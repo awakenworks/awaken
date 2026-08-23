@@ -3,8 +3,10 @@
 //! Extraction is Memory extension work triggered by a committed terminal Run. It
 //! is not Session protocol state, part of the Memory resource aggregate, or an
 //! authorization decision. The intent therefore carries only the already-selected
-//! Workspace, MemoryStore identity/config version, secret-free extractor snapshot
-//! and input.
+//! Workspace, physical Session affinity, MemoryStore identity/config version,
+//! secret-free extractor snapshot and input. The immutable transcript snapshot
+//! retains the logical Thread identity; delegated children may therefore share a
+//! parent Session without creating a second commit partition.
 //! No authorization principal, API key, Project/WorkUnit identity, or raw
 //! credential material crosses this boundary. The complete executable snapshot
 //! may carry secret-free permission policy and credential references.
@@ -159,6 +161,10 @@ pub struct MemoryExtractionIntent {
     pub intent_id: String,
     pub idempotency_key: String,
     pub workspace_id: String,
+    /// Physical Session/commit partition that owns auxiliary execution.
+    ///
+    /// The logical Thread remains `transcript_snapshot.thread_id`. Legacy range
+    /// intents have no snapshot and therefore use this same id for both roles.
     pub session_id: String,
     pub terminal_commit_id: String,
     pub memory_store_id: String,
@@ -403,11 +409,10 @@ impl MemoryExtractionIntent {
             ));
         }
         if let Some(snapshot) = &self.transcript_snapshot {
-            if snapshot.thread_id.0 != self.session_id {
-                return Err(MemoryExtractionError::Invalid(
-                    "transcript snapshot must belong to the extraction Session".into(),
-                ));
-            }
+            // A delegated child retains its logical Thread in the snapshot while
+            // `session_id` names the parent physical commit partition. The slice
+            // contract validates the logical identity and ranges without
+            // collapsing those two authorities back into one id.
             TranscriptSliceSpec {
                 snapshot: snapshot.clone(),
                 ranges: self.transcript_ranges.clone(),
@@ -520,6 +525,20 @@ impl MemoryExtractionIntent {
             && self.auxiliary_thread_id() == other.auxiliary_thread_id()
             && self.auxiliary_run_id() == other.auxiliary_run_id()
             && self.extractor == other.extractor
+    }
+
+    /// Logical Thread whose committed transcript is being extracted.
+    ///
+    /// Snapshot-backed intents retain this independently from the physical
+    /// parent Session. Legacy range intents predate snapshot identity and were
+    /// always Session-root work, so `session_id` is their compatible fallback.
+    #[must_use]
+    pub fn logical_thread_id(&self) -> &str {
+        self.transcript_snapshot
+            .as_ref()
+            .map_or(self.session_id.as_str(), |snapshot| {
+                snapshot.thread_id.0.as_str()
+            })
     }
 
     /// Durable cursor after this intent's captured transcript. Legacy serialized
@@ -805,10 +824,14 @@ pub trait MemoryExtractionRepository: Send + Sync {
     ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError>;
 
     /// Greatest committed transcript boundary already owned by an intent for the
-    /// Session. Pending work counts: once its intent is durable, later terminal
-    /// Runs must not capture the same messages again.
-    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError>;
+    /// logical Thread. Pending work counts: once its intent is durable, later
+    /// terminal Runs must not capture the same messages again. Delegated siblings
+    /// that share one physical Session therefore retain independent cursors.
+    async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError>;
 
+    /// Oldest global prefix of non-terminal intents in deterministic scheduling
+    /// order. `usize::MAX` requests the exhaustive recoverable set for owners
+    /// that must apply a frozen binding predicate outside storage.
     async fn recoverable_extractions(
         &self,
         limit: usize,
@@ -851,6 +874,8 @@ pub trait MemoryExtractionDriver: Send + Sync {
 /// Frozen inputs prepared by an embedding adapter for one terminal Run.
 pub struct MemoryTerminalExtractionRequest {
     pub workspace_id: String,
+    /// Physical Session/commit partition used by the bound extractor. The
+    /// logical Thread is authoritative in `committed_transcript`.
     pub session_id: String,
     pub terminal_run_id: String,
     pub memory_store_id: String,
@@ -912,6 +937,11 @@ impl awaken_runtime_contract::terminal::RunTerminalObserver for MemoryTerminalOb
     }
 }
 
+mod controller;
+
+#[cfg(test)]
+pub(crate) use controller::unix_ms;
+
 /// Operational policy for the at-least-once extraction worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MemoryExtractionPolicy {
@@ -919,17 +949,6 @@ pub struct MemoryExtractionPolicy {
     pub heartbeat_ms: u64,
     pub max_attempts: u32,
     pub retry_base_ms: u64,
-}
-
-impl Default for MemoryExtractionPolicy {
-    fn default() -> Self {
-        Self {
-            lease_ms: 3_000,
-            heartbeat_ms: 1_000,
-            max_attempts: 5,
-            retry_base_ms: 25,
-        }
-    }
 }
 
 /// Memory-owned application service that advances durable extraction intents.
@@ -940,337 +959,6 @@ pub struct MemoryExtractionController {
     repository: std::sync::Arc<dyn MemoryExtractionRepository>,
     owner: String,
     policy: MemoryExtractionPolicy,
-}
-
-impl MemoryExtractionController {
-    #[must_use]
-    pub fn new(
-        repository: std::sync::Arc<dyn MemoryExtractionRepository>,
-        owner: impl Into<String>,
-    ) -> Self {
-        Self {
-            repository,
-            owner: owner.into(),
-            policy: MemoryExtractionPolicy::default(),
-        }
-    }
-
-    #[must_use]
-    pub fn with_policy(mut self, policy: MemoryExtractionPolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-
-    /// CAS-create an intent. Redelivery is accepted only for the same immutable
-    /// request; a reused stable identity with different content fails closed.
-    pub async fn enqueue(
-        &self,
-        intent: MemoryExtractionIntent,
-    ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
-        if let Some(existing) = self.repository.get_extraction(&intent.intent_id).await? {
-            return if existing.same_request(&intent) {
-                Ok(PutMemoryExtractionOutcome::Existing)
-            } else {
-                Err(MemoryExtractionError::IdempotencyConflict(
-                    intent.idempotency_key,
-                ))
-            };
-        }
-        self.repository.put_extraction_if_absent(intent).await
-    }
-
-    /// Create the stable terminal-Run intent over only the transcript suffix not
-    /// already owned by an earlier durable intent.
-    pub async fn enqueue_terminal(
-        &self,
-        request: MemoryTerminalExtractionRequest,
-    ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
-        let idempotency_key = format!("{}:{}", request.session_id, request.terminal_run_id);
-        let intent_id = format!("memory-extraction:{idempotency_key}");
-        if let Some(existing) = self.repository.get_extraction(&intent_id).await? {
-            let same_binding = existing.workspace_id == request.workspace_id
-                && existing.session_id == request.session_id
-                && existing.terminal_commit_id == request.terminal_run_id
-                && existing.memory_store_id == request.memory_store_id
-                && existing.memory_config_version == request.memory_config_version
-                && existing.extractor == request.extractor;
-            return if same_binding {
-                Ok(PutMemoryExtractionOutcome::Existing)
-            } else {
-                Err(MemoryExtractionError::IdempotencyConflict(idempotency_key))
-            };
-        }
-        if request.committed_transcript.reference().thread_id.0 != request.session_id {
-            return Err(MemoryExtractionError::Invalid(
-                "terminal transcript snapshot belongs to another Session".into(),
-            ));
-        }
-        let start = self
-            .repository
-            .extraction_cursor(&request.session_id)
-            .await?;
-        if start > request.committed_transcript.messages().len() {
-            return Err(MemoryExtractionError::Invalid(format!(
-                "extraction cursor {start} exceeds committed transcript length {}",
-                request.committed_transcript.messages().len()
-            )));
-        }
-        let end = request.committed_transcript.messages().len();
-        let start_seq = u64::try_from(start)
-            .map_err(|_| MemoryExtractionError::Invalid("transcript cursor overflow".into()))?;
-        let end_seq = u64::try_from(end)
-            .map_err(|_| MemoryExtractionError::Invalid("transcript cursor overflow".into()))?;
-        let mut ranges = Vec::new();
-        let mut open = None;
-        let mut transcript = Vec::new();
-        for (offset, message) in request.committed_transcript.messages()[start..]
-            .iter()
-            .enumerate()
-        {
-            let sequence = start_seq
-                + u64::try_from(offset).map_err(|_| {
-                    MemoryExtractionError::Invalid("transcript sequence overflow".into())
-                })?;
-            if message.id.0.starts_with(crate::RECALL_MESSAGE_ID_PREFIX) {
-                if let Some(range_start) = open.take() {
-                    ranges.push(TranscriptRange::new(range_start, sequence));
-                }
-            } else {
-                open.get_or_insert(sequence);
-                transcript.push(message.clone());
-            }
-        }
-        if let Some(range_start) = open {
-            ranges.push(TranscriptRange::new(range_start, end_seq));
-        }
-        let intent = MemoryExtractionIntent::new_snapshot(
-            intent_id,
-            idempotency_key,
-            request.workspace_id,
-            request.session_id,
-            request.terminal_run_id,
-            request.memory_store_id,
-            request.memory_config_version,
-            request.committed_transcript.reference().clone(),
-            ranges,
-            transcript,
-            request.extractor,
-        )?;
-        self.repository.put_extraction_if_absent(intent).await
-    }
-
-    /// Drive every recoverable intent accepted by one frozen binding.
-    pub async fn drive_recoverable(&self, driver: &dyn MemoryExtractionDriver) {
-        loop {
-            let Ok(candidates) = self.repository.recoverable_extractions(64).await else {
-                return;
-            };
-            let Some(mut intent) = candidates.into_iter().find(|intent| driver.accepts(intent))
-            else {
-                return;
-            };
-            let now = unix_ms();
-            let expected_revision = intent.revision;
-            let generation = match intent.claim(&self.owner, now, self.policy.lease_ms) {
-                Ok(generation) => generation,
-                Err(MemoryExtractionError::LeaseHeld {
-                    lease_expires_at_unix_ms,
-                }) => {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        lease_expires_at_unix_ms
-                            .saturating_sub(now)
-                            .saturating_add(1),
-                    ))
-                    .await;
-                    continue;
-                }
-                Err(_) => return,
-            };
-            if self
-                .repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .is_err()
-            {
-                continue;
-            }
-
-            let result = self.advance_claimed(driver, &mut intent, generation).await;
-            if let Err((error, terminal)) = result {
-                let Ok(Some(current)) = self.repository.get_extraction(&intent.intent_id).await
-                else {
-                    return;
-                };
-                if current.revision != intent.revision
-                    || current.claim_owner.as_deref() != Some(self.owner.as_str())
-                    || current.claim_generation != generation
-                {
-                    continue;
-                }
-                let now = unix_ms();
-                let expected_revision = intent.revision;
-                let transition = if terminal || intent.attempts >= self.policy.max_attempts {
-                    intent.terminal_fail(&self.owner, generation, now, error)
-                } else {
-                    intent.retry(&self.owner, generation, now, error)
-                };
-                if transition.is_ok() {
-                    let _ = self
-                        .repository
-                        .compare_and_swap_extraction(expected_revision, intent.clone())
-                        .await;
-                }
-                if !terminal && intent.attempts < self.policy.max_attempts {
-                    tokio::time::sleep(std::time::Duration::from_millis(
-                        self.policy.retry_base_ms * u64::from(intent.attempts.max(1)),
-                    ))
-                    .await;
-                    continue;
-                }
-            }
-        }
-    }
-
-    /// Renew from committed claim state, not from the controller's pre-I/O
-    /// snapshot. Credential materialization may record its receipt while the
-    /// extractor is running; overwriting that newer revision would either lose
-    /// the receipt or turn every heartbeat into a false extraction retry.
-    async fn renew_current_claim(
-        &self,
-        intent: &mut MemoryExtractionIntent,
-        generation: u64,
-    ) -> Result<(), MemoryExtractionError> {
-        for _ in 0..8 {
-            let mut current = self
-                .repository
-                .get_extraction(&intent.intent_id)
-                .await?
-                .ok_or_else(|| MemoryExtractionError::NotFound(intent.intent_id.clone()))?;
-            let expected_revision = current.revision;
-            current.renew_claim(&self.owner, generation, unix_ms(), self.policy.lease_ms)?;
-            match self
-                .repository
-                .compare_and_swap_extraction(expected_revision, current.clone())
-                .await
-            {
-                Ok(()) => {
-                    *intent = current;
-                    return Ok(());
-                }
-                Err(MemoryExtractionError::RevisionConflict(_)) => continue,
-                Err(error) => return Err(error),
-            }
-        }
-        Err(MemoryExtractionError::RevisionConflict(
-            intent.intent_id.clone(),
-        ))
-    }
-
-    async fn advance_claimed(
-        &self,
-        driver: &dyn MemoryExtractionDriver,
-        intent: &mut MemoryExtractionIntent,
-        generation: u64,
-    ) -> Result<(), (String, bool)> {
-        driver
-            .validate_binding(intent)
-            .await
-            .map_err(|error| (error, true))?;
-        if intent.status == MemoryExtractionStatus::Claimed {
-            let extraction_input = intent.clone();
-            let extraction = driver.extract(&extraction_input);
-            tokio::pin!(extraction);
-            let mutations = loop {
-                tokio::select! {
-                    result = &mut extraction => break result.map_err(|error| (error, false))?,
-                    () = tokio::time::sleep(std::time::Duration::from_millis(self.policy.heartbeat_ms)) => {
-                        self.renew_current_claim(intent, generation)
-                            .await
-                            .map_err(|error| (error.to_string(), false))?;
-                    }
-                }
-            };
-            // A driver may persist claim-fenced auxiliary facts (currently the
-            // common credential-realization receipt) while extraction is in
-            // flight. Reload the same claim before the lifecycle transition so
-            // its CAS revision is authoritative instead of being overwritten by
-            // the controller's pre-I/O snapshot.
-            let current = self
-                .repository
-                .get_extraction(&intent.intent_id)
-                .await
-                .map_err(|error| (error.to_string(), false))?
-                .ok_or_else(|| {
-                    (
-                        "Memory extraction disappeared during execution".into(),
-                        true,
-                    )
-                })?;
-            current
-                .require_claim(&self.owner, generation, unix_ms())
-                .map_err(|error| (error.to_string(), false))?;
-            *intent = current;
-            let expected_revision = intent.revision;
-            intent
-                .mark_extracted(&self.owner, generation, unix_ms(), mutations)
-                .map_err(|error| (error.to_string(), false))?;
-            self.repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        if intent.status == MemoryExtractionStatus::Extracted {
-            driver
-                .validate_binding(intent)
-                .await
-                .map_err(|error| (error, true))?;
-            let mut receipts = Vec::with_capacity(intent.mutations.len());
-            for mutation in &intent.mutations {
-                receipts.push(
-                    driver
-                        .apply(intent, mutation)
-                        .await
-                        .map_err(|error| (error, false))?,
-                );
-            }
-            let expected_revision = intent.revision;
-            intent
-                .mark_stored(
-                    &self.owner,
-                    generation,
-                    unix_ms(),
-                    MemoryExtractionReceipt {
-                        stored_at_unix_ms: unix_ms(),
-                        mutations: receipts,
-                    },
-                )
-                .map_err(|error| (error.to_string(), false))?;
-            self.repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        if intent.status == MemoryExtractionStatus::Stored {
-            let expected_revision = intent.revision;
-            intent
-                .complete(&self.owner, generation, unix_ms())
-                .map_err(|error| (error.to_string(), false))?;
-            self.repository
-                .compare_and_swap_extraction(expected_revision, intent.clone())
-                .await
-                .map_err(|error| (error.to_string(), false))?;
-        }
-        Ok(())
-    }
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        .try_into()
-        .unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
@@ -1557,7 +1245,11 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct TestRepository(Mutex<Vec<MemoryExtractionIntent>>);
+    struct TestRepository {
+        stored: Mutex<Vec<MemoryExtractionIntent>>,
+        recoverable_failures_remaining: AtomicUsize,
+        recoverable_reads: AtomicUsize,
+    }
 
     #[async_trait]
     impl MemoryExtractionRepository for TestRepository {
@@ -1565,7 +1257,7 @@ mod tests {
             &self,
             intent: MemoryExtractionIntent,
         ) -> Result<PutMemoryExtractionOutcome, MemoryExtractionError> {
-            let mut stored = self.0.lock().unwrap();
+            let mut stored = self.stored.lock().unwrap();
             match stored.iter().find(|existing| {
                 existing.intent_id == intent.intent_id
                     || existing.idempotency_key == intent.idempotency_key
@@ -1588,7 +1280,7 @@ mod tests {
             intent_id: &str,
         ) -> Result<Option<MemoryExtractionIntent>, MemoryExtractionError> {
             Ok(self
-                .0
+                .stored
                 .lock()
                 .unwrap()
                 .iter()
@@ -1596,16 +1288,13 @@ mod tests {
                 .cloned())
         }
 
-        async fn extraction_cursor(
-            &self,
-            session_id: &str,
-        ) -> Result<usize, MemoryExtractionError> {
+        async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
             Ok(self
-                .0
+                .stored
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|intent| intent.session_id == session_id)
+                .filter(|intent| intent.logical_thread_id() == thread_id)
                 .map(MemoryExtractionIntent::transcript_cursor)
                 .max()
                 .unwrap_or(0))
@@ -1615,8 +1304,20 @@ mod tests {
             &self,
             limit: usize,
         ) -> Result<Vec<MemoryExtractionIntent>, MemoryExtractionError> {
+            self.recoverable_reads.fetch_add(1, Ordering::SeqCst);
+            if self
+                .recoverable_failures_remaining
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                    remaining.checked_sub(1)
+                })
+                .is_ok()
+            {
+                return Err(MemoryExtractionError::Storage(
+                    "transient recovery read".into(),
+                ));
+            }
             Ok(self
-                .0
+                .stored
                 .lock()
                 .unwrap()
                 .iter()
@@ -1631,7 +1332,7 @@ mod tests {
             expected_revision: u64,
             intent: MemoryExtractionIntent,
         ) -> Result<(), MemoryExtractionError> {
-            let mut stored = self.0.lock().unwrap();
+            let mut stored = self.stored.lock().unwrap();
             let Some(position) = stored
                 .iter()
                 .position(|current| current.intent_id == intent.intent_id)
@@ -1728,6 +1429,74 @@ mod tests {
         assert_eq!(completed.attempts, 2);
         assert_eq!(completed.receipt.unwrap().mutations.len(), 1);
         assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn recovery_scan_is_exhaustive_and_survives_one_transient_read_error() {
+        // Cause/effect graph: C1 the accepted binding is inside/beyond the first
+        // 64 global rows; C2 a recoverable repository read succeeds/fails once;
+        // C3 all earlier rows belong to other physical Sessions. Effects: E1 the
+        // matching intent is eventually claimed and completed; E2 foreign rows
+        // remain untouched; E3 the existing controller stays alive after one
+        // transient read error. Constraints: K1 repository ordering and the
+        // global port remain unchanged; K2 `driver.accepts` is the sole frozen-
+        // binding predicate; K3 no second reconciler, timer, or identity exists.
+        //
+        // | Rule | accepted position | first read | earlier rows | Effects |
+        // | R1   | <=64              | success    | foreign      | E1,E2   |
+        // | R2   | 65                | success    | foreign      | E1,E2   |
+        // | R3   | 65                | transient  | foreign      | E1,E2,E3|
+        //
+        // R1 is covered by `controller_owns_retry_receipt_and_completion_ordering`;
+        // this test composes R2+R3, the starvation/crash-retry boundary.
+        let repository = Arc::new(TestRepository {
+            recoverable_failures_remaining: AtomicUsize::new(1),
+            ..TestRepository::default()
+        });
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a")
+            .with_policy(MemoryExtractionPolicy {
+                lease_ms: 1_000,
+                heartbeat_ms: 100,
+                max_attempts: 3,
+                retry_base_ms: 0,
+            });
+        for index in 0..64 {
+            let mut foreign = intent();
+            foreign.intent_id = format!("foreign-{index:02}");
+            foreign.idempotency_key = format!("foreign-terminal-{index:02}");
+            foreign.session_id = format!("foreign-session-{index:02}");
+            controller.enqueue(foreign).await.unwrap();
+        }
+        controller.enqueue(intent()).await.unwrap();
+        let driver = TestDriver {
+            extraction_calls: AtomicUsize::new(0),
+            fail_first_extraction: false,
+            binding_valid: true,
+        };
+
+        controller.drive_recoverable(&driver).await;
+
+        let completed = repository
+            .get_extraction("extract-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.status, MemoryExtractionStatus::Completed, "R3/E1");
+        assert_eq!(driver.extraction_calls.load(Ordering::SeqCst), 1, "R3/E1");
+        assert!(
+            repository.recoverable_reads.load(Ordering::SeqCst) >= 3,
+            "R3/E3 retries once and proves global exhaustion beyond 64"
+        );
+        assert_eq!(
+            repository
+                .get_extraction("foreign-00")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            MemoryExtractionStatus::Pending,
+            "R3/E2"
+        );
     }
 
     #[tokio::test]
@@ -1907,6 +1676,138 @@ mod tests {
         );
         assert_eq!(second_intent.transcript, vec![second]);
         assert_eq!(repository.extraction_cursor("session-1").await.unwrap(), 3);
+    }
+
+    #[tokio::test]
+    async fn terminal_enqueue_separates_physical_session_from_logical_thread_identity() {
+        // Cause/effect graph: C1 physical Session equals/differs from the logical
+        // Thread; C2 an earlier intent belongs to the same/a sibling logical
+        // Thread; C3 delivery is exact or reuses the stable logical identity with
+        // a different physical Session; C4 a legacy range intent has no snapshot.
+        // Effects: E1 persist the physical Session for recovery ownership; E2
+        // derive idempotency and cursor from the logical snapshot Thread; E3 keep
+        // sibling cursors independent; E4 exact redelivery is Existing while a
+        // changed physical owner conflicts; E5 legacy logical identity falls back
+        // to its Session. Constraints: one intent stores no second logical id;
+        // `TranscriptSnapshotRef.thread_id` remains the only snapshot-backed
+        // logical authority, and pending intents already advance the cursor.
+        //
+        // | Rule | C1       | C2          | C3               | C4 | effects   |
+        // | R1   | distinct | same        | fresh            | F  | E1,E2    |
+        // | R2   | distinct | sibling     | fresh            | F  | E1,E2,E3 |
+        // | R3   | distinct | same        | exact/different  | F  | E4       |
+        // | R4   | equal    | none        | fresh            | T  | E5       |
+        let repository = Arc::new(TestRepository::default());
+        let controller = MemoryExtractionController::new(repository.clone(), "worker-a");
+        let request = |session: &str, thread: &str, run: &str, transcript: Vec<Message>| {
+            MemoryTerminalExtractionRequest {
+                workspace_id: "ws-a".into(),
+                session_id: session.into(),
+                terminal_run_id: run.into(),
+                memory_store_id: "memory-1".into(),
+                memory_config_version: 2,
+                committed_transcript: TranscriptSnapshot::new(
+                    awaken_agent_contract::agent::thread::Id(thread.into()),
+                    awaken_agent_contract::thread::read::transcript::TranscriptView::RawCommitted,
+                    transcript,
+                ),
+                extractor: intent().extractor,
+            }
+        };
+        let child_a_first = Message::text(Id("a1".into()), Role::User, "first child A fact");
+        let child_a_second = Message::text(Id("a2".into()), Role::User, "second child A fact");
+        let child_b_first = Message::text(Id("b1".into()), Role::User, "first child B fact");
+
+        controller
+            .enqueue_terminal(request(
+                "parent-session",
+                "child-a",
+                "run-1",
+                vec![child_a_first.clone()],
+            ))
+            .await
+            .expect("R1 child A first terminal");
+        controller
+            .enqueue_terminal(request(
+                "parent-session",
+                "child-a",
+                "run-2",
+                vec![child_a_first.clone(), child_a_second.clone()],
+            ))
+            .await
+            .expect("R1 child A second terminal");
+        controller
+            .enqueue_terminal(request(
+                "parent-session",
+                "child-b",
+                "run-1",
+                vec![child_b_first.clone()],
+            ))
+            .await
+            .expect("R2 sibling child terminal");
+
+        let child_a = repository
+            .get_extraction("memory-extraction:child-a:run-2")
+            .await
+            .unwrap()
+            .expect("R1 child A intent");
+        let child_b = repository
+            .get_extraction("memory-extraction:child-b:run-1")
+            .await
+            .unwrap()
+            .expect("R2 child B intent");
+        assert_eq!(child_a.session_id, "parent-session", "R1/E1");
+        assert_eq!(child_a.logical_thread_id(), "child-a", "R1/E2");
+        assert_eq!(child_a.transcript, vec![child_a_second], "R1/E2");
+        assert_eq!((child_a.transcript_start, child_a.transcript_end), (1, 2));
+        assert_eq!(child_b.session_id, "parent-session", "R2/E1");
+        assert_eq!(child_b.logical_thread_id(), "child-b", "R2/E2");
+        assert_eq!(child_b.transcript, vec![child_b_first], "R2/E3");
+        assert_eq!((child_b.transcript_start, child_b.transcript_end), (0, 1));
+        assert_eq!(repository.extraction_cursor("child-a").await.unwrap(), 2);
+        assert_eq!(repository.extraction_cursor("child-b").await.unwrap(), 1);
+        assert_eq!(
+            repository
+                .extraction_cursor("parent-session")
+                .await
+                .unwrap(),
+            0
+        );
+
+        assert_eq!(
+            controller
+                .enqueue_terminal(request(
+                    "parent-session",
+                    "child-a",
+                    "run-2",
+                    vec![
+                        child_a_first.clone(),
+                        Message::text(Id("a2".into()), Role::User, "second child A fact")
+                    ],
+                ))
+                .await
+                .expect("R3 exact replay"),
+            PutMemoryExtractionOutcome::Existing,
+            "R3/E4 exact"
+        );
+        assert!(
+            matches!(
+                controller
+                    .enqueue_terminal(request(
+                        "other-parent",
+                        "child-a",
+                        "run-2",
+                        vec![child_a_first, Message::text(Id("a2".into()), Role::User, "second child A fact")],
+                    ))
+                    .await,
+                Err(MemoryExtractionError::IdempotencyConflict(key)) if key == "child-a:run-2"
+            ),
+            "R3/E4 changed physical owner"
+        );
+
+        let legacy = intent();
+        assert!(legacy.transcript_snapshot.is_none(), "R4/C4");
+        assert_eq!(legacy.logical_thread_id(), legacy.session_id, "R4/E5");
     }
 
     struct TerminalReader(Vec<Message>);

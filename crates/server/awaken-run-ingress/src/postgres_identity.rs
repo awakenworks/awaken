@@ -64,6 +64,22 @@ pub(crate) async fn lock_run_identity(
         .map_err(reject)
 }
 
+/// Serialize absent-row capacity decisions for one parent Session. Child Run ids
+/// differ, so their ordinary identity locks alone cannot protect a shared
+/// distinct-Thread bound. A domain-separated advisory key supplies that narrow
+/// transaction fence without another table or registry.
+pub(crate) async fn lock_session_child_admission(
+    tx: &mut Transaction<'_, Postgres>,
+    parent_thread_id: &str,
+) -> Result<(), DispatchError> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("awaken:session-child-admission:{parent_thread_id}"))
+        .execute(&mut **tx)
+        .await
+        .map(|_| ())
+        .map_err(reject)
+}
+
 pub(crate) async fn load_completion_events(
     pool: &PgPool,
     prefix: &str,
@@ -78,7 +94,8 @@ pub(crate) async fn load_completion_events(
     })?;
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let rows = sqlx::query(&format!(
-        "SELECT sequence, run_id, request_fingerprint FROM {prefix}_dispatch_completion \
+        "SELECT sequence, run_id, request_fingerprint, thread_id, session_thread_id \
+         FROM {prefix}_dispatch_completion \
          WHERE sequence > $1 ORDER BY sequence LIMIT $2"
     ))
     .bind(after_sequence)
@@ -94,6 +111,14 @@ pub(crate) async fn load_completion_events(
                     DispatchError::Rejected("persisted completion sequence is negative".to_string())
                 })?,
                 run_id: RunId(row.try_get("run_id").map_err(reject)?),
+                thread_id: row
+                    .try_get::<Option<String>, _>("thread_id")
+                    .map_err(reject)?
+                    .map(awaken_agent_contract::agent::thread::Id),
+                session_thread_id: row
+                    .try_get::<Option<String>, _>("session_thread_id")
+                    .map_err(reject)?
+                    .map(awaken_agent_contract::agent::thread::Id),
                 request_fingerprint: row.try_get("request_fingerprint").map_err(reject)?,
             })
         })

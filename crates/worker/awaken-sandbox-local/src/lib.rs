@@ -24,7 +24,7 @@ use async_trait::async_trait;
 use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use awaken_runtime_contract::ContentBlock;
 use awaken_runtime_contract::llm::ToolCall;
-use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
+use awaken_runtime_contract::tool::{RawTool, ToolError, ToolExecutionTarget, ToolOutput};
 use serde_json::Value;
 
 #[derive(Clone)]
@@ -384,6 +384,10 @@ struct HandToolAsRaw(Arc<dyn HandTool>);
 impl RawTool for HandToolAsRaw {
     fn id(&self) -> &str {
         self.0.id()
+    }
+
+    fn execution_target(&self) -> ToolExecutionTarget {
+        ToolExecutionTarget::Sandbox
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
@@ -1250,9 +1254,13 @@ mod tests {
 
     // ---- the environment boundary carries no runtime state (G13) ----
 
-    // A `HandTool` cannot author state (`HandOutput` has no state field); this
-    // confirms the `RawTool` the runtime sees always carries empty state, on both
-    // the success and error paths.
+    // Causes: C1 a sandbox-bound HandTool crosses the sole HandTool -> RawTool
+    // adapter; C2 its invocation succeeds; C3 its invocation returns an error
+    // output. Effects: E1 the post-adapter execution target remains Sandbox; E2
+    // success carries no runtime state; E3 error carries no runtime state.
+    // Constraint K1: the adapter may translate shape only; it cannot move a Hand
+    // capability to Brain or introduce a second state-authoring boundary.
+    // Decision rules: R1=C1+C2 -> E1+E2; R2=C1+C3 -> E1+E3.
     #[tokio::test]
     async fn adapter_maps_ok_and_error_with_empty_state() {
         let good = hand_tool_as_raw(Arc::new(CustomHand {
@@ -1264,18 +1272,29 @@ mod tests {
             fail: true,
         }));
 
+        assert_eq!(
+            good.execution_target(),
+            ToolExecutionTarget::Sandbox,
+            "R1/E1"
+        );
+        assert_eq!(
+            bad.execution_target(),
+            ToolExecutionTarget::Sandbox,
+            "R2/E1"
+        );
+
         let o = good
             .invoke(call("good", serde_json::json!({})))
             .await
             .unwrap();
         assert_eq!(o.text(), "done");
-        assert!(!o.is_error && o.state.is_empty());
+        assert!(!o.is_error && o.state.is_empty(), "R1/E2");
 
         let e = bad
             .invoke(call("bad", serde_json::json!({})))
             .await
             .unwrap();
-        assert!(e.is_error && e.state.is_empty());
+        assert!(e.is_error && e.state.is_empty(), "R2/E3");
     }
 
     // ---- rooted_hand_tools ----

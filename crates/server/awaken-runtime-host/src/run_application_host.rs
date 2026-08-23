@@ -100,7 +100,6 @@ impl RunApplication for RunApplicationHost {
         self.host
             .pending_tool(thread)
             .await
-            .map(crate::step_projection::pending)
             .map_err(to_application_error)
     }
 

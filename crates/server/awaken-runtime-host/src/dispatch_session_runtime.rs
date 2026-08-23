@@ -11,9 +11,37 @@ use awaken_resource_contract::RepositoryBindingVerifier;
 use awaken_run_ingress_contract::{
     SessionResourceInstallDecision, session_resource_install_decision,
 };
-use awaken_session_contract::RunError;
+use awaken_session_contract::{RunError, SessionRuntime};
 
 use crate::{ManagedHost, SharedHost};
+
+/// Decode the one Session-owned Resource envelope carried by durable dispatch.
+/// Both execution realization and post-commit observation cross this boundary;
+/// keeping scope validation here prevents either caller from inventing a second
+/// wire interpretation.
+pub(crate) fn decode_dispatched_resource_manifest(
+    dispatch: &awaken_run_ingress::RunDispatch,
+) -> Result<Option<awaken_session_contract::SessionResourceManifest>, String> {
+    let Some(envelope) = &dispatch.session_resources else {
+        return Ok(None);
+    };
+    let scope = dispatch
+        .execution_scope
+        .as_ref()
+        .map(|scope| scope.0.0.as_str());
+    if envelope.workspace_id.trim().is_empty() || scope != Some(envelope.workspace_id.as_str()) {
+        return Err(format!(
+            "run {} has a resource manifest outside its execution scope",
+            dispatch.run_id().0
+        ));
+    }
+    envelope.decode_manifest().map(Some).map_err(|error| {
+        format!(
+            "run {} has an invalid Session resource manifest: {error}",
+            dispatch.run_id().0
+        )
+    })
+}
 
 /// Weak, cloneable Worker-side adapter over the same configured Managed
 /// `SessionRuntime`.
@@ -99,6 +127,41 @@ impl DispatchSessionRuntime {
         }
     }
 
+    /// Compile only the authored Memory binding selected by one frozen Agent.
+    /// Unlike `install`, this terminal-observation seam intentionally does not
+    /// stage File, Repository, Skill, mount, or Environment projections and does
+    /// not publish a resident Session selection.
+    async fn compile_memory_binding(
+        &self,
+        session_thread: &str,
+        manifest: &awaken_session_contract::SessionResourceManifest,
+        binding_id: &str,
+    ) -> Result<Arc<crate::memory::BoundMemory>, RunError> {
+        let input = manifest
+            .resources
+            .inputs()
+            .iter()
+            .find(|input| input.binding_id.as_str() == binding_id)
+            .ok_or_else(|| {
+                RunError::internal(format!(
+                    "frozen Memory binding `{binding_id}` is absent from the Session manifest"
+                ))
+            })?;
+        if !matches!(
+            &input.source,
+            awaken_session_contract::ResolvedInputSource::MemoryStore { .. }
+        ) {
+            return Err(RunError::internal(format!(
+                "frozen binding `{binding_id}` is not a MemoryStore"
+            )));
+        }
+        self.managed()?
+            .compile_memory_binding(session_thread, &manifest.workspace_id, input, None)
+            .await?
+            .map(|(_, memory)| memory)
+            .ok_or_else(|| RunError::internal("frozen Memory input did not compile"))
+    }
+
     async fn stage_mcp(
         &self,
         request: awaken_session_contract::StageMcpAttachment,
@@ -146,6 +209,13 @@ impl DispatchSessionRuntime {
             }
         }
     }
+
+    async fn execute_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        self.managed()?.execute_terminal_cleanup(command).await
+    }
 }
 
 impl SharedHost {
@@ -164,6 +234,51 @@ impl SharedHost {
                 RunError::internal("durable resource dispatch has no Session Runtime")
             })?;
         preparer.install(thread, manifest, claim).await
+    }
+
+    pub(crate) async fn compile_dispatched_memory_binding(
+        &self,
+        session_thread: &str,
+        manifest: &awaken_session_contract::SessionResourceManifest,
+        binding_id: &str,
+    ) -> Result<Arc<crate::memory::BoundMemory>, RunError> {
+        self.dispatch_session_runtime()?
+            .compile_memory_binding(session_thread, manifest, binding_id)
+            .await
+    }
+
+    /// Build the terminal observer from the exact guarded dispatch. The logical
+    /// Thread owns transcript/extraction identity; `commit` may still point at
+    /// its parent Session's physical partition.
+    pub(crate) async fn dispatched_memory_terminal_observer(
+        &self,
+        dispatch: &awaken_run_ingress::RunDispatch,
+        commit: Arc<crate::store::HostCommit>,
+    ) -> Result<
+        Option<Arc<dyn awaken_runtime_contract::terminal::RunTerminalObserver>>,
+        crate::HostError,
+    > {
+        let manifest =
+            decode_dispatched_resource_manifest(dispatch).map_err(crate::HostError::internal)?;
+        let workspace = dispatch
+            .execution_scope
+            .as_ref()
+            .map_or_else(|| self.local_workspace(), |scope| scope.0.0.as_str());
+        let frozen_publications = crate::agent_catalog::exact_run_publication_source(
+            &dispatch.activation.snapshot,
+            &dispatch.agent_publications,
+            workspace,
+        )
+        .map_err(crate::HostError::internal)?;
+        self.memory_terminal_observer(
+            &dispatch.session_thread_id().0,
+            &dispatch.activation.snapshot,
+            dispatch.activation.effective_model_ref(),
+            manifest.as_ref(),
+            frozen_publications.as_ref(),
+            commit,
+        )
+        .await
     }
 
     pub(crate) fn dispatch_session_runtime(&self) -> Result<DispatchSessionRuntime, RunError> {
@@ -195,5 +310,14 @@ impl SharedHost {
         generation: awaken_session_contract::McpGenerationRef,
     ) -> Result<(), RunError> {
         self.dispatch_session_runtime()?.drain_mcp(generation).await
+    }
+
+    pub(crate) async fn execute_dispatched_terminal_cleanup(
+        &self,
+        command: awaken_session_contract::SessionCleanupCommand,
+    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
+        self.dispatch_session_runtime()?
+            .execute_terminal_cleanup(command)
+            .await
     }
 }

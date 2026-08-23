@@ -10,7 +10,10 @@ import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 const PORT = Number(process.env.E2E_PORT ?? 38437);
 const WORKSPACE = `ephemeral-resource-${process.pid}`;
 const OTHER = `ephemeral-resource-other-${process.pid}`;
-const BETAS = 'managed-agents-2026-04-01,files-api-2025-04-14';
+const MANAGED_BETA = 'managed-agents-2026-04-01';
+const MEMORY_BETA = 'agent-memory-2026-07-22';
+const SKILLS_BETA = 'skills-2025-10-02';
+const FILES_BETA = 'files-api-2025-04-14';
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function start() {
@@ -29,10 +32,22 @@ const scoped = (workspace, tail) =>
   `http://127.0.0.1:${PORT}/v1/workspaces/${workspace}/${tail}`;
 
 async function json(method, workspace, tail, body) {
+  // Protocol decision rules: Session/Memory/Skill/File tails select exactly
+  // Managed/Memory/Skill/Files beta respectively. Replacement betas are not a
+  // union: a missing or cross-family beta rejects before lifecycle behavior.
+  const beta = tail.startsWith('sessions')
+    ? MANAGED_BETA
+    : tail.startsWith('memory_stores')
+      ? MEMORY_BETA
+      : tail.startsWith('skills')
+        ? SKILLS_BETA
+        : tail.startsWith('files')
+          ? FILES_BETA
+          : undefined;
   const response = await fetch(scoped(workspace, tail), {
     method,
     headers: {
-      'anthropic-beta': BETAS,
+      ...(beta === undefined ? {} : { 'anthropic-beta': beta }),
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -47,7 +62,7 @@ async function upload(workspace, content) {
   form.append('file', new Blob([content]), 'input.txt');
   const response = await fetch(scoped(workspace, 'files'), {
     method: 'POST',
-    headers: { 'anthropic-beta': BETAS },
+    headers: { 'anthropic-beta': FILES_BETA },
     body: form,
   });
   assert.equal(response.status, 200);
@@ -60,7 +75,7 @@ async function uploadSkill(workspace, content) {
   form.append('files[]', new Blob([content], { type: 'text/markdown' }), 'SKILL.md');
   const response = await fetch(scoped(workspace, 'skills'), {
     method: 'POST',
-    headers: { 'anthropic-beta': BETAS },
+    headers: { 'anthropic-beta': SKILLS_BETA },
     body: form,
   });
   const text = await response.text();
@@ -69,6 +84,15 @@ async function uploadSkill(workspace, content) {
 }
 
 async function main() {
+  // Test design (ephemeral adapters). Causes: C1=same/different bytes are
+  // uploaded within one or two Workspaces; C2=File, Skill, and Repository
+  // metadata/content are addressed through logical public ids; C3=an id is
+  // requested from the wrong Workspace. Effects: E1=each upload owns a distinct
+  // public id despite possible private blob dedupe; E2=all resource families
+  // round-trip through one logical adapter contract; E3=C3 is denied.
+  // Constraints/invariant: Workspace+logical id owns authorization; private
+  // content hashes are neither public identity nor cross-Workspace authority.
+  // Decision rules: R1=C1(same scope)+C2=>E1+E2; R2=C1(other scope)+C3=>E3.
   const server = start();
   try {
     await ready(server);
@@ -77,6 +101,8 @@ async function main() {
     // same bytes + same Workspace + distinct upload -> distinct public File ids;
     // same bytes + other Workspace -> distinct id and independent ownership;
     // all three may share one private content-addressed blob, which is not exposed.
+    // Constraints/invariant: logical File id plus Workspace, never blob hash,
+    // controls public retrieval. Decision rules are the three rows above.
     const file = await upload(WORKSPACE, 'same immutable bytes');
     const duplicate = await upload(WORKSPACE, 'same immutable bytes');
     const otherWorkspaceFile = await upload(OTHER, 'same immutable bytes');

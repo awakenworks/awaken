@@ -138,11 +138,12 @@ impl WorkerResolver<MemoryDispatchStore> for ExhaustionResolver {
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &awaken_run_ingress::Claimed,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.terminal_calls
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.terminal_worker
-            .terminalize_retry_exhausted(claimed)
+            .terminalize_retry_exhausted(claimed, clock)
             .await
     }
 }
@@ -166,9 +167,15 @@ impl WorkerResolver<MemoryDispatchStore> for SettlingRejectingResolver {
         &self,
         claimed: &awaken_run_ingress::Claimed,
         error: Error,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         self.worker
-            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
+            .fail_claimed_before_execution(
+                claimed,
+                "dispatch_resolution_failed",
+                error.to_string(),
+                clock,
+            )
             .await
     }
 }
@@ -188,6 +195,79 @@ impl WorkerResolver<FlakyDispatchStore> for FlakyResolver {
     }
 }
 
+struct GatedFlakyResolver {
+    worker: Option<Arc<FlakyWorker>>,
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl WorkerResolver<FlakyDispatchStore> for GatedFlakyResolver {
+    async fn worker_for(
+        &self,
+        _thread_id: &ThreadId,
+        _agent_id: Option<&str>,
+    ) -> Result<Arc<FlakyWorker>, Error> {
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("resolver release")
+            .forget();
+        self.worker.clone().ok_or_else(|| {
+            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                "synthetic provisioning failure".into(),
+            ))
+        })
+    }
+}
+
+struct BlockingCancelAttemptExecutor {
+    entered: Arc<tokio::sync::Notify>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunExecutor for BlockingCancelAttemptExecutor {
+    async fn execute(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "cancellation-only test executor was asked to execute".into(),
+        ))
+    }
+}
+
+#[async_trait]
+impl awaken_runtime_contract::execution::RunAttemptExecutor for BlockingCancelAttemptExecutor {
+    async fn resume(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _command: awaken_runtime_contract::resume::ResumeCommand,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<RunState> {
+        Err(awaken_runtime_contract::execution::Error::Execution(
+            "cancellation-only test executor was asked to resume".into(),
+        ))
+    }
+
+    async fn cancel(
+        &self,
+        _activation: awaken_runtime_contract::activation::RunActivation,
+        _context: awaken_runtime_contract::RuntimeRunContext,
+    ) -> awaken_runtime_contract::execution::Result<()> {
+        self.entered.notify_one();
+        self.release
+            .acquire()
+            .await
+            .expect("cancellation release")
+            .forget();
+        Ok(())
+    }
+}
+
 /// Build a worker over the shared store, with its own runtime + commit boundary.
 fn worker_over(
     runtime: Arc<Runtime>,
@@ -203,6 +283,16 @@ async fn wait_for(cond: impl Fn() -> bool) -> bool {
             return true;
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    cond()
+}
+
+async fn yield_until(cond: impl Fn() -> bool) -> bool {
+    for _ in 0..1_000 {
+        if cond() {
+            return true;
+        }
+        tokio::task::yield_now().await;
     }
     cond()
 }
@@ -289,19 +379,315 @@ async fn special_claim_error_blocks_the_same_tick_ordinary_claim() {
     pool.shutdown().await;
 }
 
+/// Exact-claim renewal ownership cause/effect decision table. C1 is the Pool
+/// claim, C2 is resolver completion, C3 is the exact Worker drive, C4 is
+/// cancellation, C5 is resolver failure, and C6 is expiry/replacement. E1 is one
+/// renewal write per interval, E2 is guard transfer without a second Tokio task,
+/// E3 is guard shutdown, E4 is immediate relinquish, and E5 is fail-closed stale
+/// execution.
+///
+/// | Rule | Resolver | Exact operation | Authority | Expected effect |
+/// |---|---|---|---|---|
+/// | RG1 | succeeds | normal execute | current | E1+E2, then E3 |
+/// | RG2 | succeeds | cancel | current | E1+E2, then E3 |
+/// | RG3 | fails | none | current | E1+E4, then E3 |
+/// | RG4 | blocked | none | expired/replaced | one failed E1, E3+E5 |
+///
+/// The count is the observable task cardinality: the pre-fix Pool and Worker
+/// tasks both woke on the same interval, producing two renewal writes for RG1
+/// and RG2. One transferred guard produces exactly one.
+/// Constraint/Invariant: exactly one renewal guard follows the exact claim from
+/// Pool through Worker and stops at every terminal/failure exit. Decision rule:
+/// this test owns RG1; the adjacent tests own RG2-RG4.
+#[tokio::test(start_paused = true)]
+async fn pool_transfers_one_renewal_guard_into_a_normal_drive() {
+    use std::sync::atomic::Ordering;
+
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let lease_ms = 90;
+    let worker = Arc::new(
+        DispatchWorker::new(runtime, store.clone(), commit.clone(), "pool").with_lease_ms(lease_ms),
+    );
+    store
+        .enqueue(RunDispatch::new(activation("one-renewal-normal")))
+        .await
+        .unwrap();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        "pool",
+        lease_ms,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+
+    assert!(
+        yield_until(|| ran.load(Ordering::SeqCst) == 1).await,
+        "RG1 drive entered"
+    );
+    assert_eq!(store.renewal_attempts(), 0, "RG1 before first interval");
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 1).await,
+        "RG1 first renewal"
+    );
+    assert_eq!(store.renewal_attempts(), 1, "RG1/E1+E2");
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 2).await,
+        "RG1 second renewal"
+    );
+    assert_eq!(store.renewal_attempts(), 2, "RG1 one task per interval");
+
+    release.add_permits(1);
+    assert!(
+        yield_until(|| commit.commit_count() >= 1).await,
+        "RG1 drive settled"
+    );
+    let settled_count = store.renewal_attempts();
+    tokio::time::advance(Duration::from_millis(300)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.renewal_attempts(), settled_count, "RG1/E3");
+    pool.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn pool_transfers_one_renewal_guard_into_cancellation() {
+    // Cause/effect: C1 is an accepted durable cancellation and C2 is a Worker
+    // whose terminal effect is blocked. E1 is that admission returns before C2;
+    // E2 is one pool-owned renewal guard while the ordinary drainer owns the
+    // claim; E3 is no renewal after settlement.
+    //
+    // | Rule | C1 | C2 | admission | renewal/terminal effect |
+    // |---|---|---|---|---|
+    // | RG2 | true | blocked | returns true immediately | one guard, then stop |
+    // Constraint/Invariant: accepting cancellation does not create a synchronous
+    // second driver or renewal task. Decision rule: RG2 requires immediate
+    // admission, one renewal while blocked, and zero renewal after settlement.
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let lease_ms = 90;
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let executor = Arc::new(BlockingCancelAttemptExecutor {
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "pool")
+            .with_lease_ms(lease_ms),
+    );
+    worker.install_attempt_executor(executor);
+    let pool = DispatchPool::spawn(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        "pool",
+        lease_ms,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(FlakyResolver { worker }),
+        1,
+    );
+    store
+        .enqueue(RunDispatch::new(activation("one-renewal-cancel")))
+        .await
+        .unwrap();
+
+    let run_id = RunId("one-renewal-cancel".into());
+    assert!(pool.cancel(&run_id).await.expect("RG2 admission"), "RG2/E1");
+    entered.notified().await;
+    // The cancellation executor can be reached in the same scheduler pass as
+    // guard creation; give the transferred renewal task one poll to arm its
+    // first interval before advancing virtual time.
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 1).await,
+        "RG2 first renewal"
+    );
+    assert_eq!(store.renewal_attempts(), 1, "RG2/E2");
+
+    release.add_permits(1);
+    assert!(
+        yield_until(|| {
+            CommittedThreadView::run(commit.as_ref(), &run_id)
+                .is_some_and(|run| matches!(run.state, RunState::Ended(_)))
+        })
+        .await,
+        "RG2 cancellation settles"
+    );
+    let settled_count = store.renewal_attempts();
+    tokio::time::advance(Duration::from_millis(300)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.renewal_attempts(), settled_count, "RG2/E3");
+    pool.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn pool_stops_its_only_renewal_guard_after_resolution_failure() {
+    // Cause/effect rule RG3: C1 the Pool owns one renewal guard while Worker
+    // resolution is gated; C2 resolution returns no Worker. Effects: E1 exactly
+    // one renewal occurs while blocked; E2 the failed resolution relinquishes
+    // the claim and drops that guard; E3 later virtual time adds no renewal.
+    // Decision rule RG3=C1+C2=>E1+E2+E3.
+    // Constraint/Invariant: resolution failure relinquishes the same exact claim
+    // and terminates its sole guard before another Worker may claim it.
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    store
+        .enqueue(RunDispatch::new(activation("one-renewal-failure")))
+        .await
+        .unwrap();
+    let entered_wait = entered.notified();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        Arc::new(ManualClock::new(0)),
+        "pool",
+        90,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(GatedFlakyResolver {
+            worker: None,
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+    entered_wait.await;
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 1).await,
+        "RG3 first renewal"
+    );
+    assert_eq!(store.renewal_attempts(), 1, "RG3/E1");
+
+    release.add_permits(1);
+    assert!(
+        yield_until(|| store.claim_attempts() >= 1).await,
+        "RG3 resolver returned to drain"
+    );
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    let failed_count = store.renewal_attempts();
+    tokio::time::advance(Duration::from_millis(300)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.renewal_attempts(), failed_count, "RG3/E3+E4");
+    pool.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn expired_replaced_claim_stops_the_only_renewal_and_executes_no_effect() {
+    // Cause/effect rule RG4: C1 Worker resolution is blocked; C2 the edge clock
+    // expires the Pool claim; C3 a peer replaces it before resolution resumes.
+    // Effects: E1 the sole guard observes one renewal loss and stops; E2 later
+    // time creates no renewal; E3 the stale Worker ownership check commits no
+    // effect. Decision rule RG4=C1+C2+C3=>E1+E2+E3.
+    // Constraint/Invariant: replaced ownership fails closed before execution and
+    // cannot leave a detached renewal task.
+    let store = Arc::new(FlakyDispatchStore::new(0));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let worker = Arc::new(
+        DispatchWorker::new(text_runtime(), store.clone(), commit.clone(), "pool")
+            .with_lease_ms(90),
+    );
+    let entered = Arc::new(tokio::sync::Notify::new());
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let clock = Arc::new(ManualClock::new(0));
+    store
+        .enqueue(RunDispatch::new(activation("one-renewal-stale")))
+        .await
+        .unwrap();
+    let entered_wait = entered.notified();
+    let pool = DispatchPool::spawn_with_wake(
+        store.clone(),
+        clock.clone(),
+        "pool",
+        90,
+        DispatchServiceConfig {
+            poll_interval: Duration::from_secs(3_600),
+            ..Default::default()
+        },
+        Arc::new(GatedFlakyResolver {
+            worker: Some(worker),
+            entered: entered.clone(),
+            release: release.clone(),
+        }),
+        1,
+        Arc::new(BlackholeWake),
+    );
+    entered_wait.await;
+    clock.set(91);
+    assert!(
+        store
+            .claim("replacement", 90, 91, &Default::default())
+            .await
+            .unwrap()
+            .is_some(),
+        "RG4 claim replaced after expiry"
+    );
+    tokio::time::advance(Duration::from_millis(30)).await;
+    assert!(
+        yield_until(|| store.renewal_attempts() >= 1).await,
+        "RG4 failed renewal observed"
+    );
+    assert_eq!(store.renewal_attempts(), 1, "RG4 one task");
+    tokio::time::advance(Duration::from_millis(300)).await;
+    for _ in 0..10 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(store.renewal_attempts(), 1, "RG4/E3");
+
+    release.add_permits(1);
+    for _ in 0..20 {
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(commit.commit_count(), 0, "RG4/E5");
+    pool.shutdown().await;
+}
+
 /// Durable cancellation uses the same exact-claim WorkerResolver as ordinary
-/// pool draining; it does not reconstruct a second per-Session worker path.
+/// pool draining; the admitting caller does not reconstruct or synchronously
+/// drive a second per-Session worker path.
 #[tokio::test]
-async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
+async fn pool_cancellation_is_admitted_then_drained_by_the_frozen_claim() {
     use awaken_agent_contract::agent::run::EndCause;
 
+    // Test design. Causes: C1 a durable Run is pending; C2 cancellation is
+    // admitted; C3 the Pool's ordinary resolver drains its frozen exact claim.
+    // Effects: E1 C2 returns without synchronous execution; E2 C3 commits
+    // Cancelled and settles once. Constraint/Invariant: cancellation uses the
+    // same resolver/queue path as normal work, never a per-Session worker path.
+    // Decision rule: exercise C1+C2+C3 and require one terminal commit.
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = worker_over(text_runtime(), store.clone(), commit.clone());
     let resolver = Arc::new(MapResolver {
         workers: HashMap::from([("cancel-thread".to_string(), worker)]),
     });
-    let pool = DispatchPool::spawn_with_wake(
+    let pool = DispatchPool::spawn(
         store.clone(),
         Arc::new(SystemClock),
         "pool",
@@ -312,20 +698,16 @@ async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
         },
         resolver,
         1,
-        Arc::new(BlackholeWake),
     );
-    // Close background admission so this test deterministically exercises the
-    // synchronous exact-run command rather than racing a drain task.
-    pool.begin_drain().await;
 
-    // Cause graph: durable row exists -> persist cancel -> exact claim -> common
-    // resolver -> cancellation worker -> fenced terminal settle. Missing row
-    // fails closed without invoking the resolver.
+    // Cause/effect: the request only admits a durable intent; the already-owned
+    // drainer later resolves the frozen activation and commits the terminal fact.
+    // Missing rows fail closed without creating work.
     //
-    // | Rule | dispatch row | cancel result | durable terminal |
+    // | Rule | dispatch row | admission | eventual pool effect |
     // |---|---|---|---|
     // | C1 | absent | false | absent |
-    // | C2 | queued/frozen activation | true | Cancelled |
+    // | C2 | queued/frozen activation | true | exactly one Cancelled + settle |
     assert!(!pool.cancel(&RunId("unknown".into())).await.unwrap(), "C1");
     store
         .enqueue(RunDispatch::new(activation_on(
@@ -338,6 +720,10 @@ async fn pool_cancellation_resolves_and_drives_the_frozen_claim() {
     assert!(
         pool.cancel(&RunId("cold-cancel".into())).await.unwrap(),
         "C2"
+    );
+    assert!(
+        yield_until(|| store.dispatch_count() == 0).await,
+        "C2 pool settlement"
     );
     assert_eq!(
         CommittedThreadView::run(commit.as_ref(), &RunId("cold-cancel".into()))
@@ -730,6 +1116,11 @@ async fn crashed_lease_is_recovered_and_redriven() {
 /// target thread's pending input by the pool's maintenance loop, exactly once.
 #[tokio::test]
 async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
+    // Test design. Causes: C1 a cross-Thread message is staged; C2 the Pool
+    // maintenance loop polls at least once. Effects: E1 C2 relays it into target
+    // pending input; E2 repeated polls do not duplicate the stable message id.
+    // Constraint/Invariant: the Outbox row is the sole relay authority. Decision rule:
+    // wait through multiple polls and require one pending delivery.
     let store = Arc::new(MemoryDispatchStore::new());
     let resolver = Arc::new(MapResolver {
         workers: HashMap::new(),
@@ -755,6 +1146,7 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
         correlation_id: harness::TICKET.to_string(),
         available_at_ms: None,
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
     };
     pool.send(staged).await.unwrap();
 
@@ -1194,9 +1586,9 @@ async fn renewal_stops_when_claim_resolution_fails() {
     // | R1 | live | blocked | present | exact lease renews (covered above) |
     // | R2 | live | fails | removed | exact claim is relinquished; peer claims |
     // | R3 | absent | n/a | absent | no lease write (idle-poller test) |
-    // R2 prevents the owner-wide heartbeat from indefinitely preserving an
-    // un-settled claim after provisioning or runtime construction has failed;
-    // relinquish also avoids waiting a full lease or charging crash recovery.
+    // R2 drops the exact guard instead of indefinitely preserving an unsettled
+    // claim after provisioning or Runtime construction has failed; relinquish
+    // also avoids waiting a full lease or charging crash recovery.
     let store = Arc::new(MemoryDispatchStore::new());
     store
         .enqueue(RunDispatch::new(activation("resolver-failure")))

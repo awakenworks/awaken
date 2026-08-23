@@ -16,6 +16,7 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38243);
@@ -39,11 +40,28 @@ async function reply(sessionId) {
 }
 
 async function turn(sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact User receipt; C2=reply+terminal before crash selection. E1=the
+  // post-C1 delta proves the root Run committed. K: extractor crash/recovery is
+  // observed separately. Decision C1&&!C2=>retry; C1+C2=>return committed reply.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
-  return reply(sessionId);
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'exact crash-extraction User Event receipt');
+  const { delta } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta: later }) => later.some((event) => event.type === 'agent.message')
+      && later.some((event) => event.type === 'session.status_idle'),
+    `crash-extraction Run for ${JSON.stringify(text)} to commit`,
+  );
+  return delta
+    .filter((event) => event.type === 'agent.message')
+    .map((event) => event.content.map((block) => block.text ?? '').join(''))
+    .join('\n');
 }
 
 async function waitUntil(predicate, message, tries = 80) {
@@ -105,10 +123,10 @@ async function main() {
     // | Claimed        | live                 | canonical startup supervisor | wait, reclaim, store exactly once |
     // | Claimed        | expired              | canonical startup supervisor | reclaim immediately, store exactly once |
     // | terminal       | any                  | canonical startup supervisor | no duplicate extraction or Memory version |
-    // The empty command below only rehydrates the wire projection. Recovery must
-    // be owned by the same Coordinator lifecycle supervisor as production, never
-    // by pending-tool/history reads or another protocol-specific recovery path.
-    await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
+    // The SDK history read only observes the disposable wire projection after
+    // restart. It does not enqueue a command: recovery remains owned by the same
+    // Coordinator lifecycle supervisor as production, never by a protocol-specific
+    // trigger or by the history observer itself.
     assert.ok((await reply(session.id)).includes(MARKER), 'committed Session rehydrated');
     await waitUntil(async () => {
       const page = await client.get(`/v1/memory_stores/${store.id}/memories?view=full`, {

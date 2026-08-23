@@ -1,103 +1,17 @@
 //! Session/context management for [`SharedHost`]: building a thread's commit
 //! boundary, stream-checkpoint store, run-delivery ingress, and `ctx_for`.
 
+mod child_substrate;
+mod input_projection;
+
 use super::*;
-
-fn pre_authorized_tool_ids(
-    mcp_ids: &[String],
-    admin_ids: &[String],
-    has_authored_permission: bool,
-) -> Vec<String> {
-    if has_authored_permission {
-        admin_ids.to_vec()
-    } else {
-        mcp_ids
-            .iter()
-            .cloned()
-            .chain(admin_ids.iter().cloned())
-            .collect()
-    }
-}
-
-fn merge_acp_mcp_servers(
-    publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
-    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
-) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
-    let publication = publication
-        .into_iter()
-        .map(|server| match server.transport {
-            awaken_runtime_contract::resolved::AcpMcpTransport::Stdio { command, args } => {
-                awaken_run_executor_acp::SessionMcpServer {
-                    name: server.name,
-                    command: Some(command),
-                    args,
-                    url: None,
-                    auth: None,
-                }
-            }
-            awaken_runtime_contract::resolved::AcpMcpTransport::Http { url } => {
-                awaken_run_executor_acp::SessionMcpServer {
-                    name: server.name,
-                    command: None,
-                    args: Vec::new(),
-                    url: Some(url),
-                    auth: None,
-                }
-            }
-        });
-    merge_process_local_mcp_servers(publication.collect(), staged)
-}
-
-fn merge_process_local_mcp_servers(
-    existing: Vec<awaken_run_executor_acp::SessionMcpServer>,
-    staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
-) -> Result<Vec<awaken_run_executor_acp::SessionMcpServer>, HostError> {
-    let mut names = std::collections::BTreeSet::new();
-    let mut merged = Vec::new();
-    for server in existing.into_iter().chain(staged) {
-        if !names.insert(server.name.clone()) {
-            return Err(HostError::bad_request(format!(
-                "duplicate ACP MCP server name `{}`",
-                server.name
-            )));
-        }
-        merged.push(server);
-    }
-    Ok(merged)
-}
-
-/// Apply the exact Session-scoped model route frozen at admission to an
-/// immutable Agent publication. Both co-located and claimed-Worker paths pass
-/// through this function: replay may therefore apply the same projection more
-/// than once, but may never re-resolve a model or retain candidates from the
-/// Agent's superseded route.
-pub(super) fn project_frozen_session_model_override(
-    mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-    model_override: Option<&awaken_session_contract::SessionModelOverride>,
-    workspace_id: &str,
-) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, HostError> {
-    let Some(model_override) = model_override else {
-        return Ok(snapshot);
-    };
-    if let Some(publication) = &model_override.publication {
-        publication
-            .validate_for_workspace(workspace_id)
-            .map_err(|error| {
-                HostError::internal(format!(
-                    "frozen Session model override publication is invalid: {error}"
-                ))
-            })?;
-        snapshot.resolved_spec.model_binding = publication.primary.clone();
-        snapshot.resolved_spec.model_candidates = publication.candidates.clone();
-    }
-    snapshot.resolved_spec.plugin_config.inference = model_override.inference.clone();
-    snapshot.recompute_fingerprint().map_err(|error| {
-        HostError::internal(format!(
-            "frozen Session model override publication is invalid: {error}"
-        ))
-    })?;
-    Ok(snapshot)
-}
+pub(super) use input_projection::{
+    ManagedCoordinationRole, SessionToolsetProjection, project_frozen_session_model_override,
+    project_managed_coordination_surface, project_session_tool_override,
+};
+use input_projection::{
+    merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
+};
 
 impl SharedHost {
     /// Resolve the one immutable publication selected for a Session and enforce
@@ -573,15 +487,12 @@ impl SharedHost {
             .map_err(HostError::from)
     }
 
-    /// Build a thread's run-delivery ingress. Default is direct in-process
-    /// execution (`DirectRunIngress`, slice C). With `typed durable ingress` the
-    /// turn is delivered through a `DurableRunIngress`: every accepted run is
-    /// persisted to a dispatch queue before it executes (so it survives a crash),
-    /// and on session (re)build any dispatch a prior process crashed on is
-    /// recovered (slice D). The durable ingress shares this thread's `runtime` and
-    /// `commit`, so execution and committed truth are identical to the direct path
-    /// (G6) — only the delivery guarantee differs. Returns the ingress plus the
-    /// flag that tells `run` to submit through the durable (queued) path.
+    /// Build the one claimed Worker for this Thread, then select its independent
+    /// foreground-delivery policy. Durable foreground delivery exposes the
+    /// `DurableRunIngress` that owns that same Worker; direct foreground delivery
+    /// keeps `DirectRunIngress` while retaining the Worker for pool-routed claims.
+    /// Runtime, commit, executor, observers, credentials, and recovery wiring are
+    /// therefore configured once regardless of delivery durability.
     async fn build_ingress(
         &self,
         runtime: Arc<Runtime>,
@@ -593,18 +504,10 @@ impl SharedHost {
         (
             Arc<dyn RunIngress>,
             Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
+            Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>,
         ),
         HostError,
     > {
-        if !self.deployment.durable {
-            return Ok((
-                Arc::new(DirectRunIngress::with_attempt_executor(
-                    runtime,
-                    attempt_executor,
-                )),
-                None,
-            ));
-        }
         // The ONE process-shared dispatch queue (shared SQLite file, or the shared
         // Postgres pool for a fleet) plus this process's unique claim owner — both
         // arrive through the Coordinator-owned RuntimeAuthority (ADR-0019/0024).
@@ -621,11 +524,12 @@ impl SharedHost {
             .is_none()
             .then(|| self.local_credential_realization_capabilities());
         let recovery_projection = commit.recovery_projection();
+        let settlement_observer = self.dispatch_settlement_observer();
         // The recovered dispatch a crash left mid-flight is re-executed by this
         // worker; giving it the same checkpoint store lets that re-execution resume
         // the interrupted step from its flushed partial (Phase 3 cross-process).
         let mut ingress = DurableRunIngress::with_owner_and_resolver(
-            runtime,
+            runtime.clone(),
             store,
             commit,
             self.deployment.dispatch_owner.clone(),
@@ -633,6 +537,9 @@ impl SharedHost {
             inference_materializer,
         )
         .with_context(run_context);
+        if let Some(observer) = settlement_observer {
+            ingress = ingress.with_settlement_observer(observer);
+        }
         ingress = match &self.worker_stream_publisher {
             Some(publisher) => ingress.with_claimed_stream_publisher(publisher.clone()),
             None => ingress.with_stream_sink(self.completion.clone()),
@@ -643,7 +550,7 @@ impl SharedHost {
         if let Some(resolver) = &self.worker_credential_resolver {
             ingress = ingress.with_worker_credential_resolver(resolver.clone());
         }
-        ingress.install_attempt_executor(attempt_executor);
+        ingress.install_attempt_executor(attempt_executor.clone());
         if let Some(upstream) = &self.upstream {
             ingress =
                 ingress.with_claimed_commit(crate::commit_ingest::remote_claimed_commit(upstream)?);
@@ -652,12 +559,21 @@ impl SharedHost {
             ingress = ingress.with_recovery_projection(projection);
         }
         let ingress = Arc::new(ingress);
+        let claimed_worker = ingress.worker_handle();
         // No per-session recovery sweep here: this session's worker shares one queue
         // with every other, so a claim would grab foreign threads' runs. The
         // process-level `DispatchPool` owns recovery — it claims each crashed run and
         // routes it to the session (this one included) that owns its thread.
-        let boxed: Arc<dyn RunIngress> = ingress.clone();
-        Ok((boxed, Some(ingress)))
+        if self.deployment.durable {
+            let boxed: Arc<dyn RunIngress> = ingress.clone();
+            Ok((boxed, Some(ingress), claimed_worker))
+        } else {
+            let direct: Arc<dyn RunIngress> = Arc::new(DirectRunIngress::with_attempt_executor(
+                runtime,
+                attempt_executor,
+            ));
+            Ok((direct, None, claimed_worker))
+        }
     }
 
     /// Wrap this host's `InferenceExecutorMaterializer` (if installed) into the neutral
@@ -707,6 +623,36 @@ impl SharedHost {
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_attempt(thread, agent, published_snapshot, adopted, None)
+            .await
+    }
+
+    pub(crate) async fn ctx_for_claimed_snapshot_with_sandbox(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
+        attempt: ClaimedRuntimeInput,
+    ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_attempt(
+            thread,
+            agent,
+            Some(published_snapshot),
+            adopted,
+            Some(attempt),
+        )
+        .await
+    }
+
+    async fn ctx_for_snapshot_with_attempt(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+        published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
+        adopted: Option<crate::session_environment::SessionEnvironment>,
+        claimed_attempt: Option<ClaimedRuntimeInput>,
+    ) -> Result<Arc<SessionCtx>, HostError> {
         let lifecycle = self
             .session_slots
             .update(thread, |slot| slot.lifecycle.clone());
@@ -716,10 +662,15 @@ impl SharedHost {
             .read(thread, |slot| slot.runtime.clone())
             .flatten()
         {
-            if adopted.is_some() && ctx.env.is_none() {
+            let cache_matches_attempt = claimed_attempt.as_ref().is_none_or(|attempt| {
+                ctx.runtime_publication_identity.as_ref() == Some(&attempt.identity)
+            });
+            if !cache_matches_attempt || (adopted.is_some() && ctx.env.is_none()) {
                 // A deferred durable context can survive the crash gap after the
-                // dispatch claim bound a Sandbox but before Session persistence.
-                // Rebuild that sandbox-free context around the adopted handle.
+                // dispatch claim bound a Sandbox but before Session persistence;
+                // likewise, a claim carrying different frozen Runtime inputs
+                // must rebuild around its exact publication source rather than
+                // reuse a warm Runtime.
                 self.session_slots
                     .update(thread, |slot| slot.runtime = None);
             } else {
@@ -734,6 +685,12 @@ impl SharedHost {
                     // it would tear down the shared underlying sandbox.
                     adopted.stop_bound_processes().await;
                 }
+                // A resident Session is also a recovery wake. Rebind every
+                // frozen writable Memory resource through the one controller so
+                // a prior transient repository outage cannot strand durable
+                // parent- or child-Thread extraction work behind the cache hit.
+                self.bind_thread_memory_recovery(thread, ctx.commit.clone())
+                    .await?;
                 let _ = ctx
                     .runtime
                     .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
@@ -746,6 +703,43 @@ impl SharedHost {
         // executor or a process-wide sandbox default.
         let (workspace, selected_agent, installed) =
             self.resolve_session_publication(thread, agent, published_snapshot)?;
+        let fallback_model_ref = claimed_attempt.as_ref().map_or_else(
+            || {
+                let frozen_model_ref = installed.as_ref().map_or(self.model_ref.as_str(), |root| {
+                    root.resolved_spec.model_binding.model_ref.as_str()
+                });
+                self.inference_routing.model_ref(thread, frozen_model_ref)
+            },
+            |attempt| attempt.effective_model_ref.clone(),
+        );
+        let (publication_source, unclaimed_runtime_publications): (
+            Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+            Option<Vec<awaken_runtime_contract::ExecutableAgentSnapshot>>,
+        ) = if let Some(attempt) = &claimed_attempt {
+            (attempt.publications.clone(), None)
+        } else {
+            let frozen = installed
+                .as_ref()
+                .map(|root| {
+                    crate::agent_catalog::freeze_run_publications(
+                        root,
+                        self.agent_publications.as_deref(),
+                        &workspace,
+                    )
+                })
+                .transpose()
+                .map_err(HostError::bad_request)?
+                .unwrap_or_default();
+            let source = Arc::new(
+                awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(frozen.clone())
+                    .map_err(|error| {
+                        HostError::bad_request(format!(
+                            "invalid Agent publication closure: {error}"
+                        ))
+                    })?,
+            );
+            (source, Some(frozen))
+        };
         // Legacy Session manifests carry no frozen Skill list. Refresh their
         // canonical delivered catalog before deciding whether `on_tool_use` may
         // defer the Environment; doing this later in Skill wiring can classify
@@ -810,13 +804,36 @@ impl SharedHost {
                 .delegates
                 .is_empty()
         });
+        let has_published_advisor = installed
+            .as_ref()
+            .is_some_and(|snapshot| snapshot.resolved_spec.plugin_config.agent.advisor.is_some());
+        let has_published_multiagent = has_published_delegates || has_published_advisor;
+        // Managed Sessions expose Anthropic's fixed asynchronous coordination
+        // tools. Ordinary/direct SDK sessions retain the existing synchronous
+        // `agent_run` path. `session_dispatch` is the projection of the durable
+        // Session admission fact; this is not a process-local feature mode.
+        let session_dispatch = self
+            .session_slots
+            .read(thread, |slot| slot.session_dispatch)
+            .unwrap_or(false);
+        let managed_coordination = has_published_multiagent && session_dispatch;
+        // `session_dispatch` is also the sole scope selector for per-request
+        // budget admission. A Managed single-Agent Session needs that authority
+        // even though it has no coordination tools, while direct AI-SDK/AG-UI
+        // Threads must remain independent of the Managed application port.
+        let coordination_endpoint = self.coordination_endpoint();
+        if session_dispatch && coordination_endpoint.is_none() {
+            return Err(HostError::internal(
+                "Managed Session has no Session application authority",
+            ));
+        }
         let deferred = retained.is_none()
             && adopted.is_none()
             && self.can_defer_session_environment(
                 thread,
                 Some(selected_agent.as_str()),
                 installed.as_ref(),
-                has_published_delegates,
+                has_published_multiagent,
             );
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
@@ -892,7 +909,7 @@ impl SharedHost {
         // competing host-side connection.
         let is_acp = execution_backend.is_acp();
         // This thread's staged MCP servers (ADR-0043 Phase 3), registered by the
-        // managed adapter's `prepare_session` before the first turn; the wire
+        // Managed adapter's `prepare_session` before the first Run; the wire
         // startup (connect + discover, fail closed) lives in `crate::mcp`.
         // Read, not removed, so a retry re-attempts (and re-fails) the connect.
         let active_mcp = self.active_mcp_projections(thread);
@@ -944,11 +961,17 @@ impl SharedHost {
             .unwrap_or(published_toolsets);
         // Management tools (ADR-0052) remain pre-authorized: they are read-only,
         // and only the reserved-scope assistant's config names them.
-        let admin_ids: Vec<String> = self
+        let mut admin_ids: Vec<String> = self
             .admin_tools
             .iter()
             .map(|t| t.id().to_string())
             .collect();
+        if managed_coordination {
+            admin_ids.extend([
+                awaken_ext_builtin_tools::LIST_AGENTS.to_string(),
+                awaken_ext_builtin_tools::SEND_TO_AGENT.to_string(),
+            ]);
+        }
         let has_explicit_tool_policy = config_permission_ruleset(published_configuration.plugins())
             .is_some()
             || !toolsets.is_empty();
@@ -976,7 +999,7 @@ impl SharedHost {
         // R1/R2: the runtime is built with the host default executor; each run then
         // resolves its *effective* model (its `model_ref_override`, else its snapshot
         // binding) to an executor at the resolve seam and sets it on the run context.
-        // Resolving per run — not once at session build — means a per-turn model
+        // Resolving per Run — not once at Session build — means a per-Run model
         // switch needs no session rebuild, and a database-less worker runs the
         // configured model without a session-level registry.
         let mut runtime = match env.as_ref() {
@@ -996,14 +1019,48 @@ impl SharedHost {
         }
         // Delegation is a runtime concern: inject the executor so the kernel runs
         // `agent_run` as a sub-agent (native or remote), not the tool registry.
-        if has_published_delegates && env.is_none() && !self.deployment.disable_local_pool {
+        if has_published_multiagent
+            && !managed_coordination
+            && env.is_none()
+            && !self.deployment.disable_local_pool
+        {
             return Err(HostError::internal(
                 "remote-only execution cannot host local delegate targets",
             ));
         }
-        if let Some(env) = env.clone()
-            && let Some(service) =
-                self.run_delegation(thread, env, commit.clone(), installed.as_ref())?
+        if managed_coordination {
+            let coordinator = coordination_endpoint
+                .clone()
+                .map(|endpoint| Arc::new(crate::coordination::HostAgentCoordinator::new(endpoint)));
+            if let Some(coordinator) = coordinator {
+                for tool in awaken_ext_builtin_tools::coordination_tools(coordinator) {
+                    runtime = runtime.with_tool(tool);
+                }
+            }
+            // Advisor is an internal target of the existing durable child-Run
+            // service. Installing the shared service does not re-enable
+            // `agent_run`: Runtime dispatch additionally requires the exact
+            // AgentDelegation descriptor, which the Managed surface removed.
+            if has_published_advisor
+                && let Some(env) = env.clone()
+                && let Some(service) = self.run_delegation(
+                    thread,
+                    env,
+                    commit.clone(),
+                    installed.as_ref(),
+                    publication_source.clone(),
+                )?
+            {
+                runtime = runtime.with_run_delegation(service);
+            }
+        } else if let Some(env) = env.clone()
+            && let Some(service) = self.run_delegation(
+                thread,
+                env,
+                commit.clone(),
+                installed.as_ref(),
+                publication_source.clone(),
+            )?
         {
             runtime = runtime.with_run_delegation(service);
         }
@@ -1135,47 +1192,54 @@ impl SharedHost {
             } else {
                 None
             };
-            let selected = self
-                .select_thread_memory_binding(thread, binding_id)
-                .map_err(HostError::bad_request)?;
-            if let Some(memory) = &selected {
-                memory.reconcile(thread).await;
-            }
-            selected
+            self.select_thread_memory_binding(thread, binding_id)
+                .map_err(HostError::bad_request)?
         } else {
             // Direct embedders opt in through `bind_resolved_memory`; Managed
             // compatibility Sessions merely register standard mount bindings.
             self.memory_for_thread(thread)
         };
+        // Recovery is owned by the frozen Resource bindings, not by whichever
+        // Memory plugin the parent Agent selects. This also resumes delegated
+        // child intents when the parent itself has no automatic Memory plugin.
+        self.bind_thread_memory_recovery(thread, commit.clone())
+            .await?;
         let recalled_memory = selected_memory
             .clone()
             .filter(|memory| memory.recall_enabled() && authored_memory.recall_enabled);
-        let memory_selector = recalled_memory.as_ref().map(|_| {
-            let agent_id = authored_memory
-                .selector_agent_id
-                .as_deref()
-                .unwrap_or(awaken_ext_memory::SELECTOR_AGENT_ID);
-            let fallback = awaken_ext_memory::default_selector_agent(
-                &self.model_ref,
-                authored_memory
-                    .selector_instructions
-                    .as_deref()
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS),
-            );
-            let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
-                self.agent_publications.as_deref(),
-                &workspace,
-                agent_id,
-                fallback,
-                authored_memory.selector_instructions.as_deref(),
-            );
-            Arc::new(crate::memory::AgentSelector::new(
-                self.llm.clone(),
-                snapshot,
-                commit.clone(),
-            )) as Arc<dyn awaken_ext_memory::RecallSelector>
-        });
+        let memory_selector = recalled_memory
+            .as_ref()
+            .map(
+                |_| -> Result<Arc<dyn awaken_ext_memory::RecallSelector>, HostError> {
+                    let agent_id = authored_memory
+                        .selector_agent_id
+                        .as_deref()
+                        .unwrap_or(awaken_ext_memory::SELECTOR_AGENT_ID);
+                    let fallback = awaken_ext_memory::default_selector_agent(
+                        &fallback_model_ref,
+                        authored_memory
+                            .selector_instructions
+                            .as_deref()
+                            .filter(|value| !value.trim().is_empty())
+                            .unwrap_or(awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS),
+                    );
+                    let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
+                        Some(publication_source.as_ref()),
+                        &workspace,
+                        agent_id,
+                        fallback,
+                        authored_memory.selector_instructions.as_deref(),
+                    )
+                    .map_err(HostError::bad_request)?;
+                    Ok(Arc::new(crate::memory::AgentSelector::new(
+                        self.llm.clone(),
+                        snapshot,
+                        commit.clone(),
+                    ))
+                        as Arc<dyn awaken_ext_memory::RecallSelector>)
+                },
+            )
+            .transpose()?;
         let acp_memory_recall = recalled_memory.as_ref().map(|mem| {
             let recall =
                 awaken_ext_memory::MemoryRecall::new(mem.store(), authored_memory.recall.clone());
@@ -1211,7 +1275,7 @@ impl SharedHost {
                     .and_then(|value| serde_json::from_value(value.clone()).ok())
                     .unwrap_or_else(|| compaction.config.clone());
                 let fallback = awaken_ext_compact::default_compact_agent(
-                    &self.model_ref,
+                    &fallback_model_ref,
                     compact_config
                         .agent_instructions
                         .as_deref()
@@ -1219,12 +1283,13 @@ impl SharedHost {
                         .unwrap_or(awaken_ext_compact::DEFAULT_COMPACT_INSTRUCTIONS),
                 );
                 let snapshot = crate::agent_catalog::resolve_auxiliary_snapshot(
-                    self.agent_publications.as_deref(),
+                    Some(publication_source.as_ref()),
                     &workspace,
                     &compact_config.agent_id,
                     fallback,
                     compact_config.agent_instructions.as_deref(),
-                );
+                )
+                .map_err(HostError::bad_request)?;
                 let agent_tool = build_compact_runner(self.llm.clone(), snapshot, commit.clone());
                 let backend = build_compact_backend(agent_tool, self.memory.background());
                 let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);
@@ -1276,33 +1341,26 @@ impl SharedHost {
         // removed published custom tool from leaking beside an official
         // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
         // and delegation ownership.
-        if generated_config && session_tools.is_some() {
-            config.resolved_spec.plugin_config.agent.toolsets = toolsets;
-        }
+        let mut config_changed = false;
         if let Some(session_tools) = &session_tools {
-            let projected = session_tools
-                .client_tools
-                .iter()
-                .map(crate::config::session_client_tool_descriptor)
-                .collect::<Vec<_>>();
-            let current = config
-                .resolved_spec
-                .tool_descriptors
-                .iter()
-                .filter(|descriptor| {
-                    descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                })
-                .cloned()
-                .collect::<Vec<_>>();
-            if current != projected {
-                config.resolved_spec.tool_descriptors.retain(|descriptor| {
-                    descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-                });
-                config.resolved_spec.tool_descriptors.extend(projected);
-                config.recompute_fingerprint().map_err(|error| {
-                    HostError::internal(format!("fingerprint Session tool projection: {error}"))
-                })?;
-            }
+            config_changed |= project_session_tool_override(
+                &mut config,
+                session_tools,
+                if generated_config {
+                    SessionToolsetProjection::ProjectIntoSnapshot
+                } else {
+                    SessionToolsetProjection::PreservePublished
+                },
+            );
+        }
+        if managed_coordination {
+            config_changed |=
+                project_managed_coordination_surface(&mut config, ManagedCoordinationRole::Primary);
+        }
+        if config_changed {
+            config.recompute_fingerprint().map_err(|error| {
+                HostError::internal(format!("fingerprint Session tool projection: {error}"))
+            })?;
         }
         // WebSearch has one configuration/dispatch owner for both execution
         // backends. Native lets Runtime resolve the plugin once; ACP resolves
@@ -1314,7 +1372,10 @@ impl SharedHost {
             .iter()
             .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
         {
-            let plugin = self.web_search_plugin(thread);
+            let execution_configuration =
+                awaken_ext_builtin_tools::web_search_execution_configuration(&toolsets)
+                    .map_err(HostError::bad_request)?;
+            let plugin = self.web_search_plugin(thread, execution_configuration);
             if is_acp {
                 Some(
                     plugin
@@ -1498,21 +1559,29 @@ impl SharedHost {
                 attempt_executor,
                 self.artifact_harvester(),
             ));
-        // The foreground delivery seam (slice C/D): a turn's execution goes through
+        // The foreground delivery seam (slice C/D): a Run's execution goes through
         // `RunIngress` rather than calling `runtime.start_run` directly. Direct
         // ingress runs inline on the same `runtime`; durable ingress queues the run
         // through a dispatch store first. Both share this thread's `runtime`/`commit`.
         // A database-less Worker sends its terminal commit to the Coordinator.
-        // The Coordinator's HostCommitApplier owns post-commit observation so the
-        // durable extraction intent lands beside the authoritative Session. Local
+        // The authenticated dispatch-settlement observer owns remote post-commit
+        // Memory observation, after Coordinator commit and before settlement, so
+        // the durable intent lands beside authoritative Session truth. Local
         // execution observes here because its commit authority is in this Host.
         let terminal_observers: Vec<_> = if self.upstream.is_some() {
             Vec::new()
         } else {
-            self.memory_terminal_observer(thread, &config, commit.clone())
-                .await
-                .into_iter()
-                .collect()
+            self.memory_terminal_observer(
+                thread,
+                &config,
+                &fallback_model_ref,
+                None,
+                publication_source.as_ref(),
+                commit.clone(),
+            )
+            .await?
+            .into_iter()
+            .collect()
         };
         let tool_executor = if a2a_only {
             None
@@ -1526,6 +1595,8 @@ impl SharedHost {
                 .read(thread, |slot| slot.deferred_executor.clone())
                 .flatten()
         };
+        let tool_executor = crate::config::configured_web_fetch_executor(tool_executor, &toolsets)
+            .map_err(HostError::bad_request)?;
         // Cause/effect rules: terminal observers and Session plugins
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
@@ -1562,6 +1633,13 @@ impl SharedHost {
             Some(plugin) => run_context.with_session_plugin(plugin),
             None => run_context,
         };
+        let run_context = match (session_dispatch, coordination_endpoint) {
+            (true, Some(endpoint)) => run_context.with_model_request_gate(Arc::new(
+                crate::coordination::HostModelRequestGate::new(endpoint, thread),
+            )),
+            (false, _) => run_context,
+            (true, None) => unreachable!("Session application authority was checked above"),
+        };
         let run_context = match tool_executor.as_ref() {
             Some(executor) => run_context.with_tool_executor(executor.clone()),
             None => run_context,
@@ -1572,7 +1650,7 @@ impl SharedHost {
             )),
             None => run_context,
         };
-        let (ingress, durable_ingress) = self
+        let (ingress, durable_ingress, claimed_worker) = self
             .build_ingress(
                 runtime.clone(),
                 attempt_executor,
@@ -1585,11 +1663,27 @@ impl SharedHost {
         // No per-session dispatch daemon: the process-level `DispatchPool` (spawned
         // once by `mount`) is the sole claimer of the shared queue and drives this
         // session's runs by routing claimed work back to its worker (O2).
+        let runtime_publication_identity = claimed_attempt
+            .as_ref()
+            .map(|attempt| attempt.identity.clone())
+            .or_else(|| {
+                unclaimed_runtime_publications
+                    .as_deref()
+                    .map(|publications| {
+                        RuntimePublicationIdentity::from_publications(
+                            &config,
+                            publications,
+                            fallback_model_ref.as_str(),
+                        )
+                    })
+            });
         let ctx = Arc::new(SessionCtx {
             runtime,
             ingress,
             durable,
             durable_ingress,
+            claimed_worker,
+            runtime_publication_identity,
             config,
             commit,
             attempt_context: run_context,
@@ -1601,9 +1695,6 @@ impl SharedHost {
             skill_registry,
             cancel: Arc::new(std::sync::Mutex::new(None)),
             active_run: std::sync::Mutex::new(None),
-            reschedule: std::sync::Mutex::new(None),
-            model_requests: std::sync::Mutex::new(None),
-            rescheduled_runs: std::sync::Mutex::new(None),
             live_inbox: std::sync::Mutex::new(crate::live_inbox::LiveInboxSlot::default()),
             state: tokio::sync::Mutex::new(state),
             outcome: tokio::sync::Mutex::new(()),
@@ -1618,8 +1709,13 @@ impl SharedHost {
             .runtime
             .reconcile_delegation_cancellations(&ctx.thread_id, ctx.commit.as_ref())
             .await;
-        // Recover the generic after-commit observer gap from committed Run truth.
-        if let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
+        // Direct ingress has no later settlement edge, so reopening it repairs
+        // the generic after-commit observer gap from committed Run truth. A
+        // durable Runtime must leave this delivery to its guarded Worker/HTTP
+        // settlement owner, including ordinary cold contexts opened without a
+        // claimed identity.
+        if !ctx.durable
+            && let Some(run) = ctx.commit.latest_run(&ctx.thread_id)
             && run.state.is_terminal()
         {
             let _ = awaken_runtime_contract::terminal::redeliver_committed_terminal(
@@ -1879,73 +1975,5 @@ impl SharedHost {
         }
 
         dispose_result
-    }
-}
-
-#[cfg(test)]
-mod permission_projection_tests {
-    use super::{merge_acp_mcp_servers, pre_authorized_tool_ids};
-    use awaken_runtime_contract::resolved::{AcpMcpServer, AcpMcpTransport};
-
-    fn published_stdio(name: &str) -> AcpMcpServer {
-        AcpMcpServer {
-            name: name.into(),
-            transport: AcpMcpTransport::Stdio {
-                command: "playwright-mcp".into(),
-                args: vec!["--headless".into()],
-            },
-        }
-    }
-
-    fn staged_stdio(name: &str) -> awaken_run_executor_acp::SessionMcpServer {
-        awaken_run_executor_acp::SessionMcpServer {
-            name: name.into(),
-            command: Some("playwright-mcp".into()),
-            args: vec!["--headless".into()],
-            url: None,
-            auth: None,
-        }
-    }
-
-    #[test]
-    fn authored_permission_is_the_only_mcp_confirmation_authority() {
-        let mcp = vec!["mcp__calc__add".to_string()];
-        let admin = vec!["awaken_admin_get".to_string()];
-
-        assert_eq!(
-            pre_authorized_tool_ids(&mcp, &admin, false),
-            vec!["mcp__calc__add", "awaken_admin_get"]
-        );
-        assert_eq!(
-            pre_authorized_tool_ids(&mcp, &admin, true),
-            vec!["awaken_admin_get"]
-        );
-    }
-
-    #[test]
-    fn publication_stdio_and_session_mcp_routes_merge_without_shadowing() {
-        let merged = merge_acp_mcp_servers(
-            vec![published_stdio("playwright")],
-            [staged_stdio("session")],
-        )
-        .expect("distinct routes");
-        assert_eq!(
-            merged
-                .iter()
-                .map(|server| server.name.as_str())
-                .collect::<Vec<_>>(),
-            ["playwright", "session"]
-        );
-
-        let error = merge_acp_mcp_servers(
-            vec![published_stdio("playwright")],
-            [staged_stdio("playwright")],
-        )
-        .expect_err("duplicate names must not silently shadow a publication route");
-        assert!(
-            error
-                .to_string()
-                .contains("duplicate ACP MCP server name `playwright`")
-        );
     }
 }

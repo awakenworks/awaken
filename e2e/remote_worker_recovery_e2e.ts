@@ -13,6 +13,7 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 
@@ -56,6 +57,25 @@ async function startA2aPeer(): Promise<{
       .map((part: { text?: string }) => String(part.text ?? ''))
       .join('');
     sent.push({ contextId: message.contextId, text });
+    if (text.startsWith('reservation-recovery-')) {
+      json(response, 200, {
+        task: {
+          kind: 'task',
+          id: `reservation-task-${sent.length}`,
+          contextId: `reservation-context-${sent.length}`,
+          status: {
+            state: 'completed',
+            message: {
+              kind: 'message',
+              messageId: `reservation-message-${sent.length}`,
+              role: 'agent',
+              parts: [{ kind: 'text', text: `completed ${text}` }],
+            },
+          },
+        },
+      });
+      return;
+    }
     if (message.contextId === 'recovery-context') {
       json(response, 200, {
         task: {
@@ -115,8 +135,13 @@ async function startFaultProxy(): Promise<{
   commits: () => any[];
   commitAttempts: () => any[];
   settleAttempts: () => any[];
+  runActivityAdmissions: () => any[];
+  reservationResolutions: () => any[];
+  recoverySnapshots: () => Array<{ workerId: string; snapshot: any }>;
   requestCounts: () => Record<string, number>;
   registration: () => any;
+  identity: (workerId: string) => any;
+  failNextRunActivityAdmission: () => void;
   awaitingSettle: Promise<void>;
   close: () => Promise<void>;
 }> {
@@ -126,11 +151,16 @@ async function startFaultProxy(): Promise<{
   const firstOperationAttempts: any[] = [];
   const commits: any[] = [];
   const settleAttempts: any[] = [];
+  const runActivityAdmissions: any[] = [];
+  const reservationResolutions: any[] = [];
+  const recoverySnapshots: Array<{ workerId: string; snapshot: any }> = [];
   let firstOperationId: string | undefined;
   let blockedAwaitingSettle = false;
   let signalAwaitingSettle!: () => void;
   const requestCounts = new Map<string, number>();
   let registration: any;
+  const identities = new Map<string, any>();
+  let failedRunActivityAdmissions = 0;
   const awaitingSettle = new Promise<void>((resolve) => {
     signalAwaitingSettle = resolve;
   });
@@ -142,8 +172,20 @@ async function startFaultProxy(): Promise<{
     const parsed = body.length > 0 ? JSON.parse(body.toString('utf8')) : {};
     const workerId = String(request.headers['x-awaken-worker-id'] ?? '');
     if (request.url === '/v1/worker/register') registration = parsed;
+    if (workerId && parsed.identity) identities.set(workerId, parsed.identity);
     if (request.method === 'POST' && request.url === '/v1/worker/dispatch/settle') {
       settleAttempts.push(parsed);
+    }
+    if (request.method === 'POST' && request.url === '/v1/worker/session/run-activity/admit') {
+      runActivityAdmissions.push(parsed);
+      if (failedRunActivityAdmissions > 0) {
+        failedRunActivityAdmissions -= 1;
+        json(response, 503, { error: 'injected Session activity admission outage' });
+        return;
+      }
+    }
+    if (request.method === 'POST' && request.url === '/v1/worker/dispatch/reservation/resolve') {
+      reservationResolutions.push(parsed);
     }
 
     if (
@@ -166,13 +208,13 @@ async function startFaultProxy(): Promise<{
           'content-type': request.headers['content-type'] ?? 'application/json',
           ...(workerId ? { 'x-awaken-worker-id': workerId } : {}),
         },
-        body: body.length > 0 ? body : undefined,
+        body: body.length > 0 ? Uint8Array.from(body) : undefined,
       });
     } catch (error) {
       // Worker shutdown can leave a final claim/renew request in this test-only
       // proxy while Control is closing. That transport failure belongs to the
       // caller; it must not escape the async server callback as an unhandled
-      // rejection and turn an already-passed recovery scenario into a failure.
+      // rejection and make an already-passed recovery scenario fail.
       if (!response.destroyed) {
         json(response, 502, { error: { message: String(error) } });
       }
@@ -190,6 +232,17 @@ async function startFaultProxy(): Promise<{
         claimed = claimResponse.claimed;
         claims.push({ workerId, claimed });
       }
+    }
+
+    if (
+      request.method === 'POST' &&
+      request.url === '/v1/worker/recovery/snapshot' &&
+      upstream.ok
+    ) {
+      recoverySnapshots.push({
+        workerId,
+        snapshot: JSON.parse(upstreamBody.toString('utf8')).snapshot,
+      });
     }
 
     if (
@@ -226,11 +279,64 @@ async function startFaultProxy(): Promise<{
     commits: () => commits,
     commitAttempts: () => firstOperationAttempts,
     settleAttempts: () => settleAttempts,
+    runActivityAdmissions: () => runActivityAdmissions,
+    reservationResolutions: () => reservationResolutions,
+    recoverySnapshots: () => recoverySnapshots,
     requestCounts: () => Object.fromEntries(requestCounts),
     registration: () => registration,
+    identity: (workerId) => identities.get(workerId),
+    failNextRunActivityAdmission: () => {
+      failedRunActivityAdmissions += 1;
+    },
     awaitingSettle,
     close: () => closeHttpServer(server),
   };
+}
+
+async function workerApi(
+  workerId: string,
+  identity: any,
+  route: string,
+  body: Record<string, unknown>,
+): Promise<{ status: number; body: any }> {
+  const response = await fetch(`${CONTROL}${route}`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      'x-awaken-worker-id': workerId,
+    },
+    body: JSON.stringify({ ...body, identity }),
+  });
+  return { status: response.status, body: await response.json().catch(() => ({})) };
+}
+
+function spawnCredentialIsolatedWorker(
+  workerId: string,
+  upstream: string,
+): ReturnType<typeof spawnServer>['server'] {
+  // Test-process credential-isolation decision table. The production startup
+  // guard remains fail-closed; this fixture changes only the exact Worker child
+  // environment at spawn time and restores the Node owner's environment before
+  // returning.
+  //
+  // | Rule | inherited name | child effect | parent effect |
+  // | W1   | API_KEY/*_API_KEY | omit       | restore exact value |
+  // | W2   | any other name    | inherit    | unchanged           |
+  const ambientApiKeys = Object.entries(process.env).filter(([name, value]) => {
+    const normalized = name.toUpperCase();
+    return value !== undefined && (normalized === 'API_KEY' || normalized.endsWith('_API_KEY'));
+  }) as Array<[string, string]>;
+  for (const [name] of ambientApiKeys) delete process.env[name];
+  try {
+    return spawnServer('echo', 0, {
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
+      AWAKEN_UPSTREAM_URL: upstream,
+      AWAKEN_SCENARIO_ROLE: 'worker',
+      AWAKEN_WORKER_ID: workerId,
+    }).server;
+  } finally {
+    for (const [name, value] of ambientApiKeys) process.env[name] = value;
+  }
 }
 
 async function api(method: string, route: string, body?: unknown): Promise<{ status: number; body: any }> {
@@ -266,12 +372,13 @@ async function publishRemote(endpoint: string): Promise<void> {
 }
 
 async function createSession(): Promise<string> {
-  const created = await api('POST', '/v1/sessions', {
+  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: CONTROL });
+  const created = await client.beta.sessions.create({
     agent: AGENT,
     environment_id: 'env_local',
+    betas: ['managed-agents-2026-04-01'],
   });
-  assert.equal(created.status, 200, JSON.stringify(created.body));
-  return created.body.id;
+  return created.id;
 }
 
 function dispatchDatabases(root: string): string[] {
@@ -320,6 +427,110 @@ function sqliteRun(database: string, statement: string, ...params: any[]): void 
   withSqlite(database, (db) => {
     (db.prepare(statement) as StatementSync).run(...params);
   });
+}
+
+function reservationRequest(base: any, sessionId: string, label: string): any {
+  const request = structuredClone(base);
+  const runId = `${base.activation.run_id}-reservation-${label}`;
+  request.activation.run_id = runId;
+  request.activation.thread_id = sessionId;
+  request.session_thread_id = sessionId;
+  request.session_activity_epoch = null;
+  for (const [index, message] of (request.activation.input ?? []).entries()) {
+    message.id = `${message.id}-reservation-${label}-${index}`;
+    for (const block of message.content ?? []) {
+      if (block.type === 'text') block.text = `reservation-recovery-${label}`;
+    }
+  }
+  return request;
+}
+
+async function stageReservationCrashBoundary(
+  storage: string,
+  workerId: string,
+  identity: any,
+  request: any,
+  deadlineMs: number,
+): Promise<string> {
+  const enqueued = await workerApi(
+    workerId,
+    identity,
+    '/v1/worker/dispatch/enqueue',
+    { request },
+  );
+  assert.equal(enqueued.status, 200, `canonical reservation fixture enqueue: ${JSON.stringify(enqueued.body)}`);
+  const runId = String(request.activation.run_id);
+  const matches = dispatchDatabases(storage).filter(
+    (database) => sqliteValue(
+      database,
+      'SELECT status FROM runtime_dispatch WHERE run_id = ?',
+      runId,
+    ) !== undefined,
+  );
+  assert.equal(matches.length, 1, `reservation fixture has one DispatchQueue authority for ${runId}`);
+  const changes = withSqlite(matches[0], (db) => (
+    db.prepare(
+      `UPDATE runtime_dispatch SET status = 'reserved', lease_owner = NULL, ` +
+        `lease_until = ?, worker_assignment = NULL, credential_bindings = NULL, ` +
+        `credential_receipts = NULL WHERE run_id = ? AND status = 'pending'`,
+    ).run(deadlineMs, runId).changes
+  ));
+  assert.equal(changes, 1, `reservation fixture freezes one persisted pre-activity row for ${runId}`);
+  return runId;
+}
+
+async function waitForReservationResolution(
+  proxy: { reservationResolutions: () => any[] },
+  runId: string,
+  after: number,
+  variant: 'Admitted' | 'Rejected' | 'Retry',
+  timeoutMs = 30_000,
+): Promise<any> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const resolution = proxy.reservationResolutions().slice(after).find(
+      (request) => request.claim?.run_id === runId && (
+        variant === 'Rejected'
+          ? request.resolution === 'Rejected'
+          : request.resolution?.[variant] !== undefined
+      ),
+    );
+    if (resolution) return resolution;
+    await sleep(25);
+  }
+  throw new Error(
+    `reservation ${runId} did not resolve as ${variant}: ${JSON.stringify(proxy.reservationResolutions().slice(after))}`,
+  );
+}
+
+async function waitForDispatchGone(thread: string, runId: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    const response = await api('GET', `/v1/durable/threads/${thread}/dispatches`);
+    if (!(response.body.dispatches ?? []).some((dispatch: any) => dispatch.run_id === runId)) return;
+    await sleep(25);
+  }
+  throw new Error(`dispatch ${runId} did not settle from ${thread}`);
+}
+
+async function waitForStoredDispatchStatus(
+  storage: string,
+  runId: string,
+  status: string,
+  timeoutMs = 30_000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    for (const database of dispatchDatabases(storage)) {
+      if (sqliteValue(
+        database,
+        'SELECT status FROM runtime_dispatch WHERE run_id = ?',
+        runId,
+      ) === status) return database;
+    }
+    await sleep(25);
+  }
+  throw new Error(`dispatch ${runId} did not persist status ${status}`);
 }
 
 function removeEmptyManagedResourceEnvelope(root: string, runId: string): void {
@@ -409,6 +620,7 @@ async function waitForReplacementClaim(
   },
   workerId: string,
   runId: string,
+  storage: string,
   timeoutMs = CRASH_RECOVERY_TIMEOUT_MS,
 ): Promise<void> {
   // Recovery readiness cause/effect graph: C1 the replacement Worker is
@@ -417,8 +629,13 @@ async function waitForReplacementClaim(
   // the recovery linearization evidence. C3 -> zero sandbox binds is valid and
   // must not block the scenario; a local-Sandbox test owns binding/adoption.
   //
-  // | Rule | C1 registered | C2 exact claim | C3 remote-only | ready | bind required |
-  // | R1   | T             | T              | T              | T     | F             |
+  // C4 the Coordinator-only terminal scanner shares the Dispatch store but may
+  // claim only committed Ended Runs. C1+C2+C4 is active-active evidence that a
+  // maintenance scan cannot steal a non-terminal expired lease or hide the theft
+  // by restoring the same public status.
+  //
+  // | Rule | C1 registered | C2 exact claim | C3 remote-only | C4 nonterminal scan | ready | bind required |
+  // | R1   | T             | T              | T              | preserves row       | T     | F             |
   const deadline = Date.now() + timeoutMs;
   while (Date.now() <= deadline) {
     const registered = proxy.registration()?.registration?.worker_id === workerId;
@@ -432,12 +649,34 @@ async function waitForReplacementClaim(
     `replacement Worker ${workerId} did not claim Run ${runId}; ` +
       `registration=${JSON.stringify(proxy.registration())} ` +
       `claims=${JSON.stringify(proxy.claims())} ` +
-      `requests=${JSON.stringify(proxy.requestCounts())}`,
+      `requests=${JSON.stringify(proxy.requestCounts())} ` +
+      `durable=${JSON.stringify(
+        dispatchDatabases(storage).map((database) => ({
+          database,
+          row: withSqlite(database, (db) =>
+            db
+              .prepare(
+                'SELECT status, lease_owner, lease_until, lease_epoch, attempt_count, ' +
+                  'worker_assignment, credential_bindings FROM runtime_dispatch WHERE run_id = ?',
+              )
+              .get(runId),
+          ),
+          operations: withSqlite(database, (db) =>
+            db
+              .prepare(
+                'SELECT operation FROM runtime_dispatch_operation ' +
+                  'WHERE operation LIKE ? ORDER BY rowid',
+              )
+              .all(`%${runId}%`),
+          ),
+        })),
+      )}`,
   );
 }
 
 async function waitForTerminalMessage(
   thread: string,
+  diagnostics: () => unknown,
   timeoutMs = CRASH_RECOVERY_TIMEOUT_MS,
 ): Promise<any[]> {
   const deadline = Date.now() + timeoutMs;
@@ -448,7 +687,10 @@ async function waitForTerminalMessage(
     if (JSON.stringify(messages).includes(TERMINAL_MARKER)) return messages;
     await sleep(50);
   }
-  throw new Error(`terminal message was not committed: ${JSON.stringify(messages)}`);
+  throw new Error(
+    `terminal message was not committed: ${JSON.stringify(messages)} ` +
+      `diagnostics=${JSON.stringify(diagnostics())}`,
+  );
 }
 
 async function main(): Promise<void> {
@@ -461,20 +703,33 @@ async function main(): Promise<void> {
   // C5+C6 first reclaims the subordinate Run epoch; C7 then waits for the
   // independently durable Session Work lease to expire before realization can
   // transfer. C5+C6+C7 resumes the committed snapshot, fences A, and emits one
-  // terminal fact. The scenario WorkQueue is intentionally in-memory, so time
+  // terminal fact. C8 keeps the Coordinator-only terminal scanner active over
+  // the same Dispatch store; it may repair Ended truth but must not claim this
+  // committed-Awaiting Run. C9 requires the registered replacement to pass the
+  // frozen remote placement capabilities, and C10 verifies its credential-free
+  // attempt remains an exact empty binding rather than bypassing credential
+  // admission. C11 requires both Worker processes to complete their immediate
+  // Environment warmup reconciliation over this same private transport; a
+  // missing Scenario route returns a non-warmup body and the Worker reports the
+  // response-decode failure instead of exercising production topology. The
+  // scenario WorkQueue is intentionally in-memory, so time
   // is the production crash-recovery authority; directly mutating a second
   // store would create a false parallel ownership path.
   //
-  // | Rule | remote | current | lost receipt | crash/reclaim | Work TTL | Effect |
-  // | T1   | yes    | yes     | yes          | yes           | elapsed  | idempotent retry; both fences transfer; one terminal fact |
-  // | T2   | no     | n/a     | n/a          | n/a           | n/a      | local phase driver owns realization (Rust placement tests) |
-  // | T3   | yes    | stale   | any          | reclaimed     | any      | old commit rejected |
-  // | T4   | yes    | yes     | no           | no            | live     | ordinary single-worker completion (worker transport E2E) |
-  // | T5   | yes    | yes     | yes          | reclaimed     | live     | replacement realization remains fenced until expiry |
+  // | Rule | remote placement | credential binding | claim owner | Work TTL | Effect |
+  // | T1   | compatible       | exact empty        | B after A crash | elapsed | both fences transfer; one terminal fact |
+  // | T2   | incompatible     | any                | none       | any      | Pending (Rust placement tests) |
+  // | T3   | compatible       | exact              | stale A    | any      | old commit rejected |
+  // | T4   | compatible       | exact              | current A  | live     | ordinary single-Worker completion |
+  // | T5   | compatible       | exact              | B after A crash | live  | realization remains fenced until Work expiry |
+  // | T6   | compatible       | exact              | coordinator scan | any | nonterminal Run is preserved for B |
+  // | T7   | compatible       | exact              | A and B warmup clients | any | both decode the canonical warmup projection |
   // FMECA: bounding terminal recovery below the 60-second Work TTL makes T5 a
   // false failure and masks T1. The shared 120-second budget covers one exact
   // expiry plus the 30-second durable-pool retry cadence without weakening the
-  // stale-owner or exactly-once assertions.
+  // stale-owner or exactly-once assertions. Constraints/invariant: Dispatch
+  // claim epoch, Session Work lease, and frozen placement/credential binding are
+  // independent authorities and all must transfer before B may commit.
   const storage = mkdtempSync(path.join(tmpdir(), 'awaken-remote-worker-recovery-'));
   const peer = await startA2aPeer();
   const proxy = await startFaultProxy();
@@ -499,12 +754,7 @@ async function main(): Promise<void> {
     // envelope. This Worker-recovery scenario has no resource plane, so strip
     // that unrelated fixture dimension directly from the disposable dispatch.
     removeEmptyManagedResourceEnvelope(storage, runId);
-    workerA = spawnServer('echo', 0, {
-      SESSION_DEPLOYMENT_INGRESS: 'durable',
-      AWAKEN_UPSTREAM_URL: proxy.url,
-      AWAKEN_SCENARIO_ROLE: 'worker',
-      AWAKEN_WORKER_ID: 'recovery-worker-a',
-    }).server;
+    workerA = spawnCredentialIsolatedWorker('recovery-worker-a', proxy.url);
     await Promise.race([
       proxy.awaitingSettle,
       // Cause graph: lost applied-commit receipt -> retry with the same
@@ -542,6 +792,109 @@ async function main(): Promise<void> {
       'the retry preserved operation id, version, hash, and payload',
     );
 
+    // Claimed Managed-Session coordination cause/effect design:
+    // C1 the request carries Worker A's exact registered incarnation; C2 its
+    // Run claim owner/epoch is live; C3 Session/Thread/Run equal the frozen
+    // primary dispatch; C4 the latest committed Run is Awaiting. Effects:
+    // E1 roster lookup reaches the one Session application port; E2 model
+    // admission returns the aggregate budget decision; E3 a forged owner,
+    // stale/expired epoch, or foreign Session is rejected before either
+    // application effect. K1 the blocked Awaiting settlement keeps C2 stable
+    // while these requests run; the dispatch row remains the sole claim
+    // authority. K2 pauses only the throwaway Worker process while the fixture
+    // advances its durable lease beyond expiry, then restores the exact value;
+    // this is the same crash-clock seam used by the recovery half below.
+    //
+    // | Rule | identity | claim | coordinates | committed Run | Effect |
+    // | A1 | exact | live | exact | Awaiting | E1 |
+    // | A2 | exact | live | exact | Awaiting | E2 |
+    // | A3 | exact | forged owner | exact | any | E3 |
+    // | A4 | exact | stale epoch | exact | any | E3 |
+    // | A5 | exact | live | foreign Session | any | E3 |
+    // | A6 | exact | expired | exact | any | E3 |
+    const identityA = proxy.identity('recovery-worker-a');
+    assert.ok(identityA, 'Worker A exposed its registered incarnation on the canonical transport');
+    const liveClaim = {
+      run_id: claimA.lease.run_id,
+      owner: claimA.lease.owner,
+      epoch: claimA.lease.epoch,
+    };
+    const roster = await workerApi(
+      'recovery-worker-a',
+      identityA,
+      '/v1/worker/session/agents/list',
+      { claim: liveClaim, session_id: thread },
+    );
+    assert.equal(roster.status, 200, `A1 exact live claim lists the frozen roster: ${JSON.stringify(roster.body)}`);
+    assert.ok(Array.isArray(roster.body.agents), 'A1 returns the canonical roster envelope');
+    const modelAdmission = await workerApi(
+      'recovery-worker-a',
+      identityA,
+      '/v1/worker/session/model-request/admit',
+      {
+        claim: liveClaim,
+        session_id: thread,
+        thread_id: claimA.request.activation.thread_id,
+        run_id: runId,
+      },
+    );
+    assert.equal(
+      modelAdmission.status,
+      200,
+      `A2 exact Awaiting Run reaches model admission: ${JSON.stringify(modelAdmission.body)}`,
+    );
+    assert.equal(typeof modelAdmission.body.admitted, 'boolean', 'A2 returns the aggregate budget decision');
+    for (const [rule, claim, sessionId] of [
+      ['A3', { ...liveClaim, owner: 'forged-worker-owner' }, thread],
+      ['A4', { ...liveClaim, epoch: liveClaim.epoch + 1 }, thread],
+      ['A5', liveClaim, `${thread}-foreign`],
+    ] as const) {
+      const rejected = await workerApi(
+        'recovery-worker-a',
+        identityA,
+        '/v1/worker/session/agents/list',
+        { claim, session_id: sessionId },
+      );
+      assert.equal(rejected.status, 400, `${rule} is fenced before roster lookup: ${JSON.stringify(rejected.body)}`);
+    }
+    const authorityDatabase = dispatchDatabases(storage).find(
+      (database) => sqliteValue(
+        database,
+        'SELECT lease_until FROM runtime_dispatch WHERE run_id = ?',
+        runId,
+      ) !== undefined,
+    );
+    assert.ok(authorityDatabase, 'A6 locates the one disposable durable dispatch authority');
+    const liveLeaseUntil = sqliteValue(
+      authorityDatabase,
+      'SELECT lease_until FROM runtime_dispatch WHERE run_id = ?',
+      runId,
+    );
+    assert.equal(typeof liveLeaseUntil, 'number', 'A6 starts from a persisted live lease');
+    workerA.kill('SIGSTOP');
+    try {
+      sqliteRun(
+        authorityDatabase,
+        'UPDATE runtime_dispatch SET lease_until = 0 WHERE run_id = ?',
+        runId,
+      );
+      const expired = await workerApi(
+        'recovery-worker-a',
+        identityA,
+        '/v1/worker/session/agents/list',
+        { claim: liveClaim, session_id: thread },
+      );
+      assert.equal(expired.status, 400, `A6 expired claim is fenced: ${JSON.stringify(expired.body)}`);
+    } finally {
+      sqliteRun(
+        authorityDatabase,
+        'UPDATE runtime_dispatch SET lease_until = ? WHERE run_id = ?',
+        liveLeaseUntil,
+        runId,
+      );
+      workerA.kill('SIGCONT');
+    }
+
     const killedA = new Promise<void>((resolve) => workerA!.once('exit', () => resolve()));
     workerA.kill('SIGKILL');
     await killedA;
@@ -556,16 +909,34 @@ async function main(): Promise<void> {
       );
     }
 
-    workerB = spawnServer('echo', 0, {
-      SESSION_DEPLOYMENT_INGRESS: 'durable',
-      AWAKEN_UPSTREAM_URL: proxy.url,
-      AWAKEN_SCENARIO_ROLE: 'worker',
-      AWAKEN_WORKER_ID: 'recovery-worker-b',
-    }).server;
+    workerB = spawnCredentialIsolatedWorker('recovery-worker-b', proxy.url);
     await waitForReplacementClaim(
       proxy,
       'recovery-worker-b',
       runId,
+      storage,
+    );
+    const claimB = proxy
+      .claims()
+      .find(
+        (entry) =>
+          entry.workerId === 'recovery-worker-b' && entry.claimed?.lease?.run_id === runId,
+      )!.claimed;
+    assert.equal(claimB.recovered, true, 'Worker B used the expired-lease recovery path');
+    assert.equal(
+      claimB.assignment?.identity?.worker_id,
+      'recovery-worker-b',
+      'frozen remote placement selected the authenticated replacement',
+    );
+    assert.equal(
+      claimB.request.placement.location,
+      'remote_required',
+      'the replacement did not weaken remote placement',
+    );
+    assert.deepEqual(
+      claimB.credential_bindings,
+      [],
+      'the credential-free A2A attempt used the canonical empty binding',
     );
     const epochB = Math.max(
       ...databases.map((database) =>
@@ -595,7 +966,44 @@ async function main(): Promise<void> {
       .findLast((commit) => commit.operation?.commit?.resume_ticket);
     assert.ok(awaitingCommit, 'Worker A committed the durable resume ticket');
     stagePendingInput(storage, runId, awaitingCommit.operation.commit.resume_ticket);
-    const messages = await waitForTerminalMessage(thread);
+    const messages = await waitForTerminalMessage(thread, () => ({
+      claims: proxy
+        .claims()
+        .filter((entry) => entry.workerId === 'recovery-worker-b')
+        .slice(-3)
+        .map((entry) => ({
+          runId: entry.claimed?.lease?.run_id,
+          epoch: entry.claimed?.lease?.epoch,
+          recovered: entry.claimed?.recovered,
+          pending: entry.claimed?.pending?.map((input: any) => input.correlation_id),
+        })),
+      snapshots: proxy
+        .recoverySnapshots()
+        .filter((entry) => entry.workerId === 'recovery-worker-b')
+        .slice(-3)
+        .map((entry) => ({
+          runId: entry.snapshot?.claimed_run_id,
+          runs: entry.snapshot?.runs,
+          tickets: entry.snapshot?.resume_tickets,
+        })),
+      requests: proxy.requestCounts(),
+      peer: peer.sent,
+    }));
+    const recoveredSnapshot = proxy
+      .recoverySnapshots()
+      .findLast((entry) => entry.workerId === 'recovery-worker-b')?.snapshot;
+    assert.equal(recoveredSnapshot?.claimed_run_id, runId, 'B loaded the claimed Run prefix');
+    assert.equal(
+      recoveredSnapshot?.runs?.find((run: any) => run.id === runId)?.state,
+      'Awaiting',
+      'B observed Awaiting truth before choosing resume',
+    );
+    assert.equal(
+      recoveredSnapshot?.resume_tickets?.find((entry: any) => entry.run_id === runId)?.ticket
+        ?.correlation_id,
+      awaitingCommit.operation.commit.resume_ticket.correlation_id,
+      'snapshot install and resume selection shared the exact committed ticket',
+    );
     assert.equal(
       messages.filter((message) => String(message.text ?? '').includes(TERMINAL_MARKER)).length,
       1,
@@ -611,9 +1019,142 @@ async function main(): Promise<void> {
       'recovery-context',
       'replacement resumed the committed remote context',
     );
+    assert.ok(
+      (proxy.requestCounts()['POST /v1/worker/environment/warmups'] ?? 0) >= 2,
+      'both Worker processes decoded the canonical Environment warmup response',
+    );
+
+    // Reservation recovery R1 cause/effect design:
+    // C1 one canonical, self-affine, epochless RunDispatch is already durable;
+    // C2 its pre-activity reservation deadline expired; C3 the registered
+    // replacement owns the recovery claim; C4 Session admission returns a
+    // nonzero activity epoch. Effects: E1 the recovery claim is admission-only;
+    // E2 the Worker calls RecoverOrAdmit through the claimed Session port; E3
+    // the same row is resolved to Pending with that exact epoch; E4 only its
+    // later ordinary claim enters A2A execution and settles once. Constraints:
+    // the fixture modifies only status/deadline after canonical HTTP enqueue;
+    // every claim, activity decision, resolution, execution, and settlement is
+    // owned by the real Worker/Coordinator/Session/Dispatch paths.
+    //
+    // | Rule | expired | cancel | admission | resolution | Effect |
+    // | R1 | yes | no | Admitted(epoch>0) | current claim | E1-E4 |
+    // | R3 | yes | no | Unavailable, then Admitted | Retry, then current claim | no execution before higher-epoch E1-E4 |
+    await waitForDispatchGone(thread, runId);
+    const identityB = proxy.identity('recovery-worker-b');
+    assert.ok(identityB, 'R1 replacement exposed its registered incarnation');
+    let workerBPaused = false;
+    try {
+      workerB!.kill('SIGSTOP');
+      workerBPaused = true;
+      const request = reservationRequest(claimA.request, thread, 'admit');
+      const resolutionStart = proxy.reservationResolutions().length;
+      const admissionStart = proxy.runActivityAdmissions().length;
+      const reservationRunId = await stageReservationCrashBoundary(
+        storage,
+        'recovery-worker-b',
+        identityB,
+        request,
+        1,
+      );
+      workerB!.kill('SIGCONT');
+      workerBPaused = false;
+      const resolved = await waitForReservationResolution(
+        proxy,
+        reservationRunId,
+        resolutionStart,
+        'Admitted',
+      );
+      const admission = proxy.runActivityAdmissions().slice(admissionStart).find(
+        (candidate) => candidate.run_id === reservationRunId,
+      );
+      assert.equal(admission?.mode, 'RecoverOrAdmit', 'R1 non-cancelled recovery uses RecoverOrAdmit');
+      assert.equal(admission?.session_id, thread, 'R1 admission keeps the Managed Session affinity');
+      assert.ok(
+        resolved.resolution.Admitted.session_activity_epoch > 0,
+        'R1 resolves with the exact nonzero Session activity epoch',
+      );
+      await waitForDispatchGone(thread, reservationRunId, CRASH_RECOVERY_TIMEOUT_MS);
+      assert.equal(
+        peer.sent.filter((message) => message.text === 'reservation-recovery-admit').length,
+        1,
+        'R1 admission-only recovery is followed by exactly one ordinary execution',
+      );
+
+      workerB!.kill('SIGSTOP');
+      workerBPaused = true;
+      const retryRequest = reservationRequest(claimA.request, thread, 'retry');
+      const retryResolutionStart = proxy.reservationResolutions().length;
+      const retryAdmissionStart = proxy.runActivityAdmissions().length;
+      proxy.failNextRunActivityAdmission();
+      const retryRunId = await stageReservationCrashBoundary(
+        storage,
+        'recovery-worker-b',
+        identityB,
+        retryRequest,
+        1,
+      );
+      workerB!.kill('SIGCONT');
+      workerBPaused = false;
+      const retried = await waitForReservationResolution(
+        proxy,
+        retryRunId,
+        retryResolutionStart,
+        'Retry',
+      );
+      const failedAdmission = proxy.runActivityAdmissions().slice(retryAdmissionStart).find(
+        (candidate) => candidate.run_id === retryRunId,
+      );
+      assert.equal(failedAdmission?.mode, 'RecoverOrAdmit', 'R3 first recovery uses RecoverOrAdmit');
+      assert.equal(
+        peer.sent.filter((message) => message.text === 'reservation-recovery-retry').length,
+        0,
+        'R3 admission outage never enters execution',
+      );
+      workerB!.kill('SIGSTOP');
+      workerBPaused = true;
+      const retryDatabase = await waitForStoredDispatchStatus(storage, retryRunId, 'reserved');
+      const retryDeadline = Number(sqliteValue(
+        retryDatabase,
+        'SELECT lease_until FROM runtime_dispatch WHERE run_id = ?',
+        retryRunId,
+      ));
+      assert.equal(
+        retryDeadline,
+        retried.resolution.Retry.reservation_deadline_ms,
+        'R3 persists the Worker-selected absolute retry deadline',
+      );
+      const firstRetryEpoch = Number(retried.claim.epoch);
+      sqliteRun(
+        retryDatabase,
+        'UPDATE runtime_dispatch SET lease_until = 1 WHERE run_id = ? AND status = ?',
+        retryRunId,
+        'reserved',
+      );
+      const recoveredResolutionStart = proxy.reservationResolutions().length;
+      workerB!.kill('SIGCONT');
+      workerBPaused = false;
+      const recovered = await waitForReservationResolution(
+        proxy,
+        retryRunId,
+        recoveredResolutionStart,
+        'Admitted',
+      );
+      assert.ok(
+        Number(recovered.claim.epoch) > firstRetryEpoch,
+        'R3 expired retry is recovered under a strictly higher claim epoch',
+      );
+      await waitForDispatchGone(thread, retryRunId, CRASH_RECOVERY_TIMEOUT_MS);
+      assert.equal(
+        peer.sent.filter((message) => message.text === 'reservation-recovery-retry').length,
+        1,
+        'R3 retry recovery executes the same Run exactly once',
+      );
+    } finally {
+      if (workerBPaused) workerB!.kill('SIGCONT');
+    }
 
     console.log(
-      'REMOTE WORKER RECOVERY TS E2E PASS: lost receipt retry, crash/reclaim, snapshot resume, stale-epoch fence, and exactly-one terminal effect.',
+      'REMOTE WORKER RECOVERY TS E2E PASS: warmup decode, lost receipt retry, crash/reclaim, snapshot resume, stale-epoch fence, and exactly-one terminal effect.',
     );
   } finally {
     if (workerA) await stopServer(workerA).catch(() => {});

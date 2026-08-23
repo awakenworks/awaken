@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_coordinator::SharedHost;
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
@@ -13,13 +14,16 @@ use awaken_protocol_a2a::{Response, Transport};
 use awaken_run_executor_a2a::{A2aRunExecutor, TransportResolver};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+use awaken_runtime_contract::llm::{
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
 use awaken_runtime_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
     CredentialUsage,
 };
-use awaken_scenario_host::{DelegatingModel, EchoModel, build_router};
+use awaken_scenario_host::{EchoModel, build_router};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -97,6 +101,126 @@ fn text_of(message: &Message) -> String {
         .collect()
 }
 
+async fn assert_committed_child_report(host: &SharedHost, thread: &str) {
+    let relationships = host
+        .delegated_runs(thread)
+        .await
+        .expect("committed child-Run relationships remain readable");
+    assert_eq!(
+        relationships.len(),
+        1,
+        "one agent_run call owns one committed child Run: {relationships:?}"
+    );
+    let relationship = &relationships[0];
+    assert_eq!(relationship.agent_id, "researcher");
+    assert_eq!(relationship.parent_call_id, "native-a2a-delegate");
+    assert_eq!(relationship.status, DelegationStatus::Completed);
+    assert!(
+        !relationship.run_id.0.is_empty(),
+        "child Run identity is stable"
+    );
+
+    let messages = host
+        .committed_messages(thread)
+        .await
+        .expect("committed parent transcript remains readable");
+    let tool_use_index = messages
+        .iter()
+        .position(|message| {
+            message.role == Role::Assistant
+                && message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        ContentBlock::ToolUse { id, name, input }
+                            if id == &relationship.parent_call_id
+                                && name == "agent_run"
+                                && input["agent_id"] == "researcher"
+                    )
+                })
+        })
+        .expect("parent commits the agent_run request");
+    let expected_result_id = MessageId::tool_result(&relationship.parent_call_id);
+    let (tool_result_index, child_report) = messages
+        .iter()
+        .enumerate()
+        .find_map(|(index, message)| {
+            (message.role == Role::Tool && message.id == expected_result_id)
+                .then(|| {
+                    message.content.iter().find_map(|block| match block {
+                        ContentBlock::ToolResult {
+                            tool_use_id,
+                            content,
+                            is_error,
+                        } if tool_use_id == &relationship.parent_call_id && !is_error => {
+                            Some(awaken_runtime_host::block_text(content))
+                        }
+                        _ => None,
+                    })
+                })
+                .flatten()
+                .map(|report| (index, report))
+        })
+        .unwrap_or_else(|| {
+            panic!("completed child Run lacks its correlated non-error ToolResult: {messages:#?}")
+        });
+    assert!(
+        !child_report.is_empty(),
+        "committed child report is non-empty"
+    );
+    let (reply_index, reply) = messages
+        .iter()
+        .enumerate()
+        .find_map(|(index, message)| {
+            (index > tool_result_index && message.role == Role::Assistant)
+                .then(|| text_of(message))
+                .filter(|text| text.starts_with("delegate said:"))
+                .map(|text| (index, text))
+        })
+        .expect("parent commits a reply derived from the child report");
+    assert_eq!(reply, format!("delegate said: {child_report}"));
+    assert!(
+        tool_use_index < tool_result_index && tool_result_index < reply_index,
+        "committed causality is ToolUse -> child ToolResult -> parent reply"
+    );
+}
+
+/// Native A2A fixture kept local to this protocol test. The shared scenario
+/// `DelegatingModel` owns Managed `list_agents`/`send_to_agent`; reusing it here
+/// would merge two distinct protocol contracts back into one compatibility
+/// model.
+struct NativeDelegatingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for NativeDelegatingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let result = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Tool)
+            .map(|message| awaken_runtime_host::block_text(&message.content));
+        let output = match result {
+            Some(result) => AssistantOutput::text(format!("delegate said: {result}")),
+            None => AssistantOutput::from_tool_calls(vec![ToolCall {
+                call_id: "native-a2a-delegate".into(),
+                tool_id: "agent_run".into(),
+                arguments: serde_json::json!({
+                    "agent_id": "researcher",
+                    "input": "do the research"
+                }),
+            }]),
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
 fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
     let parent = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", "parent", "default"))
@@ -123,7 +247,7 @@ fn delegating_host(transport: Arc<dyn Transport>) -> SharedHost {
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("parent and delegated remote publications are valid");
-    SharedHost::new(Arc::new(DelegatingModel), "parent")
+    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
         .with_agent_publications(Arc::new(publications))
         .with_remote_attempt_executor(awaken_runtime_host::RemoteAttemptInstallation {
             executor: Arc::new(A2aRunExecutor::new(Arc::new(FixedTransportResolver(
@@ -164,22 +288,27 @@ fn published_delegating_host(
         .build();
     let publications = StaticPublishedAgentSnapshots::try_new([parent, remote])
         .expect("authenticated parent and child publications are valid");
-    SharedHost::new(Arc::new(DelegatingModel), "parent")
+    SharedHost::new(Arc::new(NativeDelegatingModel), "parent")
         .with_agent_publications(Arc::new(publications))
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer)))
 }
 
 #[tokio::test]
 async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
-    // Cause/effect graph:
-    // C1 parent publication permits researcher; C2 researcher publication pins
-    // a2a:*; C3 one remote attempt executor is installed.
-    // E1 agent_run creates the stable child Run; E2 exact backend routing sends
-    // message:send through A2A; E3 child and parent commit ordinary results.
+    // Causes:
+    // C1 parent publication permits researcher and freezes AgentDelegation; C2
+    // researcher publication pins a2a:*; C3 one remote attempt executor is
+    // installed; C4 the local native fixture has no/one ToolResult.
+    // Effects: E1 agent_run creates the stable child Run; E2 exact backend routing sends
+    // message:send through A2A; E3 child and parent commit ordinary results; E4
+    // C4=no result emits exactly agent_run, while C4=result reports delegate said.
     //
-    // Decision rule U1: C1+C2+C3 => E1+E2+E3. Missing C1 is covered by the
-    // delegation target gate; missing C2/C3 is covered by fail-closed resolver
-    // tests in awaken-runtime-host.
+    // Constraints/invariants: RunDelegations and the parent transcript are the
+    // committed relationship/report authorities; A2A owns only its wire projection.
+    // Decision rule U1: C1+C2+C3+C4(no result) => E1+E2+E4(call); U2: the
+    // resulting ToolResult => E3+E4(report). Missing C1 is covered by the
+    // resolved-tool and target gates; missing C2/C3 is covered by fail-closed
+    // resolver tests in awaken-runtime-host.
     let transport = Arc::new(RouterTransport {
         app: build_router(Arc::new(EchoModel), "remote"),
     });
@@ -189,18 +318,7 @@ async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
         .await
         .expect("delegated A2A child settles through the ordinary Run path");
 
-    let reply = host
-        .committed_messages("thread")
-        .await
-        .expect("committed history remains readable")
-        .iter()
-        .rev()
-        .find(|message| {
-            matches!(message.role, Role::Assistant) && text_of(message).contains("delegate said:")
-        })
-        .map(text_of)
-        .expect("parent commits the child result");
-    assert!(reply.contains("delegate said: Echo: do the research"));
+    assert_committed_child_report(&host, "thread").await;
 }
 
 async fn require_remote_bearer(
@@ -220,17 +338,22 @@ async fn require_remote_bearer(
 
 #[tokio::test]
 async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
-    // Cause/effect graph:
+    // Causes:
     // C1 the published remote child pins a card fingerprint and one exact
     // origin-tagged credential revision; C2 the card requires Bearer auth; C3
-    // only the ordinary A2A attempt installation is configured.
-    // E1 child admission freezes one claim binding; E2 the production resolver
+    // only the ordinary A2A attempt installation is configured; C4 the native
+    // fixture receives no/one ToolResult.
+    // Effects: E1 child admission freezes one claim binding; E2 the production resolver
     // materializes that binding and injects Bearer auth; E3 the remote Run and
-    // parent settle through their ordinary commit boundaries.
+    // parent settle through their ordinary commit boundaries; E4 C4 selects the
+    // exact agent_run call or terminal delegate report.
     //
-    // Decision rule E1: C1+C2+C3 => E1+E2+E3. Missing credential and card
+    // Constraints/invariants: the origin credential is materialized only at the
+    // A2A transport edge; committed RunDelegations and messages own causal truth.
+    // Decision rule E1: C1+C2+C3+C4(no result) => E1+E2+E4(call); E2: the
+    // authenticated ToolResult => E3+E4(report). Missing credential and card
     // fingerprint drift are the fail-closed rules in `a2a_remote` and
-    // `PinnedA2aTransportResolver`; anonymous U1 is covered above.
+    // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind authenticated A2A peer");
@@ -312,17 +435,6 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     )
     .await
     .expect("origin credential authenticates the delegated A2A child");
-    let reply = host
-        .committed_messages("authenticated-thread")
-        .await
-        .expect("committed history remains readable")
-        .iter()
-        .rev()
-        .find(|message| {
-            matches!(message.role, Role::Assistant) && text_of(message).contains("delegate said:")
-        })
-        .map(text_of)
-        .expect("parent commits the authenticated child result");
-    assert!(reply.contains("delegate said: Echo: do the research"));
+    assert_committed_child_report(&host, "authenticated-thread").await;
     peer_task.abort();
 }

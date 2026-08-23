@@ -12,8 +12,9 @@ use axum::routing::post;
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tracing::Instrument;
 
-use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_agent_contract::stream::sink::Sink as StreamSink;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
@@ -22,11 +23,12 @@ use awaken_run_ingress::{
     ClaimNewRunRequest as ClaimNewRunReq, ClaimRunRequest as ClaimRunReq,
     ClaimWorkerRequest as ClaimWorkerReq, CompletionSink,
     CredentialRealizationRequest as CredentialRealizationReq,
-    DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, EnqueueRequest as EnqueueReq,
-    HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy, RecoveryRequest as RecoveryReq,
-    RegisterWorkerRequest as RegisterWorkerReq, RelinquishRequest as RelinquishReq,
-    RenewRequest as RenewReq, RunClaim, SettleRequest as SettleReq,
-    StreamEventRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
+    DeliverAndClaimRequest as DeliverAndClaimReq, DispatchQueue, DispatchSettlementObserver,
+    EnqueueRequest as EnqueueReq, HeartbeatWorkerRequest as HeartbeatWorkerReq, PlacementPolicy,
+    RecoveryRequest as RecoveryReq, RegisterWorkerRequest as RegisterWorkerReq,
+    RelinquishRequest as RelinquishReq, RenewRequest as RenewReq, RunClaim,
+    SessionRunReservationResolutionRequest as ReservationResolutionReq, SettleRequest as SettleReq,
+    StreamObservationRequest as StreamEventReq, WorkerDirectory, WorkerIdentity,
     WorkerIdentityRequest as WorkerIdentityReq, WorkerSnapshot,
 };
 
@@ -35,6 +37,13 @@ use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, HeaderWorkerAuthenticator, SystemWorkerClock, VerifiedWorkerContext,
     WorkerClock, WorkerLeasePolicy, WorkerRequestAuthenticator, authenticate_worker_request,
     verify_current_worker_identity, verify_worker_identity,
+};
+
+mod session_coordination;
+
+use session_coordination::{
+    session_agent_send, session_agent_settle, session_agents_list, session_model_request_admit,
+    session_run_activity_admit,
 };
 
 /// Read-only, authenticated projection of current Environment warm demand.
@@ -88,7 +97,7 @@ pub fn worker_environment_warmup_router_with_clock(
                 .source
                 .current_environment_warmups()
                 .await
-                .map_err(HostError::internal)?;
+                .map_err(HostError::unavailable)?;
             Ok(json!({ "warmups": warmups }))
         }
         .await;
@@ -122,8 +131,10 @@ pub struct WorkerDispatchService {
     checkpoint: Option<Arc<dyn StreamCheckpointStore>>,
     recovery: Option<Arc<dyn RunRecoverySource>>,
     completion: Option<Arc<dyn CompletionSink>>,
+    terminal_observer: Option<Arc<dyn DispatchSettlementObserver>>,
     stream_sink: Option<Arc<dyn StreamSink>>,
     session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
+    session_coordination: Option<Arc<dyn awaken_session_contract::SessionAgentCoordination>>,
     session_work: Option<Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     max_attempts: u64,
@@ -148,8 +159,10 @@ impl WorkerDispatchService {
             checkpoint: None,
             recovery: None,
             completion: None,
+            terminal_observer: None,
             stream_sink: None,
             session_control: None,
+            session_coordination: None,
             session_work: None,
             local_credential_capabilities: Default::default(),
             max_attempts: 5,
@@ -177,6 +190,15 @@ impl WorkerDispatchService {
         self
     }
 
+    /// Install the Coordinator-owned post-commit terminal publisher. It runs
+    /// under the exact dispatch guard before a remote Done settlement can remove
+    /// replay evidence or release Session Work.
+    #[must_use]
+    pub fn with_terminal_observer(mut self, observer: Arc<dyn DispatchSettlementObserver>) -> Self {
+        self.terminal_observer = Some(observer);
+        self
+    }
+
     /// Install the Coordinator's one foreground live observation registry.
     #[must_use]
     pub fn with_stream_sink(mut self, stream_sink: Arc<dyn StreamSink>) -> Self {
@@ -192,6 +214,17 @@ impl WorkerDispatchService {
         control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
     ) -> Self {
         self.session_control = Some(control);
+        self
+    }
+
+    /// Install another port view of the same Coordinator Session application
+    /// for claim-fenced Agent coordination and settlement commands.
+    #[must_use]
+    pub fn with_session_coordination(
+        mut self,
+        coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+    ) -> Self {
+        self.session_coordination = Some(coordination);
         self
     }
 
@@ -298,10 +331,12 @@ pub struct RegisteredDispatchDependencies {
     pub directory: Arc<dyn WorkerDirectory>,
     pub policy: Arc<dyn PlacementPolicy>,
     pub sessions: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+    pub coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination>,
     pub session_work: Arc<dyn awaken_session_contract::work_queue::SessionWorkLeaseAuthority>,
     pub authenticator: Arc<dyn WorkerRequestAuthenticator>,
     pub recovery: Arc<dyn RunRecoverySource>,
     pub completion: Arc<dyn CompletionSink>,
+    pub terminal_observer: Arc<dyn DispatchSettlementObserver>,
     pub stream_sink: Arc<dyn StreamSink>,
 }
 
@@ -312,10 +347,12 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         directory,
         policy,
         sessions,
+        coordination,
         session_work,
         authenticator,
         recovery,
         completion,
+        terminal_observer,
         stream_sink,
     } = dependencies;
     dispatch_transport_router_with_service(Arc::new(
@@ -330,8 +367,10 @@ pub fn registered_dispatch_router(dependencies: RegisteredDispatchDependencies) 
         .with_checkpoint_store(checkpoint)
         .with_recovery_source(recovery)
         .with_completion_sink(completion)
+        .with_terminal_observer(terminal_observer)
         .with_stream_sink(stream_sink)
         .with_session_control(sessions)
+        .with_session_coordination(coordination)
         .with_session_work_authority(session_work),
     ))
 }
@@ -370,6 +409,10 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/dispatch/renew", post(renew))
         .route("/v1/worker/dispatch/renew_owned", post(renew_owned))
         .route("/v1/worker/dispatch/relinquish", post(relinquish))
+        .route(
+            "/v1/worker/dispatch/reservation/resolve",
+            post(resolve_session_run_reservation),
+        )
         .route("/v1/worker/dispatch/bind_sandbox", post(bind_sandbox))
         .route(
             "/v1/worker/dispatch/claim_is_current",
@@ -391,6 +434,32 @@ pub fn dispatch_transport_router_with_service(service: Arc<WorkerDispatchService
         .route("/v1/worker/checkpoint/delete", post(delete_checkpoint))
         .route("/v1/worker/recovery/snapshot", post(recovery_snapshot))
         .route("/v1/worker/session/resume", post(session_resume))
+        .route(
+            "/v1/worker/session/cleanup/claim-next",
+            post(session_cleanup_claim_next),
+        )
+        .route(
+            "/v1/worker/session/cleanup/poll",
+            post(session_cleanup_poll),
+        )
+        .route(
+            "/v1/worker/session/cleanup/complete",
+            post(session_cleanup_complete),
+        )
+        .route("/v1/worker/session/agents/list", post(session_agents_list))
+        .route(
+            "/v1/worker/session/model-request/admit",
+            post(session_model_request_admit),
+        )
+        .route(
+            "/v1/worker/session/run-activity/admit",
+            post(session_run_activity_admit),
+        )
+        .route("/v1/worker/session/agents/send", post(session_agent_send))
+        .route(
+            "/v1/worker/session/agents/settle",
+            post(session_agent_settle),
+        )
         .route(
             "/v1/worker/session/realization/begin",
             post(begin_session_realization),
@@ -487,6 +556,134 @@ struct SessionResumeReq {
     claim: RunClaim,
     identity: WorkerIdentity,
     session_id: String,
+}
+
+#[derive(Deserialize)]
+struct SessionCleanupPollReq {
+    identity: WorkerIdentity,
+    session_id: String,
+    lease: awaken_session_contract::SessionRealizationLease,
+}
+
+#[derive(Deserialize)]
+struct SessionCleanupClaimNextReq {
+    identity: WorkerIdentity,
+    target: awaken_session_contract::SessionRealizationTarget,
+}
+
+#[derive(Deserialize)]
+struct SessionCleanupCompleteReq {
+    identity: WorkerIdentity,
+    lease: awaken_session_contract::SessionRealizationLease,
+    completion: awaken_session_contract::SessionCleanupCompletion,
+}
+
+async fn session_cleanup_claim_next(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionCleanupClaimNextReq>,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_worker_identity(&worker, &request.identity)
+            .map_err(HostError::bad_request)
+            .map_err(RealizationHttpError::from)?;
+        let authority = claim_authority(&service, &worker, Some(&request.identity), false)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        let registry_expiry = authority
+            .snapshot
+            .as_ref()
+            .ok_or_else(|| {
+                RealizationHttpError::from(HostError::internal(
+                    "Worker directory is required for Session cleanup recovery claims",
+                ))
+            })?
+            .expires_at_ms;
+        if request.target.renew_existing_lease
+            || request.target.reassign_existing_lease
+            || request.target.owner != request.identity.worker_id
+            || request.target.runtime_incarnation != request.identity.lease_owner()
+            || !awaken_session_contract::realization_lease_is_live_at(
+                request.target.lease_expires_at_unix_ms,
+                authority.now_ms,
+            )
+            || request.target.lease_expires_at_unix_ms > registry_expiry
+        {
+            return Err(RealizationHttpError::from(HostError::bad_request(
+                "Session cleanup recovery claim exceeds authenticated Worker authority",
+            )));
+        }
+        let assignment = session_control(&service)
+            .map_err(RealizationHttpError::from)?
+            .claim_next_terminal_cleanup(request.target)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        Ok(json!({ "assignment": assignment }))
+    }
+    .await;
+    respond_realization(result)
+}
+
+async fn verify_terminal_cleanup_authority(
+    service: &WorkerDispatchService,
+    worker: &VerifiedWorkerContext,
+    identity: &WorkerIdentity,
+    lease: &awaken_session_contract::SessionRealizationLease,
+) -> Result<(), RealizationHttpError> {
+    verify_worker_identity(worker, identity)
+        .map_err(HostError::bad_request)
+        .map_err(RealizationHttpError::from)?;
+    let _authority = claim_authority(service, worker, Some(identity), false)
+        .await
+        .map_err(RealizationHttpError::from)?;
+    // Terminal cleanup is allowed to outlive the ordinary realization expiry:
+    // the Session fence prevents reassignment, while this exact generation and
+    // the current authenticated Worker incarnation prevent a stale owner from
+    // submitting effects. The Session aggregate rechecks the generation again.
+    if lease.owner != identity.worker_id || lease.runtime_incarnation != identity.lease_owner() {
+        return Err(RealizationHttpError::from(HostError::bad_request(
+            "Session cleanup lease is not owned by the authenticated Worker incarnation",
+        )));
+    }
+    Ok(())
+}
+
+async fn session_cleanup_poll(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionCleanupPollReq>,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
+            .await?;
+        let commands = session_control(&service)
+            .map_err(RealizationHttpError::from)?
+            .terminal_cleanup_commands(&request.session_id, &request.lease)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        Ok(json!({ "commands": commands }))
+    }
+    .await;
+    respond_realization(result)
+}
+
+async fn session_cleanup_complete(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<SessionCleanupCompleteReq>,
+) -> (StatusCode, Json<Value>) {
+    let result: Result<Value, RealizationHttpError> = async {
+        verify_terminal_cleanup_authority(&service, &worker, &request.identity, &request.lease)
+            .await?;
+        session_control(&service)
+            .map_err(RealizationHttpError::from)?
+            .record_terminal_cleanup_completion(&request.lease, request.completion)
+            .await
+            .map_err(RealizationHttpError::from)?;
+        Ok(json!({ "recorded": true }))
+    }
+    .await;
+    respond_realization(result)
 }
 
 async fn session_resume(
@@ -917,7 +1114,11 @@ async fn recovery_snapshot(
             .as_ref()
             .ok_or_else(|| HostError::internal("worker recovery source is not configured"))?;
         let snapshot = source
-            .recovery_snapshot(dispatch.thread_id(), dispatch.run_id())
+            .recovery_snapshot_in_session(
+                dispatch.session_thread_id(),
+                dispatch.thread_id(),
+                dispatch.run_id(),
+            )
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
         Ok(json!({ "snapshot": snapshot }))
@@ -1446,6 +1647,31 @@ async fn relinquish(
     respond(result)
 }
 
+async fn resolve_session_run_reservation(
+    State(service): State<Arc<WorkerDispatchService>>,
+    Extension(worker): Extension<VerifiedWorkerContext>,
+    Json(request): Json<ReservationResolutionReq>,
+) -> (StatusCode, Json<Value>) {
+    let result = async {
+        let authority =
+            claim_authority(&service, &worker, request.identity.as_ref(), false).await?;
+        if authority.owner != request.claim.owner {
+            return Err(HostError::bad_request(
+                "authenticated Worker does not own the Session reservation claim",
+            ));
+        }
+        let applied = service
+            .dispatch
+            .resolve_claimed_session_run_reservation(&request.claim, request.resolution)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?
+            .applied();
+        Ok(json!({ "applied": applied }))
+    }
+    .await;
+    respond(result)
+}
+
 async fn settle(
     State(service): State<Arc<WorkerDispatchService>>,
     Extension(worker): Extension<VerifiedWorkerContext>,
@@ -1473,6 +1699,92 @@ async fn settle(
         let thread_id = guard.request().thread_id().clone();
         let session_thread_id = guard.request().session_thread_id().clone();
         let owns_session_work = thread_id == session_thread_id;
+        let terminal_observer = if request.outcome == awaken_run_ingress::DispatchOutcome::Done {
+            service.terminal_observer.as_ref()
+        } else {
+            None
+        };
+        // Save the exact guarded prefix once. Terminal publication and foreground
+        // completion must not perform a second, post-settle recovery read that can
+        // cross a lease epoch or lose the child Thread's physical Session owner.
+        let committed_state = if terminal_observer.is_some() || service.completion.is_some() {
+            if let Some(recovery) = service.recovery.as_ref() {
+                match recovery
+                    .recovery_snapshot_in_session(&session_thread_id, &thread_id, &claim.run_id)
+                    .await
+                {
+                    Ok(snapshot)
+                        if snapshot.thread_id == thread_id
+                            && snapshot.claimed_run_id == claim.run_id =>
+                    {
+                        snapshot
+                            .runs
+                            .iter()
+                            .find(|record| {
+                                record.id == claim.run_id && record.thread_id == thread_id
+                            })
+                            .map(|record| record.state.clone())
+                    }
+                    Ok(_) if terminal_observer.is_some() => {
+                        return Err(RealizationHttpError::from(HostError::bad_request(
+                            "terminal settlement recovery does not match the guarded dispatch",
+                        )));
+                    }
+                    Ok(_) => None,
+                    Err(error) if terminal_observer.is_some() => {
+                        return Err(RealizationHttpError::from(HostError::unavailable(format!(
+                            "read committed terminal settlement state: {error}"
+                        ))));
+                    }
+                    Err(_) => None,
+                }
+            } else if terminal_observer.is_some() {
+                return Err(RealizationHttpError::from(HostError::internal(
+                    "terminal settlement recovery source is not configured",
+                )));
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        if let Some(observer) = terminal_observer {
+            let committed_state = committed_state.as_ref().ok_or_else(|| {
+                RealizationHttpError::from(HostError::bad_request(
+                    "terminal settlement recovery has no matching committed Run",
+                ))
+            })?;
+            if !matches!(committed_state, RunState::Ended(_)) {
+                return Err(RealizationHttpError::from(HostError::bad_request(
+                    "Done settlement requires matching committed Ended truth",
+                )));
+            }
+            // The settle HTTP request is transport activity and may carry no
+            // trace context (or an unrelated retry context). The epoch-guarded
+            // RunDispatch is the durable admission provenance, so rebuild its
+            // canonical relay only around the post-commit observer that can
+            // detach background work.
+            let observation = awaken_observability::span_with_remote_parent(
+                tracing::info_span!(
+                    parent: None,
+                    "dispatch.settlement.observe",
+                    otel.kind = "internal"
+                ),
+                guard.request().traceparent.as_deref(),
+            );
+            observer
+                .before_settle(
+                    guard.request(),
+                    &claim,
+                    committed_state,
+                    guard.cancellation_requested(),
+                )
+                .instrument(observation)
+                .await
+                .map_err(|error| {
+                    RealizationHttpError::from(HostError::unavailable(error.to_string()))
+                })?;
+        }
         drop(guard);
         // Cause graph: a Work item is the Environment's single active ownership
         // fence, not a permanent reservation for every idle Session. Keeping a
@@ -1504,14 +1816,10 @@ async fn settle(
             .await
             .map_err(|error| RealizationHttpError::from(HostError::internal(error.to_string())))?;
         if outcome.applied()
-            && let (Some(completion), Some(recovery)) = (&service.completion, &service.recovery)
-            && let Ok(snapshot) = recovery.recovery_snapshot(&thread_id, &claim.run_id).await
-            && let Some(record) = snapshot
-                .runs
-                .iter()
-                .find(|record| record.id == claim.run_id)
+            && let Some(completion) = &service.completion
+            && let Some(state) = committed_state.as_ref()
         {
-            completion.settled(&claim.run_id, &record.state);
+            completion.settled(&claim.run_id, state);
         }
         Ok(json!({ "settled": outcome.applied() }))
     }
@@ -1525,27 +1833,48 @@ async fn stream_event(
     Json(request): Json<StreamEventReq>,
 ) -> (StatusCode, Json<Value>) {
     let result = async {
-        let authority = claim_authority(&service, &worker, Some(&request.identity), false).await?;
-        if request.claim.owner != authority.owner || request.event.run_id != request.claim.run_id {
+        let stream_request = &request.request;
+        let authority =
+            claim_authority(&service, &worker, Some(&stream_request.identity), false).await?;
+        if stream_request.claim.owner != authority.owner
+            || stream_request.event.run_id != stream_request.claim.run_id
+        {
             return Err(HostError::bad_request(
                 "live Worker event does not match its authenticated claim",
             ));
         }
-        if !awaken_agent_contract::event::classify(&request.event.kind).live {
+        if !awaken_agent_contract::event::classify(&stream_request.event.kind).live {
             return Err(HostError::bad_request(
                 "Worker transport accepts only live-classified Agent events",
             ));
         }
         let current = service
             .dispatch
-            .lock_commit_epoch(&request.claim)
+            .lock_commit_epoch(&stream_request.claim)
             .await
             .map_err(|error| HostError::internal(error.to_string()))?;
-        let Some(_guard) = current else {
+        let Some(guard) = current else {
             return Ok(json!({ "accepted": false }));
         };
+        let committed_thread = guard.request().thread_id();
+        let observed_thread = request
+            .assistant_response
+            .as_ref()
+            .map(|coordinate| &coordinate.thread_id);
+        let provided_thread_mismatch =
+            observed_thread.is_some_and(|thread_id| thread_id != committed_thread);
+        if provided_thread_mismatch {
+            return Err(HostError::bad_request(
+                "live Worker event does not match its claim's logical Thread",
+            ));
+        }
         if let Some(sink) = &service.stream_sink {
-            let _ = sink.send(request.event).await;
+            let _ = sink
+                .send_observation(awaken_agent_contract::stream::event::Observation {
+                    event: request.request.event,
+                    assistant_response: request.assistant_response,
+                })
+                .await;
         }
         Ok(json!({ "accepted": true }))
     }

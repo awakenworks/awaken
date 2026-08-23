@@ -31,6 +31,7 @@ import {
   spawnServer,
   stopServer,
   waitForPort,
+  waitForValue,
   pass,
   startUpstream,
   realServerEnv,
@@ -72,21 +73,6 @@ async function messages(thread) {
   return (await res.json()).messages ?? [];
 }
 
-// Observe committed truth: poll until the daemon has drained + driven the run and
-// an assistant reply is committed. We do not drive the run — the pool does.
-async function waitForAssistant(thread, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  for (;;) {
-    const msgs = await messages(thread);
-    const assistants = msgs.filter((m) => m.role === 'Assistant' && (m.text ?? '').length > 0);
-    if (assistants.length >= 1) return assistants;
-    if (Date.now() > deadline) {
-      throw new Error(`timed out waiting for the daemon to drive the run; saw ${JSON.stringify(msgs)}`);
-    }
-    await sleep(150);
-  }
-}
-
 async function main() {
   fs.rmSync(FILE, { force: true });
   const storeDir = mkdtempSync(path.join(tmpdir(), 'awaken-durable-trace-'));
@@ -110,9 +96,19 @@ async function main() {
     });
     pass(`created durable thread ${session.id}`);
 
-    // Submit a BACKGROUND run carrying an explicit inbound trace context. It is
+    // Cause/effect graph: C1=the background Run is admitted with a valid inbound
+    // traceparent; C2=the durable daemon later claims and drives it. E1=the Run is
+    // queued rather than driven inline; E2=a reply is committed; E3=submit,
+    // wake.dispatch, runtime.run, and the Run subtree remain on TID; E4=the remote
+    // parent/ancestor chain remains SID -> submit -> wake.dispatch -> runtime.run.
+    // Decision rule R1: C1 && C2 => E1-E4. Missing/malformed trace contexts and
+    // failed claims have distinct protocol/worker owners, so this single-rule E2E
+    // covers only successful continuity across the durable queue boundary.
+    // Constraints/invariant: trace identity crosses persistence unchanged while
+    // each process still creates its own correctly parented spans.
+    // Submit a BACKGROUND Run carrying an explicit inbound trace context. It is
     // admitted here and drained later by the dispatch daemon (out of band), so
-    // this is the true durable-queue boundary — not the synchronous turn path.
+    // this is the true durable-queue boundary — not the synchronous Run path.
     const res = await fetch(`${BASE}/v1/durable/threads/${session.id}/submit_background`, {
       method: 'POST',
       headers: {
@@ -127,7 +123,14 @@ async function main() {
     pass(`submitted background run ${body.run_id} with inbound traceparent trace_id=${TID.slice(0, 8)}… (queued, daemon will drain it)`);
 
     // Let the daemon claim + drive the run to a committed reply.
-    const assistants = await waitForAssistant(session.id);
+    const assistants = await waitForValue(
+      () => messages(session.id),
+      (items) => items.some((message) =>
+        message.role === 'Assistant' && (message.text ?? '').length > 0),
+      'the durable daemon to commit an Assistant reply',
+      { timeoutMs: 20_000, pollMs: 150 },
+    ).then((items) => items.filter((message) =>
+      message.role === 'Assistant' && (message.text ?? '').length > 0));
     pass(`daemon drained + drove the run to completion (reply: ${JSON.stringify(assistants[0].text)})`);
 
     // Give the SimpleSpanProcessor a moment, then SIGINT force-flushes every

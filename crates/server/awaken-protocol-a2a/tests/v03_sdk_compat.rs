@@ -26,8 +26,6 @@ impl RunApplication for Runtime {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
     async fn resume(
@@ -39,8 +37,6 @@ impl RunApplication for Runtime {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
     async fn pending(&self, _: &str) -> Result<Option<Pending>, RunApplicationError> {

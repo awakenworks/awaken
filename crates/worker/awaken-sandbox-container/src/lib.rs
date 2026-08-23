@@ -50,8 +50,8 @@ use podman_plan::{image_of, rootfs_of};
 pub use provider_contract::{ContainerEnvironment, ContainerEnvironmentProvider, EnvironmentFile};
 pub use resident_hand::ResidentHandConfig;
 pub use runtime::{
-    ContainerRuntime, ContainerRuntimeHandle, ContainerState, K8sContinuationVolume, MemoryMount,
-    PackageImageProvisioner, RuntimeAgentProcess, RuntimeError,
+    ContainerRuntime, ContainerState, K8sContinuationVolume, MemoryMount, PackageImageProvisioner,
+    RuntimeAgentProcess, RuntimeError,
 };
 use runtime::{allowlist_capability_advertised, container_capabilities};
 pub use secret::SecretBytes;
@@ -1547,7 +1547,7 @@ pub struct ContainerSandbox<R: ContainerRuntime> {
     /// gain a projector merely because the newly started runtime supports one.
     live_input_projection: bool,
     /// Runtime-owned incarnation evidence carried through Worker adoption.
-    runtime_handle: Option<ContainerRuntimeHandle>,
+    runtime_handle: Option<pc::ContainerContinuationHandle>,
     realized: Vec<pc::RealizedMount>,
     recovered: bool,
     /// Host staging dir for materialized inline-mount content, held for the container's
@@ -1708,7 +1708,7 @@ impl ContainerCleanupState {
         &self,
         runtime: &R,
         container_id: &str,
-        runtime_handle: Option<&ContainerRuntimeHandle>,
+        runtime_handle: Option<&pc::ContainerContinuationHandle>,
     ) -> Result<(), pc::SandboxError> {
         let mut done = self.remove_done.lock().await;
         if !*done {

@@ -215,6 +215,23 @@ async fn reopen_file_replays_committed_state() {
 
 #[tokio::test]
 async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
+    // Cause/effect graph: C1 a peer writes commits 1..=5 after this reader opens;
+    // C2 each commit owns one lifecycle event, including a claim-fenced
+    // Rescheduled observation between Awaiting and resumed Running; C3 the feed
+    // is paged at two.
+    // Effects: E1 the stale process observes durable peer truth; E2 page kinds
+    // classify Running/Awaiting/Resumed/Completed; E3 source commit cursors are
+    // paired with encoded IDs [1000,2000] then [3000,4000,5000]; E4 the page
+    // cursor remains the encoded event cursor; E5 Rescheduled does not consume
+    // the preceding Awaiting state, so later Running remains Resumed.
+    //
+    // | Rule | C1 | C2 | C3 | Effects |
+    // |---|---|---|---|---|
+    // | S1 | T | T | F | E1,E2,E3,E5 |
+    // | S2 | T | T | T | E1,E2,E3,E4,E5 |
+    // Constraint/Invariant: the SQLite commit log, not the reader's in-memory
+    // projection, owns peer lifecycle truth. Decision rule: S1 and S2 cover
+    // unpaged and paged reads, including exclusive backfill and Resumed folding.
     let dir = std::env::temp_dir().join(format!(
         "awaken_store_sqlite_lifecycle_{}",
         std::process::id()
@@ -227,16 +244,32 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
     let run = RunId("lifecycle-run".into());
     let feed = SqliteCommitCoordinator::open(path).expect("open feed before peer");
     let writer = SqliteCommitCoordinator::open(path).expect("open peer writer");
+    let awaiting = RunDisposition::awaiting(ResumeTicket::new(
+        "lifecycle-correlation",
+        run.clone(),
+        thread.clone(),
+        "snapshot",
+        "catalog",
+        AwaitTarget::Pause(PauseReason::Manual),
+    ));
+    for disposition in [RunDisposition::running(run.clone()), awaiting.clone()] {
+        writer
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                disposition,
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("lifecycle commit");
+    }
+    writer
+        .commit(ThreadCommit::rescheduled(thread.clone(), awaiting, 2))
+        .await
+        .expect("rescheduled lifecycle commit");
     for disposition in [
-        RunDisposition::running(run.clone()),
-        RunDisposition::awaiting(ResumeTicket::new(
-            "lifecycle-correlation",
-            run.clone(),
-            thread.clone(),
-            "snapshot",
-            "catalog",
-            AwaitTarget::Pause(PauseReason::Manual),
-        )),
         RunDisposition::running(run.clone()),
         RunDisposition::ended(run.clone(), EndCause::NaturalEnd),
     ] {
@@ -265,6 +298,15 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
             RunLifecycleEventKind::Awaiting
         ]
     );
+    assert_eq!(
+        first
+            .events
+            .iter()
+            .map(|event| (event.cursor.0, event.source_commit_cursor))
+            .collect::<Vec<_>>(),
+        vec![(1_000, 1), (2_000, 2)],
+        "S2/E3 encoded/source domains"
+    );
     let second = feed.events_after(first.next_cursor, 10).await.unwrap();
     assert_eq!(
         second
@@ -273,9 +315,19 @@ async fn lifecycle_feed_observes_peer_commits_and_backfills_exclusively() {
             .map(|event| event.kind)
             .collect::<Vec<_>>(),
         vec![
+            RunLifecycleEventKind::Rescheduled,
             RunLifecycleEventKind::Resumed,
             RunLifecycleEventKind::Completed
         ]
+    );
+    assert_eq!(
+        second
+            .events
+            .iter()
+            .map(|event| (event.cursor.0, event.source_commit_cursor))
+            .collect::<Vec<_>>(),
+        vec![(3_000, 3), (4_000, 4), (5_000, 5)],
+        "S2/E3 encoded/source domains"
     );
     assert!(second.next_cursor > first.next_cursor);
     let _ = std::fs::remove_dir_all(&dir);
@@ -341,7 +393,7 @@ async fn open_wait_tracks_only_the_latest_run_across_reopen() {
      * Effects: E1 open_wait returns none; E2 open_wait returns the exact latest
      * Run/ticket. Rules: R1 C1+!C2 => E2; R2 C1+C2+C3+!C4 => E1; R3
      * C1+C2+C3+C4 => E1; R4 C1+C2+!C3+C5 => E2 for the new latest Run. This
-     * prevents a historical tool wait from blocking a later turn.
+     * prevents a historical tool wait from blocking a later Run.
      */
     let dir = std::env::temp_dir().join(format!(
         "awaken_store_sqlite_latest_wait_{}",

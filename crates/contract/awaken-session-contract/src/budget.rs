@@ -91,7 +91,7 @@ impl ManagedListPriceSnapshot {
                 checked_cost_term(
                     usage.web_fetch_requests,
                     self.runtime_rates.web_fetch_micros_per_request,
-                    Self::COST_DENOMINATOR,
+                    SessionBudgetState::COST_DENOMINATOR,
                 )
                 .and_then(|term| value.checked_add(term))
             })
@@ -99,7 +99,7 @@ impl ManagedListPriceSnapshot {
                 checked_cost_term(
                     usage.web_search_requests,
                     self.runtime_rates.web_search_micros_per_request,
-                    Self::COST_DENOMINATOR,
+                    SessionBudgetState::COST_DENOMINATOR,
                 )
                 .and_then(|term| value.checked_add(term))
             })
@@ -107,7 +107,15 @@ impl ManagedListPriceSnapshot {
         Ok(cost)
     }
 
-    const COST_DENOMINATOR: u128 = 1_000_000;
+    /// Price one logical Thread with the same immutable snapshot and exact
+    /// arithmetic used by the Session budget owner, then apply the public
+    /// monetary-unit rounding independently for that Thread.
+    pub fn public_usage_list_cost_minor(
+        &self,
+        usage: ManagedBudgetUsageCursor,
+    ) -> Result<u64, ManagedListPriceError> {
+        public_list_cost_minor(self.usage_cost_numerator(usage)?)
+    }
 }
 
 fn checked_cost_term(quantity: u64, rate: u64, scale: u128) -> Option<u128> {
@@ -189,12 +197,138 @@ pub struct ManagedBudgetUsageCursor {
     pub web_search_requests: u64,
 }
 
+impl ManagedBudgetUsageCursor {
+    /// Convert the neutral cumulative Session/Thread usage vocabulary once at
+    /// the pricing boundary. A legacy tally without per-model attribution may
+    /// use the already-frozen model supplied by its Session baseline; callers
+    /// must never resolve a mutable current model here.
+    pub fn from_session_usage(
+        usage: &crate::SessionUsage,
+        frozen_fallback_model: Option<&str>,
+    ) -> Result<Self, ManagedListPriceError> {
+        let mut by_model = usage
+            .by_model
+            .iter()
+            .map(|(model, usage)| {
+                (
+                    model.clone(),
+                    ManagedModelUsageCursor {
+                        input_tokens: usage.input_tokens,
+                        output_tokens: usage.output_tokens,
+                        cache_read_tokens: usage.cache_read_tokens,
+                        cache_creation_tokens: usage.cache_creation_tokens,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        if by_model.is_empty()
+            && (usage.input_tokens != 0
+                || usage.output_tokens != 0
+                || usage.cache_read_tokens != 0
+                || usage.cache_creation_tokens != 0)
+        {
+            let model = frozen_fallback_model
+                .filter(|model| !model.trim().is_empty())
+                .ok_or_else(|| {
+                    ManagedListPriceError::InvalidSnapshot(
+                        "token usage has no served-model attribution".into(),
+                    )
+                })?;
+            by_model.insert(
+                model.to_owned(),
+                ManagedModelUsageCursor {
+                    input_tokens: usage.input_tokens,
+                    output_tokens: usage.output_tokens,
+                    cache_read_tokens: usage.cache_read_tokens,
+                    cache_creation_tokens: usage.cache_creation_tokens,
+                },
+            );
+        }
+        Ok(Self {
+            by_model,
+            active_seconds: usage.active_seconds,
+            web_fetch_requests: usage.web_fetch_requests,
+            web_search_requests: usage.web_search_requests,
+        })
+    }
+
+    /// Reconstruct the neutral cumulative usage represented by this exact
+    /// pricing cursor. This inverse projection is used for durable cap events;
+    /// it does not consult current Runtime counters.
+    pub fn to_session_usage(&self) -> Result<crate::SessionUsage, ManagedListPriceError> {
+        let mut usage = crate::SessionUsage {
+            by_model: self
+                .by_model
+                .iter()
+                .map(|(model, counters)| {
+                    (
+                        model.clone(),
+                        crate::SessionModelUsage {
+                            input_tokens: counters.input_tokens,
+                            output_tokens: counters.output_tokens,
+                            cache_read_tokens: counters.cache_read_tokens,
+                            cache_creation_tokens: counters.cache_creation_tokens,
+                        },
+                    )
+                })
+                .collect(),
+            active_seconds: self.active_seconds,
+            web_fetch_requests: self.web_fetch_requests,
+            web_search_requests: self.web_search_requests,
+            ..Default::default()
+        };
+        for counters in self.by_model.values() {
+            usage.input_tokens = usage
+                .input_tokens
+                .checked_add(counters.input_tokens)
+                .ok_or_else(list_cost_overflow)?;
+            usage.output_tokens = usage
+                .output_tokens
+                .checked_add(counters.output_tokens)
+                .ok_or_else(list_cost_overflow)?;
+            usage.cache_read_tokens = usage
+                .cache_read_tokens
+                .checked_add(counters.cache_read_tokens)
+                .ok_or_else(list_cost_overflow)?;
+            usage.cache_creation_tokens = usage
+                .cache_creation_tokens
+                .checked_add(counters.cache_creation_tokens)
+                .ok_or_else(list_cost_overflow)?;
+        }
+        Ok(usage)
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManagedModelUsageCursor {
     pub input_tokens: u64,
     pub output_tokens: u64,
     pub cache_read_tokens: u64,
     pub cache_creation_tokens: u64,
+}
+
+/// One durable admissible→reached transition of the shared Session budget.
+///
+/// This is provenance on the existing aggregate ledger, not a child/Run
+/// terminal override: Thread lifecycle keeps its own Ended/Awaiting truth.
+/// The exact cumulative cursor and frozen price identity let every protocol
+/// projection reproduce the usage immediately preceding `budget_reached`, even
+/// after the cap is raised or removed and after a cold restart.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BudgetReachTransition {
+    pub generation: u64,
+    pub max_list_cost_minor: u64,
+    #[serde(with = "u128_decimal")]
+    pub consumed_numerator: u128,
+    pub usage_cursor: ManagedBudgetUsageCursor,
+    pub price_snapshot_id: String,
+}
+
+impl BudgetReachTransition {
+    #[must_use]
+    pub fn public_list_cost_minor(&self) -> Option<u64> {
+        public_list_cost_minor(self.consumed_numerator).ok()
+    }
 }
 
 /// Durable budget lifecycle. `Removed` is distinct from `Absent` because the
@@ -211,13 +345,16 @@ pub enum SessionBudgetState {
         consumed_numerator: u128,
         usage_cursor: ManagedBudgetUsageCursor,
         snapshot: ManagedListPriceSnapshot,
-        reached_event_emitted: bool,
+        #[serde(default)]
+        reach_transitions: Vec<BudgetReachTransition>,
     },
     Removed {
         #[serde(with = "u128_decimal")]
         consumed_numerator: u128,
         usage_cursor: ManagedBudgetUsageCursor,
         snapshot: ManagedListPriceSnapshot,
+        #[serde(default)]
+        reach_transitions: Vec<BudgetReachTransition>,
     },
 }
 
@@ -250,7 +387,7 @@ impl SessionBudgetState {
             consumed_numerator: 0,
             usage_cursor: ManagedBudgetUsageCursor::default(),
             snapshot,
-            reached_event_emitted: false,
+            reach_transitions: Vec::new(),
         }
     }
 
@@ -282,19 +419,15 @@ impl SessionBudgetState {
         }
     }
 
+    /// The immutable pricing authority frozen for this Session. `Absent`
+    /// intentionally has no pricing snapshot; Managed may then omit optional
+    /// list-cost fields rather than resolving mutable current prices later.
     #[must_use]
-    pub fn public_list_cost_minor(&self) -> Option<u64> {
-        let numerator = match self {
-            Self::Active {
-                consumed_numerator, ..
-            }
-            | Self::Removed {
-                consumed_numerator, ..
-            } => *consumed_numerator,
-            Self::Absent => return None,
-        };
-        let minor_denominator = Self::MICROS_PER_MINOR_USD * Self::COST_DENOMINATOR;
-        u64::try_from(numerator / minor_denominator).ok()
+    pub fn price_snapshot(&self) -> Option<&ManagedListPriceSnapshot> {
+        match self {
+            Self::Active { snapshot, .. } | Self::Removed { snapshot, .. } => Some(snapshot),
+            Self::Absent => None,
+        }
     }
 
     #[must_use]
@@ -305,6 +438,68 @@ impl SessionBudgetState {
             }
             Self::Absent => None,
         }
+    }
+
+    /// Ordered cap-transition provenance retained across cap raises/removal.
+    #[must_use]
+    pub fn reach_transitions(&self) -> &[BudgetReachTransition] {
+        match self {
+            Self::Active {
+                reach_transitions, ..
+            }
+            | Self::Removed {
+                reach_transitions, ..
+            } => reach_transitions,
+            Self::Absent => &[],
+        }
+    }
+
+    /// Append the next cap transition after cumulative usage has crossed the
+    /// active threshold. Exact reconciliation replay is a no-op; raising the cap
+    /// permits a later crossing to append the next generation.
+    pub fn record_reach_transition(
+        &mut self,
+    ) -> Result<Option<BudgetReachTransition>, ManagedListPriceError> {
+        let Self::Active {
+            max_list_cost_minor,
+            consumed_numerator,
+            usage_cursor,
+            snapshot,
+            reach_transitions,
+        } = self
+        else {
+            return Ok(None);
+        };
+        let threshold = u128::from(*max_list_cost_minor)
+            .checked_mul(Self::MICROS_PER_MINOR_USD)
+            .and_then(|value| value.checked_mul(Self::COST_DENOMINATOR))
+            .ok_or_else(list_cost_overflow)?;
+        if *consumed_numerator < threshold {
+            return Ok(None);
+        }
+        if reach_transitions.last().is_some_and(|transition| {
+            transition.max_list_cost_minor == *max_list_cost_minor
+                && transition.consumed_numerator == *consumed_numerator
+                && transition.usage_cursor == *usage_cursor
+                && transition.price_snapshot_id == snapshot.snapshot_id
+        }) {
+            return Ok(None);
+        }
+        let generation = reach_transitions.last().map_or(Ok(1), |transition| {
+            transition
+                .generation
+                .checked_add(1)
+                .ok_or_else(list_cost_overflow)
+        })?;
+        let transition = BudgetReachTransition {
+            generation,
+            max_list_cost_minor: *max_list_cost_minor,
+            consumed_numerator: *consumed_numerator,
+            usage_cursor: usage_cursor.clone(),
+            price_snapshot_id: snapshot.snapshot_id.clone(),
+        };
+        reach_transitions.push(transition.clone());
+        Ok(Some(transition))
     }
 
     pub fn reconcile_cumulative_usage(
@@ -322,6 +517,7 @@ impl SessionBudgetState {
                 consumed_numerator,
                 usage_cursor,
                 snapshot,
+                ..
             } => (consumed_numerator, usage_cursor, snapshot),
             Self::Absent => return Ok(false),
         };
@@ -370,6 +566,18 @@ impl SessionBudgetState {
         *cursor = next;
         Ok(added != 0)
     }
+}
+
+fn public_list_cost_minor(numerator: u128) -> Result<u64, ManagedListPriceError> {
+    let denominator =
+        SessionBudgetState::MICROS_PER_MINOR_USD * SessionBudgetState::COST_DENOMINATOR;
+    let whole = numerator / denominator;
+    let remainder = numerator % denominator;
+    let rounded = whole
+        .checked_add(u128::from(remainder >= denominator.div_ceil(2)))
+        .ok_or_else(list_cost_overflow)?;
+    u64::try_from(rounded)
+        .map_err(|_| ManagedListPriceError::InvalidSnapshot("list cost overflow".into()))
 }
 
 #[cfg(test)]
@@ -426,7 +634,87 @@ mod tests {
     }
 
     #[test]
+    fn cap_transition_provenance_is_append_only_across_replay_and_raise() {
+        // Cause/effect graph: C1 cumulative usage crosses an active cap; C2 the
+        // exact cursor is reconciled/reported again; C3 the cap is raised above
+        // consumption and later crossed; C4 the transition cursor is converted
+        // back to neutral usage. Effects: E1 append generation 1 with exact
+        // price/usage coordinates; E2 append nothing; E3 append generation 2
+        // without erasing generation 1; E4 reproduce cumulative counters.
+        //
+        // | Rule | Crossing | Cursor | Cap | Effect |
+        // |---|---|---|---|---|
+        // | T1 | first | advances | 1 | E1+E4 |
+        // | T2 | replay | same | 1 | E2 |
+        // | T3 | second | advances | raised to 2 | E3 |
+        // Constraints/invariants: transition provenance is append-only and
+        // idempotent for one cursor/cap generation; raising never rewrites T1.
+        let mut budget = SessionBudgetState::active(1, snapshot());
+        let first = ManagedBudgetUsageCursor {
+            by_model: BTreeMap::from([(
+                "model-a".into(),
+                ManagedModelUsageCursor {
+                    input_tokens: 3_334,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        budget.reconcile_cumulative_usage(first).unwrap();
+        let transition = budget.record_reach_transition().unwrap().expect("T1/E1");
+        assert_eq!(transition.generation, 1, "T1/E1");
+        assert_eq!(transition.price_snapshot_id, "managed-list-1", "T1/E1");
+        assert_eq!(
+            transition
+                .usage_cursor
+                .to_session_usage()
+                .unwrap()
+                .input_tokens,
+            3_334,
+            "T1/E4"
+        );
+        assert!(budget.record_reach_transition().unwrap().is_none(), "T2/E2");
+        let SessionBudgetState::Active {
+            max_list_cost_minor,
+            ..
+        } = &mut budget
+        else {
+            unreachable!()
+        };
+        *max_list_cost_minor = 2;
+        budget
+            .reconcile_cumulative_usage(ManagedBudgetUsageCursor {
+                by_model: BTreeMap::from([(
+                    "model-a".into(),
+                    ManagedModelUsageCursor {
+                        input_tokens: 6_668,
+                        ..Default::default()
+                    },
+                )]),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(
+            budget
+                .record_reach_transition()
+                .unwrap()
+                .expect("T3/E3")
+                .generation,
+            2,
+            "T3/E3"
+        );
+        assert_eq!(budget.reach_transitions().len(), 2, "T3/E3");
+    }
+
+    #[test]
     fn list_cost_overflow_is_rejected_without_panicking_or_wrapping() {
+        // Test design — Causes: C1 maximal token counts multiply/add against
+        // maximal frozen model rates; C2 a maximal runtime request count
+        // multiplies a maximal request rate. Effects: both return the stable
+        // InvalidSnapshot overflow error without panic or wrapped cost.
+        // Constraints/invariants: all list-cost arithmetic is checked before
+        // public rounding. Decision rules O1=C1=>error; O2=C2=>same error cover
+        // the model-usage and runtime-usage accumulation paths independently.
         let mut snapshot = snapshot();
         snapshot.model_rates.insert(
             "overflow".into(),
@@ -466,6 +754,146 @@ mod tests {
             Err(ManagedListPriceError::InvalidSnapshot(
                 "list cost overflow".into()
             ))
+        );
+    }
+
+    #[test]
+    fn session_and_thread_public_costs_share_arithmetic_but_round_independently() {
+        // Cause/effect graph: C1 one frozen price snapshot; C2 a public cost is
+        // below/at/above half of one minor unit or exceeds the public u64 wire;
+        // C3 two logical Threads each
+        // consume just over half a unit; C4 the Session prices their combined
+        // cumulative usage. E1 round down/half-up/up at the public projection
+        // boundary; E2 round each Thread independently; E3 price and round the
+        // Session aggregate only once; E4 Active/Removed expose the frozen
+        // snapshot and Absent does not invent one.
+        //
+        // | Rule | Amount | Scope | Effect |
+        // |---|---|---|---|
+        // | P1 | below half / exact half / above half | direct | 0 / 1 / 1 |
+        // | P1b | exceeds u64 | direct | overflow error |
+        // | P2 | just over half each | two Threads | 1 + 1 |
+        // | P3 | just over one unit total | Session | 1 |
+        // | P4 | any | Active/Removed/Absent | snapshot/snapshot/none |
+        // Constraints/invariants: all scopes share frozen integer arithmetic,
+        // but rounding occurs only at each scope's public projection boundary.
+        let snapshot = snapshot();
+        let denominator =
+            SessionBudgetState::MICROS_PER_MINOR_USD * SessionBudgetState::COST_DENOMINATOR;
+        assert_eq!(
+            public_list_cost_minor(denominator / 2 - 1).unwrap(),
+            0,
+            "P1/E1 below half"
+        );
+        assert_eq!(
+            public_list_cost_minor(denominator / 2).unwrap(),
+            1,
+            "P1/E1 exact half rounds up"
+        );
+        assert_eq!(
+            public_list_cost_minor(denominator / 2 + 1).unwrap(),
+            1,
+            "P1/E1 above half"
+        );
+        assert_eq!(
+            public_list_cost_minor(u128::MAX),
+            Err(ManagedListPriceError::InvalidSnapshot(
+                "list cost overflow".into()
+            )),
+            "P1b/E1 fails closed"
+        );
+        let per_thread = ManagedBudgetUsageCursor {
+            by_model: BTreeMap::from([(
+                "model-a".into(),
+                ManagedModelUsageCursor {
+                    input_tokens: 1_667,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot
+                .public_usage_list_cost_minor(per_thread.clone())
+                .unwrap(),
+            1,
+            "P2/E2 first Thread"
+        );
+        assert_eq!(
+            snapshot.public_usage_list_cost_minor(per_thread).unwrap(),
+            1,
+            "P2/E2 second Thread"
+        );
+        let aggregate = ManagedBudgetUsageCursor {
+            by_model: BTreeMap::from([(
+                "model-a".into(),
+                ManagedModelUsageCursor {
+                    input_tokens: 3_334,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        assert_eq!(
+            snapshot.public_usage_list_cost_minor(aggregate).unwrap(),
+            1,
+            "P3/E3"
+        );
+        let active = SessionBudgetState::active(10, snapshot.clone());
+        assert_eq!(active.price_snapshot(), Some(&snapshot), "P4/E4 active");
+        let removed = SessionBudgetState::Removed {
+            consumed_numerator: 0,
+            usage_cursor: ManagedBudgetUsageCursor::default(),
+            snapshot: snapshot.clone(),
+            reach_transitions: Vec::new(),
+        };
+        assert_eq!(removed.price_snapshot(), Some(&snapshot), "P4/E4 removed");
+        assert!(
+            SessionBudgetState::Absent.price_snapshot().is_none(),
+            "P4/E4 absent"
+        );
+    }
+
+    #[test]
+    fn neutral_usage_has_one_model_attribution_conversion_owner() {
+        // Cause/effect graph: C1 usage already carries served-model buckets;
+        // C2 legacy token usage has no bucket but a frozen fallback exists; C3
+        // neither attribution source exists. E1 preserves exact per-model and
+        // non-token counters; E2 attributes all legacy tokens to the frozen
+        // model; E3 fails closed before pricing. Rules U1=C1=>E1,
+        // U2=!C1+C2=>E2, U3=!C1+!C2+C3=>E3.
+        // Constraints/invariants: existing per-model attribution is never
+        // rewritten, and unattributed legacy tokens require one frozen fallback.
+        let attributed = crate::SessionUsage {
+            input_tokens: 11,
+            output_tokens: 7,
+            cache_read_tokens: 5,
+            cache_creation_tokens: 3,
+            by_model: BTreeMap::from([(
+                "served".into(),
+                crate::SessionModelUsage {
+                    input_tokens: 11,
+                    output_tokens: 7,
+                    cache_read_tokens: 5,
+                    cache_creation_tokens: 3,
+                },
+            )]),
+            active_seconds: 2,
+            web_fetch_requests: 1,
+            web_search_requests: 4,
+        };
+        let cursor = ManagedBudgetUsageCursor::from_session_usage(&attributed, None).unwrap();
+        assert_eq!(cursor.by_model["served"].cache_creation_tokens, 3, "U1/E1");
+        assert_eq!(cursor.active_seconds, 2, "U1/E1");
+        assert_eq!(cursor.web_search_requests, 4, "U1/E1");
+
+        let mut legacy = attributed.clone();
+        legacy.by_model.clear();
+        let cursor = ManagedBudgetUsageCursor::from_session_usage(&legacy, Some("frozen")).unwrap();
+        assert_eq!(cursor.by_model["frozen"].input_tokens, 11, "U2/E2");
+        assert!(
+            ManagedBudgetUsageCursor::from_session_usage(&legacy, None).is_err(),
+            "U3/E3"
         );
     }
 }

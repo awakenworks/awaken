@@ -15,14 +15,16 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, commit_payload_hash,
+};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_run_ingress::ClaimedCommitService;
 use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchOutcome, DispatchQueue, PostgresDispatchStore,
     RegisteredWorker, RegistryError, RegistryMutation, RunClaim, RunDispatch, SettleOutcome,
     WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest, WorkerObservationSource,
-    WorkerRegistration, WorkerSnapshot, WorkerState, commit_payload_hash,
+    WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,

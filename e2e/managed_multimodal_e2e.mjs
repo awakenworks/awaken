@@ -4,13 +4,11 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass, RED_PNG_B64 } from './harness.mjs';
+import { withRealServer, pass, RED_PNG_B64, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
-async function lastAgentText(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
+function lastAgentText(events) {
   const msg = [...events].reverse().find((e) => e.type === 'agent.message');
   return (msg?.content ?? [])
     .filter((b) => b.type === 'text')
@@ -22,7 +20,10 @@ async function main() {
   await withRealServer('vision', 38160, async (base) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact multimodal User receipt; C2=image-aware reply+terminal. E1=C2
+    // after C1. K: the official content block owns the image bytes. Decision
+    // V1 C1&&!C2=>retry; V2 C1+C2=>assert media proof.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [
         {
           type: 'user.message',
@@ -34,7 +35,18 @@ async function main() {
       ],
       betas: BETAS,
     });
-    const reply = await lastAgentText(client, session.id);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'V1 exact multimodal User Event receipt');
+    const { delta } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta: later }) => later.some((event) => event.type === 'agent.message')
+        && later.some((event) => event.type === 'session.status_idle'),
+      'V1 multimodal Run to commit its image-aware reply',
+    );
+    const reply = lastAgentText(delta);
     assert.ok(reply.includes('image/png'), `image did not reach the model: ${reply}`);
     pass('managed multimodal (image reached the model)');
   });

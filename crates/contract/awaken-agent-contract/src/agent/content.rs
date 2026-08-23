@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// One unit of message content. A turn — user or assistant — is a list of these,
+/// One unit of message content. A user or assistant message is a list of these,
 /// so text, an image, a tool request, and a tool result can interleave in a
 /// single message. Further media (audio, video, documents) are added when their
 /// mapping and consumer exist.
@@ -44,7 +44,7 @@ pub enum ContentBlock {
     /// secret or encrypted provider data cannot leak through neutral replay.
     Redacted,
     /// A model's request to invoke a tool, interleaved with text in the same
-    /// assistant turn. `input` is the only place untyped JSON is unavoidable: a
+    /// assistant Step message. `input` is the only place untyped JSON is unavoidable: a
     /// tool's arguments are shaped by that tool's own schema, not by any type the
     /// framework can know — so they are validated against the tool schema, not
     /// statically typed here. No permission grant is implied (authority lives
@@ -65,7 +65,7 @@ pub enum ContentBlock {
     },
     /// The model's extended-thinking (reasoning) content, folded from the
     /// provider's reasoning stream (Axis 10b). It interleaves with `Text` in an
-    /// assistant turn but is NOT part of the answer: `extract_text` ignores it,
+    /// assistant Step message but is NOT part of the answer: `extract_text` ignores it,
     /// and a protocol adapter projects only its *presence* as a contentless
     /// reasoning-progress marker — the reasoning text is not on any answer wire.
     Thinking {

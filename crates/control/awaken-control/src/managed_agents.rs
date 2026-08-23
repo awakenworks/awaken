@@ -17,7 +17,7 @@ use awaken_config_service::{
 use awaken_protocol_managed::types::agent::{
     AdvisorRosterEntry, AdvisorRosterEntryKind, Agent, AgentCreateParams, AgentListParams,
     AgentMcpServer, AgentSkill, AgentUpdateParams, MultiagentConfig as WireMultiagent,
-    MultiagentRosterEntry,
+    MultiagentRosterEntry, managed_advisor_pair_supported,
 };
 use awaken_protocol_managed::{ManagedAgentError, ManagedAgentRepository};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
@@ -25,6 +25,7 @@ use awaken_runtime_contract::agent_bindings::{ToolsetPolicy, ToolsetSource};
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_session_contract::{
     AgentTool, CustomToolInputSchema, is_agent_toolset_member, resolved_toolsets, toolset_policies,
+    validate_agent_tools,
 };
 use awaken_tenancy::ScopeId;
 
@@ -178,6 +179,7 @@ impl ConfigPlaneManagedAgentRepository {
         config: &mut AgentConfig,
     ) -> Result<(), ManagedAgentError> {
         let coordinator_geo = config.inference.inference_geo;
+        let coordinator_name = config.name.clone().unwrap_or_else(|| config.id.clone());
         let Some(multiagent) = config.multiagent.as_mut() else {
             return Ok(());
         };
@@ -191,13 +193,18 @@ impl ConfigPlaneManagedAgentRepository {
         {
             let executor_model = render_managed_model_id(&config.model_binding)
                 .map_err(|error| ManagedAgentError::Invalid(error.to_string()))?;
-            if !advisor_pair_supported(&executor_model, advisor_model) {
+            if !managed_advisor_pair_supported(&executor_model, advisor_model) {
                 return Err(ManagedAgentError::Invalid(format!(
                     "unsupported advisor model pairing: executor `{executor_model}`, advisor `{advisor_model}`"
                 )));
             }
         }
+        let mut roster_names = BTreeMap::<String, String>::new();
         for target in &mut multiagent.agents {
+            if target.is_self_reference() {
+                register_roster_name(&mut roster_names, &config.id, &coordinator_name)?;
+                continue;
+            }
             let MultiagentTarget::Agent { id, version } = target else {
                 continue;
             };
@@ -240,54 +247,44 @@ impl ConfigPlaneManagedAgentRepository {
                     coordinator_geo, selected.config.inference.inference_geo
                 )));
             }
+            register_roster_name(
+                &mut roster_names,
+                id,
+                selected.config.name.as_deref().unwrap_or(id),
+            )?;
             *version = Some(selected.revision);
         }
         Ok(())
     }
 }
 
-fn advisor_pair_supported(executor: &str, advisor: &str) -> bool {
-    let allowed: &[&str] = match executor {
-        "claude-haiku-4-5" | "claude-sonnet-4-6" => &[
-            "claude-mythos-5",
-            "claude-fable-5",
-            "claude-opus-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-5",
-            "claude-sonnet-4-6",
-        ],
-        "claude-sonnet-5" => &[
-            "claude-mythos-5",
-            "claude-fable-5",
-            "claude-opus-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-sonnet-5",
-        ],
-        "claude-opus-4-6" => &[
-            "claude-mythos-5",
-            "claude-fable-5",
-            "claude-opus-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-            "claude-opus-4-6",
-            "claude-sonnet-5",
-        ],
-        "claude-opus-4-7" | "claude-opus-4-8" => &[
-            "claude-mythos-5",
-            "claude-fable-5",
-            "claude-opus-5",
-            "claude-opus-4-8",
-            "claude-opus-4-7",
-        ],
-        "claude-opus-5" | "claude-fable-5" | "claude-mythos-5" => {
-            &["claude-mythos-5", "claude-fable-5", "claude-opus-5"]
-        }
-        _ => return false,
-    };
-    allowed.contains(&advisor)
+/// Validate the exact callable names resolved from frozen Agent revisions.
+/// Identity-only validation belongs to `MultiagentConfig`; only this repository
+/// boundary can see the names of every referenced publication without looking
+/// them up twice or trusting a protocol projection.
+fn register_roster_name(
+    seen: &mut BTreeMap<String, String>,
+    agent_id: &str,
+    name: &str,
+) -> Result<(), ManagedAgentError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ManagedAgentError::Invalid(format!(
+            "multiagent Agent `{agent_id}` has an empty callable name"
+        )));
+    }
+    let normalized = name.to_lowercase();
+    if matches!(normalized.as_str(), "self" | "anthropic.advisor") {
+        return Err(ManagedAgentError::Invalid(format!(
+            "multiagent Agent `{agent_id}` uses reserved callable name `{name}`"
+        )));
+    }
+    if let Some(existing) = seen.insert(normalized, agent_id.to_string()) {
+        return Err(ManagedAgentError::Invalid(format!(
+            "multiagent Agents `{existing}` and `{agent_id}` have the same callable name `{name}`"
+        )));
+    }
+    Ok(())
 }
 
 fn client_tools(tools: &[AgentTool]) -> Vec<ToolDescriptor> {
@@ -350,6 +347,7 @@ fn config_from_create(
     id: String,
     params: AgentCreateParams,
 ) -> Result<AgentConfig, ManagedAgentError> {
+    validate_agent_tools(&params.tools).map_err(ManagedAgentError::Invalid)?;
     let model = params.model.into_config().into_resolved();
     let inference = model.inference_options();
     let model_binding = parse_managed_model_id(&model.id)
@@ -604,7 +602,7 @@ fn project(revision: AgentConfigRevision) -> Agent {
             .collect(),
         tools,
         multiagent: config.multiagent.map(|value| {
-            let agents = value
+            let mut agents = value
                 .agents
                 .into_iter()
                 .map(|target| match target {
@@ -632,6 +630,11 @@ fn project(revision: AgentConfigRevision) -> Agent {
                     ),
                 })
                 .collect::<Vec<_>>();
+            // The authoring order remains ConfigPlane truth. Managed wire has one
+            // additional representation rule: the optional advisor is always the
+            // final roster entry while ordinary/self references keep their stable
+            // relative order.
+            agents.sort_by_key(|entry| matches!(entry, MultiagentRosterEntry::Advisor(_)));
             WireMultiagent::Coordinator { agents }
         }),
         version: revision.revision,
@@ -847,6 +850,7 @@ impl ManagedAgentRepository for ConfigPlaneManagedAgentRepository {
         }
         if let Some(tools) = params.tools {
             let tools = tools.unwrap_or_default();
+            validate_agent_tools(&tools).map_err(ManagedAgentError::Invalid)?;
             config.tool_ids.clear();
             config.toolsets = toolset_policies(&tools);
             config.client_tools = client_tools(&tools);
@@ -1090,6 +1094,35 @@ mod tests {
         }
     }
 
+    #[test]
+    fn resolved_roster_callable_names_follow_one_decision_table() {
+        // Cause/effect graph: C1 first ordinary name -> E1 admit; C2 another id
+        // with the same normalized name -> E2 reject ambiguity; C3 reserved
+        // `self`/`anthropic.advisor` -> E3 reject; C4 blank -> E4 reject.
+        // Constraints/invariants: case and surrounding whitespace normalize
+        // before the sole uniqueness/reserved-name decision. Decision rules:
+        // R1=C1=>E1; R2=C2=>E2; R3=C3=>E3; R4=C4=>E4.
+        let mut seen = BTreeMap::new();
+        register_roster_name(&mut seen, "agent-a", " Researcher ").expect("R1 admit");
+        assert!(
+            register_roster_name(&mut seen, "agent-b", "researcher").is_err(),
+            "R2 duplicate callable name"
+        );
+        assert!(
+            register_roster_name(&mut BTreeMap::new(), "agent-self", "SELF").is_err(),
+            "R3 self is reserved"
+        );
+        assert!(
+            register_roster_name(&mut BTreeMap::new(), "agent-advisor", "Anthropic.Advisor")
+                .is_err(),
+            "R3 advisor is reserved"
+        );
+        assert!(
+            register_roster_name(&mut BTreeMap::new(), "agent-empty", " \t").is_err(),
+            "R4 blank is not callable"
+        );
+    }
+
     fn update_params(version: u64) -> AgentUpdateParams {
         AgentUpdateParams {
             version: Some(version),
@@ -1152,6 +1185,26 @@ mod tests {
                 Arc::new(StaticToolCatalog(Vec::new())),
             ),
             catalog,
+        )
+    }
+
+    fn plane_with_delegation(path: &str) -> ConfigPlane {
+        let catalog = Arc::new(ExecutableAgentCatalog::new());
+        ConfigPlane::new(
+            Arc::new(ConfigService::new(
+                Arc::new(TestModelResolver),
+                Arc::new(LocalExecutableAgentRegistrar::new(catalog)),
+            )),
+            Arc::new(SqliteConfigStore::open(path).expect("config store")),
+            Arc::new(StaticToolCatalog(vec![
+                ToolDescriptor::pinned(
+                    "managed",
+                    "agent_run",
+                    "Run an exact roster Agent",
+                    json!({"type": "object"}),
+                )
+                .with_kind(ToolKind::AgentDelegation),
+            ])),
         )
     }
 
@@ -1397,25 +1450,11 @@ mod tests {
         // | G1   | us          | us       | create and freeze exact roster |
         // | G2   | global      | us       | 400-equivalent, no Agent       |
         // | G3   | omitted     | us       | 400-equivalent, no Agent       |
+        // Constraints/invariants: each exact published revision supplies its
+        // frozen geography and mismatch admission has no Agent write side effect.
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("config.sqlite");
-        let catalog = Arc::new(ExecutableAgentCatalog::new());
-        let plane = ConfigPlane::new(
-            Arc::new(ConfigService::new(
-                Arc::new(TestModelResolver),
-                Arc::new(LocalExecutableAgentRegistrar::new(catalog)),
-            )),
-            Arc::new(SqliteConfigStore::open(path.to_str().unwrap()).expect("config store")),
-            Arc::new(StaticToolCatalog(vec![
-                ToolDescriptor::pinned(
-                    "managed",
-                    "agent_run",
-                    "Run an exact roster Agent",
-                    json!({"type": "object"}),
-                )
-                .with_kind(ToolKind::AgentDelegation),
-            ])),
-        );
+        let plane = plane_with_delegation(path.to_str().unwrap());
         let repository = ConfigPlaneManagedAgentRepository::new(plane, "workspace-a");
         let mut worker = create_params("worker");
         worker.model = ModelInput::Config(ModelConfigParams {
@@ -1472,6 +1511,8 @@ mod tests {
         // Causes: C1 Agent reference; C2 official advisor entry; C3 unknown tag.
         // Effects: E1/E2 typed roster; E3 fail-fast decode before repository access.
         // Decision table: C1 -> E1; C2 -> E2; C3 -> E3.
+        // Constraint/invariant: the wire enum is closed to the two official
+        // entry tags; decoding cannot manufacture a repository lookup path.
         assert!(
             serde_json::from_value::<WireMultiagent>(json!({
                 "type": "coordinator",
@@ -1495,6 +1536,241 @@ mod tests {
             }))
             .is_err(),
             "E3"
+        );
+    }
+
+    #[test]
+    fn managed_multiagent_wire_projection_stably_places_the_advisor_last() {
+        // Cause/effect graph: C1 ConfigPlane has no advisor; C2 it has an advisor
+        // after ordinary entries; C3 it has an advisor before ordinary/self
+        // entries. E1 preserves the authored ordinary/self relative order; E2
+        // emits the advisor last; E3 the no-advisor roster is unchanged. This
+        // single projection owner serves create/retrieve/update responses.
+        //
+        // | Rule | Advisor | Authored position | Effects |
+        // |---|---|---|---|
+        // | R1 | no | n/a | E1,E3 |
+        // | R2 | yes | last | E1,E2 |
+        // | R3 | yes | first | E1,E2 |
+        // Constraints/invariants: projection never mutates ConfigPlane roster
+        // truth and has exactly one owner across all Managed read/write surfaces.
+        let project_roster = |agents| {
+            let mut config =
+                config_from_create("coordinator".into(), create_params("coordinator")).unwrap();
+            config.multiagent = Some(MultiagentConfig { agents });
+            let projected = project(AgentConfigRevision {
+                revision: 7,
+                config,
+                created_at_unix_ms: Some(1_000),
+                updated_at_unix_ms: Some(2_000),
+            });
+            let Some(WireMultiagent::Coordinator { agents }) = projected.multiagent else {
+                panic!("projected coordinator roster")
+            };
+            agents
+        };
+        let ordinary = || MultiagentTarget::Agent {
+            id: "researcher".into(),
+            version: Some(3),
+        };
+        let advisor = || MultiagentTarget::Advisor {
+            model: "claude-opus-5".into(),
+        };
+
+        let no_advisor = project_roster(vec![ordinary(), MultiagentTarget::SelfReference]);
+        assert!(
+            matches!(no_advisor.as_slice(), [MultiagentRosterEntry::Reference(first), MultiagentRosterEntry::Reference(second)] if first.id == "researcher" && second.id == "coordinator"),
+            "R1/E1/E3"
+        );
+        for (rule, roster) in [
+            (
+                "R2",
+                project_roster(vec![ordinary(), MultiagentTarget::SelfReference, advisor()]),
+            ),
+            (
+                "R3",
+                project_roster(vec![advisor(), ordinary(), MultiagentTarget::SelfReference]),
+            ),
+        ] {
+            assert!(
+                matches!(roster.as_slice(), [MultiagentRosterEntry::Reference(first), MultiagentRosterEntry::Reference(second), MultiagentRosterEntry::Advisor(_)] if first.id == "researcher" && second.id == "coordinator"),
+                "{rule}/E1/E2"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn advisor_first_authoring_projects_last_across_agent_crud_and_restart() {
+        // Cause/effect graph: C1 the authoritative ConfigPlane roster is authored
+        // advisor-first; C2 it also contains an ordinary child then `self`; C3
+        // create/update/retrieve/list read the current revision; C4 retrieve/list
+        // run after process-local repository loss; C5 an officially invalid pair
+        // reaches save admission. Effects: E1 ConfigPlane preserves C1/C2 exactly;
+        // E2 every Managed Agent response keeps the two ordinary references in
+        // order and moves the advisor last; E3 versions advance without creating
+        // a second projection path; E4 C5 is rejected before an Agent write.
+        //
+        // | Rule | Source order | Surface | Restart | Effect |
+        // |---|---|---|---|---|
+        // | C1 | advisor,child,self | create | no | E1,E2 |
+        // | C2 | same | retrieve/list | no | E2 |
+        // | C3 | same | update | no | E1,E2,E3 |
+        // | C4 | same | retrieve/list/version | yes | E2,E3 |
+        // | C5 | invalid pair | create | no | E4 |
+        // Constraints/invariants: ConfigPlane retains authored order, every wire
+        // surface uses one projection, and restart cannot introduce cached truth.
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("config.sqlite");
+        let plane = plane_with_delegation(path.to_str().unwrap());
+        let repository = ConfigPlaneManagedAgentRepository::new(plane.clone(), "workspace-a");
+
+        let mut worker_params = create_params("researcher");
+        worker_params.model = ModelInput::Id("claude-sonnet-4-6".into());
+        let worker = repository
+            .create("workspace-a", worker_params)
+            .await
+            .expect("ordinary child");
+
+        let mut coordinator_params = create_params("coordinator");
+        coordinator_params.model = ModelInput::Id("claude-sonnet-4-6".into());
+        coordinator_params.multiagent = Some(
+            serde_json::from_value(json!({
+                "type": "coordinator",
+                "agents": [
+                    {"type":"advisor", "model":"claude-opus-5"},
+                    {"type":"agent", "id":worker.id},
+                    {"type":"self"}
+                ]
+            }))
+            .unwrap(),
+        );
+        let created = repository
+            .create("workspace-a", coordinator_params)
+            .await
+            .expect("C1");
+
+        let assert_wire_order = |rule: &str, agent: &Agent| {
+            let Some(WireMultiagent::Coordinator { agents }) = agent.multiagent.as_ref() else {
+                panic!("{rule}: coordinator projection")
+            };
+            assert!(
+                matches!(
+                    agents.as_slice(),
+                    [
+                        MultiagentRosterEntry::Reference(child),
+                        MultiagentRosterEntry::Reference(self_reference),
+                        MultiagentRosterEntry::Advisor(advisor),
+                    ] if child.id == worker.id
+                        && self_reference.id == created.id
+                        && advisor.model == "claude-opus-5"
+                ),
+                "{rule}/E2: ordinary references retain order and advisor is last"
+            );
+        };
+        assert_wire_order("C1", &created);
+
+        let authored = plane
+            .get_versioned(&ScopeId::from("workspace-a"), &created.id)
+            .await
+            .unwrap()
+            .expect("C1 authoritative config");
+        assert!(
+            matches!(
+                authored.config.multiagent.as_ref().map(|value| value.agents.as_slice()),
+                Some([
+                    MultiagentTarget::Advisor { .. },
+                    MultiagentTarget::Agent { id, .. },
+                    MultiagentTarget::SelfReference,
+                ]) if id == &worker.id
+            ),
+            "C1/E1: wire ordering does not mutate ConfigPlane truth"
+        );
+        assert_wire_order(
+            "C2 retrieve",
+            &repository
+                .retrieve("workspace-a", &created.id, None)
+                .await
+                .unwrap(),
+        );
+        let listed = repository
+            .list("workspace-a", &AgentListParams::default())
+            .await
+            .unwrap();
+        assert_wire_order(
+            "C2 list",
+            listed
+                .iter()
+                .find(|agent| agent.id == created.id)
+                .expect("listed coordinator"),
+        );
+
+        let updated = repository
+            .update("workspace-a", &created.id, update_params(created.version))
+            .await
+            .expect("C3 update");
+        assert_eq!(updated.version, 2, "C3/E3");
+        assert_wire_order("C3 update", &updated);
+        let authored = plane
+            .get_versioned(&ScopeId::from("workspace-a"), &created.id)
+            .await
+            .unwrap()
+            .expect("C3 authoritative config");
+        assert!(
+            matches!(
+                authored
+                    .config
+                    .multiagent
+                    .as_ref()
+                    .map(|value| value.agents.first()),
+                Some(Some(MultiagentTarget::Advisor { .. }))
+            ),
+            "C3/E1"
+        );
+
+        drop(repository);
+        drop(plane);
+        let cold = ConfigPlaneManagedAgentRepository::new(
+            plane_with_delegation(path.to_str().unwrap()),
+            "workspace-a",
+        );
+        assert_wire_order(
+            "C4 cold retrieve",
+            &cold
+                .retrieve("workspace-a", &created.id, None)
+                .await
+                .unwrap(),
+        );
+        let cold_list = cold
+            .list("workspace-a", &AgentListParams::default())
+            .await
+            .unwrap();
+        assert_wire_order(
+            "C4 cold list",
+            cold_list
+                .iter()
+                .find(|agent| agent.id == created.id)
+                .expect("cold listed coordinator"),
+        );
+        for version in cold.versions("workspace-a", &created.id).await.unwrap() {
+            assert_wire_order("C4 cold version", &version);
+        }
+
+        let mut invalid = create_params("invalid-pair");
+        invalid.model = ModelInput::Id("claude-sonnet-5".into());
+        invalid.multiagent = Some(
+            serde_json::from_value(json!({
+                "type":"coordinator",
+                "agents":[{"type":"advisor", "model":"claude-sonnet-5"}]
+            }))
+            .unwrap(),
+        );
+        assert!(
+            matches!(
+                cold.create("workspace-a", invalid).await,
+                Err(ManagedAgentError::Invalid(ref message))
+                    if message.contains("unsupported advisor model pairing")
+            ),
+            "C5/E4"
         );
     }
 

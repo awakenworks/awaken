@@ -235,7 +235,6 @@ agent/
   message.rs
   thread.rs
   run.rs
-  turn.rs
   step.rs
   tool_call.rs
   approval.rs

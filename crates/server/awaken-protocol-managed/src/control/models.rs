@@ -210,6 +210,25 @@ mod tests {
     use http_body_util::BodyExt as _;
     use tower::ServiceExt as _;
 
+    struct UnavailableInventory;
+
+    #[async_trait::async_trait]
+    impl awaken_executable_agent_contract::ExecutableAgentInventorySource for UnavailableInventory {
+        async fn current_registrations(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            Err(
+                awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(
+                    "refresh failed".into(),
+                ),
+            )
+        }
+    }
+
     #[test]
     fn default_models_are_nonempty_and_project_to_beta_model_info() {
         // Cause/effect decision table: known limits -> numeric max fields;
@@ -266,5 +285,29 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["id"], id, "R1");
+    }
+
+    #[tokio::test]
+    async fn live_model_inventory_unavailability_fails_list_and_retrieve_closed() {
+        // Causes: C1 live inventory succeeds/fails; C2 list/retrieve operation.
+        // Effects: E1 failure returns 503 and no stale model document. Constraint
+        // K1 fixed fixture models do not use this live source. Decision table:
+        // D1 !C1+list=>E1; D2 !C1+retrieve=>E1.
+        let app = models_router_with_inventory(Arc::new(UnavailableInventory)).layer(
+            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
+        );
+        for (rule, path) in [("D1", "/v1/models"), ("D2", "/v1/models/model-a")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(path)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE, "{rule}");
+        }
     }
 }

@@ -18,63 +18,32 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
-    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchState,
-    DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput, PendingRecord, RunClaim,
-    RunIdentityDecision, SettleOutcome, StoredRunIdentity, SubmitOptions,
-    can_admit_attempt_credentials, compile_attempt_credential_bindings, decide_run_identity,
-    installed_worker_credential_capabilities, normalize_pending_millis,
-    verify_credential_realization_receipt,
+    AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission,
+    CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
+    DispatchQueue, DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
+    classify_completed_session_run_reservation, classify_exact_claim_mode,
+    classify_live_session_run_reservation, classify_session_run_reservation_activation,
+    compile_attempt_credential_bindings, decide_run_identity, ensure_session_child_capacity,
+    installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
+    session_child_thread, validate_outbox_continuation,
+    validate_session_resume_activity_transition, validate_session_resume_evidence,
+    validate_session_resume_target, validate_session_run_reservation_request,
+    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
 };
 use awaken_run_ingress_contract::{
-    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError,
-    GuardedTransition, RunDispatch,
+    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition, RunDispatch,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RowState {
-    Pending,
-    Leased,
-    Awaiting,
-    DeadLetter,
-    Superseded,
-}
+mod row_state;
 
-impl RowState {
-    fn public(self) -> DispatchState {
-        match self {
-            RowState::Pending => DispatchState::Pending,
-            RowState::Leased => DispatchState::Leased,
-            RowState::Awaiting => DispatchState::Awaiting,
-            RowState::DeadLetter => DispatchState::DeadLetter,
-            RowState::Superseded => DispatchState::Superseded,
-        }
-    }
-
-    fn transition_phase(self) -> DispatchPhase {
-        match self {
-            RowState::Pending => DispatchPhase::Pending,
-            RowState::Leased => DispatchPhase::Leased,
-            RowState::Awaiting => DispatchPhase::Awaiting,
-            RowState::DeadLetter => DispatchPhase::DeadLetter,
-            RowState::Superseded => DispatchPhase::Superseded,
-        }
-    }
-
-    fn from_transition_phase(phase: DispatchPhase) -> Self {
-        match phase {
-            DispatchPhase::Pending => RowState::Pending,
-            DispatchPhase::Leased => RowState::Leased,
-            DispatchPhase::Awaiting => RowState::Awaiting,
-            DispatchPhase::DeadLetter => RowState::DeadLetter,
-            DispatchPhase::Superseded => RowState::Superseded,
-        }
-    }
-}
+use row_state::RowState;
 
 #[derive(Debug, Clone)]
 struct Row {
@@ -84,6 +53,9 @@ struct Row {
     /// and recovery until the worker commits Cancelled and settles Done.
     cancellation_requested: bool,
     lease: Option<Lease>,
+    /// Absolute expiry of the caller-owned admission window. Present only while
+    /// `state == Reserved`; a recovery claim carries its ordinary lease instead.
+    reservation_deadline_ms: Option<u64>,
     /// Consecutive crash-recoveries without a settle; reset when the run awaits.
     attempt_count: u64,
     priority: i64,
@@ -104,6 +76,31 @@ struct Row {
     credential_receipts: Vec<CredentialRealizationReceipt>,
 }
 
+fn guarded_claim_row(
+    state: &State,
+    claim: &RunClaim,
+    required_state: RowState,
+) -> Option<(RunDispatch, u64, bool)> {
+    state.rows.get(&claim.run_id).and_then(|row| {
+        (row.state == required_state
+            && row.lease_epoch == claim.epoch
+            && row
+                .lease
+                .as_ref()
+                .is_some_and(|lease| lease.owner == claim.owner))
+        .then(|| {
+            (
+                row.request.clone(),
+                row.lease
+                    .as_ref()
+                    .expect("matched claim has a lease")
+                    .expires_ms,
+                row.cancellation_requested,
+            )
+        })
+    })
+}
+
 impl Row {
     fn transition(&self) -> DispatchTransition {
         DispatchTransition {
@@ -117,6 +114,14 @@ impl Row {
         self.state = RowState::from_transition_phase(transition.phase);
         self.lease_epoch = transition.lease_epoch;
         self.cancellation_requested = transition.cancellation_requested;
+    }
+
+    fn exact_claim_deadline(&self) -> Option<u64> {
+        match self.state {
+            RowState::Reserved => self.reservation_deadline_ms,
+            RowState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms),
+            _ => None,
+        }
     }
 }
 
@@ -206,6 +211,22 @@ impl MemoryDispatchStore {
             })
             .unwrap_or(0)
     }
+
+    async fn lock_claim_epoch_in_state(
+        &self,
+        claim: &RunClaim,
+        required_state: RowState,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        let guard = self.authority.clone().lock_owned().await;
+        let state = lock(&self.state)?;
+        let guarded = guarded_claim_row(&state, claim, required_state);
+        drop(state);
+        Ok(
+            guarded.map(|(request, expires_ms, cancellation_requested)| {
+                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
+            }),
+        )
+    }
 }
 
 fn lock(state: &Mutex<State>) -> Result<std::sync::MutexGuard<'_, State>, DispatchError> {
@@ -251,33 +272,58 @@ fn append_pending(state: &mut State, input: PendingInput) -> Result<bool, Dispat
     Ok(true)
 }
 
+/// Whether another open Run on the candidate's Thread blocks this claim.
+///
+/// The candidate is deliberately excluded: an Awaiting Run must be able to wake
+/// itself from its exact reply or cancellation. Cancellation only waits for an
+/// executing peer, so historical stores containing more than one Awaiting row can
+/// drain those rows one at a time instead of deadlocking forever.
+fn thread_has_claim_blocking_peer(
+    state: &State,
+    candidate_run: &RunId,
+    include_awaiting: bool,
+) -> bool {
+    let Some(candidate) = state.rows.get(candidate_run) else {
+        return false;
+    };
+    state.rows.iter().any(|(run_id, peer)| {
+        run_id != candidate_run
+            && peer.request.thread_id() == candidate.request.thread_id()
+            && (matches!(peer.state, RowState::ReservationLeased | RowState::Leased)
+                || (include_awaiting && peer.state == RowState::Awaiting))
+    })
+}
+
 /// Pick the next runnable run, oldest-first within each priority band: reclaim an
 /// expired lease (recovery), then wake an awaiting run with pending input, then a
-/// fresh pending run. This is the claim policy the Postgres store must match.
+/// fresh pending run. This is the claim policy the SQL stores must match.
 fn select_where(
     state: &State,
     now_ms: u64,
     mut compatible: impl FnMut(&Row) -> bool,
 ) -> Option<RunId> {
     let now_ms = crate::clock::normalize_millis(now_ms);
-    // Single-writer-per-thread (ADR-0022): a wake or fresh pick must not start a
-    // second concurrent run for a thread that already has one running. A recovery
-    // pick is exempt — it re-owns the SAME running row, it does not add a second.
-    let thread_running = |thread: &ThreadId| -> bool {
-        state
-            .rows
-            .values()
-            .any(|r| r.state == RowState::Leased && r.request.thread_id() == thread)
-    };
+    // Session admission repair is a distinct claim mode: the resulting Worker
+    // lease may call only the root activity authority until it is resolved.
+    // Both reservation phases use the same deadline classifier as exact claims.
+    for run in &state.order {
+        if let Some(row) = state.rows.get(run)
+            && classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+                == ExactClaimMode::ReservationRecovery
+            && !thread_has_claim_blocking_peer(state, run, false)
+        {
+            return Some(run.clone());
+        }
+    }
 
     // Cancellation is terminal control, not ordinary work. Once its owning lease
-    // is free, claim it before wakes/fresh runs so a superseding run cannot overtake
-    // the durable intent on the same thread.
+    // is free, claim it before wakes/fresh runs. Awaiting peers do not block this
+    // branch, which lets a legacy multi-Awaiting Thread be cancelled sequentially.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.cancellation_requested
             && matches!(row.state, RowState::Pending | RowState::Awaiting)
-            && !thread_running(row.request.thread_id())
+            && !thread_has_claim_blocking_peer(state, run, false)
         {
             return Some(run.clone());
         }
@@ -293,7 +339,9 @@ fn select_where(
             return Some(run.clone());
         }
     }
-    // Wake: an awaiting run with due input whose thread is not already running.
+    // Wake: an awaiting run with due input whose Thread has no other open Run.
+    // Excluding this exact row is what lets its reply wake it without opening a
+    // fresh peer execution.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Awaiting
@@ -301,19 +349,19 @@ fn select_where(
                 .pending
                 .iter()
                 .any(|p| &p.input.run_id == run && is_due(&p.input, now_ms))
-            && !thread_running(row.request.thread_id())
+            && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
         {
             return Some(run.clone());
         }
     }
     // Fresh work is ordered by priority (highest first), then enqueue order, and
-    // only for threads that are not already running.
+    // only for Threads that have neither a Running nor Awaiting peer.
     let mut best: Option<(&RunId, i64)> = None;
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.state == RowState::Pending
-            && !thread_running(row.request.thread_id())
+            && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
         {
@@ -328,6 +376,12 @@ fn select_where(
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     let now_ms = crate::clock::normalize_millis(now_ms);
     let row = state.rows.get(run_id)?;
+    if classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+        == ExactClaimMode::ReservationRecovery
+        && !thread_has_claim_blocking_peer(state, run_id, false)
+    {
+        return Some(false);
+    }
     if row.state == RowState::Leased
         && row
             .lease
@@ -336,10 +390,7 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     {
         return Some(true);
     }
-    let thread_busy = state.rows.values().any(|candidate| {
-        candidate.state == RowState::Leased
-            && candidate.request.thread_id() == row.request.thread_id()
-    });
+    let thread_busy = thread_has_claim_blocking_peer(state, run_id, !row.cancellation_requested);
     if thread_busy {
         return None;
     }
@@ -364,6 +415,12 @@ fn claim_exact(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    let mode = state
+        .rows
+        .get(requested_run)
+        .map_or(ExactClaimMode::Runnable, |row| {
+            classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+        });
     claim_exact_with_mode(
         state,
         requested_run,
@@ -372,7 +429,7 @@ fn claim_exact(
         now_ms,
         worker,
         capabilities,
-        ExactClaimMode::Runnable,
+        mode,
     )
 }
 
@@ -387,12 +444,35 @@ fn claim_exact_with_mode(
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     mode: ExactClaimMode,
 ) -> Result<Option<Claimed>, DispatchError> {
-    let was_recovery = match mode {
+    let (was_execution_recovery, previous_lease) = match mode {
         ExactClaimMode::Runnable => {
             let Some(was_recovery) = runnable(state, requested_run, now_ms) else {
                 return Ok(None);
             };
-            was_recovery
+            let previous = was_recovery.then(|| {
+                state
+                    .rows
+                    .get(requested_run)
+                    .and_then(|row| row.lease.clone())
+                    .expect("a recovery has an expired lease")
+            });
+            (was_recovery, previous)
+        }
+        ExactClaimMode::ReservationRecovery => {
+            let Some(row) = state.rows.get(requested_run) else {
+                return Ok(None);
+            };
+            let expired_recovery = row.state == RowState::ReservationLeased;
+            if classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+                != ExactClaimMode::ReservationRecovery
+                || thread_has_claim_blocking_peer(state, requested_run, false)
+            {
+                return Ok(None);
+            }
+            (
+                false,
+                expired_recovery.then(|| row.lease.clone().expect("leased repair")),
+            )
         }
         ExactClaimMode::TerminalRecovery => {
             let Some(row) = state.rows.get(requested_run) else {
@@ -403,16 +483,15 @@ fn claim_exact_with_mode(
                     .lease
                     .as_ref()
                     .is_some_and(|lease| lease.expires_ms < now_ms);
-            let thread_busy = state.rows.values().any(|candidate| {
-                candidate.state == RowState::Leased
-                    && candidate.request.thread_id() == row.request.thread_id()
-            });
+            let thread_busy = thread_has_claim_blocking_peer(state, requested_run, false);
             let quiescent_awaiting =
                 row.state == RowState::Awaiting && row.lease.is_none() && !thread_busy;
             if !quiescent_awaiting && !expired_running {
                 return Ok(None);
             }
-            expired_running
+            let previous = expired_running
+                .then(|| row.lease.clone().expect("a recovery has an expired lease"));
+            (expired_running, previous)
         }
         ExactClaimMode::RetryExhausted { max_attempts } => {
             let Some(row) = state.rows.get(requested_run) else {
@@ -427,7 +506,10 @@ fn claim_exact_with_mode(
             ) {
                 return Ok(None);
             }
-            true
+            (
+                true,
+                Some(row.lease.clone().expect("retry-exhausted row has a lease")),
+            )
         }
     };
     let terminal_resolution = mode.bypasses_execution_admission();
@@ -440,9 +522,13 @@ fn claim_exact_with_mode(
     {
         return Ok(None);
     }
-    let previous =
-        was_recovery.then(|| row.lease.clone().expect("a recovery has an expired lease"));
-    let Some(claim_transition) = row.transition().claim().map_err(transition_error)? else {
+    let claim_transition = if mode == ExactClaimMode::ReservationRecovery {
+        row.transition().recover_reservation()
+    } else {
+        row.transition().claim()
+    }
+    .map_err(transition_error)?;
+    let Some(claim_transition) = claim_transition else {
         return Ok(None);
     };
     let claim_epoch = claim_transition.lease_epoch;
@@ -470,7 +556,7 @@ fn claim_exact_with_mode(
         row.assignment = assignment.clone();
         row.credential_bindings.clone_from(&credential_bindings);
         row.credential_receipts.clear();
-        if was_recovery {
+        if was_execution_recovery {
             row.attempt_count += 1;
         }
         (
@@ -492,11 +578,12 @@ fn claim_exact_with_mode(
         credential_bindings,
         cancellation_requested,
         pending,
-        recovered: was_recovery,
+        recovered: was_execution_recovery,
+        session_activity_admission_required: mode == ExactClaimMode::ReservationRecovery,
         sandbox,
         assignment,
     };
-    if let Some(previous) = previous {
+    if let Some(previous) = previous_lease {
         let previous = RunClaim::from(&previous);
         let claim = RunClaim::from(&lease);
         let reason = if matches!(mode, ExactClaimMode::RetryExhausted { .. }) {
@@ -533,30 +620,11 @@ fn claim_new_local(
 ) -> Result<Option<Claimed>, DispatchError> {
     let run_id = request.run_id().clone();
     let known = known_run_identity(state, &request)?;
-    if !can_claim_locally(&request.placement) {
-        return Ok(None);
-    }
     if !known {
-        state.rows.insert(
-            run_id.clone(),
-            Row {
-                request,
-                state: RowState::Pending,
-                cancellation_requested: false,
-                lease: None,
-                attempt_count: 0,
-                priority: 0,
-                epoch: 0,
-                lease_epoch: 0,
-                dedupe_key: None,
-                dead_lettered_at: None,
-                sandbox: None,
-                assignment: None,
-                credential_bindings: Vec::new(),
-                credential_receipts: Vec::new(),
-            },
-        );
-        state.order.push(run_id.clone());
+        if !can_claim_locally(&request.placement) {
+            return Ok(None);
+        }
+        enqueue_with_local(state, request, SubmitOptions::default())?;
     }
     claim_exact(state, &run_id, owner, lease_ms, now_ms, None, capabilities)
 }
@@ -577,6 +645,86 @@ fn known_run_identity(state: &State, request: &RunDispatch) -> Result<bool, Disp
         StoredRunIdentity::Absent
     };
     decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
+}
+
+/// The one in-memory enqueue kernel. Every command performs any additional
+/// admission check before entering this function, then shares exact Run replay,
+/// caller dedupe, supersession, and row construction here.
+fn enqueue_with_local(
+    state: &mut State,
+    request: RunDispatch,
+    options: SubmitOptions,
+) -> Result<(), DispatchError> {
+    let run_id = request.run_id().clone();
+    if known_run_identity(state, &request)? {
+        return Ok(());
+    }
+    if let Some(key) = &options.dedupe_key
+        && state
+            .rows
+            .values()
+            .any(|row| row.dedupe_key.as_deref() == Some(key) && row.state != RowState::DeadLetter)
+    {
+        return Ok(());
+    }
+
+    let thread = request.thread_id().clone();
+    let mut epoch = 0;
+    if options.supersede {
+        let max_epoch = state
+            .rows
+            .values()
+            .filter(|row| *row.request.thread_id() == thread)
+            .map(|row| row.epoch)
+            .max()
+            .unwrap_or(0);
+        epoch = crate::next_supersession_epoch(max_epoch)?;
+        for row in state.rows.values_mut() {
+            if *row.request.thread_id() == thread
+                && matches!(row.state, RowState::Pending | RowState::Awaiting)
+                && !row.cancellation_requested
+            {
+                row.state = RowState::Superseded;
+                row.lease = None;
+            }
+        }
+    }
+    state.rows.insert(
+        run_id.clone(),
+        Row {
+            request,
+            state: RowState::Pending,
+            cancellation_requested: false,
+            lease: None,
+            reservation_deadline_ms: None,
+            attempt_count: 0,
+            priority: options.priority,
+            epoch,
+            lease_epoch: 0,
+            dedupe_key: options.dedupe_key,
+            dead_lettered_at: None,
+            sandbox: None,
+            assignment: None,
+            credential_bindings: Vec::new(),
+            credential_receipts: Vec::new(),
+        },
+    );
+    state.order.push(run_id);
+    Ok(())
+}
+
+fn known_session_child_threads(state: &State, parent: &ThreadId) -> Vec<ThreadId> {
+    state
+        .rows
+        .values()
+        .filter_map(|row| session_child_thread(&row.request, parent).cloned())
+        .chain(state.completions.iter().filter_map(|completion| {
+            (completion.session_thread_id.as_ref() == Some(parent))
+                .then(|| completion.thread_id.clone())
+                .flatten()
+                .filter(|thread| thread != parent)
+        }))
+        .collect()
 }
 
 fn deliver_and_claim_local(
@@ -634,31 +782,184 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        let guard = self.authority.clone().lock_owned().await;
-        let state = lock(&self.state)?;
-        let guarded = state.rows.get(&claim.run_id).and_then(|row| {
-            (row.lease_epoch == claim.epoch
-                && row
-                    .lease
-                    .as_ref()
-                    .is_some_and(|lease| lease.owner == claim.owner))
-            .then(|| {
-                (
-                    row.request.clone(),
-                    row.lease
-                        .as_ref()
-                        .expect("matched claim has a lease")
-                        .expires_ms,
-                    row.cancellation_requested,
-                )
-            })
-        });
-        drop(state);
-        Ok(
-            guarded.map(|(request, expires_ms, cancellation_requested)| {
-                CommitEpochGuard::new(guard, request, expires_ms, cancellation_requested)
-            }),
-        )
+        self.lock_claim_epoch_in_state(claim, RowState::Leased)
+            .await
+    }
+
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        self.lock_claim_epoch_in_state(claim, RowState::ReservationLeased)
+            .await
+    }
+
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_deadline_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let reservation_deadline_ms =
+            validate_session_run_reservation_request(&request, reservation_deadline_ms)?;
+        let run_id = request.run_id().clone();
+        if let Some(row) = state.rows.get(&run_id) {
+            return Ok(classify_live_session_run_reservation(
+                &row.request,
+                row.state.public(),
+                &request,
+            ));
+        }
+        if let Some(completion) = state
+            .completions
+            .iter()
+            .find(|completion| completion.run_id == run_id)
+        {
+            return Ok(classify_completed_session_run_reservation(
+                completion.request_fingerprint.as_deref(),
+                &request,
+            ));
+        }
+        enqueue_with_local(&mut state, request, SubmitOptions::default())?;
+        let row = state
+            .rows
+            .get_mut(&run_id)
+            .expect("newly reserved dispatch exists");
+        row.state = RowState::Reserved;
+        row.reservation_deadline_ms = Some(reservation_deadline_ms);
+        Ok(SessionRunReservationOutcome::Reserved)
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let completed = state
+            .completions
+            .iter()
+            .any(|completion| &completion.run_id == run_id);
+        let live = state
+            .rows
+            .get(run_id)
+            .map(|row| (&row.request, row.state.public()));
+        if let Some(outcome) = classify_session_run_reservation_activation(
+            live,
+            completed,
+            session_thread_id,
+            session_activity_epoch,
+        )? {
+            return Ok(outcome);
+        }
+        let row = state
+            .rows
+            .get_mut(run_id)
+            .expect("classified live reservation");
+        let next = row
+            .transition()
+            .activate_reservation()
+            .expect("classifier admitted only Reserved");
+        row.request.session_activity_epoch = Some(session_activity_epoch);
+        row.apply_transition(next);
+        row.reservation_deadline_ms = None;
+        Ok(SessionRunReservationActivation::Activated)
+    }
+
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        if state
+            .rows
+            .get(run_id)
+            .is_none_or(|row| row.state != RowState::Reserved || row.lease.is_some())
+        {
+            return Ok(false);
+        }
+        state.rows.remove(run_id);
+        state.order.retain(|candidate| candidate != run_id);
+        state
+            .pending
+            .retain(|pending| &pending.input.run_id != run_id);
+        Ok(true)
+    }
+
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        claim: &RunClaim,
+        resolution: SessionRunReservationResolution,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let resolution = validate_session_run_reservation_resolution(resolution)?;
+        let _authority = self.authority.lock().await;
+        let mut state = lock(&self.state)?;
+        let Some(row) = state.rows.get(&claim.run_id) else {
+            return Ok(SettleOutcome::Fenced);
+        };
+        let owner_matches = row
+            .lease
+            .as_ref()
+            .is_some_and(|lease| lease.owner == claim.owner);
+        let transition_resolution = match resolution {
+            SessionRunReservationResolution::Admitted { .. } => Some(true),
+            SessionRunReservationResolution::Retry { .. } => Some(false),
+            SessionRunReservationResolution::Rejected => None,
+        };
+        let transition =
+            row.transition()
+                .resolve_reservation(claim.epoch, owner_matches, transition_resolution);
+        if transition == GuardedTransition::Fenced {
+            return Ok(SettleOutcome::Fenced);
+        }
+        match transition {
+            GuardedTransition::Removed => {
+                state.rows.remove(&claim.run_id);
+                state.order.retain(|candidate| candidate != &claim.run_id);
+                state
+                    .pending
+                    .retain(|pending| pending.input.run_id != claim.run_id);
+            }
+            GuardedTransition::Applied(next) => {
+                let reorder = matches!(resolution, SessionRunReservationResolution::Retry { .. });
+                {
+                    let row = state
+                        .rows
+                        .get_mut(&claim.run_id)
+                        .expect("resolved reservation exists");
+                    match resolution {
+                        SessionRunReservationResolution::Admitted {
+                            session_activity_epoch,
+                        } => {
+                            row.request.session_activity_epoch = Some(session_activity_epoch);
+                            row.reservation_deadline_ms = None;
+                            row.lease = None;
+                            row.assignment = None;
+                            row.credential_bindings.clear();
+                            row.credential_receipts.clear();
+                        }
+                        SessionRunReservationResolution::Retry {
+                            reservation_deadline_ms,
+                        } => {
+                            row.lease = None;
+                            row.assignment = None;
+                            row.credential_bindings.clear();
+                            row.credential_receipts.clear();
+                            row.reservation_deadline_ms = Some(reservation_deadline_ms);
+                        }
+                        SessionRunReservationResolution::Rejected => unreachable!(),
+                    }
+                    row.apply_transition(next);
+                }
+                if reorder {
+                    state.order.retain(|candidate| candidate != &claim.run_id);
+                    state.order.push(claim.run_id.clone());
+                }
+            }
+            GuardedTransition::Fenced => unreachable!(),
+        }
+        Ok(SettleOutcome::Applied)
     }
 
     async fn enqueue_with(
@@ -667,64 +968,28 @@ impl DispatchQueue for MemoryDispatchStore {
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         let mut state = lock(&self.state)?;
-        let run_id = request.run_id().clone();
-        // Exact canonical replays are no-ops; same-id payload collisions fail
-        // before supersession can mutate sibling rows.
+        enqueue_with_local(&mut state, request, options)
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError> {
+        let mut state = lock(&self.state)?;
+        // Identity has precedence over mutable capacity: exact at-least-once
+        // retries succeed at the cap, while same-id payload collisions fail
+        // before any sibling is inspected or changed.
         if known_run_identity(&state, &request)? {
             return Ok(());
         }
-        if let Some(key) = &options.dedupe_key
-            && state
-                .rows
-                .values()
-                .any(|r| r.dedupe_key.as_deref() == Some(key) && r.state != RowState::DeadLetter)
-        {
-            return Ok(());
-        }
-        // Supersession: take the highest epoch on the thread and mark its prior
-        // pending/awaiting work superseded — the newest submission wins (ADR-0022).
-        let thread = request.thread_id().clone();
-        let mut epoch = 0;
-        if options.supersede {
-            let max_epoch = state
-                .rows
-                .values()
-                .filter(|r| *r.request.thread_id() == thread)
-                .map(|r| r.epoch)
-                .max()
-                .unwrap_or(0);
-            epoch = crate::next_supersession_epoch(max_epoch)?;
-            for row in state.rows.values_mut() {
-                if *row.request.thread_id() == thread
-                    && matches!(row.state, RowState::Pending | RowState::Awaiting)
-                    && !row.cancellation_requested
-                {
-                    row.state = RowState::Superseded;
-                    row.lease = None;
-                }
-            }
-        }
-        state.rows.insert(
-            run_id.clone(),
-            Row {
-                request,
-                state: RowState::Pending,
-                cancellation_requested: false,
-                lease: None,
-                attempt_count: 0,
-                priority: options.priority,
-                epoch,
-                lease_epoch: 0,
-                dedupe_key: options.dedupe_key,
-                dead_lettered_at: None,
-                sandbox: None,
-                assignment: None,
-                credential_bindings: Vec::new(),
-                credential_receipts: Vec::new(),
-            },
-        );
-        state.order.push(run_id);
-        Ok(())
+        let parent = session_child_parent(&request)?.clone();
+        ensure_session_child_capacity(
+            &request,
+            &admission,
+            known_session_child_threads(&state, &parent),
+        )?;
+        enqueue_with_local(&mut state, request, SubmitOptions::default())
     }
 
     async fn claim_new_run(
@@ -751,30 +1016,11 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let run_id = request.run_id().clone();
         let known = known_run_identity(&state, &request)?;
-        if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
-            return Ok(None);
-        }
         if !known {
-            state.rows.insert(
-                run_id.clone(),
-                Row {
-                    request,
-                    state: RowState::Pending,
-                    cancellation_requested: false,
-                    lease: None,
-                    attempt_count: 0,
-                    priority: 0,
-                    epoch: 0,
-                    lease_epoch: 0,
-                    dedupe_key: None,
-                    dead_lettered_at: None,
-                    sandbox: None,
-                    assignment: None,
-                    credential_bindings: Vec::new(),
-                    credential_receipts: Vec::new(),
-                },
-            );
-            state.order.push(run_id.clone());
+            if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
+                return Ok(None);
+            }
+            enqueue_with_local(&mut state, request, SubmitOptions::default())?;
         }
         claim_exact(
             &mut state,
@@ -811,19 +1057,6 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let run_id = input.run_id.clone();
         append_pending(&mut state, input)?;
-        if state.rows.get(&run_id).is_none_or(|row| {
-            !row.cancellation_requested
-                && can_assign(
-                    worker,
-                    &row.request.placement,
-                    row.assignment.as_ref(),
-                    row.sandbox.is_some(),
-                    now_ms,
-                )
-                .is_err()
-        }) {
-            return Ok(None);
-        }
         claim_exact(
             &mut state,
             &run_id,
@@ -1032,19 +1265,6 @@ impl DispatchQueue for MemoryDispatchStore {
     ) -> Result<Option<Claimed>, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        if state.rows.get(requested_run).is_none_or(|row| {
-            !row.cancellation_requested
-                && can_assign(
-                    worker,
-                    &row.request.placement,
-                    row.assignment.as_ref(),
-                    row.sandbox.is_some(),
-                    now_ms,
-                )
-                .is_err()
-        }) {
-            return Ok(None);
-        }
         claim_exact(
             &mut state,
             requested_run,
@@ -1102,6 +1322,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         if let Some(row) = state.rows.get_mut(&claim.run_id)
+            && row.state == RowState::Leased
             && row.lease_epoch == claim.epoch
             && row
                 .lease
@@ -1134,7 +1355,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
             Some(row)
-                if row.state == RowState::Leased
+                if matches!(row.state, RowState::ReservationLeased | RowState::Leased)
                     && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
             {
                 if let Some(lease) = row.lease.as_mut() {
@@ -1158,7 +1379,7 @@ impl DispatchQueue for MemoryDispatchStore {
         // out and is skipped until it approaches expiry (ADR-0024).
         let near_expiry = crate::clock::deadline_millis(now_ms, lease_ms / 2);
         for row in state.rows.values_mut() {
-            if row.state == RowState::Leased
+            if matches!(row.state, RowState::ReservationLeased | RowState::Leased)
                 && row
                     .lease
                     .as_ref()
@@ -1240,14 +1461,19 @@ impl DispatchQueue for MemoryDispatchStore {
             DispatchOutcome::Done => {
                 debug_assert_eq!(transition, GuardedTransition::Removed);
                 let sequence = state.completions.len() as u64 + 1;
-                let request_fingerprint = state
-                    .rows
-                    .get(run_id)
-                    .map(|row| row.request.canonical_fingerprint());
+                let request = state.rows.get(run_id).map(|row| {
+                    (
+                        row.request.thread_id().clone(),
+                        row.request.session_thread_id.clone(),
+                        row.request.canonical_fingerprint(),
+                    )
+                });
                 state.completions.push(DispatchCompletion {
                     sequence,
                     run_id: run_id.clone(),
-                    request_fingerprint,
+                    thread_id: request.as_ref().map(|(thread, _, _)| thread.clone()),
+                    session_thread_id: request.as_ref().and_then(|(_, parent, _)| parent.clone()),
+                    request_fingerprint: request.map(|(_, _, fingerprint)| fingerprint),
                 });
                 state.rows.remove(run_id);
                 state.order.retain(|r| r != run_id);
@@ -1369,6 +1595,11 @@ impl DispatchQueue for MemoryDispatchStore {
                 state.rows.get(run).map(|row| DispatchSummary {
                     run_id: run.clone(),
                     thread_id: row.request.thread_id().clone(),
+                    session_thread_id: row.request.session_thread_id.clone(),
+                    session_activity_epoch: row.request.session_activity_epoch,
+                    reservation_deadline_ms: (row.state == RowState::Reserved)
+                        .then_some(row.reservation_deadline_ms)
+                        .flatten(),
                     state: row.state.public(),
                     cancellation_requested: row.cancellation_requested,
                     attempt_count: row.attempt_count,
@@ -1397,6 +1628,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(row) = state.rows.get(run_id) else {
             return Ok(None);
         };
+        let was_reservation_claim = row.state == RowState::ReservationLeased;
         let transition = row.transition().cancel().map_err(transition_error)?;
         let CancelTransition::Applied {
             state: next,
@@ -1417,6 +1649,9 @@ impl DispatchQueue for MemoryDispatchStore {
                 None
             };
             row.apply_transition(next);
+            if was_reservation_claim && row.state == RowState::Reserved {
+                row.reservation_deadline_ms = Some(0);
+            }
             (thread, lost)
         };
         if let Some(lease) = lost {
@@ -1564,6 +1799,65 @@ impl Outbox for MemoryDispatchStore {
         Ok(true)
     }
 
+    async fn stage_session_resume(
+        &self,
+        input: PendingInput,
+        session_thread_id: &ThreadId,
+        prior_session_activity_epoch: Option<u64>,
+        session_activity_epoch: u64,
+    ) -> Result<bool, DispatchError> {
+        let mut state = lock(&self.state)?;
+        let input = normalize_pending_millis(input);
+        let row = state.rows.get(&input.run_id).ok_or_else(|| {
+            DispatchError::Rejected(format!(
+                "Session resume Run `{}` was not found",
+                input.run_id.0
+            ))
+        })?;
+        validate_session_resume_target(
+            &row.request,
+            &input,
+            session_thread_id,
+            prior_session_activity_epoch,
+            session_activity_epoch,
+        )?;
+        let current_epoch = row.request.session_activity_epoch;
+        let accepts_new_resume = !row.cancellation_requested
+            && matches!(
+                (row.state, row.lease.is_some()),
+                (RowState::Pending | RowState::Awaiting, false) | (RowState::Leased, true)
+            );
+        let exact = validate_session_resume_evidence(
+            &input,
+            state
+                .outbox
+                .iter()
+                .chain(state.pending.iter().map(|pending| &pending.input)),
+        )?;
+        if !validate_session_resume_activity_transition(
+            current_epoch,
+            prior_session_activity_epoch,
+            session_activity_epoch,
+            exact,
+        )? {
+            return Ok(false);
+        }
+        if !accepts_new_resume {
+            return Err(DispatchError::Rejected(
+                "Session resume requires a Pending, Awaiting, or currently Leased dispatch"
+                    .to_string(),
+            ));
+        }
+        state
+            .rows
+            .get_mut(&input.run_id)
+            .expect("validated dispatch row remains under the transaction mutex")
+            .request
+            .session_activity_epoch = Some(session_activity_epoch);
+        state.outbox.push(input);
+        Ok(true)
+    }
+
     async fn relay(&self) -> Result<usize, DispatchError> {
         let mut state = lock(&self.state)?;
         // Validate the whole in-memory transaction before moving anything: an
@@ -1595,5 +1889,72 @@ impl Outbox for MemoryDispatchStore {
             }
         }
         Ok(relayed)
+    }
+
+    async fn relay_and_enqueue(
+        &self,
+        input: PendingInput,
+        request: RunDispatch,
+        admission: ContinuationAdmission,
+    ) -> Result<(), DispatchError> {
+        let mut state = lock(&self.state)?;
+        let message_id = input.message_id.clone();
+        // Canonical Run identity is checked first so a conflicting retry cannot
+        // consume or alter the independently durable report.
+        let replay = known_run_identity(&state, &request)?;
+        let position = state
+            .outbox
+            .iter()
+            .position(|candidate| candidate.message_id == message_id);
+        let existing = position
+            .map(|position| state.outbox[position].clone())
+            .or_else(|| {
+                state
+                    .pending
+                    .iter()
+                    .find(|pending| pending.input.message_id == message_id)
+                    .map(|pending| pending.input.clone())
+            });
+        if existing.as_ref().is_some_and(|existing| existing != &input) {
+            return Err(DispatchError::Rejected(format!(
+                "idempotency key `{message_id}` was reused with another continuation payload"
+            )));
+        }
+        validate_outbox_continuation(&input, &request, &admission)?;
+        if replay {
+            if let Some(position) = position {
+                state.outbox.remove(position);
+            }
+            return Ok(());
+        }
+
+        // The in-memory mutex is the transaction boundary. Validate pending
+        // idempotency before enqueue so every remaining step is infallible and
+        // an error cannot expose a half-applied state.
+        if let Some(existing) = state
+            .pending
+            .iter()
+            .find(|pending| pending.input.message_id == input.message_id)
+            && existing.input != input
+        {
+            return Err(DispatchError::Rejected(format!(
+                "idempotency key `{}` was reused with another pending-input payload",
+                input.message_id
+            )));
+        }
+        if let ContinuationAdmission::SessionChild(policy) = &admission {
+            let parent = session_child_parent(&request)?.clone();
+            ensure_session_child_capacity(
+                &request,
+                policy,
+                known_session_child_threads(&state, &parent),
+            )?;
+        }
+        enqueue_with_local(&mut state, request, SubmitOptions::default())?;
+        append_pending(&mut state, input)?;
+        if let Some(position) = position {
+            state.outbox.remove(position);
+        }
+        Ok(())
     }
 }

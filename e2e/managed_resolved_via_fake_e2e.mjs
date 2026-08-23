@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -28,12 +28,24 @@ async function main() {
         betas: BETAS,
       });
       assert.ok(session.id.startsWith('sesn_'));
-      await client.beta.sessions.events.send(session.id, {
+      // C1=exact resolved-route receipt; C2=wire reply+terminal. E1=C2 after C1.
+      // K: resolver configuration remains the execution authority. Decision
+      // R1 C1&&!C2=>retry; R2 C1+C2=>assert the resolved upstream proof.
+      const receipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'resolve me' }] }],
         betas: BETAS,
       });
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      const receiptId = receipt.data[0]?.id;
+      assert.equal(typeof receiptId, 'string', 'R1 exact resolver-backed User Event receipt');
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'R1 resolver-backed Run to commit its wire reply',
+      );
       const msg = events.find((e) => e.type === 'agent.message');
       assert.ok(msg, `expected an agent.message in ${events.map((e) => e.type)}`);
       const text = (msg.content ?? []).map((c) => c.text ?? '').join('');

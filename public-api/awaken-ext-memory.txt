@@ -41,6 +41,7 @@ impl awaken_ext_memory::extraction::MemoryExtractionController
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::drive_recoverable(&self, &dyn awaken_ext_memory::extraction::MemoryExtractionDriver)
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::enqueue(&self, awaken_ext_memory::extraction::MemoryExtractionIntent) -> core::result::Result<awaken_ext_memory::extraction::PutMemoryExtractionOutcome, awaken_ext_memory::extraction::MemoryExtractionError>
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::enqueue_terminal(&self, awaken_ext_memory::extraction::MemoryTerminalExtractionRequest) -> core::result::Result<awaken_ext_memory::extraction::PutMemoryExtractionOutcome, awaken_ext_memory::extraction::MemoryExtractionError>
+pub async fn awaken_ext_memory::extraction::MemoryExtractionController::has_recoverable(&self, &dyn awaken_ext_memory::extraction::MemoryExtractionDriver) -> core::result::Result<bool, awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionController::new(alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_memory::extraction::MemoryExtractionController::with_policy(self, awaken_ext_memory::extraction::MemoryExtractionPolicy) -> Self
 pub struct awaken_ext_memory::extraction::MemoryExtractionIntent
@@ -74,6 +75,7 @@ pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::auxiliary_run_id(&
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::auxiliary_thread_id(&self) -> alloc::string::String
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::claim(&mut self, &str, u64, u64) -> core::result::Result<u64, awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::complete(&mut self, &str, u64, u64) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
+pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::logical_thread_id(&self) -> &str
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::mark_extracted(&mut self, &str, u64, u64, alloc::vec::Vec<awaken_ext_memory::extraction::MemoryExtractionMutation>) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::mark_stored(&mut self, &str, u64, u64, awaken_ext_memory::extraction::MemoryExtractionReceipt) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::new_range(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, usize, usize, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_ext_memory::extraction::MemoryExtractorSnapshot) -> core::result::Result<Self, awaken_ext_memory::extraction::MemoryExtractionError>
@@ -208,15 +210,19 @@ pub fn awaken_ext_memory::select::parse_indices(&str, usize, usize) -> alloc::ve
 pub fn awaken_ext_memory::select::query_from(&[awaken_agent_contract::agent::message::Message]) -> alloc::string::String
 pub fn awaken_ext_memory::select::select_input(&str, &[(usize, alloc::string::String)], usize) -> alloc::string::String
 pub mod awaken_ext_memory::tool
+pub struct awaken_ext_memory::tool::WriteMemoryArgs
+pub awaken_ext_memory::tool::WriteMemoryArgs::content: alloc::string::String
+pub awaken_ext_memory::tool::WriteMemoryArgs::name: alloc::string::String
 pub struct awaken_ext_memory::tool::WriteMemoryTool
 impl awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
 impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
-pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Value
+pub type awaken_ext_memory::tool::WriteMemoryTool::Args = awaken_ext_memory::tool::WriteMemoryArgs
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
-pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_ext_memory::tool::WriteMemoryTool::id(&self) -> &str
+pub const awaken_ext_memory::tool::WriteMemoryTool::DESCRIPTION: &'static str
+pub const awaken_ext_memory::tool::WriteMemoryTool::ID: &'static str
+pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_ext_memory::tool::accepts_memory_content(&str) -> bool
 pub fn awaken_ext_memory::tool::write_memory_descriptor() -> awaken_runtime_contract::resolved::ToolDescriptor
 pub enum awaken_ext_memory::MemoryExtractionError
@@ -278,6 +284,7 @@ impl awaken_ext_memory::extraction::MemoryExtractionController
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::drive_recoverable(&self, &dyn awaken_ext_memory::extraction::MemoryExtractionDriver)
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::enqueue(&self, awaken_ext_memory::extraction::MemoryExtractionIntent) -> core::result::Result<awaken_ext_memory::extraction::PutMemoryExtractionOutcome, awaken_ext_memory::extraction::MemoryExtractionError>
 pub async fn awaken_ext_memory::extraction::MemoryExtractionController::enqueue_terminal(&self, awaken_ext_memory::extraction::MemoryTerminalExtractionRequest) -> core::result::Result<awaken_ext_memory::extraction::PutMemoryExtractionOutcome, awaken_ext_memory::extraction::MemoryExtractionError>
+pub async fn awaken_ext_memory::extraction::MemoryExtractionController::has_recoverable(&self, &dyn awaken_ext_memory::extraction::MemoryExtractionDriver) -> core::result::Result<bool, awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionController::new(alloc::sync::Arc<dyn awaken_ext_memory::extraction::MemoryExtractionRepository>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_ext_memory::extraction::MemoryExtractionController::with_policy(self, awaken_ext_memory::extraction::MemoryExtractionPolicy) -> Self
 pub struct awaken_ext_memory::MemoryExtractionIntent
@@ -311,6 +318,7 @@ pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::auxiliary_run_id(&
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::auxiliary_thread_id(&self) -> alloc::string::String
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::claim(&mut self, &str, u64, u64) -> core::result::Result<u64, awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::complete(&mut self, &str, u64, u64) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
+pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::logical_thread_id(&self) -> &str
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::mark_extracted(&mut self, &str, u64, u64, alloc::vec::Vec<awaken_ext_memory::extraction::MemoryExtractionMutation>) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::mark_stored(&mut self, &str, u64, u64, awaken_ext_memory::extraction::MemoryExtractionReceipt) -> core::result::Result<(), awaken_ext_memory::extraction::MemoryExtractionError>
 pub fn awaken_ext_memory::extraction::MemoryExtractionIntent::new_range(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, u64, usize, usize, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_ext_memory::extraction::MemoryExtractorSnapshot) -> core::result::Result<Self, awaken_ext_memory::extraction::MemoryExtractionError>
@@ -388,10 +396,11 @@ impl awaken_ext_memory::tool::WriteMemoryTool
 pub fn awaken_ext_memory::tool::WriteMemoryTool::from_handle(alloc::sync::Arc<dyn awaken_ext_memory::localfs::MemoryStoreHandle>) -> Self
 pub fn awaken_ext_memory::tool::WriteMemoryTool::new(awaken_ext_memory::localfs::MemoryDir) -> Self
 impl awaken_runtime_contract::tool::Tool for awaken_ext_memory::tool::WriteMemoryTool
-pub type awaken_ext_memory::tool::WriteMemoryTool::Args = serde_json::value::Value
+pub type awaken_ext_memory::tool::WriteMemoryTool::Args = awaken_ext_memory::tool::WriteMemoryArgs
 pub type awaken_ext_memory::tool::WriteMemoryTool::Output = alloc::string::String
-pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, serde_json::value::Value) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_ext_memory::tool::WriteMemoryTool::id(&self) -> &str
+pub const awaken_ext_memory::tool::WriteMemoryTool::DESCRIPTION: &'static str
+pub const awaken_ext_memory::tool::WriteMemoryTool::ID: &'static str
+pub fn awaken_ext_memory::tool::WriteMemoryTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_memory::tool::WriteMemoryArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub const awaken_ext_memory::DEFAULT_MEMORY_INSTRUCTIONS: &str
 pub const awaken_ext_memory::DEFAULT_SELECTOR_INSTRUCTIONS: &str
 pub const awaken_ext_memory::EXTRACT_PROMPT: &str

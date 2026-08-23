@@ -153,17 +153,29 @@ export function assertToolSpan(spans, toolName) {
 }
 
 /// (3e) The detached background aux run (memory extraction) is linked into the
-/// spawning turn's trace via an `aux.background` span, instead of a disconnected
-/// root. Asserts the aux span nests under the turn and drove a sub-run.
+/// spawning turn's trace via the one durable `wake.dispatch` relay and an
+/// `aux.background` span, instead of a disconnected root. Asserts the relay
+/// returns to the admitted Session Event and the aux span drove a sub-run.
 export function assertBackgroundLinked(spans) {
   const { byId } = index(spans);
   const aux = spans.find((s) => s.name === 'aux.background');
   assert.ok(aux, 'no aux.background span; the background run was not linked to the trace');
   const chain = ancestors(aux, byId);
-  assert.ok(
-    chain.some((s) => s.name === 'host.run_turn' || s.name === 'sessions.events.send'),
-    `aux.background not under the turn; chain: ${chain.map((s) => s.name).join(' -> ')}`,
+  const wakeIndexes = chain
+    .map((span, index) => ({ span, index }))
+    .filter(({ span }) => span.name === 'wake.dispatch');
+  assert.equal(
+    wakeIndexes.length,
+    1,
+    `aux.background must have exactly one durable relay; chain: ${chain.map((s) => s.name).join(' -> ')}`,
   );
+  const sendIndex = chain.findIndex((span) => span.name === 'sessions.events.send');
+  assert.ok(
+    sendIndex > wakeIndexes[0].index,
+    `wake.dispatch not linked back to sessions.events.send; chain: ${chain.map((s) => s.name).join(' -> ')}`,
+  );
+  assert.equal(aux.trace_id, wakeIndexes[0].span.trace_id, 'aux.background split from wake.dispatch');
+  assert.equal(aux.trace_id, chain[sendIndex].trace_id, 'aux.background split from sessions.events.send');
   const subRun = spans.find(
     (s) => s.name === 'runtime.run' && ancestors(s, byId).some((a) => a.span_id === aux.span_id),
   );

@@ -18,4 +18,4 @@ pub use ingress::{DirectRunIngress, RunIngress, RunService};
 pub use permission::PermissionGate;
 pub use retry::LlmRetryPolicy;
 pub use run::{RunInput, fresh_process_id};
-pub use runtime::Runtime;
+pub use runtime::{AttemptControlRegistration, Runtime};

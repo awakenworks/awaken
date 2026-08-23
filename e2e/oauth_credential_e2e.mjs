@@ -8,7 +8,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -32,13 +32,25 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await client.beta.sessions.events.send(session.id, {
+      // C1=exact OAuth-backed User receipt; C2=authenticated reply+terminal.
+      // E1=C2 after C1 proves minted material reached the provider. K: ambient
+      // key is deliberately wrong. Decision O1 C1&&!C2=>retry; O2 C1+C2=>proof.
+      const receipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'mint me' }] }],
         betas: BETAS,
       });
 
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      const receiptId = receipt.data[0]?.id;
+      assert.equal(typeof receiptId, 'string', 'O1 exact OAuth-backed User Event receipt');
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'O1 OAuth-backed Run to commit its authenticated reply',
+      );
       const msg = events.find((e) => e.type === 'agent.message');
       assert.ok(msg, `expected an agent.message in ${events.map((e) => e.type)}`);
       const text = (msg.content ?? []).map((c) => c.text ?? '').join('');

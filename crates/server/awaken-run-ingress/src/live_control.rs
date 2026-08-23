@@ -15,7 +15,7 @@ use std::sync::Arc;
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 
-use crate::clock::{Clock, SystemClock};
+use crate::clock::SystemClock;
 use crate::dispatch::Dispatch;
 use crate::worker::DispatchWorker;
 
@@ -82,11 +82,10 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
             // the intent remains durable on that owner's lease.
             let driven = self
                 .worker
-                // Lease timestamps are absolute epoch milliseconds. Using the
-                // deterministic-test origin `0` here made this cancellation claim
-                // instantly expired to the process pool, which could reclaim it at
-                // a newer epoch and fence the terminal cancellation commit.
-                .tick_run(&run_id, SystemClock.now_ms())
+                // The control edge owns the clock for this exact drive. Claim,
+                // renewal, ownership verification, and settlement all retain this
+                // source instead of pairing a timestamp with a private Worker clock.
+                .tick_run(&run_id, Arc::new(SystemClock))
                 .await
                 .map_err(|error| Error::Dispatch(error.to_string()))?;
             return match driven {
@@ -118,9 +117,14 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// Cooperatively pause the active run identified by `correlation_id` at its
     /// next safe boundary. Pause is live-only: once accepted, the executor commits
     /// a durable `ManualPause` ticket that may be resumed after process replacement.
-    pub fn pause(&self, correlation_id: &str) -> Result<(), Error> {
+    pub async fn pause(&self, correlation_id: &str) -> Result<(), Error> {
         let run_id = RunId(correlation_id.to_owned());
-        match self.worker.runtime().deliver(LiveCommand::Pause { run_id }) {
+        match self
+            .worker
+            .runtime()
+            .deliver_to_current_attempt(LiveCommand::Pause { run_id })
+            .await
+        {
             Ok(()) => Ok(()),
             Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
             Err(error) => Err(Error::Dispatch(error.to_string())),
@@ -134,12 +138,17 @@ impl<S: Dispatch + 'static> LiveRunControlService<S> {
     /// [`Error::NoSubscriber`] when no live subscriber accepts the command,
     /// rather than silently succeeding (G5: durable-only absent on direct
     /// ingress means fail-closed, not silent-drop).
-    pub fn wake(&self, correlation_id: &str) -> Result<(), Error> {
+    pub async fn wake(&self, correlation_id: &str) -> Result<(), Error> {
         let run_id = RunId(correlation_id.to_owned());
-        match self.worker.runtime().deliver(LiveCommand::Wake {
-            run_id,
-            reason: "live-wake".to_owned(),
-        }) {
+        match self
+            .worker
+            .runtime()
+            .deliver_to_current_attempt(LiveCommand::Wake {
+                run_id,
+                reason: "live-wake".to_owned(),
+            })
+            .await
+        {
             Ok(()) => Ok(()),
             Err(ControlError::NotActive) => Err(Error::NoSubscriber(correlation_id.to_owned())),
             Err(e) => Err(Error::Dispatch(e.to_string())),
@@ -164,6 +173,7 @@ mod tests {
     use awaken_store_inmem::MemoryCommitCoordinator;
     use tokio::sync::Notify;
 
+    use crate::clock::Clock;
     use crate::worker::DispatchWorker;
     use crate::{DispatchQueue, MemoryDispatchStore, RunDispatch};
 
@@ -315,20 +325,30 @@ mod tests {
         cancelling.await.unwrap().expect("cancellation settles");
     }
 
-    #[test]
-    fn wake_is_fail_closed_when_no_live_subscriber() {
+    #[tokio::test]
+    async fn wake_is_fail_closed_when_no_live_subscriber() {
+        // Causes: C1 no attempt registration exists for the requested Run.
+        // Effects: E1 the live-only service returns NoSubscriber. Constraint/
+        // Invariant: a wake may not create a queue, store row, or side effect.
+        // Decision rule W1: C1 -> E1 with zero durable fallback.
         let svc = make_service();
-        let err = svc.wake("nonexistent-id").unwrap_err();
+        let err = svc.wake("nonexistent-id").await.unwrap_err();
         assert!(
             matches!(err, Error::NoSubscriber(_)),
             "wake must be fail-closed when no live subscriber: got {err}"
         );
     }
 
-    #[test]
-    fn pause_reaches_the_single_runtime_attempt_registry_and_fails_closed_after_deregister() {
+    #[tokio::test]
+    async fn pause_reaches_the_single_runtime_attempt_registry_and_fails_closed_after_deregister() {
         use awaken_runtime_contract::pause::PauseSignal;
 
+        // Cause/effect graph: C1 the exact Run/Thread attempt is registered; C2
+        // it carries a pause signal; C3 its exact generation is deregistered.
+        // Effects: E1 C1+C2 requests that signal once; E2 C3 makes replay fail
+        // closed as NoSubscriber. Constraint: the service and executor must use
+        // the same Runtime registry, never an ingress-private pause map.
+        // Decision rules: P1=C1+C2=>E1; P2=C3=>E2.
         let runtime = Arc::new(Runtime::new());
         let store = Arc::new(MemoryDispatchStore::new());
         let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -340,19 +360,23 @@ mod tests {
         ));
         let service = LiveRunControlService::new(worker);
         let run_id = RunId("external-attempt".into());
+        let thread_id = awaken_agent_contract::agent::thread::Id("external-thread".into());
         let pause = PauseSignal::new();
         let context = RuntimeRunContext::new().with_pause(pause.clone());
-        runtime.register_attempt_controls(&run_id, &context);
+        let registration = runtime.register_attempt_controls(&run_id, &thread_id, &context);
 
-        service.pause(&run_id.0).expect("active pause is accepted");
+        service
+            .pause(&run_id.0)
+            .await
+            .expect("active pause is accepted");
         assert!(
             pause.requested(),
             "the executor context observes the request"
         );
 
-        runtime.deregister_attempt_controls(&run_id);
+        runtime.deregister_attempt_controls(&registration);
         assert!(matches!(
-            service.pause(&run_id.0),
+            service.pause(&run_id.0).await,
             Err(Error::NoSubscriber(_))
         ));
     }

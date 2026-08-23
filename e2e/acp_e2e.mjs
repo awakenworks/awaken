@@ -1,5 +1,5 @@
 // ACP-runtime Managed Agents e2e (R3/R4/R7): an immutable Agent publication
-// selects `acp:claude` and runs on an external ACP CLI (a fake `claude --acp`
+// selects `acp:claude` and runs on an external ACP CLI (a fake pinned adapter
 // stand-in launched as a subprocess), while a native session on the same server
 // runs the built-in echo model. A second turn re-launches the ACP CLI (R7).
 //
@@ -7,35 +7,62 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import {
+  withScenarioServer,
+  pass,
+  waitForValue,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const XLSX_SKILL = [{ type: 'anthropic', skill_id: 'xlsx', version: '1' }];
 
-async function agentTexts(client, sessionId) {
+async function listEvents(client, sessionId) {
   const events = [];
   for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
     events.push(ev);
   }
+  return events;
+}
+
+function agentTexts(events) {
   return events
     .filter((e) => e.type === 'agent.message')
     .map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
 }
 
 async function waitForAgentText(client, sessionId, predicate) {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    const texts = await agentTexts(client, sessionId);
-    if (texts.some(predicate)) return texts;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  return agentTexts(client, sessionId);
+  // Create-time initial_events expose no standalone receipt, so the canonical
+  // bounded observer waits on the Session-owned history itself. C1=create
+  // accepted initial input; C2=matching Agent text. E1=C2; K=no runtime drive.
+  // Decision I1 C1&&!C2=>retry; I2 C1+C2=>return the last history.
+  const events = await waitForValue(
+    () => listEvents(client, sessionId),
+    (listed) => agentTexts(listed).some(predicate),
+    'ACP create-time initial Event to commit its matching Agent text',
+  );
+  return agentTexts(events);
 }
 
 async function send(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact mid-Session User receipt; C2=ACP/native reply+terminal. E1=C2
+  // after C1. K: each fresh ACP process is proved by its own receipt. Decision
+  // A1 C1&&!C2=>retry; A2 C1+C2=>return committed history.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'A1 exact ACP/native User Event receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `A1 ACP/native Run for ${JSON.stringify(text)} to commit`,
+  );
 }
 
 async function main() {
@@ -54,7 +81,7 @@ async function main() {
       // | Rule | Backend | Skill source | Trigger | Expected reply/pin |
       // | A1 | acp:claude | Anthropic xlsx@1 | initial_events | ACP fixture + exact selection |
       // | A2 | native | Anthropic xlsx@1 | initial_events | built-in echo + exact selection |
-      // | A3 | acp:claude | system.message + later events.send | fresh ACP process |
+      // | A3 | acp:claude | later User + final System batch | fresh ACP process + exact System receipt |
       //
       // R3/R4/A1: the published ACP Agent runs on the external CLI. Request
       // metadata is not a backend selector.
@@ -101,24 +128,47 @@ async function main() {
       );
       pass('a native session on the same server runs the built-in runtime (selection)');
 
-      // A3/R7: the ACP adapter accepts the same mid-conversation system event,
-      // persists it, and a second user turn re-launches the CLI (fresh per turn).
+      // A3/R7 causes: C1=a continued User event; C2=one System event is final and
+      // immediately follows C1 in the same batch; C3=the selected ACP model
+      // supports dynamic System context. Effects: E1=receipts preserve User then
+      // System order; E2=the exact final System receipt commits with the same
+      // history id; E3=one fresh ACP process replies and the Session idles.
+      // Constraint: the atomic batch is the sole admission boundary and the
+      // Session root remains the sole System owner. Decision A3 C1+C2+C3=>
+      // E1+E2+E3; a standalone System is owned by the admission rejection table.
       const systemReceipt = await client.beta.sessions.events.send(acp.id, {
-        events: [{ type: 'system.message', content: [{ type: 'text', text: 'be concise' }] }],
+        events: [
+          { type: 'user.message', content: [{ type: 'text', text: 'again' }] },
+          { type: 'system.message', content: [{ type: 'text', text: 'be concise' }] },
+        ],
         betas: BETAS,
       });
-      assert.equal(systemReceipt.data[0].type, 'system.message', 'A3 ACP system event admitted');
-      await send(client, acp.id, 'again');
-      texts = await agentTexts(client, acp.id);
+      assert.deepEqual(
+        systemReceipt.data.map((event) => event.type),
+        ['user.message', 'system.message'],
+        'A3/E1 ACP continuation receipts preserve the admitted batch order',
+      );
+      const systemReceiptId = systemReceipt.data[1]?.id;
+      assert.equal(typeof systemReceiptId, 'string', 'A3/E2 exact final ACP System receipt');
+      const secondAcp = await waitForSessionEventReceipt(
+        client,
+        acp.id,
+        systemReceiptId,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'A3/E3 ACP continuation after the exact final System receipt to commit',
+      );
+      texts = agentTexts(secondAcp.events);
       const acpReplies = texts.filter((t) => t.includes('acp-runtime reply')).length;
-      assert.ok(acpReplies >= 2, `R7: each turn relaunches the CLI, got ${acpReplies} acp replies`);
-      const acpEvents = [];
-      for await (const event of client.beta.sessions.events.list(acp.id, { betas: BETAS })) {
-        acpEvents.push(event);
-      }
+      const newAcpReplies = agentTexts(secondAcp.delta)
+        .filter((text) => text.includes('acp-runtime reply')).length;
+      assert.equal(newAcpReplies, 1, 'A3/E3 the atomic continuation drives exactly one fresh ACP reply');
+      assert.equal(acpReplies, 2, `R7: each turn relaunches the CLI exactly once, got ${acpReplies} replies`);
+      const acpEvents = secondAcp.events;
       assert.ok(
-        acpEvents.some((event) => event.type === 'system.message' && event.id === systemReceipt.data[0].id),
-        'A3 ACP history persists the same-id system event',
+        acpEvents.some((event) => event.type === 'system.message' && event.id === systemReceiptId),
+        'A3/E2 ACP history persists the exact same-id System event',
       );
       pass('a second turn relaunches the ACP CLI (R7)');
 
@@ -133,8 +183,7 @@ async function main() {
           environment_id: 'env_local',
           betas: BETAS,
         });
-        await send(client, s2.id, trigger);
-        const texts = await agentTexts(client, s2.id);
+        const texts = agentTexts((await send(client, s2.id, trigger)).events);
         assert.ok(
           texts.some((t) => /the agent turn failed/i.test(t)),
           `failure "${trigger}" rendered a classified failure, got ${JSON.stringify(texts)}`,

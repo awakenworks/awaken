@@ -58,25 +58,35 @@ fn agent_fingerprint(agent: &AgentRef) -> String {
     }
 }
 
-fn request_fingerprint(request: &SessionCreateParams) -> String {
+fn request_fingerprint(
+    request: &SessionCreateParams,
+    session_id: &str,
+) -> Result<String, StateError> {
     let resources = request
         .resources
         .iter()
         .map(ResourceInput::idempotency_fingerprint)
         .collect::<Vec<_>>();
-    awaken_session_contract::stable_fingerprint(&(
+    let initial_events = crate::types::initial_event::compile_session_initial_event_plan(
+        session_id,
+        &request.initial_events,
+    )
+    .map_err(|message| StateError::Run(super::RunError::bad_request(message)))?
+    .map(|plan| plan.batch);
+    Ok(awaken_session_contract::stable_fingerprint(&(
         agent_fingerprint(&request.agent),
         &request.budget,
+        initial_events,
         &request.environment_id,
         &request.title,
         &request.metadata,
         &request.vault_ids,
         resources,
-    ))
+    )))
 }
 
 impl ManagedState {
-    pub async fn create_session_with_initial_events_idempotent(
+    pub async fn create_session_idempotent(
         self: &Arc<Self>,
         mut req: SessionCreateParams,
         workspace_id: Option<String>,
@@ -91,7 +101,6 @@ impl ManagedState {
                 "Session create request contains reserved metadata",
             )));
         }
-        let request_fingerprint = request_fingerprint(&req);
         let session_id = format!(
             "sesn_{}",
             awaken_session_contract::stable_fingerprint(&(
@@ -100,6 +109,7 @@ impl ManagedState {
                 idempotency_key,
             ))
         );
+        let request_fingerprint = request_fingerprint(&req, &session_id)?;
         if let Some(session) = self
             .replay_session_with_metadata(
                 &session_id,
@@ -115,11 +125,7 @@ impl ManagedState {
             request_fingerprint.clone(),
         );
         let created = self
-            .create_session_with_initial_events_and_identity(
-                req,
-                workspace_id,
-                Some(session_id.clone()),
-            )
+            .create_session_with_identity(req, workspace_id, Some(session_id.clone()))
             .await;
         match created {
             Ok(session) => Ok(session),
@@ -158,22 +164,22 @@ mod tests {
     #[tokio::test]
     async fn idempotent_create_rehydrates_durable_session_after_restart() {
         // Cause/effect graph: C1 the owner-scoped key is new or already durable;
-        // C2 the canonical request fingerprint matches or differs; C3 the
-        // process cache is warm or cold. Effects are E1 one new Session, E2 the
-        // exact durable Session is rehydrated without another create, and E3 an
-        // idempotency mismatch with no replacement. Decision rules covered:
-        // R1 new+matching -> E1; R2 durable+matching+cold -> E2; R3
-        // durable+different+cold -> E3. Same-process and owner isolation rules
-        // remain covered by the protocol adapter matrix.
+        // C2 the canonical request fingerprint (including the compiled initial
+        // Event plan) matches or differs; C3 the process cache is warm or cold.
+        // Effects are E1 one new Session, E2 the exact durable Session is
+        // rehydrated without another create, and E3 an idempotency mismatch
+        // with no replacement. Decision rules covered: R1 new+matching -> E1;
+        // R2 durable+matching+cold -> E2; R3 durable+different title+cold -> E3;
+        // R4 durable+different initial Events+warm -> E3. Same-process and owner
+        // isolation rules remain covered by the protocol adapter matrix.
+        // Constraints/invariants: the owner-scoped key plus canonical request
+        // fingerprint selects exactly one durable Session; cache rehydration may
+        // project that truth but cannot create or replace another aggregate.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let original =
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
         let created = original
-            .create_session_with_initial_events_idempotent(
-                request("Project A"),
-                Some("workspace-a".into()),
-                "issue-a",
-            )
+            .create_session_idempotent(request("Project A"), Some("workspace-a".into()), "issue-a")
             .await
             .expect("R1 creates the canonical Session");
         drop(original);
@@ -182,22 +188,14 @@ mod tests {
             Arc::new(ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone()));
         assert!(restarted.list_sessions().is_empty(), "R2 starts cold");
         let replayed = restarted
-            .create_session_with_initial_events_idempotent(
-                request("Project A"),
-                Some("workspace-a".into()),
-                "issue-a",
-            )
+            .create_session_idempotent(request("Project A"), Some("workspace-a".into()), "issue-a")
             .await
             .expect("R2 rehydrates durable truth");
         assert_eq!(replayed.id, created.id, "R2 preserves identity");
         assert_eq!(restarted.list_sessions().len(), 1, "R2 projects once");
 
         let mismatch = restarted
-            .create_session_with_initial_events_idempotent(
-                request("Changed"),
-                Some("workspace-a".into()),
-                "issue-a",
-            )
+            .create_session_idempotent(request("Changed"), Some("workspace-a".into()), "issue-a")
             .await;
         assert!(
             matches!(mismatch, Err(StateError::IdempotencyMismatch)),
@@ -212,6 +210,26 @@ mod tests {
                 .as_deref(),
             Some("Project A"),
             "R3 leaves durable truth unchanged"
+        );
+
+        let mut changed_initial_events = request("Project A");
+        changed_initial_events.initial_events = vec![crate::types::InboundEvent::UserMessage {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "new command",
+            )],
+        }];
+        assert!(
+            matches!(
+                restarted
+                    .create_session_idempotent(
+                        changed_initial_events,
+                        Some("workspace-a".into()),
+                        "issue-a",
+                    )
+                    .await,
+                Err(StateError::IdempotencyMismatch)
+            ),
+            "R4 rejects a different canonical initial Event plan"
         );
     }
 }

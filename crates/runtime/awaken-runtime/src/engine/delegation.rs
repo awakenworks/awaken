@@ -17,6 +17,46 @@ pub(super) struct DelegationParent<'a> {
     pub thread_id: &'a ThreadId,
 }
 
+/// Whether this exact frozen snapshot classifies `call` as Advisor. Delegation
+/// selection, no-service dispatch, recovery, and resume share this one predicate.
+pub(super) fn is_resolved_advisor_call(resolved: &ResolvedRun, call: &ToolCall) -> bool {
+    resolved
+        .spec
+        .tool_descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == call.tool_id)
+        .is_some_and(|descriptor| descriptor.kind == ToolKind::Advisor)
+}
+
+/// A Host service may implement more than one child capability, but it may
+/// execute only capabilities frozen into this exact snapshot. This keeps the
+/// published tool surface authoritative: removing `agent_run` from a resolved
+/// snapshot also removes its execution path, even if the shared Host service
+/// can execute that tool for another protocol. Advisor is additionally
+/// primary-only; delegated snapshots cannot invoke it recursively.
+pub(super) fn is_resolved_delegation_call(
+    runtime: &Runtime,
+    resolved: &ResolvedRun,
+    delegation_origin: Option<&DelegationOrigin>,
+    call: &ToolCall,
+) -> bool {
+    let Some(executor) = runtime.run_delegation() else {
+        return false;
+    };
+    if !executor.handles_tool(&call.tool_id) {
+        return false;
+    }
+    if is_resolved_advisor_call(resolved, call) {
+        return delegation_origin.is_none();
+    }
+    resolved
+        .spec
+        .tool_descriptors
+        .iter()
+        .find(|descriptor| descriptor.id == call.tool_id)
+        .is_some_and(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
+}
+
 /// Commit the immutable parent/call/child relationship through the same Run
 /// state delta that makes executor entry recoverable.
 pub(super) fn stage_delegation_request(
@@ -54,7 +94,11 @@ pub(super) fn stage_delegation_requests(
     let Some(executor) = runtime.run_delegation() else {
         return Ok(false);
     };
-    if calls.is_empty() || calls.iter().any(|call| executor.tool_id() != call.tool_id) {
+    if calls.is_empty()
+        || calls
+            .iter()
+            .any(|call| !is_resolved_delegation_call(runtime, resolved, delegation_origin, call))
+    {
         return Ok(false);
     }
     let mut registry = RunDelegations::load(store)
@@ -79,7 +123,7 @@ pub(super) fn stage_delegation_requests(
         )
         .map_err(|error| Error::Execution(error.to_string()))?;
         let target_agent_id = executor
-            .target_agent_id(&call.arguments)
+            .target_agent_id_for(&call.tool_id, &call.arguments)
             .map_err(|error| Error::Execution(error.to_string()))?;
         let recursive_self = executor.allows_recursive_target(&target_agent_id);
         let child_run_id = origin.child_run_id();
@@ -113,7 +157,7 @@ pub(super) fn stage_delegation_completed(
 ) -> Result<()> {
     if runtime
         .run_delegation()
-        .is_none_or(|executor| executor.tool_id() != call.tool_id)
+        .is_none_or(|executor| !executor.handles_tool(&call.tool_id))
     {
         return Ok(());
     }
@@ -161,7 +205,7 @@ pub(super) fn stage_delegation_awaiting(
 ) -> Result<()> {
     if runtime
         .run_delegation()
-        .is_none_or(|executor| executor.tool_id() != call.tool_id)
+        .is_none_or(|executor| !executor.handles_tool(&call.tool_id))
     {
         return Ok(());
     }
@@ -251,12 +295,13 @@ pub(super) struct DelegationInvocation {
 /// result-delivery commits.
 pub(super) async fn invoke_delegation(
     runtime: &Runtime,
+    resolved: &ResolvedRun,
     parent: DelegationParent<'_>,
     call: &ToolCall,
     store: &Store,
 ) -> Option<std::result::Result<DelegationInvocation, DelegationExecutionError>> {
     let executor = runtime.run_delegation()?;
-    if executor.tool_id() != call.tool_id {
+    if !is_resolved_delegation_call(runtime, resolved, parent.origin, call) {
         return None;
     }
     let origin = match derive_delegation_origin(
@@ -283,7 +328,7 @@ pub(super) async fn invoke_delegation(
         }
         Err(error) => return Some(Err(DelegationExecutionError::new(error.to_string()))),
     }
-    let target_agent_id = match executor.target_agent_id(&call.arguments) {
+    let target_agent_id = match executor.target_agent_id_for(&call.tool_id, &call.arguments) {
         Ok(agent_id) => agent_id,
         Err(error) => return Some(Err(error)),
     };
@@ -295,6 +340,9 @@ pub(super) async fn invoke_delegation(
         target_agent_id,
         arguments: call.arguments.clone(),
     };
+    if let Err(error) = verify_attempt_ownership(parent.context.ownership.as_deref()).await {
+        return Some(Err(DelegationExecutionError::retryable(error.to_string())));
+    }
     Some(
         executor
             .start(request)
@@ -307,13 +355,19 @@ pub(super) async fn invoke_delegation(
 /// call open for recovery. Only a terminal child failure becomes a model-visible
 /// tool result and releases the relationship's parallel slot.
 pub(super) fn delegation_error_output(
-    call_id: &str,
+    resolved: &ResolvedRun,
+    call: &ToolCall,
     error: DelegationExecutionError,
 ) -> Result<ToolOutput> {
     if error.is_retryable() {
         Err(Error::Execution(error.to_string()))
     } else {
-        Ok(ToolOutput::error(call_id, error.to_string()))
+        let message = if is_resolved_advisor_call(resolved, call) {
+            awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE.to_string()
+        } else {
+            error.to_string()
+        };
+        Ok(ToolOutput::error(&call.call_id, message))
     }
 }
 
@@ -324,6 +378,7 @@ pub(super) async fn resume_delegation(
     runtime: &Runtime,
     ticket: &ResumeTicket,
     result: ResumeResult,
+    context_messages: Vec<Message>,
     resolved: &ResolvedRun,
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
@@ -345,10 +400,28 @@ pub(super) async fn resume_delegation(
             context,
             thread_id,
             run_id.clone(),
-            RunStepResult::capability_bound(run_id.clone()),
+            RunStepResult::ended_with_messages(
+                run_id.clone(),
+                EndCause::Error(Failure::CapabilityBound),
+                context_messages,
+            ),
         )
         .await;
     };
+    if !is_resolved_delegation_call(runtime, resolved, ticket.delegation_origin.as_ref(), &call) {
+        return finish(
+            runtime,
+            context,
+            thread_id,
+            run_id.clone(),
+            RunStepResult::ended_with_messages(
+                run_id.clone(),
+                EndCause::Error(Failure::CapabilityBound),
+                context_messages,
+            ),
+        )
+        .await;
+    }
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
     let step = match derive_delegation_origin(
         ticket.delegation_origin.as_ref(),
@@ -391,6 +464,7 @@ pub(super) async fn resume_delegation(
                                 .to_string(),
                         )
                     })?;
+                verify_attempt_ownership(context.ownership.as_deref()).await?;
                 let step = executor
                     .resume(DelegationResume {
                         child_run_id: origin.child_run_id(),
@@ -450,7 +524,7 @@ pub(super) async fn resume_delegation(
                 thread_id,
                 run_id.clone(),
                 RunStepResult {
-                    new_messages: Vec::new(),
+                    new_messages: context_messages,
                     staged_state,
                     audit: Vec::new(),
                     disposition: RunDisposition::awaiting(next_ticket),
@@ -458,11 +532,20 @@ pub(super) async fn resume_delegation(
             )
             .await;
         }
-        Err(error) => ResumeResult::ToolResult(delegation_error_output(call_id, error)?),
+        Err(error) => ResumeResult::ToolResult(delegation_error_output(resolved, &call, error)?),
     };
 
     drive_resumed(
-        runtime, resolved, env, run_id, thread_id, ticket, synthetic, reader, context,
+        runtime,
+        resolved,
+        env,
+        run_id,
+        thread_id,
+        ticket,
+        synthetic,
+        context_messages,
+        reader,
+        context,
     )
     .await
 }
@@ -471,11 +554,12 @@ pub(super) async fn resume_delegation(
 /// belongs to the ordinary tool registry.
 pub(super) async fn run_delegation(
     runtime: &Runtime,
+    resolved: &ResolvedRun,
     parent: DelegationParent<'_>,
     call: &ToolCall,
     store: &mut Store,
 ) -> Option<std::result::Result<DelegationStep, DelegationExecutionError>> {
-    let invocation = invoke_delegation(runtime, parent, call, store).await?;
+    let invocation = invoke_delegation(runtime, resolved, parent, call, store).await?;
     match invocation {
         Ok(DelegationInvocation {
             id,

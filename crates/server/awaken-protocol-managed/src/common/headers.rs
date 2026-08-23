@@ -2,8 +2,12 @@
 
 /// The Managed Agents beta wire header accepted by every Managed endpoint.
 pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
-/// Official beta gate for the sibling User Profiles API family.
+/// User Profiles beta emitted by the pinned SDK 0.117.1. It remains accepted
+/// for the legacy `relationship` vocabulary.
 pub const USER_PROFILES_BETA: &str = "user-profiles-2026-03-24";
+/// User Profiles beta emitted automatically by reviewed SDK 0.120.0. This is
+/// the same resource family with the `access_type` vocabulary.
+pub(crate) const USER_PROFILES_BETA_LATEST: &str = "user-profiles-2026-08-18";
 /// Research-preview MCP Tunnel API beta.
 pub const TUNNELS_BETA: &str = "mcp-tunnels-2026-06-22";
 /// Deprecated organization-scoped Tunnel beta retained during the official

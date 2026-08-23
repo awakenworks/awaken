@@ -7,8 +7,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-use awaken_agent_contract::agent::run::RunState;
-use awaken_run_ingress::{AnyDispatchStore, Dispatch, MemoryDispatchStore};
+use awaken_agent_contract::agent::run::{EndCause, RunState};
+use awaken_run_ingress::{AnyDispatchStore, Dispatch, DispatchQueue, MemoryDispatchStore};
 use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
@@ -85,12 +85,18 @@ impl LlmExecutor for ParentChildModel {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
-    // Cause/effect decision table: D1 parent Run awaits delegation + child Run
-    // awaits permission in its own thread -> the parent-facing result exposes the
-    // child's `write` ticket; D2 caller approves through the parent -> the exact
-    // child ticket resumes and both Runs terminate; D3 reading only the parent
-    // recovery snapshot cannot satisfy D1 and must never fall back to a stale
-    // process-local ticket projection.
+    // Cause/effect design: C1 the parent Run awaits delegation; C2 the child Run
+    // awaits permission in its own thread; C3 the caller approves the exact child
+    // tool through the parent; C4 the parent claim projection contains no child
+    // Thread; C5 the parent Delegation ticket transports the typed child
+    // Permission without reclassifying it. Effects: E1 expose the child's `write`
+    // boundary once; E2 resume that exact child; E3 settle both durable rows; E4
+    // commit the child result and parent NaturalEnd reply. Constraints: K1 the
+    // Session commit is the sole local parent+child read authority; K2 each claim
+    // keeps its own projection; K3 the shared queue is the sole execution fence;
+    // K4 the parent validates the relationship while the child ticket owns answer
+    // kind and call identity. Decision rules: R1=C1+C2=>E1; R2=C1+C2+C3+C5=>
+    // E2+E3+E4; R3=C4=>use K1, never a stale parent projection.
     // The injected shared queue is the typed durable-ingress authority; the
     // builder enables its pool without mutating process-global configuration.
     let storage = tempfile::tempdir().expect("storage");
@@ -119,8 +125,9 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     );
     host.ensure_dispatch_pool();
 
-    let awaiting = host
-        .run(
+    let awaiting = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        host.run(
             None,
             "parent-thread",
             vec![Message::text(
@@ -128,9 +135,11 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
                 Role::User,
                 "start",
             )],
-        )
-        .await
-        .expect("parent observes the child's interaction boundary");
+        ),
+    )
+    .await
+    .expect("child Awaiting boundary does not stall on the parent projection")
+    .expect("parent observes the child's interaction boundary");
 
     assert!(matches!(awaiting.state, RunState::Awaiting));
     let pending = awaiting
@@ -149,16 +158,38 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // The user addresses the parent session. The host validates the child's
     // committed ticket and routes this decision through the parent relationship;
     // no public API resumes the child directly.
-    let result = host
-        .resume(
+    let child_run_id = awaiting.delegated_runs[0].run_id.clone();
+    let resumed = tokio::time::timeout(
+        std::time::Duration::from_secs(20),
+        host.resume(
             "parent-thread",
             &pending.tool_use_id,
             HostResume::Permission(PermissionDecision::Allow { note: None }),
-        )
-        .await
-        .expect("parent routes the permission decision to its child");
+        ),
+    )
+    .await;
+    let result = match resumed {
+        Ok(result) => result.expect("parent routes the permission decision to its child"),
+        Err(_) => panic!(
+            "child resume stalled: rows={:?}, child_pending={}, parent={:?}",
+            memory.list_dispatches().await,
+            memory.pending_count(&child_run_id),
+            host.committed_messages("parent-thread").await,
+        ),
+    };
 
-    assert!(matches!(result.state, RunState::Ended(_)));
+    assert!(matches!(
+        result.state,
+        RunState::Ended(EndCause::NaturalEnd)
+    ));
+    assert!(
+        memory
+            .list_dispatches()
+            .await
+            .expect("durable rows remain observable")
+            .is_empty(),
+        "the child and parent durable rows reach terminal settlement and leave the live queue"
+    );
     assert!(
         host.committed_messages("parent-thread")
             .await

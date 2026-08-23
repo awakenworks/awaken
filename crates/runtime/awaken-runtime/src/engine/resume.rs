@@ -3,7 +3,35 @@
 //! This module owns ticket-result folding, approval pre-commit, delegation
 //! continuation, and re-entry into the ordinary execution loop.
 
+use super::delegation::is_resolved_advisor_call;
 use super::*;
+
+/// Select the context that still needs to be committed for one durable resume.
+/// Exact committed Messages are replay; a stable id with another payload is a
+/// conflict. Running this before environment resolution also preserves accepted
+/// System context when the resumed Run terminates at the capability boundary.
+pub(super) fn fresh_resume_context(
+    committed: &[Message],
+    context_messages: Vec<Message>,
+) -> Result<Vec<Message>> {
+    let mut fresh_context = Vec::with_capacity(context_messages.len());
+    for message in context_messages {
+        match committed
+            .iter()
+            .find(|committed| committed.id == message.id)
+        {
+            Some(committed) if committed == &message => {}
+            Some(_) => {
+                return Err(Error::Execution(format!(
+                    "resume context Message `{}` conflicts with committed truth",
+                    message.id.0
+                )));
+            }
+            None => fresh_context.push(message),
+        }
+    }
+    Ok(fresh_context)
+}
 
 /// Rebuild the transcript and state from committed truth, inject a resumed
 /// `result` for the awaiting ticket, and drive the loop to its next terminal/awaiting
@@ -19,6 +47,7 @@ pub(super) async fn drive_resumed(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     result: ResumeResult,
+    fresh_context: Vec<Message>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
@@ -29,12 +58,10 @@ pub(super) async fn drive_resumed(
     // R3 truncated partials/other Runs -> ignore them when deriving N.
     // This keeps retry/replay ids stable while preventing two distinct scheduled
     // resumes from both minting the former fixed `resume-step-1000` id.
-    let resume_step_base = committed
-        .iter()
-        .filter_map(|message| message.id.assistant_step_of(run_id))
-        .max()
-        .map_or(0, |step| step + 1);
+    let resume_step_base =
+        awaken_agent_contract::agent::message::next_assistant_step(&committed, run_id);
     let mut transcript = model_transcript(context, committed);
+    transcript.extend(fresh_context.iter().cloned());
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
     let approved = matches!(
         &result,
@@ -135,11 +162,15 @@ pub(super) async fn drive_resumed(
             tool_id: pending.tool_id.clone(),
             arguments: pending.arguments.clone(),
         };
-        let delegation_started = runtime
-            .run_delegation()
-            .is_some_and(|executor| executor.tool_id() == call.tool_id);
+        let delegation_started = is_resolved_delegation_call(
+            runtime,
+            resolved,
+            ticket.delegation_origin.as_ref(),
+            &call,
+        );
         let result = match run_delegation(
             runtime,
+            resolved,
             DelegationParent {
                 context,
                 origin: ticket.delegation_origin.as_ref(),
@@ -195,7 +226,7 @@ pub(super) async fn drive_resumed(
                     thread_id,
                     run_id.clone(),
                     RunStepResult {
-                        new_messages: Vec::new(),
+                        new_messages: fresh_context,
                         staged_state: delegation_state,
                         audit: Vec::new(),
                         disposition: RunDisposition::awaiting(next_ticket),
@@ -204,7 +235,13 @@ pub(super) async fn drive_resumed(
                 .await;
             }
             Some(Err(error)) => {
-                ResumeResult::ToolResult(delegation_error_output(&call.call_id, error)?)
+                ResumeResult::ToolResult(delegation_error_output(resolved, &call, error)?)
+            }
+            None if is_resolved_advisor_call(resolved, &call) => {
+                ResumeResult::ToolResult(ToolOutput::error(
+                    &call.call_id,
+                    awaken_runtime_contract::resolved::ADVISOR_UNAVAILABLE_NOTICE,
+                ))
             }
             None => result,
         };
@@ -273,6 +310,8 @@ pub(super) async fn drive_resumed(
         transcript.extend(resumed.iter().cloned());
         resumed
     };
+    let mut new_messages = fresh_context;
+    new_messages.extend(resumed_new_messages);
     let step_result = drive(
         runtime,
         resolved,
@@ -282,7 +321,7 @@ pub(super) async fn drive_resumed(
         context,
         ticket.delegation_origin.as_ref(),
         transcript,
-        resumed_new_messages,
+        new_messages,
         Default::default(),
         resume_step_base,
         store,
@@ -291,4 +330,47 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     finalize(runtime, context, thread_id, run_id.clone(), step_result).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::agent::message::Id as MessageId;
+
+    #[test]
+    fn resume_context_replay_is_exact_or_conflicting() {
+        // Cause/effect graph: C1 a stable context id is absent, committed with
+        // the exact payload, or committed with another payload. Effects: E1 an
+        // absent Message remains fresh; E2 exact replay produces no second
+        // Message; E3 a different payload fails before Runtime commits anything.
+        //
+        // | Rule | committed same id | payload | Effect |
+        // |---|---|---|---|
+        // | R1 | no | - | E1 fresh |
+        // | R2 | yes | exact | E2 no-op |
+        // | R3 | yes | changed | E3 conflict |
+        // Constraints/invariants: stable Message id+payload is one idempotency
+        // coordinate; replay cannot duplicate or overwrite committed context.
+        let exact = Message::text(
+            MessageId("session-system-reply".into()),
+            Role::System,
+            "context",
+        );
+        assert_eq!(
+            fresh_resume_context(&[], vec![exact.clone()]).expect("R1"),
+            vec![exact.clone()],
+            "R1/E1"
+        );
+        assert!(
+            fresh_resume_context(std::slice::from_ref(&exact), vec![exact.clone()])
+                .expect("R2")
+                .is_empty(),
+            "R2/E2"
+        );
+        let changed = Message::text(exact.id.clone(), Role::System, "changed");
+        assert!(
+            fresh_resume_context(std::slice::from_ref(&exact), vec![changed]).is_err(),
+            "R3/E3"
+        );
+    }
 }

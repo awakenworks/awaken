@@ -136,6 +136,91 @@ pub enum AdvisorRosterEntryKind {
     Advisor,
 }
 
+/// The Claude model families named by the Managed Advisor compatibility table.
+///
+/// This private vocabulary is the one owner for both save-time executor/advisor
+/// admission and client-side Advisor result visibility. Keeping those decisions
+/// together prevents a newly admitted redacted model from accidentally using a
+/// stale plaintext projection rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManagedAdvisorModelFamily {
+    Haiku45,
+    Sonnet46,
+    Sonnet5,
+    Opus46,
+    Opus47,
+    Opus48,
+    Opus5,
+    Fable5,
+    Mythos5,
+}
+
+fn managed_model_family(model: &str) -> Option<ManagedAdvisorModelFamily> {
+    use ManagedAdvisorModelFamily as Family;
+
+    // Awaken's Managed model-id codec may append provider/runtime selectors.
+    // Advisor capability is determined by the model head, never by its route.
+    let model = model.split(';').next().unwrap_or(model);
+    [
+        ("claude-haiku-4-5", Family::Haiku45),
+        ("claude-sonnet-4-6", Family::Sonnet46),
+        ("claude-sonnet-5", Family::Sonnet5),
+        ("claude-opus-4-6", Family::Opus46),
+        ("claude-opus-4-7", Family::Opus47),
+        ("claude-opus-4-8", Family::Opus48),
+        ("claude-opus-5", Family::Opus5),
+        ("claude-fable-5", Family::Fable5),
+        ("claude-mythos-5", Family::Mythos5),
+    ]
+    .into_iter()
+    .find_map(|(canonical, family)| {
+        let dated_alias = model
+            .strip_prefix(canonical)
+            .and_then(|suffix| suffix.strip_prefix('-'))
+            .is_some_and(|date| date.len() == 8 && date.bytes().all(|byte| byte.is_ascii_digit()));
+        (model == canonical || dated_alias).then_some(family)
+    })
+}
+
+/// Validate one executor/advisor pair against the Managed Agents surface.
+///
+/// The underlying Messages Advisor table is narrowed by one Managed-specific
+/// rule: Fable 5 is temporarily unavailable in the advisor role. It remains a
+/// valid executor, so the exclusion belongs to the advisor side of this table.
+#[must_use]
+pub fn managed_advisor_pair_supported(executor: &str, advisor: &str) -> bool {
+    use ManagedAdvisorModelFamily as Family;
+
+    let (Some(executor), Some(advisor)) = (
+        managed_model_family(executor),
+        managed_model_family(advisor),
+    ) else {
+        return false;
+    };
+    match executor {
+        Family::Haiku45 | Family::Sonnet46 | Family::Sonnet5 | Family::Opus46 | Family::Opus47 => {
+            matches!(
+                advisor,
+                Family::Opus47 | Family::Opus48 | Family::Opus5 | Family::Mythos5
+            )
+        }
+        Family::Opus48 => matches!(advisor, Family::Opus48 | Family::Opus5 | Family::Mythos5),
+        Family::Opus5 => matches!(advisor, Family::Opus5 | Family::Mythos5),
+        Family::Fable5 => matches!(advisor, Family::Opus5),
+        Family::Mythos5 => matches!(advisor, Family::Opus5 | Family::Mythos5),
+    }
+}
+
+/// Whether an Advisor result must be opaque on every Managed client surface.
+/// Unknown or malformed families fail closed; only the two documented
+/// plaintext-capable advisor families may expose their ordinary public blocks.
+pub(crate) fn managed_advisor_result_is_redacted(advisor: &str) -> bool {
+    !matches!(
+        managed_model_family(advisor),
+        Some(ManagedAdvisorModelFamily::Opus47 | ManagedAdvisorModelFamily::Opus48)
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AgentRosterReference {
@@ -329,6 +414,118 @@ pub struct Agent {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn managed_advisor_model_policy_matches_the_official_pair_and_visibility_tables() {
+        // Causes: the fixtures below establish `managed advisor model policy` with the concrete
+        // inputs, state, dependencies, and failure triggers used by this case.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 executor family; C2 advisor family; C3 Fable is
+        // requested as a Managed advisor; C4 either side is unknown/malformed;
+        // C5 canonical versus dated/provider-qualified model spelling. Effects:
+        // E1 admit exactly the official capability pairs; E2 reject Fable only
+        // in the advisor role; E3 reject unknown pairs; E4 redacted 5-series
+        // advisors are opaque while Opus 4.7/4.8 are plaintext-capable; E5 C5
+        // does not change family capability.
+        //
+        // | Rule | Pair in Messages table | Advisor Fable | Known | Effect |
+        // |---|---|---|---|---|
+        // | M1 | yes | no | yes | E1 |
+        // | M2 | yes | yes | yes | E2 |
+        // | M3 | no | no | yes | E3 |
+        // | M4 | any | any | no | E3, fail-closed redaction |
+        // | M5 | M1 | no | dated/qualified | E1,E5 |
+        let models = [
+            "claude-haiku-4-5",
+            "claude-sonnet-4-6",
+            "claude-sonnet-5",
+            "claude-opus-4-6",
+            "claude-opus-4-7",
+            "claude-opus-4-8",
+            "claude-opus-5",
+            "claude-fable-5",
+            "claude-mythos-5",
+        ];
+        let allowed = std::collections::BTreeSet::from([
+            ("claude-haiku-4-5", "claude-opus-4-7"),
+            ("claude-haiku-4-5", "claude-opus-4-8"),
+            ("claude-haiku-4-5", "claude-opus-5"),
+            ("claude-haiku-4-5", "claude-mythos-5"),
+            ("claude-sonnet-4-6", "claude-opus-4-7"),
+            ("claude-sonnet-4-6", "claude-opus-4-8"),
+            ("claude-sonnet-4-6", "claude-opus-5"),
+            ("claude-sonnet-4-6", "claude-mythos-5"),
+            ("claude-sonnet-5", "claude-opus-4-7"),
+            ("claude-sonnet-5", "claude-opus-4-8"),
+            ("claude-sonnet-5", "claude-opus-5"),
+            ("claude-sonnet-5", "claude-mythos-5"),
+            ("claude-opus-4-6", "claude-opus-4-7"),
+            ("claude-opus-4-6", "claude-opus-4-8"),
+            ("claude-opus-4-6", "claude-opus-5"),
+            ("claude-opus-4-6", "claude-mythos-5"),
+            ("claude-opus-4-7", "claude-opus-4-7"),
+            ("claude-opus-4-7", "claude-opus-4-8"),
+            ("claude-opus-4-7", "claude-opus-5"),
+            ("claude-opus-4-7", "claude-mythos-5"),
+            ("claude-opus-4-8", "claude-opus-4-8"),
+            ("claude-opus-4-8", "claude-opus-5"),
+            ("claude-opus-4-8", "claude-mythos-5"),
+            ("claude-opus-5", "claude-opus-5"),
+            ("claude-opus-5", "claude-mythos-5"),
+            ("claude-fable-5", "claude-opus-5"),
+            ("claude-mythos-5", "claude-opus-5"),
+            ("claude-mythos-5", "claude-mythos-5"),
+        ]);
+        for executor in models {
+            for advisor in models {
+                assert_eq!(
+                    managed_advisor_pair_supported(executor, advisor),
+                    allowed.contains(&(executor, advisor)),
+                    "M1-M3 executor={executor} advisor={advisor}"
+                );
+            }
+        }
+        assert!(
+            managed_advisor_pair_supported(
+                "claude-sonnet-5-20260801;provider=anthropic",
+                "claude-opus-5-20260801;provider=anthropic"
+            ),
+            "M5/E1/E5"
+        );
+        for malformed in [
+            ("unknown-executor", "claude-opus-5"),
+            ("claude-sonnet-5", "claude-opus-5-preview"),
+            ("claude-sonnet-5", "CLAUDE-OPUS-5"),
+        ] {
+            assert!(
+                !managed_advisor_pair_supported(malformed.0, malformed.1),
+                "M4/E3 {malformed:?}"
+            );
+        }
+        for plaintext in [
+            "claude-opus-4-7",
+            "claude-opus-4-8-20260801;provider=anthropic",
+        ] {
+            assert!(
+                !managed_advisor_result_is_redacted(plaintext),
+                "M1-M5/E4 plaintext {plaintext}"
+            );
+        }
+        for redacted in [
+            "claude-opus-5",
+            "claude-fable-5-20260801",
+            "claude-mythos-5;provider=anthropic",
+            "unknown-advisor",
+        ] {
+            assert!(
+                managed_advisor_result_is_redacted(redacted),
+                "M2-M5/E4 redacted {redacted}"
+            );
+        }
+    }
 
     #[test]
     fn managed_agent_composites_follow_the_sdk_tagged_unions() {

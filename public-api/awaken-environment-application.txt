@@ -8,7 +8,7 @@ pub awaken_environment_application::EnvironmentApplicationError::Policy(awaken_p
 pub awaken_environment_application::EnvironmentApplicationError::PolicyStoreUnavailable
 pub awaken_environment_application::EnvironmentApplicationError::Registration(awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError)
 pub awaken_environment_application::EnvironmentApplicationError::RegistrationInvariant(alloc::string::String)
-pub awaken_environment_application::EnvironmentApplicationError::RegistrationOutbox(alloc::string::String)
+pub awaken_environment_application::EnvironmentApplicationError::Store(awaken_environment_contract::EnvironmentStoreError)
 pub struct awaken_environment_application::EnvironmentApplication
 impl awaken_environment_application::EnvironmentApplication
 pub async fn awaken_environment_application::EnvironmentApplication::archive(&self, &str) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
@@ -16,8 +16,8 @@ pub async fn awaken_environment_application::EnvironmentApplication::bind_sandbo
 pub async fn awaken_environment_application::EnvironmentApplication::create(&self, awaken_environment_contract::CreateEnvironmentCommand) -> core::result::Result<awaken_environment_contract::EnvItem, awaken_environment_application::EnvironmentApplicationError>
 pub async fn awaken_environment_application::EnvironmentApplication::delete(&self, &str) -> core::result::Result<(), awaken_environment_application::EnvironmentApplicationError>
 pub async fn awaken_environment_application::EnvironmentApplication::drain_registration_intents(&self) -> core::result::Result<u64, awaken_environment_application::EnvironmentApplicationError>
-pub async fn awaken_environment_application::EnvironmentApplication::get(&self, &str) -> core::option::Option<awaken_environment_contract::EnvItem>
-pub async fn awaken_environment_application::EnvironmentApplication::list_active(&self) -> alloc::vec::Vec<awaken_environment_contract::EnvItem>
+pub async fn awaken_environment_application::EnvironmentApplication::get(&self, &str) -> core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_environment_application::EnvironmentApplicationError>
+pub async fn awaken_environment_application::EnvironmentApplication::list_active(&self) -> core::result::Result<alloc::vec::Vec<awaken_environment_contract::EnvItem>, awaken_environment_application::EnvironmentApplicationError>
 pub fn awaken_environment_application::EnvironmentApplication::new(alloc::sync::Arc<dyn awaken_environment_contract::EnvRegistry>, alloc::sync::Arc<dyn awaken_executable_environment_contract::ExecutableEnvironmentRegistrar>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> Self
 pub async fn awaken_environment_application::EnvironmentApplication::reconcile_registration(&self, &str) -> core::result::Result<core::option::Option<awaken_environment_contract::EnvItem>, awaken_environment_application::EnvironmentApplicationError>
 pub async fn awaken_environment_application::EnvironmentApplication::recover_registration_intents(&self) -> core::result::Result<u64, awaken_environment_application::EnvironmentApplicationError>

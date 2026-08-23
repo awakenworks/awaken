@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38207);
@@ -27,10 +27,24 @@ async function drain(pageIter) {
 }
 
 async function send(client, sid, text) {
-  await client.beta.sessions.events.send(sid, {
+  // C1=exact provisioning User receipt; C2=reply+idle. E1=post-C1 history
+  // proves the sandbox was exercised before disposal. K: delete/archive owns
+  // disposal. Decision D1 C1&&!C2=>retry; D2 C1+C2=>return history.
+  const receipt = await client.beta.sessions.events.send(sid, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'D1 exact sandbox-provisioning receipt');
+  return (await waitForSessionEventReceipt(
+    client,
+    sid,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `D1 sandbox Run for ${JSON.stringify(text)} to commit`,
+  )).events;
 }
 
 const agentTexts = (events) =>
@@ -52,8 +66,7 @@ async function main() {
       assert.equal(s1.status, 'idle', 'a fresh session is idle');
 
       // First turn lazily provisions the session's sandbox (ctx_for -> create_sandbox).
-      await send(client, s1.id, 'hello');
-      const e1 = await drain(client.beta.sessions.events.list(s1.id, { betas: BETAS }));
+      const e1 = await send(client, s1.id, 'hello');
       assert.ok(
         agentTexts(e1).some((t) => t.startsWith('Echo:')),
         `the provisioned session ran a turn, got ${JSON.stringify(agentTexts(e1))}`,
@@ -80,8 +93,7 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await send(client, s2.id, 'hi again');
-      const e2 = await drain(client.beta.sessions.events.list(s2.id, { betas: BETAS }));
+      const e2 = await send(client, s2.id, 'hi again');
       assert.ok(agentTexts(e2).some((t) => t.startsWith('Echo:')), 'archive-path session ran a turn');
 
       const archived = await client.beta.sessions.archive(s2.id, { betas: BETAS });

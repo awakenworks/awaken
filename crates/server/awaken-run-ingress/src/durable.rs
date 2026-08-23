@@ -29,7 +29,7 @@ use crate::service::{DispatchService, DispatchServiceConfig};
 use crate::worker::DispatchWorker;
 use awaken_run_ingress_contract::RunDispatch;
 
-/// Durable run ingress over a dispatch store. Holds the worker that turns durable
+/// Durable Run ingress over a dispatch store. Holds the Worker that converts durable
 /// dispatches into runtime attempts; the worker is shared (`Arc`) so an
 /// autonomous [`DispatchService`] can drain the same queue.
 pub struct DurableRunIngress<S> {
@@ -183,6 +183,20 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         self
     }
 
+    /// Install the one fallible committed-boundary observer before this
+    /// ingress's worker is shared with a process pool.
+    #[must_use]
+    pub fn with_settlement_observer(
+        mut self,
+        observer: Arc<dyn crate::DispatchSettlementObserver>,
+    ) -> Self {
+        let worker = Arc::into_inner(self.worker)
+            .expect("settlement observer must be configured before sharing the worker")
+            .with_settlement_observer(observer);
+        self.worker = Arc::new(worker);
+        self
+    }
+
     /// Attach the process-local best-effort stream relay before sharing this
     /// Session's worker. The relay is observation only: dispatch settlement and
     /// committed messages remain the durable authorities.
@@ -229,6 +243,10 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         let worker = Arc::into_inner(self.worker)
             .expect("recovery projection must be configured before sharing the worker")
             .with_recovery_projection(projection);
+        // The ingress replay guard and the Worker execution path must retain the
+        // exact same projection. Do not keep the constructor's provisional
+        // reader alive as a parallel empty committed view.
+        self.reader = worker.committed_reader();
         self.worker = Arc::new(worker);
         self
     }
@@ -269,7 +287,10 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
                 },
             )
             .await?;
-        let processed = self.worker.run_until_idle(0).await?;
+        let processed = self
+            .worker
+            .run_until_idle(Arc::new(crate::clock::SystemClock))
+            .await?;
         state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution(
                 "superseding run was not processed".into(),
@@ -298,11 +319,11 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     pub async fn deliver_resume(
         &self,
         input: PendingInput,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<RunState, Error> {
         let run_id = input.run_id.clone();
         self.worker.store().append(input).await?;
-        let processed = self.worker.run_until_idle(now_ms).await?;
+        let processed = self.worker.run_until_idle(clock).await?;
         state_of(&processed, &run_id).ok_or_else(|| {
             Error::from(ExecError::Execution("resumed run was not processed".into()))
         })
@@ -310,9 +331,11 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
 
     /// Reclaim and re-run any dispatch whose lease expired (crash recovery), plus
     /// any work that became runnable. Returns each processed run and its state.
-    pub async fn recover(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
-        let mut processed = self.reconcile_committed_terminals(now_ms, 256).await?;
-        processed.extend(self.worker.run_until_idle(now_ms).await?);
+    pub async fn recover(&self, clock: Arc<dyn Clock>) -> Result<Vec<(RunId, RunState)>, Error> {
+        let mut processed = self
+            .reconcile_committed_terminals(clock.clone(), 256)
+            .await?;
+        processed.extend(self.worker.run_until_idle(clock).await?);
         Ok(processed)
     }
 
@@ -323,11 +346,11 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
     /// fenced settlement.
     pub async fn reconcile_committed_terminals(
         &self,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         self.worker
-            .reconcile_committed_terminals(now_ms, limit)
+            .reconcile_committed_terminals(clock, limit)
             .await
     }
 
@@ -340,9 +363,12 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
 
     /// Relay staged cross-thread deliveries to their target pending input, then
     /// drive any run that became wakeable. Returns each processed run and state.
-    pub async fn relay_outbox(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
+    pub async fn relay_outbox(
+        &self,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
         self.worker.store().relay().await?;
-        self.worker.run_until_idle(now_ms).await
+        self.worker.run_until_idle(clock).await
     }
 
     /// Explicitly quarantine crashed runs that an operator has chosen to remove
@@ -393,7 +419,10 @@ impl<S: Dispatch + 'static> DurableRunIngress<S> {
         let Some(_thread_id) = self.worker.store().cancel(run_id).await? else {
             return Ok(false);
         };
-        let driven = self.worker.tick_run(run_id, 0).await?;
+        let driven = self
+            .worker
+            .tick_run(run_id, Arc::new(crate::clock::SystemClock))
+            .await?;
         Ok(!matches!(
             driven,
             Some((_, RunState::Ended(cause)))
@@ -454,7 +483,11 @@ impl<S: Dispatch + 'static> RunIngress for DurableRunIngress<S> {
             )
             .await
             .map_err(|err| ExecError::Execution(err.to_string()))?;
-        let processed = self.worker.run_until_idle(0).await.map_err(exec_error)?;
+        let processed = self
+            .worker
+            .run_until_idle(Arc::new(crate::clock::SystemClock))
+            .await
+            .map_err(exec_error)?;
         state_of(&processed, &run_id)
             .or_else(|| self.reader.run_state(&run_id))
             .ok_or_else(|| ExecError::Execution("submitted run was not processed".into()))
@@ -474,5 +507,44 @@ fn exec_error(err: Error) -> ExecError {
         Error::Execution(err) | Error::TerminalResolution(err) => err,
         Error::Dispatch(err) => ExecError::Execution(err.to_string()),
         Error::ResolutionNotReady(message) => ExecError::Execution(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+    use awaken_store_inmem::MemoryCommitCoordinator;
+
+    #[test]
+    fn remote_ingress_releases_its_provisional_reader() {
+        // Cause/effect decision rule: C1 the constructor creates one provisional
+        // local reader; C2 remote composition replaces the Worker projection.
+        // C1+C2 => E1 both ingress replay and Worker execution point at the
+        // replacement Arc, and E2 no old reader remains retained. This covers the
+        // outer ingress holder that the Worker's own projection test cannot see.
+        // Constraint/Invariant: remote composition has exactly one committed
+        // reader authority; the provisional local reader cannot survive. Decision
+        // rule: replace once and assert pointer identity plus weak-handle release.
+        let ingress = DurableRunIngress::new(
+            Arc::new(Runtime::new()),
+            Arc::new(crate::MemoryDispatchStore::new()),
+            Arc::new(MemoryCommitCoordinator::new()),
+        );
+        let provisional = Arc::downgrade(&ingress.reader);
+        let projection = Arc::new(crate::RecoveryProjection::new());
+        let projection_reader: Arc<dyn CommittedThreadView> = projection.clone();
+
+        let ingress = ingress.with_recovery_projection(projection);
+
+        assert!(provisional.upgrade().is_none(), "C1+C2/E2");
+        assert!(
+            Arc::ptr_eq(&ingress.reader, &projection_reader),
+            "C1+C2/E1 replay reader"
+        );
+        assert!(
+            Arc::ptr_eq(&ingress.worker.committed_reader(), &projection_reader),
+            "C1+C2/E1 Worker reader"
+        );
     }
 }

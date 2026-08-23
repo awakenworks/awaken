@@ -37,7 +37,7 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -449,7 +449,23 @@ fn snapshot(tool_ids: &[&str]) -> ExecutableAgentSnapshot {
             ),
             tool_descriptors: tool_ids
                 .iter()
-                .map(|id| ToolDescriptor::pinned("formal", *id, *id, serde_json::json!({})))
+                .map(|id| {
+                    let descriptor =
+                        ToolDescriptor::pinned("formal", *id, *id, serde_json::json!({}));
+                    if *id == "agent_run" {
+                        // Cause/effect fixture rule F1: a formal trace asking the
+                        // installed delegation service to execute `agent_run`
+                        // must also freeze AgentDelegation authority into the
+                        // snapshot; ordinary trace tools remain Regular. This
+                        // models native/SDK publication while preserving the
+                        // Managed no-descriptor negative case elsewhere.
+                        descriptor
+                            .with_kind(ToolKind::AgentDelegation)
+                            .with_recovery(ToolRecoveryPolicy::durable_request())
+                    } else {
+                        descriptor
+                    }
+                })
                 .collect(),
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),

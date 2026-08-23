@@ -467,6 +467,10 @@ mod tests {
     async fn discovery_states_project_into_the_existing_worker_liveness_states() {
         // Cause graph: exact WorkerLocal binding -> one profile observation ->
         // existing CredentialObservationState; no credential material edge exists.
+        // Effects: each detected/login/missing/failure/disabled partition maps to
+        // its existing typed state, and disabled performs no process probe.
+        // Constraints/invariants: a failed credential is local to that exact
+        // reference and the projection never transports login material.
         //
         // Decision table:
         // D1 detected/available       -> Available
@@ -538,6 +542,10 @@ mod tests {
     async fn exact_revalidation_probes_only_the_pinned_cli_and_never_resolves_material() {
         // Cause graph: exact id+revision -> exact CLI liveness probe; stale pin
         // stops before I/O; the type has no material-resolution operation.
+        // Effects: an exact Available pin succeeds after one targeted probe;
+        // stale identity returns Unavailable with no additional I/O.
+        // Constraints/invariants: pre-launch validation cannot substitute a
+        // nearby revision/account or acquire secret bytes.
         //
         // Decision table:
         // R1 exact + available -> Available, one profile probe

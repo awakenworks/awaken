@@ -6,13 +6,14 @@
 
 use awaken_agent_contract::agent::content::{ContentBlock, ImageSource};
 use awaken_agent_contract::agent::message::Role;
+use awaken_ext_builtin_tools::{LIST_AGENTS, SEND_TO_AGENT};
 use awaken_runtime_contract::llm::{
-    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
+    AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, TokenUsage, ToolCall,
 };
 
 use awaken_runtime_host::block_text;
 
-/// A deterministic, network-free model: it replies with the last user turn's
+/// A deterministic, network-free model: it replies with the latest User message's
 /// text, so the server runs end-to-end in CI and under the TypeScript SDK e2e
 /// without an API key. Swap in a provider executor for real capability.
 pub struct EchoModel;
@@ -38,10 +39,18 @@ impl LlmExecutor for EchoModel {
     }
 }
 
-/// Echoes ordinary turns, but drives a real Native builtin-tool loop for the
+/// Echoes ordinary Runs, but drives a real Native builtin-tool loop for the
 /// oversized-output e2e. It then uses the returned relative path in another real
 /// builtin tool call, proving the model can access the complete sandbox file.
 pub struct OversizedToolModel;
+
+fn deterministic_scenario_usage() -> TokenUsage {
+    TokenUsage {
+        prompt_tokens: 1,
+        completion_tokens: 1,
+        ..Default::default()
+    }
+}
 
 fn materialized_tool_output_path(text: &str) -> Option<&str> {
     text.rsplit_once("complete output was written to ")?
@@ -64,7 +73,9 @@ impl LlmExecutor for OversizedToolModel {
             .map(|message| block_text(&message.content))
             .unwrap_or_default();
         if !last_user.contains("oversized-tool-output") {
-            return EchoModel.infer(request).await;
+            let mut response = EchoModel.infer(request).await?;
+            response.usage = Some(deterministic_scenario_usage());
+            return Ok(response);
         }
         if let Some(result) = request
             .messages
@@ -82,7 +93,7 @@ impl LlmExecutor for OversizedToolModel {
                             "command": format!("/usr/bin/wc -c < {path}")
                         }),
                     }]),
-                    usage: None,
+                    usage: Some(deterministic_scenario_usage()),
                     stop_reason: None,
                 });
             }
@@ -91,7 +102,7 @@ impl LlmExecutor for OversizedToolModel {
                     "native oversized tool spill readable bytes={}",
                     text.trim()
                 )),
-                usage: None,
+                usage: Some(deterministic_scenario_usage()),
                 stop_reason: None,
             });
         }
@@ -103,17 +114,17 @@ impl LlmExecutor for OversizedToolModel {
                     "command": "/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x"
                 }),
             }]),
-            usage: None,
+            usage: Some(deterministic_scenario_usage()),
             stop_reason: None,
         })
     }
 }
 
-/// A deterministic model that fails a turn on demand, so an e2e can observe the
+/// A deterministic model that fails a Run on demand, so an e2e can observe the
 /// `session.error` projection. A user message containing `BOOM` returns a
 /// permanent (non-retryable) provider failure — surfaced as an internal
 /// `RunError` and committed as `session.error`; any other message echoes, so the
-/// scenario can prove the session stays usable after a failed turn.
+/// scenario can prove the Session stays usable after a failed Run.
 pub struct ErrorModel;
 
 #[async_trait::async_trait]
@@ -131,7 +142,7 @@ impl LlmExecutor for ErrorModel {
             .unwrap_or_default();
         if last_user.contains("BOOM") {
             // Permanent so the engine does not retry (a fast, deterministic
-            // terminal failure); the native turn path maps it to internal.
+            // terminal failure); the Native Run path maps it to internal.
             return Err(awaken_runtime_contract::llm::Error::InvalidRequest(
                 "scenario: BOOM".into(),
             ));
@@ -145,7 +156,7 @@ impl LlmExecutor for ErrorModel {
 }
 
 /// A deterministic model tagged with a label, so an e2e can observe which model
-/// (executor) a session/turn resolved to (R1/R2/R5). Replies `model=<label>`.
+/// (executor) a Session Run resolved to (R1/R2/R5). Replies `model=<label>`.
 pub struct LabelModel(pub &'static str);
 
 #[async_trait::async_trait]
@@ -171,7 +182,7 @@ impl LlmExecutor for LabelModel {
 
 /// A deterministic memory-probe model. On the extractor sub-run (its system
 /// prompt is `awaken-ext-memory`'s extraction instructions) it saves one fixed
-/// memory via the `write_memory` tool; on a main turn it prefixes its echo with
+/// memory via the `write_memory` tool; on a primary Run it prefixes its echo with
 /// every system/context line it received, so an e2e can observe whether the
 /// recall plugin injected stored memories into a LATER session's request.
 pub struct MemoryProbeModel;
@@ -200,7 +211,7 @@ impl LlmExecutor for MemoryProbeModel {
                 });
             }
             // Name the memory after a `fact-<tag>` token in the transcript when
-            // present, so distinct turns accumulate distinct memories (which
+            // present, so distinct Runs accumulate distinct memories (which
             // drives the recall SELECTOR once the store passes its threshold);
             // otherwise fall back to the fixed sky-color memory.
             let transcript: String = request
@@ -248,7 +259,7 @@ impl LlmExecutor for MemoryProbeModel {
 }
 
 /// A deterministic vision-probe model: it reports the media it received on the
-/// last user turn, so an e2e can assert an image survived the whole
+/// latest User message, so an e2e can assert an image survived the whole
 /// adapter -> runtime -> model path (the echo model only sees text). Replies e.g.
 /// `saw image/png; text: what color`.
 pub struct VisionProbeModel;
@@ -332,11 +343,11 @@ impl LlmExecutor for ProbeModel {
 }
 
 /// A deterministic model for the memory_store RESOURCE durability e2e (ADR-0038).
-/// On its first turn it writes the user's text into the mounted memory store,
+/// On its first Run it writes the User text into the mounted memory store,
 /// realized read-write at `.mnt/memory`; it then reads the same path before
 /// finishing, proving the tool observed the mounted bytes rather than an unrelated
 /// workdir file. The host harvests that write back into the store under its stable
-/// id on turn end. Driving write -> read -> harvest lets an e2e prove the store's
+/// id on Run completion. Driving write -> read -> harvest lets an e2e prove the store's
 /// contents survive a real process restart.
 pub struct MemoryResourceModel;
 
@@ -411,7 +422,7 @@ impl LlmExecutor for GitRepoModel {
                     "content": "AGENT_REPO_MARKER_3390"
                 }),
             }]),
-            _ => AssistantOutput::text("repo turn done"),
+            _ => AssistantOutput::text("repo Run done"),
         };
         Ok(ChatResponse {
             output,
@@ -486,9 +497,89 @@ impl LlmExecutor for InstructionEchoModel {
     }
 }
 
-/// Registry-backed coordinator fixture: a coordinator delegates to the Agent id
-/// named after `delegate to `; a tool-free worker returns its frozen instructions.
-/// This makes an authored roster's source-revision pin observable end to end.
+/// Return one deterministic step of the fixed Managed coordination protocol.
+/// Both coordinator fixtures use this helper so `list_agents` -> `send_to_agent`
+/// sequencing has one owner. A tool-free child returns `None` and keeps its own
+/// model behavior; the `send_to_agent` result is only an admission receipt, never
+/// the child Agent's eventual reply.
+fn managed_coordination_output(
+    request: &ChatRequest,
+    agent_id: &str,
+    message: &str,
+) -> Option<AssistantOutput> {
+    let has_list = request.tools.iter().any(|tool| tool.id == LIST_AGENTS);
+    let has_send = request.tools.iter().any(|tool| tool.id == SEND_TO_AGENT);
+    if !has_list || !has_send {
+        return None;
+    }
+    // SessionApplication resumes the coordinator after a child settles by
+    // appending a typed internal User message whose stable text envelope starts
+    // this way. ChatRequest intentionally omits persisted Message ids, so this
+    // deterministic scenario model recognizes the envelope at the remaining
+    // contract boundary. A report Run terminates directly: treating it as a new
+    // user request would recursively fan out one child per completed child.
+    if request
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::User)
+        .is_some_and(|message| block_text(&message.content).starts_with("Message from agent "))
+    {
+        return Some(AssistantOutput::text(
+            "coordination completed from child report",
+        ));
+    }
+    let current_step = request
+        .messages
+        .iter()
+        .rev()
+        .take_while(|message| message.role != Role::User)
+        .collect::<Vec<_>>();
+    let tool_results = current_step
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .count();
+    let run_ordinal = request
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .count();
+    Some(match tool_results {
+        0 => AssistantOutput::from_tool_calls(vec![ToolCall {
+            call_id: format!("list-agents-{run_ordinal}"),
+            tool_id: LIST_AGENTS.into(),
+            arguments: serde_json::json!({}),
+        }]),
+        1 => AssistantOutput::from_tool_calls(vec![ToolCall {
+            call_id: format!("send-agent-{run_ordinal}"),
+            tool_id: SEND_TO_AGENT.into(),
+            arguments: serde_json::json!({
+                "agent_id": agent_id,
+                "message": message,
+            }),
+        }]),
+        _ => {
+            let result = current_step
+                .iter()
+                .find(|message| message.role == Role::Tool)
+                .map(|message| block_text(&message.content))
+                .unwrap_or_default();
+            let failed = current_step.iter().any(|message| {
+                message
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }))
+            });
+            let outcome = if failed { "failed" } else { "accepted" };
+            AssistantOutput::text(format!("coordination {outcome}: {result}"))
+        }
+    })
+}
+
+/// Registry-backed coordinator fixture: a coordinator discovers its fixed
+/// Managed roster, sends to the Agent id named after `delegate to `, and ends
+/// after the admission receipt. A tool-free worker returns its frozen
+/// instructions, making an authored roster's source-revision pin observable.
 pub struct RegistryDelegatingModel;
 
 #[async_trait::async_trait]
@@ -497,47 +588,26 @@ impl LlmExecutor for RegistryDelegatingModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let has_delegation = request.tools.iter().any(|tool| tool.id == "agent_run");
-        if !has_delegation {
-            let system = request
-                .messages
-                .iter()
-                .rev()
-                .find(|message| message.role == Role::System)
-                .map(|message| block_text(&message.content))
-                .unwrap_or_default();
-            return Ok(ChatResponse {
-                output: AssistantOutput::text(format!("worker instructions: {system}")),
-                usage: None,
-                stop_reason: None,
-            });
-        }
-        let result = request
+        let user = request
             .messages
             .iter()
             .rev()
-            .find(|message| message.role == Role::Tool)
-            .map(|message| block_text(&message.content));
-        let output = match result {
-            Some(result) => AssistantOutput::text(format!("delegate said: {result}")),
-            None => {
-                let user = request
-                    .messages
-                    .iter()
-                    .find(|message| message.role == Role::User)
-                    .map(|message| block_text(&message.content))
-                    .unwrap_or_default();
-                let agent_id = user.strip_prefix("delegate to ").unwrap_or_default().trim();
-                AssistantOutput::from_tool_calls(vec![ToolCall {
-                    call_id: "registry-delegate".into(),
-                    tool_id: "agent_run".into(),
-                    arguments: serde_json::json!({
-                        "agent_id": agent_id,
-                        "input": "report your frozen instructions"
-                    }),
-                }])
-            }
-        };
+            .find(|message| message.role == Role::User)
+            .map(|message| block_text(&message.content))
+            .unwrap_or_default();
+        let agent_id = user.strip_prefix("delegate to ").unwrap_or_default().trim();
+        let output =
+            managed_coordination_output(&request, agent_id, "report your frozen instructions")
+                .unwrap_or_else(|| {
+                    let system = request
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|message| message.role == Role::System)
+                        .map(|message| block_text(&message.content))
+                        .unwrap_or_default();
+                    AssistantOutput::text(format!("worker instructions: {system}"))
+                });
         Ok(ChatResponse {
             output,
             usage: None,
@@ -624,6 +694,71 @@ impl LlmExecutor for CustomToolModel {
     }
 }
 
+/// A deterministic model that requests the real `web_fetch` or `web_search`
+/// tool named by the latest User command, then reports the returned result and
+/// whether the runtime marked it as an error. It owns no Web policy or provider
+/// behavior; those stay in the production Host and built-in extension paths.
+pub(crate) struct WebToolDrivingModel;
+
+#[async_trait::async_trait]
+impl LlmExecutor for WebToolDrivingModel {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        if let Some(last) = request.messages.last()
+            && last.role == Role::Tool
+        {
+            let failed = last
+                .content
+                .iter()
+                .any(|block| matches!(block, ContentBlock::ToolResult { is_error: true, .. }));
+            let status = if failed { "error" } else { "result" };
+            return Ok(ChatResponse {
+                output: AssistantOutput::text(format!(
+                    "web-{status}: {}",
+                    block_text(&last.content)
+                )),
+                usage: Some(deterministic_scenario_usage()),
+                stop_reason: None,
+            });
+        }
+
+        let last_user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(|message| block_text(&message.content))
+            .unwrap_or_default();
+        let call = last_user
+            .strip_prefix("web-fetch ")
+            .filter(|url| !url.is_empty())
+            .map(|url| ("web_fetch", serde_json::json!({ "url": url })))
+            .or_else(|| {
+                last_user
+                    .strip_prefix("web-search ")
+                    .filter(|query| !query.is_empty())
+                    .map(|query| ("web_search", serde_json::json!({ "query": query })))
+            });
+        let output = call.map_or_else(
+            || AssistantOutput::text(format!("Echo: {last_user}")),
+            |(tool_id, arguments)| {
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: format!("{tool_id}-{}", request.messages.len()),
+                    tool_id: tool_id.into(),
+                    arguments,
+                }])
+            },
+        );
+        Ok(ChatResponse {
+            output,
+            usage: Some(deterministic_scenario_usage()),
+            stop_reason: None,
+        })
+    }
+}
+
 /// A deterministic model for the MCP e2e (ADR-0043 Phase 3), following the
 /// `CustomToolModel` idiom. `add <a> <b>` emits a call to the namespaced MCP tool
 /// `mcp__calc__add` — the fixture contract: the session registers the mock MCP
@@ -640,14 +775,14 @@ impl LlmExecutor for McpToolModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        // A tool result came back: report it (`result: <text>`), ending the turn.
+        // A tool result came back: report it (`result: <text>`), completing the Run.
         if let Some(last) = request.messages.last()
             && last.role == Role::Tool
         {
             let result = block_text(&last.content);
             return Ok(ChatResponse {
                 output: AssistantOutput::text(format!("result: {result}")),
-                usage: None,
+                usage: Some(deterministic_scenario_usage()),
                 stop_reason: None,
             });
         }
@@ -665,29 +800,28 @@ impl LlmExecutor for McpToolModel {
         {
             return Ok(ChatResponse {
                 output: AssistantOutput::from_tool_calls(vec![ToolCall {
-                    // Unique per step so multi-turn tool-use events keep distinct ids.
+                    // Unique per Step so multi-Run tool-use events keep distinct ids.
                     call_id: format!("mcp-{}", request.messages.len()),
                     tool_id: "mcp__calc__add".into(),
                     arguments: serde_json::json!({ "a": a, "b": b }),
                 }]),
-                usage: None,
+                usage: Some(deterministic_scenario_usage()),
                 stop_reason: None,
             });
         }
         Ok(ChatResponse {
             output: AssistantOutput::text(format!("Echo: {last_user}")),
-            usage: None,
+            usage: Some(deterministic_scenario_usage()),
             stop_reason: None,
         })
     }
 }
 
-/// A deterministic model for the delegation e2e. When it holds `agent_run` it
-/// delegates (to Native `researcher`, ACP `acp-worker`, its explicit `self`
-/// copy, or `ghost`) and then
-/// reports the delegate's result. The self-copy task answers directly so the
-/// deterministic fixture proves one recursive edge without manufacturing an
-/// unrelated deeper orchestration tree.
+/// A deterministic model for the Managed coordination e2e. A coordinator first
+/// calls fixed `list_agents`, then asynchronously calls fixed `send_to_agent`
+/// (Native `researcher`, ACP `acp-worker`, explicit `self`, or `ghost`) and ends
+/// on the admission receipt. A child answers on its own Thread. The self-copy
+/// task answers directly so one recursive edge cannot manufacture a deeper tree.
 pub struct DelegatingModel;
 
 #[async_trait::async_trait]
@@ -696,62 +830,46 @@ impl LlmExecutor for DelegatingModel {
         &self,
         request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let has_delegation = request.tools.iter().any(|t| t.id == "agent_run");
-        if !has_delegation {
+        let user = request
+            .messages
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::User)
+            .map(|message| block_text(&message.content))
+            .unwrap_or_default();
+        if user.contains("self-copy task") {
             return Ok(ChatResponse {
-                output: AssistantOutput::text("researched: 42"),
+                output: AssistantOutput::text("self copy: 42"),
                 usage: None,
                 stop_reason: None,
             });
         }
-        let tool_results = request
-            .messages
+        let matrix_acp = awaken_run_executor_acp::known_acp_clis()
             .iter()
-            .filter(|m| m.role == Role::Tool)
-            .count();
-        let output = if tool_results == 0 {
-            let user = request
-                .messages
-                .iter()
-                .find(|m| m.role == Role::User)
-                .map(|m| block_text(&m.content))
-                .unwrap_or_default();
-            if user.contains("self-copy task") {
-                return Ok(ChatResponse {
-                    output: AssistantOutput::text("self copy: 42"),
-                    usage: None,
-                    stop_reason: None,
-                });
-            }
-            let agent_id = if user.contains("ghost") {
-                "ghost"
-            } else if user.contains("acp agent") {
-                "acp-worker"
-            } else if user.contains("self agent") {
-                "assistant"
-            } else {
-                "researcher"
-            };
-            let input = if agent_id == "assistant" {
-                "self-copy task"
-            } else {
-                "do the research"
-            };
-            AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: "d1".into(),
-                tool_id: "agent_run".into(),
-                arguments: serde_json::json!({ "agent_id": agent_id, "input": input }),
-            }])
+            .find(|cli| user.contains(&format!("{} acp agent", cli.id)))
+            .map(|cli| format!("acp-{}-worker", cli.id));
+        let agent_id = if user.contains("ghost") {
+            "ghost".to_string()
+        } else if let Some(agent_id) = matrix_acp {
+            agent_id
+        } else if user.contains("acp agent") {
+            "acp-worker".to_string()
+        } else if user.contains("self agent") {
+            "assistant".to_string()
         } else {
-            let result = request
-                .messages
-                .iter()
-                .rev()
-                .find(|message| message.role == Role::Tool)
-                .map(|message| block_text(&message.content))
-                .unwrap_or_default();
-            AssistantOutput::text(format!("delegate said: {result}"))
+            "researcher".to_string()
         };
+        let message = if agent_id == "assistant" {
+            "self-copy task"
+        } else if agent_id.starts_with("acp-") && agent_id.ends_with("-worker") {
+            "matrix-basic delegated child"
+        } else if user.contains("delegate lifecycle:") {
+            user.as_str()
+        } else {
+            "do the research"
+        };
+        let output = managed_coordination_output(&request, &agent_id, message)
+            .unwrap_or_else(|| AssistantOutput::text("researched: 42"));
         Ok(ChatResponse {
             output,
             usage: None,
@@ -761,9 +879,9 @@ impl LlmExecutor for DelegatingModel {
 }
 
 /// The compaction e2e model. On the `compactor` sub-run (its system prompt is
-/// the summarize instructions) it returns a fixed summary line; on a main turn
+/// the summarize instructions) it returns a fixed summary line; on a primary Run
 /// it prefixes its reply with the system/context text it received, so an e2e
-/// can observe the folded summary being injected on a later turn.
+/// can observe the folded summary being injected on a later Run.
 pub struct CompactionModel;
 
 #[async_trait::async_trait]
@@ -788,7 +906,7 @@ impl LlmExecutor for CompactionModel {
             .join(" ");
         if joined_user.contains("summarize") || system_text.contains("summar") {
             return Ok(ChatResponse {
-                output: AssistantOutput::text("SUMMARY: earlier turns folded"),
+                output: AssistantOutput::text("SUMMARY: earlier Runs folded"),
                 usage: None,
                 stop_reason: None,
             });
@@ -811,8 +929,8 @@ impl LlmExecutor for CompactionModel {
 #[cfg(test)]
 mod tests {
     //! Unit pins on the deterministic model zoo's *decision logic* — the fixture
-    //! contracts the e2e scenarios rely on (which tool a turn calls, how a marker is
-    //! parsed, when a turn fails). These are network-free `infer(request)` functions,
+    //! contracts the e2e scenarios rely on (which tool a Run calls, how a marker is
+    //! parsed, when a Run fails). These are network-free `infer(request)` functions,
     //! so a silent drift here (e.g. the `add a b` parser breaking) is caught locally
     //! rather than only as a hard-to-localize e2e failure driving a real binary.
     use super::*;
@@ -838,6 +956,17 @@ mod tests {
         }
     }
 
+    fn tool_error(call_id: &str, text: &str) -> ChatMessage {
+        ChatMessage {
+            role: Role::Tool,
+            content: vec![ContentBlock::tool_result_with_error(
+                call_id,
+                vec![ContentBlock::text(text)],
+                true,
+            )],
+        }
+    }
+
     fn req(messages: Vec<ChatMessage>) -> ChatRequest {
         ChatRequest {
             model_binding: ModelBinding::new("id", "m", "default"),
@@ -859,7 +988,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn echo_model_reflects_the_last_user_turn() {
+    async fn echo_model_reflects_the_last_user_message() {
+        // Causes: C1 the request contains ordered User messages. Effects: E1 the
+        // fixture replies with only the last User text under the stable `Echo:`
+        // prefix. Constraints/invariants: non-User messages and earlier User
+        // messages cannot replace the final User input. Decision rule ECHO1:
+        // C1 with `first,second` -> E1=`Echo: second`.
         let resp = infer(
             &EchoModel,
             req(vec![msg(Role::User, "first"), msg(Role::User, "second")]),
@@ -876,7 +1010,7 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::InvalidRequest(_)), "{err:?}");
-        // Anything else stays a usable echo turn.
+        // Anything else stays a usable echo Run.
         let ok = infer(&ErrorModel, req(vec![msg(Role::User, "hello")])).await;
         assert_eq!(ok.output.text_content(), "Echo: hello");
     }
@@ -912,14 +1046,22 @@ mod tests {
 
     #[tokio::test]
     async fn mcp_tool_model_parses_add_and_reports_results() {
-        // `add <int> <int>` → the namespaced MCP calculator tool with parsed operands.
+        // Cause/effect decision table: valid add -> one calculator call; invalid
+        // add -> echo; tool result -> final report. Every logical request also
+        // reports the same deterministic two-token usage so the management
+        // Scenario can exercise the real shared-budget request gate.
+        // Constraints/invariants: only two integer operands select calc.add, and
+        // only a committed Tool result selects the final report; every branch
+        // emits exactly one identical deterministic usage observation.
         let call = infer(&McpToolModel, req(vec![msg(Role::User, "add 2 3")])).await;
+        assert_eq!(call.usage, Some(deterministic_scenario_usage()));
         let calls = call.output.tool_calls();
         assert_eq!(calls[0].tool_id, "mcp__calc__add");
         assert_eq!(calls[0].arguments["a"], 2);
         assert_eq!(calls[0].arguments["b"], 3);
         // Non-integer operands do NOT match the calculator: fall through to echo.
         let echo = infer(&McpToolModel, req(vec![msg(Role::User, "add x y")])).await;
+        assert_eq!(echo.usage, Some(deterministic_scenario_usage()));
         assert!(echo.output.tool_calls().is_empty());
         assert_eq!(echo.output.text_content(), "Echo: add x y");
         // A returned tool result is reported as `result: <text>`.
@@ -928,32 +1070,177 @@ mod tests {
             req(vec![msg(Role::User, "add 2 3"), tool_result("mcp-1", "5")]),
         )
         .await;
+        assert_eq!(reported.usage, Some(deterministic_scenario_usage()));
         assert_eq!(reported.output.text_content(), "result: 5");
     }
 
     #[tokio::test]
-    async fn delegating_model_routes_by_tool_presence_and_target() {
-        // Without the `agent_run` tool it is the delegate sub-agent: it answers plainly.
+    async fn delegating_model_uses_the_fixed_managed_coordination_sequence() {
+        // Cause/effect graph: C1=both fixed coordination descriptors are present,
+        // C2=current-Run result count is 0/1/2, C3=target is published/missing/self,
+        // C4=send result is success/error, C5=latest User input is an internal
+        // child report. Effects are E1=plain child reply,
+        // E2=list_agents, E3=send_to_agent with exactly one selector, E4=receipt
+        // acknowledgement, E5=surfaced failure, and E6=report acknowledgement
+        // without another tool call. Results before the last User Run are
+        // constrained to have no effect on the new Run.
+        //
+        // Decision table:
+        // | Rule | C1 | C2 | C3       | C4      | Effect |
+        // | D1   | no | -  | child    | -       | E1     |
+        // | D2   | yes| 0  | any      | -       | E2     |
+        // | D3   | yes| 1  | roster   | -       | E3     |
+        // | D4   | yes| 2  | roster   | success | E4     |
+        // | D5   | yes| 2  | missing  | error   | E5     |
+        // | D6   | yes| 0  | self task| -       | E1     |
+        // | D7   | yes| -  | child report | -   | E6     |
+        // Constraints/invariants: only current-Run results advance this fixed
+        // sequence; without the complete fixed surface the model is a child
+        // Agent and answers plainly, and a child report can never trigger a
+        // second send.
         let plain = infer(&DelegatingModel, req(vec![msg(Role::User, "research")])).await;
         assert_eq!(plain.output.text_content(), "researched: 42");
-        // With `agent_run` it delegates — to `researcher` by default…
+
+        // A Managed coordinator discovers the roster before addressing a child.
         let mut r = req(vec![msg(Role::User, "go research this")]);
-        r.tools = vec![tool("agent_run")];
-        let deleg = infer(&DelegatingModel, r).await;
+        r.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let listed = infer(&DelegatingModel, r).await;
+        assert_eq!(listed.output.tool_calls()[0].tool_id, LIST_AGENTS);
         assert_eq!(
-            deleg.output.tool_calls()[0].arguments["agent_id"],
-            "researcher"
+            listed.output.tool_calls()[0].arguments,
+            serde_json::json!({})
         );
-        // …and to `ghost` when the user names it (the missing-agent fail path).
-        let mut rg = req(vec![msg(Role::User, "delegate to the ghost agent")]);
-        rg.tools = vec![tool("agent_run")];
+
+        // The roster result advances to the asynchronous send receipt boundary.
+        let mut r = req(vec![
+            msg(Role::User, "go research this"),
+            tool_result("list-agents-1", r#"[{"agent_id":"researcher"}]"#),
+        ]);
+        r.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let delegated = infer(&DelegatingModel, r).await;
+        let call = &delegated.output.tool_calls()[0];
+        assert_eq!(call.tool_id, SEND_TO_AGENT);
+        assert_eq!(call.arguments["agent_id"], "researcher");
+        assert_eq!(call.arguments["message"], "do the research");
+        assert!(call.arguments.get("session_thread_id").is_none());
+
+        // A missing target is still sent through the one fixed command; runtime
+        // roster authority rejects it instead of the fixture inventing a child.
+        let mut rg = req(vec![
+            msg(Role::User, "delegate to the ghost agent"),
+            tool_result("list-agents-1", "[]"),
+        ]);
+        rg.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
         let ghost = infer(&DelegatingModel, rg).await;
         assert_eq!(ghost.output.tool_calls()[0].arguments["agent_id"], "ghost");
-        // With a delegate result present it reports it.
-        let mut rr = req(vec![msg(Role::User, "go"), tool_result("d1", "the answer")]);
-        rr.tools = vec![tool("agent_run")];
-        let reported = infer(&DelegatingModel, rr).await;
-        assert_eq!(reported.output.text_content(), "delegate said: the answer");
+
+        // Successful/error send results end the coordinator Run; neither is a
+        // synchronous child reply.
+        let mut accepted = req(vec![
+            msg(Role::User, "go"),
+            tool_result("list-agents-1", "[]"),
+            tool_result("send-agent-1", r#"{"accepted":true}"#),
+        ]);
+        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let accepted = infer(&DelegatingModel, accepted).await;
+        assert_eq!(
+            accepted.output.text_content(),
+            r#"coordination accepted: {"accepted":true}"#
+        );
+
+        let mut failed = req(vec![
+            msg(Role::User, "ghost"),
+            tool_result("list-agents-1", "[]"),
+            tool_error("send-agent-1", "not in frozen roster"),
+        ]);
+        failed.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let failed = infer(&DelegatingModel, failed).await;
+        assert_eq!(
+            failed.output.text_content(),
+            "coordination failed: not in frozen roster"
+        );
+
+        // A completed child wakes the coordinator in a later Run. That report
+        // is terminal input, not another delegation request (D7).
+        let mut report = req(vec![msg(
+            Role::User,
+            "Message from agent researcher (thread child-1):\nresearched: 42",
+        )]);
+        report.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let report = infer(&DelegatingModel, report).await;
+        assert!(report.output.tool_calls().is_empty());
+        assert_eq!(
+            report.output.text_content(),
+            "coordination completed from child report"
+        );
+
+        let mut self_copy = req(vec![msg(Role::User, "self-copy task")]);
+        self_copy.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let self_copy = infer(&DelegatingModel, self_copy).await;
+        assert_eq!(self_copy.output.text_content(), "self copy: 42");
+    }
+
+    #[tokio::test]
+    async fn registry_delegating_model_reuses_the_fixed_coordination_sequence() {
+        // Causes: fixed surface absent/present and 0/1/2 current-Run results.
+        // Effects: worker instruction echo or the shared list/send/receipt steps.
+        // Decision rules: R1(absent)->worker; R2(present,0)->list;
+        // R3(present,1)->send exact authored id; R4(present,2)->end on receipt;
+        // R5(present,child report)->acknowledge without a second send.
+        // Constraints/invariants: the shared fixed descriptors and current-Run
+        // results are the only sequence inputs; authored Agent identity is
+        // preserved exactly and a child report is terminal for coordination.
+        let worker = infer(
+            &RegistryDelegatingModel,
+            req(vec![msg(Role::System, "WORKER_REVISION_ONE")]),
+        )
+        .await;
+        assert_eq!(
+            worker.output.text_content(),
+            "worker instructions: WORKER_REVISION_ONE"
+        );
+
+        let mut listed = req(vec![msg(Role::User, "delegate to agent_worker")]);
+        listed.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let listed = infer(&RegistryDelegatingModel, listed).await;
+        assert_eq!(listed.output.tool_calls()[0].tool_id, LIST_AGENTS);
+
+        let mut sent = req(vec![
+            msg(Role::User, "delegate to agent_worker"),
+            tool_result("list-agents-1", r#"[{"agent_id":"agent_worker"}]"#),
+        ]);
+        sent.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let sent = infer(&RegistryDelegatingModel, sent).await;
+        let call = &sent.output.tool_calls()[0];
+        assert_eq!(call.tool_id, SEND_TO_AGENT);
+        assert_eq!(call.arguments["agent_id"], "agent_worker");
+        assert_eq!(call.arguments["message"], "report your frozen instructions");
+
+        let mut accepted = req(vec![
+            msg(Role::User, "delegate to agent_worker"),
+            tool_result("list-agents-1", "[]"),
+            tool_result("send-agent-1", r#"{"accepted":true}"#),
+        ]);
+        accepted.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let accepted = infer(&RegistryDelegatingModel, accepted).await;
+        assert!(
+            accepted
+                .output
+                .text_content()
+                .starts_with("coordination accepted:")
+        );
+
+        let mut report = req(vec![msg(
+            Role::User,
+            "Message from agent execution-worker (thread child-1):\nworker instructions",
+        )]);
+        report.tools = vec![tool(LIST_AGENTS), tool(SEND_TO_AGENT)];
+        let report = infer(&RegistryDelegatingModel, report).await;
+        assert!(report.output.tool_calls().is_empty());
+        assert_eq!(
+            report.output.text_content(),
+            "coordination completed from child report"
+        );
     }
 
     #[tokio::test]

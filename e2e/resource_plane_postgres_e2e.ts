@@ -10,7 +10,14 @@ import path from 'node:path';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { cleanupFixtureTree, spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  managedWorkspaceClient,
+  spawnProduction,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38436);
@@ -18,6 +25,10 @@ const WORKSPACE = `resource-pg-${process.pid}`;
 const OTHER_WORKSPACE = `resource-pg-other-${process.pid}`;
 const AGENT = `resource-pg-agent-${process.pid}`;
 const MODEL = `resource-pg-model-${process.pid}`;
+const MANAGED_BETA = 'managed-agents-2026-04-01';
+const MEMORY_BETA = 'agent-memory-2026-07-22';
+const SKILLS_BETA = 'skills-2025-10-02';
+const FILES_BETA = 'files-api-2025-04-14';
 const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 function docker(...args: string[]): string {
@@ -81,10 +92,22 @@ const scoped = (workspace: string, suffix: string) =>
   `http://127.0.0.1:${PORT}/v1/workspaces/${workspace}/${suffix}`;
 
 async function json(method: string, url: string, body?: unknown) {
+  // Protocol-boundary cause/effect table: a Session/Memory/Skill/File URL with
+  // its own exact beta reaches the PostgreSQL resource behavior under test;
+  // a missing or cross-family beta is rejected before persistence. Other
+  // management routes retain the Managed beta. These are exclusive rows, not a
+  // combined compatibility header.
+  const beta = url.includes('/memory_stores')
+    ? MEMORY_BETA
+    : url.includes('/skills')
+      ? SKILLS_BETA
+      : url.includes('/files')
+        ? FILES_BETA
+        : MANAGED_BETA;
   const response = await fetch(url, {
     method,
     headers: {
-      'anthropic-beta': 'managed-agents-2026-04-01',
+      'anthropic-beta': beta,
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -97,7 +120,11 @@ async function upload(content: string, workspace = WORKSPACE): Promise<string> {
   const form = new FormData();
   form.append('purpose', 'agent');
   form.append('file', new Blob([content]), 'shared.txt');
-  const response = await fetch(scoped(workspace, 'files'), { method: 'POST', body: form });
+  const response = await fetch(scoped(workspace, 'files'), {
+    method: 'POST',
+    headers: { 'anthropic-beta': FILES_BETA },
+    body: form,
+  });
   assert.equal(response.status, 200);
   return (await response.json()).id;
 }
@@ -174,13 +201,19 @@ async function uploadSkillVersion(
     'SKILL.md',
   );
   if (binary !== undefined) {
+    const binaryBytes = new Uint8Array(binary.byteLength);
+    binaryBytes.set(binary);
     form.append(
       'files[]',
-      new Blob([binary], { type: 'application/octet-stream' }),
+      new Blob([binaryBytes], { type: 'application/octet-stream' }),
       'assets/data.bin',
     );
   }
-  const response = await fetch(scoped(WORKSPACE, route), { method: 'POST', body: form });
+  const response = await fetch(scoped(WORKSPACE, route), {
+    method: 'POST',
+    headers: { 'anthropic-beta': SKILLS_BETA },
+    body: form,
+  });
   const body = await response.json().catch(() => ({}));
   assert.equal(response.status, expectedStatus, `${route}: ${JSON.stringify(body)}`);
   return body;
@@ -434,6 +467,16 @@ async function publishAgent(endpoint: string, memoryStoreId: string): Promise<vo
 }
 
 async function main(): Promise<void> {
+  // Test design (PostgreSQL resource plane). Causes: C1=File/Memory/Skill/policy
+  // state is authored in Workspace A; C2=a replacement process uses the same
+  // PostgreSQL stores; C3=Workspace B or an archived/corrupt resource is used;
+  // C4=a registered Worker realizes the frozen manifest. Effects: E1=all valid
+  // state survives restart with exact bytes/versions; E2=C3 is denied without
+  // sandbox/model effect; E3=C4 completes one Managed Run and cleanup receipt.
+  // Constraints/invariant: PostgreSQL repositories are the sole shared truth;
+  // process-local directories and Worker projections never become authorities.
+  // Decision rules: G1=C1=>E1; G2=C1+C2=>E1; G3=C3=>E2;
+  // G4=C1+C2+C4=>E1+E3.
   const pg = await postgres();
   const upstream = await startFakeAnthropic('resource-e2e-model-key', {
     behavior: 'memory',
@@ -563,7 +606,9 @@ async function main(): Promise<void> {
     assert.equal(restoredFile.status, 200, 'E1');
     assert.equal(restoredFile.body.size_bytes, 'shared postgres file bytes'.length, 'E1');
     assert.equal(
-      (await fetch(scoped(WORKSPACE, `files/${fileId}/content`))).status,
+      (await fetch(scoped(WORKSPACE, `files/${fileId}/content`), {
+        headers: { 'anthropic-beta': FILES_BETA },
+      })).status,
       400,
       'E2',
     );
@@ -663,18 +708,23 @@ async function main(): Promise<void> {
     const latestSkill = await json('GET', scoped(WORKSPACE, `skills/${skillId}/versions/latest`));
     assert.equal(latestSkill.status, 200);
     assert.equal(latestSkill.body.version, '2');
-    const skillContent = await fetch(scoped(WORKSPACE, `skills/${skillId}/versions/2/content`));
+    const skillContent = await fetch(scoped(WORKSPACE, `skills/${skillId}/versions/2/content`), {
+      headers: { 'anthropic-beta': SKILLS_BETA },
+    });
     assert.equal(skillContent.status, 200);
     assert.match(await skillContent.text(), /shared postgres skill v2/u);
     const skillBinary = await fetch(
       scoped(WORKSPACE, `skills/${skillId}/versions/2/files/assets/data.bin`),
+      { headers: { 'anthropic-beta': SKILLS_BETA } },
     );
     assert.equal(skillBinary.status, 200);
     assert.deepEqual(new Uint8Array(await skillBinary.arrayBuffer()), binaryFixture);
 
     // Workspace routing/ownership is intrinsic resource state. It fails closed
     // without putting a principal, role, token, or policy inside any content port.
-    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`))).status, 404);
+    assert.equal((await fetch(scoped(OTHER_WORKSPACE, `files/${fileId}/content`), {
+      headers: { 'anthropic-beta': FILES_BETA },
+    })).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `memory_stores/${memoryId}`))).status, 404);
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `skills/${skillId}`))).status, 404);
     console.log('  ok: replacement process restored and isolated all PostgreSQL resource state');
@@ -692,7 +742,8 @@ async function main(): Promise<void> {
     // | legacy top-level initial_branch       | 400 unknown-field fail-closed  |
     await publishAgent(upstream.url, memoryId);
     const repository = seedRepository(secondDirectory);
-    const session = await json('POST', scoped(WORKSPACE, 'sessions'), {
+    const client = managedWorkspaceClient(`http://127.0.0.1:${PORT}`, WORKSPACE);
+    const session = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local',
       resources: [
         {
@@ -707,8 +758,8 @@ async function main(): Promise<void> {
           mount_path: '/workspace/create-time-repository',
         },
       ],
+      betas: [MANAGED_BETA],
     });
-    assert.equal(session.status, 200, JSON.stringify(session.body));
     // Registered-Worker activation cause/effect table. The public Resource list
     // is the canonical desired manifest, while status carries realization state;
     // there is no second installed-resource catalog.
@@ -718,44 +769,60 @@ async function main(): Promise<void> {
     // | present | absent | both bindings | rescheduling |
     // | present | exact | both bindings | idle/running |
     //
-    // Rule R1 covers create and R2 the turn below. FMECA: hiding desired inputs
+    // Rule R1 covers create and R2 the Run below. FMECA: hiding desired inputs
     // breaks official create/read round-trip; calling them installed invents a
     // parallel projection. Exact resource equality plus the independent status
     // assertion detects both failures.
     assert.deepEqual(
-      session.body.resources.map((resource: { type: string }) => resource.type),
+      session.resources.map((resource: { type: string }) => resource.type),
       ['memory_store', 'github_repository'],
       'the canonical desired manifest is immediately readable',
     );
-    assert.equal(session.body.status, 'rescheduling');
-    const turn = await json(
-      'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/events`),
-      {
-        events: [{
-          type: 'user.message',
-          content: [{
-            type: 'text',
-            text: `resolve the governed resource bindings fact-postgres-${process.pid}`,
-          }],
+    assert.equal(session.status, 'rescheduling');
+    // Managed Run decision table: C1=official SDK create froze both resources;
+    // C2=official SDK send returns one exact User receipt; C3=the registered
+    // Worker processes C2 and commits a later Agent reply plus idle. E1=C1 is
+    // round-trippable; E2=C1+C2+C3 authorizes DB/resource-effect assertions.
+    // K: admission or old idle history cannot satisfy C3. Rules P1 !C2=>fail;
+    // P2 C2+!C3=>retry for at most 30s; P3 C1+C2+C3=>E1+E2.
+    const runReceipt = await client.beta.sessions.events.send(session.id, {
+      events: [{
+        type: 'user.message',
+        content: [{
+          type: 'text',
+          text: `resolve the governed resource bindings fact-postgres-${process.pid}`,
         }],
-      },
+      }],
+      betas: [MANAGED_BETA],
+    });
+    assert.equal(runReceipt.data?.length, 1, JSON.stringify(runReceipt));
+    const runReceiptId = runReceipt.data[0]?.id;
+    assert.equal(typeof runReceiptId, 'string', 'P1 exact PostgreSQL Run User receipt');
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      runReceiptId,
+      [MANAGED_BETA],
+      ({ delta }: { delta: Array<{ type: string }> }) =>
+        delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+      'the PostgreSQL-backed Managed Run to commit its reply and idle edge',
+      { timeoutMs: 30_000 },
     );
-    assert.equal(turn.status, 200, JSON.stringify(turn.body));
-    const activeSession = await json('GET', scoped(WORKSPACE, `sessions/${session.body.id}`));
+    const activeSession = await json('GET', scoped(WORKSPACE, `sessions/${session.id}`));
     assert.equal(activeSession.status, 200, JSON.stringify(activeSession.body));
     assert.deepEqual(
       activeSession.body.resources.map((resource: { type: string }) => resource.type),
       ['memory_store', 'github_repository'],
     );
     console.log('  ok: registered Worker activated PostgreSQL-backed MemoryStore and Repository inputs');
-    console.log('  ok: Managed turn completed over the PostgreSQL-backed resource bindings');
+    console.log('  ok: Managed Run completed over the PostgreSQL-backed resource bindings');
     const realized = psql(
       pg.container,
-      `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.body.id)}`,
+      `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.id)}`,
     );
     assert.ok(Number(realized) >= 2, 'the Session activated both frozen resource bindings');
-    const extraction = await waitForCompletedExtraction(pg.container, session.body.id);
+    const extraction = await waitForCompletedExtraction(pg.container, session.id);
     assert.equal(extraction.workspace_id, WORKSPACE);
     assert.equal(extraction.memory_store_id, memoryId);
     assert.equal(extraction.memory_config_version, Number(memoryConfigVersion));
@@ -771,7 +838,7 @@ async function main(): Promise<void> {
       JSON.stringify({ extraction, upstreamRequests: upstream.requests }),
     );
     assert.equal(
-      upstream.requests.filter((request) => request.memoryExtractor).length,
+      upstream.requests.filter((request: { memoryExtractor?: unknown }) => request.memoryExtractor).length,
       2,
       'R1: the exact extractor candidate performs write_memory then its final response',
     );
@@ -797,7 +864,7 @@ async function main(): Promise<void> {
     const createTimeRepositoryIds = psql(
       pg.container,
       `SELECT id FROM resource_catalog_entry WHERE kind='repository' ` +
-        `AND id LIKE ${sqlLiteral(`managed:${session.body.id}:repository:%`)} ORDER BY id`,
+        `AND id LIKE ${sqlLiteral(`managed:${session.id}:repository:%`)} ORDER BY id`,
     ).split('\n').filter(Boolean);
     assert.equal(
       createTimeRepositoryIds.length,
@@ -822,7 +889,7 @@ async function main(): Promise<void> {
     );
     const probe = await json(
       'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources`),
       {
         type: 'file',
         file_id: fileId,
@@ -833,7 +900,7 @@ async function main(): Promise<void> {
     assert.equal(server.exitCode, null, 'Catalog drift must not crash the process');
     const withProbe = await json(
       'GET',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources`),
     );
     assert.deepEqual(
       withProbe.body.data.map((resource: { type: string }) => resource.type),
@@ -849,13 +916,13 @@ async function main(): Promise<void> {
     assert.equal(
       (await json(
         'DELETE',
-        scoped(WORKSPACE, `sessions/${session.body.id}/resources/${probe.body.id}`),
+        scoped(WORKSPACE, `sessions/${session.id}/resources/${probe.body.id}`),
       )).status,
       200,
     );
     const unchangedResources = await json(
       'GET',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources`),
     );
     assert.equal(unchangedResources.status, 200, JSON.stringify(unchangedResources.body));
     assert.deepEqual(
@@ -878,7 +945,7 @@ async function main(): Promise<void> {
     assert.ok(repositoryResource?.id, 'create-time Repository projection is addressable');
     const rawCredentialUpdate = await json(
       'POST',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
       {
         authorization_token: 'repository-rotated-token', // awaken-allow: secret
       },
@@ -886,13 +953,13 @@ async function main(): Promise<void> {
     assert.equal(rawCredentialUpdate.status, 400, JSON.stringify(rawCredentialUpdate.body));
     const unchangedRepository = await json(
       'GET',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
     );
     assert.equal(unchangedRepository.status, 200, JSON.stringify(unchangedRepository.body));
     assert.equal(unchangedRepository.body.mount_path, '/workspace/create-time-repository');
     const retiredRepository = await json(
       'DELETE',
-      scoped(WORKSPACE, `sessions/${session.body.id}/resources/${repositoryResource.id}`),
+      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
     );
     assert.equal(retiredRepository.status, 200, JSON.stringify(retiredRepository.body));
     assert.equal(retiredRepository.body.type, 'session_resource_deleted');
@@ -968,14 +1035,19 @@ async function main(): Promise<void> {
       (intent) => intent.status === 'pending' && intent.attempts >= 1,
     );
     const faultById = new Map(faulted.map((intent) => [intent.target.resource_id, intent]));
-    assert.match(faultById.get(reclamationIds.contended).last_error, /fenced by another/u);
+    const contendedFault = faultById.get(reclamationIds.contended);
+    const lateFault = faultById.get(reclamationIds.late);
+    const releaseFault = faultById.get(reclamationIds.release);
+    const physicalFault = faultById.get(reclamationIds.physical);
+    assert.ok(contendedFault && lateFault && releaseFault && physicalFault);
+    assert.match(contendedFault.last_error, /fenced by another/u);
     assert.ok(
-      faultById.get(reclamationIds.late).blockers.some(
+      lateFault.blockers.some(
         (blocker: { reference_id: string }) => blocker.reference_id === 'late-postgres-reference',
       ),
     );
-    assert.match(faultById.get(reclamationIds.release).last_error, /fence release failure/u);
-    assert.match(faultById.get(reclamationIds.physical).last_error, /blob delete failure/u);
+    assert.match(releaseFault.last_error, /fence release failure/u);
+    assert.match(physicalFault.last_error, /blob delete failure/u);
 
     removeReclamationFaults(pg.container, reclamationIds);
     const recoveredFaults = await waitForResourceIntents(

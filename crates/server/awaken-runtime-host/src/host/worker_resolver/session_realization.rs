@@ -3,30 +3,60 @@
 
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SessionRealizationWorkerEffect {
+    /// Keep the claim parked while the Session Work slot is occupied.
+    Defer,
+    /// Relinquish the claim through the retryable execution-failure path.
+    Relinquish,
+    /// Settle the still-current claim with an absorbing Run failure.
+    Absorb,
+}
+
+pub(super) const fn session_realization_worker_effect(
+    disposition: awaken_session_contract::SessionRealizationControlDisposition,
+) -> SessionRealizationWorkerEffect {
+    match disposition {
+        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
+            SessionRealizationWorkerEffect::Defer
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
+            SessionRealizationWorkerEffect::Relinquish
+        }
+        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
+            SessionRealizationWorkerEffect::Absorb
+        }
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_realization_control_disposition_projects_exact_worker_effect() {
+    let selector = kani::any::<u8>() % 3;
+    let (disposition, expected) = match selector {
+        0 => (
+            awaken_session_contract::SessionRealizationControlDisposition::NotReady,
+            SessionRealizationWorkerEffect::Defer,
+        ),
+        1 => (
+            awaken_session_contract::SessionRealizationControlDisposition::Retryable,
+            SessionRealizationWorkerEffect::Relinquish,
+        ),
+        _ => (
+            awaken_session_contract::SessionRealizationControlDisposition::Terminal,
+            SessionRealizationWorkerEffect::Absorb,
+        ),
+    };
+
+    assert_eq!(session_realization_worker_effect(disposition), expected);
+}
+
 struct WorkerProjectionSynchronizer<'a> {
     host: &'a SharedHost,
     claim: Option<&'a awaken_run_ingress::RunClaim>,
     published_snapshot: Option<&'a awaken_runtime_contract::ExecutableAgentSnapshot>,
     rebuild_unavailable_environment: bool,
     requires_runtime_before_effects: bool,
-}
-
-fn complete_worker_projection(
-    host: &SharedHost,
-    session_id: &str,
-    mut projection: awaken_session_contract::FrozenSessionProjection,
-    prepare_session: bool,
-) -> awaken_session_contract::FrozenSessionProjection {
-    if !prepare_session {
-        // Control intentionally omits the rebuildable transcript materialization
-        // from lease-only directives. Absence there is not an authoritative
-        // empty prefix: retain the value installed by the preparation Stage.
-        projection.request_context = host
-            .session_slots
-            .read(session_id, |slot| slot.request_context.clone())
-            .unwrap_or_default();
-    }
-    projection
 }
 
 #[async_trait::async_trait]
@@ -126,8 +156,10 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // must reuse the already-resident Resource/Skill projection instead of
         // opening an unclaimed remote materialization path.
         let synchronize_resources = self.claim.is_some() || prepare_session;
-        let projection =
-            complete_worker_projection(self.host, session_id, projection.clone(), prepare_session);
+        // Control materializes current context on every directive. Install the
+        // supplied projection even for a lease-only Complete action so a
+        // Session command accepted between Runs cannot leave a warm slot stale.
+        let projection = projection.clone();
         self.host
             .install_frozen_session_projection(
                 session_id,
@@ -194,17 +226,14 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // Synchronization is the single ordering boundary between Control's
         // frozen projection and MCP effects. A first-use Environment has no
         // durable binding to adopt yet, but its stage still needs the exact Run
-        // publication installed before it may realize sandbox stdio.
-        if let Some(published_snapshot) = published_snapshot
+        // publication installed before it may realize sandbox stdio. Only the
+        // physical substrate is needed here; parent Agent plugins remain owned
+        // by the exact root attempt and must not be constructed as a side effect.
+        if published_snapshot.is_some()
             && (has_environment_binding || self.requires_runtime_before_effects)
         {
             self.host
-                .ctx_for_snapshot_with_sandbox(
-                    session_id,
-                    Some(&projection.baseline.agent_id),
-                    Some(published_snapshot.clone()),
-                    adopted,
-                )
+                .session_child_execution_substrate(session_id, adopted, published_snapshot)
                 .await
                 .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
         }
@@ -240,6 +269,40 @@ impl awaken_session_contract::McpAttachmentRealizer for WorkerMcpEffects<'_> {
 }
 
 impl HostWorkerResolver {
+    /// Install one terminal recovery assignment through the exact same frozen
+    /// projection synchronizer used by claimed Runs and lease renewal. The
+    /// assignment carries no cleanup commands; after this returns the Host polls
+    /// the aggregate-owned command projection through Session Control.
+    pub(crate) async fn install_terminal_cleanup_assignment(
+        host: &SharedHost,
+        assignment: &awaken_session_contract::SessionTerminalCleanupAssignment,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        let realization = host.session_slots.realization_lock(&assignment.session_id);
+        let _realization = realization.lock().await;
+        let mut teardown_projection = assignment.projection.clone();
+        // Terminal recovery has root cleanup authority, never a Run claim. It
+        // installs the exact frozen baseline/publication/environment needed to
+        // dispose the process-local realization without revalidating or
+        // rematerializing the active Resource generation being destroyed.
+        // Resource lifecycle remains owned by the Session aggregate and its
+        // catalog receipts after Runtime cleanup completes.
+        teardown_projection.resources = Default::default();
+        awaken_session_contract::SessionProjectionSynchronizer::synchronize_session_projection(
+            &WorkerProjectionSynchronizer {
+                host,
+                claim: None,
+                published_snapshot: None,
+                rebuild_unavailable_environment: false,
+                requires_runtime_before_effects: false,
+            },
+            &assignment.session_id,
+            &teardown_projection,
+            &assignment.lease,
+            true,
+        )
+        .await
+    }
+
     fn map_session_realization_drive_error(
         error: awaken_session_contract::SessionRealizationDriveError,
     ) -> awaken_run_ingress::Error {
@@ -339,8 +402,106 @@ impl HostWorkerResolver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::host::worker_resolver::test_support::{AdoptionModel, test_activation};
+    use crate::host::worker_resolver::test_support::{
+        AdoptionModel, claim, deferred_environment, test_activation,
+    };
     use std::sync::{Arc, Mutex};
+
+    /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
+    /// the immutable dispatch envelope. Legacy absence remains eager, an exact
+    /// on-tool-use projection stays sandbox-free during Brain resolution, and a
+    /// malformed projection is rejected by claim admission before any Worker or
+    /// Sandbox effect. Moving C3 earlier preserves fail-closed behavior while
+    /// keeping one projection decoder at the run-ingress contract boundary.
+    #[tokio::test]
+    async fn cold_worker_runtime_projection_decision_table() {
+        use awaken_run_ingress::{Clock, DispatchQueue, WorkerResolver as _};
+
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        );
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+
+        let legacy = claim(&store, "cold-legacy", "run-legacy", "worker-a", now).await;
+        resolver
+            .worker_for_claimed(&legacy)
+            .await
+            .expect("C1 legacy projection remains eager");
+        assert!(
+            host.session_environment("cold-legacy").await.is_some(),
+            "C1"
+        );
+
+        let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
+            deferred_environment(),
+            Some(Default::default()),
+            Vec::new(),
+        )
+        .expect("encode runtime projection");
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "cold-deferred",
+                    "run-deferred",
+                ))
+                .with_session_runtime(runtime),
+            )
+            .await
+            .expect("enqueue deferred projection");
+        let deferred = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect("claim deferred projection")
+            .expect("deferred projection available");
+        resolver
+            .worker_for_claimed(&deferred)
+            .await
+            .expect("C2 cold Brain resolution stays deferred");
+        assert!(
+            host.session_environment("cold-deferred").await.is_none(),
+            "C2"
+        );
+        assert!(
+            host.session_slots
+                .read("cold-deferred", |slot| slot.deferred_executor.is_some()
+                    && slot.tools.as_ref().is_some_and(|tools| {
+                        tools == &awaken_session_contract::SessionToolConfiguration::default()
+                    }))
+                .unwrap_or(false),
+            "C2"
+        );
+
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(
+                    "cold-invalid",
+                    "run-invalid",
+                ))
+                .with_session_runtime(awaken_run_ingress::SessionRuntimeEnvelope::new("{")),
+            )
+            .await
+            .expect("enqueue invalid projection");
+        let error = store
+            .claim("worker-a", 1_000, now, &Default::default())
+            .await
+            .expect_err("C3 malformed runtime projection must fail claim admission");
+        assert!(
+            error
+                .to_string()
+                .contains("Session runtime credential projection is invalid")
+        );
+        assert!(
+            host.session_environment("cold-invalid").await.is_none(),
+            "C3"
+        );
+    }
 
     #[test]
     fn session_realization_preserves_retryable_and_absorbing_failure_classes() {
@@ -409,45 +570,6 @@ mod tests {
                 awaken_run_ingress::Error::TerminalResolution(_)
             ));
         }
-    }
-
-    #[test]
-    fn worker_projection_distinguishes_preparation_from_lease_only_context_omission() {
-        // Cause/effect graph: C1 Control preparation materializes a transcript
-        // prefix; C2 a later lease-only directive omits that rebuildable payload;
-        // C3 the resident Worker has C1 installed. Effects: E1 preparation uses
-        // the supplied prefix; E2 C2+C3 preserves C1 instead of clearing it.
-        // FMECA: treating omission as an empty prefix makes branch Workers infer
-        // values from unrelated resource names. The one projection completer
-        // resolves this before the canonical installer runs.
-        //
-        // | Rule | prepare | incoming | resident | effect |
-        // | P1   | T       | prefix A | any      | E1=A   |
-        // | P2   | F       | omitted  | prefix A | E2=A   |
-        let host = SharedHost::new(Arc::new(AdoptionModel), "stub");
-        let session_id = "branch-context-replay";
-        let prefix = vec![Message::text(
-            MessageId("source-prefix".into()),
-            Role::Assistant,
-            "E2E_SOURCE_ONLY_exact",
-        )];
-        host.session_slots.update(session_id, |slot| {
-            slot.request_context = prefix.clone();
-        });
-
-        let mut preparation = frozen_projection();
-        preparation.request_context = prefix.clone();
-        assert_eq!(
-            complete_worker_projection(&host, session_id, preparation, true).request_context,
-            prefix,
-            "P1/E1"
-        );
-        assert_eq!(
-            complete_worker_projection(&host, session_id, frozen_projection(), false)
-                .request_context,
-            prefix,
-            "P2/E2"
-        );
     }
 
     #[derive(Default)]

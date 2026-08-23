@@ -70,7 +70,7 @@ impl LlmExecutor for OkLlm {
                 cache_read_tokens: 0,
                 cache_creation_tokens: 0,
             }),
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(StopReason::NaturalEnd),
         })
     }
 }
@@ -138,8 +138,14 @@ fn no_retries() -> LlmRetryPolicy {
     }
 }
 
+/// Cause/effect design: C1 one successful inference uses model `gpt-test` and
+/// reports 11 input/7 output tokens. Effect E1: the metrics port records exactly
+/// one inference row with that model, `ok` outcome, and both token counts.
+/// Decision rule M1=C1=>E1; tool and failure outcomes are covered below.
+/// Constraints/invariants: metrics observe the completed inference once and do
+/// not become token-usage or Run-state authority.
 #[tokio::test]
-async fn a_successful_turn_records_an_ok_inference_metric_with_model_and_tokens() {
+async fn a_successful_run_records_an_ok_inference_metric_with_model_and_tokens() {
     let spy = Arc::new(SpyRecorder::default());
     let runtime = Runtime::new()
         .with_llm(Arc::new(OkLlm))

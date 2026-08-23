@@ -11,7 +11,9 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
 };
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
+use awaken_runtime_contract::tool::{
+    RawTool, Tool, ToolError, ToolExecutionTarget, ToolExecutor, ToolOutput, ToolRecoveryCapability,
+};
 use awaken_runtime_contract::{CredentialMaterial, CredentialRef, CredentialUsage};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -23,8 +25,112 @@ pub const WEB_SEARCH_TOOL_ID: &str = "web_search";
 pub const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
 pub const BRAVE_PROVIDER_ID: &str = "brave";
 
+/// Extension-owned execution settings decoded from the neutral policy's one
+/// opaque configuration value. The serde shape is the durable shape previously
+/// stored by the neutral contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+enum WebExecutionConfiguration {
+    WebFetch(WebFetchExecutionConfiguration),
+    WebSearch(WebSearchExecutionConfiguration),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "type",
+    content = "domains",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum WebDomainFilter {
+    Allow(Vec<String>),
+    Block(Vec<String>),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebFetchExecutionConfiguration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domains: Option<WebDomainFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_content_tokens: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchExecutionConfiguration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub domains: Option<WebDomainFilter>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_location: Option<WebSearchUserLocation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WebSearchUserLocation {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub city: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub country: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<String>,
+}
+
 /// Cap on fetched bytes so a huge response cannot blow up the transcript.
 const MAX_BODY: u64 = 1 << 20;
+
+fn execution_configuration<'a>(
+    toolsets: &'a [awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+    name: &str,
+) -> Option<&'a Value> {
+    toolsets
+        .iter()
+        .find(|policy| {
+            matches!(
+                policy.source,
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent
+            )
+        })
+        .and_then(|policy| policy.configuration_for(name))
+}
+
+/// Read the normalized `web_fetch` settings from the executable toolset.
+/// Authoring and runtime never maintain a parallel settings map.
+pub fn web_fetch_execution_configuration(
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+) -> Result<Option<WebFetchExecutionConfiguration>, String> {
+    let Some(value) = execution_configuration(toolsets, "web_fetch") else {
+        return Ok(None);
+    };
+    match serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid web_fetch execution configuration: {error}"))?
+    {
+        WebExecutionConfiguration::WebFetch(configuration) => Ok(Some(configuration)),
+        WebExecutionConfiguration::WebSearch(_) => {
+            Err("web_fetch policy carries web_search execution configuration".to_string())
+        }
+    }
+}
+
+/// Read the normalized `web_search` settings from the executable toolset. The
+/// same value configures Native dispatch and ACP export.
+pub fn web_search_execution_configuration(
+    toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
+) -> Result<Option<WebSearchExecutionConfiguration>, String> {
+    let Some(value) = execution_configuration(toolsets, "web_search") else {
+        return Ok(None);
+    };
+    match serde_json::from_value(value.clone())
+        .map_err(|error| format!("invalid web_search execution configuration: {error}"))?
+    {
+        WebExecutionConfiguration::WebSearch(configuration) => Ok(Some(configuration)),
+        WebExecutionConfiguration::WebFetch(_) => {
+            Err("web_search policy carries web_fetch execution configuration".to_string())
+        }
+    }
+}
 
 async fn blocking<F, T>(work: F) -> Result<T, ToolError>
 where
@@ -38,6 +144,104 @@ where
 
 /// HTTP GET a URL and return the response body as text (UTF-8 lossy, capped).
 pub struct WebFetchTool;
+
+fn url_matches_filter(url: &url::Url, filter: &WebDomainFilter) -> bool {
+    let matches = |configured: &str| {
+        let (domain, path) = configured.split_once('/').unwrap_or((configured, ""));
+        let host_matches = url.host_str().is_some_and(|host| {
+            host.eq_ignore_ascii_case(domain)
+                || host
+                    .to_ascii_lowercase()
+                    .ends_with(&format!(".{}", domain.to_ascii_lowercase()))
+        });
+        host_matches
+            && (path.is_empty()
+                || url.path() == format!("/{path}")
+                || url.path().starts_with(&format!("/{path}/")))
+    };
+    match filter {
+        WebDomainFilter::Allow(domains) => domains.iter().any(|domain| matches(domain)),
+        WebDomainFilter::Block(domains) => !domains.iter().any(|domain| matches(domain)),
+    }
+}
+
+/// Existing Session Hand executor narrowed by the Agent's WebFetch settings.
+/// The wrapper is placement-neutral: Workdir, Namespace, Container, Native,
+/// and ACP all keep their current executor while sharing one pre/post policy.
+pub struct ConfiguredWebToolExecutor {
+    inner: Arc<dyn ToolExecutor>,
+    web_fetch: WebFetchExecutionConfiguration,
+}
+
+impl ConfiguredWebToolExecutor {
+    #[must_use]
+    pub fn new(inner: Arc<dyn ToolExecutor>, web_fetch: WebFetchExecutionConfiguration) -> Self {
+        Self { inner, web_fetch }
+    }
+}
+
+fn truncate_text_blocks(output: &mut ToolOutput, max_bytes: usize) {
+    let mut remaining = max_bytes;
+    for block in &mut output.content {
+        let awaken_runtime_contract::ContentBlock::Text { text } = block else {
+            continue;
+        };
+        if text.len() <= remaining {
+            remaining -= text.len();
+            continue;
+        }
+        let mut boundary = remaining.min(text.len());
+        while boundary > 0 && !text.is_char_boundary(boundary) {
+            boundary -= 1;
+        }
+        text.truncate(boundary);
+        remaining = 0;
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for ConfiguredWebToolExecutor {
+    fn recovery_capability(&self, tool_id: &str) -> ToolRecoveryCapability {
+        self.inner.recovery_capability(tool_id)
+    }
+
+    async fn invoke(
+        &self,
+        call: &awaken_runtime_contract::tool::ToolCall,
+    ) -> Result<ToolOutput, ToolError> {
+        if call.tool_id != "web_fetch" {
+            return self.inner.invoke(call).await;
+        }
+        let configuration = &self.web_fetch;
+        let url = call
+            .arguments
+            .get("url")
+            .and_then(Value::as_str)
+            .ok_or_else(|| ToolError::InvalidArguments("url is required".into()))?;
+        let url = url::Url::parse(url)
+            .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
+        if let Some(filter) = &configuration.domains
+            && !url_matches_filter(&url, filter)
+        {
+            return Err(ToolError::Execution(
+                "web_fetch URL is outside the configured domain policy".into(),
+            ));
+        }
+        let mut output = self.inner.invoke(call).await?;
+        if let Some(max_content_tokens) = configuration.max_content_tokens
+            // Binary content is not part of the configured text-context cap.
+            // Structured binary blocks are already ignored below; preserve the
+            // explicit PDF URL case for legacy executors that return lossy text.
+            && !url.path().to_ascii_lowercase().ends_with(".pdf")
+        {
+            truncate_text_blocks(
+                &mut output,
+                usize::try_from(max_content_tokens).unwrap_or(usize::MAX),
+            );
+        }
+        Ok(output)
+    }
+}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -101,6 +305,7 @@ pub struct WebSearchRequest {
     pub query: String,
     pub count: usize,
     pub options: Value,
+    pub user_location: Option<WebSearchUserLocation>,
 }
 
 #[async_trait]
@@ -304,11 +509,12 @@ pub struct WebSearchArgs {
 
 /// Configured model-callable tool. Native Runtime and ACP MCP export both use
 /// this exact instance type.
-pub struct WebSearchTool {
+struct WebSearchTool {
     provider: Arc<dyn WebSearchProvider>,
     descriptor: WebSearchProviderDescriptor,
     config: WebSearchConfig,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+    execution_configuration: Option<WebSearchExecutionConfiguration>,
 }
 
 impl WebSearchTool {
@@ -316,28 +522,15 @@ impl WebSearchTool {
         provider: RegisteredWebSearchProvider,
         config: WebSearchConfig,
         credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+        execution_configuration: Option<WebSearchExecutionConfiguration>,
     ) -> Self {
         Self {
             descriptor: provider.descriptor,
             provider: provider.provider,
             config,
             credentials,
+            execution_configuration,
         }
-    }
-
-    pub fn duckduckgo() -> Self {
-        let registry = WebSearchProviderRegistry::builtins();
-        Self::configured(
-            registry
-                .provider(DUCKDUCKGO_PROVIDER_ID)
-                .expect("DuckDuckGo is built in"),
-            WebSearchConfig {
-                provider_id: DUCKDUCKGO_PROVIDER_ID.into(),
-                credential: None,
-                options: json!({}),
-            },
-            None,
-        )
     }
 }
 
@@ -387,17 +580,36 @@ impl Tool for WebSearchTool {
                     query: args.query,
                     count: args.count.unwrap_or(8).clamp(1, 20),
                     options: self.config.options.clone(),
+                    user_location: self
+                        .execution_configuration
+                        .as_ref()
+                        .and_then(|configuration| configuration.user_location.clone()),
                 },
                 credential.as_ref(),
             )
             .await?;
+        let results = match self
+            .execution_configuration
+            .as_ref()
+            .and_then(|configuration| configuration.domains.as_ref())
+        {
+            Some(filter) => results
+                .into_iter()
+                .filter(|result| {
+                    url::Url::parse(&result.url).is_ok_and(|url| url_matches_filter(&url, filter))
+                })
+                .collect(),
+            None => results,
+        };
         Ok(render_results(&results))
     }
 }
 
+#[derive(Clone)]
 pub struct WebSearchPlugin {
     registry: WebSearchProviderRegistry,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
+    execution_configuration: Option<WebSearchExecutionConfiguration>,
 }
 
 impl WebSearchPlugin {
@@ -408,7 +620,17 @@ impl WebSearchPlugin {
         Self {
             registry,
             credentials,
+            execution_configuration: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_execution_configuration(
+        mut self,
+        configuration: Option<WebSearchExecutionConfiguration>,
+    ) -> Self {
+        self.execution_configuration = configuration;
+        self
     }
 
     fn configured_provider(
@@ -473,7 +695,12 @@ impl WebSearchPlugin {
         }
         let descriptor = web_search_descriptor();
         let tool = erase_for(
-            WebSearchTool::configured(provider, config, self.credentials.clone()),
+            WebSearchTool::configured(
+                provider,
+                config,
+                self.credentials.clone(),
+                self.execution_configuration.clone(),
+            ),
             // Search is a configured Worker plugin: provider selection and exact
             // credential materialization live at the Brain boundary. Sending it
             // to the static Environment Hand loses that configuration and yields
@@ -666,11 +893,27 @@ impl WebSearchProvider for BraveSearchProvider {
                 .query("q", &request.query)
                 .query("count", &request.count.to_string());
             if let Some(options) = request.options.as_object() {
-                for key in ["country", "search_lang", "safesearch"] {
+                for key in ["search_lang", "safesearch"] {
                     if let Some(value) = options.get(key).and_then(Value::as_str) {
                         call = call.query(key, value);
                     }
                 }
+            }
+            // Per-Run Agent configuration is more specific than the provider
+            // publication's static default. Providers receive the complete
+            // location; Brave can realize its country component directly.
+            if let Some(country) = request
+                .user_location
+                .as_ref()
+                .and_then(|location| location.country.as_deref())
+                .or_else(|| {
+                    request
+                        .options
+                        .get("country")
+                        .and_then(serde_json::Value::as_str)
+                })
+            {
+                call = call.query("country", country);
             }
             let response: BraveResponse = call
                 .call()
@@ -705,6 +948,7 @@ mod tests {
     struct FakeProvider {
         descriptor: WebSearchProviderDescriptor,
         seen_secret: Mutex<Option<String>>,
+        seen_request: Mutex<Option<WebSearchRequest>>,
     }
 
     #[async_trait]
@@ -718,6 +962,7 @@ mod tests {
             request: WebSearchRequest,
             credential: Option<&CredentialMaterial>,
         ) -> Result<Vec<WebSearchResult>, ToolError> {
+            *self.seen_request.lock().unwrap() = Some(request.clone());
             *self.seen_secret.lock().unwrap() = credential
                 .and_then(|material| material.single_secret().ok())
                 .map(|secret| secret.expose_secret().to_string());
@@ -759,7 +1004,17 @@ mod tests {
                 options_schema: json!({ "type": "object" }),
             },
             seen_secret: Mutex::new(None),
+            seen_request: Mutex::new(None),
         })
+    }
+
+    struct EchoExecutor;
+
+    #[async_trait]
+    impl ToolExecutor for EchoExecutor {
+        async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
+            Ok(ToolOutput::ok(&call.call_id, "abcdef"))
+        }
     }
 
     /// Cause/effect table: C1 free provider/no pin -> executable; C2 paid
@@ -769,6 +1024,9 @@ mod tests {
     /// provider and credential resolver remain attached. FMECA: routing C5 to
     /// the static Hand produces an authorized `unknown tool` and loses the
     /// Worker-held credential boundary.
+    /// Constraints/invariants: the registry is the sole provider-id owner,
+    /// credentials remain resolver-held, and configured search always runs in Brain.
+    /// Decision rules W1..W5 correspond one-for-one to C1..C5 and their effects.
     #[tokio::test]
     async fn provider_registry_drives_validation_dispatch_and_credentials() {
         let free = fake_provider("free", false);
@@ -833,6 +1091,192 @@ mod tests {
         assert_eq!(
             registry.config_schema()["oneOf"].as_array().unwrap().len(),
             2
+        );
+    }
+
+    /// Web configuration cause/effect graph: one normalized ToolPolicyOverride
+    /// selects the WebFetch executor policy or WebSearch provider policy. Fetch
+    /// checks domains before invoking the existing placement executor and caps
+    /// text afterward; Search sends location to the provider and filters results.
+    ///
+    /// Decision table:
+    /// | Rule | tool | domain | setting | effect |
+    /// | W1 | web_fetch | allowed | max=3 | inner invoked; text capped |
+    /// | W2 | web_fetch | outside allowlist | any | reject before inner invoke |
+    /// | W3 | non-web | n/a | fetch config present | unchanged delegation |
+    /// | W4 | web_fetch | allowed `.PDF` URL | max=3 | legacy text projection is not policy-capped |
+    /// | W5 | web_search | blocked result | location present | provider sees location; result removed |
+    /// | W6 | web_fetch | unrestricted | max=0 | inner invoked; text capped to empty |
+    /// | W7 | web_fetch | wrong config tag | any | reject before executor construction |
+    /// | W8 | web_search | unknown config field | any | reject before provider construction |
+    /// Constraints/invariants: policy is normalized once, domain rejection
+    /// precedes I/O, the wrapper is the only Agent policy owner, `.pdf` legacy
+    /// text bypasses its context cap while the raw fetch retains its 1 MiB safety
+    /// ceiling, and malformed opaque configuration never widens into an
+    /// unconfigured Web tool.
+    #[tokio::test]
+    async fn normalized_web_configuration_controls_existing_execution_edges() {
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+        };
+
+        let fetch = WebFetchExecutionConfiguration {
+            domains: Some(WebDomainFilter::Allow(vec!["docs.example.com".into()])),
+            max_content_tokens: Some(3),
+        };
+        let search_location = WebSearchUserLocation {
+            city: Some("Shanghai".into()),
+            country: Some("CN".into()),
+            region: Some("Shanghai".into()),
+            timezone: Some("Asia/Shanghai".into()),
+        };
+        let search = WebSearchExecutionConfiguration {
+            domains: Some(WebDomainFilter::Block(vec!["result.test".into()])),
+            user_location: Some(search_location.clone()),
+        };
+        let toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy::default(),
+            overrides: vec![
+                ToolPolicyOverride::with_optional_configuration(
+                    "web_fetch",
+                    ToolExecutionPolicy::default(),
+                    Some(
+                        serde_json::to_value(WebExecutionConfiguration::WebFetch(fetch.clone()))
+                            .expect("WebFetch execution configuration serializes"),
+                    ),
+                ),
+                ToolPolicyOverride::with_optional_configuration(
+                    "web_search",
+                    ToolExecutionPolicy::default(),
+                    Some(
+                        serde_json::to_value(WebExecutionConfiguration::WebSearch(search.clone()))
+                            .expect("WebSearch execution configuration serializes"),
+                    ),
+                ),
+            ],
+        }];
+        assert_eq!(
+            web_fetch_execution_configuration(&toolsets).expect("valid WebFetch configuration"),
+            Some(fetch.clone()),
+        );
+        assert_eq!(
+            web_search_execution_configuration(&toolsets).expect("valid WebSearch configuration"),
+            Some(search.clone()),
+        );
+
+        let malformed = |name: &str, configuration: Value| {
+            vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                    name,
+                    ToolExecutionPolicy::default(),
+                    Some(configuration),
+                )],
+            }]
+        };
+        assert!(
+            web_fetch_execution_configuration(&malformed(
+                "web_fetch",
+                json!({"type":"web_search"})
+            ))
+            .is_err(),
+            "W7"
+        );
+        assert!(
+            web_search_execution_configuration(&malformed(
+                "web_search",
+                json!({"type":"web_search", "unexpected":true})
+            ))
+            .is_err(),
+            "W8"
+        );
+
+        let executor = ConfiguredWebToolExecutor::new(Arc::new(EchoExecutor), fetch);
+        let allowed = executor
+            .invoke(&ToolCall {
+                call_id: "fetch-allowed".into(),
+                tool_id: "web_fetch".into(),
+                arguments: json!({ "url": "https://guide.docs.example.com/start" }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(allowed.text(), "abc", "W1");
+        assert!(
+            executor
+                .invoke(&ToolCall {
+                    call_id: "fetch-blocked".into(),
+                    tool_id: "web_fetch".into(),
+                    arguments: json!({ "url": "https://example.net" }),
+                })
+                .await
+                .is_err(),
+            "W2"
+        );
+        let other = executor
+            .invoke(&ToolCall {
+                call_id: "read".into(),
+                tool_id: "read".into(),
+                arguments: json!({}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(other.text(), "abcdef", "W3");
+        let pdf = executor
+            .invoke(&ToolCall {
+                call_id: "fetch-pdf".into(),
+                tool_id: "web_fetch".into(),
+                arguments: json!({ "url": "https://docs.example.com/guide.PDF" }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(pdf.text(), "abcdef", "W4");
+
+        let zero_cap = ConfiguredWebToolExecutor::new(
+            Arc::new(EchoExecutor),
+            WebFetchExecutionConfiguration {
+                domains: None,
+                max_content_tokens: Some(0),
+            },
+        )
+        .invoke(&ToolCall {
+            call_id: "fetch-zero-cap".into(),
+            tool_id: "web_fetch".into(),
+            arguments: json!({ "url": "https://example.net" }),
+        })
+        .await
+        .unwrap();
+        assert_eq!(zero_cap.text(), "", "W6");
+
+        let provider = fake_provider("localized", false);
+        let plugin = WebSearchPlugin::new(
+            WebSearchProviderRegistry::try_new([provider.clone() as Arc<dyn WebSearchProvider>])
+                .unwrap(),
+            None,
+        )
+        .with_execution_configuration(Some(search));
+        let (_, tool) = plugin
+            .configured_tool(Some(&json!({ "provider_id": "localized", "options": {} })))
+            .unwrap();
+        let output = tool
+            .invoke(ToolCall {
+                call_id: "search".into(),
+                tool_id: "web_search".into(),
+                arguments: json!({ "query": "managed agents" }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(output.text(), "no web-search results", "W5");
+        assert_eq!(
+            provider
+                .seen_request
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|request| request.user_location.clone()),
+            Some(search_location),
+            "W5"
         );
     }
 

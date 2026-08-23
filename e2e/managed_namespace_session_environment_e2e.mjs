@@ -15,10 +15,11 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
   onlyChildDirectory,
-  sendAndListNewEvents,
   spawnServer,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
@@ -70,6 +71,7 @@ function seedRepository() {
 
 function seedAgentFixtureRepository() {
   const work = `${TMP}/fixture-seed`;
+  const memoryPath = TIER === 'namespace' ? '/mnt/notes/seed.txt' : 'mnt/notes/seed.txt';
   fs.mkdirSync(work, { recursive: true });
   initMainRepository(work);
   git(['config', 'user.email', 'namespace-e2e@awaken.invalid'], work);
@@ -92,7 +94,6 @@ const readProjectedSkill = (...roots) => {
   return 'ABSENT';
 };
 const writable = (path) => { try { fs.accessSync(path, fs.constants.W_OK); return true; } catch { return false; } };
-const writableAny = (...paths) => paths.some((path) => fs.existsSync(path) && writable(path));
 const mutateExisting = (path) => {
   try {
     if (!fs.existsSync(path)) return false;
@@ -106,6 +107,13 @@ const mutateExisting = (path) => {
 //    resident workspace at that turn (never reuse the first turn's bytes).
 // R3 partial line -> no turn until the newline framing contract is complete.
 // Constraint: this newline protocol is a scenario-only fixture, not production ACP.
+//
+// Memory path decision table (C1=tier has sandbox path fidelity; C2=the mount
+// is read-only): local (!C1,!C2) -> read the Workdir-root-relative projection
+// and observe writable=true; namespace (C1,C2) -> read the exact absolute
+// /mnt contract path and observe writable=false. Any other path must remain a
+// hard test failure; no fallback may hide a broken provider projection.
+const memoryPath = ${JSON.stringify(memoryPath)};
 readline.createInterface({ input: process.stdin }).on('line', () => {
   // The reserved path is the sole output boundary across Workdir/Namespace/
   // Container; a cwd-relative directory is ordinary workspace state.
@@ -114,8 +122,8 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
   fs.writeFileSync(outputs + '/result.txt', 'NAMESPACE-ARTIFACT-OK');
   const observations = [
     ['skill', readProjectedSkill('.skills', 'workspace/.skills')],
-    ['memory', readAny('mnt/notes/seed.txt', '.mnt/notes/seed.txt', 'workspace/.mnt/notes/seed.txt')],
-    ['memory_writable', writableAny('mnt/notes/seed.txt', '.mnt/notes/seed.txt', 'workspace/.mnt/notes/seed.txt')],
+    ['memory', read(memoryPath)],
+    ['memory_writable', fs.existsSync(memoryPath) && writable(memoryPath)],
     ['live_file', read('/mnt/session/uploads/workspace/live.txt')],
     ['live_file_mutated', mutateExisting('/mnt/session/uploads/workspace/live.txt')],
     ['renamed_file', read('/mnt/session/uploads/workspace/renamed.txt')],
@@ -136,10 +144,27 @@ readline.createInterface({ input: process.stdin }).on('line', () => {
 }
 
 async function lastReply(client, sessionId, prompt) {
-  const events = await sendAndListNewEvents(client, sessionId, {
+  // Namespace Run settlement rule N1: C1=the Session can already contain prior
+  // replies/idle edges; C2=this send returns one exact durable User Event
+  // receipt; C3=ACP commits the corresponding Run asynchronously. Effects:
+  // E1=only events after C2 are eligible; E2=C2 becomes processed; E3=one new
+  // Agent Message and later Session idle prove settlement. N1(C1+C2+C3)->E1-E3.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: prompt }] }],
     betas: BETAS,
   });
+  const acceptedId = receipt.data[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'N1 exact accepted User Event id');
+  const { delta: events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    acceptedId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `N1 namespace Run for ${JSON.stringify(prompt)} to settle`,
+    { timeoutMs: 120_000, pollMs: 100 },
+  );
   const replies = events.filter((event) => event.type === 'agent.message');
   const newEventTypes = events.map((event) => event.type);
   assert.ok(
@@ -150,6 +175,17 @@ async function lastReply(client, sessionId, prompt) {
 }
 
 async function main() {
+  // Causes: C1 the selected tier is Local or available Namespace; C2 a first
+  // Run realizes the Session environment; C3 File/Repository bindings are
+  // rejected, attached, replaced, or detached across later Runs; C4 Namespace
+  // execution restarts after a hard process loss. Effects: E1 all Runs reuse one
+  // workspace; E2 every accepted generation exposes only its current paths and
+  // access policy; E3 C4 adopts the same durable environment; E4 terminal delete
+  // releases it. Constraints/invariants: the Session baseline and Resource
+  // generations are the only projection authorities; tier-specific fixture
+  // paths cannot create an attempt-local or fallback mount truth. Decision rules:
+  // N0 unavailable Namespace=>skip; N1 C1+C2=>E1; N2 N1+C3=>E1+E2;
+  // N3 N2+C4=>E3; N4 terminal delete=>E4.
   assert.ok(['local', 'namespace'].includes(TIER), `unsupported Session environment tier: ${TIER}`);
   if (TIER === 'namespace' && !bwrapAvailable()) {
     console.log('E2E SKIP: bwrap/unprivileged userns unavailable on this host.');

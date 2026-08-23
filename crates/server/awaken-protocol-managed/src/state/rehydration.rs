@@ -36,12 +36,11 @@ impl ManagedState {
         self.get_session(session_id).map(Some)
     }
 
-    /// Recover a session whose in-memory record was lost from durable truth (a
-    /// process restart, ADR-0039). If the store holds a committed transcript for
-    /// `id`, rebuild the record — the projected history plus a reconstructed
-    /// session object — so a resume can continue the awaiting run. A thread with no
-    /// committed truth stays `NotFound` (fail closed): the store is authoritative.
-    pub(crate) async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
+    /// Ensure only the base disposable Session record exists.  Runtime-derived
+    /// child links and lifecycle are deliberately absent here: both cold and
+    /// warm callers consume those facts through `refresh_committed_projection`,
+    /// so recovery cannot grow a second projector.
+    pub(super) async fn ensure_session_record(&self, id: &str) -> Result<(), StateError> {
         if self.sessions.lock().unwrap().contains_key(id) {
             return Ok(());
         }
@@ -67,32 +66,30 @@ impl ManagedState {
             .map(|recovered| recovered.owner_scope.clone())
             .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
         let persisted = recovered.map(|recovered| recovered.session);
-        let pending = self
-            .application
-            .pending_tool(id)
-            .await
-            .map_err(StateError::Run)?;
-        let messages = self
-            .application
-            .committed_messages(id)
-            .await
-            .map_err(StateError::Run)?;
-        if messages.is_empty() && persisted.is_none() {
+        // A repository-less legacy Session may still be identified by its
+        // committed root transcript. This is existence detection only: the one
+        // warm/cold projector below owns message classification, ids and events.
+        // Projecting here as well would race an Awaiting transition's ticket and
+        // permanently classify the same ToolUse through two different paths.
+        if persisted.is_none()
+            && self
+                .application
+                .committed_messages(id)
+                .await
+                .map_err(StateError::Run)?
+                .is_empty()
+        {
             return Err(StateError::NotFound);
         }
-        let projected_message_ids = messages
-            .iter()
-            .map(|message| message.id.0.clone())
-            .collect();
-        let pending = pending.as_ref();
-        let events: Vec<Event> = project_messages(&messages, pending)
-            .into_iter()
-            .map(|event| Event {
-                id: event.id.unwrap_or_else(|| self.next_event_id()),
-                kind: event.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            })
-            .collect();
+        self.application
+            .refresh_executable_projections()
+            .await
+            .map_err(|error| {
+                StateError::Run(RunError::unavailable_classified(
+                    "executable_projection_refresh_failed",
+                    format!("Executable projections could not be refreshed: {error}"),
+                ))
+            })?;
         let agent_id = persisted
             .as_ref()
             .and_then(PersistedSession::agent_id)
@@ -102,25 +99,7 @@ impl ManagedState {
             .map(|session| session.resources.clone())
             .unwrap_or_default();
         let session = self.rehydrated_session(id, &owner_scope, persisted)?;
-        let delegated_runs = self
-            .application
-            .delegated_runs(id)
-            .await
-            .map_err(StateError::Run)?;
-        let delegation_transcripts = self.delegation_transcripts(&delegated_runs).await?;
-        let mut record = SessionRecord::new(
-            agent_id,
-            session,
-            resource_state,
-            events,
-            projected_message_ids,
-        );
-        self.append_delegation_projections(
-            &mut record,
-            &delegated_runs,
-            &Default::default(),
-            &delegation_transcripts,
-        );
+        let record = SessionRecord::new(agent_id, session, resource_state, Vec::new());
         self.sessions
             .lock()
             .unwrap()
@@ -132,6 +111,16 @@ impl ManagedState {
             .entry(id.to_string())
             .or_insert(owner_scope);
         Ok(())
+    }
+
+    /// Recover a session whose in-memory record was lost from durable truth (a
+    /// process restart, ADR-0039). If the store holds a committed transcript for
+    /// `id`, rebuild the record — the projected history plus a reconstructed
+    /// session object — so a resume can continue the awaiting run. A thread with no
+    /// committed truth stays `NotFound` (fail closed): the store is authoritative.
+    pub(crate) async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
+        self.ensure_session_record(id).await?;
+        self.refresh_committed_projection(id).await
     }
 }
 
@@ -170,6 +159,9 @@ mod tests {
         // that fails if any Coordinator-local physical effect is attempted. An
         // Lease owner/liveness never overrides the frozen custody fact. R3 is
         // covered by local Session creation and Resource activation tests.
+        // Constraints/invariants: frozen Runtime placement, not cache warmth or
+        // lease liveness, owns physical custody; rehydration may rebuild only the
+        // read/projection state and cannot adopt or stage Worker-owned effects.
         let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
         let mut cases = Vec::new();
         for (owner_name, placement) in [(
@@ -246,18 +238,19 @@ mod tests {
         let restored_runtimes = runtime.restored_runtimes.clone();
         let restored_inputs = runtime.restored.clone();
         let runtime = Arc::new(runtime);
+        let environments = crate::test_support::environment_components().1;
         let application = awaken_session_application::SessionApplication::new_with_configuration(
             runtime.clone(),
             runtime,
             repo,
-            crate::test_support::environment_components().1,
+            environments.clone(),
             awaken_session_application::SessionApplicationConfiguration {
                 execution_placement:
                     awaken_session_application::SessionExecutionPlacement::RegisteredWorker,
                 ..Default::default()
             },
         );
-        let restarted = ManagedState::from_application(Arc::new(application));
+        let restarted = ManagedState::from_application(Arc::new(application), environments);
 
         assert_eq!(
             restarted.reconcile_session_realizations().await,

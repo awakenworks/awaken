@@ -249,12 +249,18 @@ readiness and the durable last-known-good projections while scheduling bounded
 exponential retry. Ready, pending-domain, consecutive-failure, and lag gauges
 expose degradation and recovery without creating another work repository.
 
-In an active-active Coordinator deployment, one request middleware compares both
-durable command-log high-water marks before Session/Deployment writes that may
-admit Runtime work. An unchanged cursor loads no commands; an advanced cursor
-loads only its ordered tail. A missing tail or cursor regression triggers full
-replay into a replacement projection. Any failure rejects admission before a
-Session changes.
+In an active-active Coordinator deployment, the CLI constructs one stateless
+Agent-then-Environment refresh composite and shares it through the neutral
+Session contract. The owning application operations invoke it at their true
+consumer boundaries: Managed Session create and cold rehydration; Session
+profile creation, recovery, and realization; Deployment writes and scheduler
+ticks; and the existing Models, Dream-readiness, and Environment-warmup source
+ports. An unchanged cursor loads no commands; an advanced cursor loads only its
+ordered tail. A missing tail or cursor regression triggers full replay into a
+replacement projection. Any failure is returned before the corresponding
+catalog read, durable mutation, or external effect. Warm cached Session reads
+and frozen execution paths do not refresh, and no route predicate or request
+middleware owns correctness.
 
 ## Flow One: Configuration To Application
 
@@ -290,12 +296,12 @@ flowchart TD
     V{"Manual or scheduled trigger"}
     W["Existing: persist stable DeploymentRun"]
     X["Existing: ManagedDeploymentSessionLauncher carries deployment_run_id"]
-    AA["Existing: create_session_with_initial_events"]
+    AA["Modified: persist SessionInitialEventPlan with the Session root"]
     AB["Existing: sole SessionInputResolver; SessionCreationIntent is the final freeze point"]
     AC["Existing: exact Environment, Skill, Resource, and credential pins"]
     AD["Existing: frozen secret-free SessionResourceManifest"]
     AE["Existing: persist Session baseline before effects"]
-    AF["Existing: initial Events enter the ordinary Event command"]
+    AF["Modified: the Session reconciler replays the durable plan through canonical User Run, System, and Outcome owners"]
     AG["Persist DeploymentRun session_id or exact RunError"]
     AH["Return terminal DeploymentRun projection"]
 
@@ -341,9 +347,10 @@ Coordinator-owned Deployment and Session. Its request carries
 the original Session id. The former remote client/router/token were deleted with
 the duplicate Control-side Deployment aggregate.
 
-Session creation performs all validation before external realization, persists
-the creation intent and frozen baseline first, and sends create-time initial
-Events through the same command as later public Events.
+Session creation performs all validation before external realization and
+atomically persists the creation intent, frozen baseline, and initial Event plan
+in one Session root. The sole lifecycle reconciler later executes that retained
+plan through the same Session Event state machine as public Event batches.
 
 ### Terminal outcomes
 
@@ -367,7 +374,7 @@ flowchart TD
     D["Existing: auth, ownership, Session state, and batch validation"]
     E{"Admitted?"}
     F["Return 4xx without a partial Event batch"]
-    G["Existing: append inbound Event"]
+    G["Existing: atomically retain the complete inbound Event batch"]
     H["Existing: load frozen Session baseline and Resource manifest"]
     I["Existing: prepare RunActivation"]
     J["Existing: enqueue RunDispatch with snapshot and secret-free envelopes"]
@@ -377,17 +384,17 @@ flowchart TD
     M["Added: exact Worker-private credential materialization"]
     N["Existing: Sandbox creation and repository realization"]
     O["Existing: Runtime model, tool, child Run, and HITL execution"]
-    P["Existing: best-effort preview frames"]
+    P["Existing: ThreadEventHub live observation projected per SSE connection"]
 
     Q["Existing: claimed commit operation"]
     R["Existing: Coordinator atomic CommitStore"]
     S{"Commit accepted?"}
     T["Return existing receipt or reject stale claim"]
     U["Existing: settle Done or Awaiting with claim epoch"]
-    V["Existing: completion signal wakes the waiting request"]
+    V["Existing: completion signal wakes Session reconciliation"]
     W["Existing: project committed facts into Managed Events"]
     X["Existing: broadcast committed SSE terminal sequence"]
-    Y["Existing: POST returns EventReceipt list"]
+    Y["Existing: POST returns the accepted public Event list"]
     Z["Existing: GET Session or Events returns committed projection"]
 
     AA{"Worker crashes before settlement?"}
@@ -397,13 +404,13 @@ flowchart TD
     A --> B
     C --> D --> E
     E -- No --> F
-    E -- Yes --> G --> H --> I --> J --> K --> L --> M --> N --> O
+    E -- Yes --> G --> Y
+    G --> H --> I --> J --> K --> L --> M --> N --> O
     O -. preview .-> P -.-> B
     O --> Q --> R --> S
     S -- Duplicate or stale --> T
     S -- Accepted --> U --> V --> W
     W --> X --> B
-    W --> Y
     W --> Z
     O --> AA
     AA -- Yes --> AB --> AC --> K

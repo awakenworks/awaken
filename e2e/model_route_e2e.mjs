@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const agentWithModel = (model) => ({
@@ -18,11 +18,7 @@ const agentWithModel = (model) => ({
   model,
 });
 
-async function latestAgentText(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(ev);
-  }
+function agentTexts(events) {
   const msgs = events.filter((e) => e.type === 'agent.message');
   const texts = msgs.map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
   return texts;
@@ -31,7 +27,21 @@ async function latestAgentText(client, sessionId) {
 async function ask(client, sessionId, text, model) {
   const ev = { type: 'user.message', content: [{ type: 'text', text }] };
   if (model) ev.model = model;
-  await client.beta.sessions.events.send(sessionId, { events: [ev], betas: BETAS });
+  // C1=exact routed User receipt; C2=the selected executor reply+terminal.
+  // E1=post-C1 history proves the route. K: model selection stays frozen on the
+  // Session. Decision M1 C1&&!C2=>retry; M2 C1+C2=>return routed transcript.
+  const receipt = await client.beta.sessions.events.send(sessionId, { events: [ev], betas: BETAS });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'M1 exact model-routed User Event receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `M1 routed Run for ${JSON.stringify(text)} to commit`,
+  );
 }
 
 async function main() {
@@ -53,8 +63,7 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(fast.agent.model.id, 'fast', 'R6: create echoes the requested model (ModelConfig)');
-      await ask(client, fast.id, 'hi');
-      let texts = await latestAgentText(client, fast.id);
+      let texts = agentTexts((await ask(client, fast.id, 'hi')).events);
       assert.ok(texts.some((t) => t.startsWith('model=fast')), `R2: fast session ran fast, got ${texts}`);
       pass('per-session model "fast" resolves + echoes (R1/R2/R6)');
 
@@ -69,8 +78,7 @@ async function main() {
         betas: BETAS,
       });
       assert.equal(thirdParty.agent.model.id, thirdPartyModel);
-      await ask(client, thirdParty.id, 'third party');
-      texts = await latestAgentText(client, thirdParty.id);
+      texts = agentTexts((await ask(client, thirdParty.id, 'third party')).events);
       assert.ok(
         texts.some((t) => t.startsWith('model=fast')),
         'third-party route: ' + JSON.stringify(texts),
@@ -102,8 +110,7 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await ask(client, slow.id, 'hi');
-      texts = await latestAgentText(client, slow.id);
+      texts = agentTexts((await ask(client, slow.id, 'hi')).events);
       assert.ok(texts.some((t) => t.startsWith('model=slow')), `R2: slow session ran slow, got ${texts}`);
       pass('a different session binds a different model (R1/R2)');
 
@@ -113,8 +120,7 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await ask(client, def.id, 'hi');
-      texts = await latestAgentText(client, def.id);
+      texts = agentTexts((await ask(client, def.id, 'hi')).events);
       assert.ok(texts.some((t) => t.startsWith('model=default')), `default session ran default, got ${texts}`);
       pass('no model → host default (backward compatible)');
 
@@ -128,8 +134,7 @@ async function main() {
       });
       await ask(client, sw.id, 'first');
       await assert.rejects(() => ask(client, sw.id, 'rejected', 'slow'), (error) => error.status === 400);
-      await ask(client, sw.id, 'second');
-      texts = await latestAgentText(client, sw.id);
+      texts = agentTexts((await ask(client, sw.id, 'second')).events);
       assert.equal(texts.filter((t) => t.startsWith('model=fast')).length, 2, `R5: route changed, got ${texts}`);
       assert.ok(!texts.some((t) => t.startsWith('model=slow')), `R5: rejected model leaked, got ${texts}`);
       pass('unknown per-event model is rejected without route mutation (R5)');

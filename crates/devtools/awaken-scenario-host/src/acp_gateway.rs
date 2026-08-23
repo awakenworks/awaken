@@ -5,7 +5,7 @@ use std::sync::Arc;
 use axum::Router;
 
 use super::{
-    EchoModel, FAKE_ACP_CLI, mount_with_host_backend_publication, resource_host,
+    EchoModel, fake_acp_cli, mount_with_host_backend_publication, resource_host,
     scenario_host_acp_cli, scenario_model, scenario_storage_dir,
 };
 
@@ -14,10 +14,7 @@ use super::{
 pub fn build_acp_gateway_router() -> Router {
     let store_dir = scenario_storage_dir();
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "awaken");
-    let mut fixture_cli = FAKE_ACP_CLI;
-    // The executable is a deterministic fixture, while its id must match the
-    // registered protocol adapter selected by the immutable Agent backend.
-    fixture_cli.id = "claude";
+    let fixture_cli = fake_acp_cli();
     mount_with_host_backend_publication(
         resource_host(model, model_ref).map_host(|host| {
             host.with_projected_acp(

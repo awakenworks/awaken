@@ -28,6 +28,8 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38211);
@@ -37,28 +39,6 @@ const STORE_DIR = `/tmp/awaken-memstore-durable-e2e-${process.pid}`;
 const MARKER = 'PERSISTED_MARKER_7788';
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-
-const listEvents = async (sid) => {
-  const evs = [];
-  for await (const ev of client.beta.sessions.events.list(sid, { betas: BETAS })) evs.push(ev);
-  return evs;
-};
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Approve every gated (`ask`) tool call not yet approved — `write` parks for a
-// confirmation, so releasing it lets the turn complete before Session release.
-async function approveGated(sid, evs, approved) {
-  for (const e of evs) {
-    if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
-      approved.add(e.id);
-      await client.beta.sessions.events.send(sid, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
-        betas: BETAS,
-      });
-    }
-  }
-}
 
 async function memContent(id) {
   // Observation rule O1: a successful list projects the durable contents;
@@ -97,23 +77,57 @@ async function main() {
       resources: [{ type: 'memory_store', memory_store_id: mem.id, mount_path: '/memory' }],
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // M0 lifecycle: C1=exact write-task receipt; C2=requires_action with exact
+    // tool ids; C3=exact allow batch; C4=end_turn. E1=successful write/read
+    // results before release. Constraint: approvals are scenario writes and all
+    // observation is receipt-scoped. C1+C2=>approve; C1+C2+C3+C4=>E1.
+    const taskReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: MARKER }] }],
       betas: BETAS,
     });
 
-    // Drive write -> approval until the turn completes, then release the mount once.
-    const approved = new Set();
-    let completed = false;
-    for (let i = 0; i < 40; i += 1) {
-      await sleep(400);
-      const events = await listEvents(session.id);
-      await approveGated(session.id, events, approved);
-      completed = hasEndTurn(events);
-      if (completed) break;
+    // Drive write -> approval at committed boundaries, then release the mount once.
+    let observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      taskReceipt.data[0]?.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+      'M0 write task reaches its first committed boundary',
+    );
+    let completedEvents = observation.events;
+    for (let boundary = 0; boundary < 10 && !hasEndTurn(completedEvents); boundary += 1) {
+      const idle = [...observation.delta]
+        .reverse()
+        .find((event) => event.type === 'session.status_idle');
+      assert.equal(idle?.stop_reason?.type, 'requires_action', 'M0 nonterminal boundary requires approval');
+      const pendingIds = idle.stop_reason.event_ids;
+      assert.ok(pendingIds.length > 0, 'M0 requires_action names pending Event ids');
+      const decisions = pendingIds.map((id) => {
+        const toolUse = completedEvents.find(
+          (event) => event.id === id && event.type === 'agent.tool_use',
+        );
+        assert.equal(toolUse?.evaluated_permission, 'ask', `M0 ${id} is gated`);
+        return { type: 'user.tool_confirmation', tool_use_id: id, result: 'allow' };
+      });
+      const approval = await client.beta.sessions.events.send(session.id, {
+        events: decisions,
+        betas: BETAS,
+      });
+      const receiptIds = approval.data.map((event) => event.id);
+      observation = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receiptIds.at(-1),
+        BETAS,
+        ({ events, delta }) => receiptIds.every((id) => events.some(
+          (event) => event.id === id && event.processed_at,
+        )) && delta.some((event) => event.type === 'session.status_idle'),
+        'M0 approval batch reaches its next committed boundary',
+      );
+      completedEvents = observation.events;
     }
-    assert.ok(completed, 'the memory-writing turn completed');
-    const completedEvents = await listEvents(session.id);
+    assert.ok(hasEndTurn(completedEvents), 'the memory-writing turn completed');
     const toolResults = completedEvents.filter((event) => event.type === 'agent.tool_result');
     const writeResult = toolResults[0];
     assert.ok(writeResult, 'the gated write produced a tool result before release');
@@ -127,12 +141,12 @@ async function main() {
       `the follow-up read observes the exact mounted bytes: ${JSON.stringify(toolResults)}`,
     );
     await client.beta.sessions.delete(session.id, { betas: BETAS });
-    let harvested = '';
-    for (let i = 0; i < 20; i += 1) {
-      harvested = await memContent(mem.id);
-      if (harvested.includes(MARKER)) break;
-      await sleep(200);
-    }
+    const harvested = await waitForValue(
+      () => memContent(mem.id),
+      (content) => content.includes(MARKER),
+      'released Memory mount is harvested into the durable store',
+      { timeoutMs: 4_000, pollMs: 200 },
+    );
     assert.ok(
       harvested.includes(MARKER),
       `server A harvested the write into the memory store: ${JSON.stringify(harvested)}`,

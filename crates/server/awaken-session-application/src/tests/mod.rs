@@ -1,7 +1,7 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use awaken_environment_realization_contract::EnvironmentImageBuildError;
@@ -15,6 +15,354 @@ use super::*;
 struct NoopRuntime;
 struct SuccessfulRuntime;
 struct DiscardProgress;
+
+#[derive(Default)]
+struct ToggleProjectionRefresh {
+    calls: AtomicUsize,
+    fail: AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ExecutableProjectionRefresh for ToggleProjectionRefresh {
+    async fn refresh(&self) -> Result<(), String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.fail.load(Ordering::SeqCst) {
+            Err("projection unavailable".into())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReplyRuntimeOutcome {
+    Accepted,
+    BadRequest,
+    Unavailable,
+}
+
+struct RecordingReplyRuntime {
+    outcome: ReplyRuntimeOutcome,
+    deliveries: Mutex<Vec<awaken_session_contract::SessionThreadToolReplyDelivery>>,
+}
+
+struct RecordingBoundaryBudgetRuntime {
+    root_usage: Mutex<awaken_session_contract::SessionUsage>,
+    child_usage: Mutex<awaken_session_contract::SessionUsage>,
+    child_target: awaken_session_contract::CoordinatedThreadTarget,
+    continuations: AtomicUsize,
+    boundaries: RecordingBoundaries,
+    budget_resume_tickets:
+        Mutex<HashMap<String, Vec<awaken_session_contract::SessionBudgetResumeTicket>>>,
+    budget_resume_deliveries: Mutex<Vec<awaken_session_contract::SessionBudgetResumeDelivery>>,
+    budget_resume_dispositions:
+        Mutex<VecDeque<awaken_session_contract::SessionBudgetResumeDisposition>>,
+}
+
+#[derive(Clone, Copy)]
+enum AgentAdmissionOutcome {
+    Accepted,
+    BadRequest,
+    Unavailable,
+    MismatchedReceipt,
+}
+
+struct RecordingAgentAdmissionRuntime {
+    outcomes: Mutex<VecDeque<AgentAdmissionOutcome>>,
+    admissions: Mutex<Vec<awaken_session_contract::CoordinatedRunCommand>>,
+    committed_links: Mutex<Vec<awaken_session_contract::CoordinatedThreadLink>>,
+    archived_threads: Mutex<BTreeSet<(String, String)>>,
+    continuations: Mutex<Vec<awaken_session_contract::SessionAgentReportContinuation>>,
+    interruptions: Mutex<Vec<(String, awaken_agent_contract::agent::thread::Id)>>,
+    boundaries: RecordingBoundaries,
+}
+
+type RecordedBoundaryKey = (String, String);
+type RecordedBoundary = (
+    awaken_agent_contract::agent::run::Id,
+    awaken_agent_contract::agent::run::RunState,
+    String,
+);
+
+#[derive(Default)]
+struct RecordingBoundaries(Mutex<HashMap<RecordedBoundaryKey, RecordedBoundary>>);
+
+impl RecordingBoundaries {
+    fn commit(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        state: awaken_agent_contract::agent::run::RunState,
+        report: impl Into<String>,
+    ) {
+        self.0.lock().unwrap().insert(
+            (session_id.to_string(), thread_id.0.clone()),
+            (run_id.clone(), state, report.into()),
+        );
+    }
+
+    fn snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot> {
+        let (run_id, state, report) = self
+            .0
+            .lock()
+            .unwrap()
+            .get(&(session_id.to_string(), thread_id.to_string()))
+            .cloned()?;
+        let thread_id = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
+        let messages = (!report.is_empty())
+            .then(|| {
+                awaken_agent_contract::agent::message::Message::text(
+                    awaken_agent_contract::agent::message::Id::assistant(&run_id, 0),
+                    awaken_agent_contract::agent::message::Role::Assistant,
+                    report,
+                )
+            })
+            .into_iter()
+            .collect();
+        Some(
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                thread_id: thread_id.clone(),
+                claimed_run_id: run_id.clone(),
+                runs: vec![awaken_agent_contract::agent::run::Record {
+                    id: run_id.clone(),
+                    thread_id,
+                    state,
+                }],
+                latest_run_id: Some(run_id),
+                messages,
+                state: Vec::new(),
+                events: Vec::new(),
+                resume_tickets: Vec::new(),
+                thread_version: 1,
+                store_cursor: 1,
+                next_commit_ordinal: 1,
+            },
+        )
+    }
+
+    fn lifecycle(&self, session_id: &str) -> Vec<awaken_agent_contract::RunLifecycleEvent> {
+        let mut boundaries = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((candidate_session, _), _)| candidate_session == session_id)
+            .map(|((_, thread_id), (run_id, state, _))| {
+                (
+                    awaken_agent_contract::agent::thread::Id(thread_id.clone()),
+                    run_id.clone(),
+                    state.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        boundaries.sort_by(|left, right| left.0.0.cmp(&right.0.0));
+        boundaries
+            .into_iter()
+            .enumerate()
+            .map(
+                |(offset, (thread_id, run_id, state))| awaken_agent_contract::RunLifecycleEvent {
+                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(1, offset)
+                        .expect("test lifecycle cursor"),
+                    source_commit_cursor: 1,
+                    kind: awaken_agent_contract::classify_run_lifecycle_event(&state, None),
+                    thread_id,
+                    run_id,
+                    state,
+                    await_reason: None,
+                },
+            )
+            .collect()
+    }
+}
+
+impl RecordingAgentAdmissionRuntime {
+    fn new(outcomes: impl IntoIterator<Item = AgentAdmissionOutcome>) -> Self {
+        Self {
+            outcomes: Mutex::new(outcomes.into_iter().collect()),
+            admissions: Mutex::new(Vec::new()),
+            committed_links: Mutex::new(Vec::new()),
+            archived_threads: Mutex::new(BTreeSet::new()),
+            continuations: Mutex::new(Vec::new()),
+            interruptions: Mutex::new(Vec::new()),
+            boundaries: RecordingBoundaries::default(),
+        }
+    }
+
+    fn commit_link(&self, link: awaken_session_contract::CoordinatedThreadLink) {
+        self.committed_links.lock().unwrap().push(link);
+    }
+
+    fn archive_thread(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) {
+        self.archived_threads
+            .lock()
+            .unwrap()
+            .insert((session_id.to_string(), thread_id.0.clone()));
+    }
+}
+
+struct CoordinatedAgentSource;
+
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for CoordinatedAgentSource {
+    fn session_profile_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        let revision = match agent_id {
+            "coord-root" => 1,
+            "coord-child" => 2,
+            _ => return None,
+        };
+        self.session_profile_at_revision_in(workspace_id, agent_id, revision)
+    }
+
+    fn session_profile_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        if workspace_id != "workspace" {
+            return None;
+        }
+        match (agent_id, source_revision) {
+            ("coord-root", 1) => Some(
+                awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                    name: Some("Coordinator".into()),
+                    source_revision,
+                    delegates: vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                        agent_id: "coord-child".into(),
+                        source_revision: Some(2),
+                    }],
+                    ..Default::default()
+                },
+            ),
+            ("coord-child", 2) => Some(
+                awaken_executable_agent_contract::ExecutableAgentSessionProfile {
+                    name: Some("Researcher".into()),
+                    source_revision,
+                    ..Default::default()
+                },
+            ),
+            _ => None,
+        }
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        self.session_profile_at_revision_in(workspace_id, agent_id, source_revision)?;
+        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                "test", "model", "native",
+            ))
+            .fingerprint(format!("{agent_id}-revision-{source_revision}"))
+            .build();
+        snapshot.metadata.source.agent_id = snapshot.root_agent_id.clone();
+        snapshot.metadata.source.revision = source_revision;
+        Some(snapshot)
+    }
+}
+
+impl RecordingBoundaryBudgetRuntime {
+    fn new(child_usage: awaken_session_contract::SessionUsage) -> Self {
+        Self {
+            root_usage: Mutex::new(Default::default()),
+            child_usage: Mutex::new(child_usage),
+            child_target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                agent_id: "coord-child".into(),
+            },
+            continuations: AtomicUsize::new(0),
+            boundaries: RecordingBoundaries::default(),
+            budget_resume_tickets: Mutex::new(HashMap::new()),
+            budget_resume_deliveries: Mutex::new(Vec::new()),
+            budget_resume_dispositions: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    fn with_child_target(
+        mut self,
+        child_target: awaken_session_contract::CoordinatedThreadTarget,
+    ) -> Self {
+        self.child_target = child_target;
+        self
+    }
+
+    fn set_root_usage(&self, usage: awaken_session_contract::SessionUsage) {
+        *self.root_usage.lock().unwrap() = usage;
+    }
+
+    fn set_child_usage(&self, usage: awaken_session_contract::SessionUsage) {
+        *self.child_usage.lock().unwrap() = usage;
+    }
+
+    fn set_budget_resume_tickets(
+        &self,
+        session_id: &str,
+        tickets: Vec<awaken_session_contract::SessionBudgetResumeTicket>,
+    ) {
+        self.budget_resume_tickets
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), tickets);
+    }
+
+    fn set_budget_resume_dispositions(
+        &self,
+        dispositions: impl IntoIterator<Item = awaken_session_contract::SessionBudgetResumeDisposition>,
+    ) {
+        *self.budget_resume_dispositions.lock().unwrap() = dispositions.into_iter().collect();
+    }
+}
+
+impl RecordingAgentAdmissionRuntime {
+    fn commit_boundary(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        state: awaken_agent_contract::agent::run::RunState,
+        report: impl Into<String>,
+    ) {
+        self.boundaries
+            .commit(session_id, thread_id, run_id, state, report);
+    }
+}
+
+impl RecordingBoundaryBudgetRuntime {
+    fn commit_boundary(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        state: awaken_agent_contract::agent::run::RunState,
+        report: impl Into<String>,
+    ) {
+        self.boundaries
+            .commit(session_id, thread_id, run_id, state, report);
+    }
+}
+
+impl RecordingReplyRuntime {
+    fn new(outcome: ReplyRuntimeOutcome) -> Self {
+        Self {
+            outcome,
+            deliveries: Mutex::new(Vec::new()),
+        }
+    }
+}
 
 #[async_trait::async_trait]
 impl awaken_agent_contract::stream::sink::Sink for DiscardProgress {
@@ -172,6 +520,13 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
 
 #[async_trait::async_trait]
 impl SessionRuntime for NoopRuntime {
+    async fn session_budget_resume_tickets(
+        &self,
+        _session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
+        Ok(Vec::new())
+    }
+
     async fn execute_terminal_cleanup(
         &self,
         command: awaken_session_contract::SessionCleanupCommand,
@@ -210,10 +565,6 @@ impl SessionRuntime for NoopRuntime {
         Err(RunError::internal("unused test runtime"))
     }
 
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Err(RunError::internal("unused test runtime"))
-    }
-
     async fn define_outcome(
         &self,
         _thread: &str,
@@ -230,6 +581,420 @@ impl SessionRuntime for NoopRuntime {
 }
 
 #[async_trait::async_trait]
+impl SessionRuntime for RecordingReplyRuntime {
+    async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        Ok(vec![awaken_session_contract::CoordinatedThreadLink {
+            session_id: session_id.to_string(),
+            thread_id: awaken_agent_contract::agent::thread::Id("reply-child".into()),
+            target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                agent_id: "reply-agent".into(),
+            },
+            created_by_operation_id: "reply-spawn".into(),
+            latest_run_id: Some(awaken_agent_contract::agent::run::Id("reply-run".into())),
+        }])
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
+        if command.tool_use_id != "reply-tool"
+            || command.expected_run_id.0 != "reply-run"
+            || command.expected_correlation_id != "reply-correlation"
+        {
+            return Err(RunError::bad_request(
+                "reply does not match the committed Awaiting ticket",
+            ));
+        }
+        Ok(awaken_session_contract::SessionThreadToolReplyFence {
+            prior_session_activity_epoch: Some(1),
+        })
+    }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        let boundaries = RecordingBoundaries::default();
+        boundaries.commit(
+            session_id,
+            &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            &awaken_agent_contract::agent::run::Id("reply-run".into()),
+            awaken_agent_contract::agent::run::RunState::Awaiting,
+            "",
+        );
+        Ok(boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<(), RunError> {
+        self.deliveries.lock().unwrap().push(delivery);
+        match self.outcome {
+            ReplyRuntimeOutcome::Accepted => Ok(()),
+            ReplyRuntimeOutcome::BadRequest => Err(RunError::bad_request("rejected reply")),
+            ReplyRuntimeOutcome::Unavailable => Err(RunError::unavailable("ambiguous reply")),
+        }
+    }
+
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused reply test runtime"))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused reply test runtime"))
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused reply test runtime"))
+    }
+
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
+        Err(RunError::internal("unused reply test runtime"))
+    }
+
+    fn model(&self) -> String {
+        "unused-reply-model".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for RecordingAgentAdmissionRuntime {
+    async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        let mut links = self
+            .committed_links
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|link| link.session_id == session_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        links.extend(
+            self.admissions
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|command| command.session_id == session_id)
+                .map(|command| awaken_session_contract::CoordinatedThreadLink {
+                    session_id: session_id.to_string(),
+                    thread_id: command.thread_id.clone(),
+                    target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                        agent_id: command.snapshot.root_agent_id.0.clone(),
+                    },
+                    created_by_operation_id: command.operation_id.clone(),
+                    latest_run_id: Some(command.run_id.clone()),
+                })
+                .collect::<Vec<_>>(),
+        );
+        links.sort_by(|left, right| left.thread_id.0.cmp(&right.thread_id.0));
+        links.dedup_by(|left, right| left.thread_id == right.thread_id);
+        Ok(links)
+    }
+
+    async fn session_thread_disposition(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
+        Ok(
+            if self
+                .archived_threads
+                .lock()
+                .unwrap()
+                .contains(&(session_id.to_string(), thread_id.to_string()))
+            {
+                awaken_agent_contract::ThreadDisposition::Archived
+            } else {
+                awaken_agent_contract::ThreadDisposition::Active
+            },
+        )
+    }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(self.boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn admit_coordinated_run(
+        &self,
+        command: awaken_session_contract::CoordinatedRunCommand,
+    ) -> Result<awaken_session_contract::SessionAgentMessageReceipt, RunError> {
+        let accepted_thread = command.thread_id.clone();
+        self.admissions.lock().unwrap().push(command);
+        match self
+            .outcomes
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(AgentAdmissionOutcome::Accepted)
+        {
+            AgentAdmissionOutcome::Accepted => {
+                Ok(awaken_session_contract::SessionAgentMessageReceipt {
+                    thread_id: accepted_thread,
+                })
+            }
+            AgentAdmissionOutcome::BadRequest => {
+                Err(RunError::bad_request("rejected Agent admission"))
+            }
+            AgentAdmissionOutcome::Unavailable => {
+                Err(RunError::unavailable("ambiguous Agent admission"))
+            }
+            AgentAdmissionOutcome::MismatchedReceipt => {
+                Ok(awaken_session_contract::SessionAgentMessageReceipt {
+                    thread_id: awaken_agent_contract::agent::thread::Id("mismatched-child".into()),
+                })
+            }
+        }
+    }
+
+    async fn continue_session_agent_report(
+        &self,
+        command: awaken_session_contract::SessionAgentReportContinuation,
+    ) -> Result<(), RunError> {
+        self.continuations.lock().unwrap().push(command);
+        Ok(())
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        session_id: &str,
+        child_thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<(), RunError> {
+        self.interruptions
+            .lock()
+            .unwrap()
+            .push((session_id.to_string(), child_thread_id.clone()));
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        agent: &str,
+        thread: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        NoopRuntime.run(agent, thread, content).await
+    }
+
+    async fn resume(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        NoopRuntime.resume(thread, tool_use_id, decision).await
+    }
+
+    async fn resume_custom(
+        &self,
+        thread: &str,
+        tool_use_id: &str,
+        content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        NoopRuntime
+            .resume_custom(thread, tool_use_id, content, is_error)
+            .await
+    }
+
+    async fn define_outcome(
+        &self,
+        thread: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
+        NoopRuntime
+            .define_outcome(thread, description, rubric, max_iterations)
+            .await
+    }
+
+    fn model(&self) -> String {
+        "unused-admission-model".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for RecordingBoundaryBudgetRuntime {
+    async fn session_budget_resume_tickets(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
+        Ok(self
+            .budget_resume_tickets
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    async fn resume_budget_reached(
+        &self,
+        delivery: awaken_session_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_contract::SessionBudgetResumeDisposition, RunError> {
+        self.budget_resume_deliveries.lock().unwrap().push(delivery);
+        Ok(self
+            .budget_resume_dispositions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(awaken_session_contract::SessionBudgetResumeDisposition::Dispatched))
+    }
+
+    async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        Ok(self
+            .boundaries
+            .lifecycle(session_id)
+            .into_iter()
+            .map(|event| awaken_session_contract::CoordinatedThreadLink {
+                session_id: session_id.to_string(),
+                thread_id: event.thread_id,
+                target: self.child_target.clone(),
+                created_by_operation_id: "budget-spawn".into(),
+                latest_run_id: Some(event.run_id),
+            })
+            .collect())
+    }
+
+    async fn session_usage(
+        &self,
+        _thread: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        Ok(self.root_usage.lock().unwrap().clone())
+    }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(self.boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn session_thread_usage(
+        &self,
+        session_id: &str,
+        child_thread_id: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        if session_id == child_thread_id {
+            Ok(self.root_usage.lock().unwrap().clone())
+        } else {
+            Ok(self.child_usage.lock().unwrap().clone())
+        }
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        session_id: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        let events = self
+            .boundaries
+            .lifecycle(session_id)
+            .into_iter()
+            .filter(|event| event.cursor > cursor)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        Ok(awaken_agent_contract::RunLifecyclePage {
+            events,
+            next_cursor,
+        })
+    }
+
+    async fn continue_session_agent_report(
+        &self,
+        _command: awaken_session_contract::SessionAgentReportContinuation,
+    ) -> Result<(), RunError> {
+        self.continuations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused boundary budget test runtime"))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused boundary budget test runtime"))
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        Err(RunError::internal("unused boundary budget test runtime"))
+    }
+
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
+        Err(RunError::internal("unused boundary budget test runtime"))
+    }
+
+    fn model(&self) -> String {
+        "model".into()
+    }
+}
+
+#[async_trait::async_trait]
 impl SessionRuntime for SuccessfulRuntime {
     async fn run(
         &self,
@@ -240,8 +1005,6 @@ impl SessionRuntime for SuccessfulRuntime {
         Ok(awaken_session_contract::StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -262,10 +1025,6 @@ impl SessionRuntime for SuccessfulRuntime {
         _is_error: bool,
     ) -> Result<awaken_session_contract::StepOutcome, RunError> {
         unreachable!("message test never resumes")
-    }
-
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        unreachable!("message test never adds a system message")
     }
 
     async fn define_outcome(
@@ -348,10 +1107,6 @@ impl SessionRuntime for RecordingCleanupRuntime {
         Err(RunError::internal("unused test runtime"))
     }
 
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Err(RunError::internal("unused test runtime"))
-    }
-
     async fn define_outcome(
         &self,
         _thread: &str,
@@ -371,7 +1126,26 @@ struct FaultingSessionRepository {
     inner: Arc<dyn ManagedSessionRepository>,
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
+    running_conflict_operation_once: Mutex<Option<String>>,
+    tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
+}
+
+fn report_committed_mutation_as_conflict(
+    result: awaken_session_contract::SessionMutationResult,
+) -> awaken_session_contract::SessionMutationResult {
+    match result {
+        awaken_session_contract::SessionMutationResult::Applied { new_revision }
+        | awaken_session_contract::SessionMutationResult::Replayed { new_revision }
+        | awaken_session_contract::SessionMutationResult::Conflict {
+            current_revision: new_revision,
+        } => awaken_session_contract::SessionMutationResult::Conflict {
+            current_revision: new_revision,
+        },
+        awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+            awaken_session_contract::SessionMutationResult::IdempotencyMismatch
+        }
+    }
 }
 
 impl FaultingSessionRepository {
@@ -380,6 +1154,8 @@ impl FaultingSessionRepository {
             inner,
             fail_operation_once: Mutex::new(None),
             conflict_operation_once: Mutex::new(None),
+            running_conflict_operation_once: Mutex::new(None),
+            tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
         }
     }
@@ -390,6 +1166,14 @@ impl FaultingSessionRepository {
 
     fn commit_then_conflict_once(&self, operation: &str) {
         *self.conflict_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+
+    fn commit_running_activity_then_conflict_once(&self, operation: &str) {
+        *self.running_conflict_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+
+    fn tombstone_after_operation_once(&self, operation: &str) {
+        *self.tombstone_after_operation_once.lock().unwrap() = Some(operation.to_string());
     }
 
     fn get_not_found_once(&self) {
@@ -445,19 +1229,122 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         if should_report_conflict {
             self.conflict_operation_once.lock().unwrap().take();
             let result = self.inner.commit_mutation(owner_scope, mutation).await?;
-            let current_revision = match result {
+            return Ok(report_committed_mutation_as_conflict(result));
+        }
+        let should_commit_running = {
+            let mut operation = self.running_conflict_operation_once.lock().unwrap();
+            if operation
+                .as_ref()
+                .is_some_and(|operation| mutation.idempotency.key.contains(operation))
+            {
+                operation.take();
+                true
+            } else {
+                false
+            }
+        };
+        if should_commit_running {
+            let session_id = mutation.payload.session_id().to_string();
+            let mut concurrent = self.inner.get(&session_id).await?;
+            let expected_revision = concurrent.revision;
+            concurrent.begin_activity_epoch().ok_or_else(|| {
+                awaken_session_contract::SessionRepositoryError::InvalidMutation(
+                    "injected concurrent activity exhausted its epoch".into(),
+                )
+            })?;
+            concurrent
+                .transition_execution(awaken_session_contract::SessionExecutionState::Running)
+                .map_err(|error| {
+                    awaken_session_contract::SessionRepositoryError::InvalidMutation(
+                        error.to_string(),
+                    )
+                })?;
+            if !concurrent.begin_runtime_interval(1) {
+                return Err(
+                    awaken_session_contract::SessionRepositoryError::InvalidMutation(
+                        "injected concurrent activity could not open its interval".into(),
+                    ),
+                );
+            }
+            let payload = awaken_session_contract::SessionMutationPayload::Replace(concurrent);
+            let payload_hash = payload.stable_hash();
+            let result = self
+                .inner
+                .commit_mutation(
+                    owner_scope,
+                    awaken_session_contract::SessionMutation {
+                        expected_revision,
+                        idempotency: awaken_session_contract::IdempotencyRecord {
+                            key: format!(
+                                "test:concurrent-activity:{session_id}:{}",
+                                expected_revision.0
+                            ),
+                            payload_hash,
+                        },
+                        payload,
+                        lifecycle_facts: Vec::new(),
+                    },
+                )
+                .await?;
+            return Ok(report_committed_mutation_as_conflict(result));
+        }
+        let should_tombstone = {
+            let mut operation = self.tombstone_after_operation_once.lock().unwrap();
+            if operation
+                .as_ref()
+                .is_some_and(|operation| mutation.idempotency.key.contains(operation))
+            {
+                operation.take();
+                true
+            } else {
+                false
+            }
+        };
+        if should_tombstone {
+            let session_id = mutation.payload.session_id().to_string();
+            let committed_revision = match self.inner.commit_mutation(owner_scope, mutation).await?
+            {
                 awaken_session_contract::SessionMutationResult::Applied { new_revision }
-                | awaken_session_contract::SessionMutationResult::Replayed { new_revision }
-                | awaken_session_contract::SessionMutationResult::Conflict {
-                    current_revision: new_revision,
-                } => new_revision,
-                awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
-                    return Ok(awaken_session_contract::SessionMutationResult::IdempotencyMismatch);
+                | awaken_session_contract::SessionMutationResult::Replayed { new_revision } => {
+                    new_revision
+                }
+                conflict @ awaken_session_contract::SessionMutationResult::Conflict { .. }
+                | conflict @ awaken_session_contract::SessionMutationResult::IdempotencyMismatch => {
+                    return Ok(conflict);
                 }
             };
-            return Ok(awaken_session_contract::SessionMutationResult::Conflict {
-                current_revision,
-            });
+            let deleted_revision = awaken_session_contract::SessionRevision(
+                committed_revision.0.checked_add(1).expect("test revision"),
+            );
+            let payload = awaken_session_contract::SessionMutationPayload::Delete(
+                awaken_session_contract::SessionTombstone {
+                    session_id: session_id.clone(),
+                    deleted_revision,
+                    deleted_at: "2026-08-21T00:00:00Z".into(),
+                },
+            );
+            let payload_hash = payload.stable_hash();
+            let result = self
+                .inner
+                .commit_mutation(
+                    owner_scope,
+                    awaken_session_contract::SessionMutation {
+                        expected_revision: committed_revision,
+                        idempotency: awaken_session_contract::IdempotencyRecord {
+                            key: format!("test:concurrent-tombstone:{session_id}"),
+                            payload_hash,
+                        },
+                        payload,
+                        lifecycle_facts: Vec::new(),
+                    },
+                )
+                .await?;
+            assert!(matches!(
+                result,
+                awaken_session_contract::SessionMutationResult::Applied { .. }
+                    | awaken_session_contract::SessionMutationResult::Replayed { .. }
+            ));
+            return Err(awaken_session_contract::SessionRepositoryError::NotFound);
         }
         self.inner.commit_mutation(owner_scope, mutation).await
     }
@@ -713,7 +1600,9 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
         title: None,
         metadata: Default::default(),
         tools: Default::default(),
+        event_batches: Vec::new(),
         activity_epoch: 0,
+        active_activity_epochs: Default::default(),
         running_interval: None,
         runtime_active_millis: 0,
         budget: Default::default(),
@@ -823,5 +1712,6 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
 mod authority;
 mod continuation;
 mod creation;
+mod event_batches;
 mod realization;
 mod run_admission;

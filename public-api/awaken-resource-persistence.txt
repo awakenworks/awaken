@@ -2,13 +2,13 @@ pub mod awaken_resource_persistence
 pub use awaken_resource_persistence::ObjectBackingConfig
 pub use awaken_resource_persistence::ObjectBackingProvider
 pub enum awaken_resource_persistence::ResourcePersistenceError
-pub awaken_resource_persistence::ResourcePersistenceError::Catalog(alloc::string::String)
 pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory
 pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory::error: core::io::error::Error
 pub awaken_resource_persistence::ResourcePersistenceError::CreateDirectory::path: std::path::PathBuf
 pub awaken_resource_persistence::ResourcePersistenceError::File(alloc::string::String)
 pub awaken_resource_persistence::ResourcePersistenceError::Memory(alloc::string::String)
 pub awaken_resource_persistence::ResourcePersistenceError::NonUtf8Path(std::path::PathBuf)
+pub awaken_resource_persistence::ResourcePersistenceError::Registry(alloc::string::String)
 pub awaken_resource_persistence::ResourcePersistenceError::Skill(alloc::string::String)
 pub enum awaken_resource_persistence::SchemaMode
 pub awaken_resource_persistence::SchemaMode::Migrate

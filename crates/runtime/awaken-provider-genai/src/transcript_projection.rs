@@ -1,4 +1,4 @@
-//! Closed decision kernel for projecting neutral transcript turns onto `genai`.
+//! Closed decision kernel for projecting neutral transcript messages onto `genai`.
 //!
 //! Provider payloads (text, JSON arguments, and binary content) remain opaque to
 //! this module.  It owns only the finite structural decisions that must be
@@ -103,7 +103,7 @@ pub(crate) fn project_thinking<T, S>(
 pub(crate) enum ReplayRowState {
     /// No content part has been observed.
     Empty,
-    /// Every observed part is reasoning, so the row is not a complete turn.
+    /// Every observed part is reasoning, so the row is not a complete message.
     ReasoningOnly,
     /// At least one public or tool part makes the complete row replayable.
     Replay,
@@ -111,7 +111,7 @@ pub(crate) enum ReplayRowState {
 
 impl ReplayRowState {
     /// Absorb one projected part. `Replay` is deliberately absorbing: attached
-    /// reasoning can never cause a complete tool/public turn to be dropped.
+    /// reasoning can never cause a complete tool/public message to be dropped.
     #[must_use]
     pub(crate) const fn absorb(self, part: ProviderPartKind) -> Self {
         match (self, part) {
@@ -145,7 +145,7 @@ pub(crate) enum ReasoningFoldAction {
     Prepend,
 }
 
-/// Decide whether external reasoning must be prepended to the committed turn.
+/// Decide whether external reasoning must be prepended to the committed response.
 ///
 /// `has_reasoning` means the external payload is non-blank.
 /// `has_ordered_thinking` records whether ordered content already contains any
@@ -173,7 +173,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn attached_reasoning_keeps_the_complete_tool_turn_replayable() {
+    fn attached_reasoning_keeps_the_complete_tool_response_replayable() {
+        // Test design — Causes: an Anthropic row contains Thinking followed by
+        // ToolUse. Effects: projection reaches replayable state. Constraints/
+        // invariants: reasoning alone remains incomplete but cannot hide a later
+        // complete part. Decision rule R1: Empty+Thinking+ToolUse=>Replay.
         let state = ReplayRowState::Empty
             .absorb(project_part_kind(
                 TranscriptDialect::Anthropic,
@@ -211,7 +215,9 @@ mod tests {
         // Causes: C1 document; C2 search result; C3 redacted placeholder.
         // Effects: E1/E2 keep the row replayable through existing binary/text
         // categories; E3 contributes no provider token and cannot fabricate a
-        // complete turn. Rules M1=C1=>E1, M2=C2=>E2, M3=C3=>E3.
+        // complete message. Rules M1=C1=>E1, M2=C2=>E2, M3=C3=>E3.
+        // Constraints/invariants: managed blocks reuse this canonical projection;
+        // Redacted remains non-replayable unless another complete part exists.
         assert_eq!(
             ReplayRowState::Empty.absorb(project_part_kind(
                 TranscriptDialect::Anthropic,
@@ -259,7 +265,13 @@ mod proofs {
     }
 
     #[kani::proof]
-    fn reasoning_replay_projection_preserves_reasoning_and_complete_turns() {
+    fn reasoning_replay_projection_preserves_reasoning_and_complete_responses() {
+        // Test design — Causes: every neutral part/dialect/prior-state combination
+        // is symbolic. Effects: reasoning shape/signature and completion state
+        // obey the closed projection. Constraints/invariants: Replay is absorbing,
+        // reasoning alone never completes a row, and one dialect cannot mix
+        // envelopes. Decision rule K1: exhaust symbolic partitions=>all asserted
+        // identities and monotonic state transitions hold.
         let tag: u8 = kani::any();
         kani::assume(tag <= 4);
         let neutral = symbolic_neutral_part(tag);

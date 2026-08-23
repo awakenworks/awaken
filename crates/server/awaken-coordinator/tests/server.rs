@@ -2,6 +2,8 @@
 //! HITL round-trip where a mutating tool awaits for approval, is confirmed, runs
 //! rooted in the session's sandbox, and the read-back proves isolation.
 
+mod support;
+
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -18,6 +20,8 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+
+use support::wait_for_session_events;
 
 async fn json_call(
     app: &Router,
@@ -82,56 +86,77 @@ async fn create_session(app: &Router) -> String {
 }
 
 async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the accepted user.message to reach an aggregate idle boundary",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }
 
 async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": tool_use_id, "result": "allow" }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the accepted tool confirmation to reach an aggregate idle boundary",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await
 }
 
 #[tokio::test]
-async fn echo_turn_end_to_end() {
+async fn echo_run_end_to_end() {
+    // Causes: the fixtures below establish `echo run end to end` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_router(Arc::new(EchoModel), "echo-model");
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "hi there").await;
     // Cause/effect rule: accepting a user.message first persists that exact
-    // inbound event, then brackets the resulting turn with running/output/idle.
+    // inbound Event, then brackets the resulting Run with both aggregate and
+    // primary-Thread lifecycle before usage and aggregate idle.
     assert_eq!(
         event_types(&list),
         vec![
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "span.model_request_start",
             "span.model_request_end",
             "agent.message",
-            "session.status_idle",
-            "session.usage"
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle"
         ]
     );
     let msg = list["data"]
@@ -208,31 +233,43 @@ fn read_result_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
+    // Causes: the fixtures below establish `hitl write awaits then confirms and reads rooted` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
 
-    // The write is asked -> the run awaits.
+    // The write is asked -> the Run awaits.
     let list = send_message(&app, &id, "HELLO-SANDBOX").await;
     // Decision rule: user.message + permission-gated tool call persists the
-    // input, starts the turn, projects the request, then idles awaiting action.
+    // input, starts the Run, projects the request, then idles awaiting action.
     assert_eq!(
         event_types(&list),
         vec![
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "span.model_request_start",
             "span.model_request_end",
             "agent.tool_use",
-            "session.status_idle",
-            "session.usage"
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle"
         ]
     );
+    let tool_use_id = last_event_of_type(list["data"].as_array().unwrap(), "agent.tool_use")["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
     let idle = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
-    assert_eq!(idle["stop_reason"]["event_ids"][0], "w");
+    assert_eq!(idle["stop_reason"]["event_ids"][0], tool_use_id);
 
     // Confirm -> write runs (rooted), read runs (allowed), reply.
-    let list = confirm(&app, &id, "w").await;
+    let list = confirm(&app, &id, &tool_use_id).await;
     assert!(event_types(&list).contains(&"agent.message".to_string()));
     let last = last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle");
     assert_eq!(last["stop_reason"]["type"], "end_turn");
@@ -240,18 +277,25 @@ async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
 }
 
 async fn define_outcome(app: &Router, session: &str, rubric: &str) -> serde_json::Value {
-    json_call(
+    let receipt = json_call(
         app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
         serde_json::json!({ "events": [{ "type": "user.define_outcome", "description": "finish it", "rubric": { "type": "text", "content": rubric }, "max_iterations": 3 }] }),
     )
     .await;
-    json_call(
+    wait_for_session_events(
         app,
-        "GET",
-        &format!("/v1/sessions/{session}/events?limit=500"),
-        serde_json::Value::Null,
+        session,
+        Some(&receipt),
+        "the accepted Outcome to become satisfied or await required action",
+        |events| {
+            events.iter().any(|event| {
+                (event["type"] == "span.outcome_evaluation_end" && event["result"] == "satisfied")
+                    || (event["type"] == "session.status_idle"
+                        && event["stop_reason"]["type"] == "requires_action")
+            })
+        },
     )
     .await
 }
@@ -350,6 +394,14 @@ impl LlmExecutor for OutcomeHitlModel {
 
 #[tokio::test]
 async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate() {
+    // Causes: the fixtures below establish `outcome hitl awaits without failure then` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `resumes the active aggregate` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_router(Arc::new(OutcomeHitlModel), "outcome-hitl");
     let id = create_session(&app).await;
 
@@ -364,11 +416,10 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     // mismatched result rejection remains covered by Managed admission tests.
     let awaiting = define_outcome(&app, &id, "FINAL").await;
     let awaiting_events = awaiting["data"].as_array().unwrap();
-    assert!(
-        awaiting_events
-            .iter()
-            .any(|event| { event["type"] == "agent.tool_use" && event["id"] == "outcome-write-1" })
-    );
+    let first_tool_id = last_event_of_type(awaiting_events, "agent.tool_use")["id"]
+        .as_str()
+        .expect("first Outcome tool Event id")
+        .to_string();
     assert!(
         !awaiting_events
             .iter()
@@ -381,14 +432,17 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
     );
     let idle = last_event_of_type(awaiting_events, "session.status_idle");
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
-    assert_eq!(idle["stop_reason"]["event_ids"][0], "outcome-write-1");
+    assert_eq!(idle["stop_reason"]["event_ids"][0], first_tool_id);
 
-    let awaiting_again = confirm(&app, &id, "outcome-write-1").await;
+    let awaiting_again = confirm(&app, &id, &first_tool_id).await;
     let awaiting_again_events = awaiting_again["data"].as_array().unwrap();
-    assert!(
-        awaiting_again_events
-            .iter()
-            .any(|event| { event["type"] == "agent.tool_use" && event["id"] == "outcome-write-2" })
+    let second_tool_id = last_event_of_type(awaiting_again_events, "agent.tool_use")["id"]
+        .as_str()
+        .expect("second Outcome tool Event id")
+        .to_string();
+    assert_ne!(
+        second_tool_id, first_tool_id,
+        "R2 uses a fresh public Event id"
     );
     assert!(
         !awaiting_again_events
@@ -400,25 +454,33 @@ async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate()
         "requires_action"
     );
 
-    json_call(
+    let deny_receipt = json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
         serde_json::json!({
             "events": [{
                 "type": "user.tool_confirmation",
-                "tool_use_id": "outcome-write-2",
+                "tool_use_id": second_tool_id,
                 "result": "deny",
                 "deny_message": "continue without the second write"
             }]
         }),
     )
     .await;
-    let completed = json_call(
+    let completed = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
+        &id,
+        Some(&deny_receipt),
+        "the denied second tool call to commit the final Outcome answer and verdict",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "span.outcome_evaluation_end" && event["result"] == "satisfied"
+            }) && events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"] == "FINAL after permission"
+            })
+        },
     )
     .await;
     let completed_events = completed["data"].as_array().unwrap();
@@ -522,23 +584,31 @@ async fn outcome_graded_by_a_judge_subagent() {
 
 #[tokio::test]
 async fn custom_tool_use_through_real_kernel() {
+    // Causes: the fixtures below establish `custom tool use through real kernel` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
     let app = build_custom_router();
     let id = create_session(&app).await;
 
     // The model calls the client-executed tool `submit_answer` -> awaits as custom.
     let list = send_message(&app, &id, "solve it").await;
     // Decision rule: user.message + client-executed tool persists the input,
-    // starts the turn, projects custom_tool_use, then idles awaiting its result.
+    // starts the Run, projects custom_tool_use, then idles awaiting its result.
     assert_eq!(
         event_types(&list),
         vec![
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "span.model_request_start",
             "span.model_request_end",
             "agent.custom_tool_use",
-            "session.status_idle",
-            "session.usage"
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle"
         ]
     );
     let custom = list["data"]
@@ -553,18 +623,28 @@ async fn custom_tool_use_through_real_kernel() {
     assert_eq!(idle["stop_reason"]["type"], "requires_action");
 
     // The client returns the result -> the model incorporates it and replies.
-    json_call(
+    let result_receipt = json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
         serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": tool_use_id, "content": [{ "type": "text", "text": "42" }] }] }),
     )
     .await;
-    let list = json_call(
+    let list = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
+        &id,
+        Some(&result_receipt),
+        "the accepted custom tool result to reach the model answer and end_turn",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("got: 42"))
+            }) && events.iter().any(|event| {
+                event["type"] == "session.status_idle" && event["stop_reason"]["type"] == "end_turn"
+            })
+        },
     )
     .await;
     let msgs: Vec<&str> = list["data"]
@@ -586,7 +666,7 @@ async fn custom_tool_use_through_real_kernel() {
 }
 
 /// A model that replies with every system message it can see, so a test can prove
-/// a `system.message` reached the turn's context.
+/// a `system.message` reached the Run's context.
 struct SystemEchoModel;
 
 #[async_trait::async_trait]
@@ -619,38 +699,75 @@ impl LlmExecutor for SystemEchoModel {
 }
 
 #[tokio::test]
-async fn system_message_reaches_next_turn() {
+async fn system_message_reaches_accompanying_and_later_runs() {
+    // Causes: the fixtures below establish `system message` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the accompanying Run and every later Run observe the one committed System context.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_router(Arc::new(SystemEchoModel), "sys");
     let id = create_session(&app).await;
 
-    // A `system.message` is accept-only (no agent/session projection) but its
-    // canonical inbound event is persisted and the directive is buffered.
+    // Cause/effect graph: C1=one text System event; C2=it is final and follows
+    // one User event; C3=a later User event starts another Run. Effects:
+    // E1=the first batch is accepted in public order; E2=the accompanying Run
+    // sees the System context; E3=the later Run retains it. Decision rule
+    // S1=C1+C2+C3 -> E1+E2+E3. Invalid predecessor/cardinality rules live in the
+    // Managed adapter decision table and must fail before any Run is admitted.
     let receipts = json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "system.message", "content": [{ "type": "text", "text": "SECRET-DIRECTIVE" }] }] }),
+        serde_json::json!({ "events": [
+            { "type": "user.message", "content": [{ "type": "text", "text": "first" }] },
+            { "type": "system.message", "content": [{ "type": "text", "text": "SECRET-DIRECTIVE" }] }
+        ] }),
     )
     .await;
-    assert_eq!(receipts["data"][0]["type"], "system.message");
-    let before = json_call(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
-    )
-    .await;
-    // Cause/effect rule: accepted system.message -> one processed inbound event
-    // plus the aggregate usage projection, with no running/message/idle event
-    // until a later user turn.
     assert_eq!(
-        event_types(&before),
-        vec!["system.message", "session.usage"]
+        receipts["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|event| event["type"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        vec!["user.message", "system.message"],
+        "S1/E1"
     );
-    assert!(before["data"][0]["processed_at"].is_string());
+    let first = wait_for_session_events(
+        &app,
+        &id,
+        Some(&receipts),
+        "the accepted system.message to affect the accompanying Run",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("SECRET-DIRECTIVE"))
+            }) && events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
+    )
+    .await;
+    let first_messages = first["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "agent.message")
+        .map(|event| event["content"][0]["text"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(
+        first_messages
+            .iter()
+            .any(|message| message.contains("SECRET-DIRECTIVE")),
+        "S1/E2 accompanying Run input: {first_messages:?}"
+    );
 
-    // The next user turn sees the buffered directive.
-    let list = send_message(&app, &id, "hello").await;
+    let list = send_message(&app, &id, "later").await;
     let messages: Vec<&str> = list["data"]
         .as_array()
         .unwrap()
@@ -660,7 +777,7 @@ async fn system_message_reaches_next_turn() {
         .collect();
     assert!(
         messages.iter().any(|m| m.contains("SECRET-DIRECTIVE")),
-        "directive reached the turn: {messages:?}"
+        "S1/E3 later Run input: {messages:?}"
     );
 }
 
@@ -677,9 +794,25 @@ async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> Status
 
 #[tokio::test]
 async fn custom_result_fails_closed_on_mismatch() {
+    // Causes: the fixtures below establish `custom result` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `fails closed on mismatch` and every asserted state transition
+    // or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `custom result` is one independent branch selecting `fails closed on
+    // mismatch`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     let app = build_custom_router();
     let id = create_session(&app).await;
-    send_message(&app, &id, "solve it").await; // awaits on submit_answer (id "c1")
+    let awaiting = send_message(&app, &id, "solve it").await;
+    let tool_use_id = last_event_of_type(
+        awaiting["data"].as_array().unwrap(),
+        "agent.custom_tool_use",
+    )["id"]
+        .as_str()
+        .expect("public custom tool Event id")
+        .to_string();
 
     // A result naming the wrong tool_use_id is rejected...
     let status = post_status(
@@ -699,7 +832,7 @@ async fn custom_result_fails_closed_on_mismatch() {
     let status = post_status(
         &app,
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": "c1", "result": "allow" }] }),
+        serde_json::json!({ "events": [{ "type": "user.tool_confirmation", "tool_use_id": tool_use_id, "result": "allow" }] }),
     )
     .await;
     assert_eq!(
@@ -709,18 +842,26 @@ async fn custom_result_fails_closed_on_mismatch() {
     );
 
     // The await survives both rejections; the correct result still resumes it.
-    json_call(
+    let result_receipt = json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "c1", "content": [{ "type": "text", "text": "42" }] }] }),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": tool_use_id, "content": [{ "type": "text", "text": "42" }] }] }),
     )
     .await;
-    let list = json_call(
+    let list = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
+        &id,
+        Some(&result_receipt),
+        "the still-pending custom tool call to resume from its correctly bound result",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("got: 42"))
+            })
+        },
     )
     .await;
     let msgs: Vec<&str> = list["data"]
@@ -738,16 +879,30 @@ async fn custom_result_fails_closed_on_mismatch() {
 
 #[tokio::test]
 async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
-    // A run awaiting on the *built-in* `write` (HITL) must not be resumable with a
+    // Causes: the fixtures below establish `custom result` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `cannot fabricate a builtin tools output` and every asserted
+    // state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `custom result` is one independent branch selecting `cannot fabricate a
+    // builtin tools output`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
+    // A Run awaiting on the *built-in* `write` (HITL) must not be resumable with a
     // `user.custom_tool_result`: that would bypass execution and the approval gate.
     let app = build_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
-    send_message(&app, &id, "HELLO").await; // awaits on write (id "w")
+    let awaiting = send_message(&app, &id, "HELLO").await;
+    let tool_use_id =
+        last_event_of_type(awaiting["data"].as_array().unwrap(), "agent.tool_use")["id"]
+            .as_str()
+            .expect("public built-in tool Event id")
+            .to_string();
 
     let status = post_status(
         &app,
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": "w", "content": [{ "type": "text", "text": "forged" }] }] }),
+        serde_json::json!({ "events": [{ "type": "user.custom_tool_result", "custom_tool_use_id": tool_use_id, "content": [{ "type": "text", "text": "forged" }] }] }),
     )
     .await;
     assert_eq!(
@@ -757,12 +912,12 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     );
 
     // The proper confirmation path still runs the real tool.
-    let list = confirm(&app, &id, "w").await;
+    let list = confirm(&app, &id, &tool_use_id).await;
     assert!(read_result_text(&list).contains("HELLO"));
     assert!(!read_result_text(&list).contains("forged"));
 }
 
-/// Every agent text a turn produced: assistant messages and tool results.
+/// Every agent text a Run produced: assistant messages and tool results.
 fn all_agent_text(list: &serde_json::Value) -> String {
     list["data"]
         .as_array()
@@ -776,12 +931,46 @@ fn all_agent_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn delegation_runs_a_subagent_and_returns_its_result() {
+    // Causes: the fixtures below establish `delegation runs a subagent and` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `returns its result` and every asserted state transition or
+    // side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let app = build_delegation_router();
     let id = create_session(&app).await;
-    let list = send_message(&app, &id, "research the answer").await;
+    send_message(&app, &id, "research the answer").await;
+    let list = wait_for_session_events(
+        &app,
+        &id,
+        None,
+        "the committed child report and its one later root report Run",
+        |events| {
+            let child_report = events.iter().any(|event| {
+                event["type"] == "agent.thread_message_received"
+                    && event["content"][0]["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains("researched: 42"))
+            });
+            let root_report = events.iter().any(|event| {
+                event["type"] == "agent.message"
+                    && event["content"][0]["text"] == "coordination completed from child report"
+            });
+            child_report
+                && root_report
+                && events
+                    .iter()
+                    .rev()
+                    .any(|event| event["type"] == "session.status_idle")
+        },
+    )
+    .await;
 
-    // `agent_run` awaits and the host fulfills it: a sub-run executes and its
-    // result flows back transparently within the turn.
+    // Cause/effect rule: list_agents resolves the frozen roster, send_to_agent
+    // returns only an admission receipt, the child executes on its own Thread,
+    // and its terminal report admits exactly one later root report Run.
     let msgs: Vec<&str> = list["data"]
         .as_array()
         .unwrap()
@@ -789,10 +978,37 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
         .filter(|e| e["type"] == "agent.message")
         .map(|e| e["content"][0]["text"].as_str().unwrap())
         .collect();
-    assert!(
+    assert_eq!(
         msgs.iter()
-            .any(|m| m.contains("delegate said: researched: 42")),
-        "sub-agent output reached the main agent: {msgs:?}"
+            .filter(|message| message.contains("coordination accepted:"))
+            .count(),
+        1,
+        "one admission receipt: {msgs:?}"
+    );
+    assert_eq!(
+        msgs.iter()
+            .filter(|message| **message == "coordination completed from child report")
+            .count(),
+        1,
+        "one report Run: {msgs:?}"
+    );
+    assert!(
+        !msgs
+            .iter()
+            .any(|message| message.contains("researched: 42")),
+        "child payload is not a synchronous result: {msgs:?}"
+    );
+    let received = list["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["type"] == "agent.thread_message_received")
+        .expect("child reply cross-post");
+    assert!(
+        received["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains("researched: 42")),
+        "child Thread carries the delegate output: {received}"
     );
     assert_eq!(
         last_event_of_type(list["data"].as_array().unwrap(), "session.status_idle")["stop_reason"]
@@ -803,15 +1019,24 @@ async fn delegation_runs_a_subagent_and_returns_its_result() {
 
 #[tokio::test]
 async fn delegation_fails_closed_on_unpublished_target() {
-    // `ghost` is not in the Agent's published targets; the child Run must never start.
+    // Causes: the fixtures below establish `delegation` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `fails closed on unpublished target` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect rule: `ghost` is absent from the frozen Session roster, so
+    // send_to_agent fails before a child Thread or Run can be admitted.
     let app = build_delegation_router();
     let id = create_session(&app).await;
     let list = send_message(&app, &id, "use the ghost agent").await;
 
     let text = all_agent_text(&list);
     assert!(
-        text.contains("published targets"),
-        "published-target rejection is surfaced: {text}"
+        text.contains("frozen roster"),
+        "frozen-roster rejection is surfaced: {text}"
     );
     assert!(
         !text.contains("researched: 42"),
@@ -895,27 +1120,17 @@ impl LlmExecutor for LoopModel {
 
 #[tokio::test]
 async fn max_steps_maps_to_retries_exhausted() {
+    // Causes: a model emits one executable `glob` call on every step until the
+    // canonical loop ceiling ends the accepted user.message Run.
+    // Effects: the committed aggregate terminal projection preserves
+    // `retries_exhausted` instead of reporting an ordinary end_turn.
+    // Constraints/invariants: the receipt-aware helper observes the lifecycle
+    // supervisor's committed projection and never drives the Run itself.
+    // Decision rule: M1=unbounded tool calls + reached step ceiling -> one
+    // terminal `retries_exhausted`; ordinary natural-end coverage is `echo_run_end_to_end`.
     let app = build_router(Arc::new(LoopModel), "loop");
     let id = create_session(&app).await;
-    let mut list = send_message(&app, &id, "loop forever").await;
-    for _ in 0..100 {
-        if list["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|event| event["stop_reason"]["type"] == "retries_exhausted")
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        list = json_call(
-            &app,
-            "GET",
-            &format!("/v1/sessions/{id}/events?limit=100"),
-            serde_json::Value::Null,
-        )
-        .await;
-    }
+    let list = send_message(&app, &id, "loop forever").await;
     assert!(
         list["data"]
             .as_array()
@@ -1000,6 +1215,15 @@ impl LlmExecutor for GatedReviseModel {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn managed_user_interrupt_reports_interrupted() {
+    // Causes: C1 an accepted Outcome is blocked inside its active grading Run;
+    // C2 a concurrent user.interrupt receipt addresses that same Session; C3 the
+    // blocked model is then released so terminal reconciliation can settle.
+    // Effects: exactly one committed Outcome evaluation ends as `interrupted`,
+    // and neither satisfaction nor iteration exhaustion replaces it.
+    // Constraints/invariants: the interrupt receipt is the causal anchor; only
+    // the lifecycle supervisor may reconcile the Run and Outcome terminal facts.
+    // Decision rule: I1=C1+C2+C3 -> one terminal interrupted projection; missing
+    // C2 leaves the ordinary Outcome loop and is covered by the Outcome tests.
     let gate = std::sync::Arc::new(tokio::sync::Notify::new());
     let reached = std::sync::Arc::new(tokio::sync::Notify::new());
     let app = build_router(
@@ -1029,7 +1253,7 @@ async fn managed_user_interrupt_reports_interrupted() {
     // Once the loop is blocked mid-run, send `user.interrupt` on a concurrent
     // request, then release the gate.
     reached.notified().await;
-    json_call(
+    let interrupt_receipt = json_call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}/events"),
@@ -1040,11 +1264,16 @@ async fn managed_user_interrupt_reports_interrupted() {
     task.await.unwrap();
 
     // The projected outcome ends `interrupted`, not satisfied/max_iterations.
-    let list = json_call(
+    let list = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
+        &id,
+        Some(&interrupt_receipt),
+        "the accepted interrupt to commit the Outcome's interrupted verdict",
+        |events| {
+            events.iter().any(|event| {
+                event["type"] == "span.outcome_evaluation_end" && event["result"] == "interrupted"
+            })
+        },
     )
     .await;
     let ends: Vec<&serde_json::Value> = list["data"]

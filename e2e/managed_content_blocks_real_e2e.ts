@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { pass, withServer } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -40,7 +40,10 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // Receipt decision L2: C2 exact image-command receipt plus L1 materialized
+    // image inference; E2 processed receipt whose delta answers RED. K1 history
+    // before C2 cannot satisfy the visual oracle. D1=L1+C2=>E2.
+    const sendResponse = await client.beta.sessions.events.send(session.id, {
       events: [{
         type: 'user.message',
         content: [
@@ -50,10 +53,18 @@ async function main() {
       }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(event);
-    }
+    const receipt = sendResponse?.data?.[0];
+    assert.ok(receipt, 'L2 exact image-command receipt');
+    const observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => /\bRED\b/u.test(JSON.stringify(delta)),
+      'live image command to answer RED',
+      { timeoutMs: 180_000 },
+    );
+    const events: any[] = observation.delta;
     const answer = events
       .filter((event) => event.type === 'agent.message')
       .flatMap((event) => event.content)

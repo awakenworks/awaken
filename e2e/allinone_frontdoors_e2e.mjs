@@ -16,7 +16,7 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { HttpAgent } from '@ag-ui/client';
 import { A2AClient } from '@a2a-js/sdk/client';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38423);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -34,14 +34,24 @@ async function checkManaged(base) {
   assert.equal(session.type, 'session', 'managed session created');
   assert.ok(session.id.startsWith('sesn_'), 'managed session id looks right');
 
-  await client.beta.sessions.events.send(session.id, {
+  // C1=exact Managed-door receipt; C2=reply+terminal. E1=C2 after C1. K: the
+  // other frontdoors keep their protocol-native completion sentinels. Decision
+  // M1 C1&&!C2=>retry; M2 C1+C2=>assert Managed echo.
+  const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'hi there' }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-    events.push(ev);
-  }
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'M1 exact all-in-one Managed receipt');
+  const { delta: events } = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    'M1 all-in-one Managed Run to commit its echo',
+  );
   const message = events.find((e) => e.type === 'agent.message');
   assert.ok(message, `managed door produced an agent.message: ${events.map((e) => e.type)}`);
   const text = message.content?.[0]?.text ?? '';

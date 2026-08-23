@@ -434,10 +434,14 @@ mod tests {
     #[test]
     fn provider_executor_factory_decision_table() {
         // Causes: C1 dialect is supported, C2 dialect matches adapter, C3
-        // adapter is supported, C4 base URL exists, C5 credential exists.
+        // adapter is supported, C4 base URL exists, C5 credential exists, C6
+        // a legacy publication leaves dialect empty but pins a supported adapter.
         // Effects: E1 exact construction or the corresponding fail-closed typed
-        // error. The table enumerates all true plus each single false cause;
-        // composition crates deliberately own no parallel dialect map.
+        // error; E2 C6 remains executable through its adapter pin. Constraints:
+        // Responses is a dedicated executor despite sharing OpenAI's family,
+        // while a non-empty dialect may never mismatch or silently default.
+        // Decision rules: R1=C1..C5=>E1; R2=C6+C3..C5=>E2; each single false
+        // cause in R1 yields its typed error. No composition crate owns another map.
         let credential = RedactedString::new("sk-test");
         for (dialect, adapter) in [
             ("anthropic_messages", "anthropic"),
@@ -455,6 +459,18 @@ mod tests {
                 )
                 .is_ok(),
                 "all causes true for {dialect}/{adapter} -> E1"
+            );
+        }
+        for adapter in ["openai", "anthropic"] {
+            assert!(
+                executor_from_materialized_endpoint(
+                    "",
+                    adapter,
+                    Some("https://provider.invalid"),
+                    Some(&credential),
+                )
+                .is_ok(),
+                "R2/E2 legacy empty dialect remains executable via {adapter}"
             );
         }
         assert!(matches!(

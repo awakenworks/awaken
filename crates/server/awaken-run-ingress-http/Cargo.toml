@@ -11,6 +11,7 @@ authority = "run-ingress-http"
 
 [dependencies]
 awaken-agent-contract.workspace = true
+awaken-observability.workspace = true
 awaken-resource-contract.workspace = true
 awaken-run-ingress.workspace = true
 awaken-run-ingress-contract.workspace = true
@@ -23,6 +24,7 @@ axum.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+tracing = "0.1"
 
 [features]
 test-support = []

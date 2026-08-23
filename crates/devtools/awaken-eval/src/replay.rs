@@ -28,13 +28,13 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::MemoryCommitCoordinator;
 
-use crate::{Case, CaseScore, Dataset, ExpectationResult, Report, ScriptedTurn, score_case};
+use crate::{Case, CaseScore, Dataset, ExpectationResult, Report, ScriptedResponse, score_case};
 
-/// Serves the recorded turns in order; past the end it repeats the last turn. A
-/// turn with `tool_calls` drives the engine's tool loop (stop reason left open so
-/// the loop continues); a text turn ends the turn (`EndTurn`).
+/// Serves recorded model responses in order; past the end it repeats the last
+/// response. Tool calls keep the engine loop open; plain text naturally ends the
+/// Run.
 struct ScriptLlm {
-    turns: Vec<ScriptedTurn>,
+    responses: Vec<ScriptedResponse>,
     n: AtomicUsize,
 }
 
@@ -45,8 +45,8 @@ impl LlmExecutor for ScriptLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let i = self.n.fetch_add(1, Ordering::SeqCst);
-        let turn = self.turns.get(i).or_else(|| self.turns.last());
-        let (output, stop_reason) = match turn {
+        let response = self.responses.get(i).or_else(|| self.responses.last());
+        let (output, stop_reason) = match response {
             Some(t) if !t.tool_calls.is_empty() => {
                 let calls = t
                     .tool_calls
@@ -62,11 +62,11 @@ impl LlmExecutor for ScriptLlm {
             }
             Some(t) => (
                 AssistantOutput::text(t.text.clone()),
-                Some(StopReason::EndTurn),
+                Some(StopReason::NaturalEnd),
             ),
             None => (
                 AssistantOutput::text(String::new()),
-                Some(StopReason::EndTurn),
+                Some(StopReason::NaturalEnd),
             ),
         };
         Ok(ChatResponse {
@@ -101,15 +101,15 @@ impl RawTool for EvalEchoTool {
 async fn replay(case: &Case) -> (String, bool, Vec<String>) {
     let fingerprint = CatalogFingerprint("eval".to_string());
     let mut runtime = Runtime::new().with_llm(Arc::new(ScriptLlm {
-        turns: case.script.clone(),
+        responses: case.script.clone(),
         n: AtomicUsize::new(0),
     }));
     // Register a fixed echo tool for each distinct tool id the script invokes, so
     // a scripted tool call executes on the real engine and is recorded.
     let invoked = Arc::new(Mutex::new(Vec::new()));
     let mut registered: Vec<String> = Vec::new();
-    for turn in &case.script {
-        for tc in &turn.tool_calls {
+    for response in &case.script {
+        for tc in &response.tool_calls {
             if !registered.contains(&tc.tool_id) {
                 registered.push(tc.tool_id.clone());
                 runtime = runtime.with_tool(Arc::new(EvalEchoTool {
@@ -317,7 +317,7 @@ mod tests {
             Ok(ChatResponse {
                 output: AssistantOutput::text(self.0.to_string()),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -327,7 +327,7 @@ mod tests {
             id: "j".to_string(),
             instructions: String::new(),
             input: "q".to_string(),
-            script: vec![ScriptedTurn {
+            script: vec![ScriptedResponse {
                 text: "a thoughtful answer".to_string(),
                 tool_calls: Vec::new(),
             }],

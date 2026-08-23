@@ -9,11 +9,11 @@ mod support;
 
 use awaken_agent_contract::ClientToolDescriptor;
 use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::run::EndCause;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
 };
+use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 use awaken_protocol_managed::types::agent::ModelInput;
 use awaken_protocol_managed::types::session::{
     AgentRef, AgentRefObject, ModelConfigParams, ModelEffortInput, ModelEffortLevel,
@@ -115,7 +115,7 @@ fn resource_registry() -> std::sync::Arc<awaken_resource_application::RegistryAp
 }
 
 /// A runtime that accepts every `prepare_session` — the session record exists, so
-/// the resource routes can be exercised. Turn methods are unused here.
+/// the resource routes can be exercised. Run methods are unused here.
 #[derive(Clone, Default)]
 struct AcceptingFake {
     prepared: std::sync::Arc<std::sync::Mutex<Vec<SessionInit>>>,
@@ -124,9 +124,6 @@ struct AcceptingFake {
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
-    settle_run: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    run_started: std::sync::Arc<tokio::sync::Notify>,
-    run_release: std::sync::Arc<tokio::sync::Notify>,
 }
 
 struct AgentWithResources;
@@ -141,8 +138,19 @@ impl ExecutableAgentProfileSource for LifecycleAgent {
         _workspace_id: &str,
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
-        (agent_id == "lifecycle" && !self.unavailable.load(std::sync::atomic::Ordering::SeqCst))
-            .then(|| empty_agent_view("genai"))
+        match agent_id {
+            "lifecycle" if !self.unavailable.load(std::sync::atomic::Ordering::SeqCst) => {
+                Some(ExecutableAgentSessionProfile {
+                    delegates: vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                        agent_id: "researcher".into(),
+                        source_revision: None,
+                    }],
+                    ..empty_agent_view("genai")
+                })
+            }
+            "researcher" => Some(empty_agent_view("genai")),
+            _ => None,
+        }
     }
 
     fn agent_unavailable_in(&self, _workspace_id: &str, agent_id: &str) -> bool {
@@ -453,6 +461,238 @@ impl ExecutableAgentProfileSource for AgentWithBackend {
         agent_id: &str,
     ) -> Option<ExecutableAgentSessionProfile> {
         (agent_id == "backend-agent").then(|| empty_agent_view(self.0))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct BudgetBackendRoster {
+    root_backend: &'static str,
+    root_fallback_backend: Option<&'static str>,
+    exact_child_backend: Option<&'static str>,
+    exact_child_fallback_backend: Option<&'static str>,
+    current_child_backend: Option<&'static str>,
+    advisor_backend: Option<&'static str>,
+}
+
+impl BudgetBackendRoster {
+    fn root_profile(self) -> ExecutableAgentSessionProfile {
+        ExecutableAgentSessionProfile {
+            source_revision: 7,
+            model: Some("root-public-model".into()),
+            execution_model_ref: Some("root-model".into()),
+            backend_ref: self.root_backend.into(),
+            delegates: self
+                .exact_child_backend
+                .map(|_| {
+                    vec![awaken_executable_agent_contract::ExecutableAgentDelegate {
+                        agent_id: "budget-child".into(),
+                        source_revision: Some(3),
+                    }]
+                })
+                .unwrap_or_default(),
+            advisor_model: self.advisor_backend.map(|_| "advisor-model".to_string()),
+            ..empty_agent_view(self.root_backend)
+        }
+    }
+
+    fn child_profile(backend_ref: &str, revision: u64) -> ExecutableAgentSessionProfile {
+        ExecutableAgentSessionProfile {
+            source_revision: revision,
+            model: Some("child-public-model".into()),
+            execution_model_ref: Some("child-model".into()),
+            backend_ref: backend_ref.into(),
+            ..empty_agent_view(backend_ref)
+        }
+    }
+
+    fn candidate(
+        name: &str,
+        backend_ref: &str,
+    ) -> awaken_runtime_contract::resolved::ResolvedModelCandidate {
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+            awaken_runtime_contract::resolved::ModelBinding::new(
+                format!("{name}-provider"),
+                name,
+                backend_ref,
+            ),
+        )
+    }
+
+    fn snapshot(
+        self,
+        agent_id: &str,
+        revision: u64,
+        primary_model: &str,
+        primary_backend: &str,
+        fallback_backend: Option<&str>,
+        include_root_roster: bool,
+    ) -> awaken_runtime_contract::ExecutableAgentSnapshot {
+        let mut snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder(agent_id)
+            .model(awaken_runtime_contract::resolved::ModelBinding::new(
+                format!("{primary_model}-provider"),
+                primary_model,
+                primary_backend,
+            ))
+            .build();
+        snapshot.metadata.source.revision = revision;
+        snapshot.resolved_spec.model_candidates = fallback_backend
+            .map(|backend| Self::candidate(&format!("{primary_model}-fallback"), backend))
+            .into_iter()
+            .collect();
+        if include_root_roster {
+            snapshot.resolved_spec.plugin_config.agent.delegates = self
+                .exact_child_backend
+                .map(
+                    |_| awaken_runtime_contract::agent_bindings::AgentDelegateBinding {
+                        agent_id: awaken_runtime_contract::snapshot::AgentId("budget-child".into()),
+                        source_revision: Some(3),
+                        recursive_self: false,
+                    },
+                )
+                .into_iter()
+                .collect();
+            snapshot.resolved_spec.plugin_config.agent.advisor =
+                self.advisor_backend.map(|backend| {
+                    awaken_runtime_contract::agent_bindings::AgentAdvisorBinding {
+                        model: "advisor-model".into(),
+                        candidate: Self::candidate("advisor-model", backend),
+                    }
+                });
+        }
+        snapshot.recompute_fingerprint().unwrap();
+        snapshot
+    }
+}
+
+impl ExecutableAgentProfileSource for BudgetBackendRoster {
+    fn session_profile_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        match agent_id {
+            "budget-root" => Some(self.root_profile()),
+            "budget-child" => self
+                .current_child_backend
+                .map(|backend| Self::child_profile(backend, 4)),
+            _ => None,
+        }
+    }
+
+    fn session_profile_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<ExecutableAgentSessionProfile> {
+        match (agent_id, source_revision) {
+            ("budget-root", 7) => Some(self.root_profile()),
+            ("budget-child", 3) => self
+                .exact_child_backend
+                .map(|backend| Self::child_profile(backend, 3)),
+            _ => None,
+        }
+    }
+
+    fn executable_snapshot_at_revision_in(
+        &self,
+        _workspace_id: &str,
+        agent_id: &str,
+        source_revision: u64,
+    ) -> Option<awaken_runtime_contract::ExecutableAgentSnapshot> {
+        match (agent_id, source_revision) {
+            ("budget-root", 7) => Some(self.snapshot(
+                "budget-root",
+                7,
+                "root-model",
+                self.root_backend,
+                self.root_fallback_backend,
+                true,
+            )),
+            ("budget-child", 3) => self.exact_child_backend.map(|backend| {
+                self.snapshot(
+                    "budget-child",
+                    3,
+                    "child-model",
+                    backend,
+                    self.exact_child_fallback_backend,
+                    false,
+                )
+            }),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Default)]
+struct RecordingListPriceProvider {
+    model_rosters: std::sync::Mutex<Vec<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ManagedListPriceProvider for RecordingListPriceProvider {
+    async fn resolve_snapshot(
+        &self,
+        request: awaken_session_contract::ManagedListPriceRequest,
+    ) -> Result<
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
+    > {
+        self.model_rosters
+            .lock()
+            .unwrap()
+            .push(request.model_refs.clone());
+        let rates = awaken_session_contract::ManagedTokenListRates {
+            input_micros_per_million: 1,
+            output_micros_per_million: 1,
+            cache_read_micros_per_million: 1,
+            cache_creation_micros_per_million: 1,
+        };
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "budget-backend-test".into(),
+            version: 1,
+            effective_at_unix_ms: request.occurred_at_unix_ms,
+            arithmetic_version: 1,
+            model_rates: request
+                .model_refs
+                .into_iter()
+                .map(|model| (model, rates))
+                .collect(),
+            runtime_rates: Default::default(),
+            fingerprint: "budget-backend-test-fingerprint".into(),
+        })
+    }
+}
+
+#[derive(Default)]
+struct CountingRepositoryCredentialIngress {
+    writes: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_application::RepositoryCredentialIngress
+    for CountingRepositoryCredentialIngress
+{
+    async fn enter_repository_token(
+        &self,
+        source_id: awaken_credential_contract::CredentialSourceId,
+        _workspace_id: &str,
+        _token: awaken_agent_contract::RedactedString,
+    ) -> Result<awaken_credential_contract::CredentialSourceId, String> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(source_id)
+    }
+
+    async fn rotate_repository_token(
+        &self,
+        _source_id: &awaken_credential_contract::CredentialSourceId,
+        _workspace_id: &str,
+        _token: awaken_agent_contract::RedactedString,
+    ) -> Result<(), String> {
+        self.writes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 }
 
@@ -790,10 +1030,362 @@ async fn session_model_override_freezes_one_complete_resolved_route() {
 }
 
 #[tokio::test]
-async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_turn() {
+async fn budgeted_session_backends_follow_the_exact_publication_decision_table() {
+    // Causes: the fixtures below establish `budgeted session backends follow the exact publication
+    // decision table` with the concrete inputs, state, dependencies, and failure triggers used by
+    // this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 root backend; C2 a complete model override; C3 an
+    // exact ordinary-roster revision; C4 a root-frozen Advisor model; C5 no root
+    // profile or override leaves the optional Session runtime absent; C6 an
+    // exact candidate carries an explicit empty backend. E1 accepts every
+    // Native roster, including the implicit Host fallback, and snapshots every
+    // model; E2 rejects ACP/A2A/invalid backends as a bad request; E3 performs
+    // no Session, Resource credential, Runtime, or price-authority write/call
+    // before rejection. A mutable current child is deliberately opposite to
+    // its frozen revision, proving that only C3 is authoritative.
+    // Constraints: absence is the existing implicit Host/Native runtime, not an
+    // empty backend value; `Backend::from_ref("")` remains Invalid; only Native
+    // execution can cross the per-request budget gate.
+    //
+    // | Rule | root primary/fallback | override primary/fallback | exact child primary/fallback / current | Advisor | Effect |
+    // | B1 | ACP / absent       | absent          | absent               | absent   | E2,E3 |
+    // | B2 | A2A / absent       | absent          | absent               | absent   | E2,E3 |
+    // | B3 | Native / absent    | ACP / absent     | absent               | absent   | E2,E3 |
+    // | B4 | Native / absent    | absent          | ACP / absent / Native | absent  | E2,E3 |
+    // | B5 | Native / Native    | absent          | Native / Native / ACP | Native  | E1    |
+    // | B6 | Native / ACP       | absent          | absent               | absent   | E2,E3 |
+    // | B7 | Native / absent    | absent          | absent               | A2A      | E2,E3 |
+    // | B8 | Native / absent    | absent          | Native / A2A / ACP   | absent   | E2,E3 |
+    // | B9 | Native / absent    | Native / ACP     | absent               | absent   | E2,E3 |
+    // | B10 | no profile (None) | absent          | absent               | absent   | E1    |
+    // | B11 | Invalid("") / absent | absent       | absent               | absent   | E2,E3 |
+    struct Rule {
+        id: &'static str,
+        agent_id: &'static str,
+        roster: BudgetBackendRoster,
+        override_backend: Option<&'static str>,
+        override_fallback_backend: Option<&'static str>,
+        expected_models: Option<&'static [&'static str]>,
+    }
+    let rules = [
+        Rule {
+            id: "B1",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "acp:claude",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B2",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "a2a:https://agent.example.test",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B3",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: Some("acp:codex"),
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B4",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: Some("acp:claude"),
+                exact_child_fallback_backend: None,
+                current_child_backend: Some("genai"),
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B5",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: Some("genai"),
+                exact_child_backend: Some("genai"),
+                exact_child_fallback_backend: Some("genai"),
+                current_child_backend: Some("acp:claude"),
+                advisor_backend: Some("genai"),
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: Some(&[
+                "advisor-model",
+                "child-model",
+                "child-model-fallback",
+                "root-model",
+                "root-model-fallback",
+            ]),
+        },
+        Rule {
+            id: "B6",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: Some("acp:codex"),
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B7",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: Some("a2a:https://advisor.example.test"),
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B8",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: Some("genai"),
+                exact_child_fallback_backend: Some("a2a:https://child.example.test"),
+                current_child_backend: Some("acp:claude"),
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+        Rule {
+            id: "B9",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: Some("genai"),
+            override_fallback_backend: Some("acp:codex"),
+            expected_models: None,
+        },
+        Rule {
+            id: "B10",
+            agent_id: "assistant",
+            roster: BudgetBackendRoster {
+                root_backend: "genai",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: Some(&["test-model"]),
+        },
+        Rule {
+            id: "B11",
+            agent_id: "budget-root",
+            roster: BudgetBackendRoster {
+                root_backend: "",
+                root_fallback_backend: None,
+                exact_child_backend: None,
+                exact_child_fallback_backend: None,
+                current_child_backend: None,
+                advisor_backend: None,
+            },
+            override_backend: None,
+            override_fallback_backend: None,
+            expected_models: None,
+        },
+    ];
+
+    for rule in rules {
+        let runtime = AcceptingFake::default();
+        let repo = std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+        );
+        let prices = std::sync::Arc::new(RecordingListPriceProvider::default());
+        let credential_ingress =
+            std::sync::Arc::new(CountingRepositoryCredentialIngress::default());
+        let mut state = ManagedState::new(runtime.clone())
+            .with_config_source(std::sync::Arc::new(rule.roster))
+            .with_session_repo(repo.clone())
+            .with_managed_list_price_provider(prices.clone())
+            .with_resource_registry(resource_registry())
+            .with_repository_credential_ingress(credential_ingress.clone());
+        if let Some(backend_ref) = rule.override_backend {
+            state = state.with_model_publication_resolver(std::sync::Arc::new(
+                FixedSessionModelResolver {
+                    result: Ok(awaken_session_contract::SessionModelPublication {
+                        primary: awaken_runtime_contract::resolved::ResolvedModelCandidate::host(
+                            awaken_runtime_contract::resolved::ModelBinding::new(
+                                "override-provider",
+                                "override-execution-model",
+                                backend_ref,
+                            ),
+                        ),
+                        candidates: rule
+                            .override_fallback_backend
+                            .map(|backend| {
+                                BudgetBackendRoster::candidate(
+                                    "override-execution-model-fallback",
+                                    backend,
+                                )
+                            })
+                            .into_iter()
+                            .collect(),
+                    }),
+                    calls: Default::default(),
+                },
+            ));
+        }
+        let agent = rule.override_backend.map_or_else(
+            || json!(rule.agent_id),
+            |_| {
+                json!({
+                    "id": rule.agent_id,
+                    "type": "agent_with_overrides",
+                    "model": "override-public-model"
+                })
+            },
+        );
+        let mut request = json!({
+            "agent": agent,
+            "budget": {
+                "type": "limit",
+                "max_list_cost": {"amount": "100", "currency": "USD"}
+            },
+            "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
+        });
+        if rule.expected_models.is_none() {
+            request.as_object_mut().unwrap().insert(
+                "resources".into(),
+                json!([{
+                    "type": "github_repository",
+                    "url": "https://github.com/acme/private.git",
+                    "authorization_token": "must-not-be-written" // awaken-allow: secret
+                }]),
+            );
+        }
+        let request = serde_json::from_value(request).expect("valid Session request");
+        let result = state.create_session(request, None).await;
+
+        if let Some(expected_models) = rule.expected_models {
+            let created = result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
+            assert!(repo.get(&created.id).await.is_ok(), "{}", rule.id);
+            assert_eq!(runtime.prepared.lock().unwrap().len(), 1, "{}", rule.id);
+            let expected_models = expected_models
+                .iter()
+                .map(|model| (*model).to_string())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                prices.model_rosters.lock().unwrap().as_slice(),
+                &[expected_models],
+                "{} exact compiled price roster",
+                rule.id
+            );
+        } else {
+            let error = result.expect_err(rule.id);
+            let awaken_protocol_managed::StateError::Run(error) = error else {
+                panic!("{}: expected a Run error", rule.id)
+            };
+            assert_eq!(
+                error.kind,
+                awaken_session_contract::RunErrorKind::BadRequest,
+                "{}",
+                rule.id
+            );
+            assert!(
+                error.message.contains("budget_backend_unsupported"),
+                "{}: {error}",
+                rule.id
+            );
+            let recovery = repo.reconcilable_sessions().await.unwrap();
+            assert!(recovery.sessions.is_empty(), "{} Session write", rule.id);
+            assert!(
+                recovery.quarantined.is_empty(),
+                "{} corrupt Session write",
+                rule.id
+            );
+            assert!(runtime.prepared.lock().unwrap().is_empty(), "{}", rule.id);
+            assert!(
+                prices.model_rosters.lock().unwrap().is_empty(),
+                "{}",
+                rule.id
+            );
+        }
+        assert_eq!(
+            credential_ingress
+                .writes
+                .load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "{} Resource credential write",
+            rule.id
+        );
+    }
+}
+
+#[tokio::test]
+async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_run() {
+    // Causes: the fixtures below establish `workspace inference geo policy` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is rechecked before create and each run` and every asserted
+    // state transition or side effect must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1=Workspace denies `us` at create -> no Session or
     // Runtime preparation; C2=Workspace allows it -> Session exists; C3=the
-    // same live policy narrows before the next user turn -> the batch is
+    // same live policy narrows before the next user Run -> the batch is
     // rejected before an inbound receipt/event can be appended.
     let runtime = AcceptingFake::default();
     let policy = std::sync::Arc::new(MutableInferenceGeoPolicy::new(false));
@@ -845,7 +1437,7 @@ async fn workspace_inference_geo_policy_is_rechecked_before_create_and_each_turn
         [
             awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate,
             awaken_protocol_managed::InferenceGeoCheckpoint::SessionCreate,
-            awaken_protocol_managed::InferenceGeoCheckpoint::Turn,
+            awaken_protocol_managed::InferenceGeoCheckpoint::Run,
         ]
     );
 }
@@ -1024,16 +1616,6 @@ impl SessionRuntime for AcceptingFake {
         _t: &str,
         _c: Vec<ContentBlock>,
     ) -> Result<StepOutcome, RunError> {
-        if self.settle_run.load(std::sync::atomic::Ordering::SeqCst) {
-            self.run_started.notify_one();
-            self.run_release.notified().await;
-            return Ok(StepOutcome::ended(
-                Vec::new(),
-                EndCause::NaturalEnd,
-                false,
-                false,
-            ));
-        }
         Err(RunError::internal("unused"))
     }
     async fn resume(
@@ -1052,9 +1634,6 @@ impl SessionRuntime for AcceptingFake {
         _e: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
-    }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
     }
     async fn resolve_session_skills(
         &self,
@@ -1095,6 +1674,21 @@ impl SessionRuntime for AcceptingFake {
         }
         Ok(())
     }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        // Resource-route fake cause/effect rule: C1 these tests commit no Run;
+        // C2 Managed GET refreshes through the sole atomic recovery port.
+        // R1 C1+C2 => Ok(None), so the durable Resource desired projection is
+        // queryable. Unsupported production ports retain the trait's fail-closed
+        // 503 default; this fake never reconstructs a snapshot from split reads.
+        Ok(None)
+    }
+
     async fn define_outcome(
         &self,
         _t: &str,
@@ -1146,6 +1740,32 @@ impl awaken_session_contract::McpAttachmentRealizer for AcceptingFake {
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let (status, _, value) = call_with_headers(app, method, uri, body, &[]).await;
     (status, value)
+}
+
+async fn settle_coordinated_user_run_activity(
+    application: &awaken_session_application::SessionApplication,
+    session_id: &str,
+    rule: &str,
+) {
+    let session = application
+        .session(session_id)
+        .await
+        .unwrap_or_else(|error| panic!("{rule}: read admitted Session: {error}"));
+    assert_eq!(
+        session.active_activity_epochs.len(),
+        1,
+        "{rule}: one canonical User Run activity"
+    );
+    application
+        .settle_activity(
+            session_id,
+            *session
+                .active_activity_epochs
+                .first()
+                .expect("one canonical User Run activity"),
+        )
+        .await
+        .unwrap_or_else(|error| panic!("{rule}: settle canonical User Run activity: {error}"));
 }
 
 fn with_session_environment(mut value: Value) -> Value {
@@ -1615,77 +2235,111 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
     assert_eq!(session["resources"][0]["mount_path"], "/mnt/release.txt");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_get_projects_the_durable_activity_lifecycle() {
-    // Cause/effect graph: C1 a driving event crosses durable activity admission;
-    // C2 its Runtime execution remains in flight; C3 the same activity epoch
-    // settles. Effects: E1 the canonical Session snapshot is running; E2 GET
-    // projects running while C2 holds; E3 settlement commits idle and GET
-    // projects idle. Decision rules: A1=C1+C2=>E1+E2, A2=C1+C2+C3=>E3.
-    // This exercises the authoritative aggregate-to-wire projection seam; a
-    // dispatch lookup or protocol-only status owner would be a duplicate path.
-    let runtime = AcceptingFake::default();
-    runtime
-        .settle_run
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let app = router(std::sync::Arc::new(ManagedState::new(runtime.clone())));
+    // Causes: the fixtures below establish `session get` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 the lifecycle-supervisor-owned recovery seam
+    // reserves a retained User Event and commits its durable activity epoch; C2
+    // the one-shot test gate holds that exact canonical activation; C3 its next
+    // sequential scan observes the released Run's committed terminal truth; C4
+    // the in-process fake's missing Runtime Host callback is represented by the
+    // application-owned activity-settlement port used by that real callback.
+    // Effects: E1 the Event receipt is returned without awaiting execution; E2
+    // GET projects Running while C2 holds; E3 the same aggregate commits Idle
+    // and GET projects it. Decision rules: A1=C1+C2=>E1+E2,
+    // A2=C1+C2+C3+C4=>E3. Constraint: the gate wraps the shared
+    // `CoordinatedRuntimeFake`, and the two sequential scans model the sole
+    // supervisor; no parallel driver, request-local executor, dispatch lookup,
+    // or protocol-only status owner participates.
+    let runtime = CoordinatedRuntimeFake::default();
+    runtime.hold_next_user_run_activation();
+    let state = std::sync::Arc::new(ManagedState::new(runtime.clone()));
+    let app = router(state.clone());
     let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({ "agent": "a" }))).await;
     assert_eq!(status, StatusCode::OK);
     let session_id = session["id"].as_str().unwrap().to_owned();
 
-    let run_app = app.clone();
-    let run_session_id = session_id.clone();
-    let in_flight = tokio::spawn(async move {
-        call(
-            &run_app,
-            "POST",
-            &format!("/v1/sessions/{run_session_id}/events"),
-            Some(json!({
-                "events": [{
-                    "type": "user.message",
-                    "content": [{"type": "text", "text": "hold"}]
-                }]
-            })),
-        )
-        .await
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/events"),
+        Some(json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "hold"}]
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "A1/E1: {body}");
+    let application = state.session_application();
+    let first_scan = tokio::spawn({
+        let application = application.clone();
+        let session_id = session_id.clone();
+        async move { Box::pin(application.drive_session_event_batches(&session_id, None)).await }
     });
-    runtime.run_started.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.wait_for_user_run_activation(),
+    )
+    .await
+    .expect("A1 canonical activation was not reached");
 
     let (status, running) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
     assert_eq!(status, StatusCode::OK, "A1");
     assert_eq!(running["status"], "running", "A1/E2");
 
-    runtime.run_release.notify_one();
-    let (status, body) = in_flight.await.unwrap();
-    assert_eq!(status, StatusCode::OK, "A2: {body}");
+    runtime.release_user_run_activation();
+    first_scan
+        .await
+        .expect("A1 first recovery scan task")
+        .expect("A1 first recovery scan");
+    Box::pin(application.drive_session_event_batches(&session_id, None))
+        .await
+        .expect("A2 terminal recovery scan");
+    settle_coordinated_user_run_activity(&application, &session_id, "A2/C4").await;
     let (status, idle) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
-    assert_eq!(status, StatusCode::OK, "A2");
+    assert_eq!(status, StatusCode::OK, "A2/E3: {idle}");
     assert_eq!(idle["status"], "idle", "A2/E3");
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
+    // Causes: the fixtures below establish `disabling an agent` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `fences new sessions and new runs` and every asserted state
+    // transition or side effect must hold.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph:
-    // C1 Published -> E1 a Session may be admitted; C2 lifecycle changes to
-    // Disabled after that Session exists -> E2 a new Session and a new event
-    // on the existing Session both fail before Runtime::run. A run that already
-    // crossed this admission fence has no later lifecycle check and can settle.
+    // C1 Published -> E1 a Session may be admitted; C2 the supervisor-owned
+    // recovery seam commits a Run activity receipt and the canonical one-shot
+    // activation gate holds it; C3 lifecycle changes to Disabled; C4 the next
+    // sequential scan observes terminal truth and the canonical Runtime Host
+    // settlement port closes its activity -> E2 that already-admitted Run still
+    // settles, while E3 a new Session and a new Event on the existing Session
+    // both fail before any second activation. Constraint: the shared
+    // `CoordinatedRuntimeFake` remains the sole reservation/activation driver;
+    // its ordinary `researcher` child is frozen in the fixture roster, and
+    // recovery scans never overlap.
     //
     // Decision table:
-    // | rule | lifecycle at admission | target           | outcome |
-    // | L1   | Published              | new Session      | admit   |
-    // | L2   | Published then Disabled| admitted Run     | settle  |
-    // | L3   | Disabled               | new Session      | 400     |
-    // | L4   | Disabled               | existing Session | 400     |
+    // | rule | lifecycle at admission | target                  | outcome |
+    // | L1   | Published              | new Session             | admit   |
+    // | L2   | Published then Disabled| already-admitted Run    | settle  |
+    // | L3   | Disabled               | new Session             | 400     |
+    // | L4   | Disabled               | existing Session Event  | 400     |
     let source = std::sync::Arc::new(LifecycleAgent {
         unavailable: std::sync::atomic::AtomicBool::new(false),
     });
-    let runtime = AcceptingFake::default();
-    runtime
-        .settle_run
-        .store(true, std::sync::atomic::Ordering::SeqCst);
-    let state = ManagedState::new(runtime.clone()).with_config_source(source.clone());
-    let app = router(std::sync::Arc::new(state));
+    let runtime = CoordinatedRuntimeFake::default();
+    runtime.hold_next_user_run_activation();
+    let state =
+        std::sync::Arc::new(ManagedState::new(runtime.clone()).with_config_source(source.clone()));
+    let app = router(state.clone());
 
     let (status, session) = call(
         &app,
@@ -1697,29 +2351,52 @@ async fn disabling_an_agent_fences_new_sessions_and_new_runs() {
     assert_eq!(status, StatusCode::OK, "L1");
     let session_id = session["id"].as_str().unwrap();
 
-    let first_app = app.clone();
-    let first_session_id = session_id.to_owned();
-    let in_flight = tokio::spawn(async move {
-        call(
-            &first_app,
-            "POST",
-            &format!("/v1/sessions/{first_session_id}/events"),
-            Some(json!({
-                "events": [{
-                    "type": "user.message",
-                    "content": [{"type": "text", "text": "already admitted"}]
-                }]
-            })),
-        )
-        .await
+    let (status, body) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/events"),
+        Some(json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{"type": "text", "text": "already admitted"}]
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "L2 admitted receipt: {body}");
+    let application = state.session_application();
+    let first_scan = tokio::spawn({
+        let application = application.clone();
+        let session_id = session_id.to_owned();
+        async move { Box::pin(application.drive_session_event_batches(&session_id, None)).await }
     });
-    runtime.run_started.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        runtime.wait_for_user_run_activation(),
+    )
+    .await
+    .expect("L2 canonical activation was not reached");
     source
         .unavailable
         .store(true, std::sync::atomic::Ordering::SeqCst);
-    runtime.run_release.notify_one();
-    let (status, body) = in_flight.await.unwrap();
-    assert_eq!(status, StatusCode::OK, "L2: {body}");
+    runtime.release_user_run_activation();
+    first_scan
+        .await
+        .expect("L2 first recovery scan task")
+        .expect("L2 first recovery scan");
+    Box::pin(application.drive_session_event_batches(session_id, None))
+        .await
+        .expect("L2 terminal recovery scan");
+    settle_coordinated_user_run_activity(&application, session_id, "L2/C4").await;
+    let settled = application
+        .session(session_id)
+        .await
+        .expect("L2/E2 Session");
+    assert_eq!(
+        settled.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "L2/E2"
+    );
 
     let (status, _) = call(
         &app,

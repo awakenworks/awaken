@@ -50,6 +50,7 @@ pub use resources::{
 mod dream;
 mod env_registry;
 mod inference_policy;
+mod lifecycle_delivery;
 mod preview;
 mod state;
 mod tunnel;
@@ -60,6 +61,7 @@ mod work_queue;
 pub use inference_policy::{
     InferenceGeoCheckpoint, InferenceGeoPolicyError, ManagedInferenceGeoPolicy, inference_geo_name,
 };
+pub use lifecycle_delivery::ManagedLifecycleFactDelivery;
 pub use rate_limit::{
     ManagedOperation, ManagedRateLimitDecision, ManagedRateLimitRequest,
     ManagedRateLimitUnavailable, ManagedRateLimiter, ManagedRateLimits, ManagedRequestLimiter,

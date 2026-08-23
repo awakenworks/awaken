@@ -13,6 +13,7 @@
 // server actually emits) — the doc-vs-real-server cross-check no local oracle gives.
 
 import assert from 'node:assert/strict';
+import { waitForSessionEventReceipt } from '../harness.mjs';
 import { rustOutboundTypes, rustInboundTypes } from './catalog.mjs';
 import { whenOnlineMode } from './when_online_mode.mjs';
 
@@ -26,13 +27,24 @@ async function runOnline() {
   const environmentId = process.env.AWAKEN_WHEN_ONLINE_ENV || 'env_local';
 
   const session = await client.beta.sessions.create({ agent, environment_id: environmentId, betas: BETAS });
-  await client.beta.sessions.events.send(session.id, {
+  // Test design: C1 exact live-API receipt and C2 at least one resulting public
+  // event; E1 receipt processed before catalog comparison. K1 no prior history
+  // can stand in for this command. D1=C1+C2=>E1.
+  const receipt = (await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'Say hi in one word.' }] }],
     betas: BETAS,
-  });
+  })).data[0];
+  const observation = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    receipt.id,
+    BETAS,
+    ({ delta }) => delta.length > 0,
+    'live Managed API receipt and resulting public events',
+    { timeoutMs: 180_000 },
+  );
 
-  const seen = new Set();
-  for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) seen.add(ev.type);
+  const seen = new Set(observation.events.map((event) => event.type));
 
   const catalog = new Set([...rustOutboundTypes(), ...rustInboundTypes()]);
   const unmodelled = [...seen].filter((t) => !catalog.has(t));

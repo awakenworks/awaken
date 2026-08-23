@@ -1,1999 +1,625 @@
-//! Event driving for [`ManagedState`]: projecting committed turns/outcomes,
+//! Event driving for [`ManagedState`]: projecting committed Runs/outcomes,
 //! the live-inbox surface, and `send_events`/`list_events`.
 
 use super::*;
-use crate::types::SpanModelUsage;
-use awaken_agent_contract::agent::delegation::DelegationStatus;
-use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
-use tracing::Instrument as _;
+use crate::types::{EvaluatedPermission, SpanModelUsage};
+#[cfg(test)]
+use awaken_agent_contract::RunLifecycleCursor;
+use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
+use awaken_ext_builtin_tools::SEND_TO_AGENT;
+use awaken_runtime_contract::resolved::ADVISOR_FAILURE_NOTICE;
+#[cfg(test)]
+use awaken_session_contract::SessionThreadToolReply;
+use awaken_session_contract::{
+    CoordinatedThreadLink, CoordinatedThreadTarget, Pending, SessionEventCommand,
+    SessionEventInput, SessionEventInterrupt, SessionEventToolReply, SessionEventToolReplyKind,
+    SessionOutcomeRubric, SessionThreadTarget, session_agent_report_messages,
+    session_agent_report_text,
+};
 
-struct DelegateCall {
-    run_id: String,
-    agent_id: String,
-    sent: Vec<ContentBlock>,
-    received: Vec<ContentBlock>,
-    status: DelegationStatus,
+const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
+
+/// One public inbound event rebuilt from canonical Session/Thread truth. The
+/// batch coordinate is ephemeral ordering metadata, never a second event log.
+struct DurableInboundProjection {
+    event: Event,
 }
 
-impl ManagedState {
-    fn map_activity_error(error: awaken_session_application::SessionActivityError) -> StateError {
-        match error {
-            awaken_session_application::SessionActivityError::NotFound => StateError::NotFound,
-            awaken_session_application::SessionActivityError::Terminal => StateError::Archived,
-            awaken_session_application::SessionActivityError::NotReady => StateError::Run(
-                RunError::classified("session_not_ready", "Session realization has not completed"),
-            ),
-            awaken_session_application::SessionActivityError::BudgetReached => {
-                StateError::Run(RunError::classified(
-                    "budget_reached",
-                    "Session list-cost budget has been reached",
-                ))
-            }
-            awaken_session_application::SessionActivityError::Conflict => StateError::Conflict,
-            awaken_session_application::SessionActivityError::EpochExhausted => {
-                StateError::Run(RunError::internal("Session activity epoch is exhausted"))
-            }
-            awaken_session_application::SessionActivityError::Unavailable(message) => {
-                StateError::Run(RunError::internal(message))
-            }
-        }
-    }
-
-    pub(super) fn next_event_id(&self) -> String {
-        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
-    }
-
-    /// The session's live SSE broadcast sender, created on first use. Capacity is
-    /// generous so a fast turn's preview burst doesn't lag a slow subscriber into
-    /// `Lagged` (which the stream tolerates by skipping). Never removed.
-    fn live_sender(&self, session_id: &str) -> broadcast::Sender<StreamFrame> {
-        let mut live = self.live.lock().unwrap();
-        live.entry(session_id.to_string())
-            .or_insert_with(|| broadcast::channel(1024).0)
-            .clone()
-    }
-
-    /// Open a live SSE subscription for `session_id`: the current committed-event
-    /// snapshot (backfill) plus a receiver for frames published after this call.
-    /// Subscribing *before* cloning the snapshot means no committed event can slip
-    /// through the gap — an event that lands mid-call is on the receiver, and the
-    /// caller dedupes it against the snapshot by id.
-    pub fn stream_subscribe(
-        &self,
-        session_id: &str,
-    ) -> Result<(Vec<Event>, broadcast::Receiver<StreamFrame>), StateError> {
-        let rx = self.live_sender(session_id).subscribe();
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        Ok((record.events.clone(), rx))
-    }
-
-    /// Publish each committed `Event` appended to `session_id` since `from` on the
-    /// live broadcast, so an open SSE connection receives it without a reconnect.
-    /// Best-effort: no subscriber (or a lagging one) is not an error.
-    pub(super) fn broadcast_committed_from(
-        &self,
-        session_id: &str,
-        record: &SessionRecord,
-        from: usize,
-    ) {
-        if from >= record.events.len() {
-            return;
-        }
-        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
-            for event in &record.events[from..] {
-                let _ = tx.send(StreamFrame::Committed(event.clone()));
-            }
-        }
-    }
-
-    /// Resolve the public optional Thread selector onto the runtime's canonical
-    /// thread keys. The primary Thread is projected with a public suffix, while
-    /// the runtime has always keyed it by the Session id; child Thread ids are
-    /// already the child Run keys. Keeping that translation here prevents the
-    /// event handler and Thread routes from growing competing identity rules.
-    fn interrupt_targets(
-        &self,
-        session_id: &str,
-        requested_thread_id: Option<&str>,
-    ) -> Result<Vec<String>, StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        let primary_id = format!("{session_id}:primary");
-        if let Some(thread_id) = requested_thread_id {
-            if thread_id == primary_id {
-                return Ok(vec![session_id.to_string()]);
-            }
-            let child = record
-                .child_threads
+/// Rebuild every accepted inbound Event from the Session root's sole retained
+/// command provenance. Thread/dispatch/Outcome owners decide when an entry's
+/// `processed` bit may advance; the disposable Managed cache never infers the
+/// original DTO from their lossy execution payloads.
+fn durable_inbound_projections(
+    session_id: &str,
+    batches: &[awaken_session_contract::SessionEventBatch],
+) -> Vec<DurableInboundProjection> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            batch
+                .events
                 .iter()
-                .find(|thread| thread.id == thread_id)
-                .ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "session_thread_id does not name a thread in this session",
-                    ))
-                })?;
-            if child.status == SessionThreadStatus::Terminated {
-                return Err(StateError::Run(RunError::bad_request(
-                    "an archived or terminated session thread cannot be interrupted",
+                .map(move |entry| DurableInboundProjection {
+                    event: Event {
+                        id: durable_inbound_event_id(session_id, entry.event.operation_id()),
+                        kind: public_inbound_kind_from_command(session_id, &entry.event),
+                        processed_at: entry.processed.then(|| PROCESSED_AT.to_string()),
+                    },
+                })
+        })
+        .collect()
+}
+
+fn public_inbound_kind_from_command(
+    session_id: &str,
+    command: &SessionEventCommand,
+) -> OutboundKind {
+    match command {
+        SessionEventCommand::UserMessage { content, .. } => OutboundKind::UserMessage {
+            content: content.clone(),
+        },
+        SessionEventCommand::SystemMessage { content, .. } => OutboundKind::SystemMessage {
+            content: content.clone(),
+        },
+        SessionEventCommand::DefineOutcome {
+            outcome_id,
+            description,
+            rubric,
+            max_iterations,
+            ..
+        } => OutboundKind::UserDefineOutcome {
+            description: description.clone(),
+            rubric: match rubric {
+                SessionOutcomeRubric::Text { content } => OutcomeRubric::Text {
+                    content: content.clone(),
+                },
+                SessionOutcomeRubric::File { file_id } => OutcomeRubric::File {
+                    file_id: file_id.clone(),
+                },
+            },
+            max_iterations: *max_iterations,
+            outcome_id: outcome_id.clone(),
+        },
+        SessionEventCommand::ToolReply { reply, .. } => {
+            let session_thread_id = reply
+                .target
+                .child_thread_id()
+                .map(|thread_id| public_thread_id(session_id, &thread_id.0));
+            match &reply.reply {
+                SessionEventToolReplyKind::Confirmation {
+                    allow,
+                    deny_message,
+                } => OutboundKind::UserToolConfirmation {
+                    tool_use_id: reply.public_tool_use_event_id.clone(),
+                    result: if *allow {
+                        ConfirmResult::Allow
+                    } else {
+                        ConfirmResult::Deny
+                    },
+                    deny_message: deny_message.clone(),
+                    session_thread_id,
+                },
+                SessionEventToolReplyKind::CustomToolResult { content, is_error } => {
+                    OutboundKind::UserCustomToolResult {
+                        custom_tool_use_id: reply.public_tool_use_event_id.clone(),
+                        content: content.clone(),
+                        is_error: *is_error,
+                        session_thread_id,
+                    }
+                }
+                SessionEventToolReplyKind::ToolResult { content, is_error } => {
+                    OutboundKind::UserToolResult {
+                        tool_use_id: reply.public_tool_use_event_id.clone(),
+                        content: content.clone(),
+                        is_error: *is_error,
+                        session_thread_id,
+                    }
+                }
+            }
+        }
+        SessionEventCommand::Interrupt { interrupt, .. } => OutboundKind::UserInterrupt {
+            session_thread_id: interrupt.requested_target.as_ref().map(|target| {
+                let internal = target.thread_id(session_id);
+                public_thread_id(session_id, &internal.0)
+            }),
+        },
+    }
+}
+
+/// Merge rebuildable inbound projections into the disposable record. Root CAS
+/// progress advances an existing receipt in place; no process-local marker may
+/// move it ahead of the durable entry.
+fn merge_durable_inbound_projections(
+    record: &mut SessionRecord,
+    projected: Vec<DurableInboundProjection>,
+) {
+    for projection in projected {
+        if let Some(existing) = record
+            .events
+            .iter_mut()
+            .find(|existing| existing.id == projection.event.id)
+        {
+            if projection.event.processed_at.is_some() {
+                existing.processed_at = projection.event.processed_at;
+            }
+            continue;
+        }
+        record.events.push(projection.event);
+    }
+}
+
+/// One terminal Outcome selected by retained Session-root provenance and read
+/// from the extension's exact committed Thread snapshot. This is transient
+/// projector input, not another Outcome record.
+struct DurableOutcomeProjection {
+    outcome_id: String,
+    terminal: CommittedOutcomeProjection,
+}
+
+/// Borrowed committed evidence for one child transcript fold. This is only a
+/// call-bound view over the existing transcript/lifecycle authorities; it owns
+/// no cursor, cache, or projection state.
+struct ChildTranscriptProjection<'a> {
+    thread_id: &'a str,
+    agent_name: &'a str,
+    advisor_model: Option<&'a str>,
+    messages: &'a [awaken_agent_contract::agent::message::Message],
+    lifecycle_events: &'a [RunLifecycleEvent],
+    latest_run_id: Option<&'a awaken_agent_contract::agent::run::Id>,
+    latest_run_state: Option<&'a awaken_agent_contract::agent::run::RunState>,
+    pending: Option<&'a Pending>,
+    pending_source_run_id: Option<&'a awaken_agent_contract::agent::run::Id>,
+}
+
+/// One borrowed view of the already-read coordination facts consumed by the
+/// sole child projector. Grouping them prevents the caller and projector from
+/// drifting into parallel parameter lists without introducing another owner.
+struct DelegationProjectionEvidence<'a> {
+    links: &'a [CoordinatedThreadLink],
+    snapshots: &'a std::collections::HashMap<
+        String,
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    >,
+    transcripts:
+        &'a std::collections::HashMap<String, Vec<awaken_agent_contract::agent::message::Message>>,
+    lifecycle_events: &'a [RunLifecycleEvent],
+    latest_run_states:
+        &'a std::collections::HashMap<String, awaken_agent_contract::agent::run::RunState>,
+    pending: &'a std::collections::HashMap<String, Pending>,
+    dispositions: &'a std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
+    usage: &'a std::collections::HashMap<String, Option<crate::types::SessionThreadUsage>>,
+}
+
+impl DurableOutcomeProjection {
+    fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
+        matches!(
+            &self.terminal,
+            CommittedOutcomeProjection::Errored(failure)
+                if failure.source_run_id.as_ref() == Some(run_id)
+        )
+    }
+}
+
+fn retained_outcome_ids(batches: &[awaken_session_contract::SessionEventBatch]) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    batches
+        .iter()
+        .flat_map(|batch| &batch.events)
+        .filter_map(|entry| match &entry.event {
+            SessionEventCommand::DefineOutcome { outcome_id, .. }
+                if seen.insert(outcome_id.clone()) =>
+            {
+                Some(outcome_id.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn validate_durable_outcome_projection(
+    outcome_id: String,
+    terminal: CommittedOutcomeProjection,
+) -> Result<DurableOutcomeProjection, StateError> {
+    if let CommittedOutcomeProjection::Completed(report) = &terminal {
+        let mut previous_iteration = None;
+        for iteration in &report.iterations {
+            if iteration.outcome_id != outcome_id {
+                return Err(StateError::Run(RunError::internal(
+                    "committed Outcome report id disagrees with Session provenance",
                 )));
             }
-            return Ok(vec![child.id.clone()]);
-        }
-
-        Ok(std::iter::once(session_id.to_string())
-            .chain(
-                record
-                    .child_threads
-                    .iter()
-                    .filter(|thread| thread.status != SessionThreadStatus::Terminated)
-                    .map(|thread| thread.id.clone()),
-            )
-            .collect())
-    }
-
-    fn public_inbound_kind(event: &InboundEvent) -> OutboundKind {
-        match event {
-            InboundEvent::UserMessage { content } => OutboundKind::UserMessage {
-                content: content.clone(),
-            },
-            InboundEvent::SystemMessage { content } => OutboundKind::SystemMessage {
-                content: content.clone(),
-            },
-            InboundEvent::UserToolConfirmation {
-                tool_use_id,
-                result,
-                deny_message,
-            } => OutboundKind::UserToolConfirmation {
-                tool_use_id: tool_use_id.clone(),
-                result: *result,
-                deny_message: deny_message.clone(),
-            },
-            InboundEvent::UserCustomToolResult {
-                custom_tool_use_id,
-                content,
-                is_error,
-            } => OutboundKind::UserCustomToolResult {
-                custom_tool_use_id: custom_tool_use_id.clone(),
-                content: content.clone(),
-                is_error: *is_error,
-            },
-            InboundEvent::UserToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => OutboundKind::UserToolResult {
-                tool_use_id: tool_use_id.clone(),
-                content: content.clone(),
-                is_error: *is_error,
-            },
-            InboundEvent::UserDefineOutcome {
-                description,
-                rubric,
-                max_iterations,
-            } => OutboundKind::UserDefineOutcome {
-                description: description.clone(),
-                rubric: rubric.clone(),
-                max_iterations: *max_iterations,
-            },
-            InboundEvent::UserInterrupt { session_thread_id } => OutboundKind::UserInterrupt {
-                session_thread_id: session_thread_id.clone(),
-            },
+            if previous_iteration.is_some_and(|previous| iteration.iteration <= previous) {
+                return Err(StateError::Run(RunError::internal(
+                    "committed Outcome report iterations are not strictly ordered",
+                )));
+            }
+            previous_iteration = Some(iteration.iteration);
         }
     }
+    Ok(DurableOutcomeProjection {
+        outcome_id,
+        terminal,
+    })
+}
 
-    fn append_inbound_event(
-        &self,
-        session_id: &str,
-        inbound: &InboundEvent,
-    ) -> Result<String, StateError> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let start = record.events.len();
-        let id = self.next_event_id();
-        record.events.push(Event {
-            id: id.clone(),
-            kind: Self::public_inbound_kind(inbound),
-            processed_at: None,
-        });
-        self.broadcast_committed_from(session_id, record, start);
-        Ok(id)
-    }
-
-    fn mark_inbound_processed(&self, session_id: &str, event_id: &str) {
-        if let Some(event) = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get_mut(session_id)
-            .and_then(|record| record.events.iter_mut().find(|event| event.id == event_id))
-        {
-            event.processed_at = Some(PROCESSED_AT.to_string());
-        }
-    }
-
-    /// Commit a create-time event batch through the same command as the public
-    /// events route. Creation is acknowledged only after the batch succeeds. A
-    /// failed batch first commits the ordinary delete fence, so response loss or
-    /// retry cannot replay a partially initialized Session as successful.
-    pub(crate) async fn start_initial_events(
-        self: &Arc<Self>,
-        session_id: &str,
-        events: Vec<InboundEvent>,
-    ) -> Result<(), StateError> {
-        if events.is_empty() {
-            return Ok(());
-        }
-        {
-            let mut sessions = self.sessions.lock().unwrap();
-            let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-            record.project_runtime_status(SessionStatus::Running);
-        }
-        match self
-            .send_event_batch(session_id, SendEventsRequest { events }, true, None)
-            .await
-        {
-            Ok(_) => Ok(()),
-            Err(initial_error) => {
-                if let Err(cleanup_error) = self.delete_session(session_id).await {
-                    return Err(StateError::Run(RunError::unavailable_classified(
-                        "initial_event_compensation_failed",
-                        format!(
-                            "initial Event batch failed ({initial_error}); Session cleanup also failed ({cleanup_error})"
+/// Add only Outcome-owned public facts. Root transcript and lifecycle remain
+/// exclusively owned by their existing committed projectors. Stable ids plus
+/// the one Session-record lock make warm replay and active-active refreshes
+/// idempotent without a cursor, receipt, or protocol-side registry.
+fn append_durable_outcome_projections(
+    record: &mut SessionRecord,
+    projections: &[DurableOutcomeProjection],
+) {
+    let mut event_ids = record
+        .events
+        .iter()
+        .map(|event| event.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    for projection in projections {
+        match &projection.terminal {
+            CommittedOutcomeProjection::Completed(report) => {
+                for iteration in &report.iterations {
+                    for (role, kind) in [
+                        (
+                            "outcome-evaluation-start",
+                            OutboundKind::SpanOutcomeEvaluationStart {
+                                outcome_id: projection.outcome_id.clone(),
+                                iteration: iteration.iteration,
+                            },
                         ),
-                    )));
-                }
-                Err(initial_error)
-            }
-        }
-    }
-
-    fn delegate_calls(delegations: &[DelegatedRun], events: &[Event]) -> Vec<DelegateCall> {
-        delegations
-            .iter()
-            .map(|delegation| {
-                let sent = events.iter().find_map(|event| match &event.kind {
-                    OutboundKind::AgentToolUse { input, .. }
-                        if event.id == delegation.parent_call_id =>
-                    {
-                        Some(vec![ContentBlock::text(
-                            input
-                                .get("input")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or_default(),
-                        )])
+                        (
+                            "outcome-evaluation-ongoing",
+                            OutboundKind::SpanOutcomeEvaluationOngoing {
+                                outcome_id: projection.outcome_id.clone(),
+                                iteration: iteration.iteration,
+                            },
+                        ),
+                        (
+                            "outcome-evaluation-end",
+                            OutboundKind::SpanOutcomeEvaluationEnd {
+                                outcome_id: projection.outcome_id.clone(),
+                                iteration: iteration.iteration,
+                                result: iteration.result.clone(),
+                                explanation: iteration.explanation.clone(),
+                            },
+                        ),
+                    ] {
+                        let id = managed_multiagent_event_id(
+                            &record.session.id,
+                            &record.session.id,
+                            role,
+                            ManagedMultiagentEventProvenance::OutcomeEvaluation {
+                                outcome_id: &projection.outcome_id,
+                                iteration: iteration.iteration,
+                            },
+                        );
+                        if event_ids.insert(id.clone()) {
+                            record.events.push(Event {
+                                id,
+                                kind,
+                                processed_at: Some(PROCESSED_AT.to_string()),
+                            });
+                        }
                     }
-                    _ => None,
-                });
-                let received = events.iter().find_map(|event| match &event.kind {
-                    OutboundKind::AgentToolResult {
-                        tool_use_id,
-                        content,
-                        ..
-                    } if tool_use_id == &delegation.parent_call_id => Some(content.clone()),
-                    _ => None,
-                });
-                DelegateCall {
-                    run_id: delegation.run_id.0.clone(),
-                    agent_id: delegation.agent_id.clone(),
-                    sent: sent.unwrap_or_default(),
-                    received: received.unwrap_or_default(),
-                    status: delegation.status,
-                }
-            })
-            .collect()
-    }
 
-    /// Read each child Run's committed transcript from the Runtime authority.
-    /// This is deliberately a read model input to the Managed projection, not a
-    /// child transcript owned or persisted by the protocol adapter.
-    pub(super) async fn delegation_transcripts(
-        &self,
-        delegations: &[DelegatedRun],
-    ) -> Result<
-        std::collections::HashMap<String, Vec<awaken_agent_contract::agent::message::Message>>,
-        StateError,
-    > {
-        let mut transcripts = std::collections::HashMap::new();
-        for delegation in delegations {
-            transcripts.insert(
-                delegation.run_id.0.clone(),
-                self.application
-                    .committed_messages(&delegation.run_id.0)
-                    .await
-                    .map_err(StateError::Run)?,
-            );
-        }
-        Ok(transcripts)
-    }
-
-    fn append_child_transcript_projection(
-        &self,
-        record: &mut SessionRecord,
-        thread_id: &str,
-        messages: &[awaken_agent_contract::agent::message::Message],
-    ) {
-        let new_messages = messages
-            .iter()
-            .filter(|message| {
-                record
-                    .projected_child_message_ids
-                    .insert((thread_id.to_string(), message.id.0.clone()))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if new_messages.is_empty() {
-            return;
-        }
-        let mut projected_tool_ids = std::collections::HashSet::new();
-        let mut prior_mcp_ids = Vec::new();
-        for event in &record.events {
-            if record
-                .event_thread_owners
-                .get(&event.id)
-                .map(String::as_str)
-                != Some(thread_id)
-            {
-                continue;
-            }
-            match event.kind {
-                OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
-                    projected_tool_ids.insert(event.id.clone());
-                }
-                OutboundKind::AgentMcpToolUse { .. } => {
-                    projected_tool_ids.insert(event.id.clone());
-                    prior_mcp_ids.push(event.id.clone());
-                }
-                _ => {}
-            }
-        }
-        for projected in
-            project_messages_with_mcp_ids(&new_messages, None, &projected_tool_ids, prior_mcp_ids)
-        {
-            let id = projected.id.unwrap_or_else(|| self.next_event_id());
-            record
-                .event_thread_owners
-                .insert(id.clone(), thread_id.to_string());
-            record.events.push(Event {
-                id,
-                kind: projected.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-    }
-
-    /// Sole Runtime relationship -> Managed child Thread/event projector. Live
-    /// turns and restart recovery call the same function, so neither can invent a
-    /// different identity, message direction, or lifecycle sequence.
-    pub(super) fn append_delegation_projections(
-        &self,
-        record: &mut SessionRecord,
-        delegations: &[DelegatedRun],
-        rescheduled_run_ids: &std::collections::BTreeSet<String>,
-        transcripts: &std::collections::HashMap<
-            String,
-            Vec<awaken_agent_contract::agent::message::Message>,
-        >,
-    ) {
-        for d in Self::delegate_calls(delegations, &record.events) {
-            let thread_id = d.run_id;
-            let agent = record
-                .session
-                .agent
-                .multiagent
-                .as_ref()
-                .and_then(|coordinator| {
-                    coordinator
-                        .agents
-                        .iter()
-                        .filter_map(crate::types::SessionMultiagentRosterEntry::as_agent)
-                        .find(|agent| agent.id == d.agent_id)
-                        .cloned()
-                })
-                .unwrap_or_else(|| {
-                    Self::thread_agent_from_profile(&d.agent_id, Default::default())
-                });
-            let name = agent.name.clone();
-            let existing = record
-                .child_threads
-                .iter()
-                .position(|thread| thread.id == thread_id);
-            let is_new = existing.is_none();
-            let index = existing.unwrap_or_else(|| {
-                let child = Self::child_thread(&record.session, &thread_id, agent);
-                record.child_threads.push(child);
-                record.child_threads.len() - 1
-            });
-            let was_idle = record.child_threads[index].status == SessionThreadStatus::Idle;
-            let completed = d.status == DelegationStatus::Completed;
-            let rescheduled = rescheduled_run_ids.contains(&thread_id);
-            let reschedule_already_projected = record.events.iter().any(|event| {
-                matches!(
-                    &event.kind,
-                    OutboundKind::SessionThreadStatusRescheduled {
-                        session_thread_id,
-                        ..
-                    } if session_thread_id == &thread_id
-                )
-            });
-            if is_new {
-                record.events.extend(
-                    [
-                        OutboundKind::SessionThreadCreated {
-                            session_thread_id: thread_id.clone(),
-                            agent_name: name.clone(),
-                        },
-                        OutboundKind::SessionThreadStatusRunning {
-                            session_thread_id: thread_id.clone(),
-                            agent_name: name.clone(),
-                        },
-                        OutboundKind::AgentThreadMessageSent {
-                            to_session_thread_id: thread_id.clone(),
-                            to_agent_name: Some(name.clone()),
-                            content: d.sent,
-                        },
-                    ]
-                    .into_iter()
-                    .map(|kind| Event {
-                        id: self.next_event_id(),
-                        kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
-                    }),
-                );
-            }
-            self.append_child_transcript_projection(
-                record,
-                &thread_id,
-                transcripts
-                    .get(&thread_id)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
-            );
-            if rescheduled && !reschedule_already_projected {
-                record.events.push(Event {
-                    id: self.next_event_id(),
-                    kind: OutboundKind::SessionThreadStatusRescheduled {
-                        session_thread_id: thread_id.clone(),
-                        agent_name: name.clone(),
-                    },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-            if completed && !was_idle {
-                record.child_threads[index].status = SessionThreadStatus::Idle;
-                record.child_threads[index].updated_at = PROCESSED_AT.to_string();
-                record.events.extend(
-                    [
-                        OutboundKind::AgentThreadMessageReceived {
-                            from_session_thread_id: thread_id.clone(),
-                            from_agent_name: Some(name.clone()),
-                            content: d.received,
-                        },
-                        OutboundKind::SessionThreadStatusIdle {
-                            session_thread_id: thread_id,
-                            agent_name: name,
-                            stop_reason: StopReason::EndTurn,
-                        },
-                    ]
-                    .into_iter()
-                    .map(|kind| Event {
-                        id: self.next_event_id(),
-                        kind,
-                        processed_at: Some(PROCESSED_AT.to_string()),
-                    }),
-                );
-            }
-        }
-    }
-
-    fn lifecycle_cursor(&self, session_id: &str) -> Result<RunLifecycleCursor, StateError> {
-        self.sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .map(|record| record.projected_lifecycle_cursor)
-            .ok_or(StateError::NotFound)
-    }
-
-    async fn terminal_cursor_after(
-        &self,
-        session_id: &str,
-        after: RunLifecycleCursor,
-        outcome: &StepOutcome,
-    ) -> Result<Option<RunLifecycleCursor>, StateError> {
-        let Some(run_id) = outcome.run_id() else {
-            return Ok(None);
-        };
-        const PAGE_SIZE: usize = 256;
-        let mut cursor = after;
-        let mut found = None;
-        loop {
-            let page = self
-                .application
-                .committed_run_lifecycle(session_id, cursor, PAGE_SIZE)
-                .await
-                .map_err(StateError::Run)?;
-            let count = page.events.len();
-            for event in page.events {
-                if event.thread_id.0 == session_id
-                    && &event.run_id == run_id
-                    && &event.state == outcome.state()
-                    && matches!(
-                        event.kind,
-                        RunLifecycleEventKind::Awaiting
-                            | RunLifecycleEventKind::Completed
-                            | RunLifecycleEventKind::Failed
-                            | RunLifecycleEventKind::Cancelled
-                    )
-                {
-                    found = Some(event.cursor);
-                }
-            }
-            if page.next_cursor == cursor || count < PAGE_SIZE {
-                return Ok(found);
-            }
-            cursor = page.next_cursor;
-        }
-    }
-
-    async fn append_committed_step(
-        &self,
-        session_id: &str,
-        outcome: StepOutcome,
-        preview_ids: PreviewAllocations,
-        lifecycle_start: RunLifecycleCursor,
-    ) -> Result<(), StateError> {
-        let transcripts = self
-            .delegation_transcripts(outcome.delegated_runs())
-            .await?;
-        let terminal_cursor = self
-            .terminal_cursor_after(session_id, lifecycle_start, &outcome)
-            .await?;
-        if outcome.run_id().is_some() && terminal_cursor.is_none() {
-            return Err(StateError::Run(RunError::internal(
-                "committed Run terminal is missing from the lifecycle feed",
-            )));
-        }
-        self.append_step(
-            session_id,
-            outcome,
-            preview_ids,
-            terminal_cursor,
-            &transcripts,
-        )
-    }
-
-    /// Append one step's projected events to the session, minting ids where the
-    /// projection did not supply one.
-    /// Project a committed turn into events and append them. Preview allocations
-    /// carry the ids minted for message and thinking starts; their corresponding
-    /// buffered events reuse them so a client reconciles by id.
-    pub(super) fn append_step(
-        &self,
-        session_id: &str,
-        outcome: StepOutcome,
-        mut preview_ids: PreviewAllocations,
-        terminal_cursor: Option<RunLifecycleCursor>,
-        delegation_transcripts: &std::collections::HashMap<
-            String,
-            Vec<awaken_agent_contract::agent::message::Message>,
-        >,
-    ) -> Result<(), StateError> {
-        let pending = outcome.pending();
-        let delegated_runs = outcome.delegated_runs().to_vec();
-        let rescheduled_delegated_run_ids = outcome.rescheduled_delegated_run_ids().clone();
-        let model_requests = outcome.model_requests().to_vec();
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
-        let project_terminal =
-            terminal_cursor.is_none_or(|cursor| record.projected_terminal_cursors.insert(cursor));
-        // A concurrent GET may already have observed this process's committed
-        // messages through the shared transcript and projected them. Message ids
-        // deduplicate messages; the exact lifecycle cursor deduplicates its status
-        // bracket regardless of whether the feed or local request wins the race.
-        let new_messages = outcome
-            .new_messages
-            .iter()
-            .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
-            .cloned()
-            .collect::<Vec<_>>();
-        let projected = if project_terminal {
-            project_step(
-                &new_messages,
-                outcome.state(),
-                pending,
-                &projected_tool_ids,
-                prior_mcp_ids,
-            )
-        } else {
-            project_messages_with_mcp_ids(
-                &new_messages,
-                pending,
-                &projected_tool_ids,
-                prior_mcp_ids,
-            )
-        };
-        // Everything appended from here is republished on the live broadcast at the end.
-        let start = record.events.len();
-        // Each processing segment is bracketed `running` … `idle`; the running
-        // marker leads before any fold or message.
-        if project_terminal {
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionStatusRunning {},
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        // A transparent transient-retry recovery surfaces as `session.status_rescheduled`
-        // between the running marker and the turn's output, so a client observes that
-        // the runtime auto-recovered rather than seeing an unexplained pause.
-        if project_terminal && outcome.rescheduled {
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionStatusRescheduled {},
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        // Compaction ran at BeforeInference, so its marker precedes the turn's
-        // message events. `true` ⇒ this terminal step folded (emit-once upstream).
-        if project_terminal && outcome.compacted {
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::ThreadContextCompacted {},
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        // Model spans are paired in observation order. The start id is minted
-        // first and referenced verbatim by its end; zero-valued usage remains
-        // present because all four SDK fields are required.
-        if project_terminal {
-            for observation in model_requests {
-                let start_id = self.next_event_id();
-                record.events.push(Event {
-                    id: start_id.clone(),
-                    kind: OutboundKind::SpanModelRequestStart {},
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-                record.events.push(Event {
-                    id: self.next_event_id(),
-                    kind: OutboundKind::SpanModelRequestEnd {
-                        model_request_start_id: start_id,
-                        is_error: Some(observation.is_error),
-                        model_usage: SpanModelUsage {
-                            input_tokens: observation.usage.prompt_tokens,
-                            output_tokens: observation.usage.completion_tokens,
-                            cache_read_input_tokens: observation.usage.cache_read_tokens,
-                            cache_creation_input_tokens: observation.usage.cache_creation_tokens,
-                            speed: None,
-                        },
-                    },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-        }
-        // A terminal run fault projects a `session.error` before the turn's idle,
-        // so a streaming/listing client observes the failure. The neutral fault's
-        // `code` classifies the SDK error variant + retry status; its `message` is
-        // carried through.
-        if project_terminal && let Some(failure) = outcome.failure() {
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionError {
-                    error: SessionError::classify(failure.code(), failure.message()),
-                },
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        for event in projected {
-            // An `agent.message` (minted with no id) reuses the id its live preview
-            // announced, so `event_start.event.id == agent.message.id` and the SDK
-            // discards the accumulated preview on the buffered event. Other events, and
-            // any message beyond the previewed count, mint a fresh id as before.
-            let id = event.id.unwrap_or_else(|| match &event.kind {
-                OutboundKind::AgentMessage { .. } => preview_ids
-                    .next_message()
-                    .unwrap_or_else(|| self.next_event_id()),
-                OutboundKind::AgentThinking {} => preview_ids
-                    .next_thinking()
-                    .unwrap_or_else(|| self.next_event_id()),
-                _ => self.next_event_id(),
-            });
-            record.events.push(Event {
-                id,
-                kind: event.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        self.append_delegation_projections(
-            record,
-            &delegated_runs,
-            &rescheduled_delegated_run_ids,
-            delegation_transcripts,
-        );
-        record.project_runtime_status(SessionStatus::Idle);
-        self.broadcast_committed_from(session_id, record, start);
-        Ok(())
-    }
-
-    /// Append an outcome report: for each round, the agent's revision events then
-    /// `span.outcome_evaluation_start` / `_end`, and a terminal `session.status_idle`.
-    fn append_outcome(&self, session_id: &str, report: OutcomeReport) -> Result<(), StateError> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        // Each round's durable evaluation record, collected as we project its events
-        // and folded into the session object after the event-pushing borrow releases.
-        let mut evaluations = Vec::new();
-        let rounds = report
-            .iterations
-            .into_iter()
-            .map(|mut round| {
-                round
-                    .messages
-                    .retain(|message| record.projected_message_ids.insert(message.id.0.clone()));
-                round
-            })
-            .collect::<Vec<_>>();
-        let start = record.events.len();
-        {
-            let mut push = |id: Option<String>, kind: OutboundKind| {
-                record.events.push(Event {
-                    id: id.unwrap_or_else(|| {
-                        format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
-                    }),
-                    kind,
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            };
-            push(None, OutboundKind::SessionStatusRunning {});
-            for round in rounds {
-                for event in project_messages(&round.messages, None) {
-                    push(event.id, event.kind);
-                }
-                evaluations.push(project::outcome_evaluation(&round));
-                push(
-                    None,
-                    OutboundKind::SpanOutcomeEvaluationStart {
-                        outcome_id: round.outcome_id.clone(),
-                        iteration: round.iteration,
-                    },
-                );
-                push(
-                    None,
-                    OutboundKind::SpanOutcomeEvaluationOngoing {
-                        outcome_id: round.outcome_id.clone(),
-                        iteration: round.iteration,
-                    },
-                );
-                push(
-                    None,
-                    OutboundKind::SpanOutcomeEvaluationEnd {
-                        outcome_id: round.outcome_id,
-                        iteration: round.iteration,
-                        result: round.result,
-                        explanation: round.explanation,
-                    },
-                );
-            }
-            push(
-                None,
-                OutboundKind::SessionStatusIdle {
-                    stop_reason: StopReason::EndTurn,
-                },
-            );
-        }
-        // The session object carries the running list of evaluations that have graded
-        // it, so a `GET /v1/sessions/{id}` reflects the outcomes that ran, not [].
-        for evaluation in evaluations {
-            if let Some(existing) = record
-                .session
-                .outcome_evaluations
-                .iter_mut()
-                .find(|existing| existing.outcome_id == evaluation.outcome_id)
-            {
-                *existing = evaluation;
-            } else {
-                record.session.outcome_evaluations.push(evaluation);
-            }
-        }
-        record.project_runtime_status(SessionStatus::Idle);
-        self.broadcast_committed_from(session_id, record, start);
-        Ok(())
-    }
-
-    /// Consume committed Run truth before projecting the Outcome boundary. This
-    /// keeps tool calls and terminal lifecycle on the existing projection path;
-    /// the Outcome report adds only evaluation facts and any still-unseen text.
-    async fn project_outcome_drive(
-        &self,
-        session_id: &str,
-        progress: OutcomeDrive,
-    ) -> Result<(), StateError> {
-        self.refresh_committed_events(session_id).await?;
-        if let OutcomeDrive::Completed(report) = progress {
-            self.append_outcome(session_id, report)?;
-        }
-        Ok(())
-    }
-
-    async fn continue_outcome_after_resume(&self, session_id: &str) -> Result<(), StateError> {
-        if let Some(progress) = self.application.continue_outcome(session_id).await? {
-            self.project_outcome_drive(session_id, progress).await?;
-        }
-        Ok(())
-    }
-
-    async fn process_inbound_event(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        inbound: &InboundEvent,
-        data_subject_id: Option<&str>,
-    ) -> Result<(), StateError> {
-        match inbound {
-            InboundEvent::UserMessage { content } => {
-                let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                let sink = Arc::new(PreviewSink::new(
-                    self.live_sender(session_id),
-                    self.event_seq.clone(),
-                ));
-                let outcome = self
-                    .application
-                    .run_session_message(
-                        agent_id,
-                        session_id,
-                        content.clone(),
-                        data_subject_id.map(str::to_owned),
-                        sink.clone(),
-                    )
-                    .await;
-                let outcome = match outcome {
-                    Ok(outcome) => outcome,
-                    Err(error) => {
-                        self.append_runtime_failure(session_id, &error)?;
-                        return Err(StateError::Run(error));
-                    }
-                };
-                self.refresh_cached_projection(&outcome.session)?;
-                self.append_committed_step(
-                    session_id,
-                    outcome.step,
-                    sink.take_allocations(),
-                    lifecycle_start,
-                )
-                .await?;
-            }
-            InboundEvent::UserToolConfirmation {
-                tool_use_id,
-                result,
-                deny_message,
-            } => {
-                let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                let decision = match result {
-                    ConfirmResult::Allow => ToolPermissionDecision::Allow { note: None },
-                    ConfirmResult::Deny => ToolPermissionDecision::Deny {
-                        reason: deny_message.clone(),
-                    },
-                };
-                let outcome = self
-                    .application
-                    .resume(session_id, tool_use_id, decision)
-                    .await?;
-                self.append_committed_step(
-                    session_id,
-                    outcome,
-                    PreviewAllocations::default(),
-                    lifecycle_start,
-                )
-                .await?;
-                self.continue_outcome_after_resume(session_id).await?;
-            }
-            InboundEvent::UserCustomToolResult {
-                custom_tool_use_id,
-                content,
-                is_error,
-            } => {
-                let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                let outcome = self
-                    .application
-                    .resume_custom(
-                        session_id,
-                        custom_tool_use_id,
-                        content.clone().unwrap_or_default(),
-                        *is_error,
-                    )
-                    .await?;
-                self.append_committed_step(
-                    session_id,
-                    outcome,
-                    PreviewAllocations::default(),
-                    lifecycle_start,
-                )
-                .await?;
-                self.continue_outcome_after_resume(session_id).await?;
-            }
-            InboundEvent::UserToolResult {
-                tool_use_id,
-                content,
-                is_error,
-            } => {
-                let lifecycle_start = self.lifecycle_cursor(session_id)?;
-                let outcome = self
-                    .application
-                    .resume_custom(
-                        session_id,
-                        tool_use_id,
-                        content.clone().unwrap_or_default(),
-                        *is_error,
-                    )
-                    .await?;
-                self.append_committed_step(
-                    session_id,
-                    outcome,
-                    PreviewAllocations::default(),
-                    lifecycle_start,
-                )
-                .await?;
-                self.continue_outcome_after_resume(session_id).await?;
-            }
-            InboundEvent::UserDefineOutcome {
-                description,
-                rubric,
-                max_iterations,
-            } => {
-                let rubric = rubric_text(rubric);
-                let progress = self
-                    .application
-                    .define_outcome(
-                        session_id,
-                        description,
-                        &rubric,
-                        max_iterations.unwrap_or(3),
-                    )
-                    .await?;
-                self.project_outcome_drive(session_id, progress).await?;
-            }
-            InboundEvent::SystemMessage { content } => {
-                let text = content_text(content);
-                self.application
-                    .add_system(agent_id, session_id, &text)
-                    .await?;
-            }
-            InboundEvent::UserInterrupt { session_thread_id } => {
-                for thread in self.interrupt_targets(session_id, session_thread_id.as_deref())? {
-                    self.application.interrupt(&thread).await?;
-                }
-            }
-        }
-        Ok(())
-    }
-
-    async fn validate_event_batch(
-        &self,
-        session_id: &str,
-        events: &[InboundEvent],
-        deployment_initial: bool,
-    ) -> Result<(), StateError> {
-        let mut file_documents = 0usize;
-        for event in events {
-            file_documents = file_documents
-                .checked_add(
-                    event
-                        .validate_content()
-                        .map_err(|message| StateError::Run(RunError::bad_request(message)))?,
-                )
-                .ok_or_else(|| {
-                    StateError::Run(RunError::bad_request(
-                        "event batch contains too many file-sourced documents",
-                    ))
-                })?;
-        }
-        if file_documents > 100 {
-            return Err(StateError::Run(RunError::bad_request(
-                "event batch supports at most 100 file-sourced document blocks",
-            )));
-        }
-        let pending = self
-            .application
-            .pending_tool(session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let mut pending_resolved = pending.is_none();
-        let mut resolution_seen = false;
-        for event in events {
-            let resolution = match event {
-                InboundEvent::UserToolConfirmation { tool_use_id, .. } => {
-                    Some((tool_use_id.as_str(), false))
-                }
-                InboundEvent::UserCustomToolResult {
-                    custom_tool_use_id, ..
-                } => Some((custom_tool_use_id.as_str(), true)),
-                InboundEvent::UserToolResult { tool_use_id, .. } => {
-                    Some((tool_use_id.as_str(), true))
-                }
-                _ => None,
-            };
-            if let Some((tool_use_id, requires_client_execution)) = resolution {
-                let matches_pending = !resolution_seen
-                    && pending.as_ref().is_some_and(|pending| {
-                        pending.tool_use_id == tool_use_id
-                            && pending.client_executed == requires_client_execution
-                    });
-                if !matches_pending {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "tool result does not match the pending tool event",
-                    )));
-                }
-                resolution_seen = true;
-                pending_resolved = true;
-                continue;
-            }
-            match event {
-                InboundEvent::UserInterrupt { session_thread_id } => {
-                    // Validate every selector before the first receipt is persisted.
-                    // The same canonical resolver is called again during execution;
-                    // Session Thread topology cannot change inside this synchronous
-                    // batch, so validation and effect address the same target set.
-                    self.interrupt_targets(session_id, session_thread_id.as_deref())?;
-                }
-                InboundEvent::SystemMessage { content } if !(1..=1000).contains(&content.len()) => {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "system.message content must contain between 1 and 1000 items",
-                    )));
-                }
-                InboundEvent::SystemMessage { .. }
-                    if !deployment_initial
-                        && !self
-                            .application
-                            .supports_mid_conversation_system(session_id)
-                            .await =>
-                {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "model_does_not_support_mid_conversation_system",
-                    )));
-                }
-                InboundEvent::SystemMessage { .. } if !pending_resolved => {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "system.message must trail the pending tool result in the same request",
-                    )));
-                }
-                InboundEvent::UserMessage { .. } if !pending_resolved => {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "pending tool events must be resolved before user.message",
-                    )));
-                }
-                InboundEvent::UserDefineOutcome {
-                    max_iterations: Some(iterations),
-                    ..
-                } if !(1..=20).contains(iterations) => {
-                    return Err(StateError::Run(RunError::bad_request(
-                        "max_iterations must be between 1 and 20",
-                    )));
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
-    pub async fn send_events(
-        self: &Arc<Self>,
-        session_id: &str,
-        req: SendEventsRequest,
-    ) -> Result<SendEventsResponse, StateError> {
-        self.send_events_attributed(session_id, req, None).await
-    }
-
-    /// Send an official Managed event envelope with optional request-grain data
-    /// subject attribution supplied by the HTTP adapter. Attribution is context,
-    /// not part of the event DTO, so the SDK wire schema remains exact.
-    #[tracing::instrument(
-        name = "sessions.events.send",
-        skip_all,
-        fields(gen_ai.conversation.id = %session_id)
-    )]
-    pub async fn send_events_attributed(
-        self: &Arc<Self>,
-        session_id: &str,
-        req: SendEventsRequest,
-        data_subject_id: Option<String>,
-    ) -> Result<SendEventsResponse, StateError> {
-        // An admitted event batch is one application task. Heap-owning it here
-        // keeps every caller (HTTP, streaming, deployment, or another adapter)
-        // off the runtime's deeply nested poll stack and lets the command finish
-        // even when its initiating transport is cancelled.
-        let state = Arc::clone(self);
-        let session_id = session_id.to_string();
-        tokio::spawn(
-            async move {
-                state
-                    .send_event_batch(&session_id, req, false, data_subject_id)
-                    .await
-            }
-            .in_current_span(),
-        )
-        .await
-        .map_err(|error| {
-            StateError::Run(RunError::internal(format!(
-                "Session event command task failed: {error}"
-            )))
-        })?
-    }
-
-    /// One event command for public writes and Deployment initial batches. The
-    /// source flag changes only admission of the Deployment-only initial
-    /// `system.message`; persistence, processing, projection, and terminal
-    /// behavior remain the same implementation.
-    async fn send_event_batch(
-        &self,
-        session_id: &str,
-        req: SendEventsRequest,
-        deployment_initial: bool,
-        data_subject_id: Option<String>,
-    ) -> Result<SendEventsResponse, StateError> {
-        // Recover the session from durable truth if its in-memory record was lost
-        // (a process restart) before resolving the agent — so a resume continues
-        // the awaiting run instead of failing closed (ADR-0039).
-        self.ensure_session(session_id).await?;
-        // An archived session is terminal and read-only: refuse every inbound write
-        // (message, resume, interrupt, outcome) with a 409, before touching the
-        // runtime — the contract makes an archived session read-only.
-        let (agent_id, is_built_in_dream_agent, inference_geo) = {
-            let sessions = self.sessions.lock().unwrap();
-            let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-            if record.session.archived_at.is_some() {
-                return Err(StateError::Archived);
-            }
-            (
-                record.agent_id.clone(),
-                record.agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
-                    && record
+                    let evaluation = project::outcome_evaluation(iteration);
+                    if let Some(existing) = record
                         .session
-                        .metadata
-                        .get("awaken.session.origin")
-                        .is_some_and(|origin| origin == "dream"),
-                record.session.agent.model.inference_geo,
-            )
-        };
-        let owner_scope = self
-            .owner_scope(session_id)
-            .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
-        if self.application.agent_unavailable(&owner_scope, &agent_id) && !is_built_in_dream_agent {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_unavailable: agent `{agent_id}` cannot admit a new event"
-            ))));
-        }
-        let starts_turn = req.events.iter().any(|event| {
-            matches!(
-                event,
-                InboundEvent::UserMessage { .. }
-                    | InboundEvent::UserToolConfirmation { .. }
-                    | InboundEvent::UserCustomToolResult { .. }
-                    | InboundEvent::UserToolResult { .. }
-                    | InboundEvent::UserDefineOutcome { .. }
-            )
-        });
-        if starts_turn {
-            self.authorize_inference_geo(
-                &owner_scope,
-                inference_geo,
-                crate::InferenceGeoCheckpoint::Turn,
-            )
-            .await?;
-        }
-        // Batch admission precedes the first receipt/event append. One invalid
-        // member therefore cannot leave a partial public history.
-        self.validate_event_batch(session_id, &req.events, deployment_initial)
-            .await?;
-
-        let mut receipts = Vec::new();
-        for inbound in &req.events {
-            let drives_turn = matches!(
-                inbound,
-                InboundEvent::UserToolConfirmation { .. }
-                    | InboundEvent::UserCustomToolResult { .. }
-                    | InboundEvent::UserToolResult { .. }
-                    | InboundEvent::UserDefineOutcome { .. }
-            );
-            let activity_epoch = if drives_turn {
-                let session = self
-                    .application
-                    .begin_admitted_activity(&agent_id, session_id)
-                    .await
-                    .map_err(StateError::Run)?;
-                let epoch = session.activity_epoch;
-                self.refresh_cached_projection(&session)?;
-                Some(epoch)
-            } else {
-                None
-            };
-            let event_id = self.append_inbound_event(session_id, inbound)?;
-            receipts.push(EventReceipt {
-                id: event_id.clone(),
-                kind: inbound.type_str(),
-                processed_at: None,
-            });
-
-            let processing = self
-                .process_inbound_event(session_id, &agent_id, inbound, data_subject_id.as_deref())
-                .await;
-            self.mark_inbound_processed(session_id, &event_id);
-            if matches!(
-                inbound,
-                InboundEvent::UserCustomToolResult { .. }
-                    | InboundEvent::UserToolResult { .. }
-                    | InboundEvent::UserDefineOutcome { .. }
-            ) && let Some(receipt) = receipts.last_mut()
-            {
-                receipt.processed_at = Some(PROCESSED_AT.to_string());
+                        .outcome_evaluations
+                        .iter_mut()
+                        .find(|existing| existing.outcome_id == evaluation.outcome_id)
+                    {
+                        *existing = evaluation;
+                    } else {
+                        record.session.outcome_evaluations.push(evaluation);
+                    }
+                }
             }
-            if processing.is_err()
-                && let Some(record) = self.sessions.lock().unwrap().get_mut(session_id)
-            {
-                record.project_runtime_status(SessionStatus::Idle);
-            }
-            if let Some(activity_epoch) = activity_epoch {
-                let session = self
-                    .application
-                    .settle_activity(session_id, activity_epoch)
-                    .await
-                    .map_err(Self::map_activity_error)?;
-                self.refresh_cached_projection(&session)?;
-            }
-            processing?;
-        }
-        // Refresh the session's accumulated token usage from the runtime's committed
-        // tally, so a subsequent GET /v1/sessions reflects the tokens this turn spent.
-        let usage = self
-            .application
-            .session_usage(session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let budget = self
-            .application
-            .reconcile_managed_budget_usage(session_id, usage.clone())
-            .await
-            .map_err(|error| StateError::Run(RunError::unavailable(error.to_string())))?;
-        if let Some(record) = self.sessions.lock().unwrap().get_mut(session_id) {
-            let mut projected_usage = session_usage_value(usage);
-            projected_usage.list_cost =
-                budget
-                    .session
-                    .budget
-                    .public_list_cost_minor()
-                    .map(|amount| crate::types::MonetaryAmount {
-                        amount: amount.to_string(),
-                        currency: crate::types::Currency::USD,
+            CommittedOutcomeProjection::Errored(failure) => {
+                let id = managed_multiagent_event_id(
+                    &record.session.id,
+                    &record.session.id,
+                    "outcome-error",
+                    ManagedMultiagentEventProvenance::Outcome {
+                        outcome_id: &projection.outcome_id,
+                    },
+                );
+                if event_ids.insert(id.clone()) {
+                    record.events.push(Event {
+                        id,
+                        kind: OutboundKind::SessionError {
+                            error: SessionError::classify(&failure.code, failure.message.clone()),
+                        },
+                        processed_at: Some(PROCESSED_AT.to_string()),
                     });
-            record.session.usage = projected_usage.clone();
-            let start = record.events.len();
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionUsage {
-                    usage: projected_usage,
-                    budget: record.session.budget.clone(),
-                },
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-            if budget.reached_now {
-                record.events.push(Event {
-                    id: self.next_event_id(),
-                    kind: OutboundKind::SessionStatusIdle {
-                        stop_reason: StopReason::BudgetReached,
-                    },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-                record.project_runtime_status(SessionStatus::Idle);
+                }
             }
-            self.broadcast_committed_from(session_id, record, start);
         }
-        Ok(SendEventsResponse { data: receipts })
-    }
-
-    fn append_runtime_failure(
-        &self,
-        session_id: &str,
-        error: &awaken_session_contract::RunError,
-    ) -> Result<(), StateError> {
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let start = record.events.len();
-        let processed_at = Some(PROCESSED_AT.to_string());
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionStatusRunning {},
-            processed_at: processed_at.clone(),
-        });
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionError {
-                error: SessionError::classify(&error.code, error.message.clone()),
-            },
-            processed_at: processed_at.clone(),
-        });
-        record.events.push(Event {
-            id: self.next_event_id(),
-            kind: OutboundKind::SessionStatusIdle {
-                stop_reason: StopReason::EndTurn,
-            },
-            processed_at,
-        });
-        record.project_runtime_status(SessionStatus::Idle);
-        self.broadcast_committed_from(session_id, record, start);
-        Ok(())
-    }
-
-    /// Refresh this process's disposable event projection from the Runtime's one
-    /// durable transcript and Run lifecycle feed. A Session cache hit is not proof
-    /// that it contains commits accepted through another protocol or Coordinator.
-    pub(crate) async fn refresh_committed_events(
-        &self,
-        session_id: &str,
-    ) -> Result<(), StateError> {
-        self.ensure_session(session_id).await?;
-        // Private Worker realization mutates the same durable Session application
-        // without passing through this protocol adapter. Refresh its disposable
-        // wire projection before reading runtime events so GET cannot retain a
-        // stale preparing/idle status as a parallel lifecycle authority.
-        let persisted = self
-            .application
-            .session(session_id)
-            .await
-            .map_err(StateError::from)?;
-        self.refresh_cached_projection(&persisted)?;
-        let initial_cursor = self
-            .sessions
-            .lock()
-            .unwrap()
-            .get(session_id)
-            .ok_or(StateError::NotFound)?
-            .projected_lifecycle_cursor;
-        const LIFECYCLE_PAGE_SIZE: usize = 256;
-        let mut lifecycle_cursor = initial_cursor;
-        let mut latest_lifecycle = None;
-        loop {
-            let page = self
-                .application
-                .committed_run_lifecycle(session_id, lifecycle_cursor, LIFECYCLE_PAGE_SIZE)
-                .await
-                .map_err(StateError::Run)?;
-            let count = page.events.len();
-            for event in page
-                .events
-                .into_iter()
-                .filter(|event| event.thread_id.0 == session_id)
-            {
-                latest_lifecycle = Some(event);
-            }
-            if page.next_cursor == lifecycle_cursor || count < LIFECYCLE_PAGE_SIZE {
-                lifecycle_cursor = page.next_cursor;
-                break;
-            }
-            lifecycle_cursor = page.next_cursor;
-        }
-        let pending = self
-            .application
-            .pending_tool(session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let messages = self
-            .application
-            .committed_messages(session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let mut sessions = self.sessions.lock().unwrap();
-        let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
-        let new_messages = messages
-            .into_iter()
-            .filter(|message| record.projected_message_ids.insert(message.id.0.clone()))
-            .collect::<Vec<_>>();
-        let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
-        let pending = pending.as_ref();
-        let start = record.events.len();
-        let terminal = latest_lifecycle.as_ref().filter(|event| {
-            matches!(
-                event.kind,
-                RunLifecycleEventKind::Awaiting
-                    | RunLifecycleEventKind::Completed
-                    | RunLifecycleEventKind::Failed
-                    | RunLifecycleEventKind::Cancelled
-            )
-        });
-        // An Awaiting fact without its exact committed ticket cannot carry the
-        // required action id. Keep the cursor before it and retry; never publish an
-        // empty requires_action terminal that could supersede the real call.
-        let awaiting_ticket_pending = terminal.is_some_and(|event| {
-            event.kind == RunLifecycleEventKind::Awaiting && pending.is_none()
-        });
-        if !awaiting_ticket_pending {
-            record.projected_lifecycle_cursor = lifecycle_cursor;
-        }
-        if latest_lifecycle.as_ref().is_some_and(|event| {
-            matches!(
-                event.kind,
-                RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed
-            )
-        }) {
-            record.project_runtime_status(SessionStatus::Running);
-        } else if terminal.is_some() {
-            record.project_runtime_status(SessionStatus::Idle);
-        }
-        let project_terminal = terminal.filter(|event| {
-            !awaiting_ticket_pending && record.projected_terminal_cursors.insert(event.cursor)
-        });
-        if project_terminal.is_some() {
-            record.events.push(Event {
-                id: self.next_event_id(),
-                kind: OutboundKind::SessionStatusRunning {},
-                processed_at: Some(PROCESSED_AT.to_string()),
-            });
-        }
-        let projected = project_messages_with_mcp_ids(
-            &new_messages,
-            pending,
-            &projected_tool_ids,
-            prior_mcp_ids.iter().cloned(),
-        );
-        record
-            .events
-            .extend(projected.into_iter().map(|event| Event {
-                id: event.id.unwrap_or_else(|| self.next_event_id()),
-                kind: event.kind,
-                processed_at: Some(PROCESSED_AT.to_string()),
-            }));
-        if let Some(terminal) = project_terminal {
-            let (projected_tool_ids, prior_mcp_ids) = record.projected_tool_ids();
-            if let awaken_agent_contract::agent::run::RunState::Ended(
-                awaken_agent_contract::agent::run::EndCause::Error(failure),
-            ) = &terminal.state
-            {
-                record.events.push(Event {
-                    id: self.next_event_id(),
-                    kind: OutboundKind::SessionError {
-                        error: SessionError::classify(failure.code(), failure.message()),
-                    },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-            record.events.extend(
-                project_step(
-                    &[],
-                    &terminal.state,
-                    pending,
-                    &projected_tool_ids,
-                    prior_mcp_ids,
-                )
-                .into_iter()
-                .map(|event| Event {
-                    id: event.id.unwrap_or_else(|| self.next_event_id()),
-                    kind: event.kind,
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                }),
-            );
-        }
-        self.broadcast_committed_from(session_id, record, start);
-        Ok(())
-    }
-
-    /// `GET /v1/sessions/{id}/events` — the session's events in the requested
-    /// chronological direction, paged by cursor via the kernel's shared
-    /// [`paginate_by_id`]. `cursor` is the id of the last event on the previous
-    /// page; an absent/empty cursor starts at that direction's beginning; an
-    /// unknown cursor is a caller error (400).
-    pub fn list_events(
-        &self,
-        session_id: &str,
-        cursor: Option<&str>,
-        limit: Option<usize>,
-        descending: bool,
-    ) -> Result<ListEventsResponse, StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-        let ordered = if descending {
-            record.events.iter().rev().cloned().collect::<Vec<_>>()
-        } else {
-            record.events.clone()
-        };
-        let page = paginate_by_id(&ordered, cursor, limit, |e| e.id.as_str())
-            .map_err(|_| RunError::bad_request("unknown pagination cursor"))?;
-        Ok(ListEventsResponse {
-            data: page.items.to_vec(),
-            next_page: page.next_page,
-        })
     }
 }
+
+/// Durable provenance accepted by the sole Managed multiagent projector.
+///
+/// This is deliberately not a second event aggregate or registry: every value
+/// is already owned by the Session/Thread stores and is supplied to the same
+/// warm/cold projector that appends the public event. A root/child assistant
+/// preview uses the same response coordinate when present; generic inbound and
+/// outcome events do not use this identity because their current durable owners
+/// do not expose an exactly replayable per-event coordinate.
+#[derive(serde::Serialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+enum ManagedMultiagentEventProvenance<'a> {
+    LinkOperation {
+        operation_id: &'a str,
+    },
+    CoordinationCall {
+        event_id: &'a str,
+    },
+    Message {
+        message_id: &'a str,
+        ordinal: usize,
+    },
+    AssistantResponse {
+        run_id: &'a str,
+        step: usize,
+        response: usize,
+    },
+    AgentReport {
+        run_id: &'a str,
+    },
+    Lifecycle {
+        cursor: u64,
+    },
+    LifecyclePrefix {
+        cursor: u64,
+    },
+    BudgetReach {
+        generation: u64,
+    },
+    Audit {
+        run_id: &'a str,
+        sequence: u64,
+    },
+    RunState {
+        run_id: &'a str,
+    },
+    OutcomeEvaluation {
+        outcome_id: &'a str,
+        iteration: u32,
+    },
+    Outcome {
+        outcome_id: &'a str,
+    },
+    ArchivedDisposition,
+    ParentTerminal,
+}
+
+/// The four official primary-Thread lifecycle projections. Session lifecycle
+/// remains the aggregate authority; this enum only prevents foreground,
+/// warm/cold recovery, Outcome, and failure paths from hand-building divergent
+/// public `session.thread_status_*` payloads.
+enum PrimaryThreadStatusProjection {
+    Running,
+    Rescheduled,
+    Idle { stop_reason: StopReason },
+    Terminated,
+}
+
+fn primary_thread_status_kind(
+    record: &SessionRecord,
+    status: PrimaryThreadStatusProjection,
+) -> OutboundKind {
+    let session_thread_id = public_thread_id(&record.session.id, &record.session.id);
+    let agent_name = record.session.agent.name.clone();
+    match status {
+        PrimaryThreadStatusProjection::Running => OutboundKind::SessionThreadStatusRunning {
+            session_thread_id,
+            agent_name,
+        },
+        PrimaryThreadStatusProjection::Rescheduled => {
+            OutboundKind::SessionThreadStatusRescheduled {
+                session_thread_id,
+                agent_name,
+            }
+        }
+        PrimaryThreadStatusProjection::Idle { stop_reason } => {
+            OutboundKind::SessionThreadStatusIdle {
+                session_thread_id,
+                agent_name,
+                stop_reason,
+            }
+        }
+        PrimaryThreadStatusProjection::Terminated => OutboundKind::SessionThreadStatusTerminated {
+            session_thread_id,
+            agent_name,
+        },
+    }
+}
+
+fn primary_thread_status_event(
+    record: &SessionRecord,
+    id: String,
+    status: PrimaryThreadStatusProjection,
+) -> Event {
+    Event {
+        id,
+        kind: primary_thread_status_kind(record, status),
+        processed_at: Some(PROCESSED_AT.to_string()),
+    }
+}
+
+/// Canonical deterministic id shared by root/child live previews and their
+/// warm/cold committed transcript projector. The event role is kept in the
+/// outer `role` coordinate, so thinking/message ids remain distinct without
+/// depending on whether the provider emitted a reasoning Delta.
+pub(crate) fn managed_assistant_event_id(
+    session_id: &str,
+    thread_id: &str,
+    run_id: &str,
+    step: usize,
+    response: usize,
+    role: &'static str,
+) -> String {
+    managed_multiagent_event_id(
+        session_id,
+        thread_id,
+        role,
+        ManagedMultiagentEventProvenance::AssistantResponse {
+            run_id,
+            step,
+            response,
+        },
+    )
+}
+
+/// Stable identity for a non-tool event derived from durable multiagent truth.
+/// Tool-use events retain the separate reversible `managed_tool_event_id` owner
+/// because command admission must recover their Runtime call id.
+fn managed_multiagent_event_id(
+    session_id: &str,
+    thread_id: &str,
+    role: &str,
+    provenance: ManagedMultiagentEventProvenance<'_>,
+) -> String {
+    format!(
+        "{MANAGED_MULTIAGENT_EVENT_ID_PREFIX}{}",
+        awaken_session_contract::stable_fingerprint(&(
+            "managed-multiagent-event-v1",
+            session_id,
+            thread_id,
+            role,
+            provenance,
+        ))
+    )
+}
+
+/// Translate the Managed public Thread id at the protocol edge. The neutral
+/// `SessionThreadTarget` is the sole topology vocabulary used by admission,
+/// Session activity transfer, durable dispatch, and interruption.
+fn session_thread_target_from_public(session_id: &str, thread_id: &str) -> SessionThreadTarget {
+    let internal_thread_id = internal_thread_id(session_id, thread_id);
+    if internal_thread_id == session_id {
+        SessionThreadTarget::Primary
+    } else {
+        SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(internal_thread_id))
+    }
+}
+
+fn public_child_thread_id(target: &SessionThreadTarget) -> Option<&str> {
+    target
+        .child_thread_id()
+        .map(|thread_id| thread_id.0.as_str())
+}
+
+/// Public tool-use family already committed by the sole Managed projector.
+/// Runtime's pending boolean distinguishes permission from externally supplied
+/// results, but cannot distinguish an Agent tool from a custom tool; that wire
+/// constraint therefore remains at this adapter boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProjectedToolUseFamily {
+    Tool,
+    Custom,
+    Mcp,
+}
+
+impl ProjectedToolUseFamily {
+    fn from_event(event: &Event) -> Option<Self> {
+        match event.kind {
+            OutboundKind::AgentToolUse { .. } => Some(Self::Tool),
+            OutboundKind::AgentCustomToolUse { .. } => Some(Self::Custom),
+            OutboundKind::AgentMcpToolUse { .. } => Some(Self::Mcp),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolReplyFamily {
+    Confirmation,
+    CustomResult,
+    ToolResult,
+}
+
+impl ToolReplyFamily {
+    const fn requires_client_execution(self) -> bool {
+        matches!(self, Self::CustomResult | Self::ToolResult)
+    }
+
+    const fn accepts(self, projected: ProjectedToolUseFamily) -> bool {
+        match self {
+            Self::Confirmation => {
+                matches!(
+                    projected,
+                    ProjectedToolUseFamily::Tool | ProjectedToolUseFamily::Mcp
+                )
+            }
+            Self::CustomResult => matches!(projected, ProjectedToolUseFamily::Custom),
+            Self::ToolResult => matches!(projected, ProjectedToolUseFamily::Tool),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PendingToolReplyCandidate {
+    key: PendingToolReplyKey,
+    projected_event_id: Option<String>,
+    projected_family: Option<ProjectedToolUseFamily>,
+}
+
+impl PendingToolReplyCandidate {
+    fn from_pending(
+        target: SessionThreadTarget,
+        expected_run_id: awaken_agent_contract::agent::run::Id,
+        expected_correlation_id: String,
+        pending: Pending,
+    ) -> Self {
+        Self {
+            key: PendingToolReplyKey {
+                target,
+                expected_run_id,
+                expected_correlation_id,
+                runtime_call_id: pending.tool_use_id,
+                client_executed: pending.client_executed,
+            },
+            projected_event_id: None,
+            projected_family: None,
+        }
+    }
+}
+
+/// Unique committed pending identity within one admission snapshot. Thread
+/// alone is insufficient because one Runtime ToolBatch may expose multiple
+/// independently answerable calls on that same Thread.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct PendingToolReplyKey {
+    target: SessionThreadTarget,
+    expected_run_id: awaken_agent_contract::agent::run::Id,
+    expected_correlation_id: String,
+    runtime_call_id: String,
+    client_executed: bool,
+}
+
+/// Ephemeral output of batch admission. It carries the one resolved target and
+/// Runtime call id through activity admission and execution, so neither phase
+/// reinterprets the optional public selector or maintains a parallel registry.
+#[derive(Debug, Clone)]
+struct ResolvedToolReply {
+    key: PendingToolReplyKey,
+}
+
+/// Fully validated protocol lowering for one atomic Session-root admission.
+/// Ignored budget-pause interrupts are intentionally absent: they create no
+/// public receipt and no durable command, matching the existing no-op policy.
+struct ValidatedEventBatch {
+    inputs: Vec<SessionEventInput>,
+}
+
+mod admission;
+mod committed_projection;
+mod lifecycle_projection;
+mod recovery;
+mod stream;
+mod transcript_projection;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use async_trait::async_trait;
-    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-    use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
-    use awaken_agent_contract::agent::thread::Id as ThreadId;
-    use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEvent, RunLifecyclePage};
-    use awaken_session_contract::{Pending, RunError, SessionRuntime, ToolPermissionDecision};
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Default)]
-    struct LifecycleRuntime {
-        messages: Arc<Mutex<Vec<Message>>>,
-        lifecycle: Arc<Mutex<Vec<RunLifecycleEvent>>>,
-        pending: Arc<Mutex<Option<Pending>>>,
-    }
-
-    #[async_trait]
-    impl SessionRuntime for LifecycleRuntime {
-        async fn run(
-            &self,
-            _agent: &str,
-            _thread: &str,
-            _content: Vec<ContentBlock>,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-
-        async fn resume(
-            &self,
-            _thread: &str,
-            _tool_use_id: &str,
-            _decision: ToolPermissionDecision,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-
-        async fn resume_custom(
-            &self,
-            _thread: &str,
-            _tool_use_id: &str,
-            _content: Vec<ContentBlock>,
-            _is_error: bool,
-        ) -> Result<StepOutcome, RunError> {
-            unreachable!()
-        }
-
-        async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
-            Ok(self.messages.lock().unwrap().clone())
-        }
-
-        async fn committed_run_lifecycle(
-            &self,
-            _thread: &str,
-            cursor: RunLifecycleCursor,
-            limit: usize,
-        ) -> Result<RunLifecyclePage, RunError> {
-            let events = self
-                .lifecycle
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|event| event.cursor > cursor)
-                .take(limit)
-                .cloned()
-                .collect::<Vec<_>>();
-            Ok(RunLifecyclePage {
-                next_cursor: events.last().map_or(cursor, |event| event.cursor),
-                events,
-            })
-        }
-
-        async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
-            Ok(self.pending.lock().unwrap().clone())
-        }
-
-        async fn add_system(
-            &self,
-            _agent: &str,
-            _thread: &str,
-            _text: &str,
-        ) -> Result<(), RunError> {
-            Ok(())
-        }
-
-        async fn define_outcome(
-            &self,
-            _thread: &str,
-            _description: &str,
-            _rubric: &str,
-            _max_iterations: u32,
-        ) -> Result<OutcomeDrive, RunError> {
-            unreachable!()
-        }
-
-        fn model(&self) -> String {
-            "test-model".into()
-        }
-    }
-
-    fn lifecycle(
-        cursor: u64,
-        thread: &str,
-        run_id: &RunId,
-        kind: RunLifecycleEventKind,
-        state: RunState,
-    ) -> RunLifecycleEvent {
-        RunLifecycleEvent {
-            cursor: RunLifecycleCursor(cursor),
-            thread_id: ThreadId(thread.into()),
-            run_id: run_id.clone(),
-            kind,
-            state,
-        }
-    }
-
-    #[tokio::test]
-    async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
-        // Cause/effect graph: C1=the Session cache is warm; C2=a Run is committed
-        // through AI SDK rather than Managed; C3=latest lifecycle is Running;
-        // C4=latest lifecycle is Awaiting with its exact pending ticket; C5=latest
-        // lifecycle is Ended; C6=the same read refresh repeats; C7=the Managed
-        // request already projected that exact Run terminal; C8=the disposable
-        // Session cache is cold while the committed ticket remains open; C9=the
-        // same Run resumes and reaches a second Awaiting terminal. E1=Managed status is
-        // running without a fabricated terminal; E2=Awaiting appends one
-        // running→requires_action bracket carrying the custom-call id; E3=Ended
-        // appends one running→idle bracket; E4=messages and terminals are not
-        // duplicated; E5=the lifecycle cursor fences the projection; E6=cold
-        // recovery still classifies the call as client-executed; C10=a concurrent
-        // read observes the committed terminal before the local request appends it.
-        // E7=each terminal occurrence has exactly one status bracket even when Run
-        // id is reused; C11=a durable outcome has no matching lifecycle fact.
-        // E8=the exact lifecycle cursor deduplicates either race order; E9=missing
-        // durable identity fails closed without appending an unkeyed bracket.
-        // Decision table:
-        // | Rule | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | C10 | C11 | Effect          |
-        // | R1   | T  | T  | F  | F  | F  | F  | F  | F  | F   | F   | E1,E5           |
-        // | R2   | T  | F  | T  | F  | T  | F  | F  | F  | F   | F   | E2,E4,E5        |
-        // | R3   | T  | F  | F  | T  | T  | F  | F  | F  | F   | F   | E3,E4,E5        |
-        // | R4   | T  | F  | F  | T  | T  | T  | F  | F  | F   | F   | E3 once,E4,E8   |
-        // | R5   | T  | F  | T  | F  | T  | F  | T  | F  | F   | F   | E2,E4,E5,E6     |
-        // | R6   | T  | F  | T  | F  | T  | T  | F  | T  | T   | F   | E2,E4,E5,E7,E8  |
-        // | R7   | T  | F  | F  | F  | F  | T  | F  | F  | F   | T   | E4,E9           |
-        let runtime = LifecycleRuntime::default();
-        let state = ManagedState::new(runtime.clone());
-        let request = serde_json::from_value(serde_json::json!({
-            "agent":"coder", "environment_id":"env_local"
-        }))
-        .unwrap();
-        let session = state.create_session(request, None).await.unwrap();
-        let thread = session.id;
-        let first = Message::text(MessageId("cross-user".into()), Role::User, "build");
-        runtime.messages.lock().unwrap().push(first);
-
-        let run = RunId("run-cross-1".into());
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
-            10,
-            &thread,
-            &run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ));
-        state.refresh_committed_events(&thread).await.unwrap();
-        assert_eq!(
-            state.get_session(&thread).unwrap().status,
-            SessionStatus::Running,
-            "R1"
-        );
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert!(!rendered.contains("session.status_idle"), "R1");
-
-        let call_id = "call-cross-submit";
-        runtime.messages.lock().unwrap().push(Message::new(
-            MessageId("cross-tool".into()),
-            Role::Assistant,
-            vec![ContentBlock::tool_use(
-                call_id,
-                "design_submit_artifact",
-                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            )],
-        ));
-        *runtime.pending.lock().unwrap() = Some(Pending {
-            tool_use_id: call_id.into(),
-            name: "design_submit_artifact".into(),
-            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            client_executed: true,
-        });
-        runtime.lifecycle.lock().unwrap().push(lifecycle(
-            20,
-            &thread,
-            &run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ));
-        state.refresh_committed_events(&thread).await.unwrap();
-        state.refresh_committed_events(&thread).await.unwrap();
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert_eq!(rendered.matches(call_id).count(), 2, "R2");
-        assert_eq!(rendered.matches("session.status_idle").count(), 1, "R2/E4");
-
-        let second_run = RunId("run-cross-2".into());
-        *runtime.pending.lock().unwrap() = None;
-        runtime.lifecycle.lock().unwrap().extend([
-            lifecycle(
-                30,
-                &thread,
-                &second_run,
-                RunLifecycleEventKind::Running,
-                RunState::Running,
-            ),
-            lifecycle(
-                40,
-                &thread,
-                &second_run,
-                RunLifecycleEventKind::Completed,
-                RunState::Ended(EndCause::NaturalEnd),
-            ),
-        ]);
-        runtime.messages.lock().unwrap().push(Message::text(
-            MessageId("cross-final".into()),
-            Role::Assistant,
-            "done",
-        ));
-        state.refresh_committed_events(&thread).await.unwrap();
-        state.refresh_committed_events(&thread).await.unwrap();
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert_eq!(rendered.matches("session.status_idle").count(), 2, "R3/E4");
-        assert_eq!(rendered.matches("done").count(), 1, "R3/E4");
-
-        let local_run = RunId("run-local-3".into());
-        let local_message = Message::text(
-            MessageId("local-final".into()),
-            Role::Assistant,
-            "local done",
-        );
-        state
-            .append_step(
-                &thread,
-                StepOutcome::ended(
-                    vec![local_message.clone()],
-                    EndCause::NaturalEnd,
-                    false,
-                    false,
-                )
-                .with_run_id(local_run.clone()),
-                PreviewAllocations::default(),
-                Some(RunLifecycleCursor(60)),
-                &Default::default(),
-            )
-            .unwrap();
-        runtime.lifecycle.lock().unwrap().extend([
-            lifecycle(
-                50,
-                &thread,
-                &local_run,
-                RunLifecycleEventKind::Running,
-                RunState::Running,
-            ),
-            lifecycle(
-                60,
-                &thread,
-                &local_run,
-                RunLifecycleEventKind::Completed,
-                RunState::Ended(EndCause::NaturalEnd),
-            ),
-        ]);
-        runtime.messages.lock().unwrap().push(local_message);
-        state.refresh_committed_events(&thread).await.unwrap();
-        state.refresh_committed_events(&thread).await.unwrap();
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert_eq!(rendered.matches("session.status_idle").count(), 3, "R4/E4");
-        assert_eq!(rendered.matches("local done").count(), 1, "R4/E4");
-
-        let resumed_call_id = "call-local-resumed";
-        let resumed_message = Message::new(
-            MessageId("local-resumed-tool".into()),
-            Role::Assistant,
-            vec![ContentBlock::tool_use(
-                resumed_call_id,
-                "design_submit_artifact",
-                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            )],
-        );
-        let resumed_pending = Pending {
-            tool_use_id: resumed_call_id.into(),
-            name: "design_submit_artifact".into(),
-            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            client_executed: true,
-        };
-        *runtime.pending.lock().unwrap() = Some(resumed_pending);
-        runtime.messages.lock().unwrap().push(resumed_message);
-        runtime.lifecycle.lock().unwrap().extend([
-            lifecycle(
-                70,
-                &thread,
-                &local_run,
-                RunLifecycleEventKind::Resumed,
-                RunState::Running,
-            ),
-            lifecycle(
-                80,
-                &thread,
-                &local_run,
-                RunLifecycleEventKind::Awaiting,
-                RunState::Awaiting,
-            ),
-        ]);
-        state.refresh_committed_events(&thread).await.unwrap();
-        state
-            .append_step(
-                &thread,
-                StepOutcome::awaiting(
-                    Vec::new(),
-                    runtime.pending.lock().unwrap().clone(),
-                    false,
-                    false,
-                )
-                .with_run_id(local_run.clone()),
-                PreviewAllocations::default(),
-                Some(RunLifecycleCursor(80)),
-                &Default::default(),
-            )
-            .unwrap();
-        state.refresh_committed_events(&thread).await.unwrap();
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert_eq!(rendered.matches("session.status_idle").count(), 4, "R6/E7");
-        assert_eq!(rendered.matches(resumed_call_id).count(), 2, "R6/E2/E4");
-
-        let cold_run = RunId("run-cold-4".into());
-        let cold_call_id = "call-cold-submit";
-        *runtime.messages.lock().unwrap() = vec![Message::new(
-            MessageId("cold-tool".into()),
-            Role::Assistant,
-            vec![ContentBlock::tool_use(
-                cold_call_id,
-                "design_submit_artifact",
-                serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            )],
-        )];
-        *runtime.pending.lock().unwrap() = Some(Pending {
-            tool_use_id: cold_call_id.into(),
-            name: "design_submit_artifact".into(),
-            input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
-            client_executed: true,
-        });
-        runtime.lifecycle.lock().unwrap().extend([
-            lifecycle(
-                90,
-                &thread,
-                &cold_run,
-                RunLifecycleEventKind::Running,
-                RunState::Running,
-            ),
-            lifecycle(
-                100,
-                &thread,
-                &cold_run,
-                RunLifecycleEventKind::Awaiting,
-                RunState::Awaiting,
-            ),
-        ]);
-        state.sessions.lock().unwrap().remove(&thread);
-        state.refresh_committed_events(&thread).await.unwrap();
-        state.refresh_committed_events(&thread).await.unwrap();
-        let rendered =
-            serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
-                .unwrap();
-        assert_eq!(
-            rendered.matches("agent.custom_tool_use").count(),
-            1,
-            "R5/E6"
-        );
-        assert!(!rendered.contains("\"type\":\"agent.tool_use\""), "R5/E6");
-        assert_eq!(rendered.matches(cold_call_id).count(), 2, "R5/E2/E4");
-
-        let before = state
-            .list_events(&thread, None, None, false)
-            .unwrap()
-            .data
-            .len();
-        let missing = state
-            .append_committed_step(
-                &thread,
-                StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
-                    .with_run_id(RunId("run-missing-lifecycle".into())),
-                PreviewAllocations::default(),
-                RunLifecycleCursor(100),
-            )
-            .await
-            .unwrap_err();
-        assert!(
-            missing
-                .to_string()
-                .contains("missing from the lifecycle feed"),
-            "R7/E9"
-        );
-        assert_eq!(
-            state
-                .list_events(&thread, None, None, false)
-                .unwrap()
-                .data
-                .len(),
-            before,
-            "R7/E4/E9"
-        );
-    }
-
-    #[tokio::test]
-    async fn model_request_spans_are_paired_and_keep_required_zero_usage_on_error() {
-        use awaken_runtime_contract::llm::{ModelRequestObservation, TokenUsage};
-
-        let state = ManagedState::new(LifecycleRuntime::default());
-        let session = state
-            .create_session(
-                serde_json::from_value(serde_json::json!({
-                    "agent": "coder",
-                    "environment_id": "env_local"
-                }))
-                .unwrap(),
-                None,
-            )
-            .await
-            .unwrap();
-        state
-            .append_step(
-                &session.id,
-                StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false)
-                    .with_model_requests(vec![
-                        ModelRequestObservation {
-                            is_error: false,
-                            usage: TokenUsage {
-                                prompt_tokens: 11,
-                                completion_tokens: 7,
-                                cache_read_tokens: 3,
-                                cache_creation_tokens: 2,
-                            },
-                        },
-                        ModelRequestObservation {
-                            is_error: true,
-                            usage: TokenUsage::default(),
-                        },
-                    ]),
-                PreviewAllocations::default(),
-                None,
-                &Default::default(),
-            )
-            .unwrap();
-
-        let values = serde_json::to_value(
-            state
-                .list_events(&session.id, None, None, false)
-                .unwrap()
-                .data,
-        )
-        .unwrap();
-        let events = values.as_array().unwrap();
-        let starts = events
-            .iter()
-            .filter(|event| event["type"] == "span.model_request_start")
-            .collect::<Vec<_>>();
-        let ends = events
-            .iter()
-            .filter(|event| event["type"] == "span.model_request_end")
-            .collect::<Vec<_>>();
-        assert_eq!((starts.len(), ends.len()), (2, 2));
-        for (start, end) in starts.iter().zip(&ends) {
-            assert_eq!(end["model_request_start_id"], start["id"]);
-        }
-        assert_eq!(ends[0]["is_error"], false);
-        assert_eq!(ends[0]["model_usage"]["input_tokens"], 11);
-        assert_eq!(ends[0]["model_usage"]["cache_creation_input_tokens"], 2);
-        assert_eq!(ends[1]["is_error"], true);
-        for field in [
-            "input_tokens",
-            "output_tokens",
-            "cache_read_input_tokens",
-            "cache_creation_input_tokens",
-        ] {
-            assert_eq!(ends[1]["model_usage"][field], 0, "{field} must be present");
-        }
-    }
-}
+mod tests;

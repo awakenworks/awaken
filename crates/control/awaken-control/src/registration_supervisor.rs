@@ -356,6 +356,8 @@ mod tests {
         // | S1 | F | error | All again, degraded |
         // | S2 | F | success | transition settled |
         // | S3 | T | success | Pending only |
+        // Constraints/invariants: only a complete successful All pass crosses
+        // the recovery boundary; wakes never create an alternate work-list owner.
         let registry = Arc::new(awaken_env_store::InMemoryEnvRegistry::new());
         registry
             .create_once(awaken_environment_contract::CreateEnvironmentCommand {

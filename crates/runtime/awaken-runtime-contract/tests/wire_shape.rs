@@ -130,6 +130,12 @@ fn delegation_bindings_read_legacy_ids_but_write_one_canonical_shape() {
 
 #[test]
 fn provider_model_candidate_provisioning_is_pinned() {
+    // Test design — Cause: immutable publication selects one Provider candidate
+    // with exact provider/route/credential plus adapter and API dialect. Effect:
+    // the wire preserves every axis verbatim for later realization.
+    // Constraints/invariants: adapter family and dialect are separate pins;
+    // neither Runtime nor credential realization may reselect them. Decision
+    // rule P1=fully pinned Provider=>the exact nested provisioning shape below.
     let mut spec = spec();
     spec.model_binding = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
         ModelBinding::new("identity-a", "model-a", "genai"),

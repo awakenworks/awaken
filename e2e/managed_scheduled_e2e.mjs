@@ -16,30 +16,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38178);
 const BASE = `http://127.0.0.1:${PORT}`;
 const BETAS = ['managed-agents-2026-04-01'];
 const STORE_DIR = `/tmp/awaken-scheduled-e2e-${process.pid}`;
 const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
-
-const listEvents = async (sessionId) => {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-};
-
-const waitForScheduledCompletion = async (sessionId) => {
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline) {
-    const events = await listEvents(sessionId);
-    const idle = [...events].reverse().find((event) => event.type === 'session.status_idle');
-    if (idle?.stop_reason?.type === 'end_turn') return events;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  return listEvents(sessionId);
-};
 
 async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
@@ -49,11 +40,25 @@ async function main() {
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact scheduled User receipt; C2=worker commits tool results and
+    // end_turn. E1=the post-receipt delta proves autonomous execution. K: this
+    // observer cannot wake scheduled work. Decision S1 C1&&!C2=>retry;
+    // S2 C1+C2=>assert no requires_action and the exact tool effect.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'SCHEDULE-ME' }] }],
       betas: BETAS,
     });
-    const events = await waitForScheduledCompletion(session.id);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'S1 exact scheduled User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.tool_result')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'S1 scheduled Worker to commit autonomous completion',
+    );
 
     // The run completed autonomously — no human confirmation was needed, because
     // the durable worker performed the scheduled tool calls out of band.

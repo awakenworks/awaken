@@ -832,6 +832,59 @@ fn collect_versions(log: &[MemoryVersion]) -> Vec<MemoryVersion> {
     versions
 }
 
+fn version_operation_name(operation: MemoryVersionOperation) -> &'static str {
+    match operation {
+        MemoryVersionOperation::Created => "created",
+        MemoryVersionOperation::Modified => "modified",
+        MemoryVersionOperation::Deleted => "deleted",
+    }
+}
+
+fn parse_version_time(value: &str, field: &str) -> Result<i64, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        // The public projection is second-precision, so filtering must compare
+        // the same value clients observe. Comparing hidden sub-second store
+        // precision would incorrectly exclude a row at an inclusive `lte`.
+        .map(|value| value.timestamp())
+        .map_err(|_| format!("{field} must be an RFC 3339 timestamp"))
+}
+
+fn filter_versions(
+    versions: Vec<MemoryVersion>,
+    query: &std::collections::HashMap<String, String>,
+) -> Result<Vec<MemoryVersion>, String> {
+    let operation = query.get("operation").map(String::as_str);
+    if operation.is_some_and(|value| !matches!(value, "created" | "modified" | "deleted")) {
+        return Err("operation must be `created`, `modified`, or `deleted`".into());
+    }
+    let created_at_gte = query
+        .get("created_at[gte]")
+        .map(|value| parse_version_time(value, "created_at[gte]"))
+        .transpose()?;
+    let created_at_lte = query
+        .get("created_at[lte]")
+        .map(|value| parse_version_time(value, "created_at[lte]"))
+        .transpose()?;
+    let actor_filter = query.contains_key("api_key_id")
+        || query.contains_key("session_id")
+        || query.contains_key("service_account_id");
+    Ok(versions
+        .into_iter()
+        .filter(|version| {
+            let created_at =
+                i64::try_from(version.created_unix_nanos / 1_000_000_000).unwrap_or(i64::MAX);
+            !actor_filter
+                && query
+                    .get("memory_id")
+                    .is_none_or(|memory_id| memory_id == &version.memory_id)
+                && operation
+                    .is_none_or(|operation| operation == version_operation_name(version.operation))
+                && created_at_gte.is_none_or(|lower| created_at >= lower)
+                && created_at_lte.is_none_or(|upper| created_at <= upper)
+        })
+        .collect())
+}
+
 /// Whether the resource registry contains this store in the trusted Workspace.
 async fn list_versions(
     State(state): State<Arc<MemoryStoreApi>>,
@@ -856,7 +909,11 @@ async fn list_versions(
         Ok(log) => log,
         Err(error) => return err(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()),
     };
-    let data: Vec<_> = collect_versions(&log)
+    let versions = match filter_versions(collect_versions(&log), &query) {
+        Ok(versions) => versions,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
+    let data: Vec<_> = versions
         .iter()
         .map(|version| project_version(version, &id, view))
         .collect();

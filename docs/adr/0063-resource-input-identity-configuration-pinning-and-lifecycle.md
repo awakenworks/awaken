@@ -71,8 +71,9 @@ inputs already recorded for an existing Session.
 
 Skills are capabilities rather than input mounts, so they are not added to
 `InputResourceId`. The same durable `ResolvedSessionResources` manifest carries a
-separate optional `skills[]` collection. `None` preserves legacy behavior;
-`Some([])` explicitly selects none; each non-empty entry freezes
+separate canonical `skills[]` collection. An absent legacy field decodes to the
+same empty list as an explicit empty selection; neither authorizes a mutable
+global-catalog fallback. Each non-empty entry freezes
 `skill_id + version + bundle_sha256` once at Session creation.
 
 `Revision` is reserved for optimistic concurrency on a mutable authoring
@@ -206,9 +207,11 @@ PDP decision, or policy document into this state machine.
 Durable dispatch carries `SessionResourceManifest { workspace_id, revision, resources }`
 beside the executable Agent snapshot. This envelope is secret-free and is not a
 second Session model: `resources` is the exact persisted
-`ResolvedSessionResources`, `revision` is the corresponding
-`SessionResourceState::revision`, and `workspace_id` is the trusted intrinsic
-partition already recorded by the Session. A cold worker verifies that the
+`ResolvedSessionResources`, `revision` is its corresponding selected active or
+pending generation, and `workspace_id` is the trusted intrinsic partition
+already recorded by the Session. The aggregate's `SessionResourceState::revision`
+remains an attempted-generation watermark after rollback and must never be paired
+independently with the restored active resources. A cold worker verifies that the
 Workspace equals the dispatch `execution_scope`, installs the manifest before
 sandbox creation, and never re-reads current Agent bindings. A warm worker may
 replay the exact generation or advance to a newer one; it rejects older and

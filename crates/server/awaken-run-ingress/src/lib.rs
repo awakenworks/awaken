@@ -20,7 +20,6 @@ mod capability;
 mod claimed_stream;
 mod clock;
 mod commit_fence;
-mod commit_operation;
 mod dispatch;
 mod dispatch_schema;
 mod durable;
@@ -51,9 +50,6 @@ pub use application::{
     ApplicationError, ApplicationErrorKind, ClaimedCommitApplier, ClaimedCommitService,
     DurableDispatchStatus, DurableRunOperations, DurableSupersedeResult,
 };
-pub use capability::RunIngressCapabilities;
-// The database-less worker's HTTP dispatch client (drives claim/settle over the wire
-// to the Coordinator's registered Worker router), extracted from awaken-runtime-host.
 pub use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
@@ -75,17 +71,20 @@ pub use awaken_run_ingress_contract::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,
     ClaimedCommitRequest, CredentialRealizationRequest, DeliverAndClaimRequest, EnqueueRequest,
     HeartbeatWorkerRequest, RecoveryRequest, RegisterWorkerRequest, RelinquishRequest,
-    RenewRequest, SettleRequest, StreamEventRequest, WorkerIdentityRequest,
+    RenewRequest, SessionRunReservationResolutionRequest, SettleRequest, StreamEventRequest,
+    StreamObservationRequest, WorkerIdentityRequest,
 };
+pub use capability::RunIngressCapabilities;
 pub use claimed_stream::ClaimedStreamPublisher;
 pub use clock::{Clock, ManualClock, SystemClock};
 pub use commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
-pub use commit_operation::{CommitHashError, commit_payload_hash};
 pub use dispatch::{
     AttemptCredentialBinding, CandidateFingerprint, CasOutcome, Claimed, CommitEpochGuard,
-    CredentialRealizationReceipt, Dispatch, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    ContinuationAdmission, CredentialRealizationReceipt, Dispatch, DispatchCompletion,
+    DispatchError, DispatchOutcome, DispatchQueue, DispatchSettlementError,
+    DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
+    PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
+    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
 };
 pub use dispatch_schema::dispatch_bundle;
 pub use durable::DurableRunIngress;

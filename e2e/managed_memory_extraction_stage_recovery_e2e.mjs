@@ -1,6 +1,16 @@
 // Durable Memory extraction recovery from every post-inference stage. The
 // process is killed after a real terminal commit creates the original intent;
 // persisted variants then prove Extracted/Stored resume and bounded failure.
+//
+// Test design. Causes: C1=terminal inference creates one extraction intent;
+// C2=restart observes Prepared, Extracted, or Stored stage; C3=stored content is
+// valid, conflicting, or permanently invalid; C4=a retry budget is exhausted.
+// Effects: E1=each resumable stage advances once without repeating prior work;
+// E2=the exact Memory commit is idempotent; E3=conflict/failure is classified and
+// bounded without corrupting the source Run. Constraints/invariant: the durable
+// intent stage/idempotency key and Memory repository are the only authorities.
+// Decision rules: X1=C1+C2(valid)=>E1+E2; X2=X1+C3(conflict)=>E2;
+// X3=C1+C2+C3(invalid)+C4=>E3.
 
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -14,14 +24,16 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
+import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38244);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const STORE_DIR = `/tmp/awaken-memory-stage-recovery-${process.pid}`;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
 
@@ -85,31 +97,19 @@ function rawIntent(database, intentId) {
   return rows[0].data;
 }
 
-async function reply(sessionId) {
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(event);
-  }
+function assistantText(events) {
   return events
     .filter((event) => event.type === 'agent.message')
     .map((event) => event.content.map((block) => block.text ?? '').join(''))
     .join('\n');
 }
 
-async function turn(sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
-    betas: BETAS,
-    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-  });
-  return reply(sessionId);
-}
-
-async function waitUntil(predicate, message, tries = 160) {
-  for (let attempt = 0; attempt < tries; attempt += 1) {
-    if (await predicate()) return;
-    await sleep(100);
+async function reply(sessionId) {
+  const events = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+    events.push(event);
   }
-  assert.fail(message);
+  return assistantText(events);
 }
 
 async function hardKill(server) {
@@ -156,10 +156,33 @@ async function main() {
       betas: BETAS,
       resources: [{ type: 'memory_store', memory_store_id: store.id, mount_path: '/memory' }],
     });
-    assert.match(await turn(session.id, 'remember the staged recovery fact'), /staged recovery fact/u);
-    await waitUntil(
-      () => fs.existsSync(database) && extractionRows(database).length === 1,
-      'terminal commit did not persist an extraction intent',
+    // Initial Run cause/effect rules: I1 accepted User command => exact receipt
+    // may be unprocessed while inference runs; I2 committed agent.message with
+    // the recovery fact => terminal commit exists; I3 earlier-only history =>
+    // keep reading; I4 the exact receipt is processed. Constraint K1: history
+    // before that receipt cannot satisfy I2. Decision I1+I2+I4=>terminal fact;
+    // only that rule may lead to the extraction-intent assertion.
+    const initialSend = await client.beta.sessions.events.send(session.id, {
+      betas: BETAS,
+      events: [{ type: 'user.message', content: [{ type: 'text', text: 'remember the staged recovery fact' }] }],
+    });
+    const initialReceipt = initialSend.data[0];
+    assert.equal(initialReceipt.type, 'user.message');
+    assert.equal(initialReceipt.processed_at, null);
+    const initialObservation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      initialReceipt.id,
+      BETAS,
+      ({ delta }) => /staged recovery fact/u.test(assistantText(delta)),
+      'the initial Memory Run to commit its assistant fact',
+    );
+    const initialReply = assistantText(initialObservation.delta);
+    assert.match(initialReply, /staged recovery fact/u);
+    await waitForValue(
+      () => fs.existsSync(database) ? extractionRows(database).length : 0,
+      (count) => count === 1,
+      'terminal commit to persist one extraction intent',
     );
     await hardKill(first.server);
     servers.pop();
@@ -248,6 +271,25 @@ async function main() {
     // Mutate the authoritative current `extractor.agent` snapshot. Adding the
     // retained legacy `extractor.model` fields to a current snapshot is ignored
     // by its one-way decoder and would not exercise the intended failure.
+    // Provider fixture rule X4: C5=Pending extraction carries complete explicit
+    // but unreachable Provider coordinates with no credential -> E4=recovery
+    // retries five times and records TerminalFailed without a provider effect.
+    // Constraint/K: the shared helper supplies no defaults or validation;
+    // ResolvedModelCandidate decoding is the sole structural-validity authority.
+    const unavailableCandidate = nativeProviderCandidateFixture({
+      binding: {
+        ...source.extractor.agent.resolved_spec.model_binding,
+        model_ref: 'unavailable-extractor-model',
+      },
+      providerRef: 'unavailable-provider',
+      routeRef: 'unavailable-route',
+      scopeId: source.workspace_id,
+      credential: null,
+      adapterKind: 'open_ai_chat',
+      apiDialect: 'open_ai_chat',
+      baseUrl: 'http://127.0.0.1:1/v1',
+      upstreamModel: 'unavailable-extractor-model',
+    });
     const unavailableExtractor = {
       ...unclaimed,
       intent_id: `${source.intent_id}:unavailable-extractor`,
@@ -263,23 +305,7 @@ async function main() {
           ...source.extractor.agent,
           resolved_spec: {
             ...source.extractor.agent.resolved_spec,
-            model_binding: {
-              ...source.extractor.agent.resolved_spec.model_binding,
-              model_ref: 'unavailable-extractor-model',
-              provisioning: {
-                type: 'provider',
-                provider_ref: 'unavailable-provider',
-                route_ref: 'unavailable-route',
-                scope_id: source.workspace_id,
-                credential: null,
-                endpoint: {
-                  adapter_kind: 'open_ai_chat',
-                  api_dialect: 'open_ai_chat',
-                  base_url: 'http://127.0.0.1:1/v1',
-                  upstream_model: 'unavailable-extractor-model',
-                },
-              },
-            },
+            model_binding: unavailableCandidate,
           },
         },
       },
@@ -290,14 +316,14 @@ async function main() {
     servers.push(second.server);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-    await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
     assert.match(await reply(session.id), /staged recovery fact/u);
 
-    await waitUntil(() => {
-      const rows = extractionRows(database);
-      return rows.length === 4 && rows.every(({ status }) =>
-        status === 'completed' || status === 'terminal_failed');
-    }, 'staged extraction intents did not reach terminal states');
+    await waitForValue(
+      () => extractionRows(database),
+      (rows) => rows.length === 4 && rows.every(({ status }) =>
+        status === 'completed' || status === 'terminal_failed'),
+      'staged extraction intents to reach terminal states',
+    );
     const rows = new Map(extractionRows(database).map((row) => [row.intent.intent_id, row.intent]));
     assert.equal(rows.get(extracted.intent_id).status, 'completed');
     assert.equal(rows.get(stored.intent_id).status, 'completed');
@@ -389,7 +415,11 @@ async function main() {
       servers.push(probe.server);
       await waitForPort(PORT);
       client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-      await client.beta.sessions.events.send(session.id, { betas: BETAS, events: [] });
+      assert.match(
+        await reply(session.id),
+        /staged recovery fact/u,
+        'a corrupt extraction aggregate leaves the committed Session readable',
+      );
       assert.equal(
         rawIntent(database, validCompleted.intent_id),
         data,

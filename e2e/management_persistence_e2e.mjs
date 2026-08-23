@@ -33,7 +33,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { deploymentEnv, spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, FAKE_KEY } from './harness.mjs';
+import {
+  deploymentEnv,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+  startUpstream,
+  realServerEnv,
+  FAKE_KEY,
+} from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -54,12 +64,6 @@ async function req(base, method, uri, body, token) {
   const text = await res.text();
   const json = text ? JSON.parse(text) : null;
   return { status: res.status, json };
-}
-
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
 }
 
 function agentMessages(events) {
@@ -236,11 +240,21 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client2.beta.sessions.events.send(session.id, {
+    // P1: C1=restarted config/credential materialize; C2=exact User receipt;
+    // C3=MCP result 15 commits. E1=post-restart conversation succeeds.
+    // Constraint: only C3 after C2 qualifies. C1+C2&&!C3=>observe; all=>E1.
+    const receipt = await client2.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 7 8' }] }],
       betas: BETAS,
     });
-    const events = await listEvents(client2, session.id);
+    const { delta: events } = await waitForSessionEventReceipt(
+      client2,
+      session.id,
+      receipt.data[0]?.id,
+      BETAS,
+      ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 15')),
+      'P1 post-restart MCP result commits after its exact receipt',
+    );
     assert.ok(
       events.some((e) => e.type === 'agent.mcp_tool_use' && e.name === 'mcp__calc__add'),
       `an mcp__calc__add tool_use: ${JSON.stringify(events.map((e) => e.type))}`,

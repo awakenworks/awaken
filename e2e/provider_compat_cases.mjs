@@ -161,6 +161,27 @@ export function loadProviderCases(env = process.env) {
   return cases;
 }
 
+export function requiredProviderCaseIds(env = process.env) {
+  const raw = optional(env.AWAKEN_PROVIDER_MATRIX_REQUIRED_CASE_IDS);
+  if (!raw) return [];
+  const ids = raw.split(',').map((value) => value.trim()).filter(Boolean);
+  for (const id of ids) assert.match(id, SAFE_ID, 'required provider case id is invalid');
+  assert.equal(new Set(ids).size, ids.length, 'required provider case ids must be unique');
+  return ids;
+}
+
+/// Select the exact certification cases requested by a strict provider lane.
+/// An empty requirement preserves the ordinary all-configured matrix. A strict
+/// lane follows the caller's declared order and fails before provider I/O when
+/// any identity is unavailable.
+export function selectProviderCases(cases, requiredIds) {
+  if (requiredIds.length === 0) return cases;
+  const byId = new Map(cases.map((providerCase) => [providerCase.id, providerCase]));
+  const missing = requiredIds.filter((id) => !byId.has(id));
+  assert.deepEqual(missing, [], `required provider cases are not configured: ${missing.join(', ')}`);
+  return requiredIds.map((id) => byId.get(id));
+}
+
 export function publicProviderCase(value) {
   const { secret: _secret, ...publicValue } = value;
   return publicValue;

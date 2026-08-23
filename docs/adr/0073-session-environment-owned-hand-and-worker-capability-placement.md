@@ -84,7 +84,7 @@ this lifecycle path; it continues through ADR-0044's existing recovery boundary.
 
 The Worker-local SessionEnvironment owner proactively hibernates that same
 recreatable Hand after its configured process-inactivity horizon. This policy is
-based on actual Hand use, not Coordinator Session status: a long model turn or a
+based on actual Hand use, not Coordinator Session status: a long model request or a
 Session awaiting human/tool action may safely release an unused Hand. Each call
 advances a local generation, so an old deadline cannot stop a newer invocation;
 the same binding mutex serializes deadline, dispatch, replacement, and terminal
@@ -198,7 +198,7 @@ Worker failure therefore has two distinct outcomes:
 2. the Session Pod is gone: the provider fails continuity and the existing
    Session/Sandbox recovery policy decides whether to restore or terminate.
 
-ACP is an opaque external executor and does not expose a durable turn receipt.
+ACP is an opaque external executor and does not expose a durable Run receipt.
 The existing same-process retry remains limited to a proven pre-session
 handshake failure. A cross-process recovered ACP claim has no sound way to prove
 whether its prompt or an MCP effect was dispatched, so the current claim owner

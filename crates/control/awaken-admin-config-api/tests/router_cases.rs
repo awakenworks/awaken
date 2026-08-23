@@ -84,6 +84,11 @@ fn harness() -> Harness {
 
 #[tokio::test]
 async fn provider_descriptors_are_read_only_capabilities_not_catalog_rows() {
+    // Test design — Causes: an unconfigured client reads the descriptor endpoint.
+    // Effects: it receives the secret-free static list with stable OpenAI
+    // Responses preference, while provider/endpoint/offering stores remain empty.
+    // Constraints: capability discovery has no vault or catalog authoring side
+    // effect. Decision rules D1=read=>list; D5=read empty config=>zero writes.
     let harness = harness();
     let (status, descriptors) =
         call(&harness.app, "GET", "/v1/config/provider-descriptors", None).await;

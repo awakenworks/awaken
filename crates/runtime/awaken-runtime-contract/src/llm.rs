@@ -11,6 +11,8 @@ use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::agent::state::{MergePolicy, Scope, StateKey};
 use serde::{Deserialize, Serialize};
+
+pub use awaken_agent_contract::audit::model_request::{ModelRequestObservation, TokenUsage};
 use thiserror::Error;
 
 use crate::agent_bindings::InferenceOptions;
@@ -79,7 +81,7 @@ pub struct ChatResponse {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum StopReason {
     /// The model finished naturally.
-    EndTurn,
+    NaturalEnd,
     /// The output hit the response token limit and was truncated.
     MaxTokens,
     /// The response stopped to invoke one or more tools.
@@ -143,47 +145,32 @@ impl AssistantOutput {
     }
 }
 
-/// One model invocation's token usage. `cache_read`/`cache_creation` are the
-/// prompt-cache breakdown a provider may report (Anthropic `cache_read_input_tokens`
-/// / `cache_creation_input_tokens`); `0` when the provider reports none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct TokenUsage {
-    pub prompt_tokens: u64,
-    pub completion_tokens: u64,
-    #[serde(default)]
-    pub cache_read_tokens: u64,
-    #[serde(default)]
-    pub cache_creation_tokens: u64,
+/// Stable coordinates evaluated immediately before one logical model request.
+/// Provider retries remain inside that request and therefore do not re-enter
+/// this admission port; continuations and model-pool failover calls do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelRequestAdmissionRequest {
+    pub run_id: awaken_agent_contract::agent::run::Id,
+    pub thread_id: awaken_agent_contract::agent::thread::Id,
 }
 
-/// One completed logical model request observed at the runtime inference seam.
-/// Provider retries belong to the same request; continuations, failover calls,
-/// and advisor calls each produce another observation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-pub struct ModelRequestObservation {
-    /// Whether the logical request exhausted recovery and returned an error.
-    pub is_error: bool,
-    /// Per-request usage. Providers that omit usage leave all fields at zero.
-    pub usage: TokenUsage,
+/// Decision made by the owning application at the runtime inference
+/// chokepoint. `Pause` preserves the same Run via its ordinary Awaiting ticket.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelRequestAdmission {
+    Admit,
+    Pause(awaken_agent_contract::agent::awaiting::PauseReason),
 }
 
-impl TokenUsage {
-    /// Field-wise saturating sum, used to accumulate usage across Steps.
-    #[must_use]
-    pub fn saturating_add(self, other: Self) -> Self {
-        Self {
-            prompt_tokens: self.prompt_tokens.saturating_add(other.prompt_tokens),
-            completion_tokens: self
-                .completion_tokens
-                .saturating_add(other.completion_tokens),
-            cache_read_tokens: self
-                .cache_read_tokens
-                .saturating_add(other.cache_read_tokens),
-            cache_creation_tokens: self
-                .cache_creation_tokens
-                .saturating_add(other.cache_creation_tokens),
-        }
-    }
+/// Neutral live authority checked before every logical model request. Durable
+/// accounting remains owned outside Runtime; this port only asks that owner for
+/// the current decision and never caches it.
+#[async_trait]
+pub trait ModelRequestGate: Send + Sync {
+    async fn admit_model_request(
+        &self,
+        request: ModelRequestAdmissionRequest,
+    ) -> std::result::Result<ModelRequestAdmission, String>;
 }
 
 /// A thread's accumulated token usage **attributed per model** (a session may span

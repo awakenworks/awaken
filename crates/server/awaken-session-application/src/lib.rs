@@ -4,8 +4,8 @@
 //! caches.  This crate owns the application collaborators and durable Session
 //! repository so every protocol drives the same Session authority.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, OnceLock};
 
 use awaken_environment_contract::EnvItem;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
@@ -31,10 +31,13 @@ mod live_inbox;
 pub use activity::{SessionActivityError, SessionMessageOutcome};
 pub use budget::BudgetSettlementOutcome;
 mod continuation;
+mod coordination;
 mod creation;
 pub use continuation::SessionContinuationError;
 pub use creation::{CreateSessionCommand, SessionCreationError};
 mod credentials;
+mod event_batches;
+mod outcome_reconciliation;
 mod projection;
 pub use credentials::SessionPreparationError;
 mod mcp;

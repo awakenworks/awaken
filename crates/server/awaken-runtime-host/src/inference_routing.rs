@@ -1,7 +1,7 @@
 //! Per-thread model binding and snapshot-access materialization (R1/R2).
 //!
 //! The host once held a single fixed `LlmExecutor`; this module lifts that to a
-//! per-thread binding so a session (and, with a per-turn override, a turn) selects
+//! per-thread binding so a Session (and, with a per-Run override, a Run) selects
 //! its published model. [`InferenceRouting`] holds the runtime materialization
 //! port plus per-thread overrides. Configuration resolution is deliberately not
 //! represented here. A Host without the model resolver uses its explicitly bound
@@ -52,8 +52,8 @@ impl InferenceRouting {
             })
     }
 
-    /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
-    /// Re-registering replaces the binding (the per-turn override re-stages).
+    /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
+    /// Re-registering replaces the binding (the per-Run override re-stages).
     pub(crate) fn register(&self, thread: &str, model_ref: impl Into<String>) {
         self.slots
             .update(thread, |slot| slot.model_ref = Some(model_ref.into()));
@@ -255,8 +255,8 @@ mod tests {
 
     #[test]
     fn re_registering_a_thread_replaces_the_binding() {
-        // The per-turn override re-stages the thread's model: the LAST register wins, so
-        // a turn cannot keep running a stale prior model ref. `model_ref` reflects the
+        // The per-Run override re-stages the thread's model: the LAST register wins, so
+        // a Run cannot keep using a stale prior model ref. `model_ref` reflects the
         // latest registration (the executor itself is resolved separately via
         // `executor_for` at run time).
         let mut binding = routing();
@@ -274,7 +274,7 @@ mod tests {
 
         binding.register("t", "model-a");
         assert_eq!(binding.model_ref("t", "default-model"), "model-a");
-        // Re-register (per-turn override) → the new ref replaces the old one.
+        // Re-register (per-Run override) → the new ref replaces the old one.
         binding.register("t", "model-b");
         assert_eq!(binding.model_ref("t", "default-model"), "model-b");
         assert_eq!(binding.override_for("t").as_deref(), Some("model-b"));

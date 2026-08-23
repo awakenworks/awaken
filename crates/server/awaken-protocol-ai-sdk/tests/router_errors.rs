@@ -25,8 +25,6 @@ impl RunApplication for NoAwaitingRuntime {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -151,8 +149,6 @@ impl RunApplication for AwaitingRuntime {
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "done")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

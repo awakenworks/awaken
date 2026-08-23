@@ -13,7 +13,8 @@ use axum::middleware::Next;
 use axum::response::Response;
 use opentelemetry::propagation::Extractor;
 use tracing::Instrument;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
+
+use crate::propagation::set_remote_parent_from_extractor;
 
 /// Read-only view of the request headers for the OTel text-map propagator.
 struct HeaderExtractor<'a>(&'a axum::http::HeaderMap);
@@ -42,9 +43,7 @@ pub async fn trace_http(request: Request, next: Next) -> Response {
         .unwrap_or_else(|| request.uri().path().to_string());
 
     // Extract the inbound trace context before the request is moved into the span.
-    let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
-        propagator.extract(&HeaderExtractor(request.headers()))
-    });
+    let parent = HeaderExtractor(request.headers());
 
     // Span name is static (`http.request`); the route lives in an attribute so the
     // trace validator can key on it (ids templatized downstream).
@@ -55,9 +54,7 @@ pub async fn trace_http(request: Request, next: Next) -> Response {
         http.route = %route,
         http.response.status_code = tracing::field::Empty,
     );
-    // A process without an installed OpenTelemetry layer legitimately has no
-    // subscriber extension to receive the parent; tracing remains best-effort.
-    let _ = span.set_parent(parent_cx);
+    set_remote_parent_from_extractor(&span, &parent);
 
     let response = async move { next.run(request).await }
         .instrument(span.clone())
@@ -72,67 +69,13 @@ pub async fn trace_http(request: Request, next: Next) -> Response {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
     use axum::routing::get;
-    use opentelemetry::trace::TracerProvider as _;
-    use opentelemetry_sdk::propagation::TraceContextPropagator;
-    use opentelemetry_sdk::trace::SdkTracerProvider;
     use tower::ServiceExt;
-    use tracing_subscriber::Registry;
-    use tracing_subscriber::layer::SubscriberExt;
 
-    /// One exported span, flattened to the fields the ingress oracle asserts on:
-    /// identity + parentage + recorded attributes. Mirrors the `CapturingExporter`
-    /// oracle in `propagation.rs`, extended to also capture attributes so the
-    /// status-code recording can be read back off the emitted span.
-    #[derive(Clone, Debug)]
-    struct CapturedSpan {
-        name: String,
-        trace_id: String,
-        parent_span_id: Option<String>,
-        attributes: std::collections::HashMap<String, String>,
-    }
-
-    /// A collector-free in-memory `SpanExporter` — the same in-process, deterministic
-    /// oracle pattern used in `propagation.rs`, so the ingress span tree is asserted
-    /// exactly the way a cluster e2e reads OTLP output, but hermetically.
-    #[derive(Clone, Debug)]
-    struct CapturingExporter(Arc<Mutex<Vec<CapturedSpan>>>);
-
-    impl opentelemetry_sdk::trace::SpanExporter for CapturingExporter {
-        fn export(
-            &self,
-            batch: Vec<opentelemetry_sdk::trace::SpanData>,
-        ) -> impl std::future::Future<Output = opentelemetry_sdk::error::OTelSdkResult> + Send
-        {
-            use opentelemetry::trace::SpanId;
-            let sink = self.0.clone();
-            let mut out = sink.lock().unwrap();
-            for span in &batch {
-                let parent = span.parent_span_id;
-                let attributes = span
-                    .attributes
-                    .iter()
-                    .map(|kv| (kv.key.to_string(), kv.value.to_string()))
-                    .collect();
-                out.push(CapturedSpan {
-                    name: span.name.to_string(),
-                    trace_id: format!(
-                        "{:032x}",
-                        u128::from_be_bytes(span.span_context.trace_id().to_bytes())
-                    ),
-                    parent_span_id: (parent != SpanId::INVALID)
-                        .then(|| format!("{:016x}", u64::from_be_bytes(parent.to_bytes()))),
-                    attributes,
-                });
-            }
-            async { Ok(()) }
-        }
-    }
+    use crate::propagation::test_support::{CapturedSpan, capture_spans};
 
     /// Drive one request through a `Router` carrying the real `trace_http` layer,
     /// under a scoped subscriber whose OTel layer exports finished spans into a
@@ -153,15 +96,6 @@ mod tests {
         status: StatusCode,
         route: &str,
     ) -> (StatusCode, Vec<CapturedSpan>) {
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-        let captured = Arc::new(Mutex::new(Vec::new()));
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(CapturingExporter(captured.clone()))
-            .build();
-        let tracer = provider.tracer("awaken-observability-http-oracle");
-        let subscriber =
-            Registry::default().with(tracing_opentelemetry::layer().with_tracer(tracer));
-
         let handler = move || async move { status };
         let app = Router::new()
             .route(route, get(handler))
@@ -174,13 +108,11 @@ mod tests {
         let rt = tokio::runtime::Builder::new_current_thread()
             .build()
             .expect("build a current-thread runtime");
-        let response = tracing::subscriber::with_default(subscriber, || {
+        let (response, spans) = capture_spans("awaken-observability-http-oracle", || {
             rt.block_on(app.oneshot(request))
                 .expect("router is infallible")
         });
         let out_status = response.status();
-        provider.force_flush().expect("flush captured spans");
-        let spans = captured.lock().unwrap().clone();
         (out_status, spans)
     }
 

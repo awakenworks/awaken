@@ -1,4 +1,5 @@
-// Real-process lifecycle coverage for a remote child Run created by `agent_run`.
+// Real-process lifecycle coverage for a remote child Thread created through
+// the Managed coordinator's fixed `list_agents` / `send_to_agent` surface.
 //
 // A deterministic HTTP peer is the only test double. The coordinator, Managed
 // API, durable continuation, cancellation token, A2A adapter and parent/child Run
@@ -15,13 +16,13 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 import { closeHttpServer } from './http_server.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38214);
 const BETAS = ['managed-agents-2026-04-01'];
-const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
-
 // SDK boundary decision table: operation settles before 30s -> preserve its
 // result/error; operation remains unresolved after transport/process loss ->
 // fail the owning lifecycle rule with its phase label. No test rule may retain
@@ -214,24 +215,14 @@ async function createSession(client: Anthropic): Promise<any> {
   );
 }
 
-async function sendText(client: Anthropic, sessionId: string, text: string): Promise<void> {
-  await within(
+async function sendText(client: Anthropic, sessionId: string, text: string): Promise<any> {
+  return within(
     client.beta.sessions.events.send(sessionId, {
       events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
       betas: BETAS,
     }),
-    `turn ${text}`,
+    `Run for ${text}`,
   );
-}
-
-async function waitFor<T>(read: () => T | undefined, label: string): Promise<T> {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() <= deadline) {
-    const value = read();
-    if (value !== undefined) return value;
-    await sleep(25);
-  }
-  throw new Error(`timed out waiting for ${label}`);
 }
 
 async function main(): Promise<void> {
@@ -257,58 +248,120 @@ async function main(): Promise<void> {
     // cleanup scope.
     await waitForPort(PORT, 180_000, server.server);
     // A remote child may pause for user input. Cause/effect decision table:
-    // built-in agent_run + remote input-required -> the executed agent.tool_use
-    // remains in history, while an answerable agent.custom_tool_use(agent_input)
-    // is minted at the remote pending id; its user.custom_tool_result resumes the
-    // exact task context. The executed parent call must never be mistaken for the
-    // later remote-input ticket.
+    // C1 send_to_agent reaches remote input-required; C2 the frozen child Agent
+    // does not declare `agent_input` as a custom client tool; C3 the aggregate
+    // requires_action names the qualified child Event. Effects: E1 the public
+    // Session list contains that exact `agent.tool_use` (allow) rather than an
+    // orphan id; E2 the official generic `user.tool_result` resumes the pinned
+    // task context once. Rule R1 C1+C2+C3=>E1+E2. The executed parent call must
+    // never be mistaken for the later remote-input ticket.
     const awaiting = await createSession(client);
-    await sendText(client, awaiting.id, 'delegate and wait for remote input');
-    const awaitingEvents = await listEvents(client, awaiting.id);
+    const awaitingReceipt = (await sendText(
+      client,
+      awaiting.id,
+      'delegate and wait for remote input',
+    )).data[0];
+    // Receipt rule R2: C4 the delegated command has an exact receipt; E3 its
+    // processed delta contains the input-required boundary; K1 earlier history
+    // cannot satisfy E3. Decision R2=C1+C4=>E1+E3 via the canonical observer.
+    const { delta: awaitingEvents } = await waitForSessionEventReceipt(
+      client,
+      awaiting.id,
+      awaitingReceipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => delta.some(
+        (event: any) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'requires_action',
+      ),
+      'remote child requires_action boundary',
+      { timeoutMs: 30_000 },
+    );
     const idle = awaitingEvents.find(
-      (event) => event.type === 'session.status_idle' && event.stop_reason?.type === 'requires_action',
+      (event: any) => event.type === 'session.status_idle' && event.stop_reason?.type === 'requires_action',
     );
     const pendingId = idle?.stop_reason?.event_ids?.[0];
     const toolUse = awaitingEvents.find(
-      (event) => event.id === pendingId && event.type === 'agent.custom_tool_use' && event.name === 'agent_input',
+      (event: any) => event.id === pendingId && event.type === 'agent.tool_use' && event.name === 'agent_input',
     );
     assert.ok(toolUse, `remote agent_input was projected: ${JSON.stringify(awaitingEvents)}`);
-    await within(client.beta.sessions.events.send(awaiting.id, {
+    const resumeResponse = await within(client.beta.sessions.events.send(awaiting.id, {
       events: [
         {
-          type: 'user.custom_tool_result',
-          custom_tool_use_id: toolUse.id,
+          type: 'user.tool_result',
+          tool_use_id: toolUse.id,
           content: [{ type: 'text', text: 'src/lib.rs' }],
           is_error: false,
         },
       ],
       betas: BETAS,
     }), 'remote child input resume');
-    const resumedEvents = await listEvents(client, awaiting.id);
+    const resumeReceipt = resumeResponse?.data?.[0];
+    assert.ok(resumeReceipt, 'remote child input resume returns an exact receipt');
+    // Receipt rule R3: C5 exact generic tool-result receipt; E4 pinned child
+    // resumes once and reaches its Thread boundary; K2 pre-resume events are
+    // excluded. Decision R3=C2+C5=>E2+E4.
+    const { delta: resumedEvents } = await waitForSessionEventReceipt(
+      client,
+      awaiting.id,
+      resumeReceipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => JSON.stringify(delta).includes('REMOTE-CHILD-RESUMED')
+        && delta.some((event: any) => event.type === 'session.thread_status_idle'),
+      'remote child resumed marker and terminal Thread boundary',
+      { timeoutMs: 30_000 },
+    );
     assert.ok(JSON.stringify(resumedEvents).includes('REMOTE-CHILD-RESUMED'));
     assert.deepEqual(peer.state.resumes, [{ contextId: 'delegated-input-context', text: 'src/lib.rs' }]);
-    pass('remote agent_run input-required resumes on the pinned task context');
+    pass('remote coordinated child input-required resumes on the pinned task context');
 
     // Active remote children share the common A2A poll driver.
     const polled = await createSession(client);
-    await sendText(client, polled.id, 'delegate and poll remote child');
-    const polledEvents = await listEvents(client, polled.id);
+    const polledReceipt = (await sendText(
+      client,
+      polled.id,
+      'delegate and poll remote child',
+    )).data[0];
+    // Poll rule P1: C1 exact command receipt plus working->completed remote task;
+    // E1 receipt processed and terminal child marker committed; K1 old history is
+    // excluded. Decision P1=C1=>E1 through the canonical receipt observer.
+    const { delta: polledEvents } = await waitForSessionEventReceipt(
+      client,
+      polled.id,
+      polledReceipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => JSON.stringify(delta).includes('REMOTE-CHILD-POLLED')
+        && delta.some((event: any) => event.type === 'session.thread_status_idle'),
+      'remote polled marker and terminal Thread boundary',
+      { timeoutMs: 30_000 },
+    );
     assert.ok(JSON.stringify(polledEvents).includes('REMOTE-CHILD-POLLED'));
     assert.ok(peer.state.polls.includes('delegated-polled'));
-    pass('remote agent_run polls a working task to its terminal result');
+    pass('remote coordinated child polls a working task to its terminal result');
 
     // Interrupt the parent while its child is polling. Cancellation must cross
     // the same token into A2A and address the pinned child task once.
     const cancelled = await createSession(client);
-    const activeTurn = sendText(client, cancelled.id, 'delegate then interrupt remote child');
-    await waitFor(() => (peer.state.polls.includes('delegated-cancel') ? true : undefined), 'remote child poll');
-    await within(client.beta.sessions.events.send(cancelled.id, {
+    const activeRun = sendText(client, cancelled.id, 'delegate then interrupt remote child');
+    await waitForValue(
+      () => [...peer.state.polls],
+      (polls: string[]) => polls.includes('delegated-cancel'),
+      'remote child poll',
+    );
+    const interruptResponse = await within(client.beta.sessions.events.send(cancelled.id, {
       events: [{ type: 'user.interrupt' }],
       betas: BETAS,
     }), 'parent interrupt');
-    await within(activeTurn.catch(() => {}), 'interrupted parent turn');
+    const interruptReceipt = interruptResponse?.data?.[0];
+    assert.ok(interruptReceipt, 'parent interrupt returns an exact receipt');
+    const activeResponse = await within(activeRun, 'interrupted parent Run');
+    const activeReceipt = activeResponse?.data?.[0];
+    assert.equal(activeReceipt?.type, 'user.message', 'parent Run returns its exact User receipt');
     try {
-      await waitFor(() => peer.state.cancels.find((id) => id === 'delegated-cancel'), 'remote child cancellation');
+      await waitForValue(
+        () => [...peer.state.cancels],
+        (cancels: string[]) => cancels.includes('delegated-cancel'),
+        'remote child cancellation',
+      );
     } catch (error) {
       const committed = await listEvents(client, cancelled.id);
       throw new Error(
@@ -316,43 +369,144 @@ async function main(): Promise<void> {
         { cause: error },
       );
     }
+    // Interrupt rule I1: C1 exact parent User receipt, C2 exact interrupt receipt,
+    // and C3 peer cancel delivery; E1 both receipts process plus the pinned remote
+    // cancellation. K1 peer state is the external side-effect oracle; canonical
+    // history owns only C1/C2 completion. D1=C1+C2+C3=>E1.
+    await waitForSessionEventReceipt(
+      client,
+      cancelled.id,
+      interruptReceipt.id,
+      BETAS,
+      () => true,
+      'parent interrupt receipt to process after peer cancellation',
+      { timeoutMs: 30_000 },
+    );
+    await waitForSessionEventReceipt(
+      client,
+      cancelled.id,
+      activeReceipt.id,
+      BETAS,
+      () => true,
+      'interrupted parent User receipt to process after peer cancellation',
+      { timeoutMs: 30_000 },
+    );
     assert.deepEqual(peer.state.cancels, ['delegated-cancel']);
     pass('parent interrupt cancels the pinned remote child task exactly once');
 
-    // Cause/effect rule: poll/send transport 5xx and every negative terminal
-    // become an error ToolResult for the parent to observe and explain; the
-    // Managed send request itself may therefore complete normally. None may be
-    // collapsed into a fabricated successful child result.
+    // Failure decision rules: C1 a committed working task's poll returns 5xx;
+    // C2 the initial send returns 5xx; C3 the remote task itself terminates
+    // failed/rejected; C4 it terminates canceled. Effects: E1 C1 keeps the
+    // Session running and the exact task eligible for durable reattachment; E2
+    // C2/C3 commits the exact public error; E3 no rule fabricates REMOTE-CHILD
+    // success; E4 C4 settles the child idle without manufacturing an error or
+    // report. The SDK error shape owns a human-readable message, not the neutral
+    // internal failure code.
+    // Constraint: ADR-0057 makes poll/cancel delivery failure retryable, while a
+    // task terminal or a rejected initial send is a completed attempt boundary.
+    // R1 C1=>E1+E3; R2 C2=>E2+E3; R3 C3=>E2+E3; R4 C4=>E3+E4. Cold
+    // reattachment of R1's exact task id is owned by remote_attempt_lifecycle_e2e.ts.
     const pollFailed = await createSession(client);
     await sendText(client, pollFailed.id, 'delegate lifecycle: poll failure');
-    const pollFailureProjection = JSON.stringify(await listEvents(client, pollFailed.id));
-    assert.ok(pollFailureProjection.includes('503'), pollFailureProjection);
-    assert.ok(!pollFailureProjection.includes('REMOTE-CHILD-'));
-    assert.ok(peer.state.polls.includes('delegated-poll-failure'));
-    pass('remote agent_run poll 5xx remains an explicit child tool error');
+    // R1 is intentionally state-only: C1 leaves the exact remote task running;
+    // E1 is retry eligibility, not command completion. K1 therefore forbids a
+    // processed-receipt/terminal predicate; D1 observes Session+peer state only.
+    const retryablePoll = await waitForValue(
+      async () => ({
+        session: await client.beta.sessions.retrieve(pollFailed.id, { betas: BETAS }),
+        events: await listEvents(client, pollFailed.id),
+        polls: [...peer.state.polls],
+      }),
+      (observed: { session: any; polls: string[] }) => observed.session.status === 'running'
+        && observed.polls.includes('delegated-poll-failure'),
+      'retryable remote poll failure',
+    );
+    const pollFailureProjection = JSON.stringify(retryablePoll.events);
+    assert.equal(retryablePoll.session.status, 'running', 'R1/E1');
+    assert.ok(
+      retryablePoll.polls.includes('delegated-poll-failure'),
+      'R1 retains and polls the exact committed task id',
+    );
+    assert.ok(
+      !pollFailureProjection.includes('503'),
+      `R1 must not turn a retryable poll delivery failure into terminal truth: ${pollFailureProjection}`,
+    );
+    assert.ok(!pollFailureProjection.includes('REMOTE-CHILD-'), 'R1/E3');
+    pass('remote coordinated child poll 5xx remains durably retryable without fabricated output');
 
-    // Protocol terminal failures are deterministic, non-retryable tool errors.
-    // The parent may observe and explain that error, but never receives a
-    // fabricated successful child payload.
-    for (const [prompt, marker] of [
-      ['delegate lifecycle: failed', 'a2a_task_failed'],
-      ['delegate lifecycle: rejected', 'a2a_task_rejected'],
-      ['delegate lifecycle: canceled', 'Cancelled'],
+    for (const [prompt, message] of [
+      ['delegate lifecycle: failed', 'remote A2A task ended in the failed state'],
+      ['delegate lifecycle: rejected', 'remote A2A task ended in the rejected state'],
     ]) {
       const failed = await createSession(client);
-      await sendText(client, failed.id, prompt);
-      const failedProjection = JSON.stringify(await listEvents(client, failed.id));
-      assert.ok(failedProjection.includes(marker), `${prompt}: ${failedProjection}`);
+      const failedReceipt = (await sendText(client, failed.id, prompt)).data[0];
+      // Failure rule F1: C1 exact command receipt plus a failed/rejected remote
+      // terminal; E1 processed receipt and exact Session error; K1 no earlier
+      // error may satisfy this case. Decision F1=C1=>E1.
+      const { delta: failedEvents } = await waitForSessionEventReceipt(
+        client,
+        failed.id,
+        failedReceipt.id,
+        BETAS,
+        ({ delta }: { delta: any[] }) => delta.some(
+          (event: any) => event.type === 'session.error' && event.error?.message === message,
+        ),
+        `${prompt} projection`,
+        { timeoutMs: 30_000 },
+      );
+      const failedProjection = JSON.stringify(failedEvents);
+      assert.ok(failedProjection.includes(message), `${prompt}: ${failedProjection}`);
       assert.ok(!failedProjection.includes('REMOTE-CHILD-'), prompt);
     }
-    pass('remote failed/rejected/canceled terminals remain explicit child tool errors');
+    pass('remote failed/rejected terminals remain explicit Session errors');
+
+    const remotelyCanceled = await createSession(client);
+    const canceledReceipt = (await sendText(
+      client,
+      remotelyCanceled.id,
+      'delegate lifecycle: canceled',
+    )).data[0];
+    // Cancel-terminal rule C1: exact command receipt plus remote canceled state;
+    // E1 processed receipt and idle child/Session without output; K1 prior idle
+    // history is excluded. Decision C1=>E1.
+    const { delta: canceledEvents } = await waitForSessionEventReceipt(
+      client,
+      remotelyCanceled.id,
+      canceledReceipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => delta.some(
+        (event: any) => event.type === 'session.thread_status_idle'
+          && event.agent_name === 'researcher',
+      ) && delta.some((event: any) => event.type === 'session.status_idle'),
+      'remote canceled child settlement',
+      { timeoutMs: 30_000 },
+    );
+    const canceledProjection = JSON.stringify(canceledEvents);
+    assert.ok(!canceledProjection.includes('session.error'), 'R4/E4');
+    assert.ok(!canceledProjection.includes('REMOTE-CHILD-'), 'R4/E3');
+    pass('remote canceled terminal settles without a fabricated child result');
 
     const sendFailed = await createSession(client);
-    await sendText(client, sendFailed.id, 'delegate lifecycle: unavailable');
-    const sendFailureProjection = JSON.stringify(await listEvents(client, sendFailed.id));
+    const sendFailedReceipt = (await sendText(
+      client,
+      sendFailed.id,
+      'delegate lifecycle: unavailable',
+    )).data[0];
+    // Send-failure rule S1: C1 exact command receipt plus stable-id retries
+    // exhausted; E1 processed receipt and public 503 diagnostic; K1 older errors
+    // are excluded. Decision S1=C1=>E1.
+    const sendFailureProjection = JSON.stringify((await waitForSessionEventReceipt(
+      client,
+      sendFailed.id,
+      sendFailedReceipt.id,
+      BETAS,
+      ({ delta }: { delta: any[] }) => JSON.stringify(delta).includes('503'),
+      'remote send failure projection',
+      { timeoutMs: 30_000 },
+    )).delta);
     assert.ok(sendFailureProjection.includes('503'), sendFailureProjection);
     assert.ok(!sendFailureProjection.includes('REMOTE-CHILD-'));
-    pass('remote agent_run send 5xx fails closed after stable-id retries');
+    pass('remote coordinated child send 5xx fails closed after stable-id retries');
 
     console.log('DELEGATED REMOTE LIFECYCLE TS API E2E PASS.');
   } finally {

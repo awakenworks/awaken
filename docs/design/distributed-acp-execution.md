@@ -21,7 +21,7 @@ lands on awaken's existing seams (`RunExecutor`, `RunIngress`/`DispatchQueue`,
 - Builds on: [run-ingress-message-delivery](run-ingress-message-delivery.md)
   (the Dispatch/Server boundary; `thread_id` is the shard and consistency key;
   only one owner may freeze/snapshot/execute a thread); the ACP `RunExecutor`
-  turn model (`awaken-run-executor-acp`, `awaken-protocol-acp`); durable dispatch
+  Run model (`awaken-run-executor-acp`, `awaken-protocol-acp`); durable dispatch
   and lease recovery (`awaken-run-ingress`, `SharedHost::ensure_dispatch_pool`).
 
 ## Verdict
@@ -260,10 +260,10 @@ Order: scale workers first (cheapest) → swap store (single-cell write bottlene
 | have | dispatch queue port + self-contained activation | `RunIngress` / `DispatchQueue` / `RunDispatch` |
 | have | co-located pool + HTTP ops surface | `SharedHost::ensure_dispatch_pool`, `durable_ops_router` |
 | have | single-writer commit, ACP subprocess launch | commit coordinator, `subprocess.rs` (env_clear + passthrough) |
-| **done · read side** | **server→client live streaming across all three frontends** — managed live previews (`event_start`/`event_delta`), ai-sdk/ag-ui already streaming. The in-process per-session broadcast is the **read-side prototype** of the cross-node event sink (same multiplex/fan-out shape) | `awaken-protocol-managed` (`preview.rs`, live SSE), the `run_streaming` seam |
+| **done · read side** | **server→client live streaming across all three frontends** — RuntimeHost's per-Thread `ThreadEventHub` is the one neutral live fan-out; Managed projects its subscription into `event_start`/`event_delta`, while the Session broadcast carries committed SSE truth only | `awaken-runtime-host` (`hub.rs`), `awaken-session-contract` (`SessionThreadLiveSubscription`), `awaken-protocol-managed` (`preview.rs`, live SSE) |
 | **done · published language** | **the Fact contract** — the existing neutral `ThreadCommit` carries thread/run identity, ordered commands and events, and deterministic commit identity; transport does not introduce a second fact vocabulary | `awaken-agent-contract::thread::commit::staged::ThreadCommit` |
 | **done · closed loop** | **ONE end-to-end path**: one registered Worker → authenticated typed HTTP dispatch transport → claim-fenced `CommitOperation` → durable `CommitReceipt`. **Workers are db-less**; the Control Node remains the sole writer and Run observation is projected from committed truth | `HttpDispatchQueue`, `registered_worker_transport_router`, `ClaimedCommitService`, `RemoteClaimedRunCommit` |
-| **done · worker-only mode** | a process runs the ordinary execution pool over registered HTTP dispatch and claim-fenced commit operations, without opening the Control store | deployment config worker mode, `worker_dispatch_store_with_upstream`, `SharedHost::with_upstream` |
+| **done · worker-only mode** | a process runs the ordinary execution pool over registered HTTP dispatch and claim-fenced commit operations, without opening the Control store | deployment config worker mode, `worker_transports_with_upstream`, `SharedHost::with_worker_upstream` |
 | **done · placement and egress** | capability is a worker-manifest/dispatch requirement, filtered before replaceable policy ranking; ACP/tool egress occurs inside the selected Session sandbox under its network policy | `PlacementRequirements`, worker registry, `SessionEnvironmentProvider` |
 | **done · recovery fencing** | claim epochs fence remote commit and settle; terminal dispatch completion is an atomic tombstone; cold Workers reconstruct from a claim-authorized recovery snapshot; stable operation receipts make ambiguous response retries idempotent | `RunRecoverySnapshot`, `RecoveryProjection`, `CommitOperation`, `CommitReceipt`, ADR-0060/0065 |
 | **done · recoverable Worker closure** | claim-authorized consistent recovery snapshot, local non-authoritative recovery projection, stable commit operation receipt, expected thread version, injectable claimed-commit service, and public Worker assembly | [recoverable remote Worker protocol](remote-worker-protocol.md) and ADR-0065 |
@@ -325,12 +325,13 @@ Two consequences:
   Postgres** — which is exactly the Phase-3 "swap a cell's store" story. The shared
   db is a pragmatic co-location, not a tangle.
 
-### Recorded coupling (read side)
+### Live observation boundary (read side)
 
-The shipped managed previews reuse one `evt_N` id across a boundary: the streaming
-`PreviewSink` mints an `agent.message` id from the shared event-id counter and
-`append_turn` reuses it, so `event_start.event.id` equals the committed
-`agent.message.id` (the SDK reconciles preview → buffered by id). This is a
-pragmatic, best-effort coupling — infrastructure (streaming) allocating a domain
-identity — justified by the SDK's reconcile-by-id contract. **Keep it contained to
-the preview path; do not generalize id minting into the streaming layer.**
+RuntimeHost's per-Thread `ThreadEventHub` is the sole best-effort live source.
+Managed opens the neutral `SessionThreadLiveSubscription` and projects exact
+Run/Step/response coordinates into the same deterministic `agent.message` id that
+the committed Message projector reconstructs. Root text streams immediately;
+child text remains connection-local until a tool delta or the matching committed
+id proves it is an ordinary message, and a terminal report discards the candidate.
+No streaming component allocates durable identity and no preview frame re-enters
+the Session's committed broadcast.

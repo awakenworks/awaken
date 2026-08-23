@@ -24,6 +24,11 @@ import {
 } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
+import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  claimedCommitRequestFixture,
+  terminalThreadCommitFixture,
+} from './fixtures/thread_commit_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38817);
@@ -39,6 +44,9 @@ const GRANT_REVISION = 1;
 const SEED_MODEL = `resource-seed-model-${process.pid}`;
 const SEED_AGENT = `resource-seed-agent-${process.pid}`;
 const SEED_KEY = 'sk-resource-seed';
+const MEMORY_BETA = 'agent-memory-2026-07-22';
+const SKILLS_BETA = 'skills-2025-10-02';
+const FILES_BETA = 'files-api-2025-04-14';
 const FILE_BYTES = Buffer.from('immutable input selected by the frozen Session manifest\n');
 const MOUNT_PATH = 'uploads/input.txt';
 const SKILL_NAME = `remote-worker-skill-${process.pid}`;
@@ -109,9 +117,23 @@ async function post(pathname: string, body: unknown, worker?: string): Promise<a
 }
 
 async function resourceRequest(method: string, pathname: string, body?: unknown): Promise<any> {
+  // Public-resource protocol decision rules: Memory/Skill/File routes carry
+  // exactly their own beta and configuration routes carry none. Missing or
+  // cross-family beta fails before this test's Postgres/Worker causes can run;
+  // combining betas would create a false compatibility surface.
+  const beta = pathname.startsWith('memory_stores')
+    ? MEMORY_BETA
+    : pathname.startsWith('skills')
+      ? SKILLS_BETA
+      : pathname.startsWith('files')
+        ? FILES_BETA
+        : undefined;
   const response = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/${pathname}`, {
     method,
-    headers: body === undefined ? undefined : { 'content-type': 'application/json' },
+    headers: {
+      ...(beta === undefined ? {} : { 'anthropic-beta': beta }),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -125,6 +147,7 @@ async function uploadFile(): Promise<string> {
   form.append('file', new Blob([FILE_BYTES]), 'input.txt');
   const response = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/files`, {
     method: 'POST',
+    headers: { 'anthropic-beta': FILES_BETA },
     body: form,
   });
   const text = await response.text();
@@ -184,6 +207,7 @@ async function uploadSkill(): Promise<{ skill_id: string; version: number; bundl
   );
   const created = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/skills`, {
     method: 'POST',
+    headers: { 'anthropic-beta': SKILLS_BETA },
     body: form,
   });
   const createdText = await created.text();
@@ -191,6 +215,7 @@ async function uploadSkill(): Promise<{ skill_id: string; version: number; bundl
   const skillId = JSON.parse(createdText).id;
   const version = await fetch(
     `${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/skills/${skillId}/versions/1`,
+    { headers: { 'anthropic-beta': SKILLS_BETA } },
   );
   const versionText = await version.text();
   assert.equal(version.status, 200, `Skill version retrieved: ${versionText}`);
@@ -296,7 +321,7 @@ function resourceEnvelope(
   memory?: { memory_store_id: string; config: any },
   resourceRevision = 1,
 ): any {
-  const inputs = fileId === undefined
+  const inputs: any[] = fileId === undefined
     ? []
     : [{
         binding_id: 'session-file',
@@ -348,13 +373,17 @@ function runRequest(
   // | present | yes | canonical Session control realization |
   // | present | no | fail closed before sandbox/model use |
   delete request.session_thread_id;
-  request.activation.snapshot.resolved_spec.model_binding = {
-    ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
-    provisioning: {
-      type: 'provider',
-      provider_ref: 'fixture-provider@1',
-      route_ref: 'fixture-worker-local@1',
-      scope_id: WORKSPACE,
+  // Raw Provider prerequisite: C0 all route coordinates, including the opaque
+  // fixture dialect, are explicit -> E0 ingress admits the resource-bound Run.
+  // Constraint/K: this helper supplies no default or duplicate validation;
+  // ResolvedModelCandidate deserialization remains the sole validity authority.
+  // Rule M0=C0=>E0; malformed-route rejection belongs to worker_transport.
+  request.activation.snapshot.resolved_spec.model_binding =
+    nativeProviderCandidateFixture({
+      binding: request.activation.snapshot.resolved_spec.model_binding,
+      providerRef: 'fixture-provider@1',
+      routeRef: 'fixture-worker-local@1',
+      scopeId: WORKSPACE,
       credential: {
         credential: { id: GRANT, revision: GRANT_REVISION },
         material_source: 'worker_reference',
@@ -366,13 +395,11 @@ function runRequest(
           model_exposure: 'forbidden',
         },
       },
-      endpoint: {
-        adapter_kind: 'fixture',
-        base_url: 'https://worker-local.invalid',
-        upstream_model: request.activation.snapshot.resolved_spec.model_binding.model_ref,
-      },
-    },
-  };
+      adapterKind: 'fixture',
+      apiDialect: 'fixture',
+      baseUrl: 'https://worker-local.invalid',
+      upstreamModel: request.activation.snapshot.resolved_spec.model_binding.model_ref,
+    });
   request.activation.snapshot.resolved_spec.model_candidates = [];
   // Skill intersection decision table: the canonical Agent `skills` field
   // grants selected identities; `session_resources.skills` freezes each exact
@@ -394,35 +421,20 @@ function runRequest(
   return request;
 }
 
-async function waitUntilSettled(thread: string, timeoutMs = 30_000): Promise<void> {
-  const deadline = Date.now() + timeoutMs;
-  let last = '';
-  while (Date.now() <= deadline) {
-    const response = await fetch(`${BASE}/v1/durable/threads/${thread}/dispatches`);
-    last = await response.text();
-    if (response.status === 200 && ((JSON.parse(last) as any).dispatches ?? []).length === 0) return;
-    await sleep(50);
-  }
-  throw new Error(`thread ${thread} did not settle: ${last}`);
+async function listDispatches(thread: string): Promise<any[]> {
+  const response = await fetch(`${BASE}/v1/durable/threads/${thread}/dispatches`);
+  const text = await response.text();
+  assert.equal(response.status, 200, `list dispatches for ${thread}: ${text}`);
+  return (JSON.parse(text) as any).dispatches ?? [];
 }
 
-async function waitForDispatchStatus(
-  thread: string,
-  expected: string,
-  timeoutMs = 30_000,
-): Promise<any> {
-  const deadline = Date.now() + timeoutMs;
-  let last = '';
-  while (Date.now() <= deadline) {
-    const response = await fetch(`${BASE}/v1/durable/threads/${thread}/dispatches`);
-    last = await response.text();
-    if (response.status === 200) {
-      const dispatch = ((JSON.parse(last) as any).dispatches ?? [])[0];
-      if (dispatch?.status === expected) return dispatch;
-    }
-    await sleep(50);
-  }
-  throw new Error(`thread ${thread} never reached ${expected}: ${last}`);
+async function waitUntilSettled(thread: string, timeoutMs = 30_000): Promise<void> {
+  await waitForValue(
+    () => listDispatches(thread),
+    (dispatches: any[]) => dispatches.length === 0,
+    `Thread ${thread} dispatches to settle`,
+    { timeoutMs, pollMs: 50 },
+  );
 }
 
 function managedContainerIds(): string[] {
@@ -441,10 +453,10 @@ async function waitForNewContainer(
 ): Promise<string> {
   return waitForValue(
     managedContainerIds,
-    (ids) => ids.filter((id) => !before.has(id)).length === 1,
+    (ids: string[]) => ids.filter((id: string) => !before.has(id)).length === 1,
     marker,
     { timeoutMs },
-  ).then((ids) => ids.find((id) => !before.has(id))!);
+  ).then((ids: string[]) => ids.find((id: string) => !before.has(id))!);
 }
 
 async function waitForContainerFile(
@@ -478,6 +490,16 @@ async function enqueueAndAwait(request: any, seedWorkerId: string): Promise<void
 }
 
 async function main(): Promise<void> {
+  // Test design (remote Worker resource manifest). Causes: C1=the claimed Run
+  // carries frozen File/Skill/Memory inputs and exact Workspace; C2=attach/detach
+  // operations succeed or fail; C3=Workspace mismatches or Memory is archived;
+  // C4=Worker capability/placement satisfies the request. Effects: E1=valid
+  // inputs materialize exact bytes/tree/mount in one sandbox; E2=detach removes
+  // only that projection; E3=C3/C4-invalid remains retryable and creates no
+  // sandbox/model effect. Constraints/invariant: the dispatch activation plus
+  // frozen resource envelope is the sole Worker authority; control-plane lookup
+  // cannot widen it. Decision rules: M1=C1+C2+C4=>E1+E2;
+  // M2=C1+C3=>E3; M3=C1+!C4=>E3.
   const database = await postgres();
   const upstream = await startFakeAnthropic(SEED_KEY, { models: [SEED_MODEL] });
   const configStorage = mkdtempSync(path.join(tmpdir(), 'awaken-resource-config-'));
@@ -577,6 +599,33 @@ async function main(): Promise<void> {
       seedWorker.id,
     );
     assert.equal(ineligible.claimed, null, 'resource-ineligible worker cannot claim the manifest');
+
+    // Cause/effect decision rule for the seed handoff: C_seed the current
+    // owner/epoch commits this exact seed Run as Ended -> E_seed its durable
+    // receipt precedes terminal observation and Done removal. Constraint K:
+    // enqueueing the cloned resource Run is not committed truth for the seed;
+    // missing/mismatched/nonterminal evidence stays owned by the Rust
+    // settlement decision table.
+    const seedCommit = claimedCommitRequestFixture({
+      claimed: seedClaim,
+      commit: terminalThreadCommitFixture({
+        runId: seedClaim.lease.run_id,
+        threadId: seedClaim.request.activation.thread_id,
+        messageId: `seed-terminal-${seedClaim.lease.run_id}`,
+        text: 'seed ownership completed before resource worker handoff',
+      }),
+      ordinal: 0,
+      expectedThreadVersion: 0,
+    });
+    const seedCommitted = await post(
+      '/v1/worker/commit-claimed',
+      { ...seedCommit, identity: seedWorker.identity },
+      seedWorker.id,
+    );
+    assert.ok(
+      typeof seedCommitted.commit_sequence === 'number',
+      'E_seed durable seed receipt precedes Done settlement',
+    );
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
       {
@@ -692,9 +741,12 @@ async function main(): Promise<void> {
     const projectedMemory = '/mnt/memory/fact.md';
     await waitForContainerFile(memoryContainer, projectedMemory, MEMORY_BYTES);
 
-    // Workspace equality is checked before opening a sandbox. Give the bad run a
-    // fresh ordinary resource thread so absence of another container is externally
-    // observable without misclassifying it as Managed Session realization.
+    // Workspace mismatch decision rule: C1 exact Run is claimed with a manifest
+    // outside its execution scope -> E1 the Worker emits that exact rejection
+    // before sandbox creation. A transient Leased projection is not an oracle:
+    // the retryable dispatch may return to Pending between public reads.
+    // Constraints/invariant: activation Workspace fences every resource id and
+    // the rejected Run retains custody without acquiring a sandbox.
     const foreignThread = `${THREAD}-foreign`;
     const foreign = runRequest(
       seedClaim.request,
@@ -704,14 +756,23 @@ async function main(): Promise<void> {
     foreign.activation.thread_id = foreignThread;
     const containersBeforeForeign = managedContainerIds();
     await post('/v1/worker/dispatch/enqueue', { request: foreign }, seedWorker.id);
-    await waitForDispatchStatus(foreignThread, 'Leased');
+    await waitForValue(
+      () => workerOutput,
+      (output: string) => output.includes(foreign.activation.run_id)
+        && output.includes('resource manifest outside its execution scope'),
+      `Worker to reject exact cross-Workspace Run ${foreign.activation.run_id}`,
+      { timeoutMs: 30_000, pollMs: 50 },
+    );
     assert.deepEqual(
       managedContainerIds(),
       containersBeforeForeign,
       'scope-mismatched resource dispatch failed before sandbox creation',
     );
-    // The immutable config pin cannot revive a resource after a live lifecycle
-    // transition. The retry is genuinely claimed, then denied before model use.
+    // Live-state decision rule: C1 immutable Memory config remains pinned + C2
+    // live store is Archived => E1 its retained exact Run is attempted and the
+    // pinned store is rejected as inactive, E2 no new sandbox/model effect.
+    // Pending after the rejection retains retryable custody; a fleeting Leased
+    // projection is deliberately ineligible.
     await resourceRequest('POST', `memory_stores/${memory.memory_store_id}/archive`);
     const deniedMemory = runRequest(
       seedClaim.request,
@@ -719,19 +780,28 @@ async function main(): Promise<void> {
       resourceEnvelope(undefined, WORKSPACE, undefined, memory),
       MEMORY_THREAD,
     );
+    const containersBeforeDeniedMemory = managedContainerIds();
+    const requestsBeforeDeniedMemory = upstream.requests.length;
+    const outputFence = workerOutput.length;
     await post('/v1/worker/dispatch/enqueue', { request: deniedMemory }, seedWorker.id);
-    await waitForDispatchStatus(MEMORY_THREAD, 'Leased');
-    const denialDeadline = Date.now() + 10_000;
-    while (
-      Date.now() <= denialDeadline &&
-      !(workerOutput.includes(memory.memory_store_id) && workerOutput.includes('not active'))
-    ) {
-      await sleep(50);
-    }
-    assert.ok(
-      workerOutput.includes(memory.memory_store_id) && workerOutput.includes('not active'),
-      `archived Memory pin was not denied by live state:\n${workerOutput}`,
+    await waitForValue(
+      () => workerOutput.slice(outputFence),
+      (output: string) => output.includes(memory.memory_store_id)
+        && output.includes('not active (Archived)'),
+      `Worker to reject archived Memory after Run ${deniedMemory.activation.run_id} admission`,
+      { timeoutMs: 30_000, pollMs: 50 },
     );
+    await waitForValue(
+      () => listDispatches(MEMORY_THREAD),
+      (dispatches: any[]) => dispatches.some(
+        (dispatch) => dispatch.run_id === deniedMemory.activation.run_id
+          && dispatch.status === 'Pending',
+      ),
+      `archived-Memory Run ${deniedMemory.activation.run_id} to retain retryable custody`,
+      { timeoutMs: 30_000, pollMs: 50 },
+    );
+    assert.deepEqual(managedContainerIds(), containersBeforeDeniedMemory, 'E2: no sandbox effect');
+    assert.equal(upstream.requests.length, requestsBeforeDeniedMemory, 'E2: no model effect');
 
     assert.ok(!workerOutput.includes(FILE_BYTES.toString()), 'worker logs do not expose File bytes');
     console.log(

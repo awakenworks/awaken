@@ -4,11 +4,11 @@
 //! owns one sandboxed runtime + commit coordinator per **thread id**, and exposes
 //! neutral operations — `run`, `resume`, `committed_messages` — over that
 //! shared state. Because both adapters key by the same thread id and mutate the
-//! same coordinator and awaiting-run position, a turn started through one protocol
+//! same coordinator and awaiting-Run position, a Run started through one protocol
 //! can be observed or resumed through the other on the *same thread*.
 //!
 //! It names no protocol vocabulary: outcomes are the neutral [`RunState`] plus an
-//! optional [`PendingTool`]; each adapter maps those onto its own wire shape.
+//! optional [`Pending`]; each adapter maps those onto its own wire shape.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::awaiting::{
-    AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket, ToolAwaitReason,
+    AwaitReason, AwaitTarget, PermissionDecision, ResumeTicket,
 };
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -47,7 +47,7 @@ use awaken_runtime_contract::tool::ToolOutput;
 // `LocalProvider::create_sandbox` yields a `LocalSandbox` whose host-tier helpers
 // (rooted tools, repos, artifacts) the host configures into each session's runtime.
 use awaken_sandbox_local::LocalProvider;
-use awaken_session_contract::DelegatedRun;
+use awaken_session_contract::{DelegatedRun, Pending};
 
 use awaken_ext_compact::{CompactConfig, CompactPlugin};
 
@@ -97,21 +97,14 @@ fn sub_base(kind: &str) -> PathBuf {
     std::env::temp_dir().join("awaken-coordinator").join(name)
 }
 
-/// Wall-clock milliseconds since the Unix epoch — the dispatch queue's lease and
-/// recovery clock (slice D). Falls back to `0` if the clock is before the epoch.
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
 mod build;
 mod completion;
+mod coordination;
 mod durable_control;
 pub use completion::remote_worker_placement;
 pub use completion::self_hosted_inference_holder;
 mod credential_capabilities;
+pub(crate) use credential_capabilities::acp_mcp_client_injection_capabilities;
 mod run;
 mod session;
 mod session_ctx;
@@ -119,15 +112,20 @@ mod terminal_reconciliation;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-pub(crate) use tests::{MemoryHostModel, bind_test_memory};
+pub(crate) use tests::install_test_memory_mounter;
+#[cfg(test)]
+pub(crate) use tests::{MemoryHostModel, test_resource_validator};
 mod types;
 mod worker_resolver;
 
 pub(crate) use completion::CompletionRegistry;
-pub(crate) use session_ctx::{SessionCtx, SessionState};
+pub(crate) use session_ctx::{
+    ChildExecutionSubstrate, ClaimedRuntimeInput, RuntimePublicationIdentity, SessionCtx,
+    SessionState,
+};
 pub use types::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeIteration,
-    HostOutcomeReport, HostResume, PendingTool,
+    HostOutcomeReport, HostResume,
 };
 pub(crate) use worker_resolver::HostWorkerResolver;
 
@@ -213,7 +211,8 @@ pub struct SharedHost {
     /// The cell server this host is a database-less **worker** of, if any. When set,
     /// every thread's read boundary is a non-authoritative recovery projection;
     /// writes use the attempt's claim-fenced operation coordinator. Set via
-    /// [`with_upstream`](Self::with_upstream); `None` is a store-owning server/host.
+    /// [`with_worker_upstream`](Self::with_worker_upstream); `None` is a
+    /// store-owning server/host.
     pub(crate) upstream: Option<awaken_worker_transport_security::WorkerUpstream>,
     /// Optional Resource-transport encoder installed by a remote Worker. The
     /// runtime knows only the neutral Resources contract, never an HTTP wire type.
@@ -255,7 +254,7 @@ pub struct SharedHost {
     /// plus the `compactor` sub-agent runner, sealed as one [`crate::compact::Compaction`]
     /// so the pair is present-or-absent atomically. The config drives the `compact`
     /// plugin (a `BeforeInference` hook) and a matching `KeepLast` window so summarized
-    /// older turns leave the model view.
+    /// older Steps leave the model view.
     compaction: Option<crate::compact::Compaction>,
     /// Runtime-only view of immutable Agent publications.
     pub(crate) agent_publications:
@@ -269,6 +268,12 @@ pub struct SharedHost {
     /// host wiring plus Resource/credential SPIs, so installing it cannot create
     /// an `Arc<SharedHost>` cycle or a second Vault/materialization path.
     pub(crate) dispatch_session_runtime: std::sync::RwLock<Option<crate::DispatchSessionRuntime>>,
+    /// Weak composition edge to the Session application's sole coordination
+    /// admission owner. This is executable wiring only; it contains no roster,
+    /// Thread relationship, operation receipt, or lifecycle state.
+    pub(crate) agent_coordination: std::sync::RwLock<
+        Option<std::sync::Weak<dyn awaken_session_contract::SessionAgentCoordination>>,
+    >,
     /// Content-addressed blob store backing the Files API, file-resource mounts, and
     /// collected artifacts. A database-less Worker carries a fail-closed adapter;
     /// immutable claim-scoped reads use `file_content_source` instead.
@@ -320,9 +325,10 @@ pub struct SharedHost {
     /// The run-ingress-owned maintenance loop used by a coordinator-only Host.
     /// Local pools already own the same canonical maintenance mechanism.
     pub(crate) dispatch_maintenance: std::sync::OnceLock<awaken_run_ingress::DispatchMaintenance>,
-    /// Owns the temporary run-id registration for event-driven durable completion
-    /// and best-effort foreground stream relay. Injected into the pool as its
-    /// `CompletionSink` and into each local Session worker as its `StreamSink`.
+    /// Owns temporary run-id registrations for event-driven durable completion,
+    /// foreground stream relay, and publication into the existing Thread hub.
+    /// Injected into the pool as its `CompletionSink` and into each local Session
+    /// worker as its `StreamSink`.
     pub(crate) completion: Arc<CompletionRegistry>,
     /// Database-less Workers replace the process-local relay with the one
     /// authenticated, claim-fenced Coordinator publisher.

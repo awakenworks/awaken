@@ -29,6 +29,9 @@ pub awaken_resource_contract::InputResourceId::MemoryStore(awaken_resource_contr
 pub awaken_resource_contract::InputResourceId::Repository(awaken_resource_contract::RepositoryId)
 impl awaken_resource_contract::InputResourceId
 pub fn awaken_resource_contract::InputResourceId::id(&self) -> &str
+pub enum awaken_resource_contract::InsertOutcome
+pub awaken_resource_contract::InsertOutcome::AlreadyRegistered
+pub awaken_resource_contract::InsertOutcome::Inserted
 pub enum awaken_resource_contract::MemErr
 pub awaken_resource_contract::MemErr::AtCapacity
 pub awaken_resource_contract::MemErr::Conflict
@@ -39,8 +42,8 @@ pub awaken_resource_contract::MemErr::PathConflict(alloc::string::String)
 pub awaken_resource_contract::MemErr::Storage(alloc::string::String)
 pub awaken_resource_contract::MemErr::TooLarge
 pub enum awaken_resource_contract::MemoryStoreApplicationError
-pub awaken_resource_contract::MemoryStoreApplicationError::Catalog(awaken_resource_contract::ResourceCatalogError)
 pub awaken_resource_contract::MemoryStoreApplicationError::Purge(awaken_resource_contract::ResourcePurgeError)
+pub awaken_resource_contract::MemoryStoreApplicationError::Registry(awaken_resource_contract::ResourceRegistryError)
 pub enum awaken_resource_contract::MemoryVersionOperation
 pub awaken_resource_contract::MemoryVersionOperation::Created
 pub awaken_resource_contract::MemoryVersionOperation::Deleted
@@ -48,6 +51,16 @@ pub awaken_resource_contract::MemoryVersionOperation::Modified
 pub enum awaken_resource_contract::PutResourcePurgeOutcome
 pub awaken_resource_contract::PutResourcePurgeOutcome::Existing
 pub awaken_resource_contract::PutResourcePurgeOutcome::Inserted
+pub enum awaken_resource_contract::RegistryRepositoryError
+pub awaken_resource_contract::RegistryRepositoryError::AlreadyExists(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::ConcurrentModification(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::CorruptData(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::NotFound(alloc::string::String)
+pub awaken_resource_contract::RegistryRepositoryError::Unavailable(alloc::string::String)
+pub enum awaken_resource_contract::ReplaceOutcome
+pub awaken_resource_contract::ReplaceOutcome::ConcurrentModification
+pub awaken_resource_contract::ReplaceOutcome::Replaced
+pub awaken_resource_contract::ReplaceOutcome::Replaced::revision: awaken_resource_contract::AggregateRevision
 pub enum awaken_resource_contract::RepositoryTransport
 pub awaken_resource_contract::RepositoryTransport::Direct
 pub awaken_resource_contract::RepositoryTransport::GatewayMediated
@@ -58,21 +71,6 @@ pub fn awaken_resource_contract::RepositoryTransport::fmt(&self, &mut core::fmt:
 pub enum awaken_resource_contract::ResourceAccess
 pub awaken_resource_contract::ResourceAccess::ReadOnly
 pub awaken_resource_contract::ResourceAccess::ReadWrite
-pub enum awaken_resource_contract::ResourceCatalogError
-pub awaken_resource_contract::ResourceCatalogError::AlreadyExists(alloc::string::String)
-pub awaken_resource_contract::ResourceCatalogError::ConfigConflict
-pub awaken_resource_contract::ResourceCatalogError::ConfigConflict::current: awaken_resource_contract::ConfigVersion
-pub awaken_resource_contract::ResourceCatalogError::ConfigConflict::expected: awaken_resource_contract::ConfigVersion
-pub awaken_resource_contract::ResourceCatalogError::ConfigConflict::id: alloc::string::String
-pub awaken_resource_contract::ResourceCatalogError::ConfigNotFound
-pub awaken_resource_contract::ResourceCatalogError::ConfigNotFound::id: alloc::string::String
-pub awaken_resource_contract::ResourceCatalogError::ConfigNotFound::version: awaken_resource_contract::ConfigVersion
-pub awaken_resource_contract::ResourceCatalogError::Invalid(alloc::string::String)
-pub awaken_resource_contract::ResourceCatalogError::NotActive
-pub awaken_resource_contract::ResourceCatalogError::NotActive::id: alloc::string::String
-pub awaken_resource_contract::ResourceCatalogError::NotActive::state: awaken_resource_contract::ResourceState
-pub awaken_resource_contract::ResourceCatalogError::NotFound(alloc::string::String)
-pub awaken_resource_contract::ResourceCatalogError::Storage(alloc::string::String)
 pub enum awaken_resource_contract::ResourceKind
 pub awaken_resource_contract::ResourceKind::File
 pub awaken_resource_contract::ResourceKind::MemoryStore
@@ -123,6 +121,23 @@ pub awaken_resource_contract::ResourceReferenceKind::RetentionHold
 pub awaken_resource_contract::ResourceReferenceKind::RuntimeHandle
 pub awaken_resource_contract::ResourceReferenceKind::SessionBinding
 pub awaken_resource_contract::ResourceReferenceKind::WorkspaceOwnership
+pub enum awaken_resource_contract::ResourceRegistryError
+pub awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::ConcurrentModification(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::ConfigConflict
+pub awaken_resource_contract::ResourceRegistryError::ConfigConflict::current: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::ResourceRegistryError::ConfigConflict::expected: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::ResourceRegistryError::ConfigConflict::id: alloc::string::String
+pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound
+pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::id: alloc::string::String
+pub awaken_resource_contract::ResourceRegistryError::ConfigNotFound::version: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::ResourceRegistryError::CorruptData(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::Invalid(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::NotActive
+pub awaken_resource_contract::ResourceRegistryError::NotActive::id: alloc::string::String
+pub awaken_resource_contract::ResourceRegistryError::NotActive::state: awaken_resource_contract::ResourceState
+pub awaken_resource_contract::ResourceRegistryError::NotFound(alloc::string::String)
+pub awaken_resource_contract::ResourceRegistryError::Unavailable(alloc::string::String)
 pub enum awaken_resource_contract::ResourceState
 pub awaken_resource_contract::ResourceState::Active
 pub awaken_resource_contract::ResourceState::Archived
@@ -135,6 +150,13 @@ pub awaken_resource_contract::SkillStoreError::Io(alloc::string::String)
 pub awaken_resource_contract::SkillStoreError::NotFound(alloc::string::String)
 pub awaken_resource_contract::SkillStoreError::Storage(alloc::string::String)
 pub awaken_resource_contract::SkillStoreError::VersionConflict(alloc::string::String)
+pub struct awaken_resource_contract::AggregateRevision(_)
+impl awaken_resource_contract::AggregateRevision
+pub const awaken_resource_contract::AggregateRevision::INITIAL: Self
+pub const awaken_resource_contract::AggregateRevision::MAX: u64
+pub fn awaken_resource_contract::AggregateRevision::checked_next(self) -> core::option::Option<Self>
+pub const fn awaken_resource_contract::AggregateRevision::get(self) -> u64
+pub fn awaken_resource_contract::AggregateRevision::new(u64) -> core::result::Result<Self, awaken_resource_contract::RegistryRepositoryError>
 pub struct awaken_resource_contract::ArtifactPublication<C>
 pub awaken_resource_contract::ArtifactPublication::bytes: alloc::vec::Vec<u8>
 pub awaken_resource_contract::ArtifactPublication::content_id: alloc::string::String
@@ -168,6 +190,14 @@ impl core::convert::From<alloc::string::String> for awaken_resource_contract::Bi
 pub fn awaken_resource_contract::BindingId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_resource_contract::BindingId
 pub fn awaken_resource_contract::BindingId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_resource_contract::ChangeMemoryStoreState
+pub awaken_resource_contract::ChangeMemoryStoreState::id: awaken_resource_contract::MemoryStoreId
+pub awaken_resource_contract::ChangeMemoryStoreState::state: awaken_resource_contract::ResourceState
+pub awaken_resource_contract::ChangeMemoryStoreState::workspace_id: alloc::string::String
+pub struct awaken_resource_contract::ChangeRepositoryState
+pub awaken_resource_contract::ChangeRepositoryState::id: awaken_resource_contract::RepositoryId
+pub awaken_resource_contract::ChangeRepositoryState::state: awaken_resource_contract::ResourceState
+pub awaken_resource_contract::ChangeRepositoryState::workspace_id: alloc::string::String
 pub struct awaken_resource_contract::ClonePolicy
 pub awaken_resource_contract::ClonePolicy::depth: core::option::Option<u32>
 pub struct awaken_resource_contract::ConfigVersion(pub u64)
@@ -240,6 +270,20 @@ pub fn awaken_resource_contract::MemoryMaterializationReferenceError::new(impl c
 pub struct awaken_resource_contract::MemoryPurgeSummary
 pub awaken_resource_contract::MemoryPurgeSummary::heads_deleted: u64
 pub awaken_resource_contract::MemoryPurgeSummary::versions_deleted: u64
+pub struct awaken_resource_contract::MemoryStoreAggregate
+impl awaken_resource_contract::MemoryStoreAggregate
+pub fn awaken_resource_contract::MemoryStoreAggregate::change_state(&mut self, &str, awaken_resource_contract::ResourceState, u64) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::config(&self, awaken_resource_contract::ConfigVersion) -> core::option::Option<&awaken_resource_contract::MemoryStoreConfigVersion>
+pub fn awaken_resource_contract::MemoryStoreAggregate::definition(&self) -> &awaken_resource_contract::MemoryStoreDefinition
+pub fn awaken_resource_contract::MemoryStoreAggregate::into_config(self, awaken_resource_contract::ConfigVersion) -> core::option::Option<awaken_resource_contract::MemoryStoreConfigVersion>
+pub fn awaken_resource_contract::MemoryStoreAggregate::into_definition(self) -> awaken_resource_contract::MemoryStoreDefinition
+pub fn awaken_resource_contract::MemoryStoreAggregate::publish_config(&mut self, &str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::MemoryStoreConfigVersion, u64) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::register(awaken_resource_contract::MemoryStoreDefinition, awaken_resource_contract::MemoryStoreConfigVersion) -> core::result::Result<Self, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::rehydrate(awaken_resource_contract::MemoryStoreDefinition, alloc::collections::btree::map::BTreeMap<awaken_resource_contract::ConfigVersion, awaken_resource_contract::MemoryStoreConfigVersion>) -> core::result::Result<Self, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::resolve_for_execution(&self, &str) -> core::result::Result<awaken_resource_contract::MemoryStoreConfigVersion, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::update_profile(&mut self, alloc::string::String, alloc::string::String, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>, u64)
+pub fn awaken_resource_contract::MemoryStoreAggregate::validate_integrity(&self) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::MemoryStoreAggregate::verify_live_binding(&self, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
 pub struct awaken_resource_contract::MemoryStoreConfigVersion
 pub awaken_resource_contract::MemoryStoreConfigVersion::memory_store_id: awaken_resource_contract::MemoryStoreId
 pub awaken_resource_contract::MemoryStoreConfigVersion::retention_policy: awaken_resource_contract::RetentionPolicy
@@ -274,6 +318,33 @@ pub awaken_resource_contract::MemoryVersion::memory_id: alloc::string::String
 pub awaken_resource_contract::MemoryVersion::operation: awaken_resource_contract::MemoryVersionOperation
 pub awaken_resource_contract::MemoryVersion::path: alloc::string::String
 pub awaken_resource_contract::MemoryVersion::redacted_unix_nanos: core::option::Option<u128>
+pub struct awaken_resource_contract::PublishMemoryStoreConfig
+pub awaken_resource_contract::PublishMemoryStoreConfig::config: awaken_resource_contract::MemoryStoreConfigVersion
+pub awaken_resource_contract::PublishMemoryStoreConfig::expected_current: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::PublishMemoryStoreConfig::workspace_id: alloc::string::String
+pub struct awaken_resource_contract::PublishRepositoryConfig
+pub awaken_resource_contract::PublishRepositoryConfig::config: awaken_resource_contract::RepositoryConfigVersion
+pub awaken_resource_contract::PublishRepositoryConfig::expected_current: awaken_resource_contract::ConfigVersion
+pub awaken_resource_contract::PublishRepositoryConfig::workspace_id: alloc::string::String
+pub struct awaken_resource_contract::RegisterMemoryStore
+pub awaken_resource_contract::RegisterMemoryStore::definition: awaken_resource_contract::MemoryStoreDefinition
+pub awaken_resource_contract::RegisterMemoryStore::initial_config: awaken_resource_contract::MemoryStoreConfigVersion
+pub struct awaken_resource_contract::RegisterRepository
+pub awaken_resource_contract::RegisterRepository::definition: awaken_resource_contract::RepositoryDefinition
+pub awaken_resource_contract::RegisterRepository::initial_config: awaken_resource_contract::RepositoryConfigVersion
+pub struct awaken_resource_contract::RepositoryAggregate
+impl awaken_resource_contract::RepositoryAggregate
+pub fn awaken_resource_contract::RepositoryAggregate::change_state(&mut self, &str, awaken_resource_contract::ResourceState, u64) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::config(&self, awaken_resource_contract::ConfigVersion) -> core::option::Option<&awaken_resource_contract::RepositoryConfigVersion>
+pub fn awaken_resource_contract::RepositoryAggregate::definition(&self) -> &awaken_resource_contract::RepositoryDefinition
+pub fn awaken_resource_contract::RepositoryAggregate::into_config(self, awaken_resource_contract::ConfigVersion) -> core::option::Option<awaken_resource_contract::RepositoryConfigVersion>
+pub fn awaken_resource_contract::RepositoryAggregate::into_definition(self) -> awaken_resource_contract::RepositoryDefinition
+pub fn awaken_resource_contract::RepositoryAggregate::publish_config(&mut self, &str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::RepositoryConfigVersion, u64) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::register(awaken_resource_contract::RepositoryDefinition, awaken_resource_contract::RepositoryConfigVersion) -> core::result::Result<Self, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::rehydrate(awaken_resource_contract::RepositoryDefinition, alloc::collections::btree::map::BTreeMap<awaken_resource_contract::ConfigVersion, awaken_resource_contract::RepositoryConfigVersion>) -> core::result::Result<Self, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::resolve_for_execution(&self, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::validate_integrity(&self) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::RepositoryAggregate::verify_live_binding(&self, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
 pub struct awaken_resource_contract::RepositoryBindingVerifierError(_)
 impl awaken_resource_contract::RepositoryBindingVerifierError
 pub fn awaken_resource_contract::RepositoryBindingVerifierError::new(impl core::convert::Into<alloc::string::String>) -> Self
@@ -321,15 +392,6 @@ pub awaken_resource_contract::ResolvedFileContent::content_id: alloc::string::St
 pub awaken_resource_contract::ResolvedFileContent::file_id: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::filename: alloc::string::String
 pub awaken_resource_contract::ResolvedFileContent::media_type: alloc::string::String
-pub struct awaken_resource_contract::ResourceCatalogRules
-impl awaken_resource_contract::ResourceCatalogRules
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_initial(&str, &str, awaken_resource_contract::ConfigVersion, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_live_definition(&str, awaken_resource_contract::ResourceState) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_memory_aggregate<'a>(&str, &awaken_resource_contract::MemoryStoreDefinition, impl core::iter::traits::collect::IntoIterator<Item = (&'a awaken_resource_contract::ConfigVersion, &'a awaken_resource_contract::MemoryStoreConfigVersion)>) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_memory_config(&str, awaken_resource_contract::ConfigVersion, &awaken_resource_contract::MemoryStoreConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_publish(&str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::ConfigVersion, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_repository_aggregate<'a>(&str, &awaken_resource_contract::RepositoryDefinition, impl core::iter::traits::collect::IntoIterator<Item = (&'a awaken_resource_contract::ConfigVersion, &'a awaken_resource_contract::RepositoryConfigVersion)>) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalogRules::validate_repository_config(&str, awaken_resource_contract::ConfigVersion, &awaken_resource_contract::RepositoryConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
 pub struct awaken_resource_contract::ResourcePurgeIntent
 pub awaken_resource_contract::ResourcePurgeIntent::attempts: u32
 pub awaken_resource_contract::ResourcePurgeIntent::blockers: alloc::vec::Vec<awaken_resource_contract::ResourceReference>
@@ -428,6 +490,9 @@ impl core::convert::From<alloc::string::String> for awaken_resource_contract::Sk
 pub fn awaken_resource_contract::SkillVersionId::from(alloc::string::String) -> Self
 impl core::fmt::Display for awaken_resource_contract::SkillVersionId
 pub fn awaken_resource_contract::SkillVersionId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct awaken_resource_contract::Stored<T>
+pub awaken_resource_contract::Stored::aggregate: T
+pub awaken_resource_contract::Stored::revision: awaken_resource_contract::AggregateRevision
 pub struct awaken_resource_contract::UnavailableArtifactPublisher
 impl<C: core::marker::Send + core::marker::Sync + 'static> awaken_resource_contract::ArtifactPublisher<C> for awaken_resource_contract::UnavailableArtifactPublisher
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ArtifactPublicationReceipt, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -440,6 +505,12 @@ pub awaken_resource_contract::UpdateMemoryStoreCommand::id: awaken_resource_cont
 pub awaken_resource_contract::UpdateMemoryStoreCommand::metadata_patch: alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>
 pub awaken_resource_contract::UpdateMemoryStoreCommand::name: core::option::Option<alloc::string::String>
 pub awaken_resource_contract::UpdateMemoryStoreCommand::workspace_id: alloc::string::String
+pub struct awaken_resource_contract::UpdateMemoryStoreProfile
+pub awaken_resource_contract::UpdateMemoryStoreProfile::description: alloc::string::String
+pub awaken_resource_contract::UpdateMemoryStoreProfile::id: awaken_resource_contract::MemoryStoreId
+pub awaken_resource_contract::UpdateMemoryStoreProfile::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_resource_contract::UpdateMemoryStoreProfile::name: alloc::string::String
+pub awaken_resource_contract::UpdateMemoryStoreProfile::workspace_id: alloc::string::String
 pub const awaken_resource_contract::MAX_MANAGED_FILE_SIZE_BYTES: u64
 pub const awaken_resource_contract::MAX_MEMORIES_PER_STORE: usize
 pub const awaken_resource_contract::MAX_MEMORY_BYTES: usize
@@ -449,6 +520,9 @@ pub trait awaken_resource_contract::ArtifactPublisher<C: core::marker::Send + co
 pub fn awaken_resource_contract::ArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ArtifactPublicationReceipt, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 impl<C: core::marker::Send + core::marker::Sync + 'static> awaken_resource_contract::ArtifactPublisher<C> for awaken_resource_contract::UnavailableArtifactPublisher
 pub fn awaken_resource_contract::UnavailableArtifactPublisher::publish<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::ArtifactPublication<C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ArtifactPublicationReceipt, awaken_resource_contract::ArtifactPublicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub trait awaken_resource_contract::ExecutionResourceResolver: core::marker::Send + core::marker::Sync
+pub fn awaken_resource_contract::ExecutionResourceResolver::resolve_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::MemoryStoreConfigVersion, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ExecutionResourceResolver::resolve_repository(&self, &str, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceRegistryError>
 pub trait awaken_resource_contract::FileApplicationService: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::FileApplicationService::bytes<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<(awaken_resource_contract::FileRecord, alloc::vec::Vec<u8>)>, awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::FileApplicationService::create_artifact<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::string::String, alloc::string::String, &'life3 [u8], alloc::string::String) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::FileRecord, awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
@@ -472,6 +546,9 @@ pub fn awaken_resource_contract::FileStore::delete<'life0, 'life1, 'async_trait>
 pub fn awaken_resource_contract::FileStore::get<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<u8>>, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_resource_contract::FileStore::list<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<alloc::string::String>, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_resource_contract::FileStore::put<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 [u8]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_resource_contract::FileStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_resource_contract::LiveResourceBindingVerifier: core::marker::Send + core::marker::Sync
+pub fn awaken_resource_contract::LiveResourceBindingVerifier::verify_memory_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::LiveResourceBindingVerifier::verify_repository_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
 pub trait awaken_resource_contract::MemoryMaterializationReferenceEncoder<C>: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::MemoryMaterializationReferenceEncoder::encode(&self, &str, &str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::ResourceAccess, &C) -> core::result::Result<alloc::string::String, awaken_resource_contract::MemoryMaterializationReferenceError>
 pub trait awaken_resource_contract::MemoryRepository: core::marker::Send + core::marker::Sync
@@ -496,25 +573,20 @@ pub fn awaken_resource_contract::MemoryStoreApplicationService::set_state<'life0
 pub fn awaken_resource_contract::MemoryStoreApplicationService::update<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::UpdateMemoryStoreCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::MemoryStoreDefinition, awaken_resource_contract::MemoryStoreApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_resource_contract::RepositoryBindingVerifier<C: core::marker::Sync>: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::RepositoryBindingVerifier::verify<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::ConfigVersion, core::option::Option<&'life3 C>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::RepositoryTransport, awaken_resource_contract::RepositoryBindingVerifierError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
-pub trait awaken_resource_contract::ResourceBindingValidator: core::marker::Send + core::marker::Sync
-pub fn awaken_resource_contract::ResourceBindingValidator::validate_memory_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceBindingValidator::validate_repository_binding(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub trait awaken_resource_contract::ResourceCatalog: awaken_resource_contract::ResourceConfigSource + awaken_resource_contract::ResourceBindingValidator
-pub fn awaken_resource_contract::ResourceCatalog::create_memory_store(&self, awaken_resource_contract::MemoryStoreDefinition, awaken_resource_contract::MemoryStoreConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::create_repository(&self, awaken_resource_contract::RepositoryDefinition, awaken_resource_contract::RepositoryConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::list_memory_stores(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryStoreDefinition>, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::memory_config(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<core::option::Option<awaken_resource_contract::MemoryStoreConfigVersion>, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::memory_store(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::MemoryStoreDefinition>, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::publish_memory_config(&self, &str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::MemoryStoreConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::publish_repository_config(&self, &str, awaken_resource_contract::ConfigVersion, awaken_resource_contract::RepositoryConfigVersion) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::repository(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::RepositoryDefinition>, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::repository_config(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<core::option::Option<awaken_resource_contract::RepositoryConfigVersion>, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::set_memory_state(&self, &str, &str, awaken_resource_contract::ResourceState) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::set_repository_state(&self, &str, &str, awaken_resource_contract::ResourceState) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceCatalog::update_memory_store(&self, awaken_resource_contract::MemoryStoreDefinition) -> core::result::Result<(), awaken_resource_contract::ResourceCatalogError>
-pub trait awaken_resource_contract::ResourceConfigSource: core::marker::Send + core::marker::Sync
-pub fn awaken_resource_contract::ResourceConfigSource::resolve_memory_store(&self, &str, &str) -> core::result::Result<awaken_resource_contract::MemoryStoreConfigVersion, awaken_resource_contract::ResourceCatalogError>
-pub fn awaken_resource_contract::ResourceConfigSource::resolve_repository(&self, &str, &str) -> core::result::Result<awaken_resource_contract::RepositoryConfigVersion, awaken_resource_contract::ResourceCatalogError>
+pub trait awaken_resource_contract::ResourceAdministration: core::marker::Send + core::marker::Sync
+pub fn awaken_resource_contract::ResourceAdministration::change_memory_store_state(&self, awaken_resource_contract::ChangeMemoryStoreState) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::change_repository_state(&self, awaken_resource_contract::ChangeRepositoryState) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::publish_memory_store_config(&self, awaken_resource_contract::PublishMemoryStoreConfig) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::publish_repository_config(&self, awaken_resource_contract::PublishRepositoryConfig) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::register_memory_store(&self, awaken_resource_contract::RegisterMemoryStore) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::register_repository(&self, awaken_resource_contract::RegisterRepository) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceAdministration::update_memory_store_profile(&self, awaken_resource_contract::UpdateMemoryStoreProfile) -> core::result::Result<(), awaken_resource_contract::ResourceRegistryError>
+pub trait awaken_resource_contract::ResourceInventory: core::marker::Send + core::marker::Sync
+pub fn awaken_resource_contract::ResourceInventory::find_memory_store(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::MemoryStoreDefinition>, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceInventory::find_memory_store_config(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<core::option::Option<awaken_resource_contract::MemoryStoreConfigVersion>, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceInventory::find_repository(&self, &str, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::RepositoryDefinition>, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceInventory::find_repository_config(&self, &str, &str, awaken_resource_contract::ConfigVersion) -> core::result::Result<core::option::Option<awaken_resource_contract::RepositoryConfigVersion>, awaken_resource_contract::ResourceRegistryError>
+pub fn awaken_resource_contract::ResourceInventory::list_memory_stores(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::MemoryStoreDefinition>, awaken_resource_contract::ResourceRegistryError>
 pub trait awaken_resource_contract::ResourcePhysicalReclaimer: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::ResourcePhysicalReclaimer::purge<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_resource_contract::ResourceTarget, core::option::Option<u64>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_resource_contract::ResourcePurgeEvidence, awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_resource_contract::ResourcePurgeGuard: core::marker::Send + core::marker::Sync
@@ -537,6 +609,16 @@ pub fn awaken_resource_contract::ResourceReferenceIndex::references<'life0, 'lif
 pub fn awaken_resource_contract::ResourceReferenceIndex::references_for_resource<'life0, 'life1, 'async_trait>(&'life0 self, awaken_resource_contract::ResourceKind, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_resource_contract::ResourceReferenceRecord>, awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_resource_contract::ResourceReferenceIndex::remove_reference<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_resource_contract::ResourceReferenceRecord) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_resource_contract::ResourceReferenceIndex::replace_references<'life0, 'life1, 'async_trait>(&'life0 self, awaken_resource_contract::ResourceReferenceKind, &'life1 str, alloc::vec::Vec<awaken_resource_contract::ResourceReferenceRecord>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::ResourcePurgeError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub trait awaken_resource_contract::ResourceRegistry: awaken_resource_contract::ResourceInventory + awaken_resource_contract::ResourceAdministration + awaken_resource_contract::ExecutionResourceResolver + awaken_resource_contract::LiveResourceBindingVerifier
+impl<T> awaken_resource_contract::ResourceRegistry for T where T: awaken_resource_contract::ResourceInventory + awaken_resource_contract::ResourceAdministration + awaken_resource_contract::ExecutionResourceResolver + awaken_resource_contract::LiveResourceBindingVerifier
+pub trait awaken_resource_contract::ResourceRegistryRepository: core::marker::Send + core::marker::Sync
+pub fn awaken_resource_contract::ResourceRegistryRepository::insert_memory_store(&self, &awaken_resource_contract::MemoryStoreAggregate) -> core::result::Result<awaken_resource_contract::InsertOutcome, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::insert_repository(&self, &awaken_resource_contract::RepositoryAggregate) -> core::result::Result<awaken_resource_contract::InsertOutcome, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::list_memory_stores(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_resource_contract::Stored<awaken_resource_contract::MemoryStoreAggregate>>, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::load_memory_store(&self, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::Stored<awaken_resource_contract::MemoryStoreAggregate>>, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::load_repository(&self, &str) -> core::result::Result<core::option::Option<awaken_resource_contract::Stored<awaken_resource_contract::RepositoryAggregate>>, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::replace_memory_store(&self, awaken_resource_contract::AggregateRevision, &awaken_resource_contract::MemoryStoreAggregate) -> core::result::Result<awaken_resource_contract::ReplaceOutcome, awaken_resource_contract::RegistryRepositoryError>
+pub fn awaken_resource_contract::ResourceRegistryRepository::replace_repository(&self, awaken_resource_contract::AggregateRevision, &awaken_resource_contract::RepositoryAggregate) -> core::result::Result<awaken_resource_contract::ReplaceOutcome, awaken_resource_contract::RegistryRepositoryError>
 pub trait awaken_resource_contract::SkillStore: core::marker::Send + core::marker::Sync
 pub fn awaken_resource_contract::SkillStore::append_version<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_resource_contract::SkillVersion) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_resource_contract::SkillStore::create<'life0, 'async_trait>(&'life0 self, awaken_resource_contract::SkillDefinition, awaken_resource_contract::SkillVersion) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_resource_contract::SkillStoreError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

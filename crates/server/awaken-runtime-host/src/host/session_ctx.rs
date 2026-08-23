@@ -4,17 +4,65 @@
 
 use super::*;
 
-/// A thread's mutable position: the run awaiting a decision (if any) and the
-/// system messages buffered for the next turn.
+/// A Thread's mutable process-local execution position. Durable dynamic system
+/// context belongs to the Session root and never enters this state.
 #[derive(Default)]
 pub(crate) struct SessionState {
     pub(crate) awaiting_run: Option<RunId>,
-    pub(crate) pending_system: Vec<String>,
-    /// The distinct compaction-fold count at the current turn's start. A fold
-    /// during the turn grows it; the terminal step compares against this baseline
-    /// to surface the `agent.thread_context_compacted` marker once (spanning a
-    /// awaiting→resumed turn, which shares this baseline).
-    pub(crate) compactions_before: usize,
+}
+
+/// Derived validity key for a process-local Runtime cache. It includes exactly
+/// the frozen publication inputs captured by Runtime plugins; claim/run identity
+/// remains attempt context and must not replace the live foreground Worker Arc.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RuntimePublicationIdentity {
+    pub(crate) publication_fingerprint: String,
+}
+
+impl RuntimePublicationIdentity {
+    pub(crate) fn from_publications(
+        root: &ExecutableAgentSnapshot,
+        non_root: &[ExecutableAgentSnapshot],
+        effective_model_ref: &str,
+    ) -> Self {
+        let mut targets = non_root
+            .iter()
+            .map(|snapshot| {
+                (
+                    snapshot.root_agent_id.0.clone(),
+                    snapshot.fingerprint.0.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        targets.sort_unstable();
+        let publication_fingerprint = awaken_runtime_contract::content_fingerprint(&(
+            root.fingerprint.0.as_str(),
+            effective_model_ref,
+            targets,
+        ))
+        .expect("Runtime publication cache inputs are serializable");
+        Self {
+            publication_fingerprint,
+        }
+    }
+}
+
+/// Ephemeral input reconstructed from one guarded `RunDispatch`. Publication
+/// snapshots are deliberately passed down the call stack rather than cached in
+/// `SessionRuntimeSlot`.
+#[derive(Clone)]
+pub(crate) struct ClaimedRuntimeInput {
+    pub(crate) identity: RuntimePublicationIdentity,
+    pub(crate) publications: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
+    pub(crate) effective_model_ref: String,
+}
+
+/// Session-scoped physical capabilities borrowed by a separately dispatched
+/// child. It intentionally contains no parent Runtime or Agent plugins.
+pub(crate) struct ChildExecutionSubstrate {
+    pub(crate) environment: Arc<crate::session_environment::SessionEnvironment>,
+    pub(crate) commit: Arc<HostCommit>,
+    pub(crate) attempt_context: awaken_runtime_contract::RuntimeRunContext,
 }
 
 /// One thread's live state: an isolated runtime, its config, its commit
@@ -22,11 +70,11 @@ pub(crate) struct SessionState {
 /// position.
 pub(crate) struct SessionCtx {
     pub(crate) runtime: Arc<Runtime>,
-    /// The delivery seam a turn's execution goes through (slice C): `DirectRunIngress`
+    /// The delivery seam a Run's execution goes through (slice C): `DirectRunIngress`
     /// by default; a `DurableRunIngress` when durable dispatch is enabled (slice D).
     /// Both drive the same `runtime`/`commit`; only the delivery guarantees differ.
     pub(crate) ingress: Arc<dyn RunIngress>,
-    /// True when `ingress` is durable: a turn is submitted through the dispatch
+    /// True when `ingress` is durable: a Run is submitted through the dispatch
     /// queue (`submit_background`) rather than executed inline (slice D).
     pub(crate) durable: bool,
     /// The concrete durable ingress, present iff `durable`. Kept alongside the
@@ -34,6 +82,13 @@ pub(crate) struct SessionCtx {
     /// quarantine + GC / superseding submit — slice E) stay reachable; the boxed
     /// trait object erases them.
     pub(crate) durable_ingress: Option<Arc<DurableRunIngress<AnyDispatchStore>>>,
+    /// The one fully configured Worker that executes a claim already accepted by
+    /// this process's dispatch authority. Foreground delivery durability is an
+    /// independent choice: durable contexts share this exact `Arc` with their
+    /// `DurableRunIngress`, while direct contexts retain it only for pool-routed
+    /// work such as asynchronous Session continuations.
+    pub(crate) claimed_worker: Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>,
+    pub(crate) runtime_publication_identity: Option<RuntimePublicationIdentity>,
     pub(crate) config: ExecutableAgentSnapshot,
     pub(crate) commit: Arc<HostCommit>,
     /// Canonical topology-independent attempt capabilities. Direct execution
@@ -65,17 +120,6 @@ pub(crate) struct SessionCtx {
     /// execution uses `cancel`; durable execution uses this id to persist a
     /// cancellation intent for whichever pool worker owns the claim.
     pub(crate) active_run: std::sync::Mutex<Option<RunId>>,
-    /// The in-flight run's transient-retry counter (incremented by the inference
-    /// seam on each transparent retry), so `finish_step` can report whether the
-    /// turn was auto-recovered (`session.status_rescheduled`). Same brief-lock
-    /// discipline as `cancel`; a fresh counter is installed per run in `context`.
-    pub(crate) reschedule: std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicU32>>>,
-    /// The in-flight run's completed logical model-request observations.
-    pub(crate) model_requests: std::sync::Mutex<
-        Option<Arc<std::sync::Mutex<Vec<awaken_runtime_contract::llm::ModelRequestObservation>>>>,
-    >,
-    pub(crate) rescheduled_runs:
-        std::sync::Mutex<Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>>,
     /// The in-flight run's live inbox plus the previous attempt's unconsumed
     /// leftovers. Same locking discipline as `cancel`; lifecycle and lookup
     /// live in [`crate::live_inbox`].
@@ -115,29 +159,12 @@ impl SessionCtx {
     pub(crate) fn context(&self) -> RuntimeRunContext {
         let token = CancellationToken::new();
         *self.cancel.lock().expect("cancel mutex poisoned") = Some(token.clone());
-        // A fresh transient-retry counter for this run; the inference seam bumps it
-        // and `finish_step` reads it to report `session.status_rescheduled`.
-        let reschedule = Arc::new(std::sync::atomic::AtomicU32::new(0));
-        *self.reschedule.lock().expect("reschedule mutex poisoned") = Some(reschedule.clone());
-        let model_requests = Arc::new(std::sync::Mutex::new(Vec::new()));
-        *self
-            .model_requests
-            .lock()
-            .expect("model requests mutex poisoned") = Some(model_requests.clone());
-        let rescheduled_runs = Arc::new(std::sync::Mutex::new(Default::default()));
-        *self
-            .rescheduled_runs
-            .lock()
-            .expect("rescheduled runs mutex poisoned") = Some(rescheduled_runs.clone());
         let context = self
             .attempt_context
             .clone()
             .with_commit(self.commit.clone())
             .with_reader(self.commit.clone())
-            .with_cancellation(token)
-            .with_reschedules(reschedule)
-            .with_model_requests(model_requests)
-            .with_rescheduled_runs(rescheduled_runs);
+            .with_cancellation(token);
         match &self.stream_checkpoint {
             Some(checkpoint) => context.with_stream_checkpoint(checkpoint.clone()),
             None => context,

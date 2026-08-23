@@ -9,7 +9,7 @@ use crate::types::ModelInferenceGeo;
 pub enum InferenceGeoCheckpoint {
     AgentSave,
     SessionCreate,
-    Turn,
+    Run,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

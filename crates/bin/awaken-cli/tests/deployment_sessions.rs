@@ -38,8 +38,13 @@ async fn deployment_run_creates_session_and_executes_initial_events() {
     // C1 published Agent + valid Deployment -> Agent latest version is frozen;
     // C2 manual run -> ordinary Session with Deployment id;
     // C3 initial user Event -> ordinary Event executor commits the model response.
-    // The deterministic router owns an explicit local sandbox so this behavior
-    // is independent of optional host namespace capabilities such as bwrap.
+    // C4 lifecycle admission reconciles Resources on the default Tokio worker
+    // stack. Effects: E1-E3 are the respective durable results above; E4 the
+    // complete production recovery/admission chain returns without aborting its
+    // worker for stack exhaustion. K1 the sole lifecycle recovery cycle enters
+    // through a production task boundary, never a test-only stack override.
+    // D1: C1+C2+C3+C4 -> E1+E2+E3+E4. The deterministic router owns an explicit
+    // local sandbox, independent of optional host capabilities such as bwrap.
     let app = build_all_in_one_router_with_model(Arc::new(EchoModel), "echo").await;
     let (status, agent) = call(
         &app,

@@ -4,6 +4,8 @@ import {
   loadProviderCases,
   providerDialects,
   publicProviderCase,
+  requiredProviderCaseIds,
+  selectProviderCases,
 } from './provider_compat_cases.mjs';
 
 const authored = (cases, secrets = {}) => ({
@@ -52,6 +54,15 @@ test('all built-in wire dialects remain admitted', () => {
 });
 
 test('automatic cases cover every installed provider descriptor plus a custom gateway', () => {
+  // Cause/effect graph: C1 every built-in API-key provider has its credential
+  // and required endpoint; C2 Vertex has its project prerequisite; C3 the
+  // custom AnyRouter gateway has both credential and explicit endpoint. E1 the
+  // automatic catalog emits every canonical identity exactly once, in order.
+  // Constraint K1: with no authored JSON, `autoCases` is the sole catalog owner;
+  // prerequisite filtering may omit a row but cannot synthesize another path.
+  // Decision rule A1=C1+C2+C3=>E1. Coverage rationale: the all-enabled,
+  // dependency-expanded vector detects a missing, duplicate, reordered, or
+  // renamed row; adjacent normalization/rejection tests own field-level faults.
   const cases = loadProviderCases({
     ANTHROPIC_API_KEY: 'a',
     OPENAI_API_KEY: 'o',
@@ -65,6 +76,44 @@ test('automatic cases cover every installed provider descriptor plus a custom ga
   assert.deepEqual(
     cases.map(({ id }) => id),
     ['anthropic', 'openai', 'deepseek', 'kimi-anthropic', 'anyrouter', 'gemini', 'vertex'],
+  );
+});
+
+test('required provider certification selects exact case identities', () => {
+  // Cause/effect graph: C1 the strict lane names no/exact/duplicate/invalid
+  // case ids; C2 unrelated provider credentials may also be present. E1 no
+  // requirement remains opt-in; E2 exact ids are preserved in authored order;
+  // E3 duplicate or unsafe ids fail before any provider I/O. Decision rules:
+  // R1=!C1=>E1, R2=valid C1+any C2=>E2, R3=duplicate|invalid C1=>E3.
+  // Constraints/invariant: the requested ordered identities select only the
+  // already-built canonical case catalog; selection never creates another case.
+  assert.deepEqual(requiredProviderCaseIds({}), [], 'R1');
+  assert.deepEqual(
+    requiredProviderCaseIds({ AWAKEN_PROVIDER_MATRIX_REQUIRED_CASE_IDS: 'deepseek,anthropic' }),
+    ['deepseek', 'anthropic'],
+    'R2',
+  );
+  const configured = [{ id: 'anthropic' }, { id: 'deepseek' }, { id: 'openai' }];
+  assert.equal(selectProviderCases(configured, []), configured, 'R1 all configured');
+  assert.deepEqual(
+    selectProviderCases(configured, ['deepseek', 'anthropic']).map(({ id }) => id),
+    ['deepseek', 'anthropic'],
+    'R2 strict ordered subset',
+  );
+  assert.throws(
+    () => requiredProviderCaseIds({ AWAKEN_PROVIDER_MATRIX_REQUIRED_CASE_IDS: 'deepseek,deepseek' }),
+    /must be unique/u,
+    'R3 duplicate',
+  );
+  assert.throws(
+    () => requiredProviderCaseIds({ AWAKEN_PROVIDER_MATRIX_REQUIRED_CASE_IDS: '../deepseek' }),
+    /invalid/u,
+    'R3 unsafe',
+  );
+  assert.throws(
+    () => selectProviderCases(configured, ['missing']),
+    /not configured/u,
+    'R3 missing configured case',
   );
 });
 

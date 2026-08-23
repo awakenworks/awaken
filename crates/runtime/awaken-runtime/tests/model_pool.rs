@@ -10,6 +10,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::model_request::ModelRequestObservation;
 use awaken_runtime::{LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -24,6 +25,16 @@ use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
 use awaken_store_inmem::MemoryCommitCoordinator;
+
+fn committed_model_requests(store: &MemoryCommitCoordinator) -> Vec<ModelRequestObservation> {
+    store
+        .committed()
+        .events
+        .iter()
+        .filter_map(|record| ModelRequestObservation::from_record(record).transpose())
+        .collect::<Result<Vec<_>, _>>()
+        .expect("canonical model-request audit payload")
+}
 
 /// Routes by `model_ref`: any model whose id is in `failing` returns a retryable
 /// error; every other model returns a fixed success text. Records the ordered
@@ -61,7 +72,7 @@ impl LlmExecutor for RouteByProviderLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {provider}")),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -84,7 +95,7 @@ impl LlmExecutor for RouteLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {model}")),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -125,7 +136,7 @@ impl LlmExecutor for TruncateThenFailPrimary {
             other => Ok(ChatResponse {
                 output: AssistantOutput::text(format!("answered by {other}")),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             }),
         }
     }
@@ -188,6 +199,12 @@ fn no_retries() -> LlmRetryPolicy {
 
 #[tokio::test]
 async fn primary_failure_fails_over_to_the_next_candidate() {
+    // Causes: C1 the primary logical request fails; C2 the ordered fallback
+    // succeeds; C3 provider retries are disabled. Effects: E1 two durable
+    // observations preserve request order; E2 only the first is an error; E3
+    // neither manufactures a retry. Rule R1=C1+C2+C3=>E1+E2+E3.
+    // Constraints/invariants: candidates are tried in publication order and
+    // each failover is a new logical request with its own observation.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::new()
         .with_llm(Arc::new(RouteLlm {
@@ -210,7 +227,14 @@ async fn primary_failure_fails_over_to_the_next_candidate() {
     );
     // Both models were tried, primary first then fallback — in candidate order.
     assert_eq!(&*seen.lock().unwrap(), &["primary", "fallback"]);
-    let _ = &commit;
+    let observations = committed_model_requests(&commit);
+    assert_eq!(observations.len(), 2, "R1/E1");
+    assert!(observations[0].is_error, "R1/E2");
+    assert!(!observations[1].is_error, "R1/E2");
+    assert!(
+        observations.iter().all(|item| item.retry_count == 0),
+        "R1/E3"
+    );
 }
 
 #[tokio::test]
@@ -303,10 +327,11 @@ async fn an_override_outside_the_published_pool_is_rejected_before_inference() {
 
 #[tokio::test]
 async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
-    // I6: once a step commits a truncation partial (truncation_retries > 0), a later
-    // inference failure is terminal in place — switching to another pool model would
-    // double-generate the response. Failover (I5) fires only on a CLEAN pre-commit
-    // failure. So the fallback candidate is never tried after a partial is committed.
+    // Test design — Causes: primary commits a MaxTokens partial, then its
+    // continuation fails while a fallback exists. Effects: the Run fails in
+    // place and only primary is observed twice. Constraints/invariants: failover
+    // is allowed only before committed response content; switching afterward
+    // would double-generate. Decision rule I6: committed partial+failure=>no fallback.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let runtime = Runtime::new()
         .with_llm(Arc::new(TruncateThenFailPrimary { seen: seen.clone() }))
@@ -326,6 +351,14 @@ async fn a_committed_truncation_partial_does_not_fail_over_to_a_pool_model() {
     // Primary was asked twice (truncation, then the failing continuation); the
     // fallback was never asked — no failover after a committed partial.
     assert_eq!(&*seen.lock().unwrap(), &["primary", "primary"]);
+    let observations = committed_model_requests(&commit);
+    assert_eq!(
+        observations.len(),
+        2,
+        "one observation per continuation request"
+    );
+    assert!(!observations[0].is_error, "the MaxTokens request completed");
+    assert!(observations[1].is_error, "the continuation request failed");
 }
 
 #[tokio::test]

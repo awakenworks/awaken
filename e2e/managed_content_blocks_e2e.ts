@@ -18,7 +18,7 @@
 // FMECA:
 // - logical file_id leaks to a provider (critical): attempt-bound materializer and
 //   the sanitized upstream structural capture make R1/R2 fail;
-// - MIME/digest mismatch (critical): Files metadata verification fails the turn;
+// - MIME/digest mismatch (critical): Files metadata verification fails the Run;
 // - rich ToolResult flattened to text (high): R2 asserts the provider's closed
 //   image/document/search_result union and citations;
 // - redacted payload fabricated or exposed (critical): payloadless domain variant
@@ -29,11 +29,12 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import type {
+  BetaManagedAgentsSessionEvent,
   BetaManagedAgentsUserMessageEventParams,
-  BetaManagedAgentsUserToolResultEventParams,
+  BetaManagedAgentsUserCustomToolResultEventParams,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { RED_PNG_B64, withScenarioServer } from './harness.mjs';
+import { RED_PNG_B64, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38248);
@@ -53,13 +54,7 @@ type ProviderRequest = {
   contentShape: Array<{ role: string; content: Shape[] }>;
 };
 
-async function events(client: Anthropic, sessionId: string) {
-  const values = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    values.push(event);
-  }
-  return values;
-}
+type ListedEvents = BetaManagedAgentsSessionEvent[];
 
 function latestToolResultShape(request: ProviderRequest): Shape | undefined {
   return request.contentShape
@@ -102,9 +97,24 @@ async function main() {
         { type: 'text', text: 'Use the configured client tool.' },
       ],
     };
-    await client.beta.sessions.events.send(session.id, { events: [message], betas: BETAS });
+    const messageReceipt = await client.beta.sessions.events.send(
+      session.id,
+      { events: [message], betas: BETAS },
+    );
+    const messageReceiptId = messageReceipt.data?.[0]?.id;
+    assert.equal(typeof messageReceiptId, 'string', 'R1 returns an exact receipt id');
 
-    let history = await events(client, session.id);
+    let observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      messageReceiptId,
+      BETAS,
+      ({ delta }: { delta: ListedEvents }) => delta.some(
+        (event) => event.type === 'agent.custom_tool_use',
+      ),
+      'R1 waits for the durable custom-tool boundary',
+    );
+    let history: ListedEvents = observation.events;
     const toolUse = history.find((event) => event.type === 'agent.custom_tool_use');
     assert.ok(toolUse, `R1 expected custom tool use: ${history.map((event) => event.type)}`);
 
@@ -125,9 +135,9 @@ async function main() {
     ), 'R1/E1 Managed history retains official File source');
     assert.ok(firstUser?.content.some((block) => block.type === 'redacted'), 'R1/E3 Managed history retains redaction');
 
-    const result: BetaManagedAgentsUserToolResultEventParams = {
-      type: 'user.tool_result',
-      tool_use_id: toolUse.id,
+    const result: BetaManagedAgentsUserCustomToolResultEventParams = {
+      type: 'user.custom_tool_result',
+      custom_tool_use_id: toolUse.id,
       content: [
         { type: 'text', text: 'RICH_TOOL_RESULT' },
         { type: 'image', source: { type: 'file', file_id: image.id } },
@@ -141,10 +151,40 @@ async function main() {
         },
       ],
     };
-    await client.beta.sessions.events.send(session.id, { events: [result], betas: BETAS });
+    const resultReceipt = await client.beta.sessions.events.send(
+      session.id,
+      { events: [result], betas: BETAS },
+    );
+    const resultReceiptId = resultReceipt.data?.[0]?.id;
+    assert.equal(typeof resultReceiptId, 'string', 'R2 returns an exact receipt id');
 
-    history = await events(client, session.id);
-    const retainedResult = history.find((event) => event.type === 'user.tool_result');
+    // R2 receipt/effect decision table: C1=the exact custom-result receipt is
+    // processed and still names the awaited tool use; C2=its later delta carries
+    // the correlated typed ToolResult and Agent reply; C3=that same resumed Run
+    // reaches final end_turn idle. E1=C1+C2+C3 authorizes the rich history and
+    // provider-shape assertions below. Constraint K: the canonical observer
+    // excludes the receipt itself from delta, so C1 must use receiptEvent and
+    // only later committed effects may satisfy C2/C3.
+    observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      resultReceiptId,
+      BETAS,
+      ({ receiptEvent, delta }: {
+        receiptEvent?: BetaManagedAgentsSessionEvent;
+        delta: ListedEvents;
+      }) => receiptEvent?.type === 'user.custom_tool_result'
+        && receiptEvent.custom_tool_use_id === toolUse.id
+        && delta.some((event) =>
+          event.type === 'agent.tool_result' && event.tool_use_id === toolUse.id)
+        && delta.some((event) => event.type === 'agent.message' && event.content.some((block) =>
+          block.type === 'text' && block.text.includes('RICH_TOOL_RESULT')))
+        && delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'end_turn'),
+      'R2 waits for the exact custom result and terminal Agent Message',
+    );
+    history = observation.events;
+    const retainedResult = history.find((event) => event.type === 'user.custom_tool_result');
     assert.deepEqual(
       retainedResult?.content?.map((block) => block.type),
       ['text', 'image', 'document', 'search_result'],
@@ -176,7 +216,7 @@ async function main() {
       .filter((block) => block.type === 'text')
       .map((block) => block.text)
       .join('\n');
-    assert.match(finalText, /RICH_TOOL_RESULT/u, 'R2/E4 correlated turn reaches terminal answer');
+    assert.match(finalText, /RICH_TOOL_RESULT/u, 'R2/E4 correlated Run reaches terminal answer');
     console.log('E2E PASS: official Anthropic SDK typed content blocks and Files materialization.');
     },
   );

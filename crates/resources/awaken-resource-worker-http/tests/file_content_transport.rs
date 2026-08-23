@@ -2,8 +2,15 @@
 
 use awaken_run_ingress_testkit::worker_http as support;
 
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::read::recovery::{
+    RecoveryError, RunRecoverySnapshot, RunRecoverySource,
+};
 use awaken_file_store::FileStore as _;
 use awaken_resource_application::ApplicationFileContentSource;
 use awaken_resource_contract::FileCatalog as _;
@@ -102,6 +109,83 @@ async fn claimed_model_dispatch(
     RunClaim::from(&claimed.lease)
 }
 
+struct RecordingParentRecovery {
+    expected_session_thread_id: ThreadId,
+    expected_thread_id: ThreadId,
+    expected_run_id: RunId,
+    snapshot: RunRecoverySnapshot,
+    legacy_calls: AtomicUsize,
+    in_session_calls: Mutex<Vec<(ThreadId, ThreadId, RunId)>>,
+}
+
+#[async_trait::async_trait]
+impl RunRecoverySource for RecordingParentRecovery {
+    async fn recovery_snapshot(
+        &self,
+        _thread_id: &ThreadId,
+        _claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.legacy_calls.fetch_add(1, Ordering::SeqCst);
+        Err(RecoveryError::Rejected(
+            "legacy logical-only recovery must not authorize a child File read".into(),
+        ))
+    }
+
+    async fn recovery_snapshot_in_session(
+        &self,
+        session_thread_id: &ThreadId,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.in_session_calls.lock().unwrap().push((
+            session_thread_id.clone(),
+            thread_id.clone(),
+            claimed_run_id.clone(),
+        ));
+        if session_thread_id != &self.expected_session_thread_id
+            || thread_id != &self.expected_thread_id
+            || claimed_run_id != &self.expected_run_id
+        {
+            return Err(RecoveryError::Rejected(
+                "File recovery coordinates do not match the guarded child dispatch".into(),
+            ));
+        }
+        Ok(self.snapshot.clone())
+    }
+}
+
+async fn claimed_recovery_model_dispatch(
+    dispatch: &Arc<MemoryDispatchStore>,
+    owner: &str,
+) -> (RunClaim, ThreadId, ThreadId, RunId) {
+    let mut activation = support::activation("model-content-recovery-child");
+    activation.input.clear();
+    let thread_id = activation.thread_id.clone();
+    let run_id = activation.run_id.clone();
+    let session_thread_id = ThreadId("session-model-content-recovery-parent".into());
+    dispatch
+        .enqueue(
+            RunDispatch::new(activation)
+                .with_execution_scope(awaken_tenancy::ExecutionScopeRef(
+                    awaken_tenancy::ScopeId::from("workspace-file"),
+                ))
+                .for_session(session_thread_id.clone()),
+        )
+        .await
+        .unwrap();
+    let claimed = dispatch
+        .claim(owner, 60_000, support::unix_now_ms(), &Default::default())
+        .await
+        .unwrap()
+        .expect("recovery-only child dispatch claim");
+    (
+        RunClaim::from(&claimed.lease),
+        session_thread_id,
+        thread_id,
+        run_id,
+    )
+}
+
 fn frozen_application_session(
     session_id: &str,
     file_id: &str,
@@ -152,7 +236,9 @@ fn frozen_application_session(
         metadata: Default::default(),
         tools: Default::default(),
         budget: Default::default(),
+        event_batches: Vec::new(),
         activity_epoch: 0,
+        active_activity_epochs: Default::default(),
         running_interval: None,
         runtime_active_millis: 0,
         environment: Default::default(),
@@ -622,6 +708,119 @@ async fn model_content_file_requires_its_claimed_thread_and_strong_input_referen
         .await
         .expect_err("M3 unreferenced File");
     assert!(unreferenced.to_string().contains("403"), "M3");
+}
+
+#[tokio::test]
+async fn model_content_recovery_uses_parent_partition_for_a_child_thread() {
+    // Test design.
+    // C: C1 a live claimed child has a parent physical Session distinct from its
+    // logical Thread; C2 activation input has no File reference; C3 the exact
+    // committed child transcript references the File; C4 the legacy logical-only
+    // recovery method is an injected failure; C5 the physical-aware method
+    // receives the guarded parent/logical/Run tuple.
+    // E: E1 C1-C3+C5 authorizes and returns the immutable File bytes; E2 the
+    // legacy method is never called; E3 exactly one physical-aware read records
+    // the parent Session, child Thread, and claimed Run without inferring a child
+    // physical partition.
+    // K: the live dispatch guard, not the caller's ModelContent payload, owns all
+    // recovery coordinates; the recovered transcript remains the only authority
+    // for a File absent from activation input.
+    // D: R1=(C1,C2,C3,C5 with C4 not invoked)=>E1-E3. C4 is the negative
+    // oracle: selecting that compatibility path fails closed before File return.
+    let store = Arc::new(awaken_file_store::InMemoryFileStore::new());
+    let digest = store.put(b"recovered-model-file").await.unwrap();
+    store
+        .create_file(awaken_resource_contract::FileRecord {
+            id: "file-recovered-model".into(),
+            workspace_id: "workspace-file".into(),
+            blob_id: digest,
+            filename: "recovered-model.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 20,
+            created_at: "2026-08-23T00:00:00Z".into(),
+            downloadable: false,
+            scope_id: None,
+            logical_path: None,
+            harvest_key: None,
+            deleted: false,
+        })
+        .await
+        .unwrap();
+    let (directory, identity) = support::ready_worker("worker-model-recovery").await;
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let (claim, session_thread_id, thread_id, run_id) =
+        claimed_recovery_model_dispatch(&dispatch, &identity.lease_owner()).await;
+    let recovery = Arc::new(RecordingParentRecovery {
+        expected_session_thread_id: session_thread_id.clone(),
+        expected_thread_id: thread_id.clone(),
+        expected_run_id: run_id.clone(),
+        snapshot: RunRecoverySnapshot {
+            thread_id: thread_id.clone(),
+            claimed_run_id: run_id.clone(),
+            runs: vec![RunRecord {
+                id: run_id.clone(),
+                thread_id: thread_id.clone(),
+                state: RunState::Running,
+            }],
+            latest_run_id: Some(run_id.clone()),
+            messages: vec![Message::new(
+                MessageId("message-recovered-model".into()),
+                Role::User,
+                vec![
+                    awaken_agent_contract::agent::content::ContentBlock::document_file(
+                        "file-recovered-model",
+                    ),
+                ],
+            )],
+            state: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 1,
+            store_cursor: 1,
+            next_commit_ordinal: 0,
+        },
+        legacy_calls: AtomicUsize::new(0),
+        in_session_calls: Mutex::new(Vec::new()),
+    });
+    let lifecycle = Arc::new(awaken_resource_store::SqliteResourceStore::in_memory().unwrap());
+    let application = Arc::new(awaken_resource_application::FileApplication::new(
+        store.clone(),
+        store,
+        lifecycle,
+    ));
+    let service = Arc::new(
+        WorkerFileContentService::new(
+            Arc::new(ApplicationFileContentSource::new(application)),
+            dispatch,
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory)
+        .with_recovery(recovery.clone()),
+    );
+    let address = support::serve(worker_file_content_router(service)).await;
+    let source = HttpFileContentSource::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+
+    let exact = source
+        .read(
+            "workspace-file",
+            "file-recovered-model",
+            &FileReadPurpose::ModelContent {
+                thread_id: thread_id.0.clone(),
+            },
+            Some(&claim),
+        )
+        .await
+        .expect("R1/E1 recovered child File read")
+        .expect("R1/E1 existing recovered File");
+    assert_eq!(exact.bytes, b"recovered-model-file", "R1/E1");
+    assert_eq!(recovery.legacy_calls.load(Ordering::SeqCst), 0, "R1/E2");
+    assert_eq!(
+        recovery.in_session_calls.lock().unwrap().as_slice(),
+        [(session_thread_id, thread_id, run_id)],
+        "R1/E3"
+    );
 }
 
 /// Cause/effect rationale: a remote source without the exact claim has no

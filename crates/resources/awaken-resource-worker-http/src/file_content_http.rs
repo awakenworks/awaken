@@ -318,7 +318,11 @@ async fn model_content_file_is_authorized(
         return false;
     };
     recovery
-        .recovery_snapshot(&dispatch.activation.thread_id, &dispatch.activation.run_id)
+        .recovery_snapshot_in_session(
+            dispatch.session_thread_id(),
+            dispatch.thread_id(),
+            dispatch.run_id(),
+        )
         .await
         .is_ok_and(|snapshot| messages_reference_file(&snapshot.messages, file_id))
 }

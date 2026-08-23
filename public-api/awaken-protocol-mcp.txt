@@ -1,13 +1,25 @@
 pub mod awaken_protocol_mcp
 pub mod awaken_protocol_mcp::export
+pub enum awaken_protocol_mcp::export::McpExportError
+pub awaken_protocol_mcp::export::McpExportError::CardinalityMismatch
+pub awaken_protocol_mcp::export::McpExportError::CardinalityMismatch::descriptors: usize
+pub awaken_protocol_mcp::export::McpExportError::CardinalityMismatch::executables: usize
+pub awaken_protocol_mcp::export::McpExportError::IdentityMismatch
+pub awaken_protocol_mcp::export::McpExportError::IdentityMismatch::descriptor: alloc::string::String
+pub awaken_protocol_mcp::export::McpExportError::IdentityMismatch::executable: alloc::string::String
+impl core::error::Error for awaken_protocol_mcp::export::McpExportError
+impl core::fmt::Display for awaken_protocol_mcp::export::McpExportError
+pub fn awaken_protocol_mcp::export::McpExportError::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum awaken_protocol_mcp::export::ToolExec
 pub awaken_protocol_mcp::export::ToolExec::Plain(alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>)
 pub awaken_protocol_mcp::export::ToolExec::WithProgress(alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>)
 pub struct awaken_protocol_mcp::export::McpExportedTool
-pub awaken_protocol_mcp::export::McpExportedTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
-pub awaken_protocol_mcp::export::McpExportedTool::exec: awaken_protocol_mcp::export::ToolExec
 impl awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::descriptor(&self) -> &awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::result::Result<Self, awaken_protocol_mcp::export::McpExportError>
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_plain_set(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::result::Result<alloc::vec::Vec<Self>, awaken_protocol_mcp::export::McpExportError>
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> core::result::Result<Self, awaken_protocol_mcp::export::McpExportError>
 pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
 impl core::convert::From<awaken_runtime_contract::plugin::contributions::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
 pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::contributions::DynamicTool) -> Self
@@ -72,10 +84,12 @@ pub awaken_protocol_mcp::ToolExec::WithProgress(alloc::sync::Arc<dyn awaken_prot
 pub struct awaken_protocol_mcp::AwakenMcpContext
 pub awaken_protocol_mcp::AwakenMcpContext::store: awaken_agent_contract::agent::state::Store
 pub struct awaken_protocol_mcp::McpExportedTool
-pub awaken_protocol_mcp::McpExportedTool::descriptor: awaken_runtime_contract::resolved::ToolDescriptor
-pub awaken_protocol_mcp::McpExportedTool::exec: awaken_protocol_mcp::export::ToolExec
 impl awaken_protocol_mcp::export::McpExportedTool
+pub fn awaken_protocol_mcp::export::McpExportedTool::descriptor(&self) -> &awaken_runtime_contract::resolved::ToolDescriptor
 pub fn awaken_protocol_mcp::export::McpExportedTool::plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> Self
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_plain(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>) -> core::result::Result<Self, awaken_protocol_mcp::export::McpExportError>
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_plain_set(alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>, alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>) -> core::result::Result<alloc::vec::Vec<Self>, awaken_protocol_mcp::export::McpExportError>
+pub fn awaken_protocol_mcp::export::McpExportedTool::try_with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> core::result::Result<Self, awaken_protocol_mcp::export::McpExportError>
 pub fn awaken_protocol_mcp::export::McpExportedTool::with_progress(awaken_runtime_contract::resolved::ToolDescriptor, alloc::sync::Arc<dyn awaken_protocol_mcp::export::ProgressRawTool>) -> Self
 impl core::convert::From<awaken_runtime_contract::plugin::contributions::DynamicTool> for awaken_protocol_mcp::export::McpExportedTool
 pub fn awaken_protocol_mcp::export::McpExportedTool::from(awaken_runtime_contract::plugin::contributions::DynamicTool) -> Self

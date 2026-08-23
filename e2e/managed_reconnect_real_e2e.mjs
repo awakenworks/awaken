@@ -17,7 +17,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38141);
@@ -47,12 +47,12 @@ async function main() {
       // Open the stream, kick off a real turn, then DROP the stream after the very
       // first event — the model is still working, so later events are missed here.
       const dropped = await client.beta.sessions.events.stream(session.id, { betas: BETAS });
-      await client.beta.sessions.events.send(session.id, {
+      const receipt = (await client.beta.sessions.events.send(session.id, {
         events: [
           { type: 'user.message', content: [{ type: 'text', text: 'In one short sentence, say hello.' }] },
         ],
         betas: BETAS,
-      });
+      })).data[0];
       const seenBeforeDrop = new Set();
       for await (const ev of dropped) {
         if (ev.id) seenBeforeDrop.add(ev.id);
@@ -81,6 +81,21 @@ async function main() {
       assert.ok(
         events.some((e) => e.type === 'session.status_idle'),
         'the recovered turn reached a terminal idle',
+      );
+      // Reconnect decision R1: C1 exact command receipt and C2 dropped/reopened
+      // stream; E1 merged transport views recover reply+idle and E2 the exact
+      // receipt is processed. K1 the custom merge remains the reconnection
+      // subject; canonical history is only the receipt-scoped terminal oracle.
+      // D1=C1+C2=>E1+E2.
+      await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'reconnected turn receipt, reply, and idle',
+        { timeoutMs: 180_000 },
       );
       pass(`recovered the dropped turn via list+stream consolidation: ${JSON.stringify(text.slice(0, 80))}`);
     });

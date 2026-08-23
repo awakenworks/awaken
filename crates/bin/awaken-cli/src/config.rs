@@ -433,7 +433,6 @@ impl ResolvedDeployment {
             database_url: dispatch_url.clone(),
             postgres_max_connections,
             dispatch_owner,
-            upstream: worker_server.clone(),
             sandbox_tier: runtime_settings.sandbox_tier,
             sandbox_dir: file.sandbox_dir.clone(),
             sandbox: runtime_settings.sandbox,
@@ -831,17 +830,18 @@ mod tests {
     }
 
     #[test]
-    fn local_discovery_is_the_only_source_of_worker_routes_and_defaults() {
+    fn local_discovery_is_the_only_source_of_exact_worker_routes() {
         // Cause graph:
         // The ACP application service supplies the already filtered route ids;
-        // this startup method only projects them into AcpWorkerProfile. The
-        // profile constructor alone decides whether one row becomes the default.
+        // this startup method only projects them into AcpWorkerProfile. Agent
+        // publication selects an exact `acp:<cli>` separately; the Worker profile
+        // never owns a default CLI.
         //
         // Decision table:
         // A0 explicit empty                -> discovery/acquisition disabled
         // A1 unconfigured + none detected -> no ACP Worker
-        // A2 unconfigured + one detected  -> that CLI + automatic default
-        // A3 unconfigured + many detected -> all CLIs + no random default
+        // A2 unconfigured + one detected  -> that exact CLI route
+        // A3 unconfigured + many detected -> all exact CLI routes, no selection
         // A4 explicit subset              -> only detected configured CLIs
         // A5 available + capability failure -> diagnostic only, no route
         let missing = acp_observation("claude", awaken_acp_application::AcpDetectionState::Missing);

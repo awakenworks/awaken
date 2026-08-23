@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+import { spawnProduction, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38421);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -119,12 +119,25 @@ async function main() {
     // The split stores still resolve + run the configured model over the wire.
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
     const session = await client.beta.sessions.create({ agent: AGENT, environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact split-store User receipt; C2=resolved reply+terminal. E1=C2
+    // after C1 proves all database owners compose. K: each component DB remains
+    // authoritative for its aggregate. Decision P1 C1&&!C2=>retry; P2=>proof.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'resolve me' }] }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'P1 exact split-store User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'P1 split-store production Run to commit',
+      { timeoutMs: 30_000 },
+    );
     const msg = events.find((e) => e.type === 'agent.message');
     const text = (msg?.content ?? []).map((c) => c.text ?? '').join('');
     assert.ok(text.includes('FAKE:resolve me'), `ran the configured model across split DBs: ${JSON.stringify(text)}`);

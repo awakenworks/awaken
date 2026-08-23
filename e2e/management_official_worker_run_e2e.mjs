@@ -13,7 +13,13 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38293);
@@ -27,12 +33,6 @@ const submitAnswer = betaZodTool({
   inputSchema: z.object({ question: z.string() }),
   run: () => '42',
 });
-
-async function drain(pagePromise) {
-  const items = [];
-  for await (const item of pagePromise) items.push(item);
-  return items;
-}
 
 async function main() {
   const { server, baseUrl } = spawnServer('worker', PORT);
@@ -63,7 +63,11 @@ async function main() {
     await client.beta.environments.work.ack(sessionWork.id, { environment_id: env.id, betas: BETAS });
 
     // Drive the session turn the worker is responsible for.
-    await client.beta.sessions.events.send(session.id, {
+    // W1: C1=exact task receipt; C2=official runner drives its qualified tool;
+    // C3=end_turn commits. E1=one complete worker-owned Run. Constraint: the
+    // observer runs after, never instead of, SessionToolRunner. C1+C2&&!C3=>
+    // observe; C1+C2+C3=>E1.
+    const taskReceipt = await client.beta.sessions.events.send(session.id, {
       betas: BETAS,
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'answer it' }] }],
     });
@@ -87,8 +91,16 @@ async function main() {
     pass('the official SessionToolRunner ran the session’s tool call against awaken');
 
     // The session completed: the model replied with the tool result.
-    const events = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
-    const idle = events.reverse().find((e) => e.type === 'session.status_idle');
+    const { events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      taskReceipt.data[0]?.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'
+        && event.stop_reason?.type === 'end_turn'),
+      'W1 official tool runner reaches end_turn after the exact task receipt',
+    );
+    const idle = [...events].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(idle?.stop_reason?.type, 'end_turn', 'the session completed with end_turn after the tool ran');
     pass('the session reached end_turn — the official worker execution plane drove it to completion');
 

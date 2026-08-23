@@ -17,6 +17,7 @@ awaken-runtime-contract.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true }
+awaken-store-inmem.workspace = true
 
 [lints]
 workspace = true

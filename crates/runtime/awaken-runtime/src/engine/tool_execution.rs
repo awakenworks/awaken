@@ -2,118 +2,6 @@
 
 use super::*;
 
-struct AdvisorDeltaSink;
-
-#[async_trait]
-impl DeltaSink for AdvisorDeltaSink {
-    async fn on_text(&self, _chunk: &str) {}
-}
-
-/// Execute the publication-pinned advisor through the existing model
-/// port. The primary transcript receives only the final tool result; advisor
-/// streaming is intentionally suppressed so partial/private advice cannot leak
-/// onto the primary live stream.
-pub(super) async fn consult_advisor(
-    runtime: &Runtime,
-    resolved: &ResolvedRun,
-    transcript: &[Message],
-    call: &ToolCall,
-    context: &RuntimeRunContext,
-    run_id: &RunId,
-) -> (
-    ToolOutput,
-    Option<(String, awaken_runtime_contract::llm::TokenUsage)>,
-) {
-    let Some(advisor) = resolved.spec.plugin_config.agent.advisor.as_ref() else {
-        return (
-            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
-            None,
-        );
-    };
-    let mut messages = Vec::with_capacity(transcript.len() + 2);
-    let advisor_system = if resolved.spec.instructions.is_empty() {
-        "You are an advisor. Review the conversation and provide a concise, independent second opinion to the primary agent."
-            .to_string()
-    } else {
-        format!(
-            "You are an advisor. Review the conversation and provide a concise, independent second opinion to the primary agent. The primary agent's instructions are:\n{}",
-            resolved.spec.instructions
-        )
-    };
-    messages.push(ChatMessage {
-        role: Role::System,
-        content: vec![ContentBlock::text(advisor_system)],
-    });
-    // The last message is the primary assistant's request to invoke the
-    // advisor. Sending that unresolved function call to a second provider would
-    // violate provider transcript pairing, so the advisor sees the complete
-    // conversation immediately before the invocation plus an explicit request.
-    let history = if transcript
-        .last()
-        .is_some_and(|message| message.role == Role::Assistant)
-    {
-        &transcript[..transcript.len().saturating_sub(1)]
-    } else {
-        transcript
-    };
-    messages.extend(history.iter().map(to_chat_message));
-    messages.push(ChatMessage {
-        role: Role::User,
-        content: vec![ContentBlock::text(
-            "Provide your advice for the primary agent now.",
-        )],
-    });
-    let request = ChatRequest {
-        model_binding: advisor.candidate.binding().clone(),
-        inference: resolved.spec.plugin_config.inference.clone(),
-        messages,
-        tools: Vec::new(),
-    };
-    let Some(llm) = runtime.llm() else {
-        return (
-            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
-            None,
-        );
-    };
-    match infer_with_retry_observed(
-        llm,
-        request,
-        runtime.retry_policy(),
-        runtime.circuit_breaker(),
-        &AdvisorDeltaSink,
-        None,
-        None,
-        &context.capture.decision,
-        context.content_sink(),
-        runtime.metrics(),
-        None,
-        context.model_requests.as_ref(),
-        context.rescheduled_runs.as_ref().map(|runs| (runs, run_id)),
-    )
-    .await
-    {
-        Ok(response) if response.output.tool_calls().is_empty() => {
-            let text = response.output.text_content();
-            if text.trim().is_empty() {
-                return (
-                    ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
-                    None,
-                );
-            }
-            (
-                ToolOutput::ok(&call.call_id, text),
-                response
-                    .usage
-                    .map(|usage| (advisor.candidate.binding().model_ref.clone(), usage)),
-            )
-        }
-        Ok(_) | Err(_) => (
-            ToolOutput::error(&call.call_id, "Advisor consultation unavailable."),
-            None,
-        ),
-    }
-}
-
 /// Apply the Session's one model-visible tool-output policy before the result is
 /// persisted in a ToolBatch or appended to the transcript. Keeping this beside
 /// the loop lets fresh, recovered, and resumed paths share it without teaching
@@ -142,6 +30,7 @@ pub(super) async fn spill_tool_output(
     if let Some(spiller) = &context.tool_output_spiller
         && text_only
     {
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let text = output.text();
         output.content = vec![ContentBlock::text(
             spiller
@@ -248,6 +137,7 @@ pub(super) async fn resume_into_messages(
         })
     };
     match result {
+        ResumeResult::Continue => Ok((Vec::new(), Vec::new(), None)),
         ResumeResult::ToolResult(output) => {
             let call_id = ticket.call_id().ok_or_else(|| {
                 Error::Execution("tool result resumed a ticket without a tool call".to_string())
@@ -269,8 +159,16 @@ pub(super) async fn resume_into_messages(
                     arguments: pending.arguments.clone(),
                 };
                 let operation_id = format!("tool-resume:{}:{}", run_id.0, call.call_id);
-                let output =
-                    execute_tool(runtime, Some(env), &call, context, run_id, operation_id).await;
+                let output = execute_tool(
+                    runtime,
+                    Some(env),
+                    &call,
+                    context,
+                    run_id,
+                    &ticket.thread_id,
+                    operation_id,
+                )
+                .await?;
                 let output = spill_tool_output(context, run_id, output).await?;
                 let (messages, state) =
                     fold_resume_tool_output(env, run_id, call_id, Some(call), &output, store).await;
@@ -437,8 +335,9 @@ pub(super) async fn execute_tool(
     call: &ToolCall,
     context: &RuntimeRunContext,
     run_id: &RunId,
+    thread_id: &ThreadId,
     operation_id: String,
-) -> ToolOutput {
+) -> Result<ToolOutput> {
     let span = tracing::Span::current();
     // Resolve placement per tool. A placed Hand must never capture Brain tools
     // such as MCP or Skills, while a Sandbox tool must never silently execute in
@@ -451,6 +350,7 @@ pub(super) async fn execute_tool(
         }
         Some(ToolExecutionTarget::Brain) | None => &local,
     };
+    verify_attempt_ownership(context.ownership.as_deref()).await?;
     let started = std::time::Instant::now();
     // Fault isolation at the SPI boundary: a `RawTool` (MCP / plugin / skill — often
     // third-party) that PANICS must not take down the run. Catch the unwind here, at
@@ -460,7 +360,9 @@ pub(super) async fn execute_tool(
     let invocation = with_tool_operation_context(
         ToolOperationContext {
             run_id: Some(run_id.clone()),
+            thread_id: Some(thread_id.clone()),
             operation_id,
+            call_id: Some(call.call_id.clone()),
             execution_scope: context.execution_scope.clone(),
         },
         executor.invoke(call),
@@ -489,7 +391,7 @@ pub(super) async fn execute_tool(
         if output.is_error { "error" } else { "ok" },
         started.elapsed(),
     );
-    output
+    Ok(output)
 }
 
 /// The in-process `ToolExecutor` (ADR-0044 D1): the degenerate case where the

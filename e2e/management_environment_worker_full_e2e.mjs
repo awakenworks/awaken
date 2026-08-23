@@ -17,7 +17,14 @@ import { join, resolve } from 'node:path';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
-import { pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38341);
@@ -26,21 +33,6 @@ async function drain(page) {
   const rows = [];
   for await (const row of page) rows.push(row);
   return rows;
-}
-
-async function eventually(fn, message, timeoutMs = 20_000) {
-  const deadline = Date.now() + timeoutMs;
-  let last;
-  while (Date.now() < deadline) {
-    try {
-      const value = await fn();
-      if (value) return value;
-    } catch (error) {
-      last = error;
-    }
-    await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
-  }
-  throw new Error(`${message}${last ? `: ${last.message}` : ''}`);
 }
 
 function instrumentedTool(counters) {
@@ -83,17 +75,30 @@ async function createClaimableSession(client, name, agent = 'assistant') {
 }
 
 async function sendTask(client, sessionID) {
-  await client.beta.sessions.events.send(sessionID, {
+  const receipt = await client.beta.sessions.events.send(sessionID, {
     events: [{
       type: 'user.message',
       content: [{ type: 'text', text: 'answer it' }],
     }],
     betas: BETAS,
   });
+  return receipt.data[0]?.id;
 }
 
-async function assertExactlyOneResult(client, sessionID, counters) {
-  const events = await drain(client.beta.sessions.events.list(sessionID, { betas: BETAS }));
+async function assertExactlyOneResult(client, sessionID, receiptId, counters) {
+  // Result rule R0: C1=exact task receipt; C2=official worker result; C3=end_turn.
+  // E1=one correlated result. Constraint: tool execution stays SDK-owned.
+  // C1+C2&&!C3=>observe; C1+C2+C3=>E1.
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionID,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'user.custom_tool_result')
+      && delta.some((event) => event.type === 'session.status_idle'
+        && event.stop_reason?.type === 'end_turn'),
+    'official EnvironmentWorker result reaches end_turn',
+  );
   const uses = events.filter((event) => event.type === 'agent.custom_tool_use');
   const results = events.filter((event) => event.type === 'user.custom_tool_result');
   assert.equal(counters.runs, 1, 'the official runner invokes the tool exactly once');
@@ -115,7 +120,7 @@ async function main() {
     {
       const counters = { runs: 0, closes: 0 };
       const { environment, session } = await createClaimableSession(client, 'worker-run');
-      await sendTask(client, session.id);
+      const receiptId = await sendTask(client, session.id);
       const controller = new AbortController();
       const worker = client.beta.environments.work.worker({
         environmentId: environment.id,
@@ -126,16 +131,21 @@ async function main() {
         signal: controller.signal,
       });
       const running = worker.run();
-      const stopped = await eventually(async () => {
-        const rows = await drain(client.beta.environments.work.list(environment.id, { betas: BETAS }));
-        return rows.find((row) => row.data.type === 'session' && row.state === 'stopped');
-      }, 'EnvironmentWorker.run did not force-stop the Session work');
+      const stopped = await waitForValue(
+        async () => {
+          const rows = await drain(client.beta.environments.work.list(environment.id, { betas: BETAS }));
+          return rows.find((row) => row.data.type === 'session' && row.state === 'stopped');
+        },
+        (value) => value !== undefined,
+        'EnvironmentWorker.run did not force-stop the Session work',
+        { timeoutMs: 20_000, pollMs: 40 },
+      );
       controller.abort();
       await running;
       assert.ok(stopped.acknowledged_at, 'WorkPoller acknowledged the item');
       assert.ok(stopped.latest_heartbeat_at, 'heartbeat ran concurrently with SessionToolRunner');
       assert.equal(counters.closes, 1, 'SessionToolRunner closes every tool');
-      await assertExactlyOneResult(client, session.id, counters);
+      await assertExactlyOneResult(client, session.id, receiptId, counters);
       pass('W1 EnvironmentWorker.run: poll -> ack -> tool/heartbeat -> cleanup -> force-stop');
     }
 
@@ -150,7 +160,7 @@ async function main() {
         environment_id: environment.id,
         betas: BETAS,
       });
-      await sendTask(client, session.id);
+      const receiptId = await sendTask(client, session.id);
       const worker = client.beta.environments.work.worker({
         workdir,
         tools: [instrumentedTool(counters)],
@@ -162,7 +172,7 @@ async function main() {
         sessionId: session.id,
         environmentKey: 'e2e-env-key',
       });
-      await assertExactlyOneResult(client, session.id, counters);
+      await assertExactlyOneResult(client, session.id, receiptId, counters);
       assert.equal(
         (await client.beta.environments.work.retrieve(work.id, {
           environment_id: environment.id,
@@ -183,7 +193,7 @@ async function main() {
         environment_id: environment.id,
         betas: BETAS,
       });
-      await sendTask(client, session.id);
+      const receiptId = await sendTask(client, session.id);
       for (const [key, value] of Object.entries({
         ANTHROPIC_WORK_ID: work.id,
         ANTHROPIC_ENVIRONMENT_ID: environment.id,
@@ -199,7 +209,7 @@ async function main() {
         maxIdleMs: 100,
       });
       await worker.handleItem();
-      await assertExactlyOneResult(client, session.id, counters);
+      await assertExactlyOneResult(client, session.id, receiptId, counters);
       pass('W3 handleItem resolves all ANTHROPIC_* environment fallbacks');
       for (const key of savedEnv.keys()) delete process.env[key];
       for (const [key, value] of savedEnv) if (value !== undefined) process.env[key] = value;

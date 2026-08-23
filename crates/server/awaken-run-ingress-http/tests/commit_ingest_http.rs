@@ -7,7 +7,9 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, commit_payload_hash,
+};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_run_ingress::ClaimedCommitService;
@@ -15,7 +17,7 @@ use awaken_run_ingress::{
     ClaimedCommitCommand, ClaimedRunCommit, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
     RegistryError, RegistryMutation, RunClaim, RunDispatch, WorkerDirectory, WorkerHeartbeat,
     WorkerIdentity, WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot,
-    WorkerState, commit_payload_hash,
+    WorkerState,
 };
 use awaken_run_ingress_http::{ClaimedCommitHttpService, claimed_commit_router};
 use awaken_runtime_contract::activation::RunActivation;

@@ -78,6 +78,11 @@ async fn a_transient_store_error_is_swallowed_and_the_daemon_recovers() {
 
 #[tokio::test]
 async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
+    // Test design. Causes: one fresh Run reaches NaturalEnd on its first drive.
+    // Effects: metrics record one claim, one drive, one Done settle, one applied
+    // commit, and zero in-flight/depth. Constraint/Invariant: each lifecycle
+    // boundary is metered once. Decision rule: cover the terminal exit partition
+    // and assert its complete metric vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -88,7 +93,7 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "solo");
-    let processed = worker.tick(0).await.unwrap();
+    let processed = worker.tick(harness::clock(0)).await.unwrap();
     assert!(matches!(
         processed,
         Some((_, RunState::Ended(EndCause::NaturalEnd)))
@@ -121,6 +126,11 @@ async fn a_terminal_drive_meters_one_claim_one_drive_and_one_done_settle() {
 
 #[tokio::test]
 async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() {
+    // Test design. Causes: one fresh Run reaches Awaiting on its first drive.
+    // Effects: metrics record one claim, one drive, one Awaiting settle, no Done
+    // settle, and one retained queue row. Constraint/Invariant: Awaiting is not
+    // counted as terminal. Decision rule: cover the nonterminal settle partition
+    // and assert its vector against the terminal control above.
     let metrics = Arc::new(RecordingMetrics::default());
     let (runtime, _ran) = tool_runtime_with_metrics(metrics.clone() as Arc<_>);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -131,7 +141,7 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store, commit, "solo");
-    let processed = worker.tick(0).await.unwrap();
+    let processed = worker.tick(harness::clock(0)).await.unwrap();
     assert!(matches!(processed, Some((_, RunState::Awaiting))));
 
     assert_eq!(
@@ -158,6 +168,11 @@ async fn an_awaiting_drive_meters_one_claim_one_drive_and_one_awaiting_settle() 
 
 #[tokio::test]
 async fn an_early_terminal_recovery_return_is_still_fully_metered() {
+    // Test design. Causes: C1 committed terminal truth predates a fresh/recovered
+    // queue drive; C2 Worker takes the early settlement return. Effects: E1 one
+    // claim, drive-duration sample, and Done settle are still recorded; E2 no
+    // execution occurs. Constraint/Invariant: RAII metering covers every exit.
+    // Decision rule: force C1+C2 and assert the full early-return metric vector.
     // The early exit arm: a recovered fresh run whose committed record is ALREADY
     // terminal settles Done and returns early. That path must still meter one claim,
     // one drive.duration (the RAII timer fires on every exit), and one done settle.
@@ -189,7 +204,7 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
         .await
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "recovery");
-    let processed = worker.tick(0).await.unwrap();
+    let processed = worker.tick(harness::clock(0)).await.unwrap();
     assert!(
         matches!(processed, Some((_, RunState::Ended(_)))),
         "the recovered terminal run settles Done without re-running"
@@ -216,6 +231,11 @@ async fn an_early_terminal_recovery_return_is_still_fully_metered() {
 
 #[tokio::test]
 async fn an_expired_lease_reclaim_is_reported_as_recovery() {
+    // Test design. Causes: C1 an owner abandons a claim; C2 its lease expires;
+    // C3 replacement Worker reclaims. Effects: E1 recovered increments once; E2
+    // applied commit increments once; E3 fenced remains zero. Constraint/
+    // Invariant: only an expired lease claim is labeled recovery. Decision rule:
+    // compare the initial recovered=false claim with C3's recovered drive.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -233,7 +253,11 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
     assert!(!abandoned.recovered);
 
     let worker = DispatchWorker::new(runtime, store, commit, "replacement");
-    worker.tick(11).await.unwrap().expect("recovered drive");
+    worker
+        .tick(harness::clock(11))
+        .await
+        .unwrap()
+        .expect("recovered drive");
 
     assert_eq!(metrics.recovered.load(Ordering::SeqCst), 1);
     assert_eq!(metrics.commits_applied.load(Ordering::SeqCst), 1);
@@ -243,6 +267,11 @@ async fn an_expired_lease_reclaim_is_reported_as_recovery() {
 
 #[tokio::test]
 async fn a_stale_settlement_increments_the_fenced_metric() {
+    // Test design. Causes: C1 an old claim is superseded by a newer epoch; C2 the
+    // old owner attempts settlement. Effects: E1 C2 is fenced; E2 the fenced
+    // metric increments without an applied settlement. Constraint/Invariant:
+    // metric classification follows the queue's epoch decision. Decision rule:
+    // mint old/current claims, settle old, and assert the fenced vector.
     let metrics = Arc::new(RecordingMetrics::default());
     let runtime = text_runtime_with_metrics(metrics.clone() as Arc<_>);
     let store = Arc::new(MemoryDispatchStore::new());
@@ -265,12 +294,16 @@ async fn a_stale_settlement_increments_the_fenced_metric() {
     let worker = DispatchWorker::new(runtime, store, commit, "driver");
 
     worker
-        .drive_claimed(current, 11)
+        .drive_claimed(current, harness::clock(11))
         .await
         .unwrap()
         .expect("current owner completes");
     assert!(
-        worker.drive_claimed(stale, 11).await.unwrap().is_none(),
+        worker
+            .drive_claimed(stale, harness::clock(11))
+            .await
+            .unwrap()
+            .is_none(),
         "the stale terminal replay is fenced rather than reported as applied"
     );
 

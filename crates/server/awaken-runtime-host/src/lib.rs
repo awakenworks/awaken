@@ -24,6 +24,7 @@ mod commit_ingest;
 mod compact;
 mod config;
 mod container_environment;
+mod coordination;
 pub use container_environment::{
     ContainerEnvironmentComponents, build_container_environment, package_image_provisioner,
 };
@@ -89,7 +90,6 @@ pub use crate::authority::{
 };
 pub use crate::host::{
     CommittedStepReceipt, HostError, HostErrorKind, HostOutcomeDrive, HostOutcomeReport,
-    PendingTool,
 };
 // The neutral session substrate and its resume vocabulary.
 pub use crate::acp_capability_probe::SessionAcpCapabilityNegotiator;
@@ -142,6 +142,57 @@ fn user_message(content: Vec<ContentBlock>) -> Message {
     )
 }
 
+/// Lower one stable Session System input into its sole durable Message form.
+/// Fresh Run admission and same-Run tool reply resume share this constructor so
+/// System identity, validation, and Role ordering cannot diverge.
+fn session_system_message(
+    session_id: &str,
+    system: &awaken_session_contract::SessionUserRunSystemInput,
+) -> Result<Message, RunError> {
+    if session_id.trim().is_empty()
+        || system.operation_id.trim().is_empty()
+        || system.content.is_empty()
+    {
+        return Err(RunError::bad_request("Session System input is incomplete"));
+    }
+    Ok(Message::new(
+        MessageId::session_system(session_id, &system.operation_id),
+        Role::System,
+        system.content.clone(),
+    ))
+}
+
+/// Lower one Session User command into the exact activation input frozen by the
+/// existing dispatch reservation. An accompanying System Message precedes the
+/// User Message for model semantics, while their stable operation ids preserve
+/// the public batch order independently.
+fn session_user_run_messages(
+    command: &awaken_session_contract::SessionUserRunCommand,
+) -> Result<Vec<Message>, RunError> {
+    if command.session_id.trim().is_empty()
+        || command.operation_id.trim().is_empty()
+        || command.run_id.0.trim().is_empty()
+        || command.content.is_empty()
+        || command.accompanying_system.as_ref().is_some_and(|system| {
+            system.operation_id.trim().is_empty() || system.content.is_empty()
+        })
+    {
+        return Err(RunError::bad_request(
+            "Session User Run reservation is incomplete",
+        ));
+    }
+    let mut input = Vec::with_capacity(1 + usize::from(command.accompanying_system.is_some()));
+    if let Some(system) = &command.accompanying_system {
+        input.push(session_system_message(&command.session_id, system)?);
+    }
+    input.push(Message::new(
+        MessageId::session_event_input(&command.session_id, &command.operation_id),
+        Role::User,
+        command.content.clone(),
+    ));
+    Ok(input)
+}
+
 /// Select the exact target carried by the admitted MCP realization request.
 /// Keeping this identity projection explicit prevents credential materialization
 /// from silently rebinding the request to a name/target tuple or another derived
@@ -180,6 +231,78 @@ mod credential_target_projection_tests {
     }
 }
 
+#[cfg(test)]
+mod session_user_run_input_tests {
+    use super::session_user_run_messages;
+    use awaken_agent_contract::agent::{
+        content::ContentBlock,
+        message::{Id as MessageId, Role},
+        run::Id as RunId,
+    };
+    use awaken_session_contract::{SessionUserRunCommand, SessionUserRunSystemInput};
+
+    fn command(system: Option<SessionUserRunSystemInput>) -> SessionUserRunCommand {
+        SessionUserRunCommand {
+            session_id: "session-input".into(),
+            agent_id: "agent".into(),
+            operation_id: "user-op".into(),
+            run_id: RunId("run-input".into()),
+            content: vec![ContentBlock::text("user")],
+            accompanying_system: system,
+            data_subject_id: None,
+            traceparent: None,
+        }
+    }
+
+    #[test]
+    fn reservation_input_freezes_the_accompanying_system_before_user() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        // Cause/effect graph: C1 accompanying System absent/present; C2 its
+        // operation/content complete/incomplete. Effects: E1 User-only input;
+        // E2 stable System then stable User in one vector; E3 invalid input is
+        // rejected before dispatch reservation.
+        //
+        // | Rule | C1 | C2 | Effect |
+        // | I1 | absent | - | E1 |
+        // | I2 | present | complete | E2 |
+        // | I3 | present | empty operation/content | E3 |
+        let user_only = session_user_run_messages(&command(None)).expect("I1");
+        assert_eq!(user_only.len(), 1, "I1/E1");
+        assert_eq!(user_only[0].role, Role::User, "I1/E1");
+
+        let with_system = session_user_run_messages(&command(Some(SessionUserRunSystemInput {
+            operation_id: "system-op".into(),
+            content: vec![ContentBlock::text("system")],
+        })))
+        .expect("I2");
+        assert_eq!(with_system.len(), 2, "I2/E2");
+        assert_eq!(with_system[0].role, Role::System, "I2/E2");
+        assert_eq!(with_system[1].role, Role::User, "I2/E2");
+        assert_eq!(
+            with_system[0].id,
+            MessageId::session_system("session-input", "system-op"),
+            "I2/E2"
+        );
+        assert_eq!(
+            with_system[1].id,
+            MessageId::session_event_input("session-input", "user-op"),
+            "I2/E2"
+        );
+
+        assert!(
+            session_user_run_messages(&command(Some(SessionUserRunSystemInput {
+                operation_id: String::new(),
+                content: vec![ContentBlock::text("system")],
+            })))
+            .is_err(),
+            "I3/E3"
+        );
+    }
+}
+
 /// Map a neutral terminal state to the Managed idle `stop_reason`. `RequiresAction`
 /// carries no event ids here; the projection refills them from the pending tool.
 /// The Managed Agents `SessionRuntime` port implemented over the shared host.
@@ -194,6 +317,13 @@ pub struct ManagedHost {
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
+}
+
+/// Composition failure for the one process-local Session coordination port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AgentCoordinationInstallError {
+    #[error("Session Agent coordination application is already installed")]
+    AlreadyInstalled,
 }
 
 /// One compiled projection from the frozen Session manifest. Standard mounts
@@ -214,6 +344,26 @@ impl ManagedHost {
             repository_binding_verifier: None,
             mcp_realizer: None,
         }
+    }
+
+    /// Connect the fixed Runtime coordination tools to the canonical Session
+    /// application after composition has wrapped that application in an `Arc`.
+    /// The Host retains only a weak application port, avoiding an ownership
+    /// cycle (`SessionApplication -> ManagedHost -> SharedHost`).
+    pub fn install_agent_coordination_application(
+        &self,
+        application: std::sync::Weak<dyn awaken_session_contract::SessionAgentCoordination>,
+    ) -> Result<(), AgentCoordinationInstallError> {
+        let mut installed = self
+            .host
+            .agent_coordination
+            .write()
+            .expect("Agent coordination application lock poisoned");
+        if installed.is_some() {
+            return Err(AgentCoordinationInstallError::AlreadyInstalled);
+        }
+        *installed = Some(application);
+        Ok(())
     }
 
     /// Install the fully configured Managed adapter used by durable dispatch.
@@ -292,64 +442,25 @@ impl ManagedHost {
         let mut memory_bindings = std::collections::HashMap::new();
         for input in inputs.inputs() {
             let one = self.stage_resolved_input(workspace, input, claim).await?;
-            if let awaken_session_contract::ResolvedInputSource::MemoryStore {
-                memory_store_id,
-                config,
-            } = &input.source
-            {
-                let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
-                // Read this exact projection before merging it. Two bindings may
-                // legally reference the same store with different access, and a
-                // prior mount must never become the authority for the later one.
-                let materialization_reference =
-                    one.mounts.iter().find_map(|mount| match &mount.source {
-                        awaken_provisioning_contract::MountSource::MemoryStore {
-                            store_id,
-                            materialization_reference,
-                            ..
-                        } if store_id == memory_store_id.as_str() => {
-                            materialization_reference.clone()
-                        }
-                        _ => None,
-                    });
-                if let Some(reference) = &materialization_reference {
-                    // Remote Memory claim decision table: active + exact config
-                    // => snapshot preflight succeeds; archived/config-changed/
-                    // stale claim => fail before a resident Environment or model
-                    // can reuse the prior projection. The mounter still owns the
-                    // actual copy/write-back lifecycle.
-                    self.host
-                        .memory_repository()
-                        .snapshot_heads(reference)
-                        .await
-                        .map_err(|error| RunError::bad_request(error.to_string()))?;
-                }
-                let handle = self.host.platform_memory_handle(
-                    materialization_reference
-                        .clone()
-                        .unwrap_or_else(|| memory_store_id.to_string()),
-                    writable,
-                );
-                let resource_validator = if materialization_reference.is_some() {
-                    None
+            // Read this exact projection before merging it. Two bindings may
+            // legally reference the same store with different access, and a
+            // prior mount must never become the authority for the later one.
+            let materialization_reference = one.mounts.iter().find_map(|mount| {
+                if let awaken_provisioning_contract::MountSource::MemoryStore {
+                    materialization_reference,
+                    ..
+                } = &mount.source
+                {
+                    materialization_reference.clone()
                 } else {
-                    Some(self.resource_validator.as_ref().ok_or_else(|| {
-                        RunError::bad_request(
-                            "Memory extraction requires a configured resource binding validator",
-                        )
-                    })?.clone())
-                };
-                memory_bindings.insert(
-                    input.binding_id.to_string(),
-                    Arc::new(self.host.memory.bind(
-                        thread,
-                        workspace,
-                        handle,
-                        resource_validator,
-                        config,
-                        writable,
-                    )),
-                );
+                    None
+                }
+            });
+            if let Some((binding_id, memory)) = self
+                .compile_memory_binding(thread, workspace, input, materialization_reference)
+                .await?
+            {
+                memory_bindings.insert(binding_id, memory);
             }
             all.mounts.extend(one.mounts);
             all.prompts.extend(one.prompts);
@@ -361,6 +472,68 @@ impl ManagedHost {
             staged: all,
             memory_bindings,
         })
+    }
+
+    /// Compile the one Memory-specific leaf shared by ordinary Session staging
+    /// and post-commit recovery from a frozen dispatch. The caller owns Resource
+    /// selection and may install the result into a resident Session slot; this
+    /// leaf only binds one already-resolved input and never opens an Environment.
+    async fn compile_memory_binding(
+        &self,
+        session_thread: &str,
+        workspace: &str,
+        input: &awaken_session_contract::ResolvedInput,
+        materialization_reference: Option<String>,
+    ) -> Result<Option<(String, Arc<crate::memory::BoundMemory>)>, RunError> {
+        let awaken_session_contract::ResolvedInputSource::MemoryStore {
+            memory_store_id,
+            config,
+        } = &input.source
+        else {
+            return Ok(None);
+        };
+        let writable = input.access == awaken_resource_contract::ResourceAccess::ReadWrite;
+        if let Some(reference) = &materialization_reference {
+            // Remote Memory claim decision table: active + exact config =>
+            // snapshot preflight succeeds; archived/config-changed/stale claim
+            // fails before the mounter reuses a prior projection.
+            self.host
+                .memory_repository()
+                .snapshot_heads(reference)
+                .await
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+        }
+        let handle = self.host.platform_memory_handle(
+            materialization_reference
+                .clone()
+                .unwrap_or_else(|| memory_store_id.to_string()),
+            writable,
+        );
+        let resource_validator = if materialization_reference.is_some() {
+            None
+        } else {
+            Some(
+                self.resource_validator
+                    .as_ref()
+                    .ok_or_else(|| {
+                        RunError::bad_request(
+                            "Memory extraction requires a configured resource binding validator",
+                        )
+                    })?
+                    .clone(),
+            )
+        };
+        Ok(Some((
+            input.binding_id.to_string(),
+            Arc::new(self.host.memory.bind(
+                session_thread,
+                workspace,
+                handle,
+                resource_validator,
+                config,
+                writable,
+            )),
+        )))
     }
 
     async fn install_effective_inputs(
@@ -792,8 +965,253 @@ impl SessionRuntime for ManagedHost {
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
     }
 
+    async fn reserve_session_user_run(
+        &self,
+        command: awaken_session_contract::SessionUserRunCommand,
+    ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+        use awaken_run_ingress::{Clock as _, DispatchQueue as _};
+
+        let input = session_user_run_messages(&command)?;
+        self.validate_thread_resource_bindings(&command.session_id)
+            .await?;
+        let ctx = self
+            .host
+            .ctx_for(&command.session_id, Some(&command.agent_id))
+            .await
+            .map_err(to_run_error)?;
+        let input = match &ctx.skill_registry {
+            Some(registry) => awaken_ext_skills::expand_slash_commands(
+                registry.as_ref(),
+                &command.session_id,
+                input,
+            ),
+            None => input,
+        };
+        let (_, mut activation) =
+            ctx.runtime
+                .prepare(&ctx.config, command.session_id.clone(), input);
+        activation.run_id = command.run_id;
+        activation.model_ref_override = self
+            .host
+            .inference_routing
+            .override_for(&command.session_id);
+        activation.data_subject_id = command
+            .data_subject_id
+            .map(awaken_runtime_contract::DataSubjectId);
+        let request = self
+            .host
+            .resolved_dispatch_with_traceparent(activation, command.traceparent)
+            .map_err(to_run_error)?;
+        let deadline = awaken_run_ingress::SystemClock
+            .now_ms()
+            .saturating_add(30_000);
+        match self
+            .host
+            .dispatch_store()
+            .map_err(to_run_error)?
+            .reserve_session_run(request, deadline)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?
+        {
+            awaken_run_ingress::SessionRunReservationOutcome::Reserved => {
+                Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
+            }
+            awaken_run_ingress::SessionRunReservationOutcome::AlreadyReserved => {
+                Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved)
+            }
+            awaken_run_ingress::SessionRunReservationOutcome::RecoveryClaimed => {
+                Ok(awaken_session_contract::SessionUserRunReservation::RecoveryClaimed)
+            }
+            awaken_run_ingress::SessionRunReservationOutcome::AlreadyActivated {
+                session_activity_epoch,
+            } => Ok(
+                awaken_session_contract::SessionUserRunReservation::AlreadyActivated {
+                    session_activity_epoch,
+                },
+            ),
+            awaken_run_ingress::SessionRunReservationOutcome::Completed => {
+                Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+            }
+            awaken_run_ingress::SessionRunReservationOutcome::Conflict => Err(
+                RunError::bad_request("Session User Run id was reused with different input"),
+            ),
+        }
+    }
+
+    async fn activate_session_user_run(
+        &self,
+        delivery: awaken_session_contract::SessionUserRunDelivery,
+    ) -> Result<awaken_session_contract::SessionUserRunActivation, RunError> {
+        self.host
+            .activate_session_user_run_reservation(delivery)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn activate_and_observe_session_user_run(
+        &self,
+        admission: awaken_session_contract::SessionUserRunAdmission,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
+        self.host
+            .activate_and_observe_session_user_run(admission, sink)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn session_user_run_state(
+        &self,
+        session_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
+        let ctx = self
+            .host
+            .ctx_for(session_id, None)
+            .await
+            .map_err(to_run_error)?;
+        ctx.commit
+            .authoritative_run(run_id)
+            .await
+            .map(|record| record.map(|record| record.state))
+            .map_err(|error| RunError::unavailable(error.to_string()))
+    }
+
     async fn delegated_runs(&self, thread: &str) -> Result<Vec<DelegatedRun>, RunError> {
         self.host.delegated_runs(thread).await.map_err(to_run_error)
+    }
+
+    async fn admit_coordinated_run(
+        &self,
+        command: awaken_session_contract::CoordinatedRunCommand,
+    ) -> Result<awaken_session_contract::SessionAgentMessageReceipt, RunError> {
+        self.host
+            .admit_coordinated_run(command)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn coordinated_threads(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::CoordinatedThreadLink>, RunError> {
+        self.host
+            .coordinated_threads(session_id)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn subscribe_session_thread_live(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, RunError>
+    {
+        if thread_id == session_id {
+            return Ok(Some(self.host.hub.live_subscription(thread_id)));
+        }
+        let links = self
+            .host
+            .coordinated_threads(session_id)
+            .await
+            .map_err(to_run_error)?;
+        if !links
+            .iter()
+            .any(|link| link.session_id == session_id && link.thread_id.0.as_str() == thread_id)
+        {
+            return Err(RunError::bad_request(
+                "live observer target is not a coordinated Session Thread",
+            ));
+        }
+        Ok(Some(self.host.hub.live_subscription(thread_id)))
+    }
+
+    async fn session_thread_disposition(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
+        self.host
+            .session_thread_disposition(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn archive_session_thread(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<(), RunError> {
+        self.host
+            .archive_session_thread(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn continue_session_agent_report(
+        &self,
+        command: awaken_session_contract::SessionAgentReportContinuation,
+    ) -> Result<(), RunError> {
+        self.host
+            .continue_session_agent_report(command)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        session_id: &str,
+        child_thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<(), RunError> {
+        self.host
+            .interrupt_session_thread(session_id, child_thread_id)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn session_thread_tool_reply_fence(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, RunError> {
+        self.host
+            .session_thread_tool_reply_fence(command)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<(), RunError> {
+        self.host
+            .reply_session_thread_tool(delivery)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn resume_budget_reached(
+        &self,
+        delivery: awaken_session_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_contract::SessionBudgetResumeDisposition, RunError> {
+        self.host
+            .resume_budget_reached(delivery)
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn session_budget_resume_tickets(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, RunError> {
+        self.host
+            .session_budget_resume_tickets(session_id)
+            .await
+            .map_err(to_run_error)
     }
 
     async fn quiesce_terminal_delegations(
@@ -811,11 +1229,6 @@ impl SessionRuntime for ManagedHost {
             .has_durable_thread(thread)
             .await
             .map_err(to_run_error)
-    }
-
-    async fn end_session(&self, thread: &str) -> Result<(), RunError> {
-        let command = awaken_session_contract::SessionCleanupCommand::for_thread(thread, thread);
-        self.execute_terminal_cleanup(command).await.map(|_| ())
     }
 
     async fn execute_terminal_cleanup(
@@ -907,7 +1320,7 @@ impl SessionRuntime for ManagedHost {
         sink: std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunError> {
         self.validate_thread_resource_bindings(thread).await?;
-        // Same committed turn as `run`; `sink` mirrors in-flight `stream::Kind` so
+        // Same committed Run as `run`; `sink` mirrors in-flight `stream::Kind` so
         // the Managed adapter can project live `agent.message` previews.
         let result = self
             .host
@@ -1051,13 +1464,6 @@ impl SessionRuntime for ManagedHost {
         inbox.reorder(&order).map_err(to_live_inbox_error)
     }
 
-    async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError> {
-        self.host
-            .add_system(agent, thread, text)
-            .await
-            .map_err(to_run_error)
-    }
-
     async fn supports_mid_conversation_system(&self, thread: &str) -> bool {
         managed_model_capability::supports_mid_conversation_system(
             &self.host.model_for_thread(thread),
@@ -1065,11 +1471,7 @@ impl SessionRuntime for ManagedHost {
     }
 
     async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, RunError> {
-        self.host
-            .pending_tool(thread)
-            .await
-            .map(crate::step_projection::pending)
-            .map_err(to_run_error)
+        self.host.pending_tool(thread).await.map_err(to_run_error)
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunError> {
@@ -1086,15 +1488,42 @@ impl SessionRuntime for ManagedHost {
         managed_outcome::define(&self.host, thread, description, rubric, max_iterations).await
     }
 
+    async fn prepare_outcome(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+        description: &str,
+        rubric: &str,
+        max_iterations: u32,
+    ) -> Result<(), RunError> {
+        managed_outcome::prepare(
+            &self.host,
+            thread,
+            outcome_id,
+            description,
+            rubric,
+            max_iterations,
+        )
+        .await
+    }
+
     async fn continue_outcome(&self, thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
         managed_outcome::resume(&self.host, thread).await
+    }
+
+    async fn committed_outcome_projection(
+        &self,
+        thread: &str,
+        outcome_id: &str,
+    ) -> Result<Option<awaken_session_contract::CommittedOutcomeProjection>, RunError> {
+        managed_outcome::committed_projection(&self.host, thread, outcome_id).await
     }
 
     /// Replace only the already-selected model projection for one Session and
     /// force its next context construction to consume that exact selection.
     async fn rebind_model(&self, thread: &str, model: &str) -> Result<(), RunError> {
         // R5: re-stage the thread's model and evict its cached context so the next
-        // turn rebuilds with the newly resolved executor (native switch is O(1); an
+        // Run rebuilds with the newly resolved executor (native switch is O(1); an
         // ACP thread's cached context relaunches its CLI on rebuild).
         self.host.register_thread_model(thread, model);
         self.host.evict_session_for_rebuild(thread).await;
@@ -1174,7 +1603,7 @@ impl SessionRuntime for ManagedHost {
             // dispatch projection (or a claimed Worker installed the complete
             // immutable baseline), and the live context was necessarily built
             // after that authority transition. A successor event may be admitted
-            // while the preceding turn is finishing; its execution mutex provides
+            // while the preceding Run is finishing; its execution mutex provides
             // ordering, so keep the exact resident projection instead of rebinding.
             return Ok(());
         }
@@ -1375,6 +1804,35 @@ impl SessionRuntime for ManagedHost {
         })
     }
 
+    async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        self.host
+            .session_thread_recovery_snapshot(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
+    async fn session_thread_usage(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        self.host
+            .session_thread_usage(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+            )
+            .await
+            .map_err(to_run_error)
+    }
+
     fn model(&self) -> String {
         self.host.model()
     }
@@ -1397,523 +1855,6 @@ impl SessionRuntime for ManagedHost {
     }
 }
 
-#[async_trait::async_trait]
-impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
-    async fn stage_mcp_attachment(
-        &self,
-        request: awaken_session_contract::StageMcpAttachment,
-    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
-        use awaken_runtime_contract::{
-            CredentialRealizationCapabilities, CredentialRealizationKind, PlaintextBoundary,
-        };
-        use std::collections::BTreeSet;
-
-        if request.workspace_id.trim().is_empty()
-            || request.generation.session_id.trim().is_empty()
-            || request.realization_id.trim().is_empty()
-            || request.stage_idempotency_key.trim().is_empty()
-            || request.name.trim().is_empty()
-            || request.target.display_target().trim().is_empty()
-        {
-            return Err(RunError::bad_request(
-                "MCP realization request is incomplete",
-            ));
-        }
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        if !self
-            .host
-            .mcp_generation_is_authorized_at(&request.generation, now_unix_ms)
-        {
-            return Err(RunError::classified(
-                "mcp_stale_ownership",
-                "MCP realization lease has expired",
-            ));
-        }
-        let request_fingerprint = request.fingerprint();
-        if let Some(existing) = self.host.mcp_projection(&request.generation) {
-            let exact_replay = existing.request.realization_id == request.realization_id
-                && existing.request.stage_idempotency_key == request.stage_idempotency_key
-                && existing.receipt.receipt_fingerprint == request_fingerprint;
-            if exact_replay {
-                if existing.state != crate::session_slot::McpProjectionState::Removed {
-                    return Ok(existing.receipt);
-                }
-                if !self.host.forget_exact_removed_mcp_projection(&request) {
-                    return Err(RunError::classified(
-                        "mcp_stale_generation",
-                        "MCP generation changed while its removed projection was being recovered",
-                    ));
-                }
-            } else {
-                return Err(RunError::classified(
-                    "mcp_stale_generation",
-                    "MCP generation is already bound to another realization",
-                ));
-            }
-        }
-        match self.host.renew_mcp_projection(&request) {
-            Ok(Some(receipt)) => return Ok(receipt),
-            Ok(None) => {}
-            Err(error) => {
-                return Err(RunError::classified(
-                    "mcp_stale_generation",
-                    error.to_string(),
-                ));
-            }
-        }
-
-        let execution_backend = self
-            .host
-            .session_slots
-            .read(&request.generation.session_id, |slot| {
-                slot.backend_ref.clone()
-            })
-            .flatten()
-            .map(|backend_ref| awaken_runtime_contract::resolved::Backend::from_ref(&backend_ref));
-        let is_acp = execution_backend
-            .as_ref()
-            .is_some_and(|backend| backend.is_acp());
-
-        let sandbox_stdio = request.target.sandbox_stdio_target().cloned();
-        if sandbox_stdio.is_some()
-            && (request.credential.is_some() || request.selected_plaintext_holder.is_some())
-        {
-            return Err(RunError::classified(
-                "mcp_stdio_credential_unsupported",
-                "sandbox stdio MCP credentials require an explicit secret-environment binding; HTTP bearer credentials cannot be projected into a process",
-            ));
-        }
-
-        let (bearer, refresh, actual_realization_kind) = match (
-            request.credential.as_ref(),
-            request.selected_plaintext_holder.as_ref(),
-        ) {
-            (None, None) => (None, None, None),
-            (Some(access), Some(holder)) => {
-                let realization_kind = match holder.boundary {
-                    PlaintextBoundary::Worker => CredentialRealizationKind::WorkerRelay,
-                    PlaintextBoundary::Workload if is_acp => {
-                        let Some(awaken_runtime_contract::resolved::Backend::Acp(backend)) =
-                            execution_backend.as_ref()
-                        else {
-                            return Err(RunError::classified(
-                                "mcp_holder_unsupported",
-                                "Workload-held MCP credentials require an ACP backend",
-                            ));
-                        };
-                        let Some(adapter) = awaken_run_executor_acp::acp_cli(backend.cli()) else {
-                            return Err(RunError::classified(
-                                "mcp_client_injection_unsupported",
-                                format!(
-                                    "ACP adapter `{backend}` has no credential delivery declaration"
-                                ),
-                            ));
-                        };
-                        let delivery = awaken_credential_contract::select_mcp_credential_delivery(
-                            holder.boundary,
-                            CredentialRealizationKind::ProcessProtocolField,
-                        );
-                        if !adapter.admits_mcp_client_credential(
-                            delivery,
-                            request.target.http_url().is_some(),
-                        ) {
-                            return Err(RunError::classified(
-                                "mcp_client_injection_unsupported",
-                                format!(
-                                    "ACP adapter `{backend}` cannot consume this MCP credential through its process-private channel"
-                                ),
-                            ));
-                        }
-                        CredentialRealizationKind::ProcessProtocolField
-                    }
-                    PlaintextBoundary::Workload => {
-                        return Err(RunError::classified(
-                            "mcp_holder_unsupported",
-                            "Workload-held MCP credentials require an ACP backend",
-                        ));
-                    }
-                    PlaintextBoundary::Platform => {
-                        return Err(RunError::classified(
-                            "mcp_gateway_provisioner_required",
-                            "Platform-held MCP credentials require an external gateway provisioner",
-                        ));
-                    }
-                };
-                if realization_kind == CredentialRealizationKind::ProcessProtocolField
-                    && access.refresh.is_some()
-                {
-                    return Err(RunError::classified(
-                        "mcp_client_refresh_unsupported",
-                        "ACP process-protocol MCP credentials require a new Session generation; dynamic refresh cannot be silently discarded",
-                    ));
-                }
-                match &access.usage {
-                    awaken_runtime_contract::CredentialUsage::HttpHeader { name, scheme }
-                        if name.eq_ignore_ascii_case("authorization")
-                            && scheme
-                                .as_deref()
-                                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("bearer")) => {}
-                    _ => {
-                        return Err(RunError::classified(
-                            "mcp_credential_usage_unsupported",
-                            "MCP Runtime supports only canonical Authorization Bearer usage",
-                        ));
-                    }
-                }
-                if is_acp
-                    && realization_kind == CredentialRealizationKind::WorkerRelay
-                    && access.policy.model_exposure
-                        != awaken_runtime_contract::ModelExposurePolicy::VirtualOnly
-                {
-                    return Err(RunError::classified(
-                        "mcp_model_exposure_forbidden",
-                        "authenticated ACP MCP requires explicit VirtualOnly authorization for its generation-scoped relay capability",
-                    ));
-                }
-                if is_acp
-                    && realization_kind == CredentialRealizationKind::WorkerRelay
-                    && !self
-                        .host
-                        .session_provider
-                        .capabilities()
-                        .supports_secret_egress_without_bypass()
-                {
-                    return Err(RunError::classified(
-                        "mcp_holder_unsupported",
-                        "authenticated ACP MCP requires provider-enforced secret substitution and no-bypass networking before Worker relay materialization",
-                    ));
-                }
-                let injector = self.credentials.as_ref().ok_or_else(|| {
-                    RunError::unavailable_classified(
-                        "mcp_material_source_unavailable",
-                        "MCP credential requires a configured material resolver",
-                    )
-                })?;
-                let (material_sources, recipient_bound_envelopes) =
-                    injector.material_source_capabilities();
-                access
-                    .admit(
-                        holder,
-                        realization_kind,
-                        &CredentialRealizationCapabilities {
-                            holders: BTreeSet::from([holder.clone()]),
-                            material_sources,
-                            realization_kinds: BTreeSet::from([realization_kind]),
-                            recipient_bound_envelopes,
-                            extension_consumers: Default::default(),
-                            alternatives: Vec::new(),
-                        },
-                        now_unix_ms,
-                    )
-                    .map_err(|error| {
-                        RunError::classified("mcp_credential_admission", error.to_string())
-                    })?;
-                let bearer = injector
-                    .resolve_for_workspace(
-                        access,
-                        holder,
-                        realization_kind,
-                        &request.workspace_id,
-                        exact_credential_realization_target(&request.target),
-                    )
-                    .await
-                    .map_err(|error| match error {
-                        awaken_runtime_contract::CredentialMaterialError::Unavailable => {
-                            RunError::unavailable_classified(
-                                "mcp_material_source_unavailable",
-                                format!(
-                                    "mcp server `{}` credential material is temporarily unavailable",
-                                    request.name
-                                ),
-                            )
-                        }
-                        error => RunError::classified(
-                            "mcp_credential_revision_mismatch",
-                            format!(
-                                "mcp server `{}` credential could not be resolved exactly: {error}",
-                                request.name
-                            ),
-                        ),
-                    })?
-                    .material
-                    .into_secret()
-                    .map_err(|error| {
-                        RunError::classified(
-                            "mcp_credential_material_kind_mismatch",
-                            error.to_string(),
-                        )
-                    })?;
-                let refresh = if realization_kind == CredentialRealizationKind::WorkerRelay {
-                    match access.refresh.as_ref() {
-                        Some(refresh) => Some(Box::new(crate::mcp::McpRefreshMaterial(
-                            self.credential_refresh_factory
-                                .as_ref()
-                                .ok_or_else(|| {
-                                    RunError::unavailable_classified(
-                                        "mcp_credential_refresh_unavailable",
-                                        "MCP credential refresh requires a Coordinator refresh adapter",
-                                    )
-                                })?
-                                .refresher(
-                                    awaken_credential_contract::CredentialSourceId(
-                                        access.credential.id.clone(),
-                                    ),
-                                    refresh.clone(),
-                                ),
-                        ))),
-                        None => self.credential_refresh_factory.as_ref().map(|factory| {
-                            Box::new(crate::mcp::McpRefreshMaterial(factory.bearer_reloader(
-                                awaken_credential_contract::CredentialSourceId(
-                                    access.credential.id.clone(),
-                                ),
-                                access.credential.revision,
-                            )))
-                        }),
-                    }
-                } else {
-                    None
-                };
-                (Some(bearer), refresh, Some(realization_kind))
-            }
-            _ => {
-                return Err(RunError::classified(
-                    "mcp_credential_binding_invalid",
-                    "MCP credential and selected plaintext holder must be present together",
-                ));
-            }
-        };
-        let projection_request = request.clone();
-        let server = crate::mcp::McpTransportMaterial {
-            name: request.name,
-            prompts_as_skills: request.prompts_as_skills,
-            transport: match sandbox_stdio.as_ref() {
-                Some(target) => crate::mcp::McpTransportMaterialKind::SandboxStdio {
-                    command: target.command.clone(),
-                    args: target.args.clone(),
-                },
-                None => crate::mcp::McpTransportMaterialKind::Http {
-                    url: request
-                        .target
-                        .http_url()
-                        .expect("non-stdio MCP target must be HTTP")
-                        .to_string(),
-                    bearer,
-                    refresh,
-                },
-            },
-        };
-        if is_acp && server.prompts_as_skills {
-            return Err(RunError::classified(
-                "mcp_prompt_skills_unsupported",
-                "MCP prompts-as-skills requires the Native runtime; ACP does not expose a portable prompt-to-Skill projection",
-            ));
-        }
-        let (native_wiring, mcp_process) = if is_acp {
-            (None, None)
-        } else if let Some(target) = sandbox_stdio.as_ref() {
-            let session_id = &request.generation.session_id;
-            let environment = match self.host.session_environment(session_id).await {
-                Some(environment) => environment,
-                None => {
-                    let agent_id = self
-                        .host
-                        .session_slots
-                        .read(session_id, |slot| {
-                            slot.agent_id.clone().or_else(|| {
-                                slot.baseline
-                                    .as_ref()
-                                    .map(|baseline| baseline.agent_id.clone())
-                            })
-                        })
-                        .flatten()
-                        .ok_or_else(|| {
-                            RunError::classified(
-                                "mcp_sandbox_unavailable",
-                                "sandbox stdio MCP requires a frozen Session Agent before Environment realization",
-                            )
-                        })?;
-                    self.host
-                        .ctx_for(session_id, Some(&agent_id))
-                        .await
-                        .map_err(|error| {
-                            RunError::classified(
-                                "mcp_sandbox_unavailable",
-                                format!(
-                                    "sandbox stdio MCP could not realize its Session Environment: {error}"
-                                ),
-                            )
-                        })?;
-                    let realized = self.host.session_environment(session_id).await;
-                    realized.ok_or_else(|| {
-                        RunError::classified(
-                            "mcp_sandbox_unavailable",
-                            "sandbox stdio MCP Session Environment remained deferred after realization",
-                        )
-                    })?
-                }
-            };
-            let mut argv = Vec::with_capacity(target.args.len() + 1);
-            argv.push(target.command.clone());
-            argv.extend(target.args.clone());
-            // Match the ACP/Hand isolation contract: opaque sandbox processes
-            // never inherit the image or operator home. Give this MCP target a
-            // writable Session-scoped home inside the workspace so read-only
-            // container root filesystems still support CLI/browser caches.
-            let mcp_home_logical = format!(".mcp-home/{}", request.target.fingerprint());
-            let mcp_home = format!(
-                "{}/{}",
-                environment.workspace_cwd().trim_end_matches('/'),
-                mcp_home_logical
-            );
-            let home_sentinel = if crate::session_environment::AgentSandbox::supports_host_identity(
-                environment.as_ref(),
-            ) {
-                format!("{mcp_home_logical}/.awaken-mcp-home")
-            } else {
-                format!("{mcp_home}/.awaken-mcp-home")
-            };
-            environment
-                .materialize_inline(&home_sentinel, b"")
-                .await
-                .map_err(|error| {
-                    RunError::classified(
-                        "mcp_sandbox_home_failed",
-                        format!("sandbox stdio MCP home could not be materialized: {error}"),
-                    )
-                })?;
-            let (process, channel) = environment
-                .spawn_agent(awaken_provisioning_contract::Command {
-                    argv,
-                    cwd: environment.workspace_cwd(),
-                    env: vec![awaken_provisioning_contract::EnvVar {
-                        name: "HOME".into(),
-                        value: awaken_provisioning_contract::EnvValue::Inline { value: mcp_home },
-                        visibility: awaken_provisioning_contract::EnvVisibility::Process,
-                    }],
-                    stdio: awaken_provisioning_contract::Stdio::Piped,
-                })
-                .await
-                .map_err(|error| {
-                    RunError::classified(
-                        "mcp_sandbox_spawn_failed",
-                        format!("sandbox stdio MCP process could not start: {error}"),
-                    )
-                })?;
-            let process: Arc<dyn awaken_provisioning_contract::ProcessHandle> = Arc::from(process);
-            match crate::mcp::connect_sandbox_stdio(&server, channel).await {
-                Ok(wiring) => (Some(wiring), Some(process)),
-                Err(error) => {
-                    let _ = process
-                        .signal(awaken_provisioning_contract::Signal::Term)
-                        .await;
-                    let _ = process.wait().await;
-                    return Err(to_run_error(error));
-                }
-            }
-        } else {
-            (
-                Some(
-                    crate::mcp::connect_materialized(std::slice::from_ref(&server))
-                        .await
-                        .map_err(to_run_error)?,
-                ),
-                None,
-            )
-        };
-        // Staging is the sole route-creation boundary.  Runtime construction is
-        // a projection reader and must never repair or recreate credential-
-        // bearing effects behind the durable realization protocol's back.
-        let staged_relay =
-            if is_acp && actual_realization_kind == Some(CredentialRealizationKind::WorkerRelay) {
-                let relay = self
-                    .host
-                    .mcp_relay
-                    .get_or_try_init(crate::mcp_relay::McpRelay::start)
-                    .await
-                    .map_err(|error| {
-                        RunError::classified(
-                            "mcp_relay_unavailable",
-                            format!("could not stage Worker-held MCP route: {error}"),
-                        )
-                    })?;
-                if !relay.stage_route(&request.generation, &server) {
-                    return Err(RunError::classified(
-                        "mcp_stale_generation",
-                        "MCP generation already has a staged relay route",
-                    ));
-                }
-                Some(relay)
-            } else {
-                None
-            };
-        let receipt = awaken_session_contract::McpRealizationReceipt {
-            generation: request.generation.clone(),
-            realization_id: request.realization_id.clone(),
-            selected_plaintext_holder: request.selected_plaintext_holder,
-            actual_realization_kind,
-            receipt_fingerprint: request_fingerprint,
-        };
-        let cleanup_process = mcp_process.clone();
-        if let Err(error) =
-            self.host
-                .insert_mcp_projection(crate::session_slot::McpGenerationProjection {
-                    request: projection_request,
-                    receipt: receipt.clone(),
-                    server: Some(server),
-                    native_wiring,
-                    mcp_process,
-                    state: crate::session_slot::McpProjectionState::Staged,
-                })
-        {
-            // A route is private and not yet visible, but retaining its bearer
-            // after the exact projection failed to stage would still be a leak.
-            if let Some(relay) = staged_relay {
-                relay.remove_route(&request.generation);
-            }
-            if let Some(process) = cleanup_process {
-                let _ = process
-                    .signal(awaken_provisioning_contract::Signal::Term)
-                    .await;
-                let _ = process.wait().await;
-            }
-            return Err(to_run_error(error));
-        }
-        Ok(receipt)
-    }
-
-    async fn publish_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        let now_unix_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or_default();
-        if !self
-            .host
-            .mcp_generation_is_authorized_at(&generation, now_unix_ms)
-        {
-            return Err(RunError::classified(
-                "mcp_stale_ownership",
-                "MCP publication lease has expired",
-            ));
-        }
-        self.host
-            .publish_mcp_projection(&generation)
-            .await
-            .map_err(to_run_error)
-    }
-
-    async fn drain_mcp_generation(
-        &self,
-        generation: awaken_session_contract::McpGenerationRef,
-    ) -> Result<(), RunError> {
-        self.host
-            .drain_mcp_projection(&generation)
-            .await
-            .map_err(to_run_error)
-    }
-}
+// Keep the public trait implementation textually at the crate root so this
+// physical responsibility split cannot change its rustc DefPath.
+include!("managed_host_mcp_attachment.rs");

@@ -1,6 +1,6 @@
 //! Durable-foreground observation: the [`SharedHost`] pool-submit/await methods
-//! and the [`CompletionRegistry`] that owns one temporary completion waiter plus
-//! best-effort live route for each foreground Run.
+//! and the [`CompletionRegistry`] that owns temporary completion observers plus
+//! best-effort live routes for each foreground Run.
 
 use super::*;
 use awaken_run_ingress::{
@@ -124,10 +124,14 @@ pub fn self_hosted_inference_holder(
         .resolved_spec
         .attempt_candidates(activation.model_ref_override.as_deref())
     {
-        let awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+        let (awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             credential: Some(credential),
             ..
-        } = candidate.provisioning()
+        }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: Some(credential),
+            ..
+        }) = candidate.provisioning()
         else {
             continue;
         };
@@ -287,6 +291,21 @@ impl SharedHost {
         &self,
         activation: RunActivation,
     ) -> Result<RunDispatch, HostError> {
+        self.resolved_dispatch_with_traceparent(
+            activation,
+            awaken_observability::current_traceparent(),
+        )
+    }
+
+    /// Decorate one activation using an explicit admission trace source. Session
+    /// Event recovery supplies the context frozen in root provenance (including
+    /// an explicit absence); ordinary foreground admission delegates here with
+    /// its current validated OpenTelemetry context.
+    pub(crate) fn resolved_dispatch_with_traceparent(
+        &self,
+        activation: RunActivation,
+        traceparent: Option<String>,
+    ) -> Result<RunDispatch, HostError> {
         // `UNCONFIGURED_MODEL_REF` is a Coordinator-owned guidance executor, not a
         // remotely materializable model.  In a coordinator-only/all-in-one
         // deployment the registered Worker deliberately does not advertise the
@@ -301,14 +320,14 @@ impl SharedHost {
         }
         let thread = activation.thread_id.0.clone();
         let workspace = self.thread_workspace(&thread);
-        let agent_publications = awaken_runtime_contract::freeze_delegation_publications(
+        let agent_publications = crate::agent_catalog::freeze_run_publications(
             &activation.snapshot,
             self.agent_publications.as_deref(),
             &workspace,
         )
         .map_err(|error| {
             HostError::bad_request(format!(
-                "cannot freeze Agent delegation publications: {error}"
+                "cannot freeze Agent execution publications: {error}"
             ))
         })?;
         let resources = self.thread_resource_manifest(&thread);
@@ -357,7 +376,7 @@ impl SharedHost {
                 )
             });
         let mut request = RunDispatch::new(activation)
-            .with_traceparent(awaken_observability::current_traceparent())
+            .with_traceparent(traceparent)
             .with_agent_publications(agent_publications);
         if is_session_dispatch {
             request = request.for_session(ThreadId(thread.clone()));
@@ -410,6 +429,108 @@ impl SharedHost {
                 "durable dispatch not enabled (set typed durable ingress to run the pool)",
             )
         })
+    }
+
+    /// Publish one Session-approved reservation through the existing dispatch
+    /// row. This is the sole Host activation implementation used by both the
+    /// non-blocking reconciler port and foreground observation.
+    pub(crate) async fn activate_session_user_run_reservation(
+        &self,
+        delivery: awaken_session_contract::SessionUserRunDelivery,
+    ) -> Result<awaken_session_contract::SessionUserRunActivation, HostError> {
+        use awaken_run_ingress::Outbox as _;
+
+        if delivery.session_activity_epoch == 0 {
+            return Err(HostError::bad_request(
+                "Session User Run activity epoch must be nonzero",
+            ));
+        }
+        let store = self.dispatch_store()?;
+        let outcome = store
+            .activate_session_run_reservation(
+                &delivery.run_id,
+                &ThreadId(delivery.session_id),
+                delivery.session_activity_epoch,
+            )
+            .await
+            .map_err(|error| HostError::unavailable(error.to_string()))?;
+        let projected = match outcome {
+            awaken_run_ingress::SessionRunReservationActivation::Activated => {
+                awaken_session_contract::SessionUserRunActivation::Activated
+            }
+            awaken_run_ingress::SessionRunReservationActivation::AlreadyActivated {
+                session_activity_epoch,
+            } => awaken_session_contract::SessionUserRunActivation::AlreadyActivated {
+                session_activity_epoch,
+            },
+            awaken_run_ingress::SessionRunReservationActivation::RecoveryClaimed => {
+                awaken_session_contract::SessionUserRunActivation::RecoveryClaimed
+            }
+            awaken_run_ingress::SessionRunReservationActivation::Completed => {
+                awaken_session_contract::SessionUserRunActivation::Completed
+            }
+            awaken_run_ingress::SessionRunReservationActivation::MissingOrRejected => {
+                return Err(HostError::bad_request(
+                    "Session User Run reservation is missing or rejected",
+                ));
+            }
+            awaken_run_ingress::SessionRunReservationActivation::Conflict => {
+                return Err(HostError::bad_request(
+                    "Session User Run reservation activation conflicts with durable truth",
+                ));
+            }
+        };
+        if matches!(
+            projected,
+            awaken_session_contract::SessionUserRunActivation::Activated
+                | awaken_session_contract::SessionUserRunActivation::AlreadyActivated { .. }
+        ) {
+            if let Some(pool) = self.dispatch_pool.get() {
+                pool.notify().await;
+            } else {
+                store
+                    .relay()
+                    .await
+                    .map_err(|error| HostError::unavailable(error.to_string()))?;
+            }
+        }
+        Ok(projected)
+    }
+
+    /// Register before activation and observe only the committed Run lifecycle.
+    /// The registry is a wakeup/preview relay; peer settlement is recovered by
+    /// the same authoritative Thread read used by other foreground operations.
+    pub(crate) async fn activate_and_observe_session_user_run(
+        &self,
+        admission: awaken_session_contract::SessionUserRunAdmission,
+        stream_sink: Option<Arc<dyn StreamSink>>,
+    ) -> Result<RunState, HostError> {
+        let session_id = admission.session_id().to_string();
+        let run_id = admission.run_id().clone();
+        let ctx = self.ctx_for(&session_id, None).await?;
+        activate_and_await_session_user_run(
+            &self.completion,
+            &run_id,
+            stream_sink,
+            std::time::Duration::from_millis(250),
+            || async move {
+                match admission {
+                    awaken_session_contract::SessionUserRunAdmission::Reserved(delivery)
+                    | awaken_session_contract::SessionUserRunAdmission::AlreadyReserved(delivery)
+                    | awaken_session_contract::SessionUserRunAdmission::AlreadyActivated(
+                        delivery,
+                    ) => self.activate_session_user_run_reservation(delivery).await,
+                    awaken_session_contract::SessionUserRunAdmission::RecoveryClaimed {
+                        ..
+                    } => Ok(awaken_session_contract::SessionUserRunActivation::RecoveryClaimed),
+                    awaken_session_contract::SessionUserRunAdmission::Completed { .. } => {
+                        Ok(awaken_session_contract::SessionUserRunActivation::Completed)
+                    }
+                }
+            },
+            || self.read_settled_phase(&ctx, &run_id, None),
+        )
+        .await
     }
 
     /// Submit a durable run and wait for the pool to drive it to a settled state.
@@ -610,6 +731,7 @@ fn durable_resume_input(command: ResumeCommand) -> PendingInput {
         thread_id: command.thread_id,
         correlation_id: command.correlation_id,
         available_at_ms: None,
+        context_messages: Vec::new(),
         result: command.result,
     }
 }
@@ -654,21 +776,73 @@ where
     }
 }
 
-/// Wakes a foreground durable submitter when the pool settles its Run and relays
-/// that Run's best-effort live progress while the caller remains connected. Both
-/// registrations share one run-id slot and one drop guard; neither is durable
-/// truth. A fire-and-forget background Run has no slot and observes no side effect.
-#[derive(Default)]
+/// One register-before-activate composition shared by every Session User Run
+/// foreground caller. Activation outcomes remain typed, while the only value
+/// returned across the observation boundary is committed `RunState`.
+async fn activate_and_await_session_user_run<Activate, ActivateFuture, Read, ReadFuture>(
+    registry: &Arc<CompletionRegistry>,
+    run_id: &RunId,
+    stream_sink: Option<Arc<dyn StreamSink>>,
+    reconciliation_interval: std::time::Duration,
+    activate: Activate,
+    mut read_settled: Read,
+) -> Result<RunState, HostError>
+where
+    Activate: FnOnce() -> ActivateFuture,
+    ActivateFuture: std::future::Future<
+            Output = Result<awaken_session_contract::SessionUserRunActivation, HostError>,
+        >,
+    Read: FnMut() -> ReadFuture,
+    ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
+{
+    // The guard spans activation and the complete committed-truth wait. Dropping
+    // the caller at either phase removes only this observation; Dispatch/Thread
+    // authorities continue independently.
+    let (settled, _waiter_guard) = registry.register(run_id, stream_sink);
+    let activation = activate().await?;
+    if matches!(
+        activation,
+        awaken_session_contract::SessionUserRunActivation::Completed
+    ) && let Some(state) = read_settled().await?
+    {
+        return Ok(state);
+    }
+    await_completion_state(settled, reconciliation_interval, read_settled).await
+}
+
+/// Wakes foreground durable submitters when the pool settles a Run and relays
+/// that Run's best-effort live progress while each caller remains connected.
+/// Exact replays share one run-id slot and retain independent drop guards;
+/// neither is durable truth. Every exactly Thread-scoped observation is also
+/// published through the existing Thread hub, so a background child needs no
+/// completion registration.
 pub(crate) struct CompletionRegistry {
-    waiters: std::sync::Mutex<HashMap<String, ForegroundRegistration>>,
+    waiters: std::sync::Mutex<HashMap<String, Vec<ForegroundRegistration>>>,
+    next_registration_id: std::sync::atomic::AtomicU64,
+    hub: Arc<crate::ThreadEventHub>,
+}
+
+impl Default for CompletionRegistry {
+    fn default() -> Self {
+        Self::new(Arc::new(crate::ThreadEventHub::new()))
+    }
 }
 
 struct ForegroundRegistration {
+    id: u64,
     settled: tokio::sync::oneshot::Sender<RunState>,
     stream_sink: Option<Arc<dyn StreamSink>>,
 }
 
 impl CompletionRegistry {
+    pub(crate) fn new(hub: Arc<crate::ThreadEventHub>) -> Self {
+        Self {
+            waiters: Default::default(),
+            next_registration_id: std::sync::atomic::AtomicU64::new(1),
+            hub,
+        }
+    }
+
     /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
     /// settle it before this caller is listening (no lost wakeup). Returns the
     /// receiver plus a [`WaiterGuard`] that removes the waiter if the caller's
@@ -681,26 +855,61 @@ impl CompletionRegistry {
     ) -> (tokio::sync::oneshot::Receiver<RunState>, WaiterGuard) {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let has_stream_sink = stream_sink.is_some();
+        let registration_id = self
+            .next_registration_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.waiters
             .lock()
             .expect("completion registry poisoned")
-            .insert(
-                run_id.0.clone(),
-                ForegroundRegistration {
-                    settled: tx,
-                    stream_sink,
-                },
-            );
+            .entry(run_id.0.clone())
+            .or_default()
+            .push(ForegroundRegistration {
+                id: registration_id,
+                settled: tx,
+                stream_sink,
+            });
         tracing::trace!(
             run_id = %run_id.0,
+            registration_id,
             has_stream_sink,
             "registered durable foreground observation"
         );
         let guard = WaiterGuard {
             registry: Arc::downgrade(self),
             run_id: run_id.0.clone(),
+            registration_id,
         };
         (rx, guard)
+    }
+
+    async fn route_observation(
+        &self,
+        observation: awaken_agent_contract::stream::event::Observation,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        if let Some(coordinate) = &observation.assistant_response {
+            self.hub.publish(
+                &coordinate.thread_id.0,
+                crate::ThreadEvent::Live(observation.clone()),
+            );
+        }
+        let sinks = self
+            .waiters
+            .lock()
+            .expect("completion registry poisoned")
+            .get(&observation.event.run_id.0)
+            .into_iter()
+            .flat_map(|registrations| registrations.iter())
+            .filter_map(|registration| registration.stream_sink.clone())
+            .collect::<Vec<_>>();
+        tracing::trace!(
+            run_id = %observation.event.run_id.0,
+            matched = sinks.len(),
+            "routed durable foreground stream event"
+        );
+        for sink in sinks {
+            sink.send_observation(observation.clone()).await?;
+        }
+        Ok(())
     }
 }
 
@@ -711,6 +920,7 @@ impl CompletionRegistry {
 struct WaiterGuard {
     registry: std::sync::Weak<CompletionRegistry>,
     run_id: String,
+    registration_id: u64,
 }
 
 impl Drop for WaiterGuard {
@@ -718,9 +928,20 @@ impl Drop for WaiterGuard {
         if let Some(registry) = self.registry.upgrade()
             && let Ok(mut waiters) = registry.waiters.lock()
         {
-            let removed = waiters.remove(&self.run_id).is_some();
+            let mut removed = false;
+            let mut remove_run = false;
+            if let Some(registrations) = waiters.get_mut(&self.run_id) {
+                let before = registrations.len();
+                registrations.retain(|registration| registration.id != self.registration_id);
+                removed = registrations.len() != before;
+                remove_run = registrations.is_empty();
+            }
+            if remove_run {
+                waiters.remove(&self.run_id);
+            }
             tracing::trace!(
                 run_id = %self.run_id,
+                registration_id = self.registration_id,
                 removed,
                 "released durable foreground observation"
             );
@@ -730,15 +951,22 @@ impl Drop for WaiterGuard {
 
 impl CompletionSink for CompletionRegistry {
     fn settled(&self, run_id: &RunId, state: &RunState) {
-        if let Some(registration) = self
+        if let Some(registrations) = self
             .waiters
             .lock()
             .expect("completion registry poisoned")
             .remove(&run_id.0)
         {
-            tracing::trace!(run_id = %run_id.0, ?state, "settled durable foreground observation");
-            // The receiver may have already gone (timed out) — a dropped send is fine.
-            let _ = registration.settled.send(state.clone());
+            tracing::trace!(
+                run_id = %run_id.0,
+                observers = registrations.len(),
+                ?state,
+                "settled durable foreground observation"
+            );
+            for registration in registrations {
+                // A receiver may have already gone — a dropped send is fine.
+                let _ = registration.settled.send(state.clone());
+            }
         }
     }
 }
@@ -749,21 +977,14 @@ impl StreamSink for CompletionRegistry {
         &self,
         event: awaken_agent_contract::stream::event::Event,
     ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
-        let sink = self
-            .waiters
-            .lock()
-            .expect("completion registry poisoned")
-            .get(&event.run_id.0)
-            .and_then(|registration| registration.stream_sink.clone());
-        tracing::trace!(
-            run_id = %event.run_id.0,
-            matched = sink.is_some(),
-            "routed durable foreground stream event"
-        );
-        match sink {
-            Some(sink) => sink.send(event).await,
-            None => Ok(()),
-        }
+        self.route_observation(event.into()).await
+    }
+
+    async fn send_observation(
+        &self,
+        observation: awaken_agent_contract::stream::event::Observation,
+    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
+        self.route_observation(observation).await
     }
 }
 
@@ -771,13 +992,15 @@ impl StreamSink for CompletionRegistry {
 mod completion_tests {
     use super::{
         CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
-        await_completion_state, awaiting_ticket_advanced, durable_resume_input,
-        remote_worker_placement,
+        activate_and_await_session_user_run, await_completion_state, awaiting_ticket_advanced,
+        durable_resume_input, remote_worker_placement,
     };
     use awaken_agent_contract::agent::run::RunState;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_agent_contract::event::{AgentEvent, Delta};
-    use awaken_agent_contract::stream::event::Event as StreamEvent;
+    use awaken_agent_contract::stream::event::{
+        Event as StreamEvent, Observation as StreamObservation,
+    };
     use awaken_agent_contract::stream::sink::Sink as StreamSink;
     use awaken_run_ingress::CompletionSink;
     use awaken_runtime_contract::resolved::{
@@ -832,6 +1055,7 @@ mod completion_tests {
             snapshot_id: ExecutableAgentSnapshotId("snapshot-1".into()),
             catalog_fingerprint: CatalogFingerprint("catalog-1".into()),
             result: ResumeResult::Input(answer.into()),
+            context_messages: Vec::new(),
             now_ms: 10,
         }
     }
@@ -1118,6 +1342,183 @@ mod completion_tests {
     }
 
     #[tokio::test]
+    async fn session_user_run_observation_covers_activation_and_peer_recovery() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        use awaken_agent_contract::agent::run::EndCause;
+        use awaken_session_contract::SessionUserRunActivation;
+
+        // Cause/effect graph: C1 activation returns Activated/AlreadyActivated/
+        // RecoveryClaimed/Completed; C2 settlement is signalled locally during
+        // activation or appears only in peer committed truth. Effects: E1 the
+        // observer exists before activation; E2 a synchronous local settlement
+        // is not lost; E3 peer truth releases the same wait; E4 only committed
+        // Awaiting/Ended crosses the boundary.
+        //
+        // | Rule | Activation | Settlement source | Effect |
+        // | O1 | Activated | local during activation | E1+E2+E4 |
+        // | O2 | AlreadyActivated | peer committed fallback | E1+E3+E4 |
+        // | O3 | RecoveryClaimed | peer committed fallback | E1+E3+E4 |
+        // | O4 | Completed | immediate committed read | E1+E3+E4 |
+        let rules = [
+            (
+                "O1",
+                SessionUserRunActivation::Activated,
+                Some(RunState::Awaiting),
+                None,
+            ),
+            (
+                "O2",
+                SessionUserRunActivation::AlreadyActivated {
+                    session_activity_epoch: 9,
+                },
+                None,
+                Some(RunState::Awaiting),
+            ),
+            (
+                "O3",
+                SessionUserRunActivation::RecoveryClaimed,
+                None,
+                Some(RunState::Awaiting),
+            ),
+            (
+                "O4",
+                SessionUserRunActivation::Completed,
+                None,
+                Some(RunState::Ended(EndCause::NaturalEnd)),
+            ),
+        ];
+
+        for (rule, activation, local_state, peer_state) in rules {
+            let registry = Arc::new(CompletionRegistry::default());
+            let run_id = RunId(format!("session-user-{rule}"));
+            let activation_registry = registry.clone();
+            let activation_run = run_id.clone();
+            let expected_peer = peer_state.clone();
+            let state = activate_and_await_session_user_run(
+                &registry,
+                &run_id,
+                None,
+                std::time::Duration::from_millis(2),
+                move || async move {
+                    assert_eq!(
+                        activation_registry
+                            .waiters
+                            .lock()
+                            .unwrap()
+                            .get(&activation_run.0)
+                            .map(Vec::len),
+                        Some(1),
+                        "{rule}/E1 register before activation"
+                    );
+                    if let Some(local_state) = local_state {
+                        activation_registry.settled(&activation_run, &local_state);
+                    }
+                    Ok(activation)
+                },
+                move || {
+                    let expected_peer = expected_peer.clone();
+                    async move { Ok(expected_peer) }
+                },
+            )
+            .await
+            .unwrap_or_else(|error| panic!("{rule}: {error}"));
+
+            assert!(
+                matches!(state, RunState::Awaiting | RunState::Ended(_)),
+                "{rule}/E4"
+            );
+            assert!(registry.waiters.lock().unwrap().is_empty(), "{rule}");
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_session_user_run_observation_releases_only_its_waiter() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        use awaken_session_contract::SessionUserRunActivation;
+
+        // Cause/effect graph: C1 an activated Run remains Running in committed
+        // truth; C2 its foreground caller is dropped. Effects: E1 the observation
+        // remains pending while C1 holds; E2 C2 removes its temporary registration;
+        // E3 no Run/Dispatch state is changed. Decision rule D1=C1+C2=>E1+E2+E3.
+        let registry = Arc::new(CompletionRegistry::default());
+        let run_id = RunId("session-user-drop".into());
+        let mut observation = Box::pin(activate_and_await_session_user_run(
+            &registry,
+            &run_id,
+            None,
+            std::time::Duration::from_millis(2),
+            || std::future::ready(Ok(SessionUserRunActivation::Activated)),
+            || std::future::ready(Ok(None)),
+        ));
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(12), observation.as_mut())
+                .await
+                .is_err(),
+            "D1/E1"
+        );
+        assert_eq!(
+            registry
+                .waiters
+                .lock()
+                .unwrap()
+                .get(&run_id.0)
+                .map(Vec::len),
+            Some(1),
+            "D1/E1"
+        );
+        drop(observation);
+        assert!(registry.waiters.lock().unwrap().is_empty(), "D1/E2");
+    }
+
+    #[tokio::test]
+    async fn exact_run_replay_observers_do_not_replace_each_other() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        // Cause/effect graph: C1 two foreground callers observe the same stable
+        // Run; C2 either caller drops or the Run settles. Effects: E1 both share
+        // the one registry Run slot; E2 one drop preserves the peer; E3 settlement
+        // wakes every remaining observer. Rules M1=C1=>E1, M2=C1+drop=>E2,
+        // M3=C1+settle=>E3.
+        let registry = Arc::new(CompletionRegistry::default());
+        let run_id = RunId("session-user-replay".into());
+        let (first, first_guard) = registry.register(&run_id, None);
+        let (second, _second_guard) = registry.register(&run_id, None);
+        assert_eq!(
+            registry
+                .waiters
+                .lock()
+                .unwrap()
+                .get(&run_id.0)
+                .map(Vec::len),
+            Some(2),
+            "M1/E1"
+        );
+
+        drop(first_guard);
+        assert!(first.await.is_err(), "M2 dropped observer closes");
+        assert_eq!(
+            registry
+                .waiters
+                .lock()
+                .unwrap()
+                .get(&run_id.0)
+                .map(Vec::len),
+            Some(1),
+            "M2/E2"
+        );
+        registry.settled(&run_id, &RunState::Awaiting);
+        assert!(matches!(second.await, Ok(RunState::Awaiting)), "M3/E3");
+        assert!(registry.waiters.lock().unwrap().is_empty(), "M3/E3");
+    }
+
+    #[tokio::test]
     async fn durable_foreground_registry_routes_only_the_current_runs_live_stream() {
         // Cause/effect graph: C1 a foreground durable Run registers a live sink;
         // C2 an emitted StreamEvent carries the exact vs another Run id; C3 the
@@ -1161,6 +1562,51 @@ mod completion_tests {
         assert!(matches!(settled.await, Ok(RunState::Awaiting)), "R3 state");
         registry.send(event("run-live", "too-late")).await.unwrap();
         assert_eq!(downstream.events().len(), 1, "R3/R4 route removed");
+    }
+
+    /// Live observation cause/effect table: C1 a background Run has no
+    /// foreground waiter; C2 its neutral event carries child Thread identity; C3
+    /// an event omits Thread identity. E1 C1+C2 publishes once on the existing
+    /// child Hub channel; E2 the primary/foreign channel sees nothing; E3 C3 is
+    /// not guessed or published. Rules H1=C1+C2=>E1+E2, H2=C1+C3=>E3. This
+    /// proves observation does not depend on a second background-run registry.
+    /// Constraint/Invariant: exact Thread identity selects the existing Hub
+    /// channel; absence never falls back to another Thread. Decision rule: H1 and
+    /// H2 cover exact and absent Thread identity.
+    #[tokio::test]
+    async fn background_live_progress_uses_the_exact_thread_hub_channel() {
+        let hub = Arc::new(crate::ThreadEventHub::new());
+        let registry = CompletionRegistry::new(hub.clone());
+        let mut child = hub.subscribe("child-thread");
+        let mut primary = hub.subscribe("session-root");
+        let event = StreamObservation::assistant_delta(
+            RunId("background-run".into()),
+            ThreadId("child-thread".into()),
+            0,
+            0,
+            AgentEvent::Delta(Delta::TextDelta { delta: "x".into() }),
+        );
+
+        registry.send_observation(event.clone()).await.unwrap();
+        assert!(
+            matches!(
+                child.try_recv(),
+                Ok(crate::ThreadEvent::Live(observed)) if observed == event
+            ),
+            "H1/E1"
+        );
+        assert!(primary.try_recv().is_err(), "H1/E2");
+
+        registry
+            .send(StreamEvent {
+                run_id: RunId("background-run".into()),
+                kind: AgentEvent::Delta(Delta::TextDelta {
+                    delta: "ambiguous".into(),
+                }),
+            })
+            .await
+            .unwrap();
+        assert!(child.try_recv().is_err(), "H2/E3");
     }
 
     #[tokio::test]

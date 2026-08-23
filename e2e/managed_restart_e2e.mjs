@@ -14,7 +14,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38130);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -23,12 +31,6 @@ const STORE_DIR = `/tmp/awaken-restart-e2e-${process.pid}`;
 // `let`, not `const`: after the server restart the old keep-alive socket is dead,
 // so the post-restart calls use a freshly connected client (see below).
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-
-const listEvents = async (sessionId) => {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-};
 
 // The durable artifacts under the store dir, regardless of backend: SQLite `.db`
 // files or the filesystem backend's `commits.ndjson` append-logs.
@@ -56,12 +58,22 @@ async function main() {
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(session.id, {
+  const initialReceipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'SURVIVE-RESTART' }] }],
     betas: BETAS,
   });
 
-  const events = await listEvents(session.id);
+  const initialReceiptId = initialReceipt.data[0]?.id;
+  assert.equal(typeof initialReceiptId, 'string', 'R1 exact pre-restart User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    initialReceiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.tool_use')
+      && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+    'R1 pre-restart Run to commit its awaiting state',
+  );
   const toolUse = events.find((e) => e.type === 'agent.tool_use');
   assert.ok(toolUse, 'run awaiting on a tool_use before restart');
   assert.equal(
@@ -96,11 +108,22 @@ async function main() {
   // | Rule | awaiting truth | new incarnation | first event   | effects    |
   // | R1   | yes            | yes             | confirmation  | E1+E2+E3   |
   try {
-    await client.beta.sessions.events.send(session.id, {
+    const confirmationReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
       betas: BETAS,
     });
-    const events = await listEvents(session.id);
+    const confirmationReceiptId = confirmationReceipt.data[0]?.id;
+    assert.equal(typeof confirmationReceiptId, 'string', 'R1 exact post-restart confirmation receipt');
+    const { events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      confirmationReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.tool_result')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'R1 recovered Run to commit after its exact confirmation',
+      { timeoutMs: 30_000 },
+    );
     const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
     assert.equal(lastIdle.stop_reason.type, 'end_turn', 'awaiting run resumed and completed after restart');
     const results = events.filter((e) => e.type === 'agent.tool_result');

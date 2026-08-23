@@ -8,7 +8,7 @@ mod control_plane;
 
 pub use control_plane::*;
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use awaken_session_contract::{
@@ -40,6 +40,10 @@ pub struct WebhookOutboxNotifier {
     session_outbox: Arc<dyn ManagedSessionRepository>,
     draining: Arc<tokio::sync::Mutex<()>>,
     wake: Arc<tokio::sync::Notify>,
+    /// One notifier owns one replay loop. Coordinator composition can reserve
+    /// the application slot before starting this loop, so a rejected duplicate
+    /// binding never leaves a second outbox consumer running.
+    started: OnceLock<()>,
 }
 
 const RECONCILIATION_INTERVAL: Duration = Duration::from_secs(30);
@@ -64,22 +68,48 @@ impl WebhookOutboxNotifier {
         interval: Duration,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
     ) -> Self {
-        let wake = Arc::new(tokio::sync::Notify::new());
-        let sink = Self {
+        let sink = Self::deferred(delivery, outbox);
+        sink.register_reconciliation(interval, service_lifecycle)
+            .expect("new lifecycle outbox notifier starts once");
+        sink
+    }
+
+    /// Construct the canonical outbox consumer without starting its supervisor.
+    /// Coordinator uses this narrow composition seam to reserve the
+    /// SessionApplication notifier slot first.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn deferred(
+        delivery: Arc<dyn LifecycleFactDelivery>,
+        outbox: Arc<dyn ManagedSessionRepository>,
+    ) -> Self {
+        Self {
             delivery,
             session_outbox: outbox,
             draining: Arc::new(tokio::sync::Mutex::new(())),
-            wake,
-        };
-        sink.register_reconciliation(interval, service_lifecycle);
-        sink
+            wake: Arc::new(tokio::sync::Notify::new()),
+            started: OnceLock::new(),
+        }
+    }
+
+    /// Start the production reconciliation cadence after the notifier has been
+    /// installed in its one SessionApplication owner.
+    #[doc(hidden)]
+    pub fn start(
+        &self,
+        service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    ) -> Result<(), &'static str> {
+        self.register_reconciliation(RECONCILIATION_INTERVAL, service_lifecycle)
     }
 
     fn register_reconciliation(
         &self,
         interval: Duration,
         service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-    ) {
+    ) -> Result<(), &'static str> {
+        self.started
+            .set(())
+            .map_err(|_| "lifecycle outbox notifier is already started")?;
         let delivery = self.delivery.clone();
         let session_outbox = self.session_outbox.clone();
         let draining = self.draining.clone();
@@ -98,6 +128,7 @@ impl WebhookOutboxNotifier {
             }
             Ok(())
         });
+        Ok(())
     }
 
     async fn drain_once(
@@ -127,41 +158,4 @@ impl LifecycleFactNotifier for WebhookOutboxNotifier {
     fn notify(&self) {
         self.wake.notify_one();
     }
-}
-
-/// Compose the existing config-plane delivery, durable Session outbox notifier,
-/// and strict subscription router for a production process.
-pub fn assemble_with_session_repo(
-    store: Arc<dyn awaken_config_resolver::WebhookStore>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    org_id: Option<String>,
-    outbox: Arc<dyn ManagedSessionRepository>,
-    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> (Arc<dyn LifecycleFactNotifier>, axum::Router) {
-    let delivery = config_plane_lifecycle_delivery(store.clone(), secrets.clone(), org_id);
-    let notifier = Arc::new(WebhookOutboxNotifier::with_delivery(
-        delivery,
-        outbox,
-        service_lifecycle,
-    ));
-    (notifier, webhook_config_router(store, secrets))
-}
-
-/// Test-only composition that keeps the same outbox path and swaps only the
-/// endpoint admission/sender policy needed by loopback receivers.
-#[cfg(feature = "test-support")]
-pub fn assemble_loopback(
-    store: Arc<dyn awaken_config_resolver::WebhookStore>,
-    secrets: Arc<dyn awaken_credential_vault::SecretStore>,
-    org_id: Option<String>,
-    outbox: Arc<dyn ManagedSessionRepository>,
-    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
-) -> (Arc<dyn LifecycleFactNotifier>, axum::Router) {
-    let delivery = loopback_lifecycle_delivery(store.clone(), secrets.clone(), org_id);
-    let notifier = Arc::new(WebhookOutboxNotifier::with_delivery(
-        delivery,
-        outbox,
-        service_lifecycle,
-    ));
-    (notifier, webhook_config_router_loopback(store, secrets))
 }

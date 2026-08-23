@@ -14,9 +14,14 @@
 //! selecting another source or revision.
 
 use async_trait::async_trait;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ManagedLifecycleFact;
+
+mod execution_state;
+pub use execution_state::{
+    SessionExecutionState, SessionExecutionStateError, SessionExecutionTransitionError,
+};
 
 /// Secret-free active MCP projection consumed by protocol adapters. It is
 /// derived from the typed attachment aggregate without a JSON serialization hop.
@@ -42,129 +47,6 @@ pub struct VisibleMcpServer {
 )]
 #[serde(transparent)]
 pub struct SessionRevision(pub u64);
-
-/// The durable execution state of a Managed Session aggregate.
-///
-/// Retention and public visibility are deliberately owned by
-/// [`SessionDisposition`]. Keeping the axes orthogonal allows an activation
-/// failure or archived Session to be deleted without pretending that deletion
-/// is another execution transition.
-#[derive(
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-)]
-#[serde(rename_all = "snake_case")]
-pub enum SessionExecutionState {
-    Preparing,
-    Activating,
-    ActivationFailed,
-    Running,
-    Rescheduling,
-    #[default]
-    Idle,
-    Terminated,
-}
-
-impl SessionExecutionState {
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Preparing => "preparing",
-            Self::Activating => "activating",
-            Self::ActivationFailed => "activation_failed",
-            Self::Running => "running",
-            Self::Rescheduling => "rescheduling",
-            Self::Idle => "idle",
-            Self::Terminated => "terminated",
-        }
-    }
-
-    #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::ActivationFailed | Self::Terminated)
-    }
-
-    /// Whether a driving event may join or open the aggregate-owned activity
-    /// interval. `Running` is ready because `activity_epoch` fences overlapping
-    /// and crash-recovery admissions; realization phases and terminal states are
-    /// not execution-ready.
-    #[must_use]
-    pub const fn admits_activity(self) -> bool {
-        matches!(self, Self::Idle | Self::Running)
-    }
-
-    /// Whether the canonical Session state machine admits `next`.
-    ///
-    /// Replays are deliberately idempotent. Terminal states fail closed, and
-    /// every non-terminal transition used by fresh execution, resume, and
-    /// recovery is defined here rather than in those callers.
-    #[must_use]
-    pub fn can_transition_to(self, next: Self) -> bool {
-        if self == next {
-            return true;
-        }
-        if self.is_terminal() {
-            return false;
-        }
-        match next {
-            Self::Terminated => true,
-            Self::ActivationFailed => !matches!(self, Self::Idle),
-            Self::Activating => {
-                matches!(self, Self::Preparing | Self::Running | Self::Rescheduling)
-            }
-            Self::Idle => matches!(
-                self,
-                Self::Preparing | Self::Activating | Self::Running | Self::Rescheduling
-            ),
-            Self::Running => matches!(self, Self::Idle),
-            Self::Rescheduling => matches!(self, Self::Idle | Self::Running),
-            Self::Preparing => false,
-        }
-    }
-}
-
-impl std::fmt::Display for SessionExecutionState {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(self.as_str())
-    }
-}
-
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("unknown Session execution state `{0}`")]
-pub struct SessionExecutionStateError(pub String);
-
-#[derive(Clone, Copy, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("invalid Session execution transition from `{from}` to `{to}`")]
-pub struct SessionExecutionTransitionError {
-    pub from: SessionExecutionState,
-    pub to: SessionExecutionState,
-}
-
-impl std::str::FromStr for SessionExecutionState {
-    type Err = SessionExecutionStateError;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "preparing" => Ok(Self::Preparing),
-            "activating" => Ok(Self::Activating),
-            "activation_failed" => Ok(Self::ActivationFailed),
-            "running" => Ok(Self::Running),
-            "rescheduling" => Ok(Self::Rescheduling),
-            "idle" => Ok(Self::Idle),
-            "terminated" => Ok(Self::Terminated),
-            other => Err(SessionExecutionStateError(other.to_string())),
-        }
-    }
-}
 
 /// Durable retention and public-visibility state of one Session.
 ///
@@ -284,10 +166,27 @@ pub struct PersistedSession {
     /// Exact durable neutral mutable tool policy. Empty is an intentional clear;
     /// public protocol tool unions are projections and never persistence truth.
     pub tools: crate::SessionToolConfiguration,
-    /// Monotonic root-CAS fence for overlapping driving events. Execution and
-    /// disposition remain the durable logical state; this scalar only prevents
-    /// a stale completion from settling a newer turn.
+    /// All accepted Session Event batches in root-revision order. Entries remain
+    /// after processing as the sole durable inbound DTO provenance; User/System
+    /// completion remains owned by Dispatch/Thread and Outcome state by the
+    /// Thread Outcome aggregate.
+    pub event_batches: Vec<crate::SessionEventBatch>,
+    /// Monotonic root-CAS environment fence for overlapping driving events.
+    /// Execution and disposition remain the durable logical state; completion
+    /// membership is owned by `active_activity_epochs`, while this scalar never
+    /// rewinds and therefore keeps environment operations uniquely ordered.
     pub activity_epoch: u64,
+    /// Epochs of driving activities that have been admitted but have not yet
+    /// settled. This is Session activity truth, not a child/coordinator
+    /// relationship registry. `activity_epoch` remains the monotonic
+    /// environment fence; this set only prevents an out-of-order completion
+    /// from closing the shared Running interval while an older activity remains.
+    ///
+    /// Historical Running rows deserialize with an empty set. A direct settle
+    /// of their current scalar epoch is treated as the one legacy activity; a
+    /// new admission supersedes that unknowable crash-orphan and starts the
+    /// explicit set at its successor epoch.
+    pub active_activity_epochs: BTreeSet<u64>,
     /// One continuous authoritative Running interval. It is persisted in the
     /// aggregate so process recovery and overlapping driving events cannot
     /// fabricate gaps or emit two customer-usage intervals.
@@ -351,7 +250,9 @@ impl PersistedSession {
             title,
             metadata,
             tools,
+            event_batches: Vec::new(),
             activity_epoch: 0,
+            active_activity_epochs: BTreeSet::new(),
             running_interval: None,
             runtime_active_millis: 0,
             budget,
@@ -364,6 +265,24 @@ impl PersistedSession {
             disposition: Default::default(),
             terminal_cleanup: Default::default(),
         }
+    }
+
+    /// Install one complete create-time Event plan before the Session root is
+    /// inserted. The root activity begins in this same value so a nonempty batch
+    /// is observably Running without a follow-up mutation.
+    pub fn install_initial_event_plan(
+        &mut self,
+        mut plan: crate::SessionInitialEventPlan,
+    ) -> Result<(), crate::SessionEventBatchError> {
+        if !self.event_batches.is_empty() {
+            return Err(crate::SessionEventBatchError::ProgressMismatch);
+        }
+        let activity_epoch = self
+            .begin_activity_epoch()
+            .ok_or(crate::SessionEventBatchError::ProgressMismatch)?;
+        plan.batch.wake_activity_epoch = Some(activity_epoch);
+        self.event_batches.push(plan.batch);
+        Ok(())
     }
 
     /// Apply the sole durable Session execution transition function.
@@ -381,8 +300,61 @@ impl PersistedSession {
         if from == next {
             return Ok(false);
         }
+        if next.is_terminal() {
+            self.active_activity_epochs.clear();
+        }
         self.execution = next;
         Ok(true)
+    }
+
+    /// Advance the monotonic activity fence and record the newly admitted
+    /// activity. An empty set on a historical Running row is deliberately not
+    /// backfilled here: after crash recovery the predecessor has no durable
+    /// completion owner, so the successor becomes the sole explicit activity.
+    pub fn begin_activity_epoch(&mut self) -> Option<u64> {
+        let next = self.activity_epoch.checked_add(1)?;
+        self.activity_epoch = next;
+        self.active_activity_epochs.insert(next);
+        Some(next)
+    }
+
+    /// Open an activity at the exact root revision reserved by an idempotent
+    /// application mutation. The revision is monotonic and therefore remains in
+    /// the same fencing domain as ordinary activity epochs without an auxiliary
+    /// operation-to-epoch registry.
+    pub fn begin_activity_epoch_at(&mut self, epoch: u64) -> bool {
+        if epoch == 0 || epoch <= self.activity_epoch {
+            return false;
+        }
+        self.activity_epoch = epoch;
+        self.active_activity_epochs.insert(epoch)
+    }
+
+    /// Settle one admitted activity epoch.
+    ///
+    /// `None` is an unknown, duplicate, or stale completion. `Some(false)`
+    /// means another admitted activity remains; `Some(true)` means this was the
+    /// last activity and the application may close the shared Running interval.
+    /// A historical Running row with no explicit set treats its non-zero scalar
+    /// epoch as a singleton for backward-compatible settlement.
+    pub fn settle_activity_epoch(&mut self, expected_epoch: u64) -> Option<bool> {
+        if self.active_activity_epochs.is_empty() {
+            return (self.execution == SessionExecutionState::Running
+                && expected_epoch != 0
+                && expected_epoch == self.activity_epoch)
+                .then_some(true);
+        }
+        self.active_activity_epochs
+            .remove(&expected_epoch)
+            .then_some(self.active_activity_epochs.is_empty())
+    }
+
+    /// Whether the current aggregate has explicit, unsettled activity truth.
+    /// Legacy Running compatibility is intentionally handled only by
+    /// [`Self::settle_activity_epoch`], where the caller supplies the epoch.
+    #[must_use]
+    pub fn has_active_activities(&self) -> bool {
+        !self.active_activity_epochs.is_empty()
     }
 
     /// Whether the durable aggregate may be replaced by a compact tombstone.
@@ -429,6 +401,23 @@ impl PersistedSession {
         true
     }
 
+    /// Cumulative active time at an observation instant, including the one
+    /// currently open interval exactly once. The durable closed total and open
+    /// interval are the sole clock ledger; request admission must use this view
+    /// rather than inventing a gate-local timer.
+    #[must_use]
+    pub fn effective_runtime_active_millis(&self, now_unix_ms: u64) -> u64 {
+        self.runtime_active_millis.saturating_add(
+            self.running_interval
+                .as_ref()
+                .map(|start| {
+                    normalized_runtime_interval_end(start.started_at_unix_ms, now_unix_ms)
+                        .saturating_sub(start.started_at_unix_ms)
+                })
+                .unwrap_or_default(),
+        )
+    }
+
     /// Close and remove the current interval. The returned value is committed
     /// through the same root mutation's lifecycle outbox.
     pub fn close_runtime_interval(
@@ -465,6 +454,7 @@ impl PersistedSession {
         if !self.execution.is_terminal() {
             self.execution = SessionExecutionState::Terminated;
         }
+        self.active_activity_epochs.clear();
         self.terminal_cleanup.request(&self.session_id);
         self.disposition = SessionDisposition::Archived {
             archived_at: archived_at.into(),
@@ -486,6 +476,7 @@ impl PersistedSession {
         if plan.terminalize_execution {
             self.execution = SessionExecutionState::Terminated;
         }
+        self.active_activity_epochs.clear();
         if plan.request_cleanup {
             self.terminal_cleanup.request(&self.session_id);
         }
@@ -540,6 +531,17 @@ impl PersistedSession {
         Ok(changed)
     }
 
+    /// Admit one exact remote Runtime receipt into the existing cleanup
+    /// operation. This changes no target or phase and therefore cannot create a
+    /// second cleanup queue beside [`crate::SessionCleanupOperation`].
+    pub fn record_terminal_cleanup_completion(
+        &mut self,
+        completion: crate::SessionCleanupCompletion,
+    ) -> Result<bool, crate::SessionCleanupError> {
+        self.terminal_cleanup
+            .record_completion(&self.session_id, completion)
+    }
+
     /// Whether the root Session state forbids every new realization effect.
     /// Keep this classification on the aggregate so API rehydration, MCP recovery,
     /// and later reconcilers cannot grow different terminal-status lists.
@@ -589,7 +591,9 @@ impl PersistedSession {
     /// and future repositories from growing different recovery scans.
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
-        self.needs_resource_reconciliation()
+        self.needs_event_reconciliation()
+            || self.needs_outcome_reconciliation()
+            || self.needs_resource_reconciliation()
             || self.resources.has_references()
             || self.mcp.needs_reconciliation()
             || !matches!(
@@ -598,6 +602,33 @@ impl PersistedSession {
             )
             || self.terminal_cleanup.needs_reconciliation()
             || self.needs_work_dispatch()
+    }
+
+    /// Whether the sole lifecycle supervisor must continue any retained
+    /// root-owned Event batch. Completed batches remain provenance but do not
+    /// produce repeated reconciliation work; an ordinary queued batch owns no
+    /// aggregate activity while waiting behind an earlier Run.
+    #[must_use]
+    pub fn needs_event_reconciliation(&self) -> bool {
+        !self.is_terminal() && self.event_batches.iter().any(|batch| !batch.is_complete())
+    }
+
+    /// Whether retained root provenance can identify a Thread whose canonical
+    /// Outcome aggregate may still need continuation. The root intentionally
+    /// stores no active/terminal shadow flag: the lifecycle supervisor revisits
+    /// this conservative candidate set and the Thread aggregate decides whether
+    /// work exists. This trades a bounded read for one source of effect truth.
+    #[must_use]
+    pub fn needs_outcome_reconciliation(&self) -> bool {
+        !self.is_terminal()
+            && self.event_batches.iter().any(|batch| {
+                batch.events.iter().any(|entry| {
+                    matches!(
+                        entry.event,
+                        crate::SessionEventCommand::DefineOutcome { .. }
+                    )
+                })
+            })
     }
 
     /// Whether the externally executed Session must have its one authoritative
@@ -801,6 +832,8 @@ pub enum SessionMutationValidationError {
     LifecycleSessionMismatch,
     #[error("Session Running interval is inconsistent with execution state")]
     RuntimeIntervalStateMismatch,
+    #[error("Session active activity epochs are inconsistent with execution state or fence")]
+    ActiveActivityStateMismatch,
     #[error("lifecycle runtime interval payload is inconsistent")]
     RuntimeIntervalFactMismatch,
 }
@@ -906,6 +939,16 @@ impl SessionMutation {
             && session.execution != SessionExecutionState::Running
         {
             return Err(SessionMutationValidationError::RuntimeIntervalStateMismatch);
+        }
+        if let SessionMutationPayload::Replace(session) = &self.payload
+            && (session
+                .active_activity_epochs
+                .iter()
+                .any(|epoch| *epoch == 0 || *epoch > session.activity_epoch)
+                || (!session.active_activity_epochs.is_empty()
+                    && (session.execution == SessionExecutionState::Idle || session.is_terminal())))
+        {
+            return Err(SessionMutationValidationError::ActiveActivityStateMismatch);
         }
         if self
             .lifecycle_facts
@@ -1099,7 +1142,9 @@ mod mutation_tests {
             title: None,
             metadata: Default::default(),
             tools: Default::default(),
+            event_batches: Vec::new(),
             activity_epoch: 0,
+            active_activity_epochs: Default::default(),
             running_interval: None,
             runtime_active_millis: 0,
             budget: Default::default(),
@@ -1125,6 +1170,8 @@ mod mutation_tests {
         // | Rule | typed input | prior mutation | Effect |
         // | C1 | complete/frozen | no | E1 canonical aggregate |
         // | C2 | wire-specific defaults | no | E2 impossible at constructor |
+        // Constraints/invariants: construction starts at revision/activity zero
+        // with one complete frozen baseline; adapters cannot author partial roots.
         let fixture = session("constructor-source", SessionRevision(0));
         let crate::SessionBaselineState::Preparing(intent) = fixture.baseline else {
             panic!("fixture carries a creation intent");
@@ -1150,6 +1197,7 @@ mod mutation_tests {
         );
         assert_eq!(prepared.disposition, SessionDisposition::Active, "C1/E1");
         assert_eq!(prepared.activity_epoch, 0, "C1/E1");
+        assert!(prepared.active_activity_epochs.is_empty(), "C1/E1");
         assert!(prepared.frozen_baseline().is_some(), "C1/E1");
         assert_eq!(prepared.title.as_deref(), Some("title"), "C1/E1");
         assert_eq!(prepared.metadata, metadata, "C1/E1");
@@ -1167,10 +1215,15 @@ mod mutation_tests {
 
     #[test]
     fn persisted_session_accepts_only_the_complete_canonical_grammar() {
-        // Grammar partition: S1 complete canonical `status` -> exact decode;
-        // S2 unknown status, S3 removed required fact, S4 old alias, and S5
-        // unknown top-level fact -> reject. Recovery never synthesizes domain
-        // truth from defaults or alternate spellings.
+        // Grammar cause/effect partition: C1 complete canonical aggregate;
+        // C2 unknown status; C3 missing pre-existing required fact; C4 missing
+        // Event-batch truth; C5 missing active-activity truth; C6 old status
+        // alias; C7 unknown top-level fact. E1 is exact decode and E2 is a
+        // fail-closed decode error. Rules S1=C1=>E1 and S2..S7=C2..C7=>E2.
+        // Recovery never synthesizes domain truth from defaults, SQL columns,
+        // or alternate spellings.
+        // Constraints/invariants: the persisted aggregate has one closed grammar;
+        // missing, aliased, or unknown facts never receive compatibility defaults.
         let value = serde_json::to_value(session("session-1", SessionRevision(1))).unwrap();
         assert_eq!(value.get("status"), Some(&serde_json::json!("idle")));
         assert!(value.get("lifecycle").is_none());
@@ -1196,19 +1249,39 @@ mod mutation_tests {
             "S3"
         );
 
+        let mut missing_batches = value.clone();
+        missing_batches
+            .as_object_mut()
+            .unwrap()
+            .remove("event_batches");
+        assert!(
+            serde_json::from_value::<PersistedSession>(missing_batches).is_err(),
+            "S4"
+        );
+
+        let mut missing_activities = value.clone();
+        missing_activities
+            .as_object_mut()
+            .unwrap()
+            .remove("active_activity_epochs");
+        assert!(
+            serde_json::from_value::<PersistedSession>(missing_activities).is_err(),
+            "S5"
+        );
+
         let mut aliased = value.clone();
         let status = aliased.as_object_mut().unwrap().remove("status").unwrap();
         aliased["lifecycle"] = status;
         assert!(
             serde_json::from_value::<PersistedSession>(aliased).is_err(),
-            "S4"
+            "S6"
         );
 
         let mut extra = value;
         extra["unknown"] = serde_json::json!(true);
         assert!(
             serde_json::from_value::<PersistedSession>(extra).is_err(),
-            "S5"
+            "S7"
         );
     }
 
@@ -1238,6 +1311,13 @@ mod mutation_tests {
 
     #[test]
     fn execution_transition_decision_table_fails_closed() {
+        // Test design — Causes: every execution-state pair and the Idle/Running
+        // activity-admission partition are evaluated. Effects: permitted pairs
+        // mutate atomically and terminal entry clears activities; forbidden pairs
+        // preserve the aggregate. Constraints/invariants: Terminated is absorbing,
+        // activity begins only from Idle/Running, and no rejected edge mutates.
+        // Decision rule X1: the explicit closed transition relation below is true
+        // iff `can_transition_to` and `transition_execution` admit the same edge.
         use SessionExecutionState as State;
 
         let states = [
@@ -1290,7 +1370,13 @@ mod mutation_tests {
         assert_eq!(value.transition_execution(State::Idle), Ok(false));
         assert_eq!(value.transition_execution(State::Running), Ok(true));
         assert_eq!(value.execution, State::Running);
+        assert_eq!(value.begin_activity_epoch(), Some(1));
+        assert_eq!(value.active_activity_epochs, BTreeSet::from([1]));
         assert_eq!(value.transition_execution(State::Terminated), Ok(true));
+        assert!(
+            value.active_activity_epochs.is_empty(),
+            "terminal transition clears every active activity"
+        );
         let terminal = value.clone();
         assert_eq!(
             value.transition_execution(State::Idle),
@@ -1484,6 +1570,10 @@ mod mutation_tests {
     /// | R7 | replace | T | T | T | T | F | - | replace mismatch |
     /// | R8 | delete | T | T | T | T | F | - | tombstone mismatch |
     /// | R9 | either | T | T | T | T | T | F | lifecycle mismatch |
+    ///
+    /// Constraint/invariant: validation is ordered and side-effect free; the
+    /// first failed prerequisite returns its stable error and never advances a
+    /// Session revision or partially accepts lifecycle facts.
     #[test]
     fn mutation_validation_tests_are_generated_from_the_decision_table() {
         let rules = [
@@ -1658,10 +1748,16 @@ mod mutation_tests {
     fn runtime_interval_mutation_decision_table_is_fail_closed() {
         // Cause/effect graph: C1=open interval with Running/non-Running state;
         // C2=closed payload absent/present; C3=event kind and stable id exact;
-        // C4=end precedes start. R1 Running+C1 => accept aggregate; R2
-        // non-Running+C1 => reject; R3 exact C2+C3+!C4 => accept fact; R4-R6
-        // missing/wrong-id/reversed payload => reject. This is the root-store
-        // boundary, so no adapter can persist a billable parallel truth.
+        // C4=end precedes start. Effects: E1 admits the exact aggregate/fact;
+        // E2 rejects malformed or contradictory durable truth. Decision rules:
+        // R1 Running+C1 => E1; R2 non-Running+C1 => E2; R3 exact C2+C3+!C4
+        // => E1; R4-R6 missing/wrong-id/reversed payload => E2; C5 active
+        // epochs are positive, no newer than the monotonic fence, and absent
+        // from Idle or terminal state. R7 valid C5 => E1; R8/R9 future/Idle
+        // active epochs => E2. This is the root-store boundary, so no adapter
+        // can persist a billable parallel truth.
+        // Constraints/invariants: open-interval state, active epochs, and the
+        // matching closure fact form one atomic aggregate and one billing truth.
         let expected_revision = SessionRevision(7);
         let valid_interval = crate::SessionRuntimeInterval {
             interval_id: "interval-1".into(),
@@ -1690,6 +1786,7 @@ mod mutation_tests {
         let mut running = session("session-1", expected_revision);
         running.execution = SessionExecutionState::Running;
         running.activity_epoch = 3;
+        running.active_activity_epochs.insert(3);
         assert!(running.begin_runtime_interval(100), "R1 setup");
         let ordinary_fact = ManagedLifecycleFact {
             id: "ordinary".into(),
@@ -1700,7 +1797,7 @@ mod mutation_tests {
             runtime_interval: None,
         };
         assert_eq!(
-            mutation(running.clone(), ordinary_fact).validate(),
+            mutation(running.clone(), ordinary_fact.clone()).validate(),
             Ok(SessionRevision(8)),
             "R1"
         );
@@ -1715,10 +1812,26 @@ mod mutation_tests {
         let mut closed = running;
         closed.running_interval = None;
         closed.execution = SessionExecutionState::Idle;
+        closed.active_activity_epochs.clear();
         assert_eq!(
             mutation(closed.clone(), fact(Some(valid_interval.clone()))).validate(),
             Ok(SessionRevision(8)),
             "R3"
+        );
+        let mut future_active = closed.clone();
+        future_active.execution = SessionExecutionState::Running;
+        future_active.active_activity_epochs.insert(4);
+        assert_eq!(
+            mutation(future_active, ordinary_fact.clone()).validate(),
+            Err(SessionMutationValidationError::ActiveActivityStateMismatch),
+            "R8"
+        );
+        let mut idle_active = closed.clone();
+        idle_active.active_activity_epochs.insert(3);
+        assert_eq!(
+            mutation(idle_active, ordinary_fact).validate(),
+            Err(SessionMutationValidationError::ActiveActivityStateMismatch),
+            "R9"
         );
         assert_eq!(
             mutation(closed.clone(), fact(None)).validate(),
@@ -1738,6 +1851,42 @@ mod mutation_tests {
             mutation(closed, fact(Some(reversed))).validate(),
             Err(SessionMutationValidationError::RuntimeIntervalFactMismatch),
             "R6"
+        );
+    }
+
+    #[test]
+    fn effective_runtime_usage_counts_open_interval_once() {
+        // Active-time cause/effect table. C1 interval is closed/open; C2 now is
+        // before/equal/after start; C3 the open interval is subsequently closed
+        // at the same instant. E1 closed total only; E2 clamp clock rollback;
+        // E3 add open elapsed once; E4 closing preserves the same effective
+        // total (no double count). Rules: T1 closed=>E1; T2 open+before=>E2;
+        // T3 open+after=>E3; T4 T3 then close=>E4. Repeating a rule is exact and
+        // budget reconciliation separately keeps its cumulative cursor monotonic.
+        // Constraints/invariants: elapsed time is nonnegative, monotonic, and an
+        // open interval is included at most once before or after closure.
+        let mut value = session("active-time", SessionRevision(1));
+        value.runtime_active_millis = 2_000;
+        assert_eq!(
+            value.effective_runtime_active_millis(50_000),
+            2_000,
+            "T1/E1"
+        );
+        value.execution = SessionExecutionState::Running;
+        value.activity_epoch = 1;
+        value.active_activity_epochs.insert(1);
+        assert!(value.begin_runtime_interval(10_000), "T2 setup");
+        assert_eq!(value.effective_runtime_active_millis(9_000), 2_000, "T2/E2");
+        assert_eq!(
+            value.effective_runtime_active_millis(13_500),
+            5_500,
+            "T3/E3"
+        );
+        value.close_runtime_interval(13_500).expect("T4 close");
+        assert_eq!(
+            value.effective_runtime_active_millis(99_000),
+            5_500,
+            "T4/E4"
         );
     }
 }

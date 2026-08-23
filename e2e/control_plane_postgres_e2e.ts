@@ -12,8 +12,10 @@ import path from 'node:path';
 import { execFileSync, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
+import type { BetaManagedAgentsSessionEvent } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
-import { spawnProduction, stopServer, waitForPort } from './harness.mjs';
+// @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
+import { spawnProduction, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39413);
@@ -110,16 +112,38 @@ async function executePublishedAgent(expectedCalls: number): Promise<void> {
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(session.id, {
+  // Durable-admission cause/effect table: R1 exact User Event receipt is still
+  // unprocessed => keep observing; R2 it is processed but its later Agent
+  // message is absent => keep observing; R3 only a later matching message may
+  // prove this Run. A one-shot list can observe admission before execution and
+  // must not turn that legal state into a persistence failure. Causes are the
+  // exact receipt and PostgreSQL-backed publication; effects are processed
+  // receipt plus its later matching Agent Message. Constraints/invariant: no
+  // pre-existing history or unrelated Run may satisfy expectedCalls.
+  const receipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: `postgres-${expectedCalls}` }] }],
     betas: BETAS,
   });
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-    events.push(event);
-  }
-  const message: any = events.find((event: any) => event.type === 'agent.message');
-  const text = (message?.content ?? []).map((part: any) => part.text ?? '').join('');
+  const receiptId = receipt.data?.[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'official SDK returns the exact User Event receipt');
+  const observed: { delta: BetaManagedAgentsSessionEvent[] } =
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }: { delta: BetaManagedAgentsSessionEvent[] }) =>
+        delta.some((event) => event.type === 'agent.message'
+          && event.content.some((part) => part.type === 'text'
+            && part.text.includes(`FAKE:postgres-${expectedCalls}`))),
+      `PostgreSQL-backed publication Run ${expectedCalls} to commit its Agent message`,
+    );
+  const message = observed.delta.find((event) => event.type === 'agent.message');
+  assert.ok(message?.type === 'agent.message');
+  const text = message.content
+    .filter((part) => part.type === 'text')
+    .map((part) => part.text)
+    .join('');
   assert.match(text, new RegExp(`FAKE:postgres-${expectedCalls}`));
 }
 

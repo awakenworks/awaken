@@ -164,11 +164,13 @@ pub awaken_cli::CoordinatorAuthorityHandles::sessions: alloc::sync::Arc<dyn awak
 pub awaken_cli::CoordinatorAuthorityHandles::worker_directory: alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>
 pub struct awaken_cli::CoordinatorServiceAdapters
 pub awaken_cli::CoordinatorServiceAdapters::cloud_native_credential_realization: core::option::Option<awaken_credential_contract::CredentialRealizationProfile>
+pub awaken_cli::CoordinatorServiceAdapters::inference_materializer: core::option::Option<alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>>
 pub awaken_cli::CoordinatorServiceAdapters::repository_transport_authorizer: core::option::Option<alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>>
 pub awaken_cli::CoordinatorServiceAdapters::worker_authenticator: core::option::Option<alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>>
 pub awaken_cli::CoordinatorServiceAdapters::worker_placement_policy: core::option::Option<alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>>
 impl awaken_cli::CoordinatorServiceAdapters
 pub fn awaken_cli::CoordinatorServiceAdapters::with_cloud_native_credential_realization(self, awaken_credential_contract::CredentialRealizationProfile) -> Self
+pub fn awaken_cli::CoordinatorServiceAdapters::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_repository_transport_authorizer(self, alloc::sync::Arc<dyn awaken_resource_worker_http::repository_binding_http::RepositoryTransportAuthorizer>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_authenticator(self, alloc::sync::Arc<dyn awaken_worker_transport_security::WorkerRequestAuthenticator>) -> Self
 pub fn awaken_cli::CoordinatorServiceAdapters::with_worker_placement_policy(self, alloc::sync::Arc<dyn awaken_worker_contract::PlacementPolicy>) -> Self
@@ -181,16 +183,20 @@ pub fn awaken_cli::DrainController::new() -> alloc::sync::Arc<Self>
 pub fn awaken_cli::DrainController::set_registration_supervisor(&self, alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>)
 pub fn awaken_cli::DrainController::set_service_lifecycle(&self, awaken_service_lifecycle::ServiceLifecycle)
 pub struct awaken_cli::ManagedServiceAdapters
-pub awaken_cli::ManagedServiceAdapters::credential_envelope_issuer: core::option::Option<alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>>
+pub awaken_cli::ManagedServiceAdapters::background_services: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_cli::ManagedBackgroundService>>
+pub awaken_cli::ManagedServiceAdapters::credential_material_delivery: core::option::Option<awaken_credential_contract::custody::CredentialMaterialDelivery>
 pub awaken_cli::ManagedServiceAdapters::credential_rollout_target: core::option::Option<alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>>
+pub awaken_cli::ManagedServiceAdapters::entitlement_provider: core::option::Option<alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>>
 pub awaken_cli::ManagedServiceAdapters::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_cli::ManagedServiceAdapters::list_price_provider: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>>
 pub awaken_cli::ManagedServiceAdapters::request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_cli::ManagedServiceAdapters::same_origin_managed_runtime: bool
 pub awaken_cli::ManagedServiceAdapters::tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
 impl awaken_cli::ManagedServiceAdapters
-pub fn awaken_cli::ManagedServiceAdapters::with_credential_envelope_issuer(self, alloc::sync::Arc<dyn awaken_credential_contract::CredentialEnvelopeIssuer>) -> Self
+pub fn awaken_cli::ManagedServiceAdapters::with_background_service(self, alloc::sync::Arc<dyn awaken_cli::ManagedBackgroundService>) -> Self
+pub fn awaken_cli::ManagedServiceAdapters::with_credential_material_delivery(self, awaken_credential_contract::custody::CredentialMaterialDelivery) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_credential_rollout_target(self, alloc::sync::Arc<dyn awaken_credential_vault::repo::ManagedCredentialRolloutTarget>) -> Self
+pub fn awaken_cli::ManagedServiceAdapters::with_entitlement_provider(self, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_inference_geo_policy(self, alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_list_price_provider(self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_request_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>) -> Self
@@ -211,6 +217,9 @@ pub awaken_cli::PreparedProcess::private_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::public_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::registration_supervisor: core::option::Option<alloc::sync::Arc<awaken_control::registration_supervisor::StaticRegistrationSupervisor>>
 pub awaken_cli::PreparedProcess::service_lifecycle: awaken_service_lifecycle::ServiceLifecycle
+pub trait awaken_cli::ManagedBackgroundService: core::marker::Send + core::marker::Sync
+pub fn awaken_cli::ManagedBackgroundService::name(&self) -> &'static str
+pub fn awaken_cli::ManagedBackgroundService::run<'life0, 'async_trait>(&'life0 self, tokio_util::sync::cancellation_token::CancellationToken) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_cli::block_on_service<F: core::future::future::Future>(F) -> <F as core::future::future::Future>::Output
 pub async fn awaken_cli::build_all_in_one_router() -> axum::routing::Router
 pub async fn awaken_cli::build_all_in_one_router_with_deployment(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<axum::routing::Router, alloc::string::String>
@@ -223,20 +232,20 @@ pub async fn awaken_cli::migrate_service(core::option::Option<std::path::PathBuf
 pub fn awaken_cli::mount_console(axum::routing::Router) -> axum::routing::Router
 pub fn awaken_cli::mount_console_with_navigation(axum::routing::Router, awaken_api_contract::console::SuiteNavigation) -> axum::routing::Router
 pub async fn awaken_cli::prepare_all_in_one_process(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
-pub async fn awaken_cli::prepare_all_in_one_process_with_managed_services(&awaken_cli::config::ResolvedDeployment, &[u8; 32], awaken_cli::ManagedServiceAdapters) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
+pub async fn awaken_cli::prepare_all_in_one_process_with_services(&awaken_cli::config::ResolvedDeployment, &[u8; 32], awaken_cli::ManagedServiceAdapters, awaken_cli::CoordinatorServiceAdapters) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_control_process(&awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_control_process_with_managed_services(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>>, awaken_cli::ManagedServiceAdapters) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_control_process_with_publication_resolver(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_control_process_with_publication_resolver_and_web_search(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_control_process_with_publication_resolver_web_search_and_lifecycle_delivery(&awaken_cli::config::ResolvedDeployment, &[u8; 32], alloc::sync::Arc<dyn awaken_config_service::binding_resolver::ModelPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_admin_config_api::router::BrokeredCatalogDiscovery>>, awaken_ext_builtin_tools::web::WebSearchProviderRegistry, alloc::sync::Arc<dyn awaken_config_service::plugin_validation::PluginPublicationResolver>, core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>>) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_coordinator_process(&awaken_cli::config::ResolvedDeployment) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
-pub async fn awaken_cli::prepare_coordinator_process_with_managed_services(&awaken_cli::config::ResolvedDeployment, awaken_cli::ManagedServiceAdapters) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_coordinator_process_with_services(&awaken_cli::config::ResolvedDeployment, awaken_cli::ManagedServiceAdapters, awaken_cli::CoordinatorServiceAdapters) -> core::result::Result<awaken_cli::PreparedProcess, alloc::string::String>
 pub async fn awaken_cli::prepare_local_acp(&mut awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<core::option::Option<awaken_cli::PreparedLocalAcp>, alloc::string::String>
 pub async fn awaken_cli::prepare_local_worker(&mut awaken_cli::config::ResolvedDeployment, &[u8; 32]) -> core::result::Result<awaken_cli::PreparedLocalWorker, alloc::string::String>
 pub fn awaken_cli::process_admin_router(alloc::sync::Arc<awaken_cli::DrainController>) -> axum::routing::Router
 pub fn awaken_cli::register_active_streams_gauge(alloc::sync::Arc<awaken_cli::DrainController>) -> alloc::vec::Vec<opentelemetry::metrics::instruments::gauge::ObservableGauge<u64>>
 pub fn awaken_cli::registered_memory_mounter_factory() -> awaken_worker::RegisteredMemoryMounterFactory
+pub async fn awaken_cli::run_all_in_one_with_services(awaken_cli::console::ServiceArgs, awaken_cli::ManagedServiceAdapters, awaken_cli::CoordinatorServiceAdapters) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::run_service(awaken_cli::console::ServiceArgs, awaken_cli::ServiceRole) -> core::result::Result<(), alloc::string::String>
 pub async fn awaken_cli::run_service_binary(awaken_cli::ServiceRole) -> std::process::ExitCode
 pub async fn awaken_cli::serve_prepared_control(awaken_cli::config::ResolvedDeployment, awaken_cli::PreparedProcess) -> core::result::Result<(), alloc::string::String>

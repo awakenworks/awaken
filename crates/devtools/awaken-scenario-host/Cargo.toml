@@ -20,6 +20,7 @@ awaken-runtime-host = { workspace = true, features = ["test-support"] }
 awaken-run-ingress-http.workspace = true
 awaken-config-service.workspace = true
 awaken-ext-permission.workspace = true
+awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-run-ingress = { workspace = true, features = ["durable"] }
@@ -35,7 +36,6 @@ awaken-observability = { workspace = true }
 awaken-authz-enforce = { workspace = true }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
 awaken-protocol-awaken = { workspace = true }
-awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
@@ -101,15 +101,8 @@ axum = { version = "0.8", features = ["multipart"] }
 # (also used by the integration tests).
 tower = { version = "0.5", features = ["util"] }
 
-# Depends on the product crate for the now-pub assembly helpers + production executors.
-awaken-environment-application.workspace = true
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-resource-application.workspace = true
-awaken-environment-execution-application.workspace = true
-awaken-env-store = { workspace = true, features = ["test-support"] }
-awaken-work-store = { workspace = true, features = ["test-support"] }
-awaken-executable-environment-catalog.workspace = true
-awaken-executable-environment-contract.workspace = true
 awaken-session-contract.workspace = true
 awaken-dream-application.workspace = true
 awaken-coordinator = { workspace = true, features = ["test-support"] }

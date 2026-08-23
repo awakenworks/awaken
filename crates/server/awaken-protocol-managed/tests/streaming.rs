@@ -2,300 +2,34 @@
 //! send-then-stream backfill is covered in `adapter.rs`; this suite drives the
 //! *live* broadcast path instead:
 //!
-//! 1. LIVE broadcast ordering: subscribe first, then drive a turn, and assert the
-//!    committed frames arrive on the open receiver in turn order.
-//! 2. The preview plane end-to-end: a runtime whose `run_streaming` drives the sink
-//!    publishes `event_start`/`event_delta` preview frames, and the committed
-//!    `agent.message` reuses the preview-minted id (preview → committed
-//!    reconciliation by id).
+//! 1. LIVE broadcast ordering: subscribe first, then drive a Run, and assert the
+//!    committed frames arrive on the open receiver in Run order.
+//! 2. The preview plane end-to-end: the Runtime-owned Thread live subscription
+//!    drives root/child `event_start`/`event_delta` projection without re-entering
+//!    the committed Session broadcast.
 //! 3. `session.thread_status_terminated` driven over HTTP and asserted on the SSE
 //!    `event:` name.
 //! 4. Replay characterization (`Last-Event-ID` / cursor), the `stream_thread_events`
 //!    endpoint, and `Lagged`/`Closed` broadcast handling.
 //!
-//! The live-broadcast assertions drive `ManagedState::stream_subscribe` + a turn
-//! directly (the crate's own idiom for the broadcast — see
-//! `state.rs::delete_broadcasts_session_deleted_then_removes_the_record`): it is
-//! fully deterministic (every frame is published synchronously by the awaited
-//! `send_events`, then drained) with no ordering sleeps, which an HTTP oneshot of
-//! the infinite SSE body cannot be without concurrency + timing.
+//! The live-broadcast assertions subscribe before durable Event-batch admission,
+//! then use the same application reconciliation and committed projector as the
+//! HTTP routes. This makes receipt -> Run commit -> projection ordering explicit
+//! without a private synchronous Runtime path or timing sleeps.
+
+mod support;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
-use awaken_agent_contract::agent::content::ContentBlock;
-use awaken_agent_contract::agent::delegation::DelegationStatus;
-use awaken_agent_contract::agent::message::{Id, Message, Role};
-use awaken_agent_contract::agent::run::{EndCause, Id as RunId};
-use awaken_agent_contract::event::{AgentEvent, Delta};
-use awaken_agent_contract::stream::event::Event as StreamEvent;
-use awaken_agent_contract::stream::sink::Sink;
-use awaken_protocol_managed::types::{
-    OutboundKind, PreviewContent, PreviewDelta, PreviewFrame, SendEventsResponse, StreamFrame,
-};
+use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
+use awaken_protocol_managed::types::Event;
 use awaken_protocol_managed::{ManagedState, router};
-use awaken_session_contract::{
-    DelegatedRun, OutcomeDrive, RunError, SessionRuntime, StepOutcome, ToolPermissionDecision,
-};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tokio::sync::broadcast::error::TryRecvError;
 use tower::ServiceExt;
-
-// --- Fakes -------------------------------------------------------------------
-
-/// A one-text-reply runtime (no streaming path): `echo: <user text>`.
-struct EchoFake;
-
-static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-
-#[async_trait::async_trait]
-impl SessionRuntime for EchoFake {
-    async fn run(
-        &self,
-        _a: &str,
-        _t: &str,
-        content: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        let text = Message::new(Id("u".into()), Role::User, content).text_content();
-        Ok(end_turn(vec![Message::text(
-            // Match the Runtime contract: committed message ids are unique and
-            // therefore safe as the peer-projection dedupe fence.
-            Id(format!(
-                "a-{}",
-                ECHO_MESSAGE_SEQUENCE.fetch_add(1, Ordering::SeqCst)
-            )),
-            Role::Assistant,
-            format!("echo: {text}"),
-        )]))
-    }
-    async fn resume(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _d: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no resume"))
-    }
-    async fn resume_custom(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _c: Vec<ContentBlock>,
-        _e: bool,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no custom"))
-    }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn define_outcome(
-        &self,
-        _t: &str,
-        _d: &str,
-        _r: &str,
-        _m: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        Err(RunError::internal("no outcome"))
-    }
-    fn model(&self) -> String {
-        "test-model".into()
-    }
-}
-
-/// A runtime that mirrors its turn's text through the live-preview sink as
-/// `TextDelta` events (chunked), then commits a single `agent.message` carrying the
-/// same full text. Proves the preview → committed reconciliation: the committed
-/// message must reuse the id the preview `event_start` announced.
-struct StreamingFake {
-    reasoning: Vec<&'static str>,
-    chunks: Vec<&'static str>,
-}
-
-#[async_trait::async_trait]
-impl SessionRuntime for StreamingFake {
-    async fn run(
-        &self,
-        _a: &str,
-        _t: &str,
-        _c: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        // send_events always drives `run_streaming`; `run` is only the non-streaming
-        // fallback and is unused here.
-        let mut content = Vec::new();
-        if !self.reasoning.is_empty() {
-            content.push(ContentBlock::thinking(self.reasoning.concat()));
-        }
-        content.push(ContentBlock::text(self.chunks.concat()));
-        Ok(end_turn(vec![Message::new(
-            Id("a".into()),
-            Role::Assistant,
-            content,
-        )]))
-    }
-    async fn run_streaming(
-        &self,
-        _a: &str,
-        _t: &str,
-        _c: Vec<ContentBlock>,
-        sink: Arc<dyn Sink>,
-    ) -> Result<StepOutcome, RunError> {
-        // Mirror reasoning first, then the reply, as the provider stream does.
-        for chunk in &self.reasoning {
-            let ev = StreamEvent {
-                run_id: RunId("r1".into()),
-                kind: AgentEvent::Delta(Delta::ReasoningDelta {
-                    delta: (*chunk).into(),
-                }),
-            };
-            sink.send(ev).await.expect("best-effort sink send");
-        }
-        for chunk in &self.chunks {
-            let ev = StreamEvent {
-                run_id: awaken_agent_contract::agent::run::Id("r1".into()),
-                kind: AgentEvent::Delta(Delta::TextDelta {
-                    delta: (*chunk).into(),
-                }),
-            };
-            sink.send(ev).await.expect("best-effort sink send");
-        }
-        let mut content = Vec::new();
-        if !self.reasoning.is_empty() {
-            content.push(ContentBlock::thinking(self.reasoning.concat()));
-        }
-        content.push(ContentBlock::text(self.chunks.concat()));
-        Ok(end_turn(vec![Message::new(
-            Id("a".into()),
-            Role::Assistant,
-            content,
-        )]))
-    }
-    async fn resume(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _d: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no resume"))
-    }
-    async fn resume_custom(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _c: Vec<ContentBlock>,
-        _e: bool,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no custom"))
-    }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn define_outcome(
-        &self,
-        _t: &str,
-        _d: &str,
-        _r: &str,
-        _m: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        Err(RunError::internal("no outcome"))
-    }
-    fn model(&self) -> String {
-        "test-model".into()
-    }
-}
-
-/// A runtime whose single turn delegates once (an inline `agent_run` tool call to
-/// `researcher`), spawning a subagent child thread whose archive is the terminate
-/// path under test.
-struct DelegateFake;
-
-#[async_trait::async_trait]
-impl SessionRuntime for DelegateFake {
-    async fn execute_terminal_cleanup(
-        &self,
-        command: awaken_session_contract::SessionCleanupCommand,
-    ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
-        Ok(awaken_session_contract::SessionCleanupCompletion::new(
-            &command,
-            Vec::new(),
-        ))
-    }
-
-    async fn run(
-        &self,
-        _a: &str,
-        _t: &str,
-        _c: Vec<ContentBlock>,
-    ) -> Result<StepOutcome, RunError> {
-        Ok(end_turn(vec![
-            Message::new(
-                Id("a".into()),
-                Role::Assistant,
-                vec![
-                    ContentBlock::text("delegating"),
-                    ContentBlock::ToolUse {
-                        id: "d1".into(),
-                        name: "agent_run".into(),
-                        input: serde_json::json!({ "agent_id": "researcher", "input": "find docs" }),
-                    },
-                ],
-            ),
-            Message::new(
-                Id("t".into()),
-                Role::Tool,
-                vec![ContentBlock::ToolResult {
-                    tool_use_id: "d1".into(),
-                    content: vec![ContentBlock::text("here are the docs")],
-                    is_error: false,
-                }],
-            ),
-        ])
-        .with_delegated_runs(vec![DelegatedRun {
-            run_id: RunId("child-run-stream".into()),
-            parent_call_id: "d1".into(),
-            agent_id: "researcher".into(),
-            status: DelegationStatus::Completed,
-        }]))
-    }
-    async fn resume(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _d: ToolPermissionDecision,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no resume"))
-    }
-    async fn resume_custom(
-        &self,
-        _t: &str,
-        _tid: &str,
-        _c: Vec<ContentBlock>,
-        _e: bool,
-    ) -> Result<StepOutcome, RunError> {
-        Err(RunError::internal("no custom"))
-    }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
-    }
-    async fn define_outcome(
-        &self,
-        _t: &str,
-        _d: &str,
-        _r: &str,
-        _m: u32,
-    ) -> Result<OutcomeDrive, RunError> {
-        Err(RunError::internal("no outcome"))
-    }
-    fn model(&self) -> String {
-        "test-model".into()
-    }
-}
-
-fn end_turn(messages: Vec<Message>) -> StepOutcome {
-    StepOutcome::ended(messages, EndCause::NaturalEnd, false, false)
-}
 
 // --- State-level helpers (deterministic broadcast driving) -------------------
 
@@ -314,18 +48,47 @@ async fn state_create(state: &ManagedState) -> String {
         .id
 }
 
-async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) -> SendEventsResponse {
+async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
+    // The shared fake commits through reserve/activate/state, while the real Host
+    // supplies the later completion callback. Drive and settle that exact
+    // application-owned activity here; no test transcript or lifecycle state is
+    // synthesized beside the production authority.
+    let application = state.session_application();
+    support::drive_retained_session_events(state, session_id).await;
+    let session = Box::pin(application.session(session_id))
+        .await
+        .expect("read the retained activity epochs");
+    for epoch in session.active_activity_epochs {
+        Box::pin(application.settle_activity(session_id, epoch))
+            .await
+            .expect("settle the application-owned activity epoch");
+    }
+}
+
+async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
     let req = serde_json::from_value(serde_json::json!({
         "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }]
     }))
     .unwrap();
-    state.send_events(id, req).await.expect("send")
+    state.send_events(id, req).await.expect("send");
+    reconcile_published_run(state, id).await;
+    // GET owns warm projection in production. Calling the route after the
+    // committed Run keeps this integration helper on that same projector and
+    // publishes its appended suffix to an already-open receiver.
+    let app = router(state.clone());
+    let _ = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
 }
 
 /// Drain every frame currently buffered on `rx` (all frames are published
-/// synchronously by the awaited `send_events`, so a non-blocking drain is complete
-/// and deterministic). Returns the frames and how many `Lagged` gaps were observed.
-fn drain(rx: &mut tokio::sync::broadcast::Receiver<StreamFrame>) -> (Vec<StreamFrame>, usize) {
+/// before this call through the awaited admission/reconciliation/projection
+/// sequence). Returns the frames and how many `Lagged` gaps were observed.
+fn drain(rx: &mut tokio::sync::broadcast::Receiver<Event>) -> (Vec<Event>, usize) {
     let mut frames = Vec::new();
     let mut lagged = 0;
     loop {
@@ -338,14 +101,8 @@ fn drain(rx: &mut tokio::sync::broadcast::Receiver<StreamFrame>) -> (Vec<StreamF
     (frames, lagged)
 }
 
-fn committed_types(frames: &[StreamFrame]) -> Vec<&'static str> {
-    frames
-        .iter()
-        .filter_map(|f| match f {
-            StreamFrame::Committed(e) => Some(e.type_str()),
-            StreamFrame::Preview(_) => None,
-        })
-        .collect()
+fn committed_types(frames: &[Event]) -> Vec<&'static str> {
+    frames.iter().map(Event::type_str).collect()
 }
 
 // --- HTTP helpers ------------------------------------------------------------
@@ -408,15 +165,39 @@ async fn http_create(app: &Router) -> String {
         .to_string()
 }
 
+async fn http_primary_thread_id(app: &Router, session_id: &str) -> String {
+    http_json(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session_id}/threads"),
+        serde_json::Value::Null,
+    )
+    .await["data"]
+        .as_array()
+        .expect("Thread list data")
+        .iter()
+        .find(|thread| thread["parent_thread_id"].is_null())
+        .and_then(|thread| thread["id"].as_str())
+        .expect("primary Thread")
+        .to_string()
+}
+
 // === 1(a) LIVE broadcast ordering ===========================================
 
-/// A subscriber open BEFORE a turn runs receives that turn's committed events on
-/// the live broadcast, in turn order (`user.message` → `running` →
-/// `agent.message` → `idle` → `usage`) — the live path, distinct from the send-then-stream
-/// backfill the adapter suite covers.
+/// Causes: C1 a subscriber opens before durable admission; C2 the shared Runtime
+/// commits one primary Run plus its coordinated child Run; C3 GET invokes the
+/// sole projector after application settlement. Effects: E1 the receipt is live;
+/// E2 aggregate, primary, child, messages, usage, and idle follow in committed
+/// order exactly once; E3 no lag. Decision rule L1=C1+C2+C3=>E1+E2+E3.
 #[tokio::test]
-async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
-    let state = Arc::new(ManagedState::new(EchoFake));
+async fn live_broadcast_delivers_one_runs_committed_frames_in_order() {
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `live broadcast delivers one runs committed frames in order` is one
+    // independent branch selecting `all output, state, side-effect, error, and terminal assertions
+    // below hold together`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
     let id = state_create(&state).await;
 
     // Subscribe first: a fresh session has no committed events, so nothing is
@@ -427,26 +208,42 @@ async fn live_broadcast_delivers_a_turns_committed_frames_in_order() {
     state_send_user(&state, &id, "hi").await;
 
     let (frames, lagged) = drain(&mut rx);
-    assert_eq!(lagged, 0, "no lag on a single small turn");
+    assert_eq!(lagged, 0, "no lag on a single small Run");
     assert_eq!(
         committed_types(&frames),
         vec![
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "agent.message",
-            "session.status_idle",
-            "session.usage"
+            "agent.tool_use",
+            "agent.tool_result",
+            "session.thread_created",
+            "session.thread_status_running",
+            "agent.thread_message_sent",
+            "agent.thread_message_received",
+            "session.thread_status_idle",
+            "session.thread_status_idle",
+            "session.usage",
+            "session.status_idle"
         ],
-        "the turn's committed frames arrive live, in order"
+        "the Run's committed frames arrive live, in order"
     );
 }
 
-/// Two consecutive turns on one open subscription deliver both brackets back to
-/// back with no interleaving or gap — the broadcast preserves commit order across
-/// turns.
+/// Causes: C1 one receiver remains open; C2 two Event batches commit consecutive
+/// primary/child Runs; C3 the second Run targets the existing child. Effects: E1
+/// two aggregate/primary/child brackets arrive back-to-back; E2 child creation is
+/// emitted only by the first Run; E3 every cross-post appears once. Decision rule
+/// L2=C1+C2+C3=>E1+E2+E3.
 #[tokio::test]
-async fn live_broadcast_preserves_order_across_two_turns() {
-    let state = Arc::new(ManagedState::new(EchoFake));
+async fn live_broadcast_preserves_order_across_two_runs() {
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `live broadcast` is one independent branch selecting `preserves order
+    // across two runs`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
@@ -459,225 +256,144 @@ async fn live_broadcast_preserves_order_across_two_turns() {
         vec![
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "agent.message",
-            "session.status_idle",
+            "agent.tool_use",
+            "agent.tool_result",
+            "session.thread_created",
+            "session.thread_status_running",
+            "agent.thread_message_sent",
+            "agent.thread_message_received",
+            "session.thread_status_idle",
+            "session.thread_status_idle",
             "session.usage",
+            "session.status_idle",
             "user.message",
             "session.status_running",
+            "session.thread_status_running",
             "agent.message",
-            "session.status_idle",
+            "agent.tool_use",
+            "agent.tool_result",
+            "session.thread_status_running",
+            "agent.thread_message_sent",
+            "agent.thread_message_received",
+            "session.thread_status_idle",
+            "session.thread_status_idle",
             "session.usage",
+            "session.status_idle",
         ],
-        "both turns' brackets arrive live, in commit order"
+        "both Runs' brackets arrive live, in commit order"
     );
 }
 
-// === 2 Preview plane: preview → committed reconciliation ====================
+// === 2 Preview plane: Runtime Thread live source =============================
 
-/// The preview plane end-to-end: a `run_streaming` turn publishes `event_start` +
-/// `event_delta` preview frames on the live broadcast, and the committed
-/// `agent.message` reuses the id the `event_start` announced — the identity the SDK
-/// reconciles preview → buffered on. The concatenated preview text equals the
-/// committed message text.
+/// Root live-preview cause/effect graph: C1 a Session SSE opts into
+/// `agent.message` before the Run; C2 two exact root observations share one
+/// Run/Step/response coordinate; C3 the Session broadcaster is observed in
+/// parallel; C4 a committed terminal closes SSE. Effects: E1 C2 emits one start
+/// and both deltas immediately; E2 all frames share one stable id; E3 C3 receives
+/// no Preview frame; E4 C4 ends the response after the previews.
+///
+/// | Rule | Subscription | Coordinate | Source | Effect |
+/// |---|---|---|---|---|
+/// | R1 | opted in | exact root, first chunk | Thread live | E1,E2 |
+/// | R2 | opted in | exact root, repeated chunk | Thread live | E1,E2 |
+/// | R3 | open | exact root | Session broadcast | E3 |
+/// | R4 | open | committed terminal | Session broadcast | E4 |
 #[tokio::test]
-async fn preview_frames_reconcile_to_the_committed_agent_message_by_id() {
-    let state = Arc::new(ManagedState::new(StreamingFake {
-        reasoning: vec![],
-        chunks: vec!["Hel", "lo ", "world"],
-    }));
-    let id = state_create(&state).await;
-    let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
-
-    state_send_user(&state, &id, "hi").await;
-
-    let (frames, _) = drain(&mut rx);
-
-    // The preview announces the upcoming agent.message id up front.
-    let preview_id = frames
-        .iter()
-        .find_map(|f| match f {
-            StreamFrame::Preview(PreviewFrame::EventStart { event })
-                if event.event_type == "agent.message" =>
-            {
-                Some(event.id.clone())
-            }
-            _ => None,
-        })
-        .expect("an event_start preview announced the agent.message");
-
-    // The preview deltas carry the streamed suffix text, keyed to that id.
-    let previewed: String = frames
-        .iter()
-        .filter_map(|f| match f {
-            StreamFrame::Preview(PreviewFrame::EventDelta {
-                event_id,
-                delta:
-                    PreviewDelta::ContentDelta {
-                        content: PreviewContent::Text { text },
-                        ..
-                    },
-            }) if *event_id == preview_id => Some(text.clone()),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        previewed, "Hello world",
-        "the preview deltas stream the full text"
-    );
-
-    // The committed agent.message reuses the preview-minted id (reconciliation).
-    let (committed_id, committed_text) = frames
-        .iter()
-        .find_map(|f| match f {
-            StreamFrame::Committed(e) => match &e.kind {
-                OutboundKind::AgentMessage { content } => Some((
-                    e.id.clone(),
-                    Message::new(Id("x".into()), Role::Assistant, content.clone()).text_content(),
-                )),
-                _ => None,
-            },
-            _ => None,
-        })
-        .expect("the committed agent.message is on the broadcast");
-    assert_eq!(
-        committed_id, preview_id,
-        "the committed agent.message reuses the preview-announced id"
-    );
-    assert_eq!(
-        committed_text, "Hello world",
-        "committed text matches the preview"
-    );
-}
-
-/// Cause-effect graph and decision rule E3:
-/// C1 provider emits one or more contiguous reasoning chunks, then C2 visible text;
-/// C1 -> E1 exactly one start-only `agent.thinking` preview (reasoning stays private),
-/// C2 -> E2 a distinct `agent.message` start plus deltas, and committed facts -> E3
-/// both buffered events reuse their preview ids in the same order. Constraint: no
-/// thinking delta or content may cross the Managed wire.
-#[tokio::test]
-async fn thinking_preview_is_start_only_and_reconciles_with_committed_thinking() {
-    let state = Arc::new(ManagedState::new(StreamingFake {
-        reasoning: vec!["private", " chain"],
-        chunks: vec!["public", " answer"],
-    }));
-    let id = state_create(&state).await;
-    let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
-
-    state_send_user(&state, &id, "hi").await;
-    let (frames, _) = drain(&mut rx);
-
-    let starts: Vec<(String, String)> = frames
-        .iter()
-        .filter_map(|frame| match frame {
-            StreamFrame::Preview(PreviewFrame::EventStart { event }) => {
-                Some((event.event_type.clone(), event.id.clone()))
-            }
-            _ => None,
-        })
-        .collect();
-    assert_eq!(starts.len(), 2);
-    assert_eq!(starts[0].0, "agent.thinking");
-    assert_eq!(starts[1].0, "agent.message");
-    assert!(
-        frames.iter().all(|frame| !matches!(
-            frame,
-            StreamFrame::Preview(PreviewFrame::EventDelta { event_id, .. })
-                if event_id == &starts[0].1
-        )),
-        "reasoning is represented only by its start marker"
-    );
-
-    let committed: Vec<(String, &str)> = frames
-        .iter()
-        .filter_map(|frame| match frame {
-            StreamFrame::Committed(event) => match event.kind {
-                OutboundKind::AgentThinking {} => Some((event.id.clone(), "agent.thinking")),
-                OutboundKind::AgentMessage { .. } => Some((event.id.clone(), "agent.message")),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        committed,
-        vec![
-            (starts[0].1.clone(), "agent.thinking"),
-            (starts[1].1.clone(), "agent.message"),
-        ]
-    );
-}
-
-/// The same streaming turn observed over HTTP with `event_deltas[]=agent.message`
-/// (send-then-stream): the preview frames are stream-only and gone by the time the
-/// connection opens, but the committed `agent.message` in the backfill still carries
-/// the preview-minted id — the durable half of the reconciliation is visible on the
-/// event list regardless of whether a client caught the live previews.
-#[tokio::test]
-async fn a_streamed_turns_committed_message_id_is_preview_minted() {
-    let state = Arc::new(ManagedState::new(StreamingFake {
-        reasoning: vec![],
-        chunks: vec!["a", "b"],
-    }));
-    let app = router(state);
+async fn root_stream_immediately_projects_thread_live_observations_only() {
+    // Causes: the fixtures below establish `root stream immediately` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
-    http_json(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
-    )
-    .await;
+    let (_snapshot, mut committed_rx) = state.stream_subscribe(&id).expect("R3 subscribe");
+    let stream_app = app.clone();
+    let uri = format!("/v1/sessions/{id}/events/stream?event_deltas[]=agent.message");
+    let stream = tokio::spawn(async move { http_sse(&stream_app, &uri, &[]).await });
+    runtime.wait_for_live_subscription().await;
 
-    // The committed agent.message id was drawn from the shared evt_N counter by the
-    // preview sink (not a fresh mint at append) — it sits BEFORE the running marker's
-    // id in the sequence because the preview minted it during the run, ahead of the
-    // append-step ids.
-    let list = http_json(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
-    )
-    .await;
-    let events = list["data"].as_array().unwrap();
-    let msg = events
-        .iter()
-        .find(|e| e["type"] == "agent.message")
-        .unwrap();
-    let running = events
-        .iter()
-        .find(|e| e["type"] == "session.status_running")
-        .unwrap();
-    let num = |e: &serde_json::Value| -> u64 {
-        e["id"]
-            .as_str()
-            .unwrap()
-            .trim_start_matches("evt_")
-            .parse()
-            .unwrap()
-    };
+    runtime.publish_root_live_text(&id, "root ");
+    runtime.publish_root_live_text(&id, "progress");
     assert!(
-        num(msg) < num(running),
-        "the agent.message id ({}) was preview-minted ahead of the running marker ({})",
-        msg["id"],
-        running["id"]
+        matches!(committed_rx.try_recv(), Err(TryRecvError::Empty)),
+        "R3/E3"
+    );
+    let deleted = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/v1/sessions/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK, "R4/E4");
+
+    let (status, sse) = stream.await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+    let data = sse
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .collect::<Vec<_>>();
+    let start = data
+        .iter()
+        .find(|event| event["type"] == "event_start")
+        .expect("R1/E1 start");
+    let preview_id = start["event"]["id"].as_str().expect("R1/E2 id");
+    let deltas = data
+        .iter()
+        .filter(|event| event["type"] == "event_delta")
+        .collect::<Vec<_>>();
+    assert_eq!(deltas.len(), 2, "R1-R2/E1");
+    assert!(
+        deltas.iter().all(|event| event["event_id"] == preview_id),
+        "R1-R2/E2"
+    );
+    assert!(
+        sse.contains("root ") && sse.contains("progress"),
+        "R1-R2/E1"
+    );
+    assert!(
+        sse.find("event: event_delta").is_some_and(|preview| {
+            sse.find("event: session.deleted")
+                .is_some_and(|terminal| preview < terminal)
+        }),
+        "R4/E4 sse:\n{sse}"
     );
 }
 
-// === 3 session.thread_status_terminated over HTTP ===========================
+// === 3 child Thread isolation and durable archive ===========================
 
-/// Driving the child-thread terminate path and asserting the SSE `event:` name: a
-/// delegation spawns a subagent child thread; archiving that child thread commits a
-/// `session.thread_status_terminated` event; a subsequent stream (after the session
-/// itself is archived, so the backfill reaches a terminal and ends) carries it as an
-/// SSE `event: session.thread_status_terminated` line.
+/// Causes: C1 one real child Thread has committed created/running/message/idle
+/// facts; C2 primary and child SSE backfill the same disposable event log while
+/// parent-only creation remains absent from the child stream; C3 the
+/// parent-partition command commits its absorbing archive disposition. Effects:
+/// E1 child SSE sees
+/// its own lifecycle and reverses cross-post direction without leaking primary
+/// Session status; E2 archive returns the terminated Thread and the unique
+/// projector commits one terminal fact.
+/// Decision table: S1=C1+C2=>E1; S2=C1+C3=>E2.
 #[tokio::test]
-async fn archiving_a_child_thread_streams_thread_status_terminated() {
-    let app = router(Arc::new(ManagedState::new(DelegateFake)));
+async fn child_thread_sse_is_isolated_and_archive_projects_durable_terminal() {
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
 
-    // A turn delegates once → its stable child Run thread is created.
+    // A Run delegates once, creating its stable child Thread.
     http_json(
         &app,
         "POST",
@@ -685,6 +401,7 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "go" }] }] }),
     )
     .await;
+    reconcile_published_run(&state, &id).await;
     let threads = http_json(
         &app,
         "GET",
@@ -692,47 +409,42 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
         serde_json::Value::Null,
     )
     .await;
+    let primary_id = threads["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|thread| thread["parent_thread_id"].is_null())
+        .and_then(|thread| thread["id"].as_str())
+        .expect("S1 public primary Thread");
+    assert!(primary_id.starts_with("sthr_"), "S1 public Thread id");
     let child_id = threads["data"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|t| t["parent_thread_id"] == format!("{id}:primary"))
+        .find(|thread| thread["parent_thread_id"] == primary_id)
         .expect("a child thread was spawned")["id"]
         .as_str()
         .unwrap()
         .to_string();
 
-    // Archiving the child thread commits the terminated event...
-    let archived = http_json(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{id}/threads/{child_id}/archive"),
-        serde_json::Value::Null,
-    )
-    .await;
-    assert_eq!(archived["status"], "terminated");
-
-    // ...and archiving the session gives the backfill a terminal to end on, so the
-    // whole SSE body is delivered.
-    http_json(
-        &app,
-        "POST",
-        &format!("/v1/sessions/{id}/archive"),
-        serde_json::Value::Null,
-    )
-    .await;
-
-    let (status, sse) = http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[]).await;
-    assert_eq!(status, StatusCode::OK);
+    let (primary_status, primary_sse) =
+        http_sse(&app, &format!("/v1/sessions/{id}/events/stream"), &[]).await;
+    assert_eq!(primary_status, StatusCode::OK, "S1");
+    let child_idle = primary_sse
+        .find("event: session.thread_status_idle")
+        .expect("S1 child idle remains observable on primary");
+    let aggregate_idle = primary_sse
+        .find("event: session.status_idle")
+        .expect("S1 child idle must not truncate primary before aggregate idle");
     assert!(
-        sse.contains("event: session.thread_status_terminated"),
-        "the child-thread terminate is an SSE event: name — sse:\n{sse}"
+        child_idle < aggregate_idle,
+        "S1 primary_sse:\n{primary_sse}"
     );
-    // The terminated frame carries the delegate identity in its data payload.
     assert!(
-        sse.contains(&format!("\"session_thread_id\":\"{child_id}\"")),
-        "the terminated frame names the child thread — sse:\n{sse}"
+        primary_sse.contains("event: session.usage"),
+        "S1 trailing aggregate telemetry survives child idle — sse:\n{primary_sse}"
     );
+
     let (child_status, child_sse) = http_sse(
         &app,
         &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
@@ -742,61 +454,140 @@ async fn archiving_a_child_thread_streams_thread_status_terminated() {
     assert_eq!(child_status, StatusCode::OK);
     assert!(
         !child_sse.contains("event: session.status_")
-            && !child_sse.contains("event: agent.message\n"),
-        "a child stream must not alias the primary Session stream — sse:\n{child_sse}"
+            && !child_sse.contains("event: session.thread_created")
+            && child_sse.contains("event: session.thread_status_running")
+            && child_sse.contains("event: session.thread_status_idle"),
+        "S1 child lifecycle is isolated from aggregate Session status — sse:\n{child_sse}"
     );
     assert!(
         child_sse.contains("event: agent.thread_message_received")
             && child_sse.contains("event: agent.thread_message_sent"),
-        "the child stream projects both message directions from the child perspective — sse:\n{child_sse}"
+        "S1 child stream projects both message directions from its perspective — sse:\n{child_sse}"
+    );
+
+    let archive = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/v1/sessions/{id}/threads/{child_id}/archive"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(archive.status(), StatusCode::OK, "S2/E2");
+    let events = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        events["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["type"] == "session.thread_status_terminated")
+            .count()
+            == 1,
+        "S2/E2"
+    );
+    let (archived_status, archived_child_sse) = http_sse(
+        &app,
+        &format!("/v1/sessions/{id}/threads/{child_id}/stream"),
+        &[],
+    )
+    .await;
+    assert_eq!(archived_status, StatusCode::OK, "S2/E2");
+    assert!(
+        archived_child_sse
+            .find("event: session.thread_status_idle")
+            .is_some_and(|idle| {
+                archived_child_sse
+                    .find("event: session.thread_status_terminated")
+                    .is_some_and(|terminated| idle < terminated)
+            }),
+        "S2/E2 child replay closes with durable terminal — sse:\n{archived_child_sse}"
     );
 }
 
-/// `state/threads.rs::archive_thread` commits `session.thread_status_terminated` to
-/// the event log AND — like `append_step`, `append_outcome`, and the delete path —
-/// calls `broadcast_committed_from`, so a client with an ALREADY-OPEN live stream
-/// receives the child-thread termination in real time (not only via reconnect
-/// backfill).
+/// Causes: C1 the shared Runtime has committed and projected a coordinated Run;
+/// C2 a receiver opens after that prefix; C3 the idle child's durable disposition
+/// changes Active -> Archived. Effects: E1 C2 has no live replay of the historical
+/// prefix; E2 C3 publishes exactly one terminal frame; E3 list/backfill and the
+/// Runtime archive authority each contain one transition. Decision rule
+/// B1=C1+C2+C3=>E1+E2+E3.
 #[tokio::test]
-async fn archive_thread_broadcasts_to_an_open_live_stream() {
-    let state = Arc::new(ManagedState::new(DelegateFake));
+async fn durable_child_archive_broadcasts_and_backfills_one_terminal_frame() {
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `durable child archive broadcasts and backfills one terminal frame` is
+    // one independent branch selecting `all output, state, side-effect, error, and terminal
+    // assertions below hold together`; a multi-row decision table is not applicable, and sibling
+    // tests own alternate causes.
+    let runtime = CoordinatedRuntimeFake::default();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
     let id = state_create(&state).await;
-    // Run the delegation turn, then open a subscription and drain the backfill turn
-    // frames so the receiver is caught up.
+    // Project the delegation, then subscribe: the returned snapshot owns backfill
+    // while this receiver contains only facts committed after subscription.
     state_send_user(&state, &id, "go").await;
-    let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
-    let (_caught_up, _) = drain(&mut rx);
+    let (snapshot, mut rx) = state.stream_subscribe(&id).expect("subscribe");
+    assert!(
+        !snapshot.is_empty(),
+        "B1/E1 committed prefix is backfill-only"
+    );
+    assert!(
+        matches!(rx.try_recv(), Err(TryRecvError::Empty)),
+        "B1/E1 receiver starts caught up"
+    );
 
-    let child_id = "child-run-stream";
+    let child_id = CoordinatedRuntimeFake::CHILD_THREAD_ID;
     state
         .archive_thread(&id, child_id)
         .await
-        .expect("archive child");
+        .expect("B1 durable archive succeeds");
 
-    // The terminate was broadcast — the open stream receives it live.
+    // The committed disposition is projected to an already-open stream.
     let (frames, _) = drain(&mut rx);
-    assert!(
-        committed_types(&frames).contains(&"session.thread_status_terminated"),
-        "archive_thread publishes the terminated event to the open broadcast"
+    assert_eq!(
+        committed_types(&frames)
+            .into_iter()
+            .filter(|kind| *kind == "session.thread_status_terminated")
+            .count(),
+        1,
+        "B1 live"
     );
-    // And it was also committed to the durable log (a reconnect would replay it).
+    // Reconnect/backfill observes the same committed projection once.
     let list = state.list_events(&id, None, None, false).expect("list");
-    assert!(
+    assert_eq!(
         list.data
             .iter()
-            .any(|e| e.type_str() == "session.thread_status_terminated"),
-        "the terminated event is in the committed log"
+            .filter(|event| event.type_str() == "session.thread_status_terminated")
+            .count(),
+        1,
+        "B1 backfill"
     );
+    assert_eq!(runtime.archive_commits().len(), 1, "B1 durable transition");
 }
 
 // === 1(c) stream_thread_events endpoint =====================================
 
-/// `GET /v1/sessions/{id}/threads/{tid}/stream` (previously untested): the primary
-/// thread's stream backfills the session's committed events as SSE `event:` names,
-/// terminating on the turn's idle.
+/// Causes: C1 a completed root Run has committed output; C2 the client selects
+/// the listed public primary Thread id; C3 SSE backfills the committed prefix.
+/// Effects: E1 root Running/Idle bracket the output on the Thread stream; E2 all
+/// status payloads reuse C2's `sthr_` id; E3 the aggregate Idle closes SSE.
+/// Decision table: P1(C1+C2+C3)->E1+E2+E3. Unknown/stale selectors are U1/U2
+/// in the rejection test below.
 #[tokio::test]
 async fn stream_thread_events_backfills_the_primary_thread() {
-    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
         &app,
@@ -805,24 +596,53 @@ async fn stream_thread_events_backfills_the_primary_thread() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
+    reconcile_published_run(&state, &id).await;
+    // Codec integration rule P1: a listed public root is `sthr_` and selects
+    // the internal Session root on the per-Thread stream route. A fabricated
+    // internal/sentinel id is covered by the unknown-Thread rejection below.
+    let primary_id = http_primary_thread_id(&app, &id).await;
+    assert!(primary_id.starts_with("sthr_"), "P1");
 
     let (status, sse) = http_sse(
         &app,
-        &format!("/v1/sessions/{id}/threads/{id}:primary/stream"),
+        &format!("/v1/sessions/{id}/threads/{primary_id}/stream"),
         &[],
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    assert!(
+        sse.contains("event: session.thread_status_running"),
+        "P1/E1 sse:\n{sse}"
+    );
     assert!(sse.contains("event: agent.message"), "sse:\n{sse}");
-    assert!(sse.contains("event: session.status_idle"), "sse:\n{sse}");
+    assert!(
+        sse.contains("event: session.thread_status_idle"),
+        "P1/E1 sse:\n{sse}"
+    );
+    assert!(
+        sse.contains(&format!(r#""session_thread_id":"{primary_id}""#)),
+        "P1/E2 sse:\n{sse}"
+    );
+    assert!(
+        sse.contains("event: session.status_idle"),
+        "P1/E3 sse:\n{sse}"
+    );
 }
 
-/// The official per-thread EventStreamParams accepts the same `event_deltas[]`
-/// preview selector. The primary Thread shares the Session producer, so admission
-/// succeeds; unsupported values still fail through the one shared parser.
+/// Causes: C1 a coordinated Run has terminal committed truth; C2 the listed
+/// primary Thread selects `event_deltas[]=agent.message`. Effects: E1 C2 is
+/// admitted through the shared parser; E2 committed aggregate Idle terminates
+/// the body without requiring a live delta. Decision rule O1=C1+C2=>E1+E2;
+/// unsupported values are covered by E4 below.
 #[tokio::test]
 async fn stream_thread_events_accepts_the_preview_opt_in() {
-    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `stream thread events` is one independent branch selecting `accepts the
+    // preview opt in`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
         &app,
@@ -831,33 +651,222 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
+    reconcile_published_run(&state, &id).await;
+    let primary_id = http_primary_thread_id(&app, &id).await;
     let (status, _) = http_sse(
         &app,
-        &format!("/v1/sessions/{id}/threads/{id}:primary/stream?event_deltas[]=agent.message"),
+        &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
         &[],
     )
     .await;
     assert_eq!(status, StatusCode::OK);
 }
 
-/// An unknown thread id on the per-thread stream is a 404 (fail-closed).
+/// Managed child live-preview cause/effect table:
+/// C0 the reserved Event batch is advanced once and its initial committed prefix
+/// exposes the real child selector; C1 exact child text is followed by a tool
+/// delta (ordinary-message proof); C2 child
+/// stream opts into `agent.message`; C3 child reasoning is observed; C4
+/// primary/Session share only the committed broadcast; C5 later text becomes the
+/// terminal report; C6 ordinary Message and terminal lifecycle commit. Effects:
+/// E0 C0 lets both subscriptions start from the same caught-up prefix;
+/// E1 C1+C2 emits child-only start/delta; E2 C3 emits nothing; E3 C4 receives no
+/// child preview; E4 C5 emits no preview and commits only child sent/primary
+/// received; E5 C6 commits the ordinary `agent.message` with E1's id, settles the
+/// application-owned activity epoch, then projects child and aggregate Idle.
+///
+/// | Rule | Ordinary proof | Terminal report | Stream | Effects |
+/// |---|---|---|---|---|
+/// | L0 | n/a | no | committed projector | E0 |
+/// | L1 | tool | no | child opted-in | E1,E2,E5 |
+/// | L2 | tool | no | primary/Session | E3 |
+/// | L3 | absent | yes | child opted-in | E2,E4 |
 #[tokio::test]
-async fn stream_thread_events_unknown_thread_is_404() {
-    let app = router(Arc::new(ManagedState::new(EchoFake)));
+async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report() {
+    // Causes: the fixtures below establish `child stream previews only ordinary text and` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let runtime = CoordinatedRuntimeFake::default();
+    runtime.defer_child_completion();
+    let state = Arc::new(ManagedState::new(runtime.clone()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
-    let (status, _) = http_sse(&app, &format!("/v1/sessions/{id}/threads/nope/stream"), &[]).await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+    http_json(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::json!({
+            "events": [{
+                "type": "user.message",
+                "content": [{ "type": "text", "text": "coordinate" }]
+            }]
+        }),
+    )
+    .await;
+    support::drive_retained_session_events(&state, &id).await;
+
+    let child_id = CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    let threads = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/threads"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert!(
+        threads["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|thread| thread["id"] == child_id),
+        "L0/E0 canonical projection exposes the real child selector: {threads}"
+    );
+    let (snapshot, mut session_frames) = state.stream_subscribe(&id).unwrap();
+    assert!(!snapshot.is_empty(), "L0/E0 committed prefix is backfilled");
+    let child_app = app.clone();
+    let child_uri =
+        format!("/v1/sessions/{id}/threads/{child_id}/stream?event_deltas[]=agent.message");
+    let child_stream = tokio::spawn(async move { http_sse(&child_app, &child_uri, &[]).await });
+    runtime.wait_for_live_subscription().await;
+    // The child route's repeated refresh is idempotent, so the already-caught-up
+    // Session receiver remains empty before connection-local previews arrive.
+    let (committed_prefix, lagged) = drain(&mut session_frames);
+    assert_eq!(lagged, 0, "L2 setup");
+    assert!(committed_prefix.is_empty(), "L0/E0 no duplicate projection");
+
+    runtime.publish_child_live_reasoning("private chain");
+    runtime.publish_child_live_text("live progress");
+    runtime.publish_child_live_tool();
+    assert!(
+        matches!(session_frames.try_recv(), Err(TryRecvError::Empty)),
+        "L2/E3 child preview never enters the Session/primary broadcast"
+    );
+
+    runtime.commit_child_ordinary_message("live progress");
+    let _ = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    runtime.publish_child_live_reasoning("terminal private chain");
+    runtime.publish_child_live_text("terminal report");
+    runtime.complete_deferred_child("terminal report");
+    reconcile_published_run(&state, &id).await;
+    let terminal_events = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let terminal_types = terminal_events["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect::<Vec<_>>();
+    assert!(
+        terminal_types.contains(&"session.thread_status_idle")
+            && terminal_types.contains(&"session.status_idle"),
+        "L1,L3/E5 canonical projector closes child and aggregate: {terminal_types:?}"
+    );
+    let (status, sse) = child_stream.await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+    assert!(sse.contains("event: event_start"), "L1/E1 sse:\n{sse}");
+    assert!(sse.contains("event: event_delta"), "L1/E1 sse:\n{sse}");
+    assert!(sse.contains("live progress"), "L1/E1");
+    assert!(!sse.contains("private chain"), "L1,L3/E2");
+    assert_eq!(
+        sse.matches("terminal report").count(),
+        1,
+        "L3/E4 report appears only in committed thread_message_sent"
+    );
+    assert!(sse.contains("event: agent.message"), "L1/E5 sse:\n{sse}");
+    assert!(
+        sse.contains("event: agent.thread_message_sent"),
+        "L3/E4 sse:\n{sse}"
+    );
+    assert!(
+        sse.contains("event: session.thread_status_idle"),
+        "L1,L3/E5 sse:\n{sse}"
+    );
+
+    let data = sse
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter_map(|json| serde_json::from_str::<serde_json::Value>(json).ok())
+        .collect::<Vec<_>>();
+    let preview_id = data
+        .iter()
+        .find(|event| event["type"] == "event_start")
+        .and_then(|event| event["event"]["id"].as_str())
+        .expect("L1 preview id");
+    let committed_id = data
+        .iter()
+        .find(|event| event["type"] == "agent.message")
+        .and_then(|event| event["id"].as_str())
+        .expect("L1 committed id");
+    assert_eq!(preview_id, committed_id, "L1/E5 reconciliation");
+
+    let primary_id = http_primary_thread_id(&app, &id).await;
+    let (status, primary) = http_sse(
+        &app,
+        &format!("/v1/sessions/{id}/threads/{primary_id}/stream?event_deltas[]=agent.message"),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!primary.contains("event: event_start"), "L2/E3");
+    assert!(!primary.contains("event: event_delta"), "L2/E3");
+    assert!(
+        primary.contains("event: agent.thread_message_received"),
+        "L3/E4"
+    );
 }
 
-/// Causes: an `event_deltas[]` member may be supported/unsupported and its repeated
-/// count may be at/beyond 100.
-/// Constraints: only message/thinking are valid and the inclusive maximum is 100.
-/// Effects: 100 values streams normally; an invalid value or 101 values is a 400
-/// `invalid_request_error` before opening a stream.
-/// Decision rule: E4.
+/// Causes: C1 an arbitrary unknown Thread id; C2 the retired internal primary
+/// sentinel. Effect E1: both fail closed with 404 rather than aliasing the
+/// Session root. Decision table: U1(C1)->E1; U2(C2)->E1.
+#[tokio::test]
+async fn stream_thread_events_unknown_thread_is_404() {
+    // Effects: the observable result `is 404` and every asserted state transition or side effect
+    // must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let app = router(Arc::new(ManagedState::new(
+        CoordinatedRuntimeFake::default(),
+    )));
+    let id = http_create(&app).await;
+    for thread_id in ["nope".to_string(), format!("{id}:primary")] {
+        let (status, _) = http_sse(
+            &app,
+            &format!("/v1/sessions/{id}/threads/{thread_id}/stream"),
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{thread_id}");
+    }
+}
+
+/// Causes: C1 an `event_deltas[]` member is supported/unsupported; C2 its repeated
+/// count is at/beyond 100. Constraint: only message/thinking are valid and the
+/// inclusive maximum is 100. Effects: E1 a supported 100-value request streams;
+/// E2 an invalid value or 101 values returns 400 `invalid_request_error` before
+/// opening a stream. Decision table: D1=supported+100=>E1;
+/// D2=unsupported+any=>E2; D3=supported+101=>E2.
 #[tokio::test]
 async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
-    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
         &app,
@@ -866,6 +875,7 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
+    reconcile_published_run(&state, &id).await;
 
     let repeated = |count: usize| {
         std::iter::repeat_n("event_deltas[]=agent.message", count)
@@ -901,14 +911,22 @@ async fn session_stream_event_deltas_follow_the_boundary_decision_rule() {
 
 // === 1(b) Full-replay + dedupe-by-id contract ===============================
 
-/// The SSE stream's replay contract (by design): on (re)connect it always replays
-/// the FULL committed snapshot and does NOT honor `Last-Event-ID` for incremental
-/// resume. Replay-safety is provided by snapshot/live dedupe-by-id — a client
-/// discards ids it has already seen — so full replay is idempotent for the client
-/// and no committed event is ever missed. This asserts that documented contract.
+/// Causes: C1 the shared Runtime has committed one coordinated Run; C2 reconnect
+/// supplies the id of the last committed event as `Last-Event-ID`. Effects: E1
+/// the stream still returns the full aggregate Running/message/Idle snapshot; E2
+/// no committed fact is omitted. Decision rule F1=C1+C2=>E1+E2 because this API's
+/// replay contract deliberately ignores incremental resume and relies on id
+/// dedupe at the client.
 #[tokio::test]
 async fn the_stream_full_replays_and_ignores_last_event_id() {
-    let app = router(Arc::new(ManagedState::new(EchoFake)));
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `the stream full replays and ignores last event id` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
+    let app = router(state.clone());
     let id = http_create(&app).await;
     http_json(
         &app,
@@ -917,8 +935,9 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
         serde_json::json!({ "events": [{ "type": "user.message", "content": [{ "type": "text", "text": "hi" }] }] }),
     )
     .await;
+    reconcile_published_run(&state, &id).await;
 
-    // Discover the committed ids (running is the earliest committed event).
+    // Discover the final id from the canonical chronological event list.
     let list = http_json(
         &app,
         "GET",
@@ -948,25 +967,38 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
 
 // === 1(d) Lagged / Closed broadcast handling ================================
 
-/// The `Lagged` broadcast path: a subscriber that falls more than a channel-capacity
-/// behind observes a `Lagged` gap (its oldest frames were dropped), yet the stream's
-/// contract is best-effort — subsequent committed frames (including the terminal
-/// `session.status_idle`) STILL arrive. Driven by overflowing the 1024-frame channel
-/// with one batch of turns while the receiver does not drain (the exact condition the
-/// stream's `Lagged => continue` arm tolerates).
+/// Causes: C1 an open receiver does not drain; C2 one durable batch publishes
+/// 1,025 accepted receipts, exceeding the 1,024-frame channel; C3 canonical Run
+/// reconciliation/projector publishes terminal facts afterward. Effects: E1 the
+/// receiver reports a lag gap; E2 later `session.status_idle` remains observable.
+/// Decision table: G1=C1+receipts<=1024=>no required gap (boundary owned by the
+/// channel); G2=C1+C2+C3=>E1+E2 (covered here).
 #[tokio::test]
 async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
-    let state = Arc::new(ManagedState::new(EchoFake));
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
-    // One batch of 400 turns → 1200 committed frames > the 1024 channel capacity,
-    // published synchronously while `rx` is not drained → the receiver lags.
-    let events: Vec<serde_json::Value> = (0..400)
+    // Admission itself owns every receipt. Overflow with that authoritative
+    // prefix, then project the later committed Run through the normal read path.
+    let events: Vec<serde_json::Value> = (0..1_025)
         .map(|_| serde_json::json!({ "type": "user.message", "content": [{ "type": "text", "text": "x" }] }))
         .collect();
     let req = serde_json::from_value(serde_json::json!({ "events": events })).unwrap();
-    state.send_events(&id, req).await.expect("batch of turns");
+    state.send_events(&id, req).await.expect("batch of Runs");
+    reconcile_published_run(&state, &id).await;
+    let app = router(state.clone());
+    let _ = http_json(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
 
     let (frames, lagged) = drain(&mut rx);
     assert!(lagged >= 1, "the receiver observed a Lagged gap");
@@ -976,14 +1008,19 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     );
 }
 
-/// The `Closed` broadcast path: when the session's sender is gone (here, the whole
-/// state is dropped), an open receiver observes `Closed` — the signal the stream's
-/// `Closed => break` arm ends the SSE body on. A fresh session's subscription tails
-/// live (empty backfill), so this is the terminating condition when no committed
-/// terminal ever arrives.
+/// Causes: C1 a fresh Session receiver has empty backfill; C2 the sole state-owned
+/// Sender is dropped before any terminal fact. Effect E1: `recv` returns Closed,
+/// the exact signal used to end the SSE body. Decision rule C1+C2=>E1; a retained
+/// Sender instead leaves the receiver open and is outside this terminal case.
 #[tokio::test]
 async fn a_closed_sender_ends_the_subscription() {
-    let state = ManagedState::new(EchoFake);
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    let state = ManagedState::new(CoordinatedRuntimeFake::default());
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 

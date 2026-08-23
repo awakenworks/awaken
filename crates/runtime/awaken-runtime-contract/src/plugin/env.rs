@@ -96,11 +96,10 @@ pub enum MergeError {
 /// use awaken_runtime_contract::plugin::ResolvedExecutionEnv;
 ///
 /// fn corrupt(env: &mut ResolvedExecutionEnv) {
-///     env.order.clear();
+///     env.dynamic_tools.clear();
 /// }
 /// ```
 pub struct ResolvedExecutionEnv {
-    order: Vec<String>,
     phase_hooks: Vec<Arc<dyn PhaseHook>>,
     /// Scheduled-action kinds the selected plugins contribute. A kind absent here
     /// (its plugin is not selected for the run) cannot be staged (ADR-0027).
@@ -215,7 +214,6 @@ impl ResolvedExecutionEnv {
         }
 
         Ok(Self {
-            order,
             phase_hooks,
             action_kinds,
             run_end_guards,
@@ -245,13 +243,6 @@ impl ResolvedExecutionEnv {
             .iter()
             .find(|dynamic| dynamic.executable().id() == id)
             .map(|dynamic| Arc::clone(dynamic.executable()))
-    }
-
-    /// Active plugin ids in dependency order. The returned slice cannot mutate
-    /// the order proven by [`Self::merge`].
-    #[must_use]
-    pub fn plugin_order(&self) -> &[String] {
-        &self.order
     }
 
     /// Hooks registered for one phase point, in dependency order.

@@ -8,17 +8,24 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { spawnProduction, stopServer, waitForPort, waitForValue } from './harness.mjs';
+import {
+  managedWorkspaceClient,
+  spawnProduction,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { sqliteExec, sqliteRows } from './sqlite.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38439);
 const WORKSPACE = `catalog-corruption-${process.pid}`;
 const AGENT = 'catalog-corruption-agent';
 const MODEL = 'catalog-corruption-model';
 const FAKE_KEY = 'sk-catalog-corruption-fake'; // awaken-allow: secret
+const MANAGED_BETA = 'managed-agents-2026-04-01';
+const MEMORY_BETA = 'agent-memory-2026-07-22';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function start(directory) {
@@ -46,10 +53,15 @@ async function stop(child, signal = 'SIGINT') {
 const scoped = (tail) =>
   `http://127.0.0.1:${PORT}/v1/workspaces/${WORKSPACE}/${tail}`;
 
-async function json(method, tail, body) {
+async function internalJson(method, tail, body, beta) {
+  // Agent publication and deliberately absent Awaken-only config routes have no
+  // SDK method. Session and Memory compatibility calls below never enter here.
   const response = await fetch(scoped(tail), {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      ...(beta === undefined ? {} : { 'anthropic-beta': beta }),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -57,7 +69,7 @@ async function json(method, tail, body) {
 }
 
 async function authorModel(upstream) {
-  const provider = await json('POST', 'config/provider-connections', {
+  const provider = await internalJson('POST', 'config/provider-connections', {
     idempotency_key: 'catalog-corruption-provider',
     workspace_id: WORKSPACE,
     provider_id: 'anthropic',
@@ -68,19 +80,50 @@ async function authorModel(upstream) {
     secret: FAKE_KEY,
   });
   assert.equal(provider.status, 201, JSON.stringify(provider.body));
-  const agent = await json('PUT', `config/agents/${AGENT}`, {
+  const agent = await internalJson('PUT', `config/agents/${AGENT}`, {
     name: AGENT, model: { id: MODEL }, system: 'catalog recovery', max_steps: 2,
   });
   assert.equal(agent.status, 200, JSON.stringify(agent.body));
-  const publication = await json('POST', `config/agents/${AGENT}/publish`);
+  const publication = await internalJson('POST', `config/agents/${AGENT}/publish`);
   assert.equal(publication.status, 200, JSON.stringify(publication.body));
 }
 
-async function driveSession(sessionId, text, expectedStatus) {
-  const response = await json('POST', `sessions/${sessionId}/events`, {
+async function driveSession(client, sessionId, text) {
+  const response = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: [MANAGED_BETA],
   });
-  assert.equal(response.status, expectedStatus, JSON.stringify(response.body));
+  // Durable-admission decision rules: D1 valid wire command => HTTP 200 with
+  // one exact unprocessed receipt, regardless of whether Resource dependencies
+  // are presently readable; D2 malformed wire command => synchronous 4xx.
+  // Dependency failure belongs to later reconciliation and cannot roll D1 back.
+  assert.equal(response.data?.length, 1, JSON.stringify(response));
+  const receipt = response.data[0];
+  assert.equal(receipt.type, 'user.message');
+  assert.equal(receipt.processed_at, null);
+  return receipt;
+}
+
+async function readReceipt(client, sessionId, receiptId) {
+  for await (const event of client.beta.sessions.events.list(sessionId, {
+    betas: [MANAGED_BETA],
+  })) {
+    if (event.id === receiptId) return event;
+  }
+  return undefined;
+}
+
+async function listMemoryStores(client) {
+  const stores = [];
+  for await (const store of client.beta.memoryStores.list({ betas: [MEMORY_BETA] })) {
+    stores.push(store);
+  }
+  return stores;
+}
+
+function sdkErrorMatches(error, status, pattern) {
+  return error?.status === status
+    && pattern.test(`${String(error?.message)}\n${JSON.stringify(error?.error)}`);
 }
 
 function seedRepository(root) {
@@ -172,6 +215,15 @@ function persistPreparedGeneration(database, sessionId) {
 }
 
 async function main() {
+  // Test design (catalog corruption matrix). Causes: C1=valid Memory and
+  // Repository aggregates establish an Active generation; C2=durable catalog/
+  // generation/manifest fields are missing, malformed, cross-linked, or stale;
+  // C3=the process restarts and a new Run demands realization. Effects:
+  // E1=the valid baseline executes; E2=every C2 arm fails closed with a
+  // classified error and no model/resource success; E3=repair restores only the
+  // original authoritative generation. Constraints/invariant: catalog rows,
+  // immutable inputs, and matching manifest generation form one atomic truth.
+  // Decision rules: C1=>E1; C1+C2+C3=>E2; repaired(C2)+C3=>E3.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-catalog-corruption-'));
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const resourceDatabase = path.join(directory, 'resources.db');
@@ -180,14 +232,15 @@ async function main() {
   try {
     await ready(server);
     await authorModel(upstream);
-    const memory = await json('POST', 'memory_stores', {
+    const client = managedWorkspaceClient(`http://127.0.0.1:${PORT}`, WORKSPACE);
+    const memory = await client.beta.memoryStores.create({
       name: 'catalog-fail-closed',
       description: 'configuration must never be inferred',
+      betas: [MEMORY_BETA],
     });
-    assert.equal(memory.status, 200, JSON.stringify(memory.body));
 
     const repository = seedRepository(directory);
-    const session = await json('POST', 'sessions', {
+    const session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
@@ -195,9 +248,9 @@ async function main() {
         url: repository,
         mount_path: '/workspace/catalog-repository',
       }],
+      betas: [MANAGED_BETA],
     });
-    assert.equal(session.status, 200, JSON.stringify(session.body));
-    const repositoryId = `managed:${session.body.id}:repository:0`;
+    const repositoryId = `managed:${session.id}:repository:0`;
 
     // Demand/placement cause graph: a Session create freezes Resource intent
     // but a registered Worker owns physical realization. Only an actual Run
@@ -206,19 +259,27 @@ async function main() {
     // | Rule | Worker eligible | Run demand | Catalog valid | Effect |
     // |---|---|---|---|---|
     // | B1 | yes | no | yes | remain Prepared |
-    // | B2 | yes | yes | yes | Active baseline |
-    await driveSession(session.body.id, 'establish catalog baseline', 200);
+    // | B2 | yes | yes | yes | exact receipt processed; Active baseline |
+    const baselineReceipt = await driveSession(client, session.id, 'establish catalog baseline');
     await waitForValue(
-      () => sessionResources(sessionsDatabase, session.body.id),
+      () => sessionResources(sessionsDatabase, session.id),
       (resources) => resources.pending === undefined
         && resources.activations.some((activation) => activation.state === 'active'),
       'initial catalog Resource generation did not become Active',
     );
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      baselineReceipt.id,
+      [MANAGED_BETA],
+      () => true,
+      'the catalog baseline command to process after its Resource generation becomes Active',
+    );
 
     await stop(server, 'SIGKILL');
-    const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.body.id);
+    const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.id);
     const repositoryRecord = catalogRecord(resourceDatabase, 'repository', repositoryId);
-    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, {
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, {
       ...memoryRecord,
       configs: {},
     });
@@ -226,48 +287,71 @@ async function main() {
       ...repositoryRecord,
       configs: {},
     });
-    persistPreparedGeneration(sessionsDatabase, session.body.id);
+    persistPreparedGeneration(sessionsDatabase, session.id);
 
     server = start(directory);
     await ready(server);
 
     // Corruption decision table: C1 exact pending generation; C2 immutable
-    // catalog history exists; C3 real Run demand. C1+!C2+C3 is rejected by the
-    // Coordinator binding verifier before enqueue, so attempts stays zero and
-    // no fabricated Worker error is recorded. Restoring C2 and redelivering C3
-    // performs the first real attempt and commits that same generation. Listener
-    // readiness alone performs no hidden Worker-owned effect.
-    await driveSession(session.body.id, 'observe corrupt catalog generation', 400);
+    // catalog history exists; C3 real Run demand. C1+!C2+C3 commits the exact
+    // Session-root receipt but reconciliation fails before enqueue, so attempts
+    // stays zero and the receipt stays unprocessed. Restoring C2 lets that same
+    // durable command perform the first real attempt and commit the generation;
+    // no second User command is allowed. Listener readiness alone performs no
+    // hidden Worker-owned effect.
+    const deniedReceipt = await driveSession(
+      client,
+      session.id,
+      'observe corrupt catalog generation',
+    );
 
     // Cause/effect boundary rule: missing internal catalog config can fail
     // resource lifecycle/binding, but cannot make removed HTTP routes reappear.
-    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 404);
     assert.equal(
-      (await json('GET', `memory_stores/${memory.body.id}/config_versions/1`)).status,
+      (await internalJson(
+        'GET',
+        `memory_stores/${memory.id}/config`,
+        undefined,
+        MEMORY_BETA,
+      )).status,
       404,
     );
     assert.equal(
-      (await json('POST', `memory_stores/${memory.body.id}/config`, {
+      (await internalJson(
+        'GET',
+        `memory_stores/${memory.id}/config_versions/1`,
+        undefined,
+        MEMORY_BETA,
+      )).status,
+      404,
+    );
+    assert.equal(
+      (await internalJson('POST', `memory_stores/${memory.id}/config`, {
         expected_config_version: 1,
         recall_policy: { enabled: true },
-      })).status,
+      }, MEMORY_BETA)).status,
       404,
     );
-    assert.equal((await json('DELETE', `memory_stores/${memory.body.id}`)).status, 500);
-    const deniedMemoryBinding = await json('POST', 'sessions', {
-      agent: 'assistant',
-      environment_id: 'env_local',
-      resources: [{
-        type: 'memory_store',
-        memory_store_id: memory.body.id,
-        mount_path: '/workspace/memory',
-      }],
-    });
-    assert.equal(deniedMemoryBinding.status, 400);
-    assert.match(JSON.stringify(deniedMemoryBinding.body), /current config version is missing/u);
+    await assert.rejects(
+      () => client.beta.memoryStores.delete(memory.id, { betas: [MEMORY_BETA] }),
+      (error) => error?.status === 500,
+    );
+    await assert.rejects(
+      () => client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        resources: [{
+          type: 'memory_store',
+          memory_store_id: memory.id,
+          mount_path: '/workspace/memory',
+        }],
+        betas: [MANAGED_BETA],
+      }),
+      (error) => sdkErrorMatches(error, 400, /current config version is missing/u),
+    );
 
     const deniedRepository = await waitForValue(
-      () => sessionResources(sessionsDatabase, session.body.id),
+      () => sessionResources(sessionsDatabase, session.id),
       (resources) => resources.pending !== undefined
         && resources.activations.at(-1).state === 'prepared'
         && resources.activations.at(-1).attempts === 0
@@ -278,27 +362,49 @@ async function main() {
     assert.equal(deniedRepository.activations.at(-1).state, 'prepared');
     assert.equal(deniedRepository.activations.at(-1).attempts, 0);
     assert.equal(deniedRepository.activations.at(-1).last_error, undefined);
+    assert.equal((await readReceipt(client, session.id, deniedReceipt.id)).processed_at, null);
 
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
     await stop(server, 'SIGKILL');
-    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, memoryRecord);
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, memoryRecord);
     writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
     server = start(directory);
     await ready(server);
-    await driveSession(session.body.id, 'retry repaired catalog generation', 200);
 
     const recovered = await waitForValue(
-      () => sessionResources(sessionsDatabase, session.body.id),
+      () => sessionResources(sessionsDatabase, session.id),
       (resources) => resources.pending === undefined
         && resources.activations.at(-1).state === 'active',
       'repaired catalog generation did not commit',
+      // SIGKILL preserves the predecessor's canonical 60-second Session Work
+      // lease. Before expiry a replacement must leave this exact generation
+      // Prepared; after expiry it claims the already-retained User command and
+      // commits it. Ninety seconds covers lease+claim latency without sending a
+      // second command or accepting any weaker state.
+      { timeoutMs: 90_000 },
     );
     assert.equal(recovered.pending, undefined);
     assert.equal(recovered.activations.at(-1).state, 'active');
     assert.equal(recovered.activations.at(-1).attempts, 1);
     assert.equal(recovered.activations.at(-1).last_error, undefined);
-    assert.equal((await json('GET', `memory_stores/${memory.body.id}/config`)).status, 404);
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      deniedReceipt.id,
+      [MANAGED_BETA],
+      () => true,
+      'the repaired catalog to process the original durable command',
+    );
+    assert.equal(
+      (await internalJson(
+        'GET',
+        `memory_stores/${memory.id}/config`,
+        undefined,
+        MEMORY_BETA,
+      )).status,
+      404,
+    );
 
     // Every catalog read validates the complete aggregate. Corrupt durable JSON
     // must fail closed on a cold process without panicking or serving a partial
@@ -331,19 +437,21 @@ async function main() {
       })],
     ];
     for (const [name, data] of memoryCorruptions) {
-      writeCatalogRaw(resourceDatabase, 'memory_store', memory.body.id, data);
+      writeCatalogRaw(resourceDatabase, 'memory_store', memory.id, data);
       server = start(directory);
       await ready(server);
-      const denied = await json('GET', 'memory_stores');
-      assert.equal(denied.status, 500, `${name}: ${JSON.stringify(denied.body)}`);
-      assert.match(JSON.stringify(denied.body), /resource catalog storage failure/u);
+      await assert.rejects(
+        () => listMemoryStores(client),
+        (error) => sdkErrorMatches(error, 500, /resource registry data is corrupt/u),
+        `${name}: corrupt Memory catalog must fail through the SDK`,
+      );
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
       await stop(server);
     }
-    writeCatalogRecord(resourceDatabase, 'memory_store', memory.body.id, memoryRecord);
+    writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, memoryRecord);
     server = start(directory);
     await ready(server);
-    assert.equal((await json('GET', 'memory_stores')).status, 200);
+    assert.ok((await listMemoryStores(client)).some((store) => store.id === memory.id));
 
     // Repository aggregates have no standalone public collection route: they are
     // execution inputs owned by the Session lifecycle. Drive the same corruption
@@ -379,13 +487,17 @@ async function main() {
     for (const [name, data] of repositoryCorruptions) {
       await stop(server);
       writeCatalogRaw(resourceDatabase, 'repository', repositoryId, data);
-      persistPreparedGeneration(sessionsDatabase, session.body.id);
+      persistPreparedGeneration(sessionsDatabase, session.id);
       server = start(directory);
       await ready(server);
-      await driveSession(session.body.id, `reject ${name} Repository catalog`, 400);
+      const corruptReceipt = await driveSession(
+        client,
+        session.id,
+        `reject ${name} Repository catalog`,
+      );
 
       const denied = await waitForValue(
-        () => sessionResources(sessionsDatabase, session.body.id),
+        () => sessionResources(sessionsDatabase, session.id),
         (resources) => resources.pending !== undefined
           && resources.activations.at(-1).state === 'prepared'
           && resources.activations.at(-1).attempts === 0
@@ -396,19 +508,24 @@ async function main() {
       assert.equal(denied.activations.at(-1).state, 'prepared', name);
       assert.equal(denied.activations.at(-1).attempts, 0, name);
       assert.equal(denied.activations.at(-1).last_error, undefined, name);
+      assert.equal(
+        (await readReceipt(client, session.id, corruptReceipt.id)).processed_at,
+        null,
+        name,
+      );
       assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
 
       await stop(server);
       writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
       server = start(directory);
       await ready(server);
-      await driveSession(session.body.id, `recover ${name} Repository catalog`, 200);
       // Cause/effect decision table for every corruption rule:
-      // corrupt catalog + Run demand => admission rejects before an attempt;
-      // restored catalog + Run demand => that same generation becomes Active;
-      // listener readiness alone is never a Worker recovery receipt.
+      // corrupt catalog + Run demand => exact receipt remains unprocessed and
+      // no attempt starts; restored catalog => the same command is retried and
+      // that same generation becomes Active; listener readiness alone is never
+      // a Worker recovery receipt and no second User command drives recovery.
       const repaired = await waitForValue(
-        () => sessionResources(sessionsDatabase, session.body.id),
+        () => sessionResources(sessionsDatabase, session.id),
         (resources) => resources.pending === undefined
           && resources.activations.at(-1).state === 'active',
         `${name}: repaired generation did not commit`,
@@ -417,6 +534,14 @@ async function main() {
       assert.equal(repaired.activations.at(-1).state, 'active', name);
       assert.equal(repaired.activations.at(-1).attempts, 1, name);
       assert.equal(repaired.activations.at(-1).last_error, undefined, name);
+      await waitForSessionEventReceipt(
+        client,
+        session.id,
+        corruptReceipt.id,
+        [MANAGED_BETA],
+        () => true,
+        `${name}: repaired catalog did not process the original durable command`,
+      );
     }
 
     console.log('E2E PASS: corrupt Memory and Repository aggregates fail closed and the same snapshot later recovers.');

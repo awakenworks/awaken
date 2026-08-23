@@ -22,14 +22,16 @@ use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpoint;
 use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_agent_contract::stream::sink::Error as StreamError;
 use awaken_run_ingress_contract::{
     BindSandboxRequest, CasOutcome, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest,
     ClaimWorkerRequest, Claimed, CommitEpochGuard, CredentialRealizationReceipt,
     CredentialRealizationRequest, DeliverAndClaimRequest, DispatchError, DispatchOutcome,
     DispatchQueue, DispatchSummary, EnqueueRequest, Inbox, Outbox, PendingInput, PendingRecord,
-    RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim, RunDispatch, SettleOutcome,
-    SettleRequest, StreamEventRequest, SubmitOptions,
+    RecoveryRequest, RelinquishRequest, RenewRequest, RunClaim, RunDispatch,
+    SessionRunReservationResolution, SessionRunReservationResolutionRequest, SettleOutcome,
+    SettleRequest, StreamEventRequest, StreamObservationRequest, SubmitOptions,
 };
 use awaken_run_ingress_contract::{
     ClaimedStreamPublisher, WorkerIdentity, WorkerSnapshot,
@@ -249,24 +251,28 @@ impl HttpDispatchQueue {
     fn worker_id(&self) -> &str {
         &self.worker_identity.worker_id
     }
-}
 
-#[async_trait]
-impl ClaimedStreamPublisher for HttpDispatchQueue {
-    async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError> {
+    async fn post_stream_observation(
+        &self,
+        claim: &RunClaim,
+        observation: StreamObservation,
+    ) -> Result<(), StreamError> {
         // `classify` is the single routing truth. Complete content/lifecycle Facts
         // are committed through the durable path and must never be posted to the
         // Coordinator's live-only observation endpoint.
-        if !awaken_agent_contract::event::classify(&event.kind).live {
+        if !awaken_agent_contract::event::classify(&observation.event.kind).live {
             return Ok(());
         }
         let result = self
             .post(
                 "/v1/worker/dispatch/stream",
-                &StreamEventRequest {
-                    claim: claim.clone(),
-                    identity: self.worker_identity.clone(),
-                    event,
+                &StreamObservationRequest {
+                    request: StreamEventRequest {
+                        claim: claim.clone(),
+                        identity: self.worker_identity.clone(),
+                        event: observation.event,
+                    },
+                    assistant_response: observation.assistant_response,
                 },
                 self.worker_id(),
             )
@@ -279,7 +285,47 @@ impl ClaimedStreamPublisher for HttpDispatchQueue {
 }
 
 #[async_trait]
+impl ClaimedStreamPublisher for HttpDispatchQueue {
+    async fn publish(&self, claim: &RunClaim, event: StreamEvent) -> Result<(), StreamError> {
+        self.post_stream_observation(claim, event.into()).await
+    }
+
+    async fn publish_observation(
+        &self,
+        claim: &RunClaim,
+        observation: StreamObservation,
+    ) -> Result<(), StreamError> {
+        self.post_stream_observation(claim, observation).await
+    }
+}
+
+#[async_trait]
 impl DispatchQueue for HttpDispatchQueue {
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        claim: &RunClaim,
+        resolution: SessionRunReservationResolution,
+    ) -> Result<SettleOutcome, DispatchError> {
+        let value = self
+            .post_idempotent(
+                "/v1/worker/dispatch/reservation/resolve",
+                &SessionRunReservationResolutionRequest {
+                    claim: claim.clone(),
+                    identity: Some(self.worker_identity.clone()),
+                    resolution,
+                },
+                self.worker_id(),
+            )
+            .await?;
+        Ok(
+            if value.get("applied").and_then(serde_json::Value::as_bool) == Some(true) {
+                SettleOutcome::Applied
+            } else {
+                SettleOutcome::Fenced
+            },
+        )
+    }
+
     async fn claim_is_current(
         &self,
         claim: &RunClaim,

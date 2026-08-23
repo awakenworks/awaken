@@ -15,21 +15,44 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import {
+  withRealServer,
+  pass,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38403);
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 // The documented gate: after idle, poll until the queryable status is no longer
 // 'running' before any cleanup call.
 async function settle(client, sessionId) {
-  for (let i = 0; i < 20; i++) {
-    const s = await client.beta.sessions.retrieve(sessionId, { betas: BETAS });
-    if (s.status !== 'running') return s.status;
-    await sleep(100);
-  }
-  throw new Error('session never left running');
+  return (await waitForValue(
+    () => client.beta.sessions.retrieve(sessionId, { betas: BETAS }),
+    (session) => session.status !== 'running',
+    'queryable Session status to settle after committed idle',
+    { timeoutMs: 2_000 },
+  )).status;
+}
+
+async function sendAndObserveIdle(client, sessionId) {
+  // C1=exact User receipt; C2=its idle event; C3=queryable status settles.
+  // E1=C2 is post-C1; E2=C3 permits cleanup. K: event and Session projections
+  // remain separate reads. Decision P1 C1&&!C2=>retry; P2 C1+C2=>settle C3.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text: 'work' }] }],
+    betas: BETAS,
+  });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'P1 exact post-idle User Event receipt');
+  await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+    'P1 exact Run idle to commit before Session-status settle',
+  );
 }
 
 async function main() {
@@ -39,10 +62,7 @@ async function main() {
 
       // --- archive after settling ---
       const a = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(a.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'work' }] }],
-        betas: BETAS,
-      });
+      await sendAndObserveIdle(client, a.id);
       const settled = await settle(client, a.id);
       assert.notEqual(settled, 'running', 'status settled off running before cleanup');
       const archived = await client.beta.sessions.archive(a.id, { betas: BETAS });
@@ -51,10 +71,7 @@ async function main() {
 
       // --- delete after settling ---
       const b = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(b.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'work' }] }],
-        betas: BETAS,
-      });
+      await sendAndObserveIdle(client, b.id);
       await settle(client, b.id);
       await client.beta.sessions.delete(b.id, { betas: BETAS });
       await assert.rejects(

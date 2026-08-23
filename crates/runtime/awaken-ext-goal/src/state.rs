@@ -2,12 +2,14 @@
 //!
 //! This is the Outcome extension's typed state codec, not a second persistence
 //! abstraction. Values are ordinary Thread-scoped state commands and every write
-//! crosses the existing `CommitCoordinator`; reads rebuild the same committed
-//! Thread truth through `CommittedThreadView`.
+//! crosses the existing idempotent commit-operation boundary; reads rebuild one
+//! internally consistent committed Thread prefix through `RunRecoverySource`.
 
 use awaken_runtime_contract::{
-    CommitCoordinator, CommittedThreadView, EndCause, ExecutableAgentSnapshot, MergePolicy,
-    RunDisposition, RunId, Scope, StateCell, StateCommand, Store, ThreadCommit, ThreadId,
+    CommitOperation, CommitOperationCoordinator, CommitOperationId, EndCause,
+    ExecutableAgentSnapshot, MergePolicy, Message, RunDisposition, RunId, RunRecoverySnapshot,
+    RunRecoverySource, Scope, StateCell, StateCommand, Store, ThreadCommit, ThreadId,
+    commit_payload_hash,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
@@ -28,8 +30,16 @@ pub enum Error {
     Commit(String),
     NotFound(String),
     AlreadyActive(String),
-    Conflict { expected: u64, current: u64 },
+    Conflict {
+        expected: u64,
+        current: u64,
+    },
+    ConcurrentCommit {
+        expected_thread_version: u64,
+        current_thread_version: u64,
+    },
     ActivePointerMismatch,
+    Recovery(String),
 }
 
 impl std::fmt::Display for Error {
@@ -47,9 +57,17 @@ impl std::fmt::Display for Error {
                 formatter,
                 "Outcome version conflict: expected version {expected}, current version {current}"
             ),
+            Self::ConcurrentCommit {
+                expected_thread_version,
+                current_thread_version,
+            } => write!(
+                formatter,
+                "Outcome Thread commit conflict: expected version {expected_thread_version}, current version {current_thread_version}"
+            ),
             Self::ActivePointerMismatch => {
                 formatter.write_str("Outcome active pointer and aggregate id disagree")
             }
+            Self::Recovery(message) => write!(formatter, "Outcome recovery failed: {message}"),
         }
     }
 }
@@ -64,39 +82,65 @@ pub struct Aggregate {
     pub evaluations: Vec<Evaluation>,
 }
 
-/// The existing Thread reader/coordinator viewed as the Outcome consistency
-/// boundary. The version check prevents stale transitions from being appended;
-/// no external I/O occurs while this codec evaluates or commits a transition.
+/// One exact committed Thread prefix for public Outcome projection. The
+/// aggregate and transcript are materialized from the same recovery snapshot;
+/// callers must not combine [`ThreadOutcomeState::load`] with a separate
+/// transcript read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Projection {
+    pub aggregate: Aggregate,
+    pub messages: Vec<Message>,
+}
+
+/// The existing Thread recovery/commit-operation ports viewed as the Outcome
+/// consistency boundary. The durable Thread-version CAS prevents stale
+/// transitions from being appended across replicas; no external I/O occurs
+/// while this codec evaluates or commits a transition.
 pub struct ThreadOutcomeState<'a> {
     thread_id: &'a ThreadId,
-    reader: &'a dyn CommittedThreadView,
-    coordinator: &'a dyn CommitCoordinator,
+    recovery: &'a dyn RunRecoverySource,
+    coordinator: &'a dyn CommitOperationCoordinator,
 }
 
 impl<'a> ThreadOutcomeState<'a> {
     #[must_use]
     pub fn new(
         thread_id: &'a ThreadId,
-        reader: &'a dyn CommittedThreadView,
-        coordinator: &'a dyn CommitCoordinator,
+        recovery: &'a dyn RunRecoverySource,
+        coordinator: &'a dyn CommitOperationCoordinator,
     ) -> Self {
         Self {
             thread_id,
-            reader,
+            recovery,
             coordinator,
         }
     }
 
-    pub fn active(&self) -> Result<Option<Aggregate>, Error> {
-        let store = self.store();
+    pub async fn active(&self) -> Result<Option<Aggregate>, Error> {
+        let snapshot = self.snapshot(&projection_run_id()).await?;
+        let store = Store::rebuild(&snapshot.state);
         let Some(id) = load_optional::<Id>(&store, ACTIVE_KEY)? else {
             return Ok(None);
         };
         self.load_from(&store, &id).map(Some)
     }
 
-    pub fn load(&self, id: &Id) -> Result<Aggregate, Error> {
-        self.load_from(&self.store(), id)
+    pub async fn load(&self, id: &Id) -> Result<Aggregate, Error> {
+        self.projection(id)
+            .await
+            .map(|projection| projection.aggregate)
+    }
+
+    /// Rebuild one Outcome and its transcript from one durable recovery read.
+    /// This is a query only: it neither resumes the aggregate nor reconstructs
+    /// state from an in-process execution result.
+    pub async fn projection(&self, id: &Id) -> Result<Projection, Error> {
+        let snapshot = self.snapshot(&control_run_id(id)).await?;
+        let aggregate = self.load_from(&Store::rebuild(&snapshot.state), id)?;
+        Ok(Projection {
+            aggregate,
+            messages: snapshot.messages,
+        })
     }
 
     pub async fn create(
@@ -108,8 +152,17 @@ impl<'a> ThreadOutcomeState<'a> {
         definition
             .validate()
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        if let Some(active) = self.active()? {
-            return Err(Error::AlreadyActive(active.state.outcome_id.0));
+        let run_id = control_run_id(&state.outcome_id);
+        let snapshot = self.snapshot(&run_id).await?;
+        let store = Store::rebuild(&snapshot.state);
+        if let Some(active_id) = load_optional::<Id>(&store, ACTIVE_KEY)? {
+            if active_id == state.outcome_id {
+                let active = self.load_from(&store, &active_id)?;
+                if active.definition == *definition {
+                    return Ok(());
+                }
+            }
+            return Err(Error::AlreadyActive(active_id.0));
         }
         if state.outcome_id.0.is_empty() {
             return Err(Error::Serialization(
@@ -117,17 +170,43 @@ impl<'a> ThreadOutcomeState<'a> {
             ));
         }
         let id = &state.outcome_id;
-        self.commit(
-            id,
-            false,
-            vec![
-                set(ACTIVE_KEY, id)?,
-                set(&definition_key(id), definition)?,
-                set(&binding_key(id), binding)?,
-                set(&state_key(id), state)?,
-            ],
-        )
-        .await
+        let result = self
+            .commit(
+                id,
+                false,
+                snapshot.thread_version,
+                snapshot.next_commit_ordinal,
+                vec![
+                    set(ACTIVE_KEY, id)?,
+                    set(&definition_key(id), definition)?,
+                    set(&binding_key(id), binding)?,
+                    set(&state_key(id), state)?,
+                ],
+            )
+            .await;
+        match result {
+            Ok(()) => Ok(()),
+            Err(Error::ConcurrentCommit { .. }) => {
+                // Another replica may have applied this exact create or won
+                // with a different Outcome. Rebuild from committed truth before
+                // classifying the retry; never trust the failed call's receipt.
+                match self.active().await? {
+                    Some(active)
+                        if active.state.outcome_id == *id && active.definition == *definition =>
+                    {
+                        Ok(())
+                    }
+                    Some(active) => Err(Error::AlreadyActive(active.state.outcome_id.0)),
+                    None => match self.load(id).await {
+                        Ok(existing) if existing.definition == *definition => Ok(()),
+                        Ok(_) => Err(Error::AlreadyActive(id.0.clone())),
+                        Err(Error::NotFound(_)) => result,
+                        Err(error) => Err(error),
+                    },
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Append one transition only when the committed head still has the version
@@ -139,9 +218,12 @@ impl<'a> ThreadOutcomeState<'a> {
         state: &State,
         evaluation: Option<&Evaluation>,
     ) -> Result<(), Error> {
-        let committed = self
-            .active()?
+        let run_id = control_run_id(&state.outcome_id);
+        let snapshot = self.snapshot(&run_id).await?;
+        let store = Store::rebuild(&snapshot.state);
+        let active_id = load_optional::<Id>(&store, ACTIVE_KEY)?
             .ok_or_else(|| Error::NotFound(state.outcome_id.0.clone()))?;
+        let committed = self.load_from(&store, &active_id)?;
         if committed.state.outcome_id != state.outcome_id {
             return Err(Error::ActivePointerMismatch);
         }
@@ -167,11 +249,14 @@ impl<'a> ThreadOutcomeState<'a> {
         if terminal {
             commands.push(remove(ACTIVE_KEY));
         }
-        self.commit(&state.outcome_id, terminal, commands).await
-    }
-
-    fn store(&self) -> Store {
-        Store::rebuild(&self.reader.committed_state(self.thread_id))
+        self.commit(
+            &state.outcome_id,
+            terminal,
+            snapshot.thread_version,
+            snapshot.next_commit_ordinal,
+            commands,
+        )
+        .await
     }
 
     fn load_from(&self, store: &Store, id: &Id) -> Result<Aggregate, Error> {
@@ -198,6 +283,8 @@ impl<'a> ThreadOutcomeState<'a> {
         &self,
         id: &Id,
         terminal: bool,
+        expected_thread_version: u64,
+        operation_ordinal: u64,
         commands: Vec<StateCommand>,
     ) -> Result<(), Error> {
         let run_id = control_run_id(id);
@@ -206,18 +293,42 @@ impl<'a> ThreadOutcomeState<'a> {
         } else {
             RunDisposition::running(run_id)
         };
-        self.coordinator
-            .commit(ThreadCommit::assemble(
-                self.thread_id.clone(),
-                disposition,
-                false,
-                Vec::new(),
-                commands,
-                Vec::new(),
-            ))
+        let commit = ThreadCommit::assemble(
+            self.thread_id.clone(),
+            disposition,
+            false,
+            Vec::new(),
+            commands,
+            Vec::new(),
+        );
+        let payload_hash = commit_payload_hash(&commit)
+            .map_err(|error| Error::Serialization(error.to_string()))?;
+        let operation = CommitOperation {
+            operation_id: CommitOperationId::new(control_run_id(id), operation_ordinal),
+            expected_thread_version,
+            payload_hash,
+            commit,
+        };
+        match self.coordinator.commit_operation(operation).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let current = self.snapshot(&control_run_id(id)).await?;
+                if current.thread_version != expected_thread_version {
+                    return Err(Error::ConcurrentCommit {
+                        expected_thread_version,
+                        current_thread_version: current.thread_version,
+                    });
+                }
+                Err(Error::Commit(error.to_string()))
+            }
+        }
+    }
+
+    async fn snapshot(&self, claimed_run_id: &RunId) -> Result<RunRecoverySnapshot, Error> {
+        self.recovery
+            .recovery_snapshot(self.thread_id, claimed_run_id)
             .await
-            .map(|_| ())
-            .map_err(|error| Error::Commit(error.to_string()))
+            .map_err(|error| Error::Recovery(error.to_string()))
     }
 }
 
@@ -243,6 +354,10 @@ pub fn acknowledgment_run_id(id: &Id) -> RunId {
 
 fn control_run_id(id: &Id) -> RunId {
     RunId(format!("outcome/{}/state", id.0))
+}
+
+fn projection_run_id() -> RunId {
+    RunId("outcome/state/projection".into())
 }
 
 fn definition_key(id: &Id) -> String {

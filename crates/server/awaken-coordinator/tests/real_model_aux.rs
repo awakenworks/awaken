@@ -1,7 +1,7 @@
 //! Real-model e2e for the auxiliary agents (memory extraction, context
 //! compaction) driven by [`SharedHost`] over a **live** Anthropic-compatible
 //! endpoint (e.g. Kimi) through the genai provider. These prove the real effect:
-//! a live model, triggered after a turn, actually writes a memory file / produces
+//! a live model, triggered after a Run, actually writes a memory file / produces
 //! a summary that keeps a long conversation going.
 //!
 //! Gated with `#[ignore]` — needs network + credentials. Run explicitly:
@@ -76,20 +76,29 @@ fn bind_memory(host: &SharedHost, thread: &str, store: &str) {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_memory_extraction_writes_a_memory_file() {
+    // Causes: the fixtures below establish `live memory extraction` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `writes a memory file` and every asserted state transition or
+    // side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `live memory extraction` is one independent branch selecting `writes a
+    // memory file`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-extraction";
     bind_memory(&host, "mem-e2e", store);
 
-    // A turn stating a clear, durable preference the extractor should save.
+    // A Run stating a clear, durable preference the extractor should save.
     let state = host
         .run(None, "mem-e2e",
             user("Please remember this for the future: my name is Ada, and I strongly prefer Rust over Python for all backend work. Reply with a brief acknowledgement."),
         )
         .await
-        .expect("main turn");
+        .expect("main Run");
     assert!(
         matches!(state.state, RunState::Ended(_)),
-        "main turn should end"
+        "main Run should end"
     );
 
     assert!(
@@ -128,6 +137,15 @@ async fn live_memory_extraction_writes_a_memory_file() {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation() {
+    // Causes: the fixtures below establish `live memory` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is generated then recalled and used in a new conversation`
+    // and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `live memory` is one independent branch selecting `is generated then
+    // recalled and used in a new conversation`; a multi-row decision table is not applicable, and
+    // sibling tests own alternate causes.
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-loop";
     bind_memory(&host, "conv-1", store);
@@ -138,7 +156,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
         user("Remember for the future: my favorite programming language is Rust. Acknowledge briefly."),
     )
     .await
-    .expect("conversation 1 turn");
+    .expect("conversation 1 Run");
     assert!(
         host.drain_memory(Duration::from_secs(90)).await,
         "memory extraction should finish"
@@ -153,7 +171,7 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
             user("Based on what you remember about me, what is my favorite programming language? Answer with just the language name."),
         )
         .await
-        .expect("conversation 2 turn");
+        .expect("conversation 2 Run");
     let reply = state
         .new_messages
         .iter()
@@ -171,6 +189,17 @@ async fn live_memory_is_generated_then_recalled_and_used_in_a_new_conversation()
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent() {
+    // Causes: the fixtures below establish `live relevance selection picks the right memory via the
+    // selector agent` with the concrete inputs, state, dependencies, and failure triggers used by
+    // this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `live relevance selection picks the right memory via the selector agent`
+    // is one independent branch selecting `all output, state, side-effect, error, and terminal
+    // assertions below hold together`; a multi-row decision table is not applicable, and sibling
+    // tests own alternate causes.
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     let store = "live-memory-selection";
 
@@ -210,7 +239,7 @@ async fn live_relevance_selection_picks_the_right_memory_via_the_selector_agent(
             user("Based on what you remember about me, what is my dog's name? Answer with just the name."),
         )
         .await
-        .expect("turn");
+        .expect("Run");
     let reply = state
         .new_messages
         .iter()
@@ -263,11 +292,22 @@ async fn live_judge_grades_a_deliverable_as_a_configurable_agent() {
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
 async fn live_compaction_summarizes_and_the_conversation_continues() {
+    // Causes: the fixtures below establish `live compaction summarizes and the conversation
+    // continues` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `live compaction summarizes and the conversation continues` is one
+    // independent branch selecting `all output, state, side-effect, error, and terminal assertions
+    // below hold together`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     let (host, _model) = live_host().expect("set KIMI_API_KEY to run this test");
     // Compact once history passes 4 messages, keeping the last 2 verbatim.
     let host = host.with_compaction(4, 2);
 
-    // Several short turns to build history past the threshold.
+    // Several short Runs to build history past the threshold.
     for i in 0..3 {
         let state = host
             .run(
@@ -278,11 +318,11 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
                 )),
             )
             .await
-            .expect("turn");
+            .expect("Run");
         assert!(matches!(state.state, RunState::Ended(_)));
     }
 
-    // A follow-up turn still completes: the compact plugin summarized the older slice
+    // A follow-up Run still completes: the compact plugin summarized the older slice
     // inline (BeforeInference) and the windowed context is coherent for the live model.
     let state = host
         .run(
@@ -291,10 +331,10 @@ async fn live_compaction_summarizes_and_the_conversation_continues() {
             user("Briefly, how many facts have I told you so far?"),
         )
         .await
-        .expect("follow-up turn");
+        .expect("follow-up Run");
     assert!(
         matches!(state.state, RunState::Ended(_)),
-        "the post-compaction turn should complete"
+        "the post-compaction Run should complete"
     );
     let reply = state
         .new_messages

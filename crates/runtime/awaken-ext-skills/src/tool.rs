@@ -1241,8 +1241,13 @@ mod tests {
 
     #[test]
     fn slash_command_leaves_non_user_messages_untouched() {
+        // Test design — Causes: an Assistant message has text shaped like a
+        // user-invocable slash command. Effects: expansion returns it verbatim.
+        // Constraints/invariants: only Role::User can invoke a skill; content
+        // shape alone never grants authority. Decision rule R1:
+        // non-User+matching command=>unchanged message.
         // The `role != User` early return: an assistant message that happens to
-        // start with `/deploy` must NOT be expanded (only user turns invoke skills).
+        // start with `/deploy` must NOT be expanded (only user messages invoke skills).
         let registry = FixedSkillRegistry::from_specs([SkillSpec::new(
             "deploy",
             "Deploy",

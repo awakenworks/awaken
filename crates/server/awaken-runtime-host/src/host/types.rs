@@ -3,17 +3,6 @@
 
 use super::*;
 
-/// A tool a run awaits: its id, model-visible name/input, and whether it is
-/// client-executed (the caller runs it and returns a result) or a built-in tool
-/// awaiting a permission decision.
-#[derive(Debug, Clone)]
-pub struct PendingTool {
-    pub tool_use_id: String,
-    pub name: String,
-    pub input: serde_json::Value,
-    pub client_executed: bool,
-}
-
 /// Proof that one Host step was read back from the authoritative ThreadCommit
 /// prefix. Public protocols may inspect the projected result fields, but cannot
 /// construct this value because the commit identity is private to the Host.
@@ -23,16 +12,8 @@ pub struct CommittedStepReceipt {
     pub run_id: RunId,
     pub new_messages: Vec<Message>,
     pub state: RunState,
-    pub pending: Option<PendingTool>,
-    /// `true` when this turn folded its context (the compact plugin summarized
-    /// older turns). Read from durable thread state at the terminal step, so a
-    /// awaiting→resumed turn reports it exactly once.
-    pub compacted: bool,
-    /// `true` when the runtime transparently retried a transient inference failure
-    /// during this turn (auto-recovery), read from the run's reschedule counter.
-    pub rescheduled: bool,
-    pub model_requests: Vec<awaken_runtime_contract::llm::ModelRequestObservation>,
-    pub rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
+    pub pending: Option<Pending>,
+    pub await_reason: Option<AwaitReason>,
     pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
     proof: CommittedStepProof,
 }
@@ -50,11 +31,8 @@ pub(super) struct VerifiedStepProjection {
     pub run_id: RunId,
     pub new_messages: Vec<Message>,
     pub state: RunState,
-    pub pending: Option<PendingTool>,
-    pub compacted: bool,
-    pub rescheduled: bool,
-    pub model_requests: Vec<awaken_runtime_contract::llm::ModelRequestObservation>,
-    pub rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
+    pub pending: Option<Pending>,
+    pub await_reason: Option<AwaitReason>,
     pub delegated_runs: Vec<awaken_session_contract::DelegatedRun>,
 }
 
@@ -78,10 +56,7 @@ impl CommittedStepReceipt {
             new_messages: projected.new_messages,
             state: projected.state,
             pending: projected.pending,
-            compacted: projected.compacted,
-            rescheduled: projected.rescheduled,
-            model_requests: projected.model_requests,
-            rescheduled_delegated_run_ids: projected.rescheduled_delegated_run_ids,
+            await_reason: projected.await_reason,
             delegated_runs: projected.delegated_runs,
             proof: CommittedStepProof {
                 thread_id: committed.thread_id.clone(),

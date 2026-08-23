@@ -1,6 +1,6 @@
 //! Full-server evaluation for the Admin Assistant's Agent-authoring behavior.
 //!
-//! The server remains the execution authority: this module submits a user turn
+//! The server remains the execution authority: this module submits a user message
 //! and observes the persisted Agent configuration.  The dataset, observations,
 //! deterministic scorer, and release floors live in `awaken-eval`, so there is
 //! no parallel Python harness or second source of golden cases.

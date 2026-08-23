@@ -5,6 +5,7 @@
 //! handle; an `Err` feeds a model-visible error. A awaiting delegation resumes
 //! through the executor, which may finish, re-await, or fail (RD2/RD3/RD4).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -30,13 +31,16 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolKind,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{
+    AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
+};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_runtime_contract::tool::ToolRecoveryPolicy;
 use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase, ToolCallPhase};
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -169,6 +173,44 @@ struct MockRunDelegationService {
     started: Mutex<Vec<DelegationOrigin>>,
     resumed_with: Mutex<Vec<(serde_json::Value, ResumeResult)>>,
     cancelled: Mutex<Vec<ChildRunCancellation>>,
+}
+
+#[derive(Clone, Copy)]
+enum OwnershipDecision {
+    Current,
+    Lost,
+    Unavailable,
+}
+
+struct ScriptedOwnership {
+    decisions: Mutex<VecDeque<OwnershipDecision>>,
+}
+
+impl ScriptedOwnership {
+    fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
+        Self {
+            decisions: Mutex::new(decisions.into_iter().collect()),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl AttemptOwnershipVerifier for ScriptedOwnership {
+    async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+        match self
+            .decisions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(OwnershipDecision::Current)
+        {
+            OwnershipDecision::Current => Ok(()),
+            OwnershipDecision::Lost => Err(AttemptOwnershipError::Lost),
+            OwnershipDecision::Unavailable => {
+                Err(AttemptOwnershipError::Unavailable("authority down".into()))
+            }
+        }
+    }
 }
 
 struct ConcurrentRunDelegationService {
@@ -373,7 +415,20 @@ fn snapshot() -> ExecutableAgentSnapshot {
                     backend_ref: "b".to_string(),
                 },
             ),
-            tool_descriptors: Vec::new(),
+            // Native/SDK delegation is authorized by the exact frozen tool
+            // descriptor as well as the installed service. Managed snapshots
+            // deliberately omit this descriptor, so an empty fixture would be
+            // the negative Managed case rather than a valid `agent_run` run.
+            tool_descriptors: vec![
+                ToolDescriptor::pinned(
+                    "test:delegation",
+                    DELEGATE_TOOL,
+                    "Delegate a Run to another Agent",
+                    serde_json::json!({"type":"object"}),
+                )
+                .with_kind(ToolKind::AgentDelegation)
+                .with_recovery(ToolRecoveryPolicy::durable_request()),
+            ],
             plugin_ids: Vec::new(),
             plugin_config: Default::default(),
             context_policy: ContextPolicy::KeepAll,
@@ -420,6 +475,7 @@ fn resume_command(input: &str) -> ResumeCommand {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId(SNAPSHOT_ID.to_string()),
         catalog_fingerprint: awaken_runtime_contract::CatalogFingerprint(FINGERPRINT.to_string()),
         result: ResumeResult::Input(input.to_string()),
+        context_messages: Vec::new(),
         now_ms: 0,
     }
 }
@@ -447,9 +503,13 @@ fn committed_delegation_reference(
 
 #[tokio::test]
 async fn delegation_done_folds_delegate_usage_and_feeds_the_reply_back() {
-    // T2: an allowed delegation that finishes feeds the delegate's reply back as the
-    // tool result AND folds the delegate's own token spend into the parent thread's
-    // running tally, so a session's usage counts delegated work.
+    // Cause/effect graph: C1=the native snapshot publishes the canonical
+    // AgentDelegation descriptor, C2=the installed service handles that id, and
+    // C3=the child ends with text plus usage. Effects: E1=one child is entered,
+    // E2=its reply is the parent ToolResult, E3=its usage is folded once, and
+    // E4=the parent reaches NaturalEnd. Decision rule N1: C1+C2+C3 -> E1-E4.
+    // Constraints/invariants: the canonical delegation descriptor/service is the
+    // sole child path and usage/reply are each folded exactly once.
     let executor = Arc::new(MockRunDelegationService::new(
         Step::Done("delegate replied".to_string(), 5),
         Step::Fail("unused".to_string()),
@@ -478,6 +538,65 @@ async fn delegation_done_folds_delegate_usage_and_feeds_the_reply_back() {
         5,
         "the parent thread's tally counts the delegate's tokens"
     );
+}
+
+#[tokio::test]
+async fn delegation_start_requires_live_parent_attempt_authority() {
+    // Cause/effect graph: C1=the provider has produced an authorized delegation
+    // call; C2=parent attempt authority is current/lost/down immediately before
+    // child start. Effects: E1=start exactly one child and continue the Run;
+    // E2=start zero children and return an attempt error. Authority absence is
+    // the direct compatibility rule covered by `delegation_done...`.
+    //
+    // | Rule | Authority sequence        | Effect |
+    // | O1   | current,current,current   | E1     |
+    // | O2   | current,lost/down         | E2     |
+    // Constraints/invariants: the parent claim is checked at child start;
+    // lost/unavailable ownership cannot produce any child side effect.
+    let current_service = Arc::new(MockRunDelegationService::new(
+        Step::Done("child done".into(), 0),
+        Step::Fail("unused".into()),
+    ));
+    let current_runtime = configured_runtime(current_service.clone());
+    let current_commit = Arc::new(MemoryCommitCoordinator::new());
+    let current_context = RuntimeRunContext::new()
+        .with_commit(current_commit)
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+        ])));
+    assert_eq!(
+        current_runtime
+            .execute(activation(), current_context)
+            .await
+            .expect("O1 current authority permits delegation"),
+        RunState::Ended(EndCause::NaturalEnd),
+        "O1/E1"
+    );
+    assert_eq!(current_service.started.lock().unwrap().len(), 1, "O1/E1");
+
+    for (label, stale) in [
+        ("lost", OwnershipDecision::Lost),
+        ("down", OwnershipDecision::Unavailable),
+    ] {
+        let service = Arc::new(MockRunDelegationService::new(
+            Step::Done("must not start".into(), 0),
+            Step::Fail("unused".into()),
+        ));
+        let runtime = configured_runtime(service.clone());
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(MemoryCommitCoordinator::new()))
+            .with_ownership(Arc::new(ScriptedOwnership::new([
+                OwnershipDecision::Current,
+                stale,
+            ])));
+        runtime
+            .execute(activation(), context)
+            .await
+            .expect_err("O2 stale authority fences delegation start");
+        assert!(service.started.lock().unwrap().is_empty(), "O2/E2 {label}");
+    }
 }
 
 #[tokio::test]
@@ -611,6 +730,13 @@ async fn delegation_awaiting_awaits_the_parent_on_a_delegation_ticket() {
 
 #[tokio::test]
 async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent() {
+    // Test design — Causes: C1 the parent is durably Awaiting on one child with
+    // an opaque cancellation reference; C2 cancellation targets that parent.
+    // Effects: the parent commits Cancelled, the relationship commits
+    // CancelRequested with the same reference, and the executor receives one
+    // exact child cancellation. Constraints/invariants: parent terminal state
+    // and child intent share the commit boundary; no process-local waiter owns
+    // recovery. Decision rule C1+C2=>all three facts, each exactly once.
     let executor = Arc::new(MockRunDelegationService::new(
         Step::Awaiting(serde_json::json!({ "task": "remote-42" })),
         Step::Fail("unused".to_string()),
@@ -709,6 +835,14 @@ async fn cancelling_an_awaiting_parent_atomically_persists_child_cancel_intent()
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn child_result_arriving_after_parent_end_is_rejected() {
+    // Cause/effect graph: C1=a descriptor-authorized native child is executing,
+    // C2=the parent commits Cancelled before that child returns, and C3=the late
+    // result is released afterward. Effects: E1=the running attempt is rejected,
+    // E2=no result enters the durable inbox, and E3=the relationship remains
+    // CancelRequested. Decision rule L1: C1+C2+C3 -> E1+E2+E3. The bounded wait
+    // makes loss of C1 fail diagnostically instead of hanging the whole suite.
+    // Constraints/invariants: a terminal parent commit fence is absorbing and a
+    // late child result cannot enter the durable inbox or revive the relation.
     let executor = Arc::new(LateResultRunDelegationService {
         reached: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
@@ -723,7 +857,12 @@ async fn child_result_arriving_after_parent_end_is_rejected() {
         let context = context.clone();
         tokio::spawn(async move { runtime.execute(activation(), context).await })
     };
-    executor.reached.notified().await;
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        executor.reached.notified(),
+    )
+    .await
+    .expect("descriptor-authorized child reaches the executor");
     assert_eq!(
         runtime
             .cancel_run(RunId("run-1".into()), ThreadId("thread-1".into()), context,)
@@ -867,8 +1006,13 @@ async fn await_on_delegation(
 
 #[tokio::test]
 async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
-    // RD2: resuming an awaiting delegation runs the executor one more step; a Done folds
-    // the reply back as the delegate tool's result and the parent drives on.
+    // Test design — Causes: C1 a parent is durably Awaiting with one child
+    // handle; C2 resume supplies user input; C3 the child returns Done text.
+    // Effects: the executor receives the exact handle/input once, the text folds
+    // as the delegate Tool result, the ticket clears, and the parent reaches
+    // NaturalEnd. Constraints/invariants: the committed ticket/relationship is
+    // the sole continuation authority; reply folding cannot leave a stale await.
+    // Decision rule RD2=C1+C2+C3=>the complete resume/commit terminal sequence.
     let executor = Arc::new(MockRunDelegationService::new(
         Step::Awaiting(serde_json::json!({ "task": "remote-42" })),
         Step::Done("delegate finished".to_string(), 0),
@@ -901,6 +1045,71 @@ async fn resuming_a_delegation_done_folds_the_reply_and_completes() {
             .resume_ticket_for(&RunId("run-1".to_string()))
             .is_none()
     );
+}
+
+#[tokio::test]
+async fn delegation_resume_requires_live_parent_attempt_authority() {
+    // Cause/effect graph: C1=an awaiting child has one durable continuation;
+    // C2=the replacement parent authority is absent/current/lost/down before
+    // resume. Effects: E1=resume the child exactly once; E2=zero child resume
+    // calls and an attempt error. The absence compatibility rule is covered by
+    // `resuming_a_delegation_done...`.
+    //
+    // | Rule | Authority | Effect |
+    // | O1   | current   | E1     |
+    // | O2   | lost/down | E2     |
+    // Constraints/invariants: a replacement parent verifies its live claim
+    // immediately before the sole child-resume call; stale authority has no effect.
+    let current_service = Arc::new(MockRunDelegationService::new(
+        Step::Awaiting(serde_json::json!({ "task": "current" })),
+        Step::Done("finished".into(), 0),
+    ));
+    let (current_runtime, current_commit) = await_on_delegation(current_service.clone()).await;
+    let current_context = RuntimeRunContext::new()
+        .with_commit(current_commit.clone())
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+        ])));
+    assert_eq!(
+        current_runtime
+            .resume(
+                resume_command("continue"),
+                current_commit.as_ref(),
+                current_context,
+            )
+            .await
+            .expect("O1 current authority resumes child"),
+        RunState::Ended(EndCause::NaturalEnd),
+        "O1/E1"
+    );
+    assert_eq!(
+        current_service.resumed_with.lock().unwrap().len(),
+        1,
+        "O1/E1"
+    );
+
+    for (label, stale) in [
+        ("lost", OwnershipDecision::Lost),
+        ("down", OwnershipDecision::Unavailable),
+    ] {
+        let service = Arc::new(MockRunDelegationService::new(
+            Step::Awaiting(serde_json::json!({ "task": label })),
+            Step::Done("must not resume".into(), 0),
+        ));
+        let (runtime, commit) = await_on_delegation(service.clone()).await;
+        let context = RuntimeRunContext::new()
+            .with_commit(commit.clone())
+            .with_ownership(Arc::new(ScriptedOwnership::new([stale])));
+        runtime
+            .resume(resume_command("continue"), commit.as_ref(), context)
+            .await
+            .expect_err("O2 stale authority fences delegation resume");
+        assert!(
+            service.resumed_with.lock().unwrap().is_empty(),
+            "O2/E2 {label}"
+        );
+    }
 }
 
 #[tokio::test]

@@ -16,7 +16,15 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38151);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -32,15 +40,26 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact User receipt; C2=both gated calls and end_turn commit. E1=the
+    // post-receipt delta owns both calls/results. K: older Session history cannot
+    // satisfy C2. Decision S1 C1&&!C2=>retry; S2 C1+C2=>assert the machine path.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'walk the machine' }] }],
       betas: BETAS,
     });
 
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
-      events.push(ev);
-    }
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'S1 exact state-machine User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.filter((event) => event.type === 'agent.tool_use').length === 2
+        && delta.filter((event) => event.type === 'agent.tool_result').length === 2
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'S1 state-machine Run to commit its complete gated sequence',
+    );
 
     const toolUses = events.filter((e) => e.type === 'agent.tool_use');
     assert.equal(toolUses.length, 2, 'the model made two glob calls');

@@ -4,6 +4,8 @@
 // subresource (add / list / retrieve / update / delete). The create / retrieve /
 // events path is covered elsewhere; this exercises the endpoints that were
 // missing so any wire-shape drift surfaces as an SDK decode error.
+// Causes: root update/CAS fields, disposition command, budget state, and
+// Thread/resource subresource operation are partitioned by the tables below.
 //
 // Run: (from e2e/)  node management_sessions_family_e2e.mjs
 //
@@ -37,10 +39,44 @@
 // | U7 | live | archive | terminated tombstone with `archived_at` |
 // | U8 | live | delete | `session_deleted`; retrieve returns 404 |
 // | U9 | archived + terminated | delete | `session_deleted`; retrieve returns 404 |
+//
+// Budget cause graph: C10 budget is fixed at creation but its existing cap may
+// be raised/lowered or removed; C11 a Session created without a budget cannot
+// acquire one later; C12 wire amounts are canonical positive integer cents and
+// the Scenario snapshot charges 14 cents per cache-normalized Provider request.
+// C13 the first logical request reaches the cap, then an exact MCP confirmation
+// allows the same Run's post-tool request; C14 the cap is raised or removed;
+// C15 a System Event trails that confirmation even though confirmations are not
+// valid System predecessors. Effects are U10 exact SDK
+// create/retrieve/list projection, U11 exact update or removal, U12 rejection
+// before root mutation, U13 one budget pause, and U14 automatic continuation of
+// the same Run without a second User Event or duplicated tool effect; U15 is a
+// 400 atomic no-op before the later exact confirmation succeeds.
+//
+// | Rule | Created budget | Update | Effect |
+// |---|---|---|---|
+// | B1 | 100 USD cents | none | all Session reads echo 100 USD |
+// | B2 | 100 | 250 | root and subsequent reads echo 250 USD |
+// | B3 | 250 | null | budget is removed |
+// | B4 | absent | 100 | 400; budget remains absent |
+// | B5 | 100 | noncanonical/zero | 400; budget remains 100 |
+// | B6 | 1, exact MCP confirmation reaches next request | 100 | one resume; final end_turn; cost 28 |
+// | B7 | 1, exact MCP confirmation reaches next request | null | one resume; final end_turn; cost 28 |
+// | B8 | 1, MCP confirmation + trailing System | any | 400; no receipt/effect; pending unchanged |
+// Constraints/invariant: one Session root revision owns update/CAS/disposition/
+// budget; Thread, resource, and Event subresources project from that same
+// aggregate and no rejected arm emits a partial Event or Run.
+// Decision rules are U1-U15/B1-B8 above; their effects distinguish semantic
+// no-op, retained archive, deletion, budget pause/resume, and atomic rejection.
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import {
+  withScenarioServer,
+  pass,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -62,10 +98,195 @@ async function rawUpdate(baseUrl, sessionId, body, headers = {}) {
   });
 }
 
+const sessionEvents = (client, sessionId) =>
+  drain(client.beta.sessions.events.list(sessionId, { betas: BETAS }));
+
+async function exerciseBudgetResume(client, updateKind) {
+  const budgeted = await client.beta.sessions.create({
+    agent: 'assistant',
+    environment_id: 'env_local',
+    budget: { type: 'limit', max_list_cost: { amount: '1', currency: 'USD' } },
+    betas: BETAS,
+  });
+  const taskReceipt = await client.beta.sessions.events.send(budgeted.id, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 2 3' }] }],
+    betas: BETAS,
+  });
+  const { events: awaitingTool } = await waitForSessionEventReceipt(
+    client,
+    budgeted.id,
+    taskReceipt.data[0]?.id,
+    BETAS,
+    ({ delta }) => delta.some((event) =>
+      event.type === 'session.status_idle' && event.stop_reason.type === 'requires_action'),
+    `${updateKind} reaches the client tool boundary`,
+  );
+  const mcpToolUse = awaitingTool.find((event) => event.type === 'agent.mcp_tool_use');
+  assert.ok(mcpToolUse?.id, `${updateKind} exposes one public MCP Event id`);
+  const beforeInvalidIds = awaitingTool.map((event) => event.id);
+  await assert.rejects(
+    client.beta.sessions.events.send(budgeted.id, {
+      events: [{
+        type: 'user.tool_confirmation',
+        tool_use_id: mcpToolUse.id,
+        result: 'allow',
+      }, {
+        type: 'system.message',
+        content: [{ type: 'text', text: 'must not trail a confirmation' }],
+      }],
+      betas: BETAS,
+    }),
+    (error) => error?.status === 400,
+    `${updateKind} B8 rejects Confirmation+System`,
+  );
+  assert.deepEqual(
+    (await sessionEvents(client, budgeted.id)).map((event) => event.id),
+    beforeInvalidIds,
+    `${updateKind} B8 appends neither confirmation nor System`,
+  );
+  const confirmationReceipt = await client.beta.sessions.events.send(budgeted.id, {
+    events: [{
+      type: 'user.tool_confirmation',
+      tool_use_id: mcpToolUse.id,
+      result: 'allow',
+    }],
+    betas: BETAS,
+  });
+  const { events: paused } = await waitForSessionEventReceipt(
+    client,
+    budgeted.id,
+    confirmationReceipt.data[0]?.id,
+    BETAS,
+    ({ delta }) => delta.some((event) =>
+      event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached'),
+    `${updateKind} reaches the request gate`,
+  );
+  const threads = await drain(client.beta.sessions.threads.list(budgeted.id, { betas: BETAS }));
+  const primary = threads.find((thread) => thread.parent_thread_id == null);
+  assert.ok(primary?.id.startsWith('sthr_'), `${updateKind} has one public primary Thread`);
+  const pausedThread = paused.filter((event) =>
+    event.session_thread_id === primary.id && event.type.startsWith('session.thread_status_'));
+  assert.deepEqual(
+    pausedThread.map((event) =>
+      event.type === 'session.thread_status_idle'
+        ? `${event.type}:${event.stop_reason.type}`
+        : event.type),
+    [
+      'session.thread_status_running',
+      'session.thread_status_idle:requires_action',
+      'session.thread_status_running',
+      'session.thread_status_idle:budget_reached',
+    ],
+    `${updateKind} exact tool reply reaches one budget pause in the same Run`,
+  );
+  const pausedAggregate = paused.findIndex((event) =>
+    event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached');
+  assert.equal(paused[pausedAggregate - 1]?.type, 'session.usage', `${updateKind} usage precedes budget idle`);
+  assert.equal(
+    paused.filter((event) => event.type === 'user.message').length,
+    1,
+    `${updateKind} has one User Event`,
+  );
+
+  await client.beta.sessions.update(budgeted.id, {
+    budget: updateKind === 'raise'
+      ? { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } }
+      : null,
+    betas: BETAS,
+  });
+  const completed = await waitForValue(
+    () => sessionEvents(client, budgeted.id),
+    (events) => events.some((event) =>
+      event.type === 'session.status_idle' && event.stop_reason.type === 'end_turn') &&
+      events.some((event) => event.type === 'agent.message'),
+    `${updateKind} resumes the paused Run`,
+  );
+  const primaryStatuses = completed.filter((event) =>
+    event.session_thread_id === primary.id && event.type.startsWith('session.thread_status_'));
+  assert.deepEqual(
+    primaryStatuses.map((event) =>
+      event.type === 'session.thread_status_idle'
+        ? `${event.type}:${event.stop_reason.type}`
+        : event.type),
+    [
+      'session.thread_status_running',
+      'session.thread_status_idle:requires_action',
+      'session.thread_status_running',
+      'session.thread_status_idle:budget_reached',
+      'session.thread_status_running',
+      'session.thread_status_idle:end_turn',
+    ],
+    `${updateKind} continues the same paused lifecycle once`,
+  );
+  assert.equal(completed.filter((event) => event.type === 'user.message').length, 1);
+  assert.equal(completed.filter((event) => event.type === 'user.tool_confirmation').length, 1);
+  assert.equal(completed.filter((event) => event.type === 'agent.mcp_tool_use').length, 1);
+  assert.equal(completed.filter((event) => event.type === 'agent.mcp_tool_result').length, 1);
+  assert.equal(completed.filter((event) => event.type === 'agent.message').length, 1);
+  const finalAggregate = completed.findLastIndex((event) => event.type === 'session.status_idle');
+  assert.equal(completed[finalAggregate - 1]?.type, 'session.usage', `${updateKind} final usage precedes idle`);
+  const retrieved = await client.beta.sessions.retrieve(budgeted.id, { betas: BETAS });
+  const terminalUsage = completed.slice(0, finalAggregate)
+    .findLast((event) => event.type === 'session.usage');
+  assert.equal(
+    terminalUsage?.usage?.list_cost?.amount,
+    '28',
+    `${updateKind} final usage prices both logical requests`,
+  );
+  assert.equal(
+    retrieved.usage?.list_cost?.amount,
+    '28',
+    `${updateKind} prices two logical requests: ${JSON.stringify({
+      retrieved,
+      usageEvents: completed.filter((event) => event.type === 'session.usage'),
+    })}`,
+  );
+  if (updateKind === 'remove') {
+    assert.equal(retrieved.budget, null, 'remove keeps the one-way removal');
+  } else {
+    assert.equal(retrieved.budget?.max_list_cost.amount, '100', 'raise keeps the new cap');
+  }
+  await client.beta.sessions.delete(budgeted.id, { betas: BETAS });
+}
+
 async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38146, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+
+      // Session Agent-tool admission cause/effect graph: C1 create carries an
+      // unknown member in agent_with_overrides; C2 update carries the same
+      // unknown member beside otherwise valid root fields. Effects: E1 400 from
+      // the shared validator; E2 create adds no Session; E3 update changes no
+      // root revision, tools, title, or event. Decision rows: S1 C1=>E1+E2;
+      // S2 C2=>E1+E3. K/Constraint: both ingress paths reject before the single
+      // Session aggregate, so normalization never silently drops the member.
+      const sessionsBeforeUnknownCreate = (await drain(
+        client.beta.sessions.list({ betas: BETAS }),
+      )).map((candidate) => candidate.id).sort();
+      await assert.rejects(
+        () => client.beta.sessions.create({
+          agent: {
+            id: 'assistant',
+            type: 'agent_with_overrides',
+            tools: [{
+              type: 'agent_toolset_20260401',
+              configs: [{ name: 'parallel_web_search' }],
+            }],
+          },
+          environment_id: 'env_local',
+          betas: BETAS,
+        }),
+        (error) => error?.status === 400,
+        'S1/E1 unknown create-time member is rejected',
+      );
+      assert.deepEqual(
+        (await drain(client.beta.sessions.list({ betas: BETAS })))
+          .map((candidate) => candidate.id)
+          .sort(),
+        sessionsBeforeUnknownCreate,
+        'S1/E2 rejection creates no Session',
+      );
 
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -146,6 +367,36 @@ async function main() {
       const updatedAfterTools = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
       assert.ok(updatedAfterTools.some((e) => e.type === 'session.updated' && Array.isArray(e.agent?.tools)),
         'tools update emits session.updated');
+      const beforeUnknownUpdate = await client.beta.sessions
+        .retrieve(session.id, { betas: BETAS })
+        .withResponse();
+      const beforeUnknownUpdateEvents = (await sessionEvents(client, session.id)).length;
+      const unknownToolUpdate = await rawUpdate(baseUrl, session.id, {
+        title: 'must-not-apply-unknown-tool',
+        agent: {
+          tools: [{
+            type: 'agent_toolset_20260401',
+            configs: [{ name: 'parallel_web_search' }],
+          }],
+        },
+      });
+      assert.equal(unknownToolUpdate.status, 400, 'S2/E1');
+      assert.match(await unknownToolUpdate.text(), /unknown agent tool `parallel_web_search`/u, 'S2/E1');
+      const afterUnknownUpdate = await client.beta.sessions
+        .retrieve(session.id, { betas: BETAS })
+        .withResponse();
+      assert.equal(
+        afterUnknownUpdate.response.headers.get('etag'),
+        beforeUnknownUpdate.response.headers.get('etag'),
+        'S2/E3 root revision is unchanged',
+      );
+      assert.equal(afterUnknownUpdate.data.title, beforeUnknownUpdate.data.title, 'S2/E3 title');
+      assert.deepEqual(afterUnknownUpdate.data.agent.tools, beforeUnknownUpdate.data.agent.tools, 'S2/E3 tools');
+      assert.equal(
+        (await sessionEvents(client, session.id)).length,
+        beforeUnknownUpdateEvents,
+        'S2/E3 no Session Event is appended',
+      );
       await assert.rejects(
         () => client.beta.sessions.update(session.id, { agent: { model: 'forbidden-model' }, betas: BETAS }),
         (err) => err.status === 400,
@@ -182,12 +433,89 @@ async function main() {
       assert.ok(listed.includes(session.id));
       pass('beta.sessions.list -> PageCursor<BetaManagedAgentsSession>');
 
+      // -- budget lifecycle -------------------------------------------------
+      const budgeted = await client.beta.sessions.create({
+        agent: 'assistant',
+        environment_id: 'env_local',
+        budget: {
+          type: 'limit',
+          max_list_cost: { amount: '100', currency: 'USD' },
+        },
+        betas: BETAS,
+      });
+      assert.deepEqual(
+        budgeted.budget,
+        { type: 'limit', max_list_cost: { amount: '100', currency: 'USD' } },
+        'B1 create echoes the public cent amount',
+      );
+      assert.deepEqual(
+        (await client.beta.sessions.retrieve(budgeted.id, { betas: BETAS })).budget,
+        budgeted.budget,
+        'B1 retrieve uses the same budget projection',
+      );
+      const listedBudgeted = (await drain(client.beta.sessions.list({ betas: BETAS })))
+        .find((candidate) => candidate.id === budgeted.id);
+      assert.deepEqual(listedBudgeted?.budget, budgeted.budget, 'B1 list uses the same projection');
+
+      const raisedBudget = await client.beta.sessions.update(budgeted.id, {
+        budget: {
+          type: 'limit',
+          max_list_cost: { amount: '250', currency: 'USD' },
+        },
+        betas: BETAS,
+      });
+      assert.equal(raisedBudget.budget?.max_list_cost.amount, '250', 'B2 raises the existing cap');
+
+      for (const invalid of ['0', '01']) {
+        const response = await rawUpdate(baseUrl, budgeted.id, {
+          budget: {
+            type: 'limit',
+            max_list_cost: { amount: invalid, currency: 'USD' },
+          },
+        });
+        assert.equal(response.status, 400, `B5 rejects amount ${invalid}: ${await response.text()}`);
+      }
+      assert.equal(
+        (await client.beta.sessions.retrieve(budgeted.id, { betas: BETAS })).budget?.max_list_cost.amount,
+        '250',
+        'B5 invalid updates leave the root unchanged',
+      );
+
+      const removedBudget = await client.beta.sessions.update(budgeted.id, {
+        budget: null,
+        betas: BETAS,
+      });
+      assert.equal(removedBudget.budget, null, 'B3 removes the existing budget');
+      await assert.rejects(
+        () => client.beta.sessions.update(session.id, {
+          budget: {
+            type: 'limit',
+            max_list_cost: { amount: '100', currency: 'USD' },
+          },
+          betas: BETAS,
+        }),
+        (err) => err.status === 400,
+        'B4 cannot add a budget after Session creation',
+      );
+      assert.equal(
+        (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).budget,
+        null,
+        'B4 rejection leaves the no-budget root unchanged',
+      );
+      pass('B1-B5 budget create/update/remove decision table through the official SDK');
+
+      await exerciseBudgetResume(client, 'raise');
+      await exerciseBudgetResume(client, 'remove');
+      pass('B6-B7 budget pause + raise/remove automatically resumes one existing Run');
+
       // -- threads -----------------------------------------------------------
       const threads = await drain(client.beta.sessions.threads.list(session.id, { betas: BETAS }));
       assert.equal(threads.length, 1, 'a fresh session has one primary thread');
       const thread = threads[0];
       assert.equal(thread.type, 'session_thread');
       assert.equal(thread.session_id, session.id);
+      assert.match(thread.id, /^sthr_/u, 'the primary Thread uses the public ID codec');
+      assert.notEqual(thread.id, session.id, 'the internal root key is not a public Thread id');
       const gotThread = await client.beta.sessions.threads.retrieve(thread.id, {
         session_id: session.id,
         betas: BETAS,

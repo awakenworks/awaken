@@ -17,19 +17,11 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38254);
 const BETAS = ['managed-agents-2026-04-01'];
 const STREAM_PARAMS = { betas: BETAS, event_deltas: ['agent.thinking'] };
-
-async function listAll(client, sessionId) {
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(event);
-  }
-  return events;
-}
 
 function assertContentlessThinking(mark, label) {
   assert.equal(mark.type, 'agent.thinking', `${label}: event type`);
@@ -108,7 +100,7 @@ async function main() {
       );
       const afterReconnect = [];
       for await (const event of reopened) afterReconnect.push(event);
-      await send;
+      const receipt = (await send).data[0];
 
       assert.ok(
         afterReconnect.every(
@@ -122,7 +114,21 @@ async function main() {
       );
       pass('reopened stream recovers the turn without replaying thinking preview frames');
 
-      const events = await listAll(client, session.id);
+      // Receipt rule T2: C6 exact prompt receipt plus T1 reconnect sequence; E5
+      // that receipt is processed with one durable marker, final answer, and
+      // idle. K1 preview frames and pre-receipt history cannot satisfy E5.
+      // D2=T1+C6=>E1-E5 through the canonical authoritative-history observer.
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.filter((event) => event.type === 'agent.thinking').length === 1
+          && delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'thinking receipt, durable marker, final answer, and idle',
+        { timeoutMs: 180_000 },
+      );
       const thinking = events.filter((event) => event.type === 'agent.thinking');
       assert.equal(thinking.length, 1, `T1/E4 history contains one marker: ${JSON.stringify(events)}`);
       assertContentlessThinking(thinking[0], 'T1/E4');

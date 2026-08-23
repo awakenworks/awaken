@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 
@@ -29,15 +29,24 @@ async function main() {
       });
       pass(`session created (resolver-backed): ${session.id}`);
 
-      await client.beta.sessions.events.send(session.id, {
+      // Test design: C1 resolver-backed exact command receipt and C2 live reply;
+      // E1 processed receipt with agent.message. K1 pre-command history cannot
+      // satisfy the resolver oracle. D1=C1+C2=>E1.
+      const receipt = (await client.beta.sessions.events.send(session.id, {
         events: [
           { type: 'user.message', content: [{ type: 'text', text: 'Reply with exactly the single word: pong' }] },
         ],
         betas: BETAS,
-      });
-
-      const events = [];
-      for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+      })).data[0];
+      const { delta: events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+        'resolver-backed real model reply',
+        { timeoutMs: 180_000 },
+      );
       const msg = events.find((e) => e.type === 'agent.message');
       assert.ok(msg, `expected agent.message in ${events.map((e) => e.type)}`);
       const text = (msg.content ?? []).map((c) => c.text ?? '').join('').trim();

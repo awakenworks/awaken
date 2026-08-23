@@ -14,6 +14,7 @@ awaken-runtime-contract.workspace = true
 awaken-agent-contract.workspace = true
 awaken-resource-contract.workspace = true
 awaken-tenancy.workspace = true
+awaken-tool-pattern.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

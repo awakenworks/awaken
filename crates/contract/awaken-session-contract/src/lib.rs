@@ -13,8 +13,10 @@
 mod agent_config;
 mod baseline;
 mod budget;
+mod coordination;
 mod dream;
 mod environment;
+mod event_batches;
 mod lifecycle;
 mod mcp_attachment;
 mod mcp_probe;
@@ -39,8 +41,9 @@ pub mod resource_plane {
 
 pub use agent_config::{
     AGENT_TOOLSET_TOOL_IDS, AgentTool, AgentToolConfig, AgentToolDefaultConfig,
-    AgentToolPermissionPolicy, AgentToolsetMember, CustomToolInputSchema, ObjectSchemaKind,
-    agent_toolset_members, is_agent_toolset_member, resolved_toolsets, toolset_policies,
+    AgentToolPermissionPolicy, AgentToolsetMember, AgentWebSearchUserLocation,
+    AgentWebSearchUserLocationKind, CustomToolInputSchema, ObjectSchemaKind, agent_toolset_members,
+    is_agent_toolset_member, resolved_toolsets, toolset_policies, validate_agent_tools,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};
@@ -53,9 +56,19 @@ pub use baseline::{
     SessionRuntimePlacement, resolved_environment_snapshot_is_exact,
 };
 pub use budget::{
-    ManagedBudgetUsageCursor, ManagedListPriceError, ManagedListPriceProvider,
-    ManagedListPriceRequest, ManagedListPriceSnapshot, ManagedModelUsageCursor,
-    ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
+    BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
+    ManagedListPriceProvider, ManagedListPriceRequest, ManagedListPriceSnapshot,
+    ManagedModelUsageCursor, ManagedRuntimeListRates, ManagedTokenListRates, SessionBudgetState,
+};
+pub use coordination::{
+    CoordinatedRunCommand, CoordinatedRunIntent, CoordinatedThreadLink, CoordinatedThreadTarget,
+    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
+    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
+    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, coordinated_thread_failed,
+    coordinated_thread_id, session_agent_report_messages, session_agent_report_text,
+    session_run_activity_operation_id,
 };
 
 /// Rebuildable desired Environment capacity exported by Coordinator. The
@@ -64,6 +77,15 @@ pub use budget::{
 #[async_trait::async_trait]
 pub trait EnvironmentWarmupSource: Send + Sync {
     async fn current_environment_warmups(&self) -> Result<Vec<EnvironmentSnapshot>, String>;
+}
+
+/// Process-composed prerequisite that advances rebuildable executable
+/// projections before an application boundary consumes current or exact
+/// executable facts. Implementations own no cursor, cache, or durable state;
+/// those remain with the authoritative projection adapters.
+#[async_trait::async_trait]
+pub trait ExecutableProjectionRefresh: Send + Sync {
+    async fn refresh(&self) -> Result<(), String>;
 }
 pub use dream::{
     DREAM_MAX_INSTRUCTIONS_CHARS, DREAM_MAX_SESSIONS, DREAM_SUPPORTED_MODELS, Dream,
@@ -79,6 +101,16 @@ pub use environment::{
     SessionEnvironmentOperation, SessionEnvironmentReceipt, SessionEnvironmentReceiptError,
     SessionEnvironmentState, SessionEnvironmentTransitionError, SourceDisposedReceipt,
     SuspendPhase, checkpoint_source_disposal_authorized,
+};
+pub use event_batches::{
+    MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchError,
+    SessionEventBatchOperation, SessionEventCommand, SessionEventEntry, SessionEventInput,
+    SessionEventInterrupt, SessionEventToolReply, SessionEventToolReplyKind,
+    SessionInitialEventPlan, SessionOutcomeRubric, SessionUserRunActivation,
+    SessionUserRunAdmission, SessionUserRunCommand, SessionUserRunDelivery,
+    SessionUserRunReservation, SessionUserRunSystemInput, decode_session_event_batch_operation,
+    session_event_batch_id, session_event_batch_operation, session_event_outcome_id,
+    session_event_user_run_id, session_outcome_convenience_id,
 };
 pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
@@ -110,11 +142,13 @@ pub use run_application::{
     blocks_text, epoch_millis_to_rfc3339, paginate_history,
 };
 pub use session::{
-    AgentCapabilities, BuiltinTool, CustomTool, DelegatedRun, DelegatedRunSnapshot,
-    LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry, LiveInboxError,
-    LiveInboxSnapshot, McpAttachmentRealizer, OutcomeDrive, OutcomeIteration, OutcomeReport,
-    Pending, RunError, RunErrorKind, SessionEnvironmentBindingSink, SessionInit, SessionModelUsage,
-    SessionRuntime, SessionUsage, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, DelegatedRun,
+    DelegatedRunSnapshot, LiveInboxApplication, LiveInboxApplicationError, LiveInboxEntry,
+    LiveInboxError, LiveInboxSnapshot, McpAttachmentRealizer, OutcomeDrive, OutcomeFailure,
+    OutcomeIteration, OutcomeReport, Pending, RunError, RunErrorKind, SessionBudgetResumeDelivery,
+    SessionBudgetResumeDisposition, SessionBudgetResumeTicket, SessionEnvironmentBindingSink,
+    SessionInit, SessionModelUsage, SessionRuntime, SessionThreadLiveSubscription, SessionUsage,
+    StepOutcome, ToolPermissionDecision,
 };
 pub use session_realization::{
     AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
@@ -122,8 +156,9 @@ pub use session_realization::{
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
     SessionRealizationControlDisposition, SessionRealizationControlFailure,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationProgress,
-    SessionRealizationTarget, drive_session_realization, frozen_agent_publication_decision,
-    realization_generation_authorizes, realization_lease_authorizes, realization_lease_is_live_at,
+    SessionRealizationTarget, SessionTerminalCleanupAssignment, drive_session_realization,
+    frozen_agent_publication_decision, realization_generation_authorizes,
+    realization_lease_authorizes, realization_lease_is_live_at,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,

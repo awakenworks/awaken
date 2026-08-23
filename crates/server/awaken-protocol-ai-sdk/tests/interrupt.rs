@@ -75,8 +75,6 @@ impl RunApplication for InterruptRecorder {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

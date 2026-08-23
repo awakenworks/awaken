@@ -1,5 +1,5 @@
 //! Neutral value types and the [`SessionRuntime`] interface the adapter drives:
-//! pending tools, turn outcomes, capabilities, session init, and run errors.
+//! pending tools, Run outcomes, capabilities, Session initialization, and Run errors.
 
 use std::sync::Arc;
 
@@ -9,7 +9,6 @@ use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecyclePage};
-use awaken_runtime_contract::llm::ModelRequestObservation;
 
 /// The tool a run awaits: its id, model-visible name/input, and whether it is
 /// client-executed (projected as `agent.custom_tool_use`) or a built-in awaiting
@@ -20,6 +19,42 @@ pub struct Pending {
     pub name: String,
     pub input: serde_json::Value,
     pub client_executed: bool,
+}
+
+impl Pending {
+    /// Classify the externally answerable value directly from the one committed
+    /// [`awaken_agent_contract::agent::awaiting::ResumeTicket`]. Host execution,
+    /// Session application, and protocol recovery must all use this decoder so
+    /// warm and cold reads cannot disagree with the committed projection.
+    pub fn from_resume_ticket(
+        ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
+    ) -> Option<Self> {
+        use awaken_agent_contract::agent::awaiting::{AwaitTarget, ToolAwaitReason};
+
+        match ticket.target() {
+            AwaitTarget::ToolCall {
+                reason: reason @ (ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution),
+                call_id,
+                tool,
+            } => Some(Self {
+                tool_use_id: call_id.clone(),
+                name: tool.tool_id.clone(),
+                input: tool.arguments.clone(),
+                client_executed: *reason == ToolAwaitReason::ClientExecution,
+            }),
+            AwaitTarget::RemoteInput { call_id, .. } => Some(Self {
+                tool_use_id: call_id.clone(),
+                name: "agent_input".to_string(),
+                input: serde_json::json!({ "reason": ticket.reason().as_stream_str() }),
+                client_executed: true,
+            }),
+            AwaitTarget::ToolCall {
+                reason: ToolAwaitReason::ScheduledAction | ToolAwaitReason::Delegation,
+                ..
+            }
+            | AwaitTarget::Pause(_) => None,
+        }
+    }
 }
 
 /// Stable child-Run relationship projected at a session boundary. Runtime owns
@@ -37,11 +72,54 @@ pub struct DelegatedRun {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DelegatedRunSnapshot {
     pub delegated_runs: Vec<DelegatedRun>,
+    /// Ordinary logical child Threads admitted under this Session's dispatch
+    /// affinity. These remain distinct from synchronous delegated Runs.
+    pub coordinated_thread_ids: Vec<awaken_agent_contract::agent::thread::Id>,
     /// Monotonic committed-state position from which `delegated_runs` was rebuilt.
     pub watermark: u64,
 }
 
-/// The result of running one settled step (a new turn, or a resume).
+/// Session-approved delivery that resumes one exact committed budget pause.
+/// The activity epoch is newly admitted for this continuation; durable dispatch
+/// implementations atomically rotate their existing row to this coordinate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionBudgetResumeDelivery {
+    pub session_id: String,
+    pub thread_id: awaken_agent_contract::agent::thread::Id,
+    pub run_id: RunId,
+    pub correlation_id: String,
+    /// The claimed Run's next committed-operation ordinal while this exact
+    /// pause is current. It is read from committed recovery truth, remains
+    /// stable while Awaiting, and advances when the same Run pauses again.
+    pub pause_generation: u64,
+    /// Existing durable Session activity coordinate carried by a dispatch row.
+    /// The application transfers it to `session_activity_epoch` atomically;
+    /// foreground Runs without a row carry `None`.
+    pub prior_session_activity_epoch: Option<u64>,
+    pub session_activity_epoch: u64,
+}
+
+/// One committed budget pause paired with its authoritative generation.
+///
+/// The generation is derived from the Run recovery snapshot rather than a
+/// separate counter or pause registry. This makes repeated BudgetReached
+/// pauses in the same Run distinct while keeping exact update replay stable.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SessionBudgetResumeTicket {
+    pub ticket: awaken_agent_contract::agent::awaiting::ResumeTicket,
+    pub pause_generation: u64,
+    pub prior_session_activity_epoch: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionBudgetResumeDisposition {
+    /// The durable dispatch row accepted the resume and new epoch.
+    Dispatched,
+    /// The exact ticket was already consumed by an earlier delivery/replay.
+    Stale,
+}
+
+/// The result of running one settled Step (a new Run, or a resume).
 ///
 /// `state` reuses the run's sole lifecycle authority instead of storing a second
 /// terminal classification. It is private: callers can construct only
@@ -55,56 +133,31 @@ pub struct StepOutcome {
     run_id: Option<RunId>,
     state: RunState,
     pending: Option<Pending>,
-    /// `true` when this turn folded its context — projected as an
-    /// `agent.thread_context_compacted` event ahead of the turn's messages.
-    pub compacted: bool,
-    /// `true` when the runtime transparently retried a transient inference failure
-    /// during this turn (auto-recovery) — projected as a `session.status_rescheduled`
-    /// event ahead of the turn's messages, so a client observes the recovery.
-    pub rescheduled: bool,
-    /// Completed logical model requests observed during this settled step.
-    model_requests: Vec<ModelRequestObservation>,
-    rescheduled_delegated_run_ids: std::collections::BTreeSet<String>,
+    await_reason: Option<awaken_agent_contract::agent::awaiting::AwaitReason>,
     delegated_runs: Vec<DelegatedRun>,
 }
 
 impl StepOutcome {
     #[must_use]
-    pub fn awaiting(
-        messages: Vec<Message>,
-        pending: Option<Pending>,
-        compacted: bool,
-        rescheduled: bool,
-    ) -> Self {
+    pub fn awaiting(messages: Vec<Message>, pending: Option<Pending>) -> Self {
         Self {
             new_messages: messages,
             run_id: None,
             state: RunState::Awaiting,
             pending,
-            compacted,
-            rescheduled,
-            model_requests: Vec::new(),
-            rescheduled_delegated_run_ids: Default::default(),
+            await_reason: None,
             delegated_runs: Vec::new(),
         }
     }
 
     #[must_use]
-    pub fn ended(
-        messages: Vec<Message>,
-        cause: EndCause,
-        compacted: bool,
-        rescheduled: bool,
-    ) -> Self {
+    pub fn ended(messages: Vec<Message>, cause: EndCause) -> Self {
         Self {
             new_messages: messages,
             run_id: None,
             state: RunState::Ended(cause),
             pending: None,
-            compacted,
-            rescheduled,
-            model_requests: Vec::new(),
-            rescheduled_delegated_run_ids: Default::default(),
+            await_reason: None,
             delegated_runs: Vec::new(),
         }
     }
@@ -142,6 +195,20 @@ impl StepOutcome {
     }
 
     #[must_use]
+    pub fn with_await_reason(
+        mut self,
+        reason: awaken_agent_contract::agent::awaiting::AwaitReason,
+    ) -> Self {
+        self.await_reason = Some(reason);
+        self
+    }
+
+    #[must_use]
+    pub fn await_reason(&self) -> Option<&awaken_agent_contract::agent::awaiting::AwaitReason> {
+        self.await_reason.as_ref()
+    }
+
+    #[must_use]
     pub fn failure(&self) -> Option<&Failure> {
         match &self.state {
             RunState::Ended(EndCause::Error(failure)) => Some(failure),
@@ -159,31 +226,6 @@ impl StepOutcome {
     pub fn delegated_runs(&self) -> &[DelegatedRun] {
         &self.delegated_runs
     }
-
-    #[must_use]
-    pub fn with_model_requests(mut self, model_requests: Vec<ModelRequestObservation>) -> Self {
-        self.model_requests = model_requests;
-        self
-    }
-
-    #[must_use]
-    pub fn model_requests(&self) -> &[ModelRequestObservation] {
-        &self.model_requests
-    }
-
-    #[must_use]
-    pub fn with_rescheduled_delegated_runs(
-        mut self,
-        run_ids: std::collections::BTreeSet<String>,
-    ) -> Self {
-        self.rescheduled_delegated_run_ids = run_ids;
-        self
-    }
-
-    #[must_use]
-    pub fn rescheduled_delegated_run_ids(&self) -> &std::collections::BTreeSet<String> {
-        &self.rescheduled_delegated_run_ids
-    }
 }
 
 /// A human-in-the-loop tool decision, delivered by `user.tool_confirmation`.
@@ -193,7 +235,7 @@ pub use awaken_agent_contract::agent::awaiting::PermissionDecision as ToolPermis
 /// reads this once at session creation so the public agent object reports what the run
 /// can actually do. This is neutral data; the public Managed Agents wire shaping (the
 /// built-in `agent_toolset` fold, `custom` tools, `skills`, `multiagent`) lives in
-/// [`crate::project`]. Deliberately absent: MCP servers (the host wires none) and
+/// the Managed protocol projector. Deliberately absent: MCP servers (the host wires none) and
 /// session resources (the host has no Files-API-backed resource to reference yet), so
 /// those wire fields stay empty until a real producer exists.
 #[derive(Default)]
@@ -226,6 +268,7 @@ pub struct CustomTool {
 
 /// One evaluation round of a goal: the agent's revision messages committed this
 /// round (empty when grading the existing deliverable), and the verdict.
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutcomeIteration {
     pub messages: Vec<Message>,
     pub outcome_id: String,
@@ -237,12 +280,33 @@ pub struct OutcomeIteration {
 
 /// The result of `user.define_outcome`: the ordered evaluation rounds. The loop
 /// always ends idle (`end_turn`).
+#[derive(Debug, Clone, PartialEq)]
 pub struct OutcomeReport {
     pub iterations: Vec<OutcomeIteration>,
 }
 
+/// Neutral infrastructure failure committed by the Outcome aggregate. The
+/// optional source Run correlates an ordinary lifecycle fact so adapters can
+/// project one public error without parsing identities or duplicating it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutcomeFailure {
+    pub code: String,
+    pub message: String,
+    pub source_run_id: Option<RunId>,
+}
+
+/// One terminal Outcome rebuilt from committed Thread truth. A rubric `failed`
+/// remains a completed report; only execution/schema/persistence faults use the
+/// infrastructure-error branch.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommittedOutcomeProjection {
+    Completed(OutcomeReport),
+    Errored(OutcomeFailure),
+}
+
 /// The next durable boundary reached while driving an Outcome. Awaiting keeps
 /// the active aggregate in Thread state; completed carries its terminal report.
+#[derive(Debug, Clone, PartialEq)]
 pub enum OutcomeDrive {
     Awaiting,
     Completed(OutcomeReport),
@@ -282,7 +346,7 @@ pub struct SessionInit {
     pub environment: crate::EnvironmentSnapshot,
 }
 
-/// A queued live-inbox message on the session's in-flight turn. `id` is the
+/// A queued live-inbox message on the Session's in-flight Run. `id` is the
 /// runtime's queue identity — targetable until the engine consumes the entry.
 /// Neutral: the adapter projects it onto the wire snapshot at the route.
 #[derive(Debug, Clone)]
@@ -292,7 +356,7 @@ pub struct LiveInboxEntry {
 }
 
 /// The session's live-inbox resource: the editable queue of messages addressed
-/// to the in-flight turn. `active: false` means no native turn is running (the
+/// to the in-flight Run. `active: false` means no native Run is executing (the
 /// queue shows empty; sends go through the normal event path instead). Neutral —
 /// the wire shaping (`Json`) lives in the `ext::live_inbox` route.
 #[derive(Debug, Clone)]
@@ -313,10 +377,10 @@ impl LiveInboxSnapshot {
 }
 
 /// Why a live-inbox operation failed. Mirrors the runtime contract's edit
-/// errors, plus `Inactive` for "no native turn in flight on this session".
+/// errors, plus `Inactive` for "no native Run in flight on this Session".
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum LiveInboxError {
-    #[error("no turn is in flight; send the message as a normal event")]
+    #[error("no Run is in flight; send the message as a normal event")]
     Inactive,
     #[error("no queued message with that id")]
     UnknownMessage,
@@ -438,6 +502,18 @@ pub trait McpAttachmentRealizer: Send + Sync {
     }
 }
 
+/// One best-effort subscription to a logical Session Thread's neutral live
+/// observations. The transport/runtime adapter owns buffering and fan-out; the
+/// protocol sees neither Tokio channels nor Host types.
+#[async_trait]
+pub trait SessionThreadLiveSubscription: Send {
+    /// Wait for the next live observation. `None` means the producer has closed;
+    /// lag is implementation-defined and never affects committed truth.
+    async fn recv(
+        &mut self,
+    ) -> Result<Option<awaken_agent_contract::stream::event::Observation>, RunError>;
+}
+
 /// The runtime seam the adapter drives (DDD port). Implemented by the server over
 /// the kernel; the adapter never constructs a runtime. MCP realization is kept on
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
@@ -468,6 +544,60 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
+
+    /// Persist one complete self-affine User Run as an unclaimable reservation.
+    /// Implementations must use their existing durable Run dispatch authority;
+    /// the default fails closed rather than executing inline.
+    async fn reserve_session_user_run(
+        &self,
+        _command: crate::SessionUserRunCommand,
+    ) -> Result<crate::SessionUserRunReservation, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement durable Session User Run reservations",
+        ))
+    }
+
+    /// Publish one exact reservation only after the Session root committed its
+    /// activity epoch. Ordinary Worker claim/execution remains the sole runner.
+    async fn activate_session_user_run(
+        &self,
+        _delivery: crate::SessionUserRunDelivery,
+    ) -> Result<crate::SessionUserRunActivation, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement durable Session User Run activation",
+        ))
+    }
+
+    /// Register a foreground observer before publishing a delivery, then wait
+    /// for the exact committed Run to become `Awaiting` or `Ended`.
+    ///
+    /// The admission plan is produced only after the Session application has
+    /// committed its exact activity receipt. Recovery-only plans still wait on
+    /// committed Thread truth and never create another reservation/activity.
+    /// Public queued Event acceptance has its own durable command boundary and
+    /// does not wait through this foreground observation port.
+    async fn activate_and_observe_session_user_run(
+        &self,
+        _admission: crate::SessionUserRunAdmission,
+        _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<RunState, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement durable Session User Run observation",
+        ))
+    }
+
+    /// Read the exact Run lifecycle from existing committed Thread truth. This
+    /// is the recovery observation for batch advancement, not a completion
+    /// registry or protocol event cache.
+    async fn session_user_run_state(
+        &self,
+        _session_id: &str,
+        _run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement Session User Run recovery",
+        ))
+    }
     /// Install the exact realization fence before any physical environment can
     /// be published. Runtime adapters retain it only as an effect guard.
     fn install_session_realization_lease(
@@ -493,6 +623,114 @@ pub trait SessionRuntime: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Admit one ordinary child Run after the Session application has validated
+    /// the frozen roster and lifecycle. Implementations must use their canonical
+    /// durable Run ingress; the default fails closed rather than spawning a
+    /// process-local task.
+    async fn admit_coordinated_run(
+        &self,
+        _command: crate::CoordinatedRunCommand,
+    ) -> Result<crate::SessionAgentMessageReceipt, RunError> {
+        Err(RunError::unavailable(
+            "asynchronous Agent coordination is unsupported",
+        ))
+    }
+
+    /// Rebuild the Session's coordinated child-Thread links from existing
+    /// committed ToolBatch/transcript/dispatch facts. This is a query, not a
+    /// relationship repository.
+    async fn coordinated_threads(
+        &self,
+        _session_id: &str,
+    ) -> Result<Vec<crate::CoordinatedThreadLink>, RunError> {
+        Ok(Vec::new())
+    }
+
+    /// Subscribe to neutral live observations for one already-admitted root or
+    /// child logical Thread. `None` is the fail-closed default: committed events
+    /// remain available, but no Runtime without an exact Thread-scoped observer
+    /// can accidentally leak previews across Threads. This port is a view over
+    /// the Runtime's existing live hub, not another fan-out or replay owner.
+    async fn subscribe_session_thread_live(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<Box<dyn SessionThreadLiveSubscription>>, RunError> {
+        Ok(None)
+    }
+
+    /// Persist one Session-approved child report through the primary Thread's
+    /// existing Outbox/Inbox and durable root-Run admission owners.
+    async fn continue_session_agent_report(
+        &self,
+        _command: crate::SessionAgentReportContinuation,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "asynchronous Agent report continuation is unsupported",
+        ))
+    }
+
+    /// Interrupt one logical child through its parent Session's physical commit
+    /// and dispatch partition. Implementations must not open child-named storage.
+    async fn interrupt_session_thread(
+        &self,
+        _session_id: &str,
+        _child_thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "coordinated Session Thread interruption is unsupported",
+        ))
+    }
+
+    /// Read and validate the exact committed Awaiting coordinate that a Primary
+    /// or child Thread tool reply intends to answer. The command already carries
+    /// its admission-time Run/correlation identity; this returns only the current
+    /// dispatch activity coordinate. Implementations revalidate the command when
+    /// applying the reply so a concurrent resume or later Run fails closed.
+    async fn session_thread_tool_reply_fence(
+        &self,
+        _command: &crate::SessionThreadToolReplyCommand,
+    ) -> Result<crate::SessionThreadToolReplyFence, RunError> {
+        Err(RunError::unavailable(
+            "Session Thread tool reply fencing is unsupported",
+        ))
+    }
+
+    /// Reply to the exact pending tool of a Primary or logical child Thread
+    /// through the Session-affine claim-fenced resume/commit boundary.
+    async fn reply_session_thread_tool(
+        &self,
+        _delivery: crate::SessionThreadToolReplyDelivery,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "Session Thread tool replies are unsupported",
+        ))
+    }
+
+    /// Resume an exact `BudgetReached` ticket without injecting transcript
+    /// content. Implementations reuse the foreground Run driver or the existing
+    /// durable dispatch row; they must not enqueue a replacement Run.
+    async fn resume_budget_reached(
+        &self,
+        _delivery: SessionBudgetResumeDelivery,
+    ) -> Result<SessionBudgetResumeDisposition, RunError> {
+        Err(RunError::unavailable(
+            "budget-paused Run resumption is unsupported",
+        ))
+    }
+
+    /// Discover current budget-paused continuations from committed Run tickets
+    /// and existing Session-affine dispatch rows. This is a recovery query over
+    /// those authorities, never a pause registry.
+    async fn session_budget_resume_tickets(
+        &self,
+        _session_id: &str,
+    ) -> Result<Vec<SessionBudgetResumeTicket>, RunError> {
+        Err(RunError::unavailable(
+            "budget-paused Run discovery is unsupported",
+        ))
+    }
+
     /// Stop the parent Run, wait until it can no longer commit a delegation, and
     /// then read the complete child set from durable runtime authority.
     async fn quiesce_terminal_delegations(
@@ -502,11 +740,12 @@ pub trait SessionRuntime: Send + Sync {
         self.interrupt(thread).await?;
         Ok(DelegatedRunSnapshot {
             delegated_runs: self.delegated_runs(thread).await?,
+            coordinated_thread_ids: Vec::new(),
             watermark: 0,
         })
     }
 
-    /// Run one user turn on `thread` to its first pause or end. `content` is the
+    /// Run one user request on `thread` to its first pause or end. `content` is the
     /// user message's full block list (multimodal): text interleaved with any
     /// image blocks, never flattened to a bare string.
     async fn run(
@@ -530,7 +769,7 @@ pub trait SessionRuntime: Send + Sync {
         self.run(agent, thread, content).await
     }
 
-    /// Run one user turn, installing `sink` as the run's best-effort live-progress
+    /// Run one user request, installing `sink` as the Run's best-effort live-progress
     /// channel so the adapter can project in-flight `stream::Kind` into
     /// `event_start`/`event_delta` previews. The committed [`StepOutcome`] is
     /// identical to [`run`](Self::run) — the sink only mirrors in-flight events. The
@@ -581,7 +820,7 @@ pub trait SessionRuntime: Send + Sync {
 
     /// Provision `thread` for a new session BEFORE its record exists (ADR-0043
     /// Phase 3): the host materializes the init's MCP credential bindings and
-    /// stages the servers for the thread's first turn. A failure fails the
+    /// stages the servers for the Thread's first Run. A failure fails the
     /// create (fail closed). The default is a no-op, so every host without MCP
     /// wiring is unaffected.
     async fn prepare_session(&self, _thread: &str, _init: SessionInit) -> Result<(), RunError> {
@@ -693,10 +932,10 @@ pub trait SessionRuntime: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Rebind `thread` to `model` for its subsequent turns (R5, per-turn override).
+    /// Rebind `thread` to `model` for its subsequent Runs (R5, per-Run override).
     /// The default is a no-op, so a host without per-thread model routing is
     /// unaffected; the server impl re-stages the thread's model and evicts the
-    /// cached context so the next turn resolves the new executor.
+    /// cached context so the next Run resolves the new executor.
     async fn rebind_model(&self, _thread: &str, _model: &str) -> Result<(), RunError> {
         Ok(())
     }
@@ -731,8 +970,26 @@ pub trait SessionRuntime: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Read one internally consistent logical Thread prefix through the parent
+    /// Session's physical commit partition. The primary Thread is addressed by
+    /// `session_id == thread_id`; coordinated children use their own logical
+    /// Thread id. Implementations must reuse
+    /// the Runtime's authoritative [`RunRecoverySource`](awaken_agent_contract::thread::read::recovery::RunRecoverySource)
+    /// rather than assembling messages, state, and tickets from separate reads.
+    /// `None` means the logical Thread has no committed Run.
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Err(RunError::unavailable(
+            "consistent coordinated Thread recovery is unsupported",
+        ))
+    }
+
     /// Read committed Run lifecycle facts after `cursor`. The commit log remains
-    /// the sole authority; Managed uses this projection to observe turns accepted
+    /// the sole authority; Managed uses this projection to observe Runs accepted
     /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
     async fn committed_run_lifecycle(
         &self,
@@ -746,11 +1003,46 @@ pub trait SessionRuntime: Send + Sync {
         })
     }
 
-    /// The session's accumulated token usage across all turns, surfaced on the
+    /// The Session's accumulated token usage across all Runs, surfaced on the
     /// session's `usage` field. The default is empty — a runtime that reports no usage
     /// (the deterministic in-process models).
     async fn session_usage(&self, _thread: &str) -> Result<SessionUsage, RunError> {
         Ok(SessionUsage::default())
+    }
+
+    /// Read usage for one logical Thread from its parent Session partition.
+    /// Global stores may use `thread_id` directly; filesystem/SQLite adapters
+    /// must retain `session_id` as the physical read owner.
+    async fn session_thread_usage(
+        &self,
+        _session_id: &str,
+        thread_id: &str,
+    ) -> Result<SessionUsage, RunError> {
+        self.session_usage(thread_id).await
+    }
+
+    /// Read the durable disposition of one logical child Thread through its
+    /// parent Session's physical commit partition. Legacy Threads without the
+    /// state cell remain Active.
+    async fn session_thread_disposition(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<awaken_agent_contract::ThreadDisposition, RunError> {
+        Ok(awaken_agent_contract::ThreadDisposition::Active)
+    }
+
+    /// Commit the absorbing archive disposition on one logical child Thread
+    /// through its parent Session partition. Implementations must not mutate a
+    /// protocol cache or open child-named storage.
+    async fn archive_session_thread(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "durable coordinated Thread archive is unsupported",
+        ))
     }
 
     /// Whether the thread's selected model accepts a system message after the
@@ -765,23 +1057,6 @@ pub trait SessionRuntime: Send + Sync {
     /// matching result; resume remains the sole mutating authority.
     async fn pending_tool(&self, _thread: &str) -> Result<Option<Pending>, RunError> {
         Ok(None)
-    }
-
-    /// Buffer a system message; it is prepended to the next turn's input.
-    /// `agent` supplies the immutable publication identity when this is the
-    /// first event admitted for a newly-created Session.
-    async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), RunError>;
-
-    /// End `thread`'s session at a terminal edge (session delete/archive): dispose
-    /// its sandbox at the OS boundary — flush memory/skills back to durable truth
-    /// while it is still live, then shred any materialized secrets and reap the
-    /// workspace — and drop the cached context. Distinct from the evict-to-rebuild
-    /// edges such as [`apply_session_inputs`](Self::apply_session_inputs), which deliberately
-    /// keep the per-thread workspace so the next turn reuses it. Idempotent: a
-    /// thread with no live session is a no-op. The default is a no-op, so a host
-    /// without sandbox lifecycle is unaffected.
-    async fn end_session(&self, _thread: &str) -> Result<(), RunError> {
-        Ok(())
     }
 
     /// Execute the exact durable cleanup command and return untrusted completion
@@ -805,15 +1080,38 @@ pub trait SessionRuntime: Send + Sync {
         Ok(())
     }
 
-    /// Define an outcome and drive the grade->revise loop over `thread`, bounded by
-    /// `max_iterations`; `rubric` is the normalized requirement text.
+    /// Persist one Outcome aggregate without executing a Worker or Grader Run.
+    /// The opaque id is supplied by the application command so crash replay and
+    /// activity admission share one stable operation identity.
+    async fn prepare_outcome(
+        &self,
+        _thread: &str,
+        _outcome_id: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<(), RunError> {
+        Err(RunError::unavailable(
+            "runtime does not implement durable Outcome preparation",
+        ))
+    }
+
+    /// Convenience composition over the canonical prepare/continue phases.
     async fn define_outcome(
         &self,
         thread: &str,
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<OutcomeDrive, RunError>;
+    ) -> Result<OutcomeDrive, RunError> {
+        let outcome_id =
+            crate::session_outcome_convenience_id(thread, description, rubric, max_iterations);
+        self.prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
+            .await?;
+        self.continue_outcome(thread)
+            .await?
+            .ok_or_else(|| RunError::internal("prepared Outcome is not active"))
+    }
 
     /// Continue the active Outcome after the ordinary Run resume has committed.
     /// `None` proves there is no active aggregate; implementations must rebuild
@@ -822,15 +1120,27 @@ pub trait SessionRuntime: Send + Sync {
         Ok(None)
     }
 
-    /// The live-inbox queue on `thread`'s in-flight turn. The default reports
+    /// Read one exact terminal Outcome projection from committed Thread truth.
+    /// `None` means the id is absent or still active. Implementations must not
+    /// resume the Outcome or reconstruct a terminal from an in-process
+    /// [`StepOutcome`].
+    async fn committed_outcome_projection(
+        &self,
+        _thread: &str,
+        _outcome_id: &str,
+    ) -> Result<Option<CommittedOutcomeProjection>, RunError> {
+        Ok(None)
+    }
+
+    /// The live-inbox queue on `thread`'s in-flight Run. The default reports
     /// an inactive queue, so a host without live-inbox wiring is unaffected.
     async fn live_inbox_snapshot(&self, _thread: &str) -> LiveInboxSnapshot {
         LiveInboxSnapshot::inactive()
     }
 
-    /// Queue a message onto `thread`'s in-flight turn; it is folded into the
+    /// Queue a message onto `thread`'s in-flight Run; it is folded into the
     /// running transcript at the next safe boundary. Fails `Inactive` when no
-    /// native turn is running (the caller should send a normal event instead).
+    /// native Run is executing (the caller should send a normal event instead).
     async fn live_inbox_queue(
         &self,
         _thread: &str,
@@ -962,7 +1272,7 @@ impl RunError {
 
 /// The session-level token usage the managed wire reports (the port's neutral shape;
 /// the runtime's per-model `TokenUsage` totals are mapped onto this by the host, so
-/// this crate needs no runtime-plane type). Cumulative across all turns and models.
+/// this crate needs no runtime-plane type). Cumulative across all Runs and models.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionUsage {
     pub input_tokens: u64,
@@ -1011,8 +1321,6 @@ mod tests {
                 code: "boom".into(),
                 message: "it failed".into(),
             }),
-            true,
-            true,
         )
     }
 
@@ -1044,15 +1352,6 @@ mod tests {
             _is_error: bool,
         ) -> Result<StepOutcome, RunError> {
             unreachable!("not exercised by the default-method tests")
-        }
-
-        async fn add_system(
-            &self,
-            _agent: &str,
-            _thread: &str,
-            _text: &str,
-        ) -> Result<(), RunError> {
-            Ok(())
         }
 
         async fn define_outcome(
@@ -1112,6 +1411,12 @@ mod tests {
     // Item 1: the other fail-closed defaults — ownership false, committed empty.
     #[tokio::test]
     async fn default_probes_report_nothing() {
+        // Test design — Causes: the minimal Runtime leaves every optional probe
+        // and lifecycle hook unimplemented. Effects: ownership/history/usage and
+        // capabilities are empty while no-op lifecycle commands succeed.
+        // Constraints/invariants: defaults cannot invent durable ownership,
+        // transcript, usage, or executable capability. Decision rule D1:
+        // absent adapter=>neutral read values plus side-effect-free command OK.
         let rt = MinimalRuntime;
         assert!(
             !rt.owns_thread("t")
@@ -1133,10 +1438,9 @@ mod tests {
             SessionUsage::default(),
             "no usage reported by default"
         );
-        // The lifecycle no-op defaults succeed without a host wiring them.
+        // The nonterminal lifecycle no-op defaults succeed without a host wiring them.
         assert!(rt.prepare_session("t", init()).await.is_ok());
         assert!(rt.rebind_model("t", "m").await.is_ok());
-        assert!(rt.end_session("t").await.is_ok());
         assert!(rt.interrupt("t").await.is_ok());
         // The default capability surface is empty.
         let caps = rt.capabilities();
@@ -1236,6 +1540,12 @@ mod tests {
     // identical (the sink only mirrors in-flight events, which the default ignores).
     #[tokio::test]
     async fn run_streaming_default_delegates_identically_to_run() {
+        // Test design — Causes: the default streaming port receives the same
+        // input as the direct Run port with a no-op sink. Effects: every committed
+        // StepOutcome field is identical. Constraints/invariants: streaming is
+        // observational only and cannot create a second execution path.
+        // Decision rule: S1 default streaming=>delegate once to `run` and
+        // preserve outcome.
         let rt = MinimalRuntime;
         let direct = rt
             .run("a", "t", vec![ContentBlock::text("go")])
@@ -1253,8 +1563,6 @@ mod tests {
             streamed.pending().map(|p| &p.tool_use_id),
             direct.pending().map(|p| &p.tool_use_id),
         );
-        assert_eq!(streamed.compacted, direct.compacted);
-        assert_eq!(streamed.rescheduled, direct.rescheduled);
         assert_eq!(
             streamed.failure().map(Failure::code),
             direct.failure().map(Failure::code),
@@ -1264,9 +1572,14 @@ mod tests {
     // Item 4: `LiveInboxError` Display messages are stable, distinct wire text.
     #[test]
     fn live_inbox_error_display_messages_are_pinned() {
+        // Test design — Causes: each closed LiveInbox failure variant is rendered.
+        // Effects: it produces its exact distinct operator-facing text.
+        // Constraints/invariants: display text is a pinned wire/debug boundary;
+        // variants never alias. Decision rule L1: enumerate all variants=>three
+        // exact, pairwise-distinct messages.
         assert_eq!(
             LiveInboxError::Inactive.to_string(),
-            "no turn is in flight; send the message as a normal event",
+            "no Run is in flight; send the message as a normal event",
         );
         assert_eq!(
             LiveInboxError::UnknownMessage.to_string(),
@@ -1281,6 +1594,8 @@ mod tests {
     // Cause/effect decision table: R1 runtime faults map to Internal/internal;
     // R2 caller faults map to BadRequest/invalid_request; R3 temporary dependency
     // faults map to Unavailable/unavailable. The wire adapter owns 500/400/503.
+    // Constraints/invariants: the contract preserves three distinct stable kinds
+    // and codes; transport status selection remains outside this value object.
     #[test]
     fn run_error_display_and_kind_mapping() {
         let internal = RunError::internal("provider blew up");
@@ -1303,10 +1618,130 @@ mod tests {
     // Item 5: `LiveInboxSnapshot::inactive()` invariants.
     #[test]
     fn inactive_snapshot_is_empty_versionless_and_inactive() {
+        // Test design — Cause: no Run is in flight, so the canonical inactive
+        // constructor is selected. Effects: active=false, version=0, and no
+        // queued messages. Constraints/invariants: absence carries neither a
+        // resumable version nor latent inbox state. Decision rule I1: inactive
+        // constructor=>assert the complete three-field boundary tuple.
         let snap = LiveInboxSnapshot::inactive();
         assert!(!snap.active);
         assert_eq!(snap.version, 0);
         assert!(snap.messages.is_empty());
+    }
+
+    #[test]
+    fn committed_resume_ticket_has_one_pending_projection_decision_table() {
+        use awaken_agent_contract::agent::awaiting::{
+            AwaitTarget, PauseReason, PendingTool as TicketPendingTool, RemoteInputReason,
+            ResumeTicket, ToolAwaitReason,
+        };
+
+        // Causes: C1 each closed ToolCall reason is Permission, ClientExecution,
+        // ScheduledAction, or Delegation; C2 each RemoteInput reason is UserInput
+        // or ExternalEvent; C3 each Pause reason is Manual, RateLimit, or
+        // BudgetReached. Effects: E1 preserve the exact call/tool and classify a
+        // built-in confirmation; E2 preserve the exact call/tool and classify a
+        // client execution; E3 synthesize client-executed agent_input with the
+        // exact reason token; E4 omit system-owned waits. This is the sole
+        // foreground/cold decoder.
+        //
+        // Decision table:
+        // | Rule | Closed target | Effect |
+        // |---|---|---|
+        // | P1 | ToolCall(Permission) | E1 |
+        // | P2 | ToolCall(ClientExecution) | E2 |
+        // | P3 | RemoteInput(UserInput) | E3 user_input |
+        // | P4 | RemoteInput(ExternalEvent) | E3 external_event |
+        // | P5 | ToolCall(ScheduledAction) | E4 |
+        // | P6 | ToolCall(Delegation) | E4 |
+        // | P7 | Pause(Manual) | E4 |
+        // | P8 | Pause(RateLimit) | E4 |
+        // | P9 | Pause(BudgetReached) | E4 |
+        // Constraints/invariants: K1 ToolCall necessarily carries call id and
+        // PendingTool, so projection has no malformed-payload error; K2 internal
+        // waits never become required action; K3 exhaustive matching makes a new
+        // closed target fail compilation until this authority classifies it.
+        let ticket = |target| {
+            ResumeTicket::new(
+                "correlation",
+                RunId("run".into()),
+                awaken_agent_contract::agent::thread::Id("thread".into()),
+                "snapshot",
+                "catalog",
+                target,
+            )
+        };
+        let concrete = || TicketPendingTool {
+            tool_id: "calculator".into(),
+            arguments: serde_json::json!({"value": 7}),
+        };
+
+        let tool = |reason| AwaitTarget::ToolCall {
+            reason,
+            call_id: "call".into(),
+            tool: concrete(),
+        };
+        let exact_tool = |client_executed| {
+            Some(Pending {
+                tool_use_id: "call".into(),
+                name: "calculator".into(),
+                input: serde_json::json!({"value": 7}),
+                client_executed,
+            })
+        };
+        let agent_input = |reason| {
+            Some(Pending {
+                tool_use_id: "call".into(),
+                name: "agent_input".into(),
+                input: serde_json::json!({"reason": reason}),
+                client_executed: true,
+            })
+        };
+        let cases = [
+            (
+                "P1/E1",
+                tool(ToolAwaitReason::Permission),
+                exact_tool(false),
+            ),
+            (
+                "P2/E2",
+                tool(ToolAwaitReason::ClientExecution),
+                exact_tool(true),
+            ),
+            (
+                "P3/E3",
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::UserInput,
+                    call_id: "call".into(),
+                },
+                agent_input("user_input"),
+            ),
+            (
+                "P4/E3",
+                AwaitTarget::RemoteInput {
+                    reason: RemoteInputReason::ExternalEvent,
+                    call_id: "call".into(),
+                },
+                agent_input("external_event"),
+            ),
+            ("P5/E4", tool(ToolAwaitReason::ScheduledAction), None),
+            ("P6/E4", tool(ToolAwaitReason::Delegation), None),
+            ("P7/E4", AwaitTarget::Pause(PauseReason::Manual), None),
+            ("P8/E4", AwaitTarget::Pause(PauseReason::RateLimit), None),
+            (
+                "P9/E4",
+                AwaitTarget::Pause(PauseReason::BudgetReached),
+                None,
+            ),
+        ];
+
+        for (rule, target, expected) in cases {
+            assert_eq!(
+                Pending::from_resume_ticket(&ticket(target)),
+                expected,
+                "{rule}"
+            );
+        }
     }
 }
 
@@ -1316,7 +1751,11 @@ mod kani_proofs {
 
     #[kani::proof]
     fn awaiting_constructor_cannot_create_a_terminal_or_failed_outcome() {
-        let outcome = StepOutcome::awaiting(Vec::new(), None, kani::any(), kani::any());
+        // Test design — Causes: the Awaiting constructor receives no pending tool.
+        // Effects: state is Awaiting and failure is absent. Constraints/invariants:
+        // Awaiting cannot also be terminal. Decision rule K1: any empty message
+        // vector+None pending=>Awaiting and no failure authority.
+        let outcome = StepOutcome::awaiting(Vec::new(), None);
         assert!(matches!(outcome.state(), RunState::Awaiting));
         assert!(outcome.failure().is_none());
         std::mem::forget(outcome);
@@ -1324,13 +1763,18 @@ mod kani_proofs {
 
     #[kani::proof]
     fn ended_constructor_carries_the_only_failure_authority_and_no_pending_tool() {
+        // Test design — Causes: an Ended constructor receives either a classified
+        // error or natural completion. Effects: both are terminal, only the error
+        // exposes Failure, and neither has pending work. Constraints/invariants:
+        // EndCause is the sole failure authority. Decision rule K2: error=>failure;
+        // natural=>none; both=>Ended+no pending.
         let cause = if kani::any::<bool>() {
             EndCause::Error(Failure::CapabilityBound)
         } else {
             EndCause::NaturalEnd
         };
         let is_error = matches!(&cause, EndCause::Error(_));
-        let outcome = StepOutcome::ended(Vec::new(), cause, kani::any(), kani::any());
+        let outcome = StepOutcome::ended(Vec::new(), cause);
         assert!(matches!(outcome.state(), RunState::Ended(_)));
         assert!(outcome.pending().is_none());
         assert_eq!(outcome.failure().is_some(), is_error);
@@ -1338,21 +1782,18 @@ mod kani_proofs {
     }
 
     #[kani::proof]
-    fn observability_decorators_cannot_change_step_authority() {
-        let ended = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, kani::any(), kani::any())
-            // Empty collections are sufficient for this non-interference proof:
-            // both decorators are whole-field assignments, while authority lives
-            // in disjoint fields. Avoiding allocator-backed symbolic contents also
-            // keeps CBMC from unwinding BTree internals unrelated to the property.
-            .with_model_requests(Vec::new())
-            .with_rescheduled_delegated_runs(std::collections::BTreeSet::new());
+    fn settled_step_has_no_parallel_observation_authority() {
+        // Cause/effect decision rule: a terminal committed Run cause creates an
+        // Ended Step outcome; compaction, retry, and model-request observations
+        // remain exclusively in the committed recovery snapshot audit stream.
+        // Constraints/invariants: StepOutcome carries no parallel observation
+        // authority and a settled Step cannot retain pending work.
+        let ended = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd);
         assert!(matches!(
             ended.state(),
             RunState::Ended(EndCause::NaturalEnd)
         ));
         assert!(ended.pending().is_none());
-        assert!(ended.model_requests().is_empty());
-        assert!(ended.rescheduled_delegated_run_ids().is_empty());
         std::mem::forget(ended);
     }
 }

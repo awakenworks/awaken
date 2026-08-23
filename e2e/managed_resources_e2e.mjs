@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withServer } from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 import {
   aggregateUsage,
@@ -45,7 +45,7 @@ async function listEvents(client, sid) {
 }
 
 async function send(client, sid, text) {
-  await client.beta.sessions.events.send(sid, {
+  return client.beta.sessions.events.send(sid, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
@@ -54,14 +54,19 @@ async function send(client, sid, text) {
 // Send a user.message, tolerating a thread that is awaiting awaiting a tool decision:
 // the server rejects a fresh message while gated, so approve any pending calls and
 // retry until it lands (or give up after a bounded number of tries).
-async function sendSafe(client, sid, text, approved) {
+async function sendSafe(client, sid, text, approved, confirmationReceiptIds) {
   for (let tries = 0; tries < 10; tries++) {
     try {
-      await send(client, sid, text);
-      return true;
+      return await send(client, sid, text);
     } catch (e) {
       if (!String(e).includes('awaiting a tool decision')) throw e;
-      await approveGated(client, sid, await listEvents(client, sid), approved);
+      await approveGated(
+        client,
+        sid,
+        await listEvents(client, sid),
+        approved,
+        confirmationReceiptIds,
+      );
       await sleep(1200);
     }
   }
@@ -71,14 +76,17 @@ async function sendSafe(client, sid, text, approved) {
 // Approve every gated (`evaluated_permission === 'ask'`) tool call not yet approved.
 // `write` is not auto-allowed (only read/glob/grep are), so writes await for a
 // confirmation — this releases them.
-async function approveGated(client, sid, evs, approved) {
+async function approveGated(client, sid, evs, approved, confirmationReceiptIds) {
   for (const e of evs) {
     if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
       approved.add(e.id);
-      await client.beta.sessions.events.send(sid, {
+      // This is an intermediate gate release, not a terminal acceptance oracle;
+      // driveUntil receipt-gates the owning prompt after the resulting effects.
+      const response = await client.beta.sessions.events.send(sid, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
         betas: BETAS,
       });
+      confirmationReceiptIds.push(response.data[0].id);
     }
   }
 }
@@ -97,23 +105,89 @@ const assistantText = (evs) =>
 // Returns { approved, ok }.
 async function driveUntil(client, sid, text, check, { nudges = 2, rounds = 16, nudgeText } = {}) {
   const approved = new Set();
+  const confirmationReceiptIds = [];
+  const processedConfirmationIds = new Set();
+  const waitForConfirmations = async () => {
+    for (const receiptId of confirmationReceiptIds) {
+      if (processedConfirmationIds.has(receiptId)) continue;
+      await waitForSessionEventReceipt(
+        client,
+        sid,
+        receiptId,
+        BETAS,
+        () => true,
+        'resource permission receipt to process',
+        { timeoutMs: 120_000, pollMs: 500 },
+      );
+      processedConfirmationIds.add(receiptId);
+    }
+  };
+  let lastReceipt;
+  // Driver decision R1: C1 an exact prompt/nudge receipt, C2 optional permission
+  // releases, and C3 the scenario event/external-state predicate succeeds.
+  // Effects: E1 intermediate gates advance; E2 C1 is processed while C3 remains
+  // true. K1 pre-receipt history may drive gates but cannot complete the turn.
+  // R1=C1+C3=>E2; R2=C1+C2+C3=>E1+E2.
   for (let attempt = 0; attempt <= nudges; attempt++) {
     // A nudge is a fresh user.message; `sendSafe` approves any pending gated call and
     // retries so an awaiting thread ("awaiting a tool decision") still accepts it.
     if (await check(await listEvents(client, sid))) return { approved, ok: true };
-    await sendSafe(client, sid, attempt === 0 ? text : nudgeText ?? text, approved);
+    const sendResponse = await sendSafe(
+      client,
+      sid,
+      attempt === 0 ? text : nudgeText ?? text,
+      approved,
+      confirmationReceiptIds,
+    );
+    lastReceipt = sendResponse?.data?.[0];
+    if (!lastReceipt) continue;
     for (let i = 0; i < rounds; i++) {
       await sleep(1500);
       const evs = await listEvents(client, sid);
-      await approveGated(client, sid, evs, approved);
-      if (await check(evs)) return { approved, ok: true };
+      await approveGated(client, sid, evs, approved, confirmationReceiptIds);
+      if (await check(evs)) {
+        await waitForSessionEventReceipt(
+          client,
+          sid,
+          lastReceipt.id,
+          BETAS,
+          ({ events }) => check(events),
+          `resource turn ${JSON.stringify(attempt === 0 ? text : nudgeText ?? text)}`,
+          { timeoutMs: 120_000, pollMs: 500 },
+        );
+        await waitForConfirmations();
+        return { approved, ok: true };
+      }
       if (evs.length && evs[evs.length - 1].type === 'session.status_idle') {
-        if (await check(evs)) return { approved, ok: true };
+        await waitForSessionEventReceipt(
+          client,
+          sid,
+          lastReceipt.id,
+          BETAS,
+          () => true,
+          `resource nudge ${attempt + 1} to settle`,
+          { timeoutMs: 120_000, pollMs: 500 },
+        );
+        await waitForConfirmations();
         break; // idle without success → nudge
       }
     }
   }
-  return { approved, ok: await check(await listEvents(client, sid)) };
+  const finalEvents = await listEvents(client, sid);
+  const ok = await check(finalEvents);
+  if (ok && lastReceipt) {
+    await waitForSessionEventReceipt(
+      client,
+      sid,
+      lastReceipt.id,
+      BETAS,
+      ({ events }) => check(events),
+      'final resource turn receipt',
+      { timeoutMs: 120_000, pollMs: 500 },
+    );
+    await waitForConfirmations();
+  }
+  return { approved, ok };
 }
 
 async function main() {

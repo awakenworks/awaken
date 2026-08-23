@@ -21,6 +21,7 @@ impl crate::host::SharedHost {
     pub(crate) fn web_search_plugin(
         &self,
         thread: &str,
+        execution_configuration: Option<awaken_ext_builtin_tools::WebSearchExecutionConfiguration>,
     ) -> Arc<awaken_ext_builtin_tools::WebSearchPlugin> {
         let credentials = self.credential_materializer.clone().map(|materializer| {
             Arc::new(HostWebSearchCredentialResolver::new(
@@ -28,10 +29,13 @@ impl crate::host::SharedHost {
                 self.thread_workspace(thread),
             )) as Arc<dyn awaken_ext_builtin_tools::WebSearchCredentialResolver>
         });
-        Arc::new(awaken_ext_builtin_tools::WebSearchPlugin::new(
-            self.web_search_providers.clone(),
-            credentials,
-        ))
+        Arc::new(
+            awaken_ext_builtin_tools::WebSearchPlugin::new(
+                self.web_search_providers.clone(),
+                credentials,
+            )
+            .with_execution_configuration(execution_configuration),
+        )
     }
 }
 

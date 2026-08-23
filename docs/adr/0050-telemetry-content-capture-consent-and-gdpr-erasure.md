@@ -388,12 +388,12 @@ SPA) listing the purposes; (4) accept → `POST /enroll/<token>/grant` writes
 webhook callback to the developer reuses existing webhook infra (follow-on). v1
 no-stub minimum = mint → page → grant recorded.
 
-**Resolution cadence.** `CaptureDecision` is resolved at **each run/turn boundary**
+**Resolution cadence.** `CaptureDecision` is resolved at **each Run boundary**
 in `awaken-runtime-host` (never per-token, never once-per-session): meet(ceiling ×
 request × consent) + build the redactor from the resolved redaction mode → hand
-`{level, redactor}` + opaque `data_subject_id` to the runtime for that turn. Withdrawal
+`{level, redactor}` + opaque `data_subject_id` to the runtime for that Run. Withdrawal
 gives a **two-part guarantee**: content erasure is immediate (`erase` by id); capture
-stops at the **next turn** (best-effort-prompt, seconds). One turn's tokens use one
+stops at the **next Run** (best-effort-prompt, seconds). One Run's tokens use one
 decision.
 
 ## How this satisfies simple design & DDD
@@ -441,7 +441,7 @@ Build slices (**core** = both builds; **managed** = server-local only):
 2. `ContentRedactor` port + `Noop` + `RegexPiiRedactor` in
    `awaken-observability`; fold `redact_arguments` in as a source. *(core)*
 3. `DataSubjectId` on the neutral request + `DataSubjectResolver` port with
-   `NullResolver`; resolve `CaptureDecision` per run/turn in `awaken-runtime-host`;
+   `NullResolver`; resolve `CaptureDecision` per Run in `awaken-runtime-host`;
    thread the opaque id through inference attribution. *(core)*
 4. `DataSubjectErasure` + per-record `data_subject_id`/`purpose`/`retention`;
    TTL sweep; downgrade `AWAKEN_TRACE_FILE` to `Structured`-only. *(core)*

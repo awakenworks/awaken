@@ -53,8 +53,9 @@ async fn post(router: &Router, worker: &str, identity: Value) -> (StatusCode, Va
 /// every Worker to discard valid capacity (S6 O4 D3, RPN72); F2 an invalid or
 /// stale identity reaches the source and learns Environment configuration
 /// (S8 O3 D3, RPN72). C1 exact current identity; C2 source succeeds; C3 source
-/// fails. Effects: E1 return the authoritative list, E2 return 500 rather than
+/// fails. Effects: E1 return the authoritative list, E2 return 503 rather than
 /// false emptiness, E3 reject before source access.
+/// Constraint K1: the source/refresh adapter owns no desired-state cache.
 /// | Rule | C1 | C2 | C3 | Effect |
 /// | W1   | 1  | 1  | 0  | E1     |
 /// | W2   | 1  | 0  | 1  | E2     |
@@ -109,6 +110,6 @@ async fn warmup_projection_preserves_source_failure_and_identity_fencing() {
         serde_json::to_value(&identity).unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "W2: {body}");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "W2: {body}");
     assert_eq!(failure.calls.load(Ordering::SeqCst), 1, "W2");
 }

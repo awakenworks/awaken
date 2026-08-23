@@ -14,45 +14,46 @@ allow a protected operation.
 resolved descriptor
   -> model-visible tool list
   -> model tool call
-  -> argument normalization
-  -> permission context
-  -> PermissionPolicy decision
-  -> ToolGateHook / runtime gate
-  -> execute, suspend for decision, deny, or set result
+  -> normalized ToolCall
+  -> ToolPermissionPolicy verdict
+  -> PermissionGate / ToolGateHook
+  -> GateOutcome
+  -> execute, block, require confirmation, set result, or schedule
   -> staged audit/effect
   -> commit
 ```
 
 The permission decision must happen for each protected invocation. A cached or
 configured policy may provide the answer, but the runtime path still observes an
-explicit allow, deny, ask, or substitute-result decision.
+explicit `ToolPermissionVerdict`. Only `Allow` reaches execution;
+`RequireConfirmation` commits the ordinary closed wait/resume authority. The
+gate-only `SetResult` and `Schedule` outcomes do not enlarge the policy verdict
+vocabulary.
 
 ## Decision Types
 
-| Decision | Meaning | Runtime behavior |
+| Policy verdict | Gate outcome | Runtime behavior |
 |---|---|---|
-| `allow` | invocation may proceed | execute through the selected tool/backend port |
-| `deny` | invocation is not allowed | return typed denied result or terminal error according to policy |
-| `ask` | human/operator decision is required | suspend through runtime wait/decision machinery |
-| `set_result` | policy supplies a safe result | skip execution and stage the supplied tool result |
-| `require_scope` | a narrower credential/resource scope is required | fail or suspend until an explicit grant exists |
+| `ToolPermissionVerdict::Allow` | `GateOutcome::Allow` | execute through the selected tool/backend port |
+| `ToolPermissionVerdict::Deny { reason }` | `GateOutcome::Block { reason }` | skip execution and return the typed blocked result |
+| `ToolPermissionVerdict::RequireConfirmation { correlation_id }` | `GateOutcome::RequireConfirmation { correlation_id }` | commit a closed permission wait and require a typed resume decision |
+
+`GateOutcome::SetResult` and `GateOutcome::Schedule` are final-gate outcomes,
+not additional `ToolPermissionVerdict` variants. A narrower credential/resource
+scope therefore maps to `Deny` or `RequireConfirmation`; it does not create a
+parallel permission control path.
 
 No decision grants unrelated authority. Permission for a tool call does not grant
 credential write, config publication, provider selection, or admin action.
 
 ## Policy Inputs
 
-Allowed policy inputs are:
-
-- resolved descriptor id, schema, content hash, and policy metadata;
-- normalized invocation arguments;
-- run/thread identity and active agent id;
-- selected backend profile and capability requirement;
-- operator overlay and explicit grants;
-- opaque credential/resource references;
-- runtime state facts needed for contextual policy;
-- public adapter identity only after it is normalized into an internal caller
-  context.
+The per-evaluation `ToolPermissionPolicy` input is exactly the normalized
+`ToolCall` (`tool_id`, `call_id`, and arguments). The concrete policy object may
+already own its configured rules and mode. It receives no Run, Thread, backend,
+credential, resource, or adapter identity. A final `ToolGateHook` separately
+receives the same `ToolCall` plus the Run's read-only `Store`; that hook may
+further restrict an allowed call but cannot widen the permission verdict.
 
 Forbidden inputs are:
 
@@ -66,19 +67,23 @@ Forbidden inputs are:
 
 | Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
 |---|---|---|---|---|---|---|
-| `PermissionContext` | value object | normalized data for one authorization decision | descriptor, args, caller context, runtime facts | public DTOs, secrets, local paths | policy sees unstable or privileged input | G9, G21; context serialization tests |
-| `PermissionPolicy` | policy | allow/deny/ask/set-result decision | operator overlay, explicit grants, runtime context | descriptor visibility, backend selection | selection or health becomes authorization | G9, G21; no-hidden-grant tests |
-| `PermissionDecision` | value object | typed decision and reason | policy output | execution transport, public error schema | denied or pending work is ambiguous | G21, G26; decision mapping tests |
-| `ToolGateHook` | runtime hook | final invocation gate for a tool call | permission decision, tool call, runtime context | descriptor resolution, direct commit | tool executes without explicit permission path | G9, G21; no-bypass tests |
-| `DecisionTicket` | value object | resumable ask/approval correlation (one await reason of the shared wait/resume capability) | pending `ResumeTicket`, shared `ResumeValidator` | public session state, config writes | approval resumes the wrong call | G5, G21; resume correlation tests |
-| `AuditDraft` | staged fact/effect | reviewable record of protected decision | permission context and decision | durable write outside commit | authorization cannot be explained later | G1, G21; audit commit tests |
+| `ToolCall` | value object | normalized data for one authorization decision | tool id, call id, arguments | public DTOs, secrets, local paths | policy sees unstable or privileged input | G9, G21; tool normalization tests |
+| `ToolPermissionPolicy` | policy | one `ToolPermissionVerdict` for a normalized call | configured rules and mode | descriptor visibility, backend selection, Run state, execution | selection or health becomes authorization | G9, G21; no-hidden-grant tests |
+| `ToolPermissionVerdict` | closed value | `Allow`, `Deny`, or `RequireConfirmation` with its payload | policy output | gate-only outcomes, resume decisions, public error schema | denied or pending work is ambiguous | G21, G26; verdict-to-gate tests |
+| `ToolGateHook` | runtime hook | final `GateOutcome` for a tool call | normalized call and read-only Run `Store` | descriptor resolution, direct commit | tool executes without the gate chain | G9, G21; no-bypass tests |
+| `ResumeTicket` | closed value | exact confirmation correlation and `AwaitTarget::ToolCall { reason: ToolAwaitReason::Permission, call_id, tool }` | shared `ResumeValidator` | a second ticket type, public session state, config writes | a decision resumes the wrong call | G5, G21; resume correlation tests |
+| `PermissionDecision` | closed resume value | the later operator `Allow` or `Deny` answer | `ResumeResult::Permission` | policy evaluation, tool results, free-form input | an untyped input approves a tool | G5, G21; result-kind validation tests |
+| `AuditDraft` | staged fact/effect | reviewable record of the gate outcome | normalized call and gate decision | durable write outside commit | authorization cannot be explained later | G1, G21; audit commit tests |
 
 ## First Vertical Slice
 
-1. Build `PermissionContext` for one protected tool.
-2. Return `allow`, `deny`, and `ask` from a `PermissionPolicy`.
-3. Gate execution through `ToolGateHook`.
-4. Resume an `ask` decision with a correlated ticket.
+1. Normalize one protected invocation as a `ToolCall`.
+2. Return `Allow`, `Deny`, or `RequireConfirmation` from a
+   `ToolPermissionPolicy`.
+3. Project the verdict once to `GateOutcome` and gate execution through
+   `ToolGateHook`.
+4. Commit confirmation as a closed `ResumeTicket`, then accept only
+   `ResumeResult::Permission(PermissionDecision::Allow | PermissionDecision::Deny)`.
 5. Stage audit output through the normal commit path.
 6. Prove visibility, health, and selection cannot grant permission.
 

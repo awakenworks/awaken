@@ -23,7 +23,7 @@ const FAKE_ACP_PERMISSION_SCRIPT: &str = "while IFS= read -r line; do \
     done";
 
 const SLOW_FAKE_ACP_SCRIPT: &str = "read _prompt; sleep 3; \
-    printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP-SLOW-TURN\"}'; \
+    printf '%s\\n' '{\"type\":\"message\",\"text\":\"ACP-SLOW-RUN\"}'; \
     printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"natural_end\"}'";
 
 fn slow_acp_source() -> awaken_run_executor_acp::SubprocessChannelSource {
@@ -68,7 +68,7 @@ impl awaken_run_executor_acp::AgentChannelSource for FailSecondAcpSource {
     }
 }
 
-/// First ACP turn starts normally; a live-inbox continuation reaches the normal
+/// First ACP Run starts normally; a live-inbox continuation reaches the normal
 /// relaunch seam, where the deterministic source fails. Production error handling
 /// is exercised without adding a diagnostic endpoint to the server.
 pub fn build_acp_relaunch_failure_router() -> Router {
@@ -88,24 +88,76 @@ pub fn build_acp_relaunch_failure_router() -> Router {
 /// over real ACP JSON-RPC (the [`awaken_run_executor_acp::Codec::Acp`] driver),
 /// proving the production codec end-to-end. `AWAKEN_MODEL_MODE=acp-jsonrpc`.
 pub async fn build_acp_jsonrpc_router() -> Router {
-    let launch = awaken_run_executor_acp::AcpLaunch::custom(
-        scenario_shell_argv(FAKE_ACP_JSONRPC_SCRIPT),
-        vec![],
+    // One catalog-driven route set owns every production ACP identity. Only the
+    // acquisition command is replaced by the canonical deterministic fixture;
+    // model/MCP delivery, config-home isolation, and session-model projection
+    // continue to come from each real catalog row.
+    let interrupt_ready_dir: Option<&'static str> =
+        std::env::var("AWAKEN_MATRIX_INTERRUPT_READY_DIR")
+            .ok()
+            .map(|value| Box::leak(value.into_boxed_str()) as &'static str);
+    let routes = awaken_run_executor_acp::known_acp_clis()
+        .iter()
+        .copied()
+        .map(|mut cli| {
+            let mut env = cli.env.to_vec();
+            env.push(("AWAKEN_MATRIX_RUNTIME", cli.id));
+            if let Some(ready_dir) = interrupt_ready_dir {
+                env.push(("AWAKEN_MATRIX_INTERRUPT_READY_DIR", ready_dir));
+            }
+            cli.env = Box::leak(env.into_boxed_slice());
+            cli.acquisition = awaken_run_executor_acp::AcpAcquisition::Direct {
+                executable: "sh",
+                args: &["-c", FAKE_ACP_JSONRPC_SCRIPT],
+            };
+            (
+                scenario_host_acp_cli(cli),
+                Arc::new(FixedAcpModel) as Arc<dyn awaken_run_executor_acp::LaunchResolver>,
+            )
+        })
+        .collect();
+    let launch = awaken_runtime_host::LaunchSource::Projected(
+        awaken_runtime_host::AcpLaunchRegistry::new(routes)
+            .expect("the production ACP catalog is a unique exact-route set"),
     );
+    let mut snapshots = vec![
+        ExecutableAgentSnapshot::builder("acp-agent")
+            .instructions("matrix-runtime=claude")
+            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+                "",
+                "",
+                "acp:claude",
+            )))
+            .build(),
+        ExecutableAgentSnapshot::builder("matrix-native")
+            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+                "scenario", "awaken", "default",
+            )))
+            .build(),
+    ];
+    snapshots.extend(awaken_run_executor_acp::known_acp_clis().iter().map(|cli| {
+        ExecutableAgentSnapshot::builder(format!("matrix-acp-{}", cli.id))
+            .instructions(format!("matrix-runtime={} matrix-suite=true", cli.id))
+            .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+                "",
+                "",
+                format!("acp:{}", cli.id),
+            )))
+            .build()
+    }));
+    let publication = fixed_agent_publication(snapshots);
     let mut deployment = scenario_deployment();
     deployment.sandbox_tier = awaken_runtime_host::SandboxTier::Local;
+    let host_publication = publication.clone();
     let platform =
         resource_host_with_deployment(Arc::new(OversizedToolModel), "awaken", deployment)
             .map_host_async(|host| async move {
-                host.with_gate_override(Arc::new(AllowAllGate))
-                    .with_acp_launch_source(
-                        awaken_worker::relay_hand_executor_factory(),
-                        awaken_runtime_host::LaunchSource::FixedAcp(Box::new(launch)),
-                    )
+                host.with_agent_publications(host_publication)
+                    .with_acp_launch_source(awaken_worker::relay_hand_executor_factory(), launch)
                     .await
             })
             .await;
-    mount_with_host_backend_publication(platform, "acp-agent", "acp:claude")
+    mount_with_agent_source(platform, publication)
 }
 
 /// Durable allow/deny coverage for ACP `session/request_permission`, through the
@@ -187,46 +239,41 @@ const FAKE_ACP_DISCOVERY: awaken_run_executor_acp::AcpDiscoverySpec =
         install_remediation: "scenario fixture is built in",
     };
 
-/// The [`FAKE_ACP_GATEWAY_JSONRPC_SCRIPT`] wired as a real [`AcpCli`] row, so the
+/// Build a deterministic executable fixture by overriding only process-local
+/// facts on the authoritative Claude catalog row. Model/MCP delivery, credential
+/// admission, config-home isolation, and every other adapter capability remain
+/// owned by `known_acp_clis()`.
+fn canonical_claude_fixture(
+    acquisition: awaken_run_executor_acp::AcpAcquisition,
+    container_argv: &'static [&'static str],
+) -> awaken_run_executor_acp::AcpCli {
+    let mut cli = *awaken_run_executor_acp::acp_cli("claude")
+        .expect("the canonical Claude ACP row is installed");
+    cli.acquisition = acquisition;
+    cli.discovery = FAKE_ACP_DISCOVERY;
+    cli.image_requirements = &[];
+    cli.container_argv = container_argv;
+    cli.container_probe_argv = None;
+    cli.capability_probe_auth_method_id = None;
+    cli.session_persistence = awaken_run_executor_acp::SessionPersistence::None;
+    cli
+}
+
+/// The [`FAKE_ACP_GATEWAY_JSONRPC_SCRIPT`] wired from the real Claude [`AcpCli`]
+/// row, so the
 /// projecting launch path resolves + projects the model env onto it exactly as a
 /// production CLI (its delivery keys are the `ANTHROPIC_*` ones the script echoes).
 /// Used only by [`build_acp_gateway_router`] to exercise host model resolution
 /// (self-credentialed vs cloud-managed gateway, D-R2) end to end.
-pub(super) const FAKE_ACP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
-    id: "fake",
-    display_name: "Fake ACP",
-    description: "Deterministic scenario ACP fixture.",
-    acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
-        executable: "/bin/sh",
-        args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
-    },
-    discovery: FAKE_ACP_DISCOVERY,
-    image_requirements: &[],
-    container_argv: &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
-    container_probe_argv: None,
-    capability_probe_auth_method_id: None,
-    model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
-        base_url: "ANTHROPIC_BASE_URL",
-        model: "ANTHROPIC_MODEL",
-        credential_env: &["ANTHROPIC_API_KEY"],
-        aliases: &[],
-    }),
-    model_api_dialects: &["anthropic_messages"],
-    backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
-    managed_model_interface: awaken_run_executor_acp::ManagedModelInterface::Environment,
-    managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
-    managed_provider_config: None,
-    auth_method_id: None,
-    mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
-    config_home_env: Some("CLAUDE_CONFIG_DIR"),
-    config_home_aliases: &[],
-    memory_entrypoint: "CLAUDE.md",
-    session_export_excludes: &[],
-    // The fake gateway CLI keeps no local session (it is a scripted stand-in).
-    session_persistence: awaken_run_executor_acp::SessionPersistence::None,
-    context_window_env: None,
-    env: &[],
-};
+pub(super) fn fake_acp_cli() -> awaken_run_executor_acp::AcpCli {
+    canonical_claude_fixture(
+        awaken_run_executor_acp::AcpAcquisition::Direct {
+            executable: "/bin/sh",
+            args: &["-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
+        },
+        &["/bin/sh", "-c", FAKE_ACP_GATEWAY_JSONRPC_SCRIPT],
+    )
+}
 
 /// A fake ACP agent (JSON-RPC, shell builtins only) that reports whether the
 /// `session/new` request it received carried the session's MCP server and, if so,
@@ -252,83 +299,34 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
-/// [`FAKE_ACP_MCP_ECHO_SCRIPT`] wired as an `AcpSession` (session/new delivery) CLI row,
-/// so the projecting launch path hands it the run's staged MCP servers through the
-/// `session/new` request the [`awaken_run_executor_acp::Codec::Acp`] driver builds.
-const FAKE_ACP_MCP_CLI: awaken_run_executor_acp::AcpCli = awaken_run_executor_acp::AcpCli {
-    id: "fake-mcp",
-    display_name: "Fake ACP MCP",
-    description: "Deterministic scenario ACP MCP fixture.",
-    acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
-        executable: "/bin/sh",
-        args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
-    },
-    discovery: FAKE_ACP_DISCOVERY,
-    image_requirements: &[],
-    container_argv: &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
-    container_probe_argv: None,
-    capability_probe_auth_method_id: None,
-    model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
-        base_url: "ANTHROPIC_BASE_URL",
-        model: "ANTHROPIC_MODEL",
-        credential_env: &["ANTHROPIC_API_KEY"],
-        aliases: &[],
-    }),
-    model_api_dialects: &["anthropic_messages"],
-    backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
-    managed_model_interface: awaken_run_executor_acp::ManagedModelInterface::Environment,
-    managed_credential_delivery: awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
-    managed_provider_config: None,
-    auth_method_id: None,
-    mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
-    config_home_env: Some("CLAUDE_CONFIG_DIR"),
-    config_home_aliases: &[],
-    memory_entrypoint: "CLAUDE.md",
-    session_export_excludes: &[],
-    session_persistence: awaken_run_executor_acp::SessionPersistence::None,
-    context_window_env: None,
-    env: &[],
-};
+/// [`FAKE_ACP_MCP_ECHO_SCRIPT`] replaces only the canonical Claude row's
+/// executable, so staged MCP servers and credential admission still come from
+/// the production row before the official `session/new` request is built.
+fn fake_acp_mcp_cli() -> awaken_run_executor_acp::AcpCli {
+    canonical_claude_fixture(
+        awaken_run_executor_acp::AcpAcquisition::Direct {
+            executable: "/bin/sh",
+            args: &["-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+        },
+        &["/bin/sh", "-c", FAKE_ACP_MCP_ECHO_SCRIPT],
+    )
+}
 
 /// Container-only ACP fixture used by the Environment package E2E. The image
 /// supplies this executable; its prompt handler opens the publication-pinned
 /// Playwright stdio MCP server and proves a real browser tool round trip.
-const PLAYWRIGHT_MCP_FIXTURE_CLI: awaken_run_executor_acp::AcpCli =
-    awaken_run_executor_acp::AcpCli {
-        id: "playwright-fixture",
-        display_name: "Playwright MCP fixture",
-        description: "Deterministic container ACP client for Playwright MCP.",
-        acquisition: awaken_run_executor_acp::AcpAcquisition::Direct {
+fn playwright_mcp_fixture_cli() -> awaken_run_executor_acp::AcpCli {
+    let mut cli = canonical_claude_fixture(
+        awaken_run_executor_acp::AcpAcquisition::Direct {
             executable: "/usr/local/bin/awaken-playwright-acp-fixture",
             args: &[],
         },
-        discovery: FAKE_ACP_DISCOVERY,
-        image_requirements: &[],
-        container_argv: &["/usr/local/bin/awaken-playwright-acp-fixture"],
-        container_probe_argv: None,
-        capability_probe_auth_method_id: None,
-        model_delivery: Some(awaken_run_executor_acp::ModelDelivery {
-            base_url: "ANTHROPIC_BASE_URL",
-            model: "ANTHROPIC_MODEL",
-            credential_env: &["ANTHROPIC_API_KEY"],
-            aliases: &[],
-        }),
-        model_api_dialects: &["anthropic_messages"],
-        backend_model_interface: awaken_run_executor_acp::BackendModelInterface::Unsupported,
-        managed_model_interface: awaken_run_executor_acp::ManagedModelInterface::Environment,
-        managed_credential_delivery:
-            awaken_run_executor_acp::ManagedCredentialDelivery::ProcessSecret,
-        managed_provider_config: None,
-        auth_method_id: None,
-        mcp_interface: awaken_run_executor_acp::McpInterface::AcpSession,
-        config_home_env: Some("AWAKEN_PLAYWRIGHT_CONFIG_HOME"),
-        config_home_aliases: &[],
-        memory_entrypoint: "AGENTS.md",
-        session_export_excludes: &[],
-        session_persistence: awaken_run_executor_acp::SessionPersistence::None,
-        context_window_env: None,
-        env: &[],
-    };
+        &["/usr/local/bin/awaken-playwright-acp-fixture"],
+    );
+    cli.config_home_env = Some("AWAKEN_PLAYWRIGHT_CONFIG_HOME");
+    cli.memory_entrypoint = "AGENTS.md";
+    cli
+}
 
 /// A launch resolver with a fixed (dummy) model: the fake CLI ignores the model env, so
 /// this keeps the scenario off the "model config via env" path — no ANTHROPIC_* need be
@@ -359,11 +357,7 @@ impl awaken_run_executor_acp::LaunchResolver for FixedAcpModel {
 /// α-secretless into the fake CLI's `session/new`. Proves the D6→D5 chain end to end
 /// through the HTTP managed API. `AWAKEN_MODEL_MODE=acp-managed-mcp`.
 pub async fn build_acp_managed_mcp_router() -> Router {
-    let mut fixture_cli = FAKE_ACP_MCP_CLI;
-    // Keep the deterministic executable, but bind it to a registered adapter
-    // identity so credential-delivery and MCP capability declarations come
-    // from the same production catalog row used by admission.
-    fixture_cli.id = "claude";
+    let fixture_cli = fake_acp_mcp_cli();
     let source = Arc::new(awaken_run_executor_acp::ProjectingChannelSource::new(
         scenario_host_acp_cli(fixture_cli),
         Arc::new(FixedAcpModel),
@@ -372,14 +366,15 @@ pub async fn build_acp_managed_mcp_router() -> Router {
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", "acp-managed-mcp", "acp:claude"),
+        None,
         move |host| host.with_acp(executor),
     )
     .await
 }
 
 /// The REAL-CLI, REAL-LLM twin of [`build_acp_managed_mcp_router`]: the managed plane
-/// with the **actual** `claude --acp` adapter (the catalog `claude` row, launched via
-/// `npx`) wired as the ACP backend, its model resolved from the operator env (KIMI:
+/// with the actual pinned Claude ACP adapter from the catalog wired as the
+/// backend, its model resolved from the operator env (KIMI:
 /// `ANTHROPIC_BASE_URL`/`ANTHROPIC_MODEL`/`ANTHROPIC_API_KEY`), and α loopback-relay MCP
 /// delivery so the sandboxed CLI receives no vault secret while the host relay authenticates
 /// upstream. Each thread's config home is isolated under
@@ -413,6 +408,7 @@ pub async fn build_acp_real_mcp_router() -> Router {
     awaken_cli::build_all_in_one_router_with_host_customizer(
         Arc::new(McpToolModel),
         ModelBinding::new("scenario", model_ref, format!("acp:{cli_id}")),
+        None,
         move |host| {
             host.with_projected_acp_argv(
                 cli,
@@ -584,11 +580,7 @@ pub async fn build_acp_container_router() -> Router {
         );
         (publication, launch, Arc::new(NativePlaywrightMcpModel))
     } else if playwright_mcp {
-        let mut fixture_cli = PLAYWRIGHT_MCP_FIXTURE_CLI;
-        // The fixture supplies the executable, while the immutable Agent
-        // publication still names a production catalog adapter. This preserves
-        // the single adapter authority enforced by the runtime host.
-        fixture_cli.id = "claude";
+        let fixture_cli = playwright_mcp_fixture_cli();
         let publication = fixed_host_backend_publication_with_acp_mcp(
             "namespace-agent",
             "acp:claude",

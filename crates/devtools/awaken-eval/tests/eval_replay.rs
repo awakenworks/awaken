@@ -5,7 +5,7 @@ use awaken_eval::outcome_judge::{
     JudgeCase, JudgeDataset, JudgeObservation, SCHEMA_VERSION, SourceKind, score,
 };
 use awaken_eval::store::{load_dataset, save_dataset};
-use awaken_eval::{Case, Dataset, Expectation, ScriptedToolCall, ScriptedTurn, replay};
+use awaken_eval::{Case, Dataset, Expectation, ScriptedResponse, ScriptedToolCall, replay};
 use awaken_ext_goal::outcome::GradeDecision;
 
 fn dataset() -> Dataset {
@@ -17,7 +17,7 @@ fn dataset() -> Dataset {
                 id: "answers-42".to_string(),
                 instructions: "be terse".to_string(),
                 input: "what is the answer?".to_string(),
-                script: vec![ScriptedTurn {
+                script: vec![ScriptedResponse {
                     text: "the answer is 42".to_string(),
                     tool_calls: Vec::new(),
                 }],
@@ -33,7 +33,7 @@ fn dataset() -> Dataset {
                 id: "wrong-expectation".to_string(),
                 instructions: String::new(),
                 input: "hello".to_string(),
-                script: vec![ScriptedTurn {
+                script: vec![ScriptedResponse {
                     text: "hi there".to_string(),
                     tool_calls: Vec::new(),
                 }],
@@ -71,11 +71,15 @@ async fn dataset_replays_through_the_real_runtime_and_scores() {
 
 #[tokio::test]
 async fn a_single_case_replays_the_committed_assistant_text() {
+    // Test design — Causes: one scripted response exactly equals one output
+    // expectation. Effects: the real replay engine commits the text and the
+    // score passes. Constraints/invariants: scoring reads committed assistant
+    // output, not the input script directly. Decision rule R1: exact text=>pass.
     let case = Case {
         id: "echoes-instructions".to_string(),
         instructions: String::new(),
         input: "go".to_string(),
-        script: vec![ScriptedTurn {
+        script: vec![ScriptedResponse {
             text: "done — result ready".to_string(),
             tool_calls: Vec::new(),
         }],
@@ -86,27 +90,32 @@ async fn a_single_case_replays_the_committed_assistant_text() {
     let score = replay::run_case(&case).await;
     assert!(
         score.passed(),
-        "committed text should equal the scripted turn"
+        "committed text should equal the scripted response"
     );
 }
 
 #[tokio::test]
 async fn a_tool_scripted_case_executes_the_tool_and_scores_tool_called() {
-    // Turn 1 calls `search`; turn 2 answers. The eval registers an echo tool for
+    // Test design — Causes: response one calls a registered tool and response two
+    // returns text satisfying positive/negative expectations. Effects: the real
+    // engine executes the tool and every score passes. Constraints/invariants:
+    // ToolCalled requires observed execution and output checks use committed text.
+    // Decision rule R2: registered call+matching final text=>all expectations pass.
+    // Response 1 calls `search`; response 2 answers. The eval registers an echo tool for
     // `search`, so the scripted call executes on the real engine.
     let case = Case {
         id: "uses-search".to_string(),
         instructions: String::new(),
         input: "find it".to_string(),
         script: vec![
-            ScriptedTurn {
+            ScriptedResponse {
                 text: String::new(),
                 tool_calls: vec![ScriptedToolCall {
                     tool_id: "search".to_string(),
                     arguments: serde_json::json!({ "q": "answer" }),
                 }],
             },
-            ScriptedTurn {
+            ScriptedResponse {
                 text: "found: 42".to_string(),
                 tool_calls: Vec::new(),
             },

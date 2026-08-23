@@ -77,7 +77,9 @@ pub fn parse_acp_args(args: &[String]) -> Result<(String, Vec<String>), String> 
         rest = tail;
     }
     if rest.is_empty() {
-        return Err("acp bridge requires a CLI argv to spawn (e.g. `... acp claude --acp`)".into());
+        return Err(
+            "acp bridge requires an ACP CLI argv to spawn (e.g. `... acp <adapter>`)".into(),
+        );
     }
     Ok((listen, rest.to_vec()))
 }

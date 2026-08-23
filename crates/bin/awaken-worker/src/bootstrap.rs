@@ -156,7 +156,6 @@ impl WorkerDaemonConfig {
             &data_dir,
         )?;
         let mut runtime = awaken_runtime_host::DeploymentConfig::ephemeral();
-        runtime.upstream = Some(server.clone());
         runtime.sandbox_tier = file
             .sandbox_tier
             .as_deref()
@@ -322,7 +321,9 @@ mod tests {
     /// Cause/effect decision table: C1 role is Worker, C2 mode is server, C3 no
     /// authority-only key is present, C4 server is valid, C5 probe TTL exceeds
     /// interval, C6 the projected signer exists and matches Worker identity, C7
-    /// the sandbox tier belongs to the canonical runtime vocabulary.
+    /// the sandbox tier belongs to the canonical runtime vocabulary, C8 the raw
+    /// server endpoint is carried only by Worker startup and lowers once into the
+    /// authenticated `WorkerUpstream` rather than being copied into Runtime axes.
     /// R1 all true -> an isolated, resource/inference-capable Worker; R2
     /// !C1/!C2/!C4/!C5/!C7 -> config validation failure; R3 !C3 -> serde rejects the
     /// unknown authority field; R4 !C6 -> startup fails before any network
@@ -349,6 +350,11 @@ mod tests {
             .build()
             .await
             .expect("R1 canonical Worker assembly");
+        assert_eq!(
+            worker.upstream.base_url(),
+            "https://coordinator:3000",
+            "R1/C8 installs the one authenticated upstream"
+        );
         assert!(
             worker
                 .manifest()

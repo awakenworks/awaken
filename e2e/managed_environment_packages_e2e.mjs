@@ -36,6 +36,10 @@ async function exerciseUnsupportedTier(tier, port) {
         environment_id: environment.id,
         betas: BETAS,
       });
+      // Negative decision N1: C1 package requirements plus a backend without
+      // immutable package provisioning; E1 SDK send rejects and E2 one durable
+      // Session error records the same cause. K1 rejection returns no accepted
+      // receipt, so a processed-receipt helper is inapplicable. N1=C1=>E1+E2.
       await assert.rejects(
         client.beta.sessions.events.send(session.id, {
           events: [{

@@ -1,6 +1,6 @@
 //! An incomplete provider stream must surface as a retryable `Timeout`, not hang
 //! the run. The per-event idle bound owns silent stalls; the fixed total call
-//! deadline owns streams that stay active forever without completing a turn.
+//! deadline owns streams that stay active forever without completing a response.
 
 use std::time::Duration;
 
@@ -11,7 +11,7 @@ use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecu
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-/// An Anthropic-shaped SSE endpoint that streams the start of a turn, then
+/// An Anthropic-shaped SSE endpoint that streams the start of a response, then
 /// stalls forever with the connection open.
 async fn spawn_stalling_server() -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -124,6 +124,9 @@ fn request() -> ChatRequest {
  */
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn stalled_stream_times_out_as_a_retryable_timeout() {
+    // Test design — Causes/effects/constraints and decision rule S1 are the
+    // adjacent stream-deadline table: open+unfinished+idle=>retryable timeout,
+    // with the outer guard proving the future cannot remain pending.
     let base_url = spawn_stalling_server().await;
     let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
         .with_idle_timeout(Duration::from_millis(300));
@@ -136,13 +139,18 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
     )
     .await
     .expect("the idle timeout fires instead of hanging");
-    let err = result.expect_err("a stalled stream is an error, not a turn");
+    let err = result.expect_err("a stalled stream is an error, not a response");
     assert_eq!(err.code(), "timeout");
     assert!(err.is_retryable(), "a stall is worth retrying");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
+    // Test design — Causes: an open unfinished stream emits no-op events inside
+    // the idle window until the fixed deadline. Effects: it returns a retryable
+    // total-timeout error. Constraints/invariants: heartbeats reset neither the
+    // total call budget nor terminal requirement. Decision rule S2 from the
+    // adjacent table: C1+C2+C4+C5=>E2+E3.
     let base_url = spawn_heartbeating_server().await;
     let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
         .with_timeout(Duration::from_millis(300))
@@ -154,7 +162,7 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     )
     .await
     .expect("the fixed call deadline fires instead of hanging");
-    let err = result.expect_err("an unfinished stream is not a completed turn");
+    let err = result.expect_err("an unfinished stream is not a completed response");
     assert_eq!(err.code(), "timeout");
     assert!(err.to_string().contains("total timeout"), "got: {err}");
     assert!(

@@ -51,8 +51,18 @@ impl SessionRuntime for AcceptingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        // Causes: C1 these association tests commit no Run; C2 GET refreshes
+        // through the sole atomic recovery port. Effect E1 is `None`, preserving
+        // the authored Session snapshot. Decision rule R1=C1+C2=>E1.
+        // Constraints/invariants: the fake never reconstructs recovery state
+        // from parallel message/lifecycle reads.
+        Ok(None)
     }
     async fn define_outcome(
         &self,
@@ -113,9 +123,11 @@ async fn app() -> (Router, String) {
 
 #[tokio::test]
 async fn environment_is_pinned_at_creation() {
-    // Cause/effect rules: R1 a Control-published current Environment is admitted
-    // and frozen by id; R2 omission is rejected at the SDK boundary. Managed
-    // never turns a missing Environment into ambient local execution.
+    // Causes: C1 a Control-published current Environment id is supplied; C2 the
+    // SDK-required id is omitted. Effects: E1 C1 is frozen and echoed; E2 C2 is
+    // rejected before Session creation. Constraints/invariants: Managed never
+    // turns a missing Environment into ambient local execution. Decision rules:
+    // R1=C1=>E1; R2=C2=>E2.
     let (app, environment_id) = app().await;
 
     // Explicit environment is echoed on the session.
@@ -148,18 +160,34 @@ async fn environment_is_immutable_across_update() {
     .await;
     let id = session["id"].as_str().unwrap().to_string();
 
-    // Cause graph: immutable field present -> admission rejects the whole update
-    // -> neither environment nor an otherwise-valid title is changed.
+    // Causes: C1 update omits the immutable Environment and supplies a title; C2
+    // update supplies another Environment plus an otherwise-valid title.
+    // Effects: E1 C1 changes only the title; E2 C2 rejects the whole mutation and
+    // a subsequent GET preserves both pinned Environment and old title.
+    // Constraints/invariants: one create-time Environment snapshot owns the
+    // Session lifetime; update has no alternate rebinding path.
     //
+    // Decision table:
     // | environment_id | title | status | environment | title |
     // |----------------|-------|--------|-------------|-------|
     // | absent         | set   | 200    | env_a       | set   |
     // | env_b          | set   | 400    | env_a       | old   |
+    let (s, renamed) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({ "title": "renamed" })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "C1/E1");
+    assert_eq!(renamed["environment_id"], environment_id, "C1/E1");
+    assert_eq!(renamed["title"], "renamed", "C1/E1");
+
     let (s, updated) = call(
         &app,
         "POST",
         &format!("/v1/sessions/{id}"),
-        Some(json!({ "title": "renamed", "environment_id": "env_b" })),
+        Some(json!({ "title": "must-not-apply", "environment_id": "env_b" })),
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -169,5 +197,5 @@ async fn environment_is_immutable_across_update() {
     let (s, got) = call(&app, "GET", &format!("/v1/sessions/{id}"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(got["environment_id"], environment_id);
-    assert_eq!(got["title"], serde_json::Value::Null);
+    assert_eq!(got["title"], "renamed", "C2/E2");
 }

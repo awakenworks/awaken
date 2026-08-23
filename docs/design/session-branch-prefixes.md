@@ -6,7 +6,7 @@ A product may create a new Managed Session whose model starts with an immutable
 prefix of another Session, without copying source events or messages into the
 target Thread. The source committed Thread remains the only history authority;
 the target Session persists only a `TranscriptSliceSpec` and owns only its new
-turns.
+Steps.
 
 This design supplies the protocol-neutral compatibility mechanism. Product
 selection, labels, branch trees, and navigation remain application concerns.

@@ -6,23 +6,32 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const FAKE_KEY = 'sk-fake-tool-key'; // awaken-allow: secret
 
-async function types(client, id) {
-  const t = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) t.push(ev.type);
-  return t;
-}
-
 async function send(client, id, text) {
-  await client.beta.sessions.events.send(id, {
+  // C1=exact User receipt; C2=wire/tool terminal. E1=types from the post-C1
+  // delta. K: each Run is receipt-scoped. Decision T1 C1&&!C2=>retry;
+  // T2 C1+C2=>return committed types.
+  const receipt = await client.beta.sessions.events.send(id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'T1 exact streamed-tool User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `T1 streamed Run for ${JSON.stringify(text)} to commit`,
+  );
+  return events.map((event) => event.type);
 }
 
 async function main() {
@@ -36,8 +45,7 @@ async function main() {
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
       // Turn 1: streamed tool round-trip.
-      await send(client, session.id, 'use-tool:glob');
-      const first = await types(client, session.id);
+      const first = await send(client, session.id, 'use-tool:glob');
       assert.ok(first.includes('agent.tool_use'), `tool_use emitted: ${first}`);
       assert.ok(first.includes('agent.tool_result'), `tool_result emitted: ${first}`);
       assert.ok(first.includes('agent.message'), `a final message followed the tool: ${first}`);
@@ -46,8 +54,7 @@ async function main() {
       pass('streamed tool round-trip: tool_use -> execute -> tool_result -> reply');
 
       // Turn 2: a plain follow-up on the same session.
-      await send(client, session.id, 'just talk now');
-      const second = await types(client, session.id);
+      const second = await send(client, session.id, 'just talk now');
       const replies = second.filter((t) => t === 'agent.message').length;
       assert.ok(replies >= 2, `multi-turn accumulates replies (${replies})`);
       pass('multi-turn continues over the streamed real path');

@@ -169,6 +169,11 @@ fn weather_tool() -> ToolDescriptor {
 #[tokio::test]
 #[ignore = "requires network and MINIMAX_API_KEY"]
 async fn minimax_streaming_tool_call_accumulates_arguments() {
+    // Test design — Causes: live MiniMax streams one tool call as argument
+    // fragments. Effects: suffix deltas concatenate to the same parsed JSON held
+    // by committed truth. Constraints/invariants: committed output is authority
+    // and live fragments are ordered, best-effort observations. Decision rule
+    // M1: valid streamed call=>nonempty deltas and exact committed JSON equality.
     let request = ChatRequest {
         model_binding: binding(),
         inference: Default::default(),
@@ -187,7 +192,7 @@ async fn minimax_streaming_tool_call_accumulates_arguments() {
         .await
         .expect("stream tool call");
 
-    // The committed turn is the source of truth (G13). genai parses the streamed
+    // The committed response is the source of truth (G13). genai parses the streamed
     // argument fragments into an object at stream end, so the committed call
     // carries the same shape the non-streaming path returns: a JSON object.
     let committed = response.output.tool_calls();

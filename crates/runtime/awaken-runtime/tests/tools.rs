@@ -74,7 +74,7 @@ struct EchoTool {
 struct MultimodalTool;
 
 struct OperationProbe {
-    seen: Arc<Mutex<Option<String>>>,
+    seen: Arc<Mutex<Option<awaken_runtime_contract::tool::ToolOperationContext>>>,
 }
 
 struct SpillProbe {
@@ -109,7 +109,8 @@ impl RawTool for OperationProbe {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        *self.seen.lock().unwrap() = awaken_runtime_contract::tool::current_tool_operation_id();
+        *self.seen.lock().unwrap() =
+            awaken_runtime_contract::tool::current_tool_operation_context();
         Ok(ToolOutput::ok(call.call_id, "ok"))
     }
 }
@@ -358,6 +359,15 @@ async fn native_tool_results_use_the_bound_spiller_and_fail_closed() {
 
 #[tokio::test]
 async fn executor_receives_run_and_step_scoped_operation_identity() {
+    // Cause-effect graph / decision table:
+    // C1=the Runtime executes a model ToolCall inside an activated Run/Thread;
+    // C2=the adapter is invoked directly outside the Runtime (covered by the
+    // contract helper test). R1 C1 -> one trusted context containing the exact
+    // Run, logical Thread, durable batch operation and model call correlation.
+    // R2 C2 -> optional Run/Thread/call coordinates remain absent.
+    // Effects: the executor observes the exact four trusted coordinates.
+    // Constraints/invariants: Runtime supplies one scoped context source and
+    // direct adapters cannot manufacture any missing coordinate.
     let seen = Arc::new(Mutex::new(None));
     let runtime = Runtime::new()
         .with_llm(Arc::new(ToolThenText::new()))
@@ -368,10 +378,11 @@ async fn executor_receives_run_and_step_scoped_operation_identity() {
         .await
         .expect("runs");
 
-    assert_eq!(
-        seen.lock().unwrap().as_deref(),
-        Some("tool-batch:run-1:0:call-1")
-    );
+    let context = seen.lock().unwrap().clone().expect("tool context");
+    assert_eq!(context.run_id, Some(RunId("run-1".into())));
+    assert_eq!(context.thread_id, Some(ThreadId("thread-1".into())));
+    assert_eq!(context.operation_id, "tool-batch:run-1:0:call-1");
+    assert_eq!(context.call_id.as_deref(), Some("call-1"));
 }
 
 #[tokio::test]
@@ -990,8 +1001,15 @@ impl LlmExecutor for InterleavedThenText {
     }
 }
 
+/// Cause/effect design: C1 the first assistant response interleaves Text then one
+/// ToolUse; C2 the gate allows the registered tool; C3 the next response closes
+/// naturally. Effects: E1 the tool executes once; E2 the Run ends naturally; E3
+/// the first committed assistant message retains both block kinds and its text.
+/// Decision rule I1=C1+C2+C3=>E1+E2+E3.
+/// Constraints/invariants: Text and ToolUse remain ordered blocks of one
+/// assistant message; execution does not split them into parallel responses.
 #[tokio::test]
-async fn an_assistant_turn_interleaves_text_and_a_tool_call() {
+async fn an_assistant_step_interleaves_text_and_a_tool_call() {
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new()
         .with_llm(Arc::new(InterleavedThenText {

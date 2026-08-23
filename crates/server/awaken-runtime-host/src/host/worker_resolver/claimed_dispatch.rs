@@ -29,15 +29,14 @@ impl HostWorkerResolver {
         claimed: &awaken_run_ingress::Claimed,
         session_thread_id: &awaken_agent_contract::agent::thread::Id,
         adopted: Option<crate::session_environment::SessionEnvironment>,
+        publication_source: Arc<awaken_runtime_contract::StaticPublishedAgentSnapshots>,
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
-        let parent = host
-            .ctx_for_snapshot_with_sandbox(&session_thread_id.0, None, None, adopted)
+        let substrate = host
+            .session_child_execution_substrate(&session_thread_id.0, adopted, None)
             .await
             .map_err(|error| Self::execution_error(error.to_string()))?;
-        let environment = parent.env.clone().ok_or_else(|| {
-            Self::execution_error("a delegated child recovery has no parent Session environment")
-        })?;
+        let environment = substrate.environment;
         let snapshot = &claimed.request.activation.snapshot;
         let authorization = crate::config::effective_tool_authorization(
             &snapshot.resolved_spec.plugin_config,
@@ -49,17 +48,14 @@ impl HostWorkerResolver {
             environment.as_ref(),
             &authorization,
         );
-        // The parent Session context owns the one hydrated commit/read boundary.
-        // Reopening the same durable file here creates a parallel projection:
-        // the child can commit through it, but the in-flight parent waiter cannot
-        // observe that terminal state until another process restart.
-        let commit = parent.commit.clone();
+        let commit = substrate.commit;
         if let Some(delegation) = host
             .run_delegation(
                 &session_thread_id.0,
                 environment.clone(),
                 commit.clone(),
                 Some(snapshot),
+                publication_source,
             )
             .map_err(|error| Self::execution_error(error.to_string()))?
         {
@@ -78,7 +74,7 @@ impl HostWorkerResolver {
             acp,
             remote: host.remote_attempt_executor.clone(),
             remote_credentials: host.remote_credential_realization.clone(),
-            web_search: Some(host.web_search_plugin(&session_thread_id.0)),
+            web_search: Some(host.web_search_plugin(&session_thread_id.0, None)),
         };
         let runtime = Arc::new(runtime);
         let attempt = crate::agent_runner::child_attempt_executor(
@@ -103,9 +99,8 @@ impl HostWorkerResolver {
             || host.local_workspace().to_owned(),
             |scope| scope.0.0.clone(),
         );
-        let child_context = parent
+        let child_context = substrate
             .attempt_context
-            .clone()
             .with_model_content_materializer(Arc::new(
                 crate::model_content_materializer::ResourceModelContentMaterializer::new(
                     host.file_content_source.clone(),
@@ -217,6 +212,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let host = self.host()?;
+        Self::require_local_execution(&host)?;
         self.resolve(
             &host,
             thread_id,
@@ -233,6 +229,20 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
     ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
     {
         let host = self.host()?;
+        Self::require_local_execution(&host)?;
+        // Reservation repair owns no executable Run yet. It needs only the
+        // parent commit boundary, queue fence, and Session admission observer;
+        // resolving publications, credentials, Sandbox, MCP, or Environment
+        // here can both block repair and create effects before admission.
+        if claimed.session_activity_admission_required {
+            let thread_id = claimed.request.session_thread_id();
+            let commit = Arc::new(
+                host.build_commit(&thread_id.0)
+                    .await
+                    .map_err(|error| Self::execution_error(error.to_string()))?,
+            );
+            return self.boundary_worker(&host, claimed, commit, false).await;
+        }
         if claimed.cancellation_requested {
             return self.cancellation_worker(&host, claimed).await;
         }
@@ -245,67 +255,33 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             .execution_scope
             .as_ref()
             .map_or_else(|| host.local_workspace(), |scope| scope.0.0.as_str());
-        let claimed_agent_publications = claimed.request.agent_publications.clone();
-        let claimed_source = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(
-            claimed_agent_publications.clone(),
-        )
-        .map_err(|error| {
-            Self::execution_error(format!(
-                "run {} has invalid Agent publications: {error}",
-                claimed.lease.run_id.0
-            ))
-        })?;
-        let expected_publications = awaken_runtime_contract::freeze_delegation_publications(
+        let claimed_source = crate::agent_catalog::exact_run_publication_source(
             &claimed.request.activation.snapshot,
-            Some(&claimed_source),
+            &claimed.request.agent_publications,
             publication_workspace,
         )
         .map_err(|error| {
             Self::execution_error(format!(
-                "run {} has an incomplete Agent publication closure: {error}",
+                "run {} has an invalid Agent publication closure: {error}",
                 claimed.lease.run_id.0
             ))
         })?;
-        let fingerprints = |snapshots: &[awaken_runtime_contract::ExecutableAgentSnapshot]| {
-            let mut values = snapshots
-                .iter()
-                .map(|snapshot| snapshot.fingerprint.0.clone())
-                .collect::<Vec<_>>();
-            values.sort_unstable();
-            values
+        let effective_model_ref = claimed.request.activation.effective_model_ref().to_string();
+        let claimed_runtime_input = ClaimedRuntimeInput {
+            identity: RuntimePublicationIdentity::from_publications(
+                &claimed.request.activation.snapshot,
+                &claimed.request.agent_publications,
+                &effective_model_ref,
+            ),
+            publications: claimed_source.clone(),
+            effective_model_ref,
         };
-        if fingerprints(&expected_publications) != fingerprints(&claimed_agent_publications) {
-            return Err(Self::execution_error(format!(
-                "run {} has an inexact Agent publication closure",
-                claimed.lease.run_id.0
-            )));
-        }
         host.session_slots.update(&thread_id.0, |slot| {
-            slot.agent_publications = claimed_agent_publications
+            slot.dispatch_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
         });
-        let dispatched_resources = if let Some(envelope) = &claimed.request.session_resources {
-            let scope = claimed
-                .request
-                .execution_scope
-                .as_ref()
-                .map(|scope| scope.0.0.as_str());
-            if envelope.workspace_id.trim().is_empty()
-                || scope != Some(envelope.workspace_id.as_str())
-            {
-                return Err(Self::execution_error(format!(
-                    "run {} has a resource manifest outside its execution scope",
-                    claimed.lease.run_id.0
-                )));
-            }
-            Some(envelope.decode_manifest().map_err(|error| {
-                Self::execution_error(format!(
-                    "run {} has an invalid Session resource manifest: {error}",
-                    claimed.lease.run_id.0
-                ))
-            })?)
-        } else {
-            None
-        };
+        let dispatched_resources =
+            crate::dispatch_session_runtime::decode_dispatched_resource_manifest(&claimed.request)
+                .map_err(Self::execution_error)?;
         let dispatched_mcp_stages = if let Some(envelope) = &claimed.request.session_runtime {
             let projection = envelope.decode_projection().map_err(|error| {
                 Self::execution_error(format!(
@@ -381,7 +357,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             claimed.sandbox.as_deref(),
             &thread_id.0,
             &claimed.lease.run_id,
-            &claimed
+            claimed
                 .request
                 .activation
                 .snapshot
@@ -400,40 +376,50 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
             });
         if requires_sandbox_stdio_environment {
             // A sandbox-stdio stage may need to realize a cold Environment. The
-            // claimed Run's immutable snapshot is already the exact execution
-            // authority, so open the Session with it before the generic MCP
-            // realizer falls back to ctx_for() without a publication argument.
-            // Publication invalidates this temporary Runtime projection below;
-            // the final resolve rebuilds it with the now-active MCP generation.
-            self.resolve(
-                &host,
-                thread_id,
-                agent_id,
-                Some(claimed.request.activation.snapshot.clone()),
-                adopted.take(),
-            )
-            .await?;
+            // physical Session substrate must exist before staging, but parent
+            // Agent plugins remain attempt-scoped and are built only by the
+            // final root/child resolver below.
+            let frozen_parent =
+                (run_thread_id == thread_id).then_some(&claimed.request.activation.snapshot);
+            host.session_child_execution_substrate(&thread_id.0, adopted.take(), frozen_parent)
+                .await
+                .map_err(|error| {
+                    Self::execution_error(format!(
+                        "run {} sandbox-stdio physical realization failed: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                })?;
         }
         if let Some(stages) = dispatched_mcp_stages {
             Self::reconcile_dispatched_mcp(&host, &thread_id.0, stages).await?;
         }
         if run_thread_id != thread_id {
             return self
-                .recovered_child_worker(&host, claimed, thread_id, adopted.take())
-                .await;
+                .recovered_child_worker(&host, claimed, thread_id, adopted.take(), claimed_source)
+                .await
+                .map_err(|error| {
+                    Self::execution_error(format!(
+                        "run {} coordinated child resolution failed: {error}",
+                        claimed.lease.run_id.0
+                    ))
+                });
         }
-        host.session_slots.update(&thread_id.0, |slot| {
-            slot.dispatch_claim = Some(awaken_run_ingress::RunClaim::from(&claimed.lease));
-        });
         let worker = self
-            .resolve(
+            .resolve_claimed(
                 &host,
                 thread_id,
                 agent_id,
-                Some(claimed.request.activation.snapshot.clone()),
+                claimed.request.activation.snapshot.clone(),
                 adopted.take(),
+                claimed_runtime_input,
             )
-            .await?;
+            .await
+            .map_err(|error| {
+                Self::execution_error(format!(
+                    "run {} root Session resolution failed: {error}",
+                    claimed.lease.run_id.0
+                ))
+            })?;
         if claimed.sandbox.is_none() || rebuild_binding {
             let Some(environment) = host.session_environment(&thread_id.0).await else {
                 return Ok(worker);
@@ -462,6 +448,7 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         &self,
         claimed: &awaken_run_ingress::Claimed,
         error: awaken_run_ingress::Error,
+        clock: Arc<dyn awaken_run_ingress::Clock>,
     ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
@@ -472,13 +459,19 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
         );
         let worker = self.boundary_worker(&host, claimed, commit, false).await?;
         worker
-            .fail_claimed_before_execution(claimed, "dispatch_resolution_failed", error.to_string())
+            .fail_claimed_before_execution(
+                claimed,
+                "dispatch_resolution_failed",
+                error.to_string(),
+                clock,
+            )
             .await
     }
 
     async fn terminalize_retry_exhausted(
         &self,
         claimed: &awaken_run_ingress::Claimed,
+        clock: Arc<dyn awaken_run_ingress::Clock>,
     ) -> Result<Option<(RunId, RunState)>, awaken_run_ingress::Error> {
         let host = self.host()?;
         let thread_id = claimed.request.session_thread_id();
@@ -488,15 +481,15 @@ impl WorkerResolver<AnyDispatchStore> for HostWorkerResolver {
                 .map_err(|error| Self::execution_error(error.to_string()))?,
         );
         let worker = self.boundary_worker(&host, claimed, commit, false).await?;
-        worker.terminalize_retry_exhausted(claimed).await
+        worker.terminalize_retry_exhausted(claimed, clock).await
     }
 
     async fn reconcile_committed_terminals(
         &self,
-        now_ms: u64,
+        clock: Arc<dyn awaken_run_ingress::Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, awaken_run_ingress::Error> {
-        crate::host::terminal_reconciliation::reconcile_committed_terminals(self, now_ms, limit)
+        crate::host::terminal_reconciliation::reconcile_committed_terminals(self, clock, limit)
             .await
     }
 }

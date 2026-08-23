@@ -4,62 +4,68 @@
 use super::types::VerifiedStepProjection;
 use super::*;
 
-#[derive(Clone, Copy)]
-struct StepCommitExpectation<'a> {
-    messages_before: usize,
-    input_ids: &'a [String],
-}
+mod projection;
 
-fn project_delegated_runs(
-    registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-) -> Vec<DelegatedRun> {
-    registry
-        .into_iter()
-        .flat_map(|registry| {
-            registry.delegations().map(|delegation| DelegatedRun {
-                run_id: delegation.child_run_id.clone(),
-                parent_call_id: delegation.parent_call_id.clone(),
-                agent_id: delegation.target_agent_id.clone(),
-                status: delegation.status,
-            })
-        })
-        .collect()
-}
-
-fn delegation_registry_from_snapshot(
-    snapshot: &RunRecoverySnapshot,
-    run_id: &RunId,
-) -> Result<Option<awaken_agent_contract::agent::delegation::DelegationRegistry>, HostError> {
-    let mut store = Store::new();
-    for command in &snapshot.state {
-        if command.scope == Scope::Run && command.run_id.as_ref() == Some(run_id) {
-            store.apply(command);
-        }
-    }
-    RunDelegations::load(&store).map_err(|error| HostError::internal(error.to_string()))
-}
-
-fn client_result_for_ticket(
-    ticket: &ResumeTicket,
-    tool_use_id: &str,
-    content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    is_error: bool,
-) -> ResumeResult {
-    if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
-        ResumeResult::Input(awaken_agent_contract::agent::content::extract_text(
-            &content,
-        ))
-    } else {
-        let output = if is_error {
-            ToolOutput::error_blocks(tool_use_id, content)
-        } else {
-            ToolOutput::ok_blocks(tool_use_id, content)
-        };
-        ResumeResult::ToolResult(output)
-    }
-}
+pub(super) use projection::session_thread_reply_result;
+use projection::{
+    StepCommitExpectation, client_result_for_ticket, delegation_registry_from_snapshot,
+    project_delegated_runs, recovery_ticket,
+};
 
 impl SharedHost {
+    pub(crate) async fn session_budget_resume_tickets(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<awaken_session_contract::SessionBudgetResumeTicket>, HostError> {
+        let parent = ThreadId(session_id.to_string());
+        let mut thread_ids = vec![parent.clone()];
+        let dispatch_rows = if let Some(store) = self.optional_dispatch_store() {
+            store
+                .list_dispatches()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+        } else {
+            Vec::new()
+        };
+        for thread_id in dispatch_rows
+            .iter()
+            // Queue phase is not pause truth: a Worker commits Awaiting
+            // before it settles a Leased row. Every live parent-affined row
+            // is therefore a candidate and committed recovery truth below
+            // performs the sole BudgetReached classification.
+            .filter(|row| row.session_thread_id.as_ref() == Some(&parent))
+            .map(|row| row.thread_id.clone())
+        {
+            if !thread_ids.contains(&thread_id) {
+                thread_ids.push(thread_id);
+            }
+        }
+        let commit = self.commit_for_read(session_id).await?;
+        let mut tickets = Vec::new();
+        for thread_id in thread_ids {
+            let Some(latest) = commit.latest_run(&thread_id) else {
+                continue;
+            };
+            let snapshot = commit
+                .recovery_snapshot(&thread_id, &latest.id)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+            if let Some(ticket) = recovery_ticket(&snapshot, &latest.id)
+                && ticket.reason() == AwaitReason::BudgetReached
+            {
+                tickets.push(awaken_session_contract::SessionBudgetResumeTicket {
+                    ticket,
+                    pause_generation: snapshot.next_commit_ordinal,
+                    prior_session_activity_epoch: dispatch_rows
+                        .iter()
+                        .find(|row| row.run_id == latest.id)
+                        .and_then(|row| row.session_activity_epoch),
+                });
+            }
+        }
+        Ok(tickets)
+    }
+
     /// All messages committed on `thread` so far (the source of history). Empty
     /// when the thread has not run yet. Opens only the configured commit adapter,
     /// so a fresh process can read durable history without provisioning the
@@ -122,6 +128,7 @@ impl SharedHost {
         projected.dedup_by(|left, right| left.run_id == right.run_id);
         Ok(awaken_session_contract::DelegatedRunSnapshot {
             delegated_runs: projected,
+            coordinated_thread_ids: Vec::new(),
             watermark,
         })
     }
@@ -140,45 +147,125 @@ impl SharedHost {
             .session_slots
             .read(thread, |slot| slot.runtime.clone())
             .flatten();
-        if let Some(ctx) = &resident
-            && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
-        {
-            token.cancel();
-        }
-        if self.deployment.durable {
-            let store = self.dispatch_store()?;
+        let mut coordinated_thread_ids = std::collections::HashSet::new();
+        if let Ok(store) = self.dispatch_store() {
             let thread_id = ThreadId(thread.to_string());
-            let dispatches = store
-                .list_dispatches()
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
-            for dispatch in dispatches.into_iter().filter(|dispatch| {
-                dispatch.thread_id == thread_id
-                    && matches!(
-                        dispatch.state,
-                        awaken_run_ingress_contract::DispatchState::Pending
-                            | awaken_run_ingress_contract::DispatchState::Leased
-                            | awaken_run_ingress_contract::DispatchState::Awaiting
-                    )
-            }) {
-                if let Some(pool) = self.dispatch_pool.get() {
-                    // A local pool can synchronously drive the cancellation
-                    // receipt. A Coordinator without a pool still commits the
-                    // epoch-advancing cancellation below; its ordinary recovery
-                    // worker settles the already-fenced row.
-                    pool.cancel(&dispatch.run_id)
-                        .await
-                        .map_err(|error| HostError::internal(error.to_string()))?;
-                } else {
-                    store
-                        .cancel(&dispatch.run_id)
-                        .await
-                        .map_err(|error| HostError::internal(error.to_string()))?;
+            // Cause/effect decision table: P1 root dispatch and P2 every row
+            // whose trusted parent affinity names this Session are the complete
+            // execution set; C1 before the resident-run fence and C2 after it
+            // close the last-admission race. Each pass records logical child ids
+            // before cancellation; no process-local child registry participates.
+            for pass in 0..2 {
+                let dispatches = store
+                    .list_dispatches()
+                    .await
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+                for dispatch in dispatches.iter().filter(|dispatch| {
+                    dispatch.thread_id == thread_id
+                        || dispatch.session_thread_id.as_ref() == Some(&thread_id)
+                }) {
+                    if dispatch.session_thread_id.as_ref() == Some(&thread_id)
+                        && dispatch.thread_id != thread_id
+                    {
+                        coordinated_thread_ids.insert(dispatch.thread_id.clone());
+                    }
+                }
+                for dispatch in dispatches.into_iter().filter(|dispatch| {
+                    (dispatch.thread_id == thread_id
+                        || dispatch.session_thread_id.as_ref() == Some(&thread_id))
+                        && matches!(
+                            dispatch.state,
+                            awaken_run_ingress_contract::DispatchState::Reserved
+                                | awaken_run_ingress_contract::DispatchState::ReservationLeased
+                                | awaken_run_ingress_contract::DispatchState::Pending
+                                | awaken_run_ingress_contract::DispatchState::Leased
+                                | awaken_run_ingress_contract::DispatchState::Awaiting
+                        )
+                }) {
+                    // The root's resident attempt receives the same post-intent
+                    // accelerator as an explicit interrupt. Child/cold/remote
+                    // attempts retain the durable claim path without a second
+                    // process-local registry.
+                    let live_runtime = resident
+                        .as_ref()
+                        .filter(|_| dispatch.thread_id == thread_id)
+                        .map(|ctx| ctx.runtime.as_ref());
+                    self.persist_dispatch_cancellation(&dispatch.run_id, live_runtime)
+                        .await?;
+                }
+
+                // Direct ACP and Outcome attempts may own only the foreground
+                // token. Any durable rows have crossed the intent boundary above,
+                // so this legacy-compatible nudge cannot precede durable truth.
+                if pass == 0
+                    && let Some(ctx) = &resident
+                    && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
+                {
+                    token.cancel();
+                }
+                if pass == 0
+                    && let Some(ctx) = &resident
+                {
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        if ctx
+                            .active_run
+                            .lock()
+                            .expect("active run mutex poisoned")
+                            .is_none()
+                        {
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(HostError::internal(format!(
+                                "terminal quiescence timed out for Thread `{thread}`"
+                            )));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+                if self.deployment.disable_local_pool && self.upstream.is_none() {
+                    // A Coordinator-only topology has no resident attempt to
+                    // join. Cancellation is complete only after the remote
+                    // Worker settles every root/parent-affined dispatch row;
+                    // the durable cancellation bit alone is not quiescence.
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                    loop {
+                        let still_active = store
+                            .list_dispatches()
+                            .await
+                            .map_err(|error| HostError::internal(error.to_string()))?
+                            .into_iter()
+                            .any(|dispatch| {
+                                (dispatch.thread_id == thread_id
+                                    || dispatch.session_thread_id.as_ref() == Some(&thread_id))
+                                    && matches!(
+                                        dispatch.state,
+                                        awaken_run_ingress_contract::DispatchState::Reserved
+                                            | awaken_run_ingress_contract::DispatchState::ReservationLeased
+                                            | awaken_run_ingress_contract::DispatchState::Pending
+                                            | awaken_run_ingress_contract::DispatchState::Leased
+                                            | awaken_run_ingress_contract::DispatchState::Awaiting
+                                    )
+                            });
+                        if !still_active {
+                            break;
+                        }
+                        if tokio::time::Instant::now() >= deadline {
+                            return Err(HostError::internal(format!(
+                                "terminal dispatch quiescence timed out for Session `{thread}`"
+                            )));
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
                 }
             }
-        }
-
-        if let Some(ctx) = resident {
+        } else if let Some(ctx) = resident {
+            // A direct/non-dispatch attempt has no durable cancellation intent
+            // to order before this legacy foreground signal.
+            if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+                token.cancel();
+            }
             let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
             loop {
                 if ctx
@@ -197,7 +284,21 @@ impl SharedHost {
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         }
-        self.delegated_run_snapshot(thread).await
+        // Rebuild committed links only after the dispatch fence. Cold or
+        // malformed projection data may make enrichment fail, but it can never
+        // prevent cancellation of already-admitted Session children.
+        coordinated_thread_ids.extend(
+            self.coordinated_threads(thread)
+                .await?
+                .into_iter()
+                .map(|link| link.thread_id),
+        );
+        let mut snapshot = self.delegated_run_snapshot(thread).await?;
+        snapshot.coordinated_thread_ids = coordinated_thread_ids.into_iter().collect();
+        snapshot
+            .coordinated_thread_ids
+            .sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(snapshot)
     }
 
     /// Durable committed-truth lifecycle feed for the partition containing
@@ -219,7 +320,7 @@ impl SharedHost {
     /// A thread's accumulated token usage, attributed per model (the run loop records
     /// it as committed thread state under [`THREAD_USAGE_STATE_KEY`]; each write is the
     /// running cumulative, so the last `Set` is the whole tally). Empty for a thread
-    /// that has never run a real turn or whose provider reported no usage (the
+    /// that has never run a real Run or whose provider reported no usage (the
     /// deterministic models). Callers use `.total()` for the session-level sum.
     pub async fn thread_usage(&self, thread: &str) -> awaken_runtime_contract::llm::ThreadUsage {
         use awaken_runtime_contract::llm::ThreadUsage;
@@ -248,7 +349,19 @@ impl SharedHost {
     }
 
     /// The tool an awaiting run on `thread` is awaiting on, if any.
-    pub async fn pending_tool(&self, thread: &str) -> Result<Option<PendingTool>, HostError> {
+    pub async fn pending_tool(&self, thread: &str) -> Result<Option<Pending>, HostError> {
+        self.pending_tool_in_partition(thread, &ThreadId(thread.to_string()))
+            .await
+    }
+
+    /// Canonical pending-tool projection for one logical Thread in a Session
+    /// partition. Both root and child reads use this implementation so local
+    /// durable stores never infer a physical database from a child id.
+    pub(crate) async fn pending_tool_in_partition(
+        &self,
+        partition: &str,
+        logical_thread: &ThreadId,
+    ) -> Result<Option<Pending>, HostError> {
         // The committed ticket is the lifecycle authority. In particular, an
         // observer on another protocol can see the committed tool-call message
         // before the foreground caller reaches `finish_step` and updates its
@@ -256,31 +369,26 @@ impl SharedHost {
         // misclassify a client-executed call as an ordinary executed tool. Open
         // committed truth before rebuilding derived context: a malformed A2A
         // continuation must not hide its still-authoritative input/auth wait and
-        // turn a legitimate resume into a client-id error.
-        let commit = self.commit_for_read(thread).await?;
-        let (run_id, ticket) = match commit
-            .open_wait_for_thread(&ThreadId(thread.to_string()))
-            .await
-        {
+        // change a legitimate resume into a client-id error.
+        let commit = self.commit_for_read(partition).await?;
+        let (run_id, ticket) = match commit.open_wait_for_thread(logical_thread).await {
             Ok(Some(waiting)) => waiting,
             Ok(None) => return Ok(None),
             Err(error) => {
                 return Err(HostError::internal(format!(
-                    "failed to read authoritative pending tool: {error}"
+                    "failed to read authoritative pending tool for {}: {error}",
+                    logical_thread.0
                 )));
             }
         };
         if matches!(ticket.target(), AwaitTarget::RemoteInput { .. }) {
-            return Ok(pending_from_ticket(&ticket));
+            return Ok(Pending::from_resume_ticket(&ticket));
         }
         if ticket.reason() == AwaitReason::Delegation {
-            let snapshot = match commit
-                .recovery_snapshot(&ThreadId(thread.to_string()), &run_id)
-                .await
-            {
+            let snapshot = match commit.recovery_snapshot(logical_thread, &run_id).await {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    tracing::warn!(thread, %error, "failed to read pending delegation snapshot");
+                    tracing::warn!(thread = %logical_thread.0, %error, "failed to read pending delegation snapshot");
                     return Err(HostError::internal(format!(
                         "failed to read pending delegation snapshot: {error}"
                     )));
@@ -289,7 +397,7 @@ impl SharedHost {
             let registry = match delegation_registry_from_snapshot(&snapshot, &run_id) {
                 Ok(registry) => registry,
                 Err(error) => {
-                    tracing::warn!(thread, %error, "failed to rebuild pending delegation registry");
+                    tracing::warn!(thread = %logical_thread.0, %error, "failed to rebuild pending delegation registry");
                     return Err(HostError::internal(format!(
                         "failed to rebuild pending delegation registry: {error}"
                     )));
@@ -303,13 +411,6 @@ impl SharedHost {
             .await
     }
 
-    /// Buffer a system message; it is prepended to the next turn's input.
-    pub async fn add_system(&self, agent: &str, thread: &str, text: &str) -> Result<(), HostError> {
-        let ctx = self.ctx_for(thread, Some(agent)).await?;
-        ctx.state.lock().await.pending_system.push(text.to_string());
-        Ok(())
-    }
-
     /// Interrupt the run in flight on `thread`, if any: cancel its token so the
     /// runtime observes it at the next step boundary and ends the run `Cancelled`
     /// (an outcome loop then reports `interrupted`). A no-op when nothing is
@@ -317,19 +418,61 @@ impl SharedHost {
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
         let ctx = self.ctx_for(thread, None).await?;
-        if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
-            token.cancel();
-        }
         let active_run = ctx
             .active_run
             .lock()
             .expect("active run mutex poisoned")
             .clone();
-        if let (Some(ingress), Some(run_id)) = (&ctx.durable_ingress, active_run) {
-            ingress
-                .cancel(&run_id)
-                .await
-                .map_err(|error| HostError::internal(error.to_string()))?;
+        if let (Some(ingress), Some(run_id)) = (&ctx.durable_ingress, active_run.as_ref()) {
+            if self.dispatch_pool.get().is_some() {
+                // The process pool is the sole durable claim driver. This edge
+                // accepts the cancellation intent and returns; its drainer owns
+                // the claim-fenced Runtime commit and settlement.
+                self.persist_dispatch_cancellation(run_id, Some(ctx.runtime.as_ref()))
+                    .await?;
+            } else {
+                // A standalone Host has no autonomous pool. Preserve its direct
+                // ingress behavior for tests/embedders while served deployments
+                // always take the non-blocking process-pool branch above.
+                ingress
+                    .cancel(run_id)
+                    .await
+                    .map_err(|error| HostError::internal(error.to_string()))?;
+            }
+            if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+                token.cancel();
+            }
+            return Ok(());
+        }
+
+        // Managed Session Event Runs are reserved and activated directly in the
+        // dispatch authority even when ordinary foreground delivery is direct.
+        // They intentionally bypass BoundRunExecutor and therefore have no
+        // process-local `active_run` hint. Fall back only when that existing
+        // authority is installed, and require the Session's one executable root
+        // row so an interrupt cannot broaden into unrelated queued work.
+        if self.optional_dispatch_store().is_some() {
+            let executable = self
+                .executable_session_dispatch_runs(thread, &ctx.thread_id)
+                .await?;
+            match executable.as_slice() {
+                [] => {}
+                [run_id] => {
+                    self.persist_dispatch_cancellation(run_id, Some(ctx.runtime.as_ref()))
+                        .await?;
+                }
+                _ => {
+                    return Err(HostError::internal(format!(
+                        "Session `{thread}` has multiple executable primary dispatches"
+                    )));
+                }
+            }
+        }
+        // Direct/foreground ACP attempts retain this exact token outside the
+        // Runtime registry. Durable paths reach it only after intent persistence;
+        // direct paths have no durable ordering precondition.
+        if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+            token.cancel();
         }
         Ok(())
     }
@@ -364,7 +507,7 @@ impl SharedHost {
     }
 
     /// Like [`SharedHost::run`] but forwards the engine's best-effort live
-    /// progress to `sink` as the turn runs (the streaming protocol path). The
+    /// progress to `sink` as the Run executes (the streaming protocol path). The
     /// committed result is identical; the sink only mirrors in-flight events.
     pub async fn run_streaming(
         &self,
@@ -390,7 +533,7 @@ impl SharedHost {
             .await
     }
 
-    /// Submit a turn that *supersedes* the thread's prior pending/awaiting work
+    /// Submit a Run that *supersedes* the Thread's prior pending/awaiting work
     /// (ADR-0022, slice E): the newest submission wins, stale dispatches are marked
     /// superseded and never claimed again, then the new run is driven. Requires
     /// durable ingress. Unlike `run` it does not fail closed on an awaiting
@@ -416,7 +559,7 @@ impl SharedHost {
     ) -> Result<CommittedStepReceipt, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
         let _execution = ctx.execution.lock().await;
-        let mut st = ctx.state.lock().await;
+        let st = ctx.state.lock().await;
         if ctx
             .commit
             .open_wait_for_thread(&ctx.thread_id)
@@ -435,18 +578,7 @@ impl SharedHost {
         // Recall is injected by the memory plugin's BeforeInference hook (request-only,
         // never committed), so the host does not touch it here.
         let mut messages: Vec<Message> = Vec::new();
-        messages.extend(
-            std::mem::take(&mut st.pending_system)
-                .into_iter()
-                .map(|text| {
-                    Message::text(
-                        MessageId(awaken_runtime::fresh_process_id("sys")),
-                        Role::System,
-                        text,
-                    )
-                }),
-        );
-        // Expand a user `/skill-name` into the skill's instructions before the turn.
+        // Expand a user `/skill-name` into the skill's instructions before the Run.
         let input = match &ctx.skill_registry {
             Some(registry) => {
                 awaken_ext_skills::expand_slash_commands(registry.as_ref(), thread, input)
@@ -464,13 +596,9 @@ impl SharedHost {
         // Read the baseline from the authoritative recovery contract. In an
         // active-active Coordinator tier this process's synchronous projection
         // may lag commits made by a peer; using it here would project an older
-        // turn again when the current turn settles on another replica.
+        // Run again when the current Run settles on another replica.
         let baseline = self.authoritative_step_snapshot(&ctx, &run_id).await?;
         let before = baseline.messages.len();
-        // Baseline the compaction-fold count at the turn's start; a fold during the
-        // turn grows it and the terminal step surfaces the marker. Set here (not on
-        // resume) so it spans an awaiting→resumed turn.
-        st.compactions_before = awaken_ext_compact::compaction_count(&baseline.state);
         drop(st);
         activation.run_id = run_id.clone();
         activation.model_ref_override = self.inference_routing.override_for(thread);
@@ -558,13 +686,37 @@ impl SharedHost {
         })
     }
 
+    /// Read this Thread's committed dispatch rows from the one process dispatch
+    /// authority. Operational monitoring observes queue truth only: it must not
+    /// materialize a Session context or reopen its frozen Agent publication.
+    async fn durable_dispatch_rows(
+        &self,
+        thread: &str,
+    ) -> Result<Vec<awaken_run_ingress::DispatchSummary>, HostError> {
+        if !self.deployment.durable {
+            return Err(HostError::bad_request(
+                "durable ingress not enabled (set typed durable ingress)",
+            ));
+        }
+        let thread_id = ThreadId(thread.to_owned());
+        self.dispatch_store()?
+            .list_dispatches()
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))
+            .map(|rows| {
+                rows.into_iter()
+                    .filter(|row| row.thread_id == thread_id)
+                    .collect()
+            })
+    }
+
     /// Reconcile `thread`'s dispatch queue (ADR-0011, slice E): reclaim and re-run
     /// any dispatch left runnable by a crash. Returns the recovered run ids.
     pub async fn reconcile(&self, thread: &str) -> Result<Vec<String>, HostError> {
         let processed = self
             .durable_ingress(thread)
             .await?
-            .recover(now_ms())
+            .recover(Arc::new(awaken_run_ingress::SystemClock))
             .await
             .map_err(|e| HostError::internal(e.to_string()))?;
         Ok(processed.into_iter().map(|(id, _)| id.0).collect())
@@ -588,18 +740,10 @@ impl SharedHost {
 
     /// The run ids currently dead-lettered on `thread` (ADR-0015, slice E).
     pub async fn dead_letters(&self, thread: &str) -> Result<Vec<String>, HostError> {
-        let rows = self
-            .durable_ingress(thread)
-            .await?
-            .list_dispatches()
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| {
-                row.thread_id.0 == thread
-                    && row.state == awaken_run_ingress::DispatchState::DeadLetter
-            })
+            .filter(|row| row.state == awaken_run_ingress::DispatchState::DeadLetter)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -643,15 +787,9 @@ impl SharedHost {
         &self,
         thread: &str,
     ) -> Result<Vec<(String, String, u64, bool)>, HostError> {
-        let rows = self
-            .durable_ingress(thread)
-            .await?
-            .list_dispatches()
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| row.thread_id.0 == thread)
             .map(|d| {
                 (
                     d.run_id.0,
@@ -666,18 +804,10 @@ impl SharedHost {
     /// The run ids superseded by a newer submission on `thread` (ADR-0022,
     /// slice E).
     pub async fn superseded(&self, thread: &str) -> Result<Vec<String>, HostError> {
-        let rows = self
-            .durable_ingress(thread)
-            .await?
-            .list_dispatches()
-            .await
-            .map_err(|e| HostError::internal(e.to_string()))?;
+        let rows = self.durable_dispatch_rows(thread).await?;
         Ok(rows
             .into_iter()
-            .filter(|row| {
-                row.thread_id.0 == thread
-                    && row.state == awaken_run_ingress::DispatchState::Superseded
-            })
+            .filter(|row| row.state == awaken_run_ingress::DispatchState::Superseded)
             .map(|row| row.run_id.0)
             .collect())
     }
@@ -695,24 +825,12 @@ impl SharedHost {
         input: Vec<Message>,
     ) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, agent).await?;
-        let mut messages: Vec<Message> = {
-            let mut st = ctx.state.lock().await;
-            std::mem::take(&mut st.pending_system)
-                .into_iter()
-                .map(|text| {
-                    Message::text(
-                        MessageId(awaken_runtime::fresh_process_id("sys")),
-                        Role::System,
-                        text,
-                    )
-                })
-                .collect()
-        };
+        let mut messages: Vec<Message> = Vec::new();
         messages.extend(input);
         let (uid, mut activation) = ctx
             .runtime
             .prepare(&ctx.config, thread.to_string(), messages);
-        // Stamp the thread's per-turn model override (R2/R5) off the fingerprinted
+        // Stamp the Thread's per-Run model override (R2/R5) off the fingerprinted
         // snapshot, so the claiming worker resolves the effective model itself.
         activation.model_ref_override = self.inference_routing.override_for(thread);
         activation.run_id = uid.clone();
@@ -740,9 +858,272 @@ impl SharedHost {
         Ok(uid.0)
     }
 
+    pub(super) async fn validated_session_thread_tool_reply(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(ThreadId, ResumeTicket), HostError> {
+        if command.session_id.trim().is_empty()
+            || command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(HostError::bad_request(
+                "Session Thread tool reply is incomplete",
+            ));
+        }
+        let thread_id = command.target.thread_id(&command.session_id);
+        if command
+            .target
+            .child_thread_id()
+            .is_some_and(|child| child.0 == command.session_id)
+        {
+            return Err(HostError::bad_request(
+                "a coordinated child Thread must differ from its parent Session",
+            ));
+        }
+        let commit = self.commit_for_read(&command.session_id).await?;
+        let (run_id, ticket) = commit
+            .open_wait_for_thread(&thread_id)
+            .await
+            .map_err(HostError::internal)?
+            .ok_or_else(|| HostError::bad_request("Session Thread has no awaiting Run"))?;
+        if run_id != command.expected_run_id
+            || ticket.correlation_id != command.expected_correlation_id
+        {
+            return Err(HostError::bad_request(
+                "Session Thread awaiting ticket changed after Event admission",
+            ));
+        }
+        self.check_pending(
+            &ticket,
+            &command.tool_use_id,
+            command.reply.client_executed(),
+        )?;
+        Ok((thread_id, ticket))
+    }
+
+    /// Rebuild the sole durable resume target for a foreground root Run whose
+    /// committed Awaiting ticket predates dispatch ownership. Budget and tool
+    /// replies share this handoff; child Runs must already have a durable row.
+    pub(super) async fn enqueue_foreground_session_resume_dispatch(
+        &self,
+        session_id: &str,
+        ticket: &ResumeTicket,
+        session_activity_epoch: u64,
+    ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
+        use awaken_run_ingress::DispatchQueue as _;
+
+        if ticket.thread_id.0 != session_id || session_activity_epoch == 0 {
+            return Err(HostError::internal(
+                "only an exact foreground Session root can enter durable resume",
+            ));
+        }
+        let store = self.dispatch_store()?;
+        let ctx = self.ctx_for(session_id, None).await?;
+        let activation = ctx
+            .resume_activation(ticket)
+            .with_model_ref_override(self.inference_routing.override_for(session_id));
+        let request = self
+            .resolved_dispatch(activation)?
+            .for_session(ThreadId(session_id.to_string()))
+            .with_session_activity_epoch(session_activity_epoch);
+        // One exact enqueue closes the foreground-to-durable crash window. A
+        // concurrent exact retry is idempotent; a changed Run payload is rejected
+        // by the existing dispatch identity fence before any resume is staged.
+        store
+            .enqueue(request)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(store)
+    }
+
+    /// Persist interruption of every executable dispatch for one logical child.
+    /// A row whose Run already committed `Ended` is the worker's current
+    /// before-settle boundary, not executable work; skipping it lets a failed
+    /// boundary cancel raced later continuations without fencing its own claim.
+    /// Awaiting native children are resolved by the DispatchWorker's specialized
+    /// claim-fenced interruption command; running/remote children retain the
+    /// canonical cancellation path.
+    pub(crate) async fn interrupt_session_thread(
+        &self,
+        session_id: &str,
+        child_thread_id: &ThreadId,
+    ) -> Result<(), HostError> {
+        if child_thread_id.0 == session_id {
+            return Err(HostError::bad_request(
+                "a coordinated child Thread must differ from its parent Session",
+            ));
+        }
+        let child_runs = self
+            .executable_session_dispatch_runs(session_id, child_thread_id)
+            .await?;
+        for run_id in child_runs {
+            self.persist_dispatch_cancellation(&run_id, None).await?;
+        }
+        Ok(())
+    }
+
+    /// Select executable work only from the one Session-affined dispatch
+    /// authority. Primary interruption requires one result; child interruption
+    /// deliberately consumes every result so a raced continuation is fenced too.
+    async fn executable_session_dispatch_runs(
+        &self,
+        session_id: &str,
+        logical_thread_id: &ThreadId,
+    ) -> Result<Vec<RunId>, HostError> {
+        let store = self.dispatch_store()?;
+        let parent = ThreadId(session_id.to_string());
+        let commit = self.commit_for_read(session_id).await?;
+        let rows = store
+            .list_dispatches()
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(rows
+            .into_iter()
+            .filter(|dispatch| {
+                dispatch.thread_id == *logical_thread_id
+                    && dispatch.session_thread_id.as_ref() == Some(&parent)
+                    && matches!(
+                        dispatch.state,
+                        awaken_run_ingress::DispatchState::Reserved
+                            | awaken_run_ingress::DispatchState::ReservationLeased
+                            | awaken_run_ingress::DispatchState::Pending
+                            | awaken_run_ingress::DispatchState::Leased
+                            | awaken_run_ingress::DispatchState::Awaiting
+                    )
+            })
+            .filter(|dispatch| {
+                !commit
+                    .run_state(&dispatch.run_id)
+                    .is_some_and(|state| state.is_terminal())
+            })
+            .map(|dispatch| dispatch.run_id)
+            .collect())
+    }
+
     /// RunResume the run awaiting on `thread`, answering `tool_use_id` with `resume`.
     /// Fails closed unless `tool_use_id` names the pending tool and its binding
     /// (built-in vs client-executed) matches the resume variant.
+    pub(crate) async fn resume_budget_reached(
+        &self,
+        delivery: awaken_session_contract::SessionBudgetResumeDelivery,
+    ) -> Result<awaken_session_contract::SessionBudgetResumeDisposition, HostError> {
+        use awaken_run_ingress::Outbox as _;
+
+        if delivery.session_activity_epoch == 0 {
+            return Err(HostError::bad_request(
+                "budget resume requires a newly admitted Session activity",
+            ));
+        }
+        let commit = self.commit_for_read(&delivery.session_id).await?;
+        let snapshot = commit
+            .recovery_snapshot(&delivery.thread_id, &delivery.run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let Some(ticket) = recovery_ticket(&snapshot, &delivery.run_id) else {
+            return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+        };
+        if ticket.reason() != AwaitReason::BudgetReached
+            || ticket.correlation_id != delivery.correlation_id
+            || ticket.thread_id != delivery.thread_id
+            || snapshot.next_commit_ordinal != delivery.pause_generation
+        {
+            return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+        }
+
+        let store = self.optional_dispatch_store();
+        let dispatch = match &store {
+            Some(store) => store
+                .list_dispatches()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+                .into_iter()
+                .find(|row| row.run_id == delivery.run_id),
+            None => None,
+        };
+        let store = if let Some(dispatch) = dispatch {
+            if dispatch.thread_id != delivery.thread_id
+                || dispatch.session_thread_id.as_ref()
+                    != Some(&ThreadId(delivery.session_id.clone()))
+            {
+                return Err(HostError::bad_request(
+                    "budget resume dispatch affinity is inconsistent",
+                ));
+            }
+            let activity_matches = match dispatch.session_activity_epoch {
+                Some(epoch) => {
+                    Some(epoch) == delivery.prior_session_activity_epoch
+                        || epoch == delivery.session_activity_epoch
+                }
+                None => delivery.prior_session_activity_epoch.is_none(),
+            };
+            if !activity_matches {
+                return Ok(awaken_session_contract::SessionBudgetResumeDisposition::Stale);
+            }
+            store
+                .as_ref()
+                .expect("dispatch was read from the installed store")
+                .clone()
+        } else {
+            if delivery.thread_id.0 != delivery.session_id
+                || delivery.prior_session_activity_epoch.is_some()
+            {
+                return Err(HostError::internal(
+                    "budget-paused child Run has no durable dispatch row",
+                ));
+            }
+            self.enqueue_foreground_session_resume_dispatch(
+                &delivery.session_id,
+                &ticket,
+                delivery.session_activity_epoch,
+            )
+            .await?
+        };
+        // Cause/effect decision table for foreground→durable handoff: a crash
+        // before enqueue leaves the committed ticket discoverable; a crash
+        // after enqueue but before staging leaves an idempotently reusable row;
+        // a Worker that claims first observes the committed Awaiting Run and
+        // cannot execute it as fresh work. Once staged, the existing claim and
+        // settlement observer owns Completed, required action, and a later
+        // budget pause, including crash repair of the Session activity epoch.
+        let input = PendingInput {
+            message_id: format!(
+                "budget-resume-{}",
+                awaken_session_contract::stable_fingerprint(&(
+                    delivery.session_id.as_str(),
+                    delivery.thread_id.0.as_str(),
+                    delivery.run_id.0.as_str(),
+                    delivery.correlation_id.as_str(),
+                    delivery.pause_generation,
+                ))
+            ),
+            run_id: delivery.run_id,
+            thread_id: delivery.thread_id,
+            correlation_id: delivery.correlation_id,
+            available_at_ms: None,
+            context_messages: Vec::new(),
+            result: ResumeResult::Continue,
+        };
+        store
+            .stage_session_resume(
+                input,
+                &ThreadId(delivery.session_id),
+                delivery.prior_session_activity_epoch,
+                delivery.session_activity_epoch,
+            )
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        if let Some(pool) = self.dispatch_pool.get() {
+            pool.notify().await;
+        } else {
+            store
+                .relay()
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?;
+        }
+        Ok(awaken_session_contract::SessionBudgetResumeDisposition::Dispatched)
+    }
+
     pub async fn resume(
         &self,
         thread: &str,
@@ -974,20 +1355,20 @@ impl SharedHost {
         commit: &HostCommit,
         ticket: &ResumeTicket,
         registry: Option<&awaken_agent_contract::agent::delegation::DelegationRegistry>,
-    ) -> Result<Option<PendingTool>, HostError> {
+    ) -> Result<Option<Pending>, HostError> {
         if ticket.reason() != AwaitReason::Delegation {
-            return Ok(pending_from_ticket(ticket));
+            return Ok(Pending::from_resume_ticket(ticket));
         }
         let visible_child = self
             .authoritative_child_ticket(commit, registry, ticket.call_id())
             .await?;
-        Ok(match visible_child {
-            Some(child) => pending_from_ticket(&child),
-            None => pending_from_ticket(ticket).map(|mut pending| {
+        match visible_child {
+            Some(child) => Ok(Pending::from_resume_ticket(&child)),
+            None => Ok(Pending::from_resume_ticket(ticket).map(|mut pending| {
                 pending.client_executed = true;
                 pending
-            }),
-        })
+            })),
+        }
     }
 
     /// Project the step's delta, update the awaiting position, and publish the
@@ -1015,10 +1396,12 @@ impl SharedHost {
             expectation.input_ids,
         )?;
         let delegation_registry = delegation_registry_from_snapshot(&committed, &run_id)?;
-        let (pending, awaiting) = match &state {
+        let (pending, awaiting, await_reason) = match &state {
             RunState::Awaiting => {
                 st.awaiting_run = Some(run_id.clone());
-                let pending = if let Some(ticket) = recovery_ticket(&committed, &run_id) {
+                let ticket = recovery_ticket(&committed, &run_id);
+                let await_reason = ticket.as_ref().map(ResumeTicket::reason);
+                let pending = if let Some(ticket) = ticket {
                     // A parent waiting on a child exposes the CHILD's ordinary
                     // interaction request. The protocol still addresses the
                     // parent session; it never obtains a bypass around the
@@ -1032,11 +1415,11 @@ impl SharedHost {
                 } else {
                     None
                 };
-                (pending, true)
+                (pending, true, await_reason)
             }
             _ => {
                 st.awaiting_run = None;
-                (None, false)
+                (None, false, None)
             }
         };
         if !new_messages.is_empty() {
@@ -1045,47 +1428,6 @@ impl SharedHost {
         }
         self.hub
             .publish(thread, ThreadEvent::StepEnded { awaiting });
-        // A fold grows the committed compaction-marker count; compare the turn's
-        // start baseline (set in `deliver_run`, spanning an awaiting→resumed turn) to
-        // the terminal-step count so the marker surfaces exactly once. Count-based,
-        // not run-id-based, so it works under durable ingress (where the worker
-        // mints its own run id). The compact extension owns the key (G16).
-        let compacted = !awaiting
-            && awaken_ext_compact::compaction_count(&committed.state) > st.compactions_before;
-        // The run's transient-retry counter: non-zero ⇒ the inference seam
-        // transparently retried at least once, so the turn was auto-recovered.
-        let rescheduled = ctx
-            .reschedule
-            .lock()
-            .expect("reschedule mutex poisoned")
-            .as_ref()
-            .is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed) > 0);
-        let model_requests = ctx
-            .model_requests
-            .lock()
-            .expect("model requests mutex poisoned")
-            .as_ref()
-            .map(|observations| {
-                observations
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone()
-            })
-            .unwrap_or_default();
-        let rescheduled_delegated_run_ids = ctx
-            .rescheduled_runs
-            .lock()
-            .expect("rescheduled runs mutex poisoned")
-            .as_ref()
-            .map(|runs| {
-                runs.lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .iter()
-                    .filter(|run| *run != &run_id.0)
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
         let delegated_runs = project_delegated_runs(delegation_registry.as_ref());
         Ok(CommittedStepReceipt::from_verified(
             VerifiedStepProjection {
@@ -1093,10 +1435,7 @@ impl SharedHost {
                 new_messages,
                 state,
                 pending,
-                compacted,
-                rescheduled,
-                model_requests,
-                rescheduled_delegated_run_ids,
+                await_reason,
                 delegated_runs,
             },
             &committed,
@@ -1113,7 +1452,7 @@ impl SharedHost {
         tool_use_id: &str,
         want_client: bool,
     ) -> Result<(), HostError> {
-        let pending = pending_from_ticket(ticket)
+        let pending = Pending::from_resume_ticket(ticket)
             .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
         if pending.tool_use_id != tool_use_id {
             return Err(HostError::bad_request(format!(
@@ -1206,41 +1545,6 @@ fn verify_committed_step(
     Ok(suffix)
 }
 
-fn recovery_ticket(committed: &RunRecoverySnapshot, run_id: &RunId) -> Option<ResumeTicket> {
-    committed
-        .resume_tickets
-        .iter()
-        .find(|entry| &entry.run_id == run_id)
-        .map(|entry| entry.ticket.clone())
-}
-
-/// Read the pending tool off the committed awaiting ticket. `AwaitReason` is the
-/// durable execution contract: `ExternalEvent` expects a client result, while
-/// `ToolPermission` expects an allow/deny decision. Reopening a Runtime context
-/// merely to rediscover that distinction would make a read perform Environment
-/// realization before Session admission.
-fn pending_from_ticket(ticket: &ResumeTicket) -> Option<PendingTool> {
-    match ticket.target() {
-        AwaitTarget::ToolCall {
-            reason,
-            call_id,
-            tool,
-        } => Some(PendingTool {
-            tool_use_id: call_id.clone(),
-            name: tool.tool_id.clone(),
-            input: tool.arguments.clone(),
-            client_executed: *reason == ToolAwaitReason::ClientExecution,
-        }),
-        AwaitTarget::RemoteInput { call_id, .. } => Some(PendingTool {
-            tool_use_id: call_id.clone(),
-            name: "agent_input".to_string(),
-            input: serde_json::json!({ "reason": ticket.reason().as_stream_str() }),
-            client_executed: true,
-        }),
-        AwaitTarget::Pause(_) => None,
-    }
-}
-
 #[cfg(test)]
 mod committed_step_proof_tests {
     use super::*;
@@ -1264,6 +1568,7 @@ mod committed_step_proof_tests {
                 Message::text(MessageId("output-proof".into()), Role::Assistant, "answer"),
             ],
             state: Vec::new(),
+            events: Vec::new(),
             resume_tickets: Vec::new(),
             thread_version: 1,
             store_cursor: 1,
@@ -1273,6 +1578,10 @@ mod committed_step_proof_tests {
 
     #[test]
     fn committed_step_proof_follows_the_fmeca_decision_table() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
         // FMECA causes: C1 exact Thread/claimed Run; C2 latest Run identity;
         // C3 committed RunRecord exists; C4 executor/committed state agree;
         // C5 committed message count does not regress; C6 every accepted input
@@ -1310,10 +1619,7 @@ mod committed_step_proof_tests {
                 new_messages: suffix,
                 state: state.clone(),
                 pending: None,
-                compacted: false,
-                rescheduled: false,
-                model_requests: Vec::new(),
-                rescheduled_delegated_run_ids: Default::default(),
+                await_reason: None,
                 delegated_runs: Vec::new(),
             },
             &snapshot(),
@@ -1402,10 +1708,14 @@ mod committed_step_proof_tests {
 #[cfg(test)]
 mod ticket_projection_tests {
     use super::*;
-    use awaken_agent_contract::agent::awaiting::RemoteInputReason;
+    use awaken_agent_contract::agent::awaiting::{RemoteInputReason, ToolAwaitReason};
 
     #[test]
     fn remote_input_wait_projects_as_a_client_executed_agent_input() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
         // Cause/effect decision table: no pending_tool + UserInput/ExternalEvent
         // -> synthetic client-executed agent_input + ResumeResult::Input;
         // concrete pending_tool -> preserve ordinary client/built-in binding and
@@ -1422,7 +1732,7 @@ mod ticket_projection_tests {
             },
         );
 
-        let pending = pending_from_ticket(&ticket).expect("visible input");
+        let pending = Pending::from_resume_ticket(&ticket).expect("visible input");
         assert_eq!(pending.tool_use_id, "remote-7");
         assert_eq!(pending.name, "agent_input");
         assert!(pending.client_executed);
@@ -1465,16 +1775,201 @@ mod ticket_projection_tests {
             )
         };
         assert!(
-            pending_from_ticket(&concrete(ToolAwaitReason::ClientExecution))
+            Pending::from_resume_ticket(&concrete(ToolAwaitReason::ClientExecution))
                 .unwrap()
                 .client_executed,
             "P2"
         );
         assert!(
-            !pending_from_ticket(&concrete(ToolAwaitReason::Permission))
+            !Pending::from_resume_ticket(&concrete(ToolAwaitReason::Permission))
                 .unwrap()
                 .client_executed,
             "P3"
+        );
+    }
+
+    #[test]
+    fn session_thread_reply_variants_map_to_the_two_runtime_resume_kinds() {
+        // Cause/effect graph: C1 the reply family is confirmation/custom/generic;
+        // C2 confirmation is allow/deny with note absent/present; C3 supplied
+        // content is normal/error; C4 the committed target is permission,
+        // client-execution, or remote input. Effects: E1 confirmation preserves
+        // the exact closed PermissionDecision; E2 custom/generic preserve exact
+        // blocks and error state; E3 mismatched result/target kinds fail closed.
+        // Constraint/invariant: wire provenance lowers once upstream; this Host
+        // projection clones the closed decision and the runtime validator remains
+        // the terminal target-kind authority. The integration tests named R6/R7
+        // additionally prove a rejected mismatch does not consume the await.
+        //
+        // | Rule | Reply | Target | Effect |
+        // |---|---|---|---|
+        // | R1 | Confirm Allow, note absent/present | permission | E1 exact Permission |
+        // | R2 | Confirm Deny, reason absent | permission | E1 exact Permission |
+        // | R3 | Confirm Deny, reason present | permission | E1 exact Permission |
+        // | R4 | Custom normal/error | client | E2 exact ToolResult |
+        // | R5 | Generic normal/error | client | E2 exact ToolResult |
+        // | R6 | Confirm | client/remote | E3 ResultKindMismatch |
+        // | R7 | Custom/Result | permission | E3 ResultKindMismatch |
+        let target = |reason| AwaitTarget::ToolCall {
+            reason,
+            call_id: "reply-call".into(),
+            tool: awaken_agent_contract::agent::awaiting::PendingTool {
+                tool_id: "reply-tool".into(),
+                arguments: serde_json::json!({}),
+            },
+        };
+        let permission_ticket = ResumeTicket::new(
+            "reply-correlation",
+            RunId("reply-run".into()),
+            ThreadId("reply-thread".into()),
+            "reply-snapshot",
+            "reply-catalog",
+            target(ToolAwaitReason::Permission),
+        );
+        for (rule, decision) in [
+            ("R1a", PermissionDecision::Allow { note: None }),
+            (
+                "R1b",
+                PermissionDecision::Allow {
+                    note: Some("approved".into()),
+                },
+            ),
+            ("R2", PermissionDecision::Deny { reason: None }),
+            (
+                "R3",
+                PermissionDecision::Deny {
+                    reason: Some("blocked".into()),
+                },
+            ),
+        ] {
+            assert_eq!(
+                session_thread_reply_result(
+                    &permission_ticket,
+                    "reply-call",
+                    &awaken_session_contract::SessionThreadToolReply::Confirm(decision.clone()),
+                ),
+                ResumeResult::Permission(decision),
+                "{rule}/E1"
+            );
+        }
+
+        let result_ticket = ResumeTicket::new(
+            "reply-correlation",
+            RunId("reply-run".into()),
+            ThreadId("reply-thread".into()),
+            "reply-snapshot",
+            "reply-catalog",
+            target(ToolAwaitReason::ClientExecution),
+        );
+        for (rule, reply, expected_error, expected_text) in [
+            (
+                "R4a",
+                awaken_session_contract::SessionThreadToolReply::Custom {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "custom ok",
+                    )],
+                    is_error: false,
+                },
+                false,
+                "custom ok",
+            ),
+            (
+                "R4b",
+                awaken_session_contract::SessionThreadToolReply::Custom {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "custom failed",
+                    )],
+                    is_error: true,
+                },
+                true,
+                "custom failed",
+            ),
+            (
+                "R5a",
+                awaken_session_contract::SessionThreadToolReply::Result {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "generic ok",
+                    )],
+                    is_error: false,
+                },
+                false,
+                "generic ok",
+            ),
+            (
+                "R5b",
+                awaken_session_contract::SessionThreadToolReply::Result {
+                    content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                        "generic failed",
+                    )],
+                    is_error: true,
+                },
+                true,
+                "generic failed",
+            ),
+        ] {
+            match session_thread_reply_result(&result_ticket, "reply-call", &reply) {
+                ResumeResult::ToolResult(output) => {
+                    assert_eq!(output.call_id, "reply-call", "{rule}/E2");
+                    assert_eq!(output.is_error, expected_error, "{rule}/E2");
+                    assert_eq!(output.text(), expected_text, "{rule}/E2");
+                }
+                other => panic!("{rule} expected ToolResult, got {other:?}"),
+            }
+        }
+
+        let permission =
+            awaken_session_contract::SessionThreadToolReply::Confirm(PermissionDecision::Allow {
+                note: None,
+            });
+        let client_mismatch = ResumeCommand::from_ticket(
+            &result_ticket,
+            session_thread_reply_result(&result_ticket, "reply-call", &permission),
+            0,
+        );
+        assert_eq!(
+            awaken_runtime_contract::resume::validate_resume(&result_ticket, &client_mismatch),
+            Err(awaken_runtime_contract::resume::ResumeError::ResultKindMismatch),
+            "R6/E3 client target"
+        );
+        let remote_ticket = ResumeTicket::new(
+            "remote-correlation",
+            RunId("remote-run".into()),
+            ThreadId("remote-thread".into()),
+            "remote-snapshot",
+            "remote-catalog",
+            AwaitTarget::RemoteInput {
+                reason: awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput,
+                call_id: "remote-call".into(),
+            },
+        );
+        let remote_mismatch = ResumeCommand::from_ticket(
+            &remote_ticket,
+            session_thread_reply_result(&remote_ticket, "remote-call", &permission),
+            0,
+        );
+        assert_eq!(
+            awaken_runtime_contract::resume::validate_resume(&remote_ticket, &remote_mismatch),
+            Err(awaken_runtime_contract::resume::ResumeError::ResultKindMismatch),
+            "R6/E3 remote target"
+        );
+        let supplied = awaken_session_contract::SessionThreadToolReply::Result {
+            content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                "forged",
+            )],
+            is_error: false,
+        };
+        let permission_mismatch = ResumeCommand::from_ticket(
+            &permission_ticket,
+            session_thread_reply_result(&permission_ticket, "reply-call", &supplied),
+            0,
+        );
+        assert_eq!(
+            awaken_runtime_contract::resume::validate_resume(
+                &permission_ticket,
+                &permission_mismatch,
+            ),
+            Err(awaken_runtime_contract::resume::ResumeError::ResultKindMismatch),
+            "R7/E3"
         );
     }
 }

@@ -4,13 +4,22 @@
 // Workspace and enforces resource actions, while the Skill repository sees only
 // that trusted Workspace coordinate. It proves binary-safe bundles, one-time
 // Session resolution, logical version retirement, and restart rehydration.
+//
+// Test design. Causes: C1=a binary-safe Skill v1 is published and selected
+// exactly or by latest; C2=v2 supersedes it; C3=the process restarts; C4=the
+// durable aggregate is corrupt. Effects: E1=old Sessions retain v1 while new
+// Sessions resolve v2; E2=bundle bytes and exact version survive restart;
+// E3=C4 fails closed before projection/execution. Constraints/invariant: one
+// Skill aggregate plus each Session's frozen pin own version selection.
+// Decision rules: S1=C1=>E1(v1); S2=C1+C2=>old-v1/new-v2;
+// S3=S2+C3=>E2; S4=C4=>E3.
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { pass, sendAndListNewEvents, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import { pass, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38237);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -96,10 +105,28 @@ async function createSession(client, skillSelection = undefined) {
 }
 
 async function runAndReadLastReply(client, sessionId, text) {
-  const events = await sendAndListNewEvents(client, sessionId, {
+  // Skill-pin Run rule S1: C1=the Session retains earlier history; C2=this send
+  // returns one exact User Event receipt; C3=the frozen Skill Run settles after
+  // admission. Effects: E1=C2 becomes processed; E2=a later Agent Message and
+  // Session idle belong to this Run; E3=older replies cannot satisfy the pin
+  // assertion. S1(C1+C2+C3)->E1+E2+E3. Constraints/invariant: the exact
+  // accepted Event fences observations to this Run and frozen Skill pin.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const acceptedId = receipt.data[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'S1 exact accepted User Event id');
+  const { delta: events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    acceptedId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `S1 Skill Run for ${JSON.stringify(text)} to settle`,
+    { timeoutMs: 120_000, pollMs: 100 },
+  );
   const replies = events.filter((event) => event.type === 'agent.message');
   assert.ok(replies.length > 0, `session emitted a new agent message for ${JSON.stringify(text)}`);
   return JSON.stringify(replies.at(-1).content);

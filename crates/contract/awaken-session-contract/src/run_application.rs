@@ -171,13 +171,15 @@ mod tests {
         // R3 classified failure -> RunFailed with the same code;
         // R4 natural end -> ordinary finish; R5 indeterminate -> explicit
         // RunFailed, never success. No second Terminal enum exists.
+        // Constraints/invariants: RunState is the sole terminal authority and
+        // projection cannot turn Indeterminate or a classified error into success.
         let pending = Pending {
             tool_use_id: "call-1".into(),
             name: "tool".into(),
             input: serde_json::json!({}),
             client_executed: false,
         };
-        let awaiting = StepOutcome::awaiting(Vec::new(), Some(pending.clone()), false, false);
+        let awaiting = StepOutcome::awaiting(Vec::new(), Some(pending.clone()));
         assert_eq!(awaiting.state(), &RunState::Awaiting, "R1");
         assert!(
             matches!(
@@ -187,7 +189,7 @@ mod tests {
             "R1"
         );
 
-        let exhausted = StepOutcome::ended(Vec::new(), EndCause::MaxSteps, false, false);
+        let exhausted = StepOutcome::ended(Vec::new(), EndCause::MaxSteps);
         assert_eq!(
             exhausted.state(),
             &RunState::Ended(EndCause::MaxSteps),
@@ -205,22 +207,20 @@ mod tests {
                 code: "upstream".into(),
                 message: "down".into(),
             }),
-            false,
-            false,
         );
         assert!(
             matches!(failed.terminal_event(), awaken_agent_contract::event::Fact::RunFailed { ref code, .. } if code == "upstream"),
             "R3"
         );
 
-        let finished = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd, false, false);
+        let finished = StepOutcome::ended(Vec::new(), EndCause::NaturalEnd);
         assert_eq!(
             finished.state(),
             &RunState::Ended(EndCause::NaturalEnd),
             "R4"
         );
 
-        let indeterminate = StepOutcome::ended(Vec::new(), EndCause::Indeterminate, false, false);
+        let indeterminate = StepOutcome::ended(Vec::new(), EndCause::Indeterminate);
         assert!(
             matches!(
                 indeterminate.terminal_event(),

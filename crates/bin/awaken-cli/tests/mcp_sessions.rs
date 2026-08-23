@@ -3,7 +3,7 @@
 //! `vault_ids`) or through the management plane's agent↔MCP config — are
 //! connected over real Streamable HTTP via `awaken-ext-mcp`, and the agent
 //! calls the server's tool with the injected vault credential across a
-//! multi-turn conversation.
+//! multi-Run conversation.
 //!
 //! The in-process mock MCP server pins the fixture contract a Node e2e fixture
 //! must mirror (JSON-RPC 2.0 over POST):
@@ -13,7 +13,7 @@
 //! - `tools/call` (`params.name = "add"`, `params.arguments = {a, b}`) →
 //!   `{ "content": [{ "type": "text", "text": "<a+b>" }], "isError": false }`;
 //! - EVERY request must carry `Authorization: Bearer <token>`, else 401 — the
-//!   handshake fails and the turn fails loudly (never a silent skip).
+//!   handshake fails and the Run fails loudly (never a silent skip).
 //!
 //! The server registers as name `calc`, so the runtime tool id is
 //! `mcp__calc__add` (`awaken_ext_mcp::to_tool_id`), which is exactly what the
@@ -381,10 +381,55 @@ async fn send_user_message(app: &Router, session: &str, text: &str) -> (StatusCo
     .await
 }
 
-async fn list_events(app: &Router, session: &str) -> Vec<Value> {
-    let (s, list) = call(app, "GET", &format!("/v1/sessions/{session}/events"), None).await;
-    assert_eq!(s, StatusCode::OK);
-    list["data"].as_array().expect("events data").clone()
+/// Read the Managed projection until the sole Session lifecycle supervisor
+/// commits the terminal boundary for this accepted command.
+async fn wait_for_session_events(
+    app: &Router,
+    session: &str,
+    accepted_receipt: &Value,
+    expectation: &str,
+) -> Vec<Value> {
+    // Causes: C1 POST durably accepts a command and returns its last Event id;
+    // C2 the lifecycle supervisor has not yet projected that Run's idle boundary;
+    // C3 it has projected the anchor and that boundary; C4 the deadline expires.
+    // Effects: E1 read/yield/retry; E2 return the complete committed projection;
+    // E3 fail with the latest projection. Constraints: K1 this integration-test
+    // observer performs GETs only and can neither execute nor reconcile a Run;
+    // K2 anchoring excludes an idle Event from an earlier Run; K3 no sleep or
+    // second lifecycle driver is permitted. Decision rules: W1=C1+C2=>E1;
+    // W2=C1+C3=>E2; W3=C4=>E3.
+    let receipt_anchor = accepted_receipt["data"]
+        .as_array()
+        .and_then(|events| events.last())
+        .and_then(|event| event["id"].as_str())
+        .unwrap_or_else(|| panic!("accepted Event receipt has no anchor: {accepted_receipt}"));
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    let uri = format!("/v1/sessions/{session}/events?limit=500");
+
+    loop {
+        let (status, list) = call(app, "GET", &uri, None).await;
+        assert_eq!(status, StatusCode::OK, "GET {uri}: {list}");
+        let events = list["data"]
+            .as_array()
+            .unwrap_or_else(|| panic!("GET {uri} has no Event data: {list}"));
+        let causal_events = events
+            .iter()
+            .position(|event| event["id"] == receipt_anchor)
+            .map(|position| &events[position..]);
+        if causal_events.is_some_and(|events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        }) {
+            return events.clone();
+        }
+
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {expectation} after receipt {receipt_anchor}; latest projection: {list}"
+        );
+        tokio::task::yield_now().await;
+    }
 }
 
 /// The text of every `agent.message` event, in order.
@@ -415,8 +460,17 @@ fn always_allow_mcp_tools(server_name: &str) -> Value {
     }])
 }
 
+/// Cause/effect design: C1 a Session binds one inline MCP server to the exact
+/// matching Vault credential; C2 two user messages run on that same Session;
+/// C3 each accepted receipt may precede its lifecycle projection.
+/// Effects: E1 the first Run calls `mcp__calc__add`, receives 5, and reports it;
+/// E2 the second Run reuses the binding and receives/reports 42; E3 each read
+/// waits for the same receipt's idle boundary. Constraint K1: the Vault binding
+/// is selected by the exact server URL; K2 neither Run may rely on ambient
+/// permission, a second credential path, or a test-owned driver. Decision rule
+/// M1=C1+C2+C3=>E1+E2+E3; missing credentials are covered separately.
 #[tokio::test(flavor = "multi_thread")]
-async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() {
+async fn session_inline_mcp_server_with_vault_credential_converses_across_runs() {
     let url = mock_calc_mcp().await;
     let app = build_all_in_one_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;
@@ -441,10 +495,16 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
     );
     let id = session["id"].as_str().unwrap().to_string();
 
-    // Turn 1: the agent calls the MCP tool with the injected bearer and reports.
-    let (s, _) = send_user_message(&app, &id, "add 2 3").await;
+    // Run 1: the agent calls the MCP tool with the injected bearer and reports.
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the first MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     let tool_use = events
         .iter()
         .find(|e| e["type"] == "agent.mcp_tool_use")
@@ -460,24 +520,37 @@ async fn session_inline_mcp_server_with_vault_credential_converses_multi_turn() 
         "final message reports 5: {events:?}"
     );
 
-    // Turn 2 on the SAME session: the connection serves the next turn too.
-    let (s, _) = send_user_message(&app, &id, "add 40 2").await;
+    // Run 2 on the SAME Session: the connection serves the next Run too.
+    let (s, receipt) = send_user_message(&app, &id, "add 40 2").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the second MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
             .any(|e| e["type"] == "agent.mcp_tool_result" && e["content"][0]["text"] == "42"),
-        "second turn's tool result is 42: {events:?}"
+        "second Run's tool result is 42: {events:?}"
     );
     assert!(
         agent_messages(&events).iter().any(|m| m.contains("42")),
-        "second turn's final message reports 42"
+        "second Run's final message reports 42"
     );
 }
 
 #[tokio::test(flavor = "multi_thread")]
 async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers() {
+    // Causes: C1 the immutable Agent snapshot owns the MCP server binding; C2
+    // the Session selects the exact Vault; C3 POST returns before asynchronous
+    // lifecycle projection. Effects: E1 the Run invokes the published MCP tool;
+    // E2 its result/final answer contain 5; E3 observation completes only after
+    // the receipt-anchored idle boundary. Constraints: K1 no inline Session MCP
+    // server may supply a parallel binding; K2 the observer is read-only.
+    // Decision rule P1=C1+C2+C3=>E1+E2+E3.
     let url = mock_calc_mcp().await;
     let app = build_all_in_one_router().await;
     let vault_id = vault_with_calc_credential(&app, &url).await;
@@ -524,9 +597,15 @@ async fn published_agent_mcp_binding_takes_effect_without_session_inline_servers
     assert_eq!(s, StatusCode::OK);
     let id = session["id"].as_str().unwrap().to_string();
 
-    let (s, _) = send_user_message(&app, &id, "add 2 3").await;
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the published-Agent MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
@@ -645,6 +724,15 @@ async fn create_mcp_session(app: &Router, vault_id: &str, url: &str) -> String {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
+    // Test design — Causes: an expired bearer receives one OAuth challenge and
+    // the refresh endpoint returns a usable replacement; each POST receipt may
+    // precede lifecycle projection. Effects: the current Run retries with the
+    // replacement, reseals it, a later Session reuses it without another grant,
+    // and each observer reaches the receipt-anchored idle boundary. Constraints:
+    // K1 the expired bearer is sent only on the challenged request; K2 credential
+    // custody stays in the Vault; K3 the test never drives lifecycle work.
+    // Decision rule R1: successful exchange + accepted receipts => one grant,
+    // two successful terminal tool results, and no later expired bearer use.
     // The initial access token is EXPIRED (the mock accepts nothing until the
     // token endpoint issues `new-token`).
     let mock = Arc::new(Mutex::new(OauthMock {
@@ -660,10 +748,16 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
     assert_eq!(status, StatusCode::OK, "{session}");
     let id = session["id"].as_str().unwrap().to_string();
 
-    // The turn still succeeds: the refresher exchanged the token mid-connect.
-    let (s, _) = send_user_message(&app, &id, "add 2 3").await;
+    // The Run still succeeds: the refresher exchanged the token mid-connect.
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the refreshed MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
@@ -704,9 +798,15 @@ async fn expired_mcp_oauth_token_is_refreshed_mid_connect_and_resealed() {
     // session on the same credential materializes `new-token` and connects
     // without another token-endpoint hit.
     let id2 = create_mcp_session(&app, &vault_id, &url).await;
-    let (s, _) = send_user_message(&app, &id2, "add 40 2").await;
+    let (s, receipt) = send_user_message(&app, &id2, "add 40 2").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id2).await;
+    let events = wait_for_session_events(
+        &app,
+        &id2,
+        &receipt,
+        "the resealed-token MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
@@ -764,8 +864,17 @@ fn expected_basic_header() -> String {
     )
 }
 
+/// Cause/effect design: C1 the stored access token is expired; C2 OAuth client
+/// authentication is `client_secret_basic`; C3 the token endpoint accepts the
+/// RFC 6749 encoded Basic header; C4 the POST receipt precedes or coincides with
+/// lifecycle projection. Effects: E1 one refresh grant makes the MCP Run return
+/// 5; E2 the grant body contains refresh fields but no client credentials; E3
+/// the exact Basic header is sent once; E4 observation reaches the same Run's
+/// idle boundary. Constraints: K1 client credentials exist only in the encoded
+/// Basic header; K2 the refresh form must not duplicate either confidential
+/// field; K3 the observer is read-only. Decision rule B1=C1+C2+C3+C4=>E1+E2+E3+E4.
 #[tokio::test(flavor = "multi_thread")]
-async fn expired_token_turn_succeeds_with_client_secret_basic_refresh() {
+async fn expired_token_run_succeeds_with_client_secret_basic_refresh() {
     // The mock requires the exact §2.3.1 Basic header and REJECTS any
     // client_id in the form body.
     let mock = Arc::new(Mutex::new(OauthMock {
@@ -786,10 +895,16 @@ async fn expired_token_turn_succeeds_with_client_secret_basic_refresh() {
     .await;
     let id = create_mcp_session(&app, &vault_id, &url).await;
 
-    // The turn still succeeds: the grant authenticated with the Basic header.
-    let (s, _) = send_user_message(&app, &id, "add 2 3").await;
+    // The Run still succeeds: the grant authenticated with the Basic header.
+    let (s, receipt) = send_user_message(&app, &id, "add 2 3").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the Basic-auth MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
@@ -813,8 +928,17 @@ async fn expired_token_turn_succeeds_with_client_secret_basic_refresh() {
     );
 }
 
+/// Cause/effect design: C1 the stored access token is expired; C2 OAuth client
+/// authentication is `client_secret_post`; C3 the token endpoint accepts the
+/// client id/secret in the form body; C4 the POST receipt precedes or coincides
+/// with lifecycle projection. Effects: E1 one refresh grant makes the MCP Run
+/// return 42; E2 both client fields are form encoded; E3 no Authorization header
+/// is sent; E4 observation reaches the same Run's idle boundary. Constraints:
+/// K1 `client_secret_post` has exactly one custody path—the encoded form; K2 it
+/// must not manufacture a Basic header; K3 the observer is read-only. Decision
+/// rule P1=C1+C2+C3+C4=>E1+E2+E3+E4.
 #[tokio::test(flavor = "multi_thread")]
-async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
+async fn expired_token_run_succeeds_with_client_secret_post_refresh() {
     let mock = Arc::new(Mutex::new(OauthMock {
         token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
         client_auth: Some(MockClientAuth::Post {
@@ -833,9 +957,15 @@ async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
     .await;
     let id = create_mcp_session(&app, &vault_id, &url).await;
 
-    let (s, _) = send_user_message(&app, &id, "add 40 2").await;
+    let (s, receipt) = send_user_message(&app, &id, "add 40 2").await;
     assert_eq!(s, StatusCode::OK);
-    let events = list_events(&app, &id).await;
+    let events = wait_for_session_events(
+        &app,
+        &id,
+        &receipt,
+        "the POST-auth MCP Run to reach its aggregate idle boundary",
+    )
+    .await;
     assert!(
         events
             .iter()
@@ -855,9 +985,15 @@ async fn expired_token_turn_succeeds_with_client_secret_post_refresh() {
 
 #[tokio::test(flavor = "multi_thread")]
 async fn wrong_client_secret_refuses_initial_realization_and_surfaces_the_challenge() {
+    // Test design — Causes: an expired bearer is paired with a Basic client
+    // secret that does not satisfy the token endpoint. Effects: realization
+    // fails with the original MCP authentication challenge after one exchange.
+    // Constraints/invariants: no Session or replacement token is admitted on a
+    // refused confidential-client grant. Decision rule F1: wrong secret => one
+    // failed grant and a fail-closed API error containing the server challenge.
     // The mock demands the right Basic creds; the credential was entered with
     // a DIFFERENT secret, so the exchange is refused and the original 401
-    // challenge fails the turn loudly.
+    // challenge fails the Run loudly.
     let mock = Arc::new(Mutex::new(OauthMock {
         token_response: Some(json!({ "access_token": "new-token", "token_type": "Bearer" })), // awaken-allow: secret
         client_auth: Some(MockClientAuth::Basic {

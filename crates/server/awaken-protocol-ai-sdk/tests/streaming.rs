@@ -117,8 +117,6 @@ fn committed() -> StepOutcome {
             input: json!({"path": "x"}),
             client_executed: true,
         }),
-        false,
-        false,
     )
 }
 
@@ -191,6 +189,16 @@ async fn streams_tool_input_deltas_then_authoritative_available() {
 
 #[tokio::test]
 async fn falls_back_to_full_projection_when_nothing_streamed() {
+    // Causes: the fixtures below establish `falls back to full projection when nothing streamed`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: this adapter owns only its public wire mapping; the shared neutral
+    // Runtime and committed facts remain the single execution authority.
+    // Coverage rationale: `falls back to full projection when nothing streamed` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     // A runtime whose `run_streaming` is the default (no live events) still
     // yields a well-formed stream with a single `start` and the committed tail.
     struct SilentMock;
@@ -205,8 +213,6 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
             Ok(StepOutcome::ended(
                 vec![Message::text(Id("a1".into()), Role::Assistant, "hello")],
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-                false,
-                false,
             ))
         }
         async fn resume(
@@ -266,6 +272,14 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
 
 #[tokio::test]
 async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
+    // Causes: the fixtures below establish `a retained best effort sink` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `cannot hold the completed stream open` and every asserted
+    // state transition or side effect must hold.
+    // Constraints/invariants: this adapter owns only its public wire mapping; the shared neutral
+    // Runtime and committed facts remain the single execution authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect decision table. C1 Run terminal, C2 sink retained, C3 queued
     // live event, C4 client connected. R1 C1+C2+!C3+C4 => finish+[DONE]+EOF;
     // R2 C1+C2+C3+C4 => drain queued events, then the same terminal sequence;
@@ -297,8 +311,6 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
             Ok(StepOutcome::ended(
                 vec![Message::text(Id("a1".into()), Role::Assistant, "complete")],
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-                false,
-                false,
             ))
         }
 
@@ -400,8 +412,6 @@ impl RunApplication for HangupProbe {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

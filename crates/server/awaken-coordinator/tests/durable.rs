@@ -44,6 +44,14 @@ async fn host_over(dir: &std::path::Path) -> SharedHost {
 
 #[tokio::test]
 async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
+    // Causes: the fixtures below establish `awaiting run survives a restart and` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `resumes from the durable store` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let dir = std::env::temp_dir().join(format!("awaken-durable-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let thread = "durable-1";
@@ -54,7 +62,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
     // fail closed/no implicit Host store; R3 C1+!C2 -> clean independent state.
     // This case proves R1 end to end; the in-memory case below proves the R2/R3
     // non-recovery effect without reintroducing a second Host-owned store path.
-    // 1. First "process": run a turn that awaits on the client tool, then drop the
+    // 1. First "process": execute a Run that awaits on the client tool, then drop the
     //    host — the run's history and awaiting ticket are now only in the store.
     let pending_id = {
         let host = host_over(&dir).await;
@@ -78,7 +86,7 @@ async fn awaiting_run_survives_a_restart_and_resumes_from_the_durable_store() {
                 .await
                 .expect("committed history remains readable")
                 .is_empty(),
-            "the turn is committed to durable truth before the restart"
+            "the Run is committed to durable truth before the restart"
         );
         pending.tool_use_id
     };

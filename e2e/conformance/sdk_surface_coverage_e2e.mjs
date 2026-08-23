@@ -18,7 +18,7 @@ const E2E = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // comments removed. A method, DTO member, discriminated union, enum, or exported
 // declaration change therefore fails this gate even when its declaration file
 // remains mapped to the same behavior test.
-const anthropicContractFingerprints = {
+const anthropicContractFingerprints01171 = {
   'resources/beta/agents/agents.d.ts': { declarations: 52, sha256: 'ff7a682a06b6baff6d579bb3bd37d209476ff461d93e4906fbf937befdb1b0e8' },
   'resources/beta/agents/index.d.ts': { declarations: 2, sha256: '73d14bac25d3e3ad0972cba64046ef3963779fa7bc9e9999b8d0d898c3256105' },
   'resources/beta/agents/versions.d.ts': { declarations: 3, sha256: 'aa3b8641073fdbc5ff22fcbd5376d682a4444fe951001d8c94d67f1cb5b7ce40' },
@@ -54,6 +54,33 @@ const anthropicContractFingerprints = {
   'resources/beta/vaults/vaults.d.ts': { declarations: 10, sha256: '33c512b558cd685d45a990247c5b22eba2becafc69fb869dc1e1bdde3147cc74' },
   'resources/beta/webhooks.d.ts': { declarations: 48, sha256: '9abf53b51b18eb3a5d7d4a7efd9bd63e71038e8e6731e809569b446b7a0ad1f3' },
 };
+
+// Version-fingerprint cause/effect graph: C1=the pinned 0.117.1 package or the
+// registry-canary 0.120.0 package supplies its exact version; C2=its reachable
+// public AST matches the reviewed map; C3=the version is unknown; C4=a known
+// version's declaration drifts. Effects: E1=shared declarations reuse the one
+// reviewed baseline and audited deltas override it; E2=the gate passes only
+// after every reachable declaration is mapped; E3=C3 fails before fingerprint
+// comparison; E4=C4 reports exact expected/actual drift. Decision table:
+// V1(C1+C2)->E1+E2; V2(C3)->E3; V3(C1+C4)->E4. This extends the sole SDK
+// surface gate; it does not create a second inventory or compatibility runner.
+// Constraints/invariant: each installed version must select one complete,
+// reviewed fingerprint map and every declaration has one behavior-test owner.
+const anthropicContractFingerprintsByVersion = Object.freeze({
+  '0.117.1': anthropicContractFingerprints01171,
+  '0.120.0': Object.freeze({
+    ...anthropicContractFingerprints01171,
+    'resources/beta/agents/agents.d.ts': { declarations: 69, sha256: '90385edd7e69f2807ffa98127148a6dbb4753841b232197b7f692674b119eac7' },
+    'resources/beta/agents/index.d.ts': { declarations: 2, sha256: 'ccc9809aa120222cf13d197e68fa660e5c7ee71ab40736322e0e5aeb63bc5dcf' },
+    'resources/beta/beta.d.ts': { declarations: 15, sha256: '7c2477d78be49b44a73c46b4e619d9d7f8e7ed526e94094732e21b53a93fc5b8' },
+    'resources/beta/environments/environments.d.ts': { declarations: 19, sha256: '55b2a0638d8822e3423be5830fdce236f2402d738b948cd4445d392e39067b9b' },
+    'resources/beta/environments/work.d.ts': { declarations: 21, sha256: '7bca378163186da3540ebfaeb3c3a624dd06316c8f5fba348ac38d2491341c65' },
+    'resources/beta/files.d.ts': { declarations: 10, sha256: '5efebf68a8a0a92d69e4021f6d6a9021690d153466b8c8ce9c77f9d1b76b825c' },
+    'resources/beta/memory-stores/index.d.ts': { declarations: 3, sha256: '304127bbff4146ab97b235fd25f3c9acc8e2ede718cd7faa60d94999695d2e5e' },
+    'resources/beta/memory-stores/memory-versions.d.ts': { declarations: 12, sha256: '500b5f17b0aa766bc09aa106eef08e46b28f1918964706b5d6b6251de584b75a' },
+    'resources/beta/user-profiles.d.ts': { declarations: 10, sha256: 'a4152a4663bbfb630e065355476c8823f6027f7b73c521fa2fa66a35033e9724' },
+  }),
+});
 
 function publicContractFingerprint(file) {
   const sourceText = readFileSync(file, 'utf8');
@@ -192,10 +219,23 @@ const unknownAnthropicContracts = {};
 const driftedAnthropicContracts = {};
 const visitedAnthropicContracts = new Set();
 const mappedTests = new Set();
+let reviewedAnthropicFingerprints;
+let reviewedAnthropicVersion;
 for (const surface of surfaces) {
   const packageRoot = surface.package === '@anthropic-ai/sdk' && process.env.ANTHROPIC_SDK_PACKAGE_ROOT
     ? resolve(process.env.ANTHROPIC_SDK_PACKAGE_ROOT)
     : resolve(E2E, 'node_modules', surface.package);
+  if (surface.package === '@anthropic-ai/sdk') {
+    reviewedAnthropicVersion = JSON.parse(
+      readFileSync(resolve(packageRoot, 'package.json'), 'utf8'),
+    ).version;
+    reviewedAnthropicFingerprints =
+      anthropicContractFingerprintsByVersion[reviewedAnthropicVersion];
+    assert.ok(
+      reviewedAnthropicFingerprints,
+      `@anthropic-ai/sdk ${JSON.stringify(reviewedAnthropicVersion)} has no reviewed public-contract fingerprint set`,
+    );
+  }
   const declarations = declarationClosure(packageRoot, surface.roots);
   assert.ok(declarations.length > 0, `${surface.package} declaration closure is empty`);
   for (const declaration of declarations) {
@@ -227,7 +267,7 @@ for (const surface of surfaces) {
     if (surface.package === '@anthropic-ai/sdk') {
       visitedAnthropicContracts.add(path);
       const actual = publicContractFingerprint(declaration);
-      const expected = anthropicContractFingerprints[path];
+      const expected = reviewedAnthropicFingerprints[path];
       if (!expected) {
         unknownAnthropicContracts[path] = actual;
       } else if (!isDeepStrictEqual(actual, expected)) {
@@ -253,7 +293,7 @@ assert.deepEqual(
 
 assert.deepEqual(
   [...visitedAnthropicContracts].sort(),
-  Object.keys(anthropicContractFingerprints).sort(),
+  Object.keys(reviewedAnthropicFingerprints).sort(),
   'every reviewed Anthropic contract fingerprint must be reachable from the installed SDK Beta root; an older or incomplete install must not silently skip newer Managed families',
 );
 
@@ -268,5 +308,5 @@ for (const test of mappedTests) {
 console.log(
   `SDK SURFACE COVERAGE PASS: ${files} relevant declaration files -> ` +
   `${mappedTests.size} behavior E2Es; ${contracts} Anthropic methods/DTOs/enums fingerprinted; ` +
-  `${excluded} imported support files explicitly excluded.`,
+  `${excluded} imported support files explicitly excluded; reviewed Anthropic SDK=${reviewedAnthropicVersion}.`,
 );

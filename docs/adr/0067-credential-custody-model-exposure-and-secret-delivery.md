@@ -348,7 +348,7 @@ model credential.
 
 The selected plaintext holder is an execution fact owned by one exact attempt
 epoch. Durable work binds that epoch to its dispatch claim; an explicitly
-non-durable in-process turn binds it to the currently active Session `run_id`:
+non-durable in-process Run binds it to the currently active Session `run_id`:
 
 ```rust
 struct AttemptCredentialBinding {
@@ -388,7 +388,7 @@ the persistence boundary: the claim operation stores the binding in the claimed
 attempt-epoch record and returns it in `Claimed`; `RuntimeRunContext` remains live
 wiring and is not durable authority.
 
-An explicitly non-durable direct turn has no recovery or reassignment contract,
+An explicitly non-durable direct Run has no recovery or reassignment contract,
 so it cannot truthfully create a durable dispatch claim. At the same pre-I/O
 boundary it invokes the same neutral binding compiler with the frozen Environment
 holder and installed materializer capabilities, assigns a process-local monotonic
@@ -667,7 +667,7 @@ join `SessionMcpAttachmentSet` and does not create a common Service authority.
    materializer/provider.
 4. Durable dispatch atomically commits `AttemptCredentialBinding` with the claim
    owner, Worker incarnation, lease, and monotonic epoch. An explicitly
-   non-durable direct turn compiles the same binding before provider I/O and
+   non-durable direct Run compiles the same binding before provider I/O and
    fences it to the exact active Session `run_id`; it is intentionally
    unrecoverable. An unsupported holder fails admission in either topology.
 5. The exact material resolver and materializer validate the candidate, binding,
@@ -708,7 +708,7 @@ boundary decides the terminal outcome.
 The relay remains an opaque generation-fenced credential mediator. It does not
 parse tool arguments, persist an effect journal, promise exactly-once execution,
 or create a second Tool authority. In particular, an ACP Worker loss after an
-MCP request may have been dispatched terminates the recovered opaque turn as
+MCP request may have been dispatched terminates the recovered opaque ACP execution as
 `EndCause::Indeterminate` instead of replaying its prompt.
 
 ### Repository Resource realization

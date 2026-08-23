@@ -7,39 +7,6 @@
 
 use super::*;
 
-pub(super) struct CommitEpochRow {
-    pub(super) epoch: i64,
-    pub(super) owner: Option<String>,
-    pub(super) expires_ms: Option<i64>,
-    pub(super) cancellation_requested: bool,
-    pub(super) request: String,
-}
-
-pub(super) fn read_commit_epoch(
-    conn: &Connection,
-    prefix: &str,
-    run_id: &str,
-) -> Result<Option<CommitEpochRow>, DispatchError> {
-    conn.query_row(
-        &format!(
-            "SELECT lease_epoch, lease_owner, lease_until, cancel_requested, request \
-             FROM {prefix}_dispatch WHERE run_id = ?1"
-        ),
-        params![run_id],
-        |row| {
-            Ok(CommitEpochRow {
-                epoch: row.get(0)?,
-                owner: row.get(1)?,
-                expires_ms: row.get(2)?,
-                cancellation_requested: row.get::<_, i64>(3)? != 0,
-                request: row.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(reject)
-}
-
 pub(super) fn claim_retry_exhausted_transaction(
     conn: &mut Connection,
     prefix: &str,
@@ -92,6 +59,27 @@ pub(super) fn claim_exact_transaction(
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    let phase: Option<(String, Option<i64>)> = tx
+        .query_row(
+            &format!("SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = ?1"),
+            params![requested_run],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(reject)?;
+    let mode = phase
+        .map(|(status, deadline)| {
+            let state = DispatchState::from_db(&status).ok_or_else(|| {
+                DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
+            })?;
+            let deadline = deadline
+                .map(crate::clock::millis_from_db)
+                .transpose()
+                .map_err(|error| DispatchError::Rejected(error.to_string()))?;
+            Ok(classify_exact_claim_mode(state, deadline, now_ms))
+        })
+        .transpose()?
+        .unwrap_or(ExactClaimMode::Runnable);
     claim_exact_transaction_with_mode(
         tx,
         requested_run,
@@ -100,7 +88,7 @@ pub(super) fn claim_exact_transaction(
         now_ms,
         worker,
         capabilities,
-        ExactClaimMode::Runnable,
+        mode,
     )
 }
 
@@ -127,23 +115,27 @@ pub(super) fn claim_exact_transaction_with_mode(
         Option<i64>,
         i64,
     );
-    let not_running = format!(
-        "NOT EXISTS (SELECT 1 FROM {prefix}_dispatch r \
-         WHERE r.thread_id = d.thread_id AND r.status = 'running')"
-    );
+    let thread_available = thread_available_for_claim(prefix);
+    let no_running_peer = no_running_peer(prefix);
     let eligibility = match mode {
         ExactClaimMode::Runnable => format!(
             "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
              OR (d.status = 'awaiting' AND (d.cancel_requested = 1 OR EXISTS ( \
                SELECT 1 FROM {prefix}_pending pe WHERE pe.run_id = d.run_id \
-               AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {not_running}) \
-             OR (d.status = 'pending' AND {not_running})) AND ?3 IS NULL"
+               AND (pe.available_at IS NULL OR pe.available_at <= ?2))) AND {thread_available}) \
+             OR (d.status = 'pending' AND {thread_available})) AND ?3 IS NULL"
+        ),
+        ExactClaimMode::ReservationRecovery => format!(
+            "((d.status = 'reserved' AND d.lease_until IS NOT NULL \
+             AND d.lease_until < ?2) \
+             OR (d.status = 'reservation_running' AND d.lease_until IS NOT NULL \
+             AND d.lease_until < ?2)) AND {no_running_peer} AND ?3 IS NULL"
         ),
         ExactClaimMode::TerminalRecovery => {
             format!(
                 "((d.status = 'running' AND d.lease_until IS NOT NULL AND d.lease_until < ?2) \
                  OR (d.status = 'awaiting' AND d.lease_owner IS NULL AND d.lease_until IS NULL \
-                 AND {not_running})) AND ?3 IS NULL"
+                 AND {no_running_peer})) AND ?3 IS NULL"
             )
         }
         ExactClaimMode::RetryExhausted { .. } => {
@@ -239,9 +231,14 @@ pub(super) fn claim_exact_transaction_with_mode(
         )?
     };
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
+    let claimed_status = if mode == ExactClaimMode::ReservationRecovery {
+        "reservation_running"
+    } else {
+        "running"
+    };
     tx.execute(
         &format!(
-            "UPDATE {prefix}_dispatch SET status = 'running', lease_owner = ?1, \
+            "UPDATE {prefix}_dispatch SET status = ?9, lease_owner = ?1, \
              lease_until = ?2, attempt_count = attempt_count + ?3, \
              lease_epoch = ?5, worker_assignment = ?6, credential_bindings = ?7, \
              credential_receipts = ?8 WHERE run_id = ?4"
@@ -260,7 +257,8 @@ pub(super) fn claim_exact_transaction_with_mode(
                 .map(|value| json(&value))
                 .transpose()?,
             json(&credential_bindings)?,
-            json(&Vec::<CredentialRealizationReceipt>::new())?
+            json(&Vec::<CredentialRealizationReceipt>::new())?,
+            claimed_status,
         ],
     )
     .map_err(reject)?;
@@ -269,7 +267,7 @@ pub(super) fn claim_exact_transaction_with_mode(
         owner: owner.to_string(),
         epoch: claim_epoch,
     };
-    if status == "running" {
+    if matches!(status.as_str(), "running" | "reservation_running") {
         let previous = RunClaim {
             run_id: RunId(requested_run.to_string()),
             owner: previous_owner.ok_or_else(|| {
@@ -323,6 +321,7 @@ pub(super) fn claim_exact_transaction_with_mode(
         cancellation_requested: cancellation_requested != 0,
         pending: pending_for_run(tx, prefix, requested_run, now_ms)?,
         recovered: status == "running",
+        session_activity_admission_required: mode == ExactClaimMode::ReservationRecovery,
         sandbox,
         assignment: (!terminal_resolution)
             .then(|| worker.map(WorkerAssignment::from))

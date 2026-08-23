@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import {
@@ -93,6 +94,32 @@ export function deploymentEnv(
   }
   fs.writeFileSync(path.join(configDir, 'config.toml'), `${lines.join('\n')}\n`);
   return { HOME: home };
+}
+
+// One test-side transport owner for official Managed SDK calls against a
+// workspace-scoped Awaken route. Causes: C1=the SDK emits its canonical `/v1/`
+// path; C2=the scenario owns the selected Workspace id. Effects: E1=prefix the
+// path exactly once before network IO; E2=leave the SDK-owned method, body,
+// beta headers, pagination, retries, and response/error decoding unchanged.
+// Constraint K1: callers may use raw HTTP only for Awaken-internal, fault, or
+// independent wire-oracle routes. Decision rules: M1 C1+C2=>E1+E2; M2 !C1=>
+// fail before IO. The four resource scenarios exercise M1; no caller may
+// recreate this fetch adapter.
+export function managedWorkspaceClient(baseURL, workspace) {
+  return new Anthropic({
+    apiKey: 'e2e-dummy',
+    baseURL,
+    maxRetries: 0,
+    fetch: async (input, init) => {
+      const source = typeof input === 'string' || input instanceof URL ? input : input.url;
+      const url = new URL(source);
+      if (!url.pathname.startsWith('/v1/')) {
+        throw new TypeError(`unexpected official Managed SDK path ${url.pathname}`);
+      }
+      url.pathname = `/v1/workspaces/${encodeURIComponent(workspace)}${url.pathname.slice(3)}`;
+      return fetch(url, init);
+    },
+  });
 }
 
 // Build the server once, up front, and resolve its binary path. We spawn the
@@ -181,6 +208,19 @@ export function ensureProductionBuilt() {
 // Start the production composition from its single typed deployment source.
 // Scenario-only metadata may be passed as process metadata, but deployment,
 // credential, model, and resource configuration must remain in config.toml.
+/**
+ * @param {string} dataDir
+ * @param {number} port
+ * @param {{
+ *   workspace?: string,
+ *   controlSealKey?: string,
+ *   databases?: Record<string, string>,
+ *   fields?: Record<string, unknown>,
+ *   extraEnv?: NodeJS.ProcessEnv,
+ *   stderr?: import('node:child_process').StdioOptions[2],
+ *   identityMode?: string,
+ * }} [options]
+ */
 export function spawnProduction(
   dataDir,
   port,
@@ -225,27 +265,6 @@ export const RED_PNG_B64 =
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAb0lEQVR4nO3PAQkAAAyEwO9feoshgnABdLep8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3I8QUNyPEFDcjxBQ3IPanc8OLDQitxAAAAAElFTkSuQmCC';
 export const RED_PNG_DATA_URI = `data:image/png;base64,${RED_PNG_B64}`;
 
-// Canonical causal boundary for request/reply E2Es.
-// Decision table:
-// R1 no history + new events -> return every new event.
-// R2 history + new events -> exclude every stable id observed before send.
-// R3 history + no new events -> return empty; the caller must fail rather than
-//    treating a historical reply as evidence for this request.
-// Constraint: events.list() is the authoritative durable log and event ids are
-// stable across pagination, reconnect, and restart.
-export async function sendAndListNewEvents(client, sessionId, request) {
-  const priorIds = new Set();
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: request.betas })) {
-    priorIds.add(event.id);
-  }
-  await client.beta.sessions.events.send(sessionId, request);
-  const events = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: request.betas })) {
-    if (!priorIds.has(event.id)) events.push(event);
-  }
-  return events;
-}
-
 // Canonical bounded wait for committed-state E2Es. The read function owns the
 // authoritative projection (HTTP, database, or filesystem); this helper only
 // coordinates observation and never drives the product state machine.
@@ -266,6 +285,56 @@ export async function waitForValue(
     await new Promise((resolve) => setTimeout(resolve, pollMs));
   } while (performance.now() < deadline);
   throw new Error(`${description}; last observed value: ${JSON.stringify(value)}`);
+}
+
+// Canonical receipt-scoped observation for asynchronous Managed Event batches.
+// Causes: C1=send returned an exact durable receipt id; C2=history may omit it,
+// retain it unprocessed, or commit it later; C3=the caller's scenario effect may
+// commit after C2; C4=the caller may supply pagination params and either an
+// explicit beta list or no beta so a registry SDK owns its default. Effects:
+// E1=return the full last history, the exact committed receipt event, and only
+// the later delta; E2=never let older history satisfy C3; E3=forward C4 without
+// manufacturing a beta field.
+// Constraint: this adapter only reads the official SDK history and delegates
+// bounded coordination to waitForValue; it owns no terminal predicate and never
+// drives the Session/Run lifecycle. Decision rules: W1 !C1=>reject; W2 C1&&!C2
+// =>retry; W3 C1+C2&&!C3=>retry; W4 C1+C2+C3=>E1+E2; W5 deadline=>surface the
+// last observation through waitForValue; W6 C4=>E3.
+export async function waitForSessionEventReceipt(
+  client,
+  sessionId,
+  receiptId,
+  betas,
+  predicate,
+  description,
+  options,
+) {
+  if (typeof receiptId !== 'string' || receiptId.length === 0) {
+    throw new TypeError('an exact Managed Event receipt id is required');
+  }
+  const { listParams = {}, ...waitOptions } = options ?? {};
+  const sdkListParams = betas === undefined
+    ? { ...listParams }
+    : { ...listParams, betas };
+  return waitForValue(
+    async () => {
+      const events = [];
+      for await (const event of client.beta.sessions.events.list(sessionId, sdkListParams)) {
+        events.push(event);
+      }
+      const receiptIndex = events.findIndex((event) => event.id === receiptId);
+      const receiptEvent = receiptIndex < 0 ? undefined : events[receiptIndex];
+      return {
+        events,
+        receiptEvent,
+        delta: receiptEvent?.processed_at ? events.slice(receiptIndex + 1) : [],
+      };
+    },
+    async (observation) => Boolean(observation.receiptEvent?.processed_at)
+      && await predicate(observation),
+    description,
+    waitOptions,
+  );
 }
 
 export function childDirectories(parent) {
@@ -331,6 +400,12 @@ export function cleanupFixtureTree(root) {
   fs.rmSync(root, { recursive: true, force: true });
 }
 
+/**
+ * @param {number} port
+ * @param {number} [timeoutMs]
+ * @param {import('node:child_process').ChildProcess | null} [server]
+ * @returns {Promise<void>}
+ */
 export function waitForPort(port, timeoutMs = 900_000, server = null) {
   // Readiness is an elapsed-time deadline. Wall-clock adjustments can jump
   // `Date.now()` past the deadline between retries even though the child has
@@ -550,6 +625,10 @@ export function spawnServer(mode, port, extraEnv = {}) {
 
 // Stop a spawned server and resolve once the process has actually exited, so the
 // TCP port is free and the SQLite files are flushed before a restart rebinds.
+/**
+ * @param {import('node:child_process').ChildProcess} server
+ * @returns {Promise<void>}
+ */
 export function stopServer(server) {
   return new Promise((resolve) => {
     // A deliberately crashed child has `exitCode === null` and a non-null

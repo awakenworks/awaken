@@ -1,4 +1,22 @@
 use super::*;
+use awaken_runtime_contract::tool_batch::ToolBatch;
+
+struct RecordingProjectionRefresh {
+    calls: std::sync::atomic::AtomicUsize,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ExecutableProjectionRefresh for RecordingProjectionRefresh {
+    async fn refresh(&self) -> Result<(), String> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            Err("projection unavailable".into())
+        } else {
+            Ok(())
+        }
+    }
+}
 
 struct RevisionedProfiles(std::sync::atomic::AtomicU64);
 
@@ -63,20 +81,46 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     // R3 would silently rewrite an old Session's Agent name, version, model, and
     // child roster after restart (high severity, externally visible); the durable
     // `agent_revision` pin and exact profile lookup detect and eliminate it.
+    // Projection-refresh causes: C5 create, C6 warm ensure, C7 cold ensure, C8
+    // refresh failure. Effects: E4 create/cold each refresh once; E5 warm cache
+    // performs no refresh; E6 failure occurs before id mint or Session write.
+    // Constraints: K1 the refresh owns no Session state. Decision rules:
+    // D1 C5=>E4; D2 C6=>E5; D3 C7=>E4; D4 C8=>E6.
     let repo = Arc::new(ephemeral_session_repo());
     let profiles = Arc::new(RevisionedProfiles(std::sync::atomic::AtomicU64::new(7)));
+    let refresh = Arc::new(RecordingProjectionRefresh {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        fail: std::sync::atomic::AtomicBool::new(false),
+    });
     let state = ManagedState::new_with_mcp(RehydrateFake::default())
         .with_config_source(profiles.clone())
-        .with_session_repo(repo);
+        .with_session_repo(repo)
+        .with_executable_projection_refresh(refresh.clone());
     let request = serde_json::from_value(serde_json::json!({
         "agent":"coordinator", "environment_id":"env_local"
     }))
     .unwrap();
     let created = state.create_session(request, None).await.unwrap();
+    assert_eq!(
+        refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "D1"
+    );
     assert_eq!(created.agent.name, "coordinator-v7", "R1");
+    state.ensure_session(&created.id).await.unwrap();
+    assert_eq!(
+        refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "D2"
+    );
     profiles.0.store(8, std::sync::atomic::Ordering::SeqCst);
     state.sessions.lock().unwrap().remove(&created.id);
     state.ensure_session(&created.id).await.unwrap();
+    assert_eq!(
+        refresh.calls.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "D3"
+    );
     let recovered = state.get_session(&created.id).unwrap();
     assert_eq!(recovered.agent.name, "coordinator-v7", "R3/E1");
     assert_eq!(recovered.agent.version, 7, "R3/E1");
@@ -90,6 +134,21 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
         .expect("first roster entry is a child agent");
     assert_eq!(child.name, "researcher-v7", "R3/E2-E3");
     assert_eq!(child.version, 7, "R3/E2-E3");
+
+    refresh
+        .fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let sequence = state.session_seq.load(std::sync::atomic::Ordering::SeqCst);
+    let rejected = serde_json::from_value(serde_json::json!({
+        "agent":"coordinator", "environment_id":"env_local"
+    }))
+    .unwrap();
+    assert!(state.create_session(rejected, None).await.is_err(), "D4");
+    assert_eq!(
+        state.session_seq.load(std::sync::atomic::Ordering::SeqCst),
+        sequence,
+        "D4 no id mint"
+    );
 }
 
 #[tokio::test]
@@ -450,12 +509,26 @@ fn persisted_session_rejects_corrupt_tools_before_rehydration() {
 
 #[tokio::test]
 async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
+    // Causes: the fixtures below establish `ensure session rehydrates from repo after cache loss`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1 cache is cold; C2 durable Session and committed
-    // transcript exist; C3 Runtime projection is stale; C4 a durable child Run
-    // has its own committed transcript. Effects: E1 rebuild the HTTP/history/
-    // delegation read model; E2 perform no Environment, Resource, or MCP
-    // realization; E3 expose the child transcript only through its child Thread.
-    // Decision rules: R1 C1+C2+C3+!C4 => E1+E2; R2 C1+C2+C3+C4 => E1+E2+E3.
+    // transcript exist; C3 Runtime projection is stale; C4 a real coordinated
+    // child Thread has one internally consistent recovery snapshot, including
+    // the ToolResult that classifies its call, and ordinary Run lifecycle; C5
+    // Runtime call ids are batch-local; C6 the durable legacy
+    // Session freezes an empty tool configuration, so an undeclared
+    // client-executed call belongs to the Agent family rather than custom.
+    // Effects: E1 rebuild the HTTP/history/coordination read model from one root
+    // snapshot plus one snapshot per child; E2 perform no Environment, Resource,
+    // or MCP realization; E3 expose the child transcript only through its child
+    // Thread; E4 derive a stable qualified `agent.tool_use` id without changing
+    // Runtime truth or consulting current Agent configuration.
+    // Decision rules: R1 C1+C2+C3+!C4 => E1+E2;
+    // R2 C1+C2+C3+C4+C5+C6 => E1+E2+E3+E4.
     // Runtime recovery belongs to the explicit reconciler/run-admission tests
     // below. FMECA:
     // driving effects from GET can duplicate mounts/credentials or turn an
@@ -492,26 +565,80 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
         client_executed: true,
     });
+    let child_thread_id = "sthr_durable";
     runtime.committed_by_thread.lock().unwrap().insert(
-        "child-durable".into(),
-        vec![Message::new(
-            awaken_agent_contract::agent::message::Id("child-assistant-tool".into()),
-            awaken_agent_contract::agent::message::Role::Assistant,
-            vec![
-                awaken_agent_contract::agent::content::ContentBlock::ToolUse {
-                    id: "child-tool-use-1".into(),
-                    name: "web_search".into(),
-                    input: serde_json::json!({"query":"managed child isolation"}),
-                },
-            ],
-        )],
+        child_thread_id.into(),
+        vec![
+            Message::new(
+                awaken_agent_contract::agent::message::Id("child-assistant-tool".into()),
+                awaken_agent_contract::agent::message::Role::Assistant,
+                vec![
+                    awaken_agent_contract::agent::content::ContentBlock::ToolUse {
+                        id: "child-tool-use-1".into(),
+                        name: "web_search".into(),
+                        input: serde_json::json!({"query":"managed child isolation"}),
+                    },
+                ],
+            ),
+            Message::new(
+                awaken_agent_contract::agent::message::Id("child-tool-result".into()),
+                awaken_agent_contract::agent::message::Role::Tool,
+                vec![
+                    awaken_agent_contract::agent::content::ContentBlock::tool_result(
+                        "child-tool-use-1",
+                        vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                            "managed child isolation result",
+                        )],
+                    ),
+                ],
+            ),
+        ],
     );
-    runtime.delegated.lock().unwrap().push(DelegatedRun {
-        run_id: awaken_agent_contract::agent::run::Id("child-durable".into()),
-        parent_call_id: "call-durable".into(),
-        agent_id: "researcher".into(),
-        status: awaken_agent_contract::agent::delegation::DelegationStatus::Completed,
-    });
+    runtime
+        .delegate_ids
+        .lock()
+        .unwrap()
+        .push("researcher".into());
+    let child_run_id = awaken_agent_contract::agent::run::Id("coord-run-durable".into());
+    runtime
+        .coordinated
+        .lock()
+        .unwrap()
+        .push(awaken_session_contract::CoordinatedThreadLink {
+            session_id: "sesn_1".into(),
+            thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
+            target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                agent_id: "researcher".into(),
+            },
+            created_by_operation_id: ToolBatch::operation_id_for_step(
+                &awaken_agent_contract::agent::run::Id("parent".into()),
+                0,
+                "call-durable",
+            ),
+            latest_run_id: Some(child_run_id.clone()),
+        });
+    runtime.lifecycle.lock().unwrap().extend([
+        awaken_agent_contract::RunLifecycleEvent {
+            cursor: awaken_agent_contract::RunLifecycleCursor(1),
+            source_commit_cursor: 1,
+            thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
+            run_id: child_run_id.clone(),
+            kind: awaken_agent_contract::RunLifecycleEventKind::Running,
+            state: awaken_agent_contract::agent::run::RunState::Running,
+            await_reason: None,
+        },
+        awaken_agent_contract::RunLifecycleEvent {
+            cursor: awaken_agent_contract::RunLifecycleCursor(2),
+            source_commit_cursor: 2,
+            thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
+            run_id: child_run_id,
+            kind: awaken_agent_contract::RunLifecycleEventKind::Completed,
+            state: awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            ),
+            await_reason: None,
+        },
+    ]);
     let restored = runtime.restored.clone();
     let restored_environments = runtime.restored_environments.clone();
     let restored_runtimes = runtime.restored_runtimes.clone();
@@ -535,19 +662,30 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     ));
     let threads = restarted.list_threads("sesn_1").expect("threads restored");
     assert_eq!(threads.len(), 2, "primary plus the durable runtime child");
+    let primary_thread_id = threads
+        .iter()
+        .find(|thread| thread.parent_thread_id.is_none())
+        .map(|thread| thread.id.clone())
+        .expect("public primary Thread");
+    assert!(primary_thread_id.starts_with("sthr_"), "R2 public codec");
     assert!(threads.iter().any(|thread| {
-        thread.id == "child-durable"
-            && thread.agent.id == "researcher"
+        thread.id == child_thread_id
+            && thread
+                .agent
+                .as_agent()
+                .is_some_and(|agent| agent.id == "researcher")
             && thread.status == SessionThreadStatus::Idle
     }));
     assert!(
         restored.lock().unwrap().is_empty(),
         "a read rebuilds no Runtime Resource projection"
     );
-    assert_eq!(
-        order.lock().unwrap().as_slice(),
-        &["history", "delegations", "history"],
-        "a read opens only the primary and child transcript/delegation projections"
+    assert!(
+        order.lock().unwrap().iter().all(|operation| matches!(
+            *operation,
+            "history" | "coordination" | "root_snapshot" | "child_snapshot"
+        )),
+        "a read opens only canonical root/coordination/child projections"
     );
     assert!(restored_runtimes.lock().unwrap().is_empty(), "read-only");
     assert!(
@@ -568,29 +706,35 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         .list_events("sesn_1", None, None, false)
         .expect("list rehydrated events");
     let encoded = serde_json::to_value(events).expect("events serialize");
-    assert!(
-        encoded["data"].as_array().unwrap().iter().any(|event| {
-            event["type"] == "agent.custom_tool_use" && event["id"] == "call-submit"
-        })
-    );
+    assert!(encoded["data"].as_array().unwrap().iter().any(|event| {
+        event["type"] == "agent.tool_use"
+            && crate::project::decode_managed_tool_event_id(
+                event["id"].as_str().unwrap_or_default(),
+            )
+            .is_some_and(|identity| identity.call_id == "call-submit")
+    }));
     let child_events = restarted
-        .list_thread_events("sesn_1", "child-durable", None, None)
+        .list_thread_events("sesn_1", child_thread_id, None, None)
         .expect("list isolated child events");
     assert!(
         child_events.data.iter().any(|event| {
-            event.id == "child-tool-use-1"
+            crate::project::decode_managed_tool_event_id(&event.id)
+                .is_some_and(|identity| identity.call_id == "child-tool-use-1")
                 && matches!(event.kind, OutboundKind::AgentToolUse { .. })
         }),
         "R2/E3"
     );
     let primary_events = restarted
-        .list_thread_events("sesn_1", "sesn_1:primary", None, None)
+        .list_thread_events("sesn_1", &primary_thread_id, None, None)
         .expect("list isolated primary events");
     assert_eq!(
         primary_events
             .data
             .iter()
-            .filter(|event| event.id == "call-submit")
+            .filter(|event| {
+                crate::project::decode_managed_tool_event_id(&event.id)
+                    .is_some_and(|identity| identity.call_id == "call-submit")
+            })
             .count(),
         1,
         "R2/E3 child projection is not flattened into primary"

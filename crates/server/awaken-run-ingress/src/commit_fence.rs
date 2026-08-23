@@ -12,12 +12,38 @@ use async_trait::async_trait;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error as CommitError,
 };
-use awaken_agent_contract::thread::commit::operation::{CommitOperation, CommitOperationId};
+use awaken_agent_contract::thread::commit::operation::{
+    CommitOperation, CommitOperationId, commit_payload_hash,
+};
 use awaken_agent_contract::thread::commit::staged::{CommitRecord, ThreadCommit};
 
-use crate::RecoveryProjection;
 use crate::dispatch::{ClaimedCommitCommand, DispatchQueue, RunClaim};
+use crate::{RecoveryProjection, RunDispatch};
 pub use awaken_run_ingress_contract::ClaimedRunCommit;
+
+/// Verify that committed logical Run/Thread truth belongs to the dispatch whose
+/// exact claim is currently fenced. Both embedded and remote workers cross this
+/// helper so topology cannot change the authority check.
+pub(crate) fn validate_commit_dispatch_binding(
+    dispatch: &RunDispatch,
+    commit: &ThreadCommit,
+) -> Result<(), String> {
+    if commit.run_id() != dispatch.run_id() {
+        return Err(format!(
+            "commit run {} does not match claimed dispatch run {}",
+            commit.run_id().0,
+            dispatch.run_id().0
+        ));
+    }
+    if &commit.thread_id != dispatch.thread_id() {
+        return Err(format!(
+            "commit thread {} does not match claimed dispatch thread {}",
+            commit.thread_id.0,
+            dispatch.thread_id().0
+        ));
+    }
+    Ok(())
+}
 
 /// Local implementation: acquire the store's exact claim guard, keep it alive
 /// across the ordinary thread commit, and fail closed when the claim is stale.
@@ -43,10 +69,12 @@ impl ClaimedRunCommit for GuardedRunCommit {
             self.store.lock_commit_epoch(claim).await.map_err(|error| {
                 CommitError::Rejected(format!("commit claim lock failed: {error}"))
             })?;
-        let Some(_guard) = guard else {
+        let Some(guard) = guard else {
             return Err(fenced_error(claim));
         };
-        // `_guard` intentionally remains alive across the await.
+        validate_commit_dispatch_binding(guard.request(), &commit)
+            .map_err(CommitError::Rejected)?;
+        // `guard` intentionally remains alive across the await.
         self.inner.commit(commit).await
     }
 }
@@ -89,7 +117,7 @@ impl CommitCoordinator for ClaimedCommitCoordinator {
                 "remote commit does not match the installed recovery projection".to_string(),
             ));
         }
-        let payload_hash = crate::commit_payload_hash(&commit)
+        let payload_hash = commit_payload_hash(&commit)
             .map_err(|error| CommitError::Rejected(error.to_string()))?;
         let operation = CommitOperation {
             operation_id: CommitOperationId::new(

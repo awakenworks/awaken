@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Deserialization is **bounds-checked** against [`config_schema`]: an
 /// out-of-range value is rejected at load (fail-closed) rather than silently
-/// producing a degenerate trigger — a `trigger_ratio` of `0` folds every turn,
+/// producing a degenerate trigger — a `trigger_ratio` of `0` folds every Step,
 /// `> 1` disables the token trigger, and a `threshold` of `0` folds one-message
 /// conversations, none of which the schema permits.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -121,7 +121,7 @@ impl<'de> Deserialize<'de> for CompactConfig {
             ));
         }
         // `trigger_ratio` in (0, 1]: exclusiveMinimum 0 (a 0 budget folds every
-        // turn), maximum 1 (a > 1 budget never fires within the real window). Also
+        // Step), maximum 1 (a > 1 budget never fires within the real window). Also
         // reject non-finite values, which no fraction-of-window can be.
         if !s.trigger_ratio.is_finite() || s.trigger_ratio <= 0.0 || s.trigger_ratio > 1.0 {
             return Err(serde::de::Error::custom(
@@ -179,7 +179,7 @@ fn compact_example() -> serde_json::Value {
         "keep_last": 8,
         "trigger_ratio": 0.8,
         "prefetch_ratio": 0.75,
-        "instructions": "Summarize the older turns into a compact briefing. Preserve open \
+        "instructions": "Summarize the older messages into a compact briefing. Preserve open \
     tasks, decisions made, and any file paths, identifiers, and commands referenced. Drop \
     resolved chatter and duplicated tool output."
     })
@@ -279,8 +279,12 @@ mod tests {
 
     #[test]
     fn trigger_ratio_zero_is_rejected_at_load() {
+        // Test design — Causes: authored trigger_ratio equals the excluded lower
+        // boundary zero. Effects: deserialization rejects before compaction.
+        // Constraints/invariants: the schema and runtime share `(0,1]`; zero
+        // cannot mean immediate fold. Decision rule B1: ratio=0=>typed load error.
         // The schema declares `trigger_ratio` exclusiveMinimum 0. A `0.0` budget
-        // (`0.0 * max_tokens == 0`) would fold on the very first turn, so it must
+        // (`0.0 * max_tokens == 0`) would fold on the very first Step, so it must
         // be rejected at deserialize rather than deserializing clean.
         let err =
             serde_json::from_value::<CompactConfig>(serde_json::json!({ "trigger_ratio": 0.0 }));

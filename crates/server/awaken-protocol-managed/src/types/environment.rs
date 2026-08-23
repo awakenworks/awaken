@@ -152,15 +152,16 @@ pub struct EnvironmentCreateParams {
 }
 
 /// `EnvironmentUpdateParams` — a partial update. `name` / `description` / `config`
-/// replace when present; `metadata` is a patch where an entry's `null` value
-/// removes the key.
+/// replace when present; an explicit nullable `description` clear normalizes to
+/// the canonical empty string, while omission preserves the authored value.
+/// `metadata` is a patch where an entry's `null` value removes the key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct EnvironmentUpdateParams {
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
-    pub description: Option<String>,
+    #[serde(default, deserialize_with = "super::presence::double_option")]
+    pub description: Option<Option<String>>,
     #[serde(default, deserialize_with = "super::presence::double_option")]
     pub config: Option<Option<EnvironmentConfigUpdateParams>>,
     #[serde(default)]

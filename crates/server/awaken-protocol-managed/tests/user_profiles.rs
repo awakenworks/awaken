@@ -215,15 +215,25 @@ async fn user_profiles_paginate_by_anthropic_page_cursor() {
 
 #[tokio::test]
 async fn user_profiles_require_their_own_beta_family() {
-    // Causes: C1 User Profiles path; C2 header={absent,managed,user-profiles}.
-    // Effects: E1 absent/wrong family -> 400; E2 exact User Profiles beta reaches
-    // the handler. Constraint: Managed Agents beta must not authorize its sibling
-    // API. Rules B1 C2=absent -> E1; B2 C2=managed -> E1; B3 C2=profile -> E2.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Causes: C1 User Profiles path; C2 header={absent,managed,pinned,latest}.
+    // Effects: E1 absent/wrong family -> 400; E2 either SDK-generated User
+    // Profiles beta reaches the one handler. Constraint: Managed Agents beta
+    // must not authorize its sibling API.
+    //
+    // Decision table:
+    // | Rule | header | effect |
+    // | B1 | absent | 400 |
+    // | B2 | managed-agents | 400 |
+    // | B3 | SDK 0.117.1 user-profiles-2026-03-24 | handler |
+    // | B4 | SDK 0.120.0 user-profiles-2026-08-18 | handler |
     let app = app().layer(axum::middleware::from_fn(enforce_managed_beta));
     for (header, expected) in [
         (None, StatusCode::BAD_REQUEST),
         (Some(MANAGED_BETA), StatusCode::BAD_REQUEST),
         (Some(USER_PROFILES_BETA), StatusCode::OK),
+        (Some("user-profiles-2026-08-18"), StatusCode::OK),
     ] {
         let mut request = Request::get("/v1/user_profiles");
         if let Some(header) = header {

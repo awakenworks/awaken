@@ -59,7 +59,7 @@ impl AcpCapabilityHandshake for ProtocolAcpCapabilityHandshake {
 
 /// Which wire the bridge speaks to the agent. A per-session datum (each ACP CLI
 /// row declares its own), not a build-time global: a test/fixture agent speaks the
-/// newline stand-in; a real `claude --acp`/`codex acp` speaks official JSON-RPC.
+/// newline stand-in; a real native or adapter-backed ACP CLI speaks official JSON-RPC.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Codec {
     /// The minimal newline-delimited `{type,text}` stand-in (fixtures, tests).

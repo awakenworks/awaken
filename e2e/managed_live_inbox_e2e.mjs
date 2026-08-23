@@ -6,11 +6,14 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import {
+  withRealServer,
+  pass,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const BETAS = 'managed-agents-2026-04-01';
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 async function li(base, method, uri, body) {
   const res = await fetch(`${base}${uri}`, {
     method,
@@ -50,7 +53,17 @@ async function main() {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'run slowly' }] }],
         betas: [BETAS],
       });
-      await sleep(700); // let the turn reach the (delayed) inference call
+      // R3 C1=a non-durable foreground Session Event is dispatched to the local
+      // pool Worker; C2=that exact attempt registers its inbox. E1=the Session
+      // extension discovers the active inbox. Constraint: deployment.durable is
+      // not attempt-ownership evidence; only Runtime's fenced registry is. The
+      // decision C1+C2=>E1 is observed without driving either the Worker or server.
+      await waitForValue(
+        () => li(base, 'GET', inbox),
+        (snapshot) => snapshot.status === 200 && snapshot.json.active === true,
+        'R3 slow turn exposes its active live inbox',
+        { timeoutMs: 5_000, pollMs: 25 },
+      );
 
       // R3 turn=in-flight, operation={snapshot,queue,reorder,replace,remove},
       // ids/order=valid -> success and each ordered mutation is observable.
@@ -81,7 +94,23 @@ async function main() {
       assert.ok(r.status >= 400, `replace unknown id -> 4xx (got ${r.status})`);
       pass('live-inbox edit error arms: bad permutation + unknown id -> 4xx');
 
-      await turn.catch(() => {}); // let the turn drain
+      // R6 C1=in-flight receipt eventually returns; C2=its idle commits after
+      // all live edits. E1=the edited turn drains; E2=the settled Worker guard
+      // removes the registry entry and the inbox is inactive. Constraint: inbox
+      // operations are the only writes; receipt observation is read-only.
+      // C1&&!C2=>observe; C1+C2=>E1+E2.
+      const receipt = await turn;
+      await waitForSessionEventReceipt(
+        client,
+        id,
+        receipt.data[0]?.id,
+        [BETAS],
+        ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+        'R6 edited live-inbox turn drains after its exact receipt',
+      );
+      r = await li(base, 'GET', inbox);
+      assert.equal(r.status, 200, 'settled inbox snapshot remains available');
+      assert.equal(r.json.active, false, 'settled pool-owned inbox is inactive');
     }, { upstream: { delayMs: 4000 } });
     console.log('E2E PASS: live-inbox snapshot/queue/reorder/replace/remove + error arms over an in-flight turn.');
     process.exitCode = 0;

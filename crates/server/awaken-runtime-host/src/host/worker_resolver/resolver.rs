@@ -11,6 +11,18 @@ pub(crate) struct HostWorkerResolver {
 }
 
 impl HostWorkerResolver {
+    pub(super) fn require_local_execution(
+        host: &SharedHost,
+    ) -> Result<(), awaken_run_ingress::Error> {
+        if host.runs_local_dispatch_pool() {
+            Ok(())
+        } else {
+            Err(Self::execution_error(
+                "coordinator-only Host cannot resolve claimed execution locally",
+            ))
+        }
+    }
+
     pub(in crate::host) fn execution_error(
         message: impl Into<String>,
     ) -> awaken_run_ingress::Error {
@@ -47,11 +59,30 @@ impl HostWorkerResolver {
             .ctx_for_snapshot_with_sandbox(&thread_id.0, agent, published_snapshot, sandbox)
             .await
             .map_err(|e| Self::execution_error(e.to_string()))?;
-        ctx.durable_ingress
-            .as_ref()
-            .map(|ingress| ingress.worker_handle())
-            .ok_or_else(|| {
-                Self::execution_error(format!("thread {} has no durable ingress", thread_id.0))
-            })
+        Ok(ctx.claimed_worker.clone())
+    }
+
+    pub(super) async fn resolve_claimed(
+        &self,
+        host: &SharedHost,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        agent_id: Option<&str>,
+        published_snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
+        sandbox: Option<crate::session_environment::SessionEnvironment>,
+        attempt: ClaimedRuntimeInput,
+    ) -> Result<Arc<awaken_run_ingress::DispatchWorker<AnyDispatchStore>>, awaken_run_ingress::Error>
+    {
+        let agent = agent_id.filter(|a| !a.is_empty());
+        let ctx = host
+            .ctx_for_claimed_snapshot_with_sandbox(
+                &thread_id.0,
+                agent,
+                published_snapshot,
+                sandbox,
+                attempt,
+            )
+            .await
+            .map_err(|error| Self::execution_error(error.to_string()))?;
+        Ok(ctx.claimed_worker.clone())
     }
 }

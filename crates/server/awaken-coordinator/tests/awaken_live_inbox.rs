@@ -3,6 +3,7 @@
 //! the session's in-flight queue, and the error mapping (404 unknown message,
 //! 409 stale order, 410 inactive queue, 404 unknown session).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -91,6 +92,7 @@ fn text_content(text: &str) -> serde_json::Value {
 struct QueueFake {
     active: AtomicBool,
     queue: Mutex<FakeQueue>,
+    user_runs: Mutex<HashMap<String, awaken_session_contract::SessionUserRunCommand>>,
 }
 
 #[derive(Default)]
@@ -106,6 +108,49 @@ fn unsupported_runtime_operation() -> RunError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
+    async fn reserve_session_user_run(
+        &self,
+        command: awaken_session_contract::SessionUserRunCommand,
+    ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+        let mut runs = self.user_runs.lock().unwrap();
+        if let Some(existing) = runs.get(&command.run_id.0) {
+            if existing != &command {
+                return Err(RunError::bad_request(
+                    "live-inbox test reservation replay changed its command",
+                ));
+            }
+            return Ok(awaken_session_contract::SessionUserRunReservation::Completed);
+        }
+        runs.insert(command.run_id.0.clone(), command);
+        Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+    }
+
+    async fn session_user_run_state(
+        &self,
+        _session_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
+        Ok(self
+            .user_runs
+            .lock()
+            .unwrap()
+            .contains_key(&run_id.0)
+            .then(|| awaken_agent_contract::agent::run::RunState::Ended(EndCause::NaturalEnd)))
+    }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        // Fake boundary rule F2/R1: this adapter fake owns no committed Thread
+        // store, so the only consistent recovery answer is no committed Run.
+        // Returning `None` exercises the durable event ingress without teaching
+        // the test a forbidden reconstruction from independently read fields.
+        Ok(None)
+    }
+
     async fn run(
         &self,
         _agent: &str,
@@ -115,8 +160,6 @@ impl SessionRuntime for QueueFake {
         Ok(StepOutcome::ended(
             vec![Message::text(Id("a".into()), Role::Assistant, "ok")],
             EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -137,10 +180,6 @@ impl SessionRuntime for QueueFake {
         _is_error: bool,
     ) -> Result<StepOutcome, RunError> {
         Err(unsupported_runtime_operation())
-    }
-
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Ok(())
     }
 
     async fn define_outcome(
@@ -258,6 +297,34 @@ fn app(fake: Arc<QueueFake>) -> Router {
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
+        async fn reserve_session_user_run(
+            &self,
+            command: awaken_session_contract::SessionUserRunCommand,
+        ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+            self.0.reserve_session_user_run(command).await
+        }
+
+        async fn session_user_run_state(
+            &self,
+            session_id: &str,
+            run_id: &awaken_agent_contract::agent::run::Id,
+        ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
+            self.0.session_user_run_state(session_id, run_id).await
+        }
+
+        async fn session_thread_recovery_snapshot(
+            &self,
+            session_id: &str,
+            thread_id: &str,
+        ) -> Result<
+            Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+            RunError,
+        > {
+            self.0
+                .session_thread_recovery_snapshot(session_id, thread_id)
+                .await
+        }
+
         async fn run(
             &self,
             a: &str,
@@ -282,9 +349,6 @@ fn app(fake: Arc<QueueFake>) -> Router {
             e: bool,
         ) -> Result<StepOutcome, RunError> {
             self.0.resume_custom(t, i, c, e).await
-        }
-        async fn add_system(&self, agent: &str, t: &str, x: &str) -> Result<(), RunError> {
-            self.0.add_system(agent, t, x).await
         }
         async fn define_outcome(
             &self,
@@ -449,6 +513,13 @@ async fn inactive_queue_lists_empty_and_refuses_mutations_with_410() {
 
 #[tokio::test]
 async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
+    // Causes: the fixtures below establish `inactive live steer has the existing durable event
+    // fallback` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // End-to-end FMECA rule: C1 no locally reachable active attempt; C2 caller
     // first tries best-effort steer; C3 caller retries the content through the
     // ordinary Session event ingress. Effects: E1 live steer returns 410 without
@@ -466,7 +537,7 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     let (status, _) = call(&app, "POST", &live, text_content("reliable")).await;
     assert_eq!(status, StatusCode::GONE, "F1");
 
-    let (status, _) = call(
+    let (status, body) = call(
         &app,
         "POST",
         &format!("/v1/sessions/{session}/events"),
@@ -478,7 +549,7 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
         }),
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "F2");
+    assert_eq!(status, StatusCode::OK, "F2: {body}");
 
     let (status, events) = call(
         &app,

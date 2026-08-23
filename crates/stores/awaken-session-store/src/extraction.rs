@@ -143,7 +143,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         .transpose()
     }
 
-    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError> {
+    async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
         let conn = self.conn.lock().map_err(|error| {
             MemoryExtractionError::Storage(format!("session repository lock: {error}"))
         })?;
@@ -157,7 +157,7 @@ impl MemoryExtractionRepository for SqliteManagedSessionRepository {
         for row in rows {
             let data = row.map_err(|error| MemoryExtractionError::Storage(error.to_string()))?;
             let intent = decode(&data)?;
-            if intent.session_id == session_id {
+            if intent.logical_thread_id() == thread_id {
                 cursor = cursor.max(intent.transcript_cursor());
             }
         }
@@ -290,7 +290,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
             .transpose()
     }
 
-    async fn extraction_cursor(&self, session_id: &str) -> Result<usize, MemoryExtractionError> {
+    async fn extraction_cursor(&self, thread_id: &str) -> Result<usize, MemoryExtractionError> {
         let rows = sqlx::query("SELECT data FROM managed_memory_extraction")
             .fetch_all(&self.pool)
             .await
@@ -298,7 +298,7 @@ impl MemoryExtractionRepository for PostgresManagedSessionRepository {
         let mut cursor = 0;
         for row in rows {
             let intent = decode(row.get("data"))?;
-            if intent.session_id == session_id {
+            if intent.logical_thread_id() == thread_id {
                 cursor = cursor.max(intent.transcript_cursor());
             }
         }

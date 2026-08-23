@@ -120,6 +120,12 @@ const NONNEGATIVE_AUTHORITY_SQLITE: &str =
     include_str!("migrations/V0023__nonnegative_authority.sqlite.sql");
 const COMPLETION_FINGERPRINT: &str =
     include_str!("migrations/V0024__dispatch_completion_fingerprint.sql");
+const COMPLETION_THREAD_AFFINITY: &str =
+    include_str!("migrations/V0025__dispatch_completion_thread_affinity.sql");
+const DISPATCH_RESERVATION_CLAIM: &str =
+    include_str!("migrations/V0026__dispatch_reservation_claim.sql");
+const PENDING_CONTEXT_MESSAGES: &str =
+    include_str!("migrations/V0027__pending_context_messages.sql");
 
 /// Parse the version from a `Vnnnn__slug.sql` file name (`V0004__…` ⇒ 4). A name
 /// that does not carry a positive version yields `0`, which [`Migration::new`]
@@ -166,6 +172,21 @@ pub fn dispatch_bundle() -> Result<MigrationBundle, MigrationError> {
         "bind completion tombstones to canonical dispatch identity",
         COMPLETION_FINGERPRINT.trim(),
     )?);
+    migrations.push(Migration::new(
+        25,
+        "retain completion Thread and parent Session affinity",
+        COMPLETION_THREAD_AFFINITY.trim(),
+    )?);
+    migrations.push(Migration::new(
+        26,
+        "fence Session reservation recovery with ordinary Thread claims",
+        DISPATCH_RESERVATION_CLAIM.trim(),
+    )?);
+    migrations.push(Migration::new(
+        27,
+        "retain stable context Messages on pending input",
+        PENDING_CONTEXT_MESSAGES.trim(),
+    )?);
     MigrationBundle::new(BUNDLE_ID, migrations)
 }
 
@@ -181,7 +202,7 @@ mod tests {
     #[test]
     fn dispatch_bundle_lints_clean() {
         // Causes: C1 every physical filename equals its registered identity; C2
-        // V1..V22 and V24 are deterministic portable bodies; C3 V23 is one
+        // V1..V22 and V24..V27 are deterministic portable bodies; C3 V23 is one
         // explicit dialect pair. Effect E1 one lint-clean stream; any identity
         // mismatch, conditional body, or cross-bundle reference fails before
         // connection. Decision rule D1=C1+C2+C3=>E1.
@@ -191,11 +212,17 @@ mod tests {
 
     #[test]
     fn versions_parse_from_file_names() {
+        // Causes: C1 the bundle contains the published migration filenames;
+        // C2 a filename could be missing, duplicated, or out of order. Effects:
+        // E1 C1 yields the exact dense V1..V27 ledger; E2 C2 is rejected by the
+        // bundle constructor/lint. Constraint/Invariant: filename identity is
+        // the migration version authority. Decision rule: this test covers the
+        // valid dense-ledger rule; bundle lint covers each invalid construction.
         let bundle = dispatch_bundle().expect("bundle builds");
-        // Decision table: D1 empty ledger -> exact dense V1..V24; D2 exact
+        // Decision table: D1 empty ledger -> exact dense V1..V27; D2 exact
         // prefix -> only its suffix; D3 duplicate/gap -> bundle rejection.
         let versions: Vec<i64> = bundle.migrations().iter().map(|m| m.version()).collect();
-        assert_eq!(versions, (1..=24).collect::<Vec<_>>());
+        assert_eq!(versions, (1..=27).collect::<Vec<_>>());
     }
 
     #[test]
@@ -207,7 +234,13 @@ mod tests {
         // CE-TM10 decision rules:
         // R1 published V1..V21 + non-negative millis -> V22 preserves the value;
         // R2 published V1..V21 + legacy negative millis -> V22 maps it to i64::MAX;
-        // R3 current V1..V24 ledger -> reopening applies nothing.
+        // R3 current V1..V27 ledger -> reopening applies nothing.
+        // Causes: C1 a pre-V22 row stores non-negative or legacy negative
+        // milliseconds; C2 the current ledger is reopened. Effects: E1 preserve
+        // valid time, E2 normalize invalid legacy time, E3 apply no migration on
+        // reopen. Constraint/Invariant: a forward migration may repair legacy
+        // sentinel values but never change already-valid time. Decision rule:
+        // execute R1-R3 to cover both value classes and idempotent reopening.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..21].to_vec())
@@ -231,13 +264,13 @@ mod tests {
         )
         .expect("seed legacy rows");
 
-        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V24");
+        let applied = runner.run_bundle(&conn, &full).expect("apply V22-V27");
         assert_eq!(
             applied
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [22, 23, 24]
+            [22, 23, 24, 25, 26, 27]
         );
         let maximum = i64::MAX;
         assert_eq!(
@@ -352,6 +385,12 @@ mod tests {
         use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
         use rusqlite::Connection;
 
+        // Test design. Causes: C1 a pre-V23 authority row has a negative epoch;
+        // C2 the V23 constraint migration runs. Effects: E1 the migration fails;
+        // E2 its schema/data changes roll back atomically. Constraint/Invariant:
+        // corrupt fencing authority must never be coerced into a valid epoch.
+        // Decision rule: seed the invalid legacy partition, require failure, then
+        // prove both the old ledger and row remain intact.
         let conn = Connection::open_in_memory().expect("open sqlite");
         let full = dispatch_bundle().expect("bundle builds");
         let published = MigrationBundle::new(BUNDLE_ID, full.migrations()[..22].to_vec())
@@ -386,7 +425,7 @@ mod tests {
                 .iter()
                 .map(|migration| migration.version)
                 .collect::<Vec<_>>(),
-            [23, 24]
+            [23, 24, 25, 26, 27]
         );
     }
 
@@ -411,6 +450,34 @@ mod tests {
                 assert!(sql.contains(&format!("{NS}_")), "prefixed: {sql}");
                 assert!(!sql.contains('{'), "no leftover token: {sql}");
             }
+        }
+    }
+
+    #[test]
+    fn reservation_repair_shares_the_existing_thread_claim_fence() {
+        // Cause/effect decision table: C1=V26 rendered for Postgres/SQLite;
+        // E1=the one existing per-Thread unique index fences both ordinary
+        // `running` and repair `reservation_running`; E2=no second table or
+        // parallel ownership index is introduced. R1=C1(Postgres)=>E1+E2;
+        // R2=C1(SQLite)=>E1+E2.
+        // Constraint/Invariant: ordinary execution and reservation repair share
+        // one per-Thread ownership fence. Decision rule: render R1 and R2 and
+        // require the shared predicate while forbidding another table.
+        use awaken_scoped_migration::Dialect;
+        let bundle = dispatch_bundle().expect("bundle builds");
+        let migration = bundle
+            .migrations()
+            .iter()
+            .find(|migration| migration.version() == 26)
+            .expect("V26 exists");
+        for dialect in [Dialect::Postgres, Dialect::Sqlite] {
+            let sql = awaken_scoped_migration::render(migration.sql_for(dialect), dialect, NS);
+            assert!(sql.contains("CREATE UNIQUE INDEX"), "R1-R2/E1: {sql}");
+            assert!(
+                sql.contains("status IN ('running', 'reservation_running')"),
+                "R1-R2/E1: {sql}"
+            );
+            assert!(!sql.contains("CREATE TABLE"), "R1-R2/E2: {sql}");
         }
     }
 }

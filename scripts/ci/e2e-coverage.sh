@@ -23,6 +23,15 @@
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
+# Preserve only the two explicit live-suite inputs before the canonical
+# sanitizer removes every ambient provider API key from builds and hermetic
+# deterministic children. The opt-in real phase restores these values in its
+# own subprocess below.
+coverage_anthropic_key="${ANTHROPIC_API_KEY:-}"
+coverage_kimi_key="${KIMI_API_KEY:-}"
+source scripts/ci/_provider_environment.sh
+awaken_unset_ambient_api_keys
+
 if command -v python3 >/dev/null 2>&1 && python3 -c 'import sys' >/dev/null 2>&1; then
   coverage_python=python3
 elif command -v python >/dev/null 2>&1 && python -c 'import sys' >/dev/null 2>&1; then
@@ -60,6 +69,9 @@ fi
 #       protocol-acp/error.rs   the provider-error taxonomy (auth/rate-limit/…)
 #                      only fires on a REAL CLI's output; the fake CLI cannot
 #                      inject provider text, so it is unit-tested, not e2e.
+#       protocol-managed/test_support.rs — feature-gated fixture composition
+#                      linked only by scenario/test-support builds, never by a
+#                      shipped served-process composition.
 # The stage gate provisions a disposable PostgreSQL and drives the Postgres
 # dispatch, history, wake, and resource-plane paths. The extended gate drives
 # ACP JSON-RPC, so neither surface is excluded from changed-line evidence.
@@ -77,7 +89,7 @@ fi
 # reviewed in e2e_unreachable.toml. The checker validates every range/reason,
 # rejects stale entries, still counts hits inside those ranges, and caps the
 # audited share at 15% so the manifest cannot become an unbounded escape hatch.
-IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-scenario-host)/|awaken-run-ingress/src/memory\.rs|awaken-config-resolver/src/reference_stores\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-coordinator/src/models\.rs'
+IGNORE='(awaken-store-conformance|awaken-runtime-examples|awaken-eval|awaken-scenario-host)/|awaken-run-ingress/src/memory\.rs|awaken-config-resolver/src/reference_stores\.rs|awaken-ext-mcp/src/(stdio|plugin|sensitive)\.rs|awaken-mcp-wire/src/jsonrpc\.rs|awaken-protocol-acp/src/(error|real_acp)\.rs|awaken-protocol-managed/src/test_support\.rs|awaken-coordinator/src/models\.rs'
 
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-/tmp/awaken-e2e-coverage}"
 export CARGO_LLVM_COV_TARGET_DIR="${CARGO_LLVM_COV_TARGET_DIR:-$CARGO_TARGET_DIR}"
@@ -107,13 +119,6 @@ if [ "${AWAKEN_COVERAGE_RESUME:-0}" = "1" ]; then
 else
   cargo llvm-cov clean --workspace
 fi
-
-# The deterministic suites contain optional live-provider arms when a developer
-# happens to have credentials in the shell. Keep those credentials out of the
-# hermetic run, then restore them only for the explicit `test:real` phase.
-coverage_anthropic_key="${ANTHROPIC_API_KEY:-}"
-coverage_kimi_key="${KIMI_API_KEY:-}"
-unset ANTHROPIC_API_KEY KIMI_API_KEY
 
 # Node 22 does not execute `.ts` entry points directly. Load the repository's
 # pinned TypeScript runner once for every npm/Node child in this coverage chain.

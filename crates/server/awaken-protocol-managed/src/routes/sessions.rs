@@ -7,7 +7,6 @@
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use awaken_tenancy::WorkspaceScope;
@@ -18,16 +17,20 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::Serialize;
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
-use crate::state::{ManagedState, RunError, RunErrorKind, StateError};
+use crate::preview::ThreadPreviewProjector;
+use crate::state::{ManagedState, RunError, RunErrorKind, StateError, internal_thread_id};
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
 };
 use crate::types::{Event, StreamFrame};
+
+mod pagination;
+
+use pagination::{SessionListPage, parse_session_list, session_list_page};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionListOrder {
@@ -52,351 +55,6 @@ impl SessionListOrder {
             Self::Desc => "desc",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SessionCursorDirection {
-    After,
-    Before,
-}
-
-#[derive(Debug, Clone)]
-struct SessionCursor {
-    order: SessionListOrder,
-    direction: SessionCursorDirection,
-    created_at: String,
-    id: String,
-}
-
-impl SessionCursor {
-    fn for_session(
-        order: SessionListOrder,
-        direction: SessionCursorDirection,
-        session: &Session,
-    ) -> Self {
-        Self {
-            order,
-            direction,
-            created_at: session.created_at.clone(),
-            id: session.id.clone(),
-        }
-    }
-
-    fn encode(&self) -> String {
-        let direction = match self.direction {
-            SessionCursorDirection::After => "after",
-            SessionCursorDirection::Before => "before",
-        };
-        let plain = format!(
-            "v1|{}|{direction}|{}|{}",
-            self.order.as_str(),
-            self.created_at,
-            self.id
-        );
-        plain
-            .as_bytes()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect()
-    }
-
-    fn decode(value: &str) -> Result<Self, WireErr> {
-        if !value.len().is_multiple_of(2) || value.is_empty() {
-            return Err(invalid_session_cursor());
-        }
-        let bytes = (0..value.len())
-            .step_by(2)
-            .map(|index| u8::from_str_radix(&value[index..index + 2], 16))
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| invalid_session_cursor())?;
-        let plain = String::from_utf8(bytes).map_err(|_| invalid_session_cursor())?;
-        let mut fields = plain.split('|');
-        if fields.next() != Some("v1") {
-            return Err(invalid_session_cursor());
-        }
-        let order = fields
-            .next()
-            .ok_or_else(invalid_session_cursor)
-            .and_then(SessionListOrder::parse)?;
-        let direction = match fields.next() {
-            Some("after") => SessionCursorDirection::After,
-            Some("before") => SessionCursorDirection::Before,
-            _ => return Err(invalid_session_cursor()),
-        };
-        let created_at = fields
-            .next()
-            .ok_or_else(invalid_session_cursor)?
-            .to_string();
-        let id = fields
-            .next()
-            .ok_or_else(invalid_session_cursor)?
-            .to_string();
-        if fields.next().is_some()
-            || id.is_empty()
-            || chrono::DateTime::parse_from_rfc3339(&created_at).is_err()
-        {
-            return Err(invalid_session_cursor());
-        }
-        Ok(Self {
-            order,
-            direction,
-            created_at,
-            id,
-        })
-    }
-}
-
-fn invalid_session_cursor() -> WireErr {
-    error_response(StateError::Run(RunError::bad_request(
-        "invalid session pagination cursor",
-    )))
-}
-
-#[derive(Debug)]
-struct SessionListParams {
-    limit: usize,
-    page: Option<SessionCursor>,
-    order: SessionListOrder,
-    agent_id: Option<String>,
-    agent_version: Option<u64>,
-    created_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
-    created_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
-    created_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
-    created_lte: Option<chrono::DateTime<chrono::FixedOffset>>,
-    deployment_id: Option<String>,
-    include_archived: bool,
-    memory_store_id: Option<String>,
-    statuses: HashSet<String>,
-}
-
-fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams, WireErr> {
-    let mut params = SessionListParams {
-        limit: awaken_agent_contract::page::DEFAULT_PAGE_LIMIT,
-        page: None,
-        order: SessionListOrder::Desc,
-        agent_id: None,
-        agent_version: None,
-        created_gt: None,
-        created_gte: None,
-        created_lt: None,
-        created_lte: None,
-        deployment_id: None,
-        include_archived: false,
-        memory_store_id: None,
-        statuses: HashSet::new(),
-    };
-    let pairs = form_urlencoded::parse(raw.unwrap_or_default().as_bytes());
-    let mut encoded_page = None;
-    for (key, value) in pairs {
-        match key.as_ref() {
-            "limit" => {
-                params.limit = value.parse::<usize>().map_err(|_| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "limit must be a positive integer",
-                    )))
-                })?;
-                if params.limit == 0 {
-                    return Err(error_response(StateError::Run(RunError::bad_request(
-                        "limit must be a positive integer",
-                    ))));
-                }
-                params.limit = params
-                    .limit
-                    .min(awaken_agent_contract::page::MAX_PAGE_LIMIT);
-            }
-            "page" => encoded_page = Some(value.into_owned()),
-            "order" => params.order = SessionListOrder::parse(&value)?,
-            "agent_id" => params.agent_id = Some(value.into_owned()),
-            "agent_version" => {
-                params.agent_version = Some(value.parse::<u64>().map_err(|_| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "agent_version must be a positive integer",
-                    )))
-                })?);
-            }
-            "created_at[gt]" => params.created_gt = Some(parse_list_time(&value)?),
-            "created_at[gte]" => params.created_gte = Some(parse_list_time(&value)?),
-            "created_at[lt]" => params.created_lt = Some(parse_list_time(&value)?),
-            "created_at[lte]" => params.created_lte = Some(parse_list_time(&value)?),
-            "deployment_id" => params.deployment_id = Some(value.into_owned()),
-            "include_archived" => {
-                params.include_archived = value.parse::<bool>().map_err(|_| {
-                    error_response(StateError::Run(RunError::bad_request(
-                        "include_archived must be a boolean",
-                    )))
-                })?;
-            }
-            "memory_store_id" => params.memory_store_id = Some(value.into_owned()),
-            "statuses" | "statuses[]" => match value.as_ref() {
-                "rescheduling" | "running" | "idle" | "terminated" => {
-                    params.statuses.insert(value.into_owned());
-                }
-                _ => {
-                    return Err(error_response(StateError::Run(RunError::bad_request(
-                        "statuses contains an unsupported Session status",
-                    ))));
-                }
-            },
-            _ => {}
-        }
-    }
-    params.page = encoded_page
-        .as_deref()
-        .map(SessionCursor::decode)
-        .transpose()?;
-    if params
-        .page
-        .as_ref()
-        .is_some_and(|cursor| cursor.order != params.order)
-    {
-        return Err(error_response(StateError::Run(RunError::bad_request(
-            "session pagination cursor order does not match the requested order",
-        ))));
-    }
-    Ok(params)
-}
-
-fn parse_list_time(value: &str) -> Result<chrono::DateTime<chrono::FixedOffset>, WireErr> {
-    chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
-        error_response(StateError::Run(RunError::bad_request(
-            "created_at filters must be RFC 3339 timestamps",
-        )))
-    })
-}
-
-#[derive(Debug, Serialize)]
-struct SessionListPage {
-    data: Vec<Session>,
-    next_page: Option<String>,
-    prev_page: Option<String>,
-}
-
-fn session_list_page(
-    mut data: Vec<Session>,
-    params: &SessionListParams,
-) -> Result<SessionListPage, WireErr> {
-    data.retain(|session| session_matches(session, params));
-    data.sort_by(|left, right| session_order(left, right, params.order));
-    let (start, end) = match &params.page {
-        None => (0, params.limit.min(data.len())),
-        Some(cursor) => match cursor.direction {
-            SessionCursorDirection::After => {
-                let start = data.partition_point(|session| {
-                    session_to_cursor_order(session, cursor, params.order) != Ordering::Greater
-                });
-                (start, start.saturating_add(params.limit).min(data.len()))
-            }
-            SessionCursorDirection::Before => {
-                let end = data.partition_point(|session| {
-                    session_to_cursor_order(session, cursor, params.order) == Ordering::Less
-                });
-                (end.saturating_sub(params.limit), end)
-            }
-        },
-    };
-    let page = data[start..end].to_vec();
-    let prev_page = (start > 0).then(|| page.first()).flatten().map(|first| {
-        SessionCursor::for_session(params.order, SessionCursorDirection::Before, first).encode()
-    });
-    let next_page = (end < data.len())
-        .then(|| page.last())
-        .flatten()
-        .map(|last| {
-            SessionCursor::for_session(params.order, SessionCursorDirection::After, last).encode()
-        });
-    Ok(SessionListPage {
-        data: page,
-        next_page,
-        prev_page,
-    })
-}
-
-fn session_order(left: &Session, right: &Session, order: SessionListOrder) -> Ordering {
-    let result = left
-        .created_at
-        .cmp(&right.created_at)
-        .then_with(|| left.id.cmp(&right.id));
-    match order {
-        SessionListOrder::Asc => result,
-        SessionListOrder::Desc => result.reverse(),
-    }
-}
-
-fn session_to_cursor_order(
-    session: &Session,
-    cursor: &SessionCursor,
-    order: SessionListOrder,
-) -> Ordering {
-    let result = session
-        .created_at
-        .cmp(&cursor.created_at)
-        .then_with(|| session.id.cmp(&cursor.id));
-    match order {
-        SessionListOrder::Asc => result,
-        SessionListOrder::Desc => result.reverse(),
-    }
-}
-
-fn session_matches(session: &Session, params: &SessionListParams) -> bool {
-    if !params.include_archived && session.archived_at.is_some() {
-        return false;
-    }
-    if params
-        .agent_id
-        .as_ref()
-        .is_some_and(|id| session.agent.id != *id)
-    {
-        return false;
-    }
-    if params.agent_id.is_some()
-        && params
-            .agent_version
-            .is_some_and(|version| session.agent.version != version)
-    {
-        return false;
-    }
-    if params
-        .deployment_id
-        .as_ref()
-        .is_some_and(|id| session.deployment_id.as_ref() != Some(id))
-    {
-        return false;
-    }
-    if params.memory_store_id.as_ref().is_some_and(|id| {
-        !session.resources.iter().any(|resource| {
-            matches!(
-                resource,
-                crate::types::resource::SessionResource::MemoryStore {
-                    memory_store_id,
-                    ..
-                } if memory_store_id == id
-            )
-        })
-    }) {
-        return false;
-    }
-    if !params.statuses.is_empty() && !params.statuses.contains(session.status.as_str()) {
-        return false;
-    }
-    let Ok(created) = chrono::DateTime::parse_from_rfc3339(&session.created_at) else {
-        return false;
-    };
-    params
-        .created_gt
-        .as_ref()
-        .is_none_or(|bound| created > *bound)
-        && params
-            .created_gte
-            .as_ref()
-            .is_none_or(|bound| created >= *bound)
-        && params
-            .created_lt
-            .as_ref()
-            .is_none_or(|bound| created < *bound)
-        && params
-            .created_lte
-            .as_ref()
-            .is_none_or(|bound| created <= *bound)
 }
 
 /// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
@@ -712,14 +370,18 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
-    if is_family("/v1/user_profiles") && !has_beta(&req, crate::USER_PROFILES_BETA) {
+    if is_family("/v1/user_profiles")
+        && !has_beta(&req, crate::USER_PROFILES_BETA)
+        && !has_beta(&req, crate::common::headers::USER_PROFILES_BETA_LATEST)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
-                    "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
-                    beta = crate::USER_PROFILES_BETA,
+                    "a User Profiles beta is required: send `anthropic-beta: {legacy}` or `anthropic-beta: {latest}`",
+                    legacy = crate::USER_PROFILES_BETA,
+                    latest = crate::common::headers::USER_PROFILES_BETA_LATEST,
                 ),
             )),
         )
@@ -786,26 +448,17 @@ async fn create_session(
     req.validate_public()
         .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     // Session preparation (MCP provisioning, ADR-0043 Phase 3) can fail; map the
-    // RunError to the envelope exactly like a turn's failure, so a failed create
+    // RunError to the envelope exactly like a Run failure, so a failed create
     // is loud rather than a half-provisioned session.
     let workspace_id = workspace.map(|w| w.0.0.clone());
     let idempotency_key = parse_idempotency_key(&headers)?;
     let session = match idempotency_key.as_deref() {
-        Some(_) if !req.initial_events.is_empty() => {
-            return Err(error_response(StateError::Run(RunError::bad_request(
-                "Idempotency-Key is not supported with initial_events",
-            ))));
-        }
         Some(key) => {
             state
-                .create_session_with_initial_events_idempotent(req, workspace_id.clone(), key)
+                .create_session_idempotent(req, workspace_id.clone(), key)
                 .await
         }
-        None => {
-            state
-                .create_session_with_initial_events(req, workspace_id.clone())
-                .await
-        }
+        None => state.create_session(req, workspace_id.clone()).await,
     }
     .map_err(error_response)?;
     versioned_session_response(&state, session).await
@@ -905,6 +558,8 @@ async fn update_session(
     headers: HeaderMap,
     ManagedJson(body): ManagedJson<crate::types::SessionUpdateParams>,
 ) -> Result<(HeaderMap, Json<Session>), WireErr> {
+    body.validate()
+        .map_err(|message| error_response(StateError::Run(RunError::bad_request(message))))?;
     state.ensure_session(&id).await.map_err(error_response)?;
     if body.vault_ids.is_some() {
         return Err(error_response(StateError::Run(RunError::bad_request(
@@ -1064,11 +719,30 @@ async fn list_thread_events(
 /// Parse the SDK's `event_deltas[]` live-preview opt-in. Repeated `event_deltas[]`
 /// (or `event_deltas`) values select which buffered events to preview; only
 /// `agent.message` and `agent.thinking` are accepted (any other value is a 400,
-/// matching the official wire). Returns whether any preview was requested — awaken
-/// previews `agent.message` text; `agent.thinking` is accepted but never emitted
-/// (awaken's live stream carries no thinking channel).
-fn parse_event_deltas(raw: Option<&str>) -> Result<bool, WireErr> {
-    let mut requested = false;
+/// matching the official wire). The returned selection keeps message and thinking
+/// independent so opting into one cannot leak the other's preview frames.
+#[derive(Debug, Clone, Copy, Default)]
+struct PreviewSelection {
+    message: bool,
+    thinking: bool,
+}
+
+impl PreviewSelection {
+    const fn any(self) -> bool {
+        self.message || self.thinking
+    }
+
+    fn accepts(self, event_type: &str) -> bool {
+        match event_type {
+            "agent.message" => self.message,
+            "agent.thinking" => self.thinking,
+            _ => false,
+        }
+    }
+}
+
+fn parse_event_deltas(raw: Option<&str>) -> Result<PreviewSelection, WireErr> {
+    let mut requested = PreviewSelection::default();
     let mut count = 0usize;
     if let Some(q) = raw {
         for (k, v) in form_urlencoded::parse(q.as_bytes()) {
@@ -1080,7 +754,8 @@ fn parse_event_deltas(raw: Option<&str>) -> Result<bool, WireErr> {
                     ));
                 }
                 match v.as_ref() {
-                    "agent.message" | "agent.thinking" => requested = true,
+                    "agent.message" => requested.message = true,
+                    "agent.thinking" => requested.thinking = true,
                     other => {
                         return Err(error_response(
                             RunError::bad_request(format!(
@@ -1115,8 +790,17 @@ fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr
     Ok(order.unwrap_or(SessionListOrder::Asc))
 }
 
-/// The terminal committed events that close a turn's SSE stream.
-fn is_terminal(frame: &StreamFrame) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SseTerminalScope {
+    /// Session and primary-Thread streams close only at the aggregate boundary.
+    Session,
+    /// A child-Thread stream closes at that child's idle/terminated boundary.
+    ChildThread,
+}
+
+/// The terminal committed events that close this exact SSE projection. A child
+/// idle is observable on the primary stream but is never the Session terminal.
+fn is_terminal(frame: &StreamFrame, scope: SseTerminalScope) -> bool {
     matches!(
         frame,
         StreamFrame::Committed(e)
@@ -1125,24 +809,37 @@ fn is_terminal(frame: &StreamFrame) -> bool {
                 "session.status_idle"
                     | "session.status_terminated"
                     | "session.deleted"
-                    | "session.thread_status_idle"
-                    | "session.thread_status_terminated"
             )
+                || (scope == SseTerminalScope::ChildThread
+                    && matches!(
+                        e.type_str(),
+                        "session.thread_status_idle" | "session.thread_status_terminated"
+                    ))
     )
 }
 
-/// Track whether the newest turn represented in a replay snapshot has reached a
+/// Track whether the newest Run represented in a replay snapshot has reached a
 /// terminal event. Usage and telemetry are committed after `status_idle`, so
 /// simply asking whether the final snapshot event is terminal leaves a
 /// send-then-stream client tailing forever. Conversely, an older idle must not
-/// close a stream after a newer input or running marker has started another turn.
-fn replay_is_terminal_after(current: bool, event_type: &str) -> bool {
+/// close a stream after a newer input or running marker has started another Run.
+fn replay_is_terminal_after(current: bool, event_type: &str, scope: SseTerminalScope) -> bool {
     match event_type {
-        "session.status_idle"
-        | "session.status_terminated"
-        | "session.deleted"
-        | "session.thread_status_idle"
-        | "session.thread_status_terminated" => true,
+        "session.status_idle" | "session.status_terminated" | "session.deleted" => true,
+        "session.thread_status_idle" | "session.thread_status_terminated"
+            if scope == SseTerminalScope::ChildThread =>
+        {
+            true
+        }
+        "session.thread_status_running" | "session.thread_status_rescheduled"
+            if scope == SseTerminalScope::ChildThread =>
+        {
+            false
+        }
+        "session.thread_status_idle"
+        | "session.thread_status_terminated"
+        | "session.thread_status_running"
+        | "session.thread_status_rescheduled" => current,
         "user.message"
         | "user.tool_confirmation"
         | "user.custom_tool_result"
@@ -1150,9 +847,7 @@ fn replay_is_terminal_after(current: bool, event_type: &str) -> bool {
         | "user.define_outcome"
         | "user.interrupt"
         | "session.status_running"
-        | "session.status_rescheduled"
-        | "session.thread_status_running"
-        | "session.thread_status_rescheduled" => false,
+        | "session.status_rescheduled" => false,
         _ => current,
     }
 }
@@ -1165,62 +860,131 @@ fn sse_frame(frame: &StreamFrame) -> SseEvent {
         .data(frame.data())
 }
 
+fn accept_preview_frame(
+    frame: &crate::types::PreviewFrame,
+    selection: PreviewSelection,
+    accepted_ids: &mut HashSet<String>,
+) -> bool {
+    match frame {
+        crate::types::PreviewFrame::EventStart { event } => {
+            selection.accepts(&event.event_type) && accepted_ids.insert(event.id.clone())
+        }
+        crate::types::PreviewFrame::EventDelta { event_id, .. } => accepted_ids.contains(event_id),
+    }
+}
+
 /// The live SSE body: the committed snapshot (backfill, deduped against the live
-/// tail by id), then live broadcast frames until a terminal committed event or the
-/// session's sender drops. Preview frames are forwarded only if `previews` is set.
+/// tail by id), then the Runtime-owned Thread preview subscription and committed
+/// broadcast race until a terminal committed event or the Session sender drops.
+/// Preview frames are connection-local and forwarded only when their exact event
+/// type was selected; they never re-enter the committed broadcast.
 fn live_sse_stream<F>(
     snapshot: Vec<Event>,
-    mut rx: broadcast::Receiver<StreamFrame>,
-    previews: bool,
+    mut rx: broadcast::Receiver<Event>,
+    previews: PreviewSelection,
+    terminal_scope: SseTerminalScope,
     project: F,
+    thread_preview: Option<(
+        Box<dyn awaken_session_contract::SessionThreadLiveSubscription>,
+        ThreadPreviewProjector,
+    )>,
 ) -> impl Stream<Item = Result<SseEvent, Infallible>>
 where
-    F: Fn(StreamFrame) -> Option<StreamFrame> + Send + Sync + 'static,
+    F: Fn(Event) -> Option<Event> + Send + Sync + 'static,
 {
     async_stream::stream! {
         let mut seen: HashSet<String> = HashSet::new();
+        let mut preview_event_ids: HashSet<String> = HashSet::new();
+        let mut thread_preview = thread_preview;
         let mut backfill_terminal = false;
         for event in snapshot {
-            let Some(StreamFrame::Committed(event)) = project(StreamFrame::Committed(event)) else {
+            let Some(event) = project(event) else {
                 continue;
             };
             seen.insert(event.id.clone());
             let frame = StreamFrame::Committed(event);
-            backfill_terminal = replay_is_terminal_after(backfill_terminal, frame.type_str());
+            backfill_terminal = replay_is_terminal_after(
+                backfill_terminal,
+                frame.type_str(),
+                terminal_scope,
+            );
             yield Ok(sse_frame(&frame));
         }
-        // A snapshot that already reached idle/terminated is a completed turn
+        // A snapshot that already reached idle/terminated is a completed Run
         // (send-then-stream): deliver the backfill and end, preserving
         // request/response semantics. Otherwise tail the live broadcast.
         if !backfill_terminal {
             loop {
-                match rx.recv().await {
-                    Ok(frame) => {
-                        let Some(frame) = project(frame) else {
-                            continue;
-                        };
-                        let StreamFrame::Committed(event) = frame else {
-                            if previews {
-                                yield Ok(sse_frame(&frame));
-                            }
-                            continue;
-                        };
-                        // Dedupe the snapshot/live overlap by id; only end on a
-                        // committed terminal.
-                        if !seen.insert(event.id.clone()) {
-                            continue;
+                tokio::select! {
+                    biased;
+                    live = async {
+                        match thread_preview.as_mut() {
+                            Some((subscription, _)) => subscription.recv().await,
+                            None => std::future::pending().await,
                         }
-                        let frame = StreamFrame::Committed(event);
-                        let terminal = is_terminal(&frame);
-                        yield Ok(sse_frame(&frame));
-                        if terminal {
-                            break;
+                    } => {
+                        match live {
+                            Ok(Some(event)) => {
+                                let frames = thread_preview
+                                    .as_mut()
+                                    .expect("enabled Thread subscription still exists")
+                                    .1
+                                    .project(event);
+                                for frame in frames {
+                                    if accept_preview_frame(
+                                        &frame,
+                                        previews,
+                                        &mut preview_event_ids,
+                                    ) {
+                                        yield Ok(sse_frame(&StreamFrame::Preview(frame)));
+                                    }
+                                }
+                            }
+                            Ok(None) | Err(_) => thread_preview = None,
                         }
                     }
-                    // Best-effort: a lagging subscriber skips the dropped frames
-                    // (the buffered agent.message still arrives); a closed sender ends.
-                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::RecvError::Closed) => break,
+                    received = rx.recv() => match received {
+                        Ok(event) => {
+                            let Some(event) = project(event) else {
+                                continue;
+                            };
+                            // Dedupe the snapshot/live overlap by id; only end on a
+                            // committed terminal.
+                            if !seen.insert(event.id.clone()) {
+                                continue;
+                            }
+                            if let Some((_, projector)) = thread_preview.as_mut() {
+                                if event.type_str() == "agent.message" {
+                                    for preview in projector.take_for_committed(&event.id) {
+                                        if accept_preview_frame(
+                                            &preview,
+                                            previews,
+                                            &mut preview_event_ids,
+                                        ) {
+                                            yield Ok(sse_frame(&StreamFrame::Preview(preview)));
+                                        }
+                                    }
+                                } else if matches!(
+                                    event.type_str(),
+                                    "agent.thread_message_sent"
+                                        | "session.thread_status_idle"
+                                        | "session.thread_status_terminated"
+                                ) {
+                                    projector.discard_uncommitted();
+                                }
+                            }
+                            let frame = StreamFrame::Committed(event);
+                            let terminal = is_terminal(&frame, terminal_scope);
+                            yield Ok(sse_frame(&frame));
+                            if terminal {
+                                break;
+                            }
+                        }
+                        // Best-effort: a lagging subscriber skips the dropped frames
+                        // (the buffered agent.message still arrives); a closed sender ends.
+                        Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(broadcast::error::RecvError::Closed) => break,
+                    },
                 }
             }
         }
@@ -1233,37 +997,53 @@ async fn stream_thread_events(
     RawQuery(raw): RawQuery,
 ) -> Result<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>, WireErr> {
     // The official Thread EventStreamParams carries the same preview selector as
-    // the Session stream. Primary-thread previews are the Session previews; child
-    // execution currently has no independent preview producer.
+    // the Session stream. Primary and ordinary child Threads consume the same
+    // Runtime-owned live observer; Advisor consultations intentionally expose
+    // only their documented lifecycle/cross-post wire.
     let previews = parse_event_deltas(raw.as_deref())?;
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
-    state.get_thread(&id, &tid).map_err(error_response)?;
+    let thread = state.get_thread(&id, &tid).map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
-    let primary = tid == format!("{id}:primary");
+    let project_thread = internal_thread_id(&id, &tid);
+    let primary = project_thread == id;
+    let thread_preview = if previews.any() && !thread.agent.is_advisor() {
+        state
+            .session_application()
+            .subscribe_session_thread_live(&id, &project_thread)
+            .await
+            .map_err(StateError::Run)
+            .map_err(error_response)?
+            .map(|subscription| {
+                (
+                    subscription,
+                    ThreadPreviewProjector::new(id.clone(), project_thread.clone()),
+                )
+            })
+    } else {
+        None
+    };
     let project_session = id.clone();
-    let project_thread = tid.clone();
     let project_state = Arc::clone(&state);
     Ok(Sse::new(live_sse_stream(
         snapshot,
         rx,
         previews,
-        move |frame| match frame {
-            StreamFrame::Committed(event) => {
-                let owner = project_state.event_thread_owner(&project_session, &event.id);
-                ManagedState::project_event_for_thread(
-                    &project_session,
-                    &project_thread,
-                    event,
-                    owner.as_deref(),
-                )
-                .map(StreamFrame::Committed)
-            }
-            preview @ StreamFrame::Preview(_) if primary => Some(preview),
-            StreamFrame::Preview(_) => None,
+        if primary {
+            SseTerminalScope::Session
+        } else {
+            SseTerminalScope::ChildThread
         },
+        move |event| {
+            project_state.project_committed_event_for_thread(
+                &project_session,
+                &project_thread,
+                event,
+            )
+        },
+        thread_preview,
     ))
     .keep_alive(KeepAlive::default()))
 }
@@ -1560,7 +1340,39 @@ async fn stream_events(
         .await
         .map_err(error_response)?;
     let (snapshot, rx) = state.stream_subscribe(&id).map_err(error_response)?;
-    Ok(Sse::new(live_sse_stream(snapshot, rx, previews, Some)).keep_alive(KeepAlive::default()))
+    let thread_preview = if previews.any() {
+        state
+            .session_application()
+            .subscribe_session_thread_live(&id, &id)
+            .await
+            .map_err(StateError::Run)
+            .map_err(error_response)?
+            .map(|subscription| {
+                (
+                    subscription,
+                    ThreadPreviewProjector::new(id.clone(), id.clone()),
+                )
+            })
+    } else {
+        None
+    };
+    let project_session = id.clone();
+    let project_state = Arc::clone(&state);
+    Ok(Sse::new(live_sse_stream(
+        snapshot,
+        rx,
+        previews,
+        SseTerminalScope::Session,
+        move |event| {
+            project_state.project_committed_event_for_thread(
+                &project_session,
+                &project_session,
+                event,
+            )
+        },
+        thread_preview,
+    ))
+    .keep_alive(KeepAlive::default()))
 }
 
 #[cfg(test)]
@@ -1572,7 +1384,8 @@ mod managed_json_tests {
     use tower::ServiceExt as _;
 
     use super::{
-        enforce_managed_beta, error_response, managed_json_message, replay_is_terminal_after,
+        SseTerminalScope, enforce_managed_beta, error_response, managed_json_message,
+        parse_event_deltas, replay_is_terminal_after,
     };
     use crate::state::{RunError, StateError};
 
@@ -1598,6 +1411,40 @@ mod managed_json_tests {
         )));
         assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE, "R1");
         assert_eq!(body.0.error.kind, "api_error", "R2");
+    }
+
+    /// Preview selector cause/effect table: C1 message requested, C2 thinking
+    /// requested, C3 neither. E1 accepts only message, E2 accepts only thinking,
+    /// E3 disables previews. Rules S1=C1=>E1, S2=C2=>E2,
+    /// S3=C1+C2=>E1+E2, S4=C3=>E3. Invalid/count boundaries are covered by the
+    /// HTTP streaming suite.
+    #[test]
+    fn preview_selection_keeps_message_and_thinking_independent() {
+        // Causes: the fixtures below establish `preview selection` with the concrete inputs, state,
+        // dependencies, and failure triggers used by this case.
+        // Effects: the observable result `keeps message and thinking independent` and every
+        // asserted state transition or side effect must hold.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        let message = parse_event_deltas(Some("event_deltas[]=agent.message")).unwrap();
+        assert!(message.accepts("agent.message"), "S1/E1");
+        assert!(!message.accepts("agent.thinking"), "S1/E1");
+
+        let thinking = parse_event_deltas(Some("event_deltas[]=agent.thinking")).unwrap();
+        assert!(!thinking.accepts("agent.message"), "S2/E2");
+        assert!(thinking.accepts("agent.thinking"), "S2/E2");
+
+        let both = parse_event_deltas(Some(
+            "event_deltas[]=agent.message&event_deltas[]=agent.thinking",
+        ))
+        .unwrap();
+        assert!(
+            both.accepts("agent.message") && both.accepts("agent.thinking"),
+            "S3"
+        );
+        assert!(!parse_event_deltas(None).unwrap().any(), "S4/E3");
     }
 
     #[tokio::test]
@@ -1755,6 +1602,18 @@ mod managed_json_tests {
 
     #[test]
     fn replay_terminal_state_survives_trailing_usage_and_telemetry() {
+        // Causes: the fixtures below establish `replay terminal state survives trailing usage and
+        // telemetry` with the concrete inputs, state, dependencies, and failure triggers used by
+        // this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Coverage rationale: `replay terminal state survives trailing usage and telemetry` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
         let mut terminal = false;
         for event_type in [
             "user.message",
@@ -1765,16 +1624,25 @@ mod managed_json_tests {
             "session.status_idle",
             "session.usage",
         ] {
-            terminal = replay_is_terminal_after(terminal, event_type);
+            terminal = replay_is_terminal_after(terminal, event_type, SseTerminalScope::Session);
         }
         assert!(
             terminal,
-            "trailing observational events cannot reopen a turn"
+            "trailing observational events cannot reopen a Run"
         );
     }
 
     #[test]
     fn replay_terminal_state_is_reset_by_every_resumption_input() {
+        // Causes: the fixtures below establish `replay terminal state` with the concrete inputs,
+        // state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `is reset by every resumption input` and every asserted
+        // state transition or side effect must hold.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Coverage rationale: `replay terminal state` is one independent branch selecting `is reset
+        // by every resumption input`; a multi-row decision table is not applicable, and sibling
+        // tests own alternate causes.
         for event_type in [
             "user.message",
             "user.tool_confirmation",
@@ -1784,13 +1652,57 @@ mod managed_json_tests {
             "user.interrupt",
             "session.status_running",
             "session.status_rescheduled",
+        ] {
+            assert!(
+                !replay_is_terminal_after(true, event_type, SseTerminalScope::Session),
+                "{event_type} must reopen the replay tail"
+            );
+        }
+    }
+
+    #[test]
+    fn child_terminal_events_close_only_the_matching_child_stream() {
+        // Causes: the fixtures below establish `child terminal events close only the matching child
+        // stream` with the concrete inputs, state, dependencies, and failure triggers used by this
+        // case.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 a child emits idle/terminated; C2 the projected
+        // stream is aggregate Session/primary; C3 it is that child Thread.
+        // Effects: E1 C1+C2 leaves aggregate tailing; E2 C1+C3 closes the child.
+        // Decision table: T1=C1+C2=>E1; T2=C1+C3=>E2. This prevents one child
+        // from truncating a primary stream while another activity remains active.
+        for event_type in [
+            "session.thread_status_idle",
+            "session.thread_status_terminated",
+        ] {
+            assert!(
+                !replay_is_terminal_after(false, event_type, SseTerminalScope::Session,),
+                "T1/{event_type}"
+            );
+            assert!(
+                replay_is_terminal_after(false, event_type, SseTerminalScope::ChildThread,),
+                "T2/{event_type}"
+            );
+        }
+        for event_type in [
             "session.thread_status_running",
             "session.thread_status_rescheduled",
         ] {
             assert!(
-                !replay_is_terminal_after(true, event_type),
-                "{event_type} must reopen the replay tail"
+                replay_is_terminal_after(true, event_type, SseTerminalScope::Session),
+                "T1 aggregate state ignores {event_type}"
+            );
+            assert!(
+                !replay_is_terminal_after(true, event_type, SseTerminalScope::ChildThread,),
+                "T2 child state reopens on {event_type}"
             );
         }
+        assert!(
+            replay_is_terminal_after(false, "session.status_idle", SseTerminalScope::Session,),
+            "the aggregate terminal still closes primary"
+        );
     }
 }

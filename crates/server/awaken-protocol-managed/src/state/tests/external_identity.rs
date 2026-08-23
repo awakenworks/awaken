@@ -11,6 +11,17 @@ pub(in crate::state) fn bare_create_params() -> SessionCreateParams {
 
 #[tokio::test]
 async fn delete_broadcasts_session_deleted_then_removes_the_record() {
+    // Causes: the fixtures below establish `delete broadcasts session deleted then removes the
+    // record` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `delete broadcasts session deleted then removes the record` is one
+    // independent branch selecting `all output, state, side-effect, error, and terminal assertions
+    // below hold together`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     let runtime = EndSessionRecorder::default();
     runtime
         .block_quiesce
@@ -39,17 +50,14 @@ async fn delete_broadcasts_session_deleted_then_removes_the_record() {
     runtime.quiesce_entered.notified().await;
 
     // The terminal frame reached the open stream before the record was dropped.
-    match rx
+    let event = rx
         .try_recv()
-        .expect("a frame was broadcast to the open stream")
-    {
-        StreamFrame::Committed(e) => assert_eq!(
-            e.type_str(),
-            "session.deleted",
-            "the broadcast terminal frame is session.deleted"
-        ),
-        other => panic!("expected a committed session.deleted frame, got {other:?}"),
-    }
+        .expect("a frame was broadcast to the open stream");
+    assert_eq!(
+        event.type_str(),
+        "session.deleted",
+        "the broadcast terminal frame is session.deleted"
+    );
 
     // And the record is gone: retrieve and events.list are now 404, by design
     // (delete removes the session; it does not tombstone it as archive does).

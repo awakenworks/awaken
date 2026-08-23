@@ -45,10 +45,16 @@ async fn create_session(app: &Router) -> serde_json::Value {
 ///
 /// Cause/effect graph and decision table:
 /// C1=the host registers a static tool, C2=the effective policy requires approval,
-/// C3=a configurable connector is absent; E1=the tool remains enabled,
-/// E2=its wire policy is `always_ask`, E3=the tool is disabled.
-/// R1(C1,C2,!C3)->E1+E2 covers `web_fetch`; R2(!C1,!C2,C3)->E3 covers
-/// `web_search`; R3(C1,!C2,!C3)->the default config covers read/glob/grep.
+/// C3=a configurable connector is absent, C4=an override names a closed Agent
+/// toolset member; E1=the tool remains enabled, E2=its wire policy is
+/// `always_ask`, E3=the tool is disabled, E4=the config's `type` repeats the
+/// closed member discriminator.
+/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers `web_fetch`;
+/// R2(!C1,!C2,C3,C4)->E3+E4 covers `web_search`;
+/// R3(C1,!C2,!C3)->the default config covers read/glob/grep;
+/// R4(C4)->E4 covers every emitted override.
+/// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
+/// the Managed projector is the only wire owner, and has no legacy type-less path.
 /// FMECA: advertising absent search would create an inexecutable tool (fail closed
 /// through E3); disabling fetch would hide a real capability (caught by R1); losing
 /// the approval policy could perform network I/O without consent (caught by E2).
@@ -68,16 +74,16 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
         session["agent"]["tools"],
         serde_json::json!([{
             "type": "agent_toolset_20260401",
-            // Every config carries all of {name, enabled, permission_policy} as the
-            // `BetaManagedAgentsAgentToolConfig` SDK type requires; only deviations
-            // from `default_config` (enabled + auto-allowed) are listed — gated
-            // tools flip the policy, unregistered tools flip `enabled`.
+            // Every config carries all of {name, type, enabled, permission_policy}
+            // as the `BetaManagedAgentsAgentToolConfig` SDK type requires; only
+            // deviations from `default_config` (enabled + auto-allowed) are listed —
+            // gated tools flip the policy, unregistered tools flip `enabled`.
             "configs": [
-                { "name": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_fetch", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
+                { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "web_fetch", "type": "web_fetch", "enabled": true, "permission_policy": { "type": "always_ask" } },
+                { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
         }])

@@ -19,24 +19,25 @@ performed exactly once and never resumed from an uncommitted candidate
 
 ### D1: A ScheduledAction is a committed `ResumeTicket`, by reason
 
-A scheduled action and an aawaiting run already share the same committed identity —
+A scheduled action and an awaiting run already share the same committed identity —
 correlation/idempotency key, run/thread binding, snapshot + catalog fingerprint,
-deadline — and `ResumeTicket` already carries a `pending_tool` (an action with
-arguments). So a ScheduledAction is a `ResumeTicket` with
-`reason = AwaitReason::ScheduledAction` whose `pending_tool` is the deferred
-action. It commits in `RunDisposition::Awaiting` and awaits the run in `RunState::Awaiting`
-through the one finish boundary (G31), exactly like any other await. No new commit
-field or state machine is added — the difference is the *reason* (who performs the
-result) and nothing else.
+deadline — and the closed `ResumeTicket` target already carries a tool call with
+its arguments. A ScheduledAction is therefore a `ResumeTicket` whose target is
+`AwaitTarget::ToolCall { reason: ToolAwaitReason::ScheduledAction, call_id, tool }`.
+It commits in `RunDisposition::Awaiting` and awaits the run in
+`RunState::Awaiting` through the one finish boundary (G31), exactly like any
+other await. No new commit field or state machine is added — the target reason
+states who performs the result.
 
 ### D2: A gate stages it; commit-before-wake makes it recoverable
 
 A hook/gate decides a tool call should be *scheduled* rather than run now, via
-`GateOutcome::Schedule { correlation_id }` (the sibling of `Suspend`). The engine
-awaits with a ScheduledAction ticket carrying that call. The request is durable
-only once `ThreadCommit` succeeds: an uncommitted scheduled-action candidate is
-never wakeable and never recovered (RS-SCH-003/007), because recovery reads the
-committed ticket, never an in-flight one.
+`GateOutcome::Schedule { correlation_id, action_kind }` (the sibling of
+`RequireConfirmation`). The engine awaits with a ScheduledAction target carrying
+that call. The request is durable only once `ThreadCommit` succeeds: an
+uncommitted scheduled-action candidate is never wakeable and never recovered
+(RS-SCH-003/007), because recovery reads the committed ticket, never an in-flight
+one.
 
 ### D3: Performing it is an allow-resume of the committed action
 
@@ -55,8 +56,9 @@ scheduled result is rejected (`NotWaiting`) without mutating facts (RS-CTRL-001/
 
 The normal path is in-process: the runtime performs the scheduled action and
 continues. For crash recovery, the committed ScheduledAction ticket is wakeable
-work the dispatch (ADR-0009) drives — an aawaiting run whose ticket reason is
-`ScheduledAction` is performed by the daemon, not waited on for external input.
+work the dispatch (ADR-0009) drives — an awaiting run whose closed target reason
+is `ToolAwaitReason::ScheduledAction` is performed by the daemon, not waited on
+for external input.
 Action-kind capability bounds (RS-SCH-005) ride on the pending action's resolved
 tool, already bound by the run's `ResolvedExecutionEnv` (ADR-0004); a richer
 plugin-owned action-kind axis is deferred.
@@ -64,7 +66,8 @@ plugin-owned action-kind axis is deferred.
 ## Consequences
 
 - The third deferred-work mechanism exists, completing the ADR-0003 triad, with no
-  new commit field or `BackgroundTask` umbrella — it is a `ResumeTicket` reason.
+  new commit field or `BackgroundTask` umbrella — it is a closed `ResumeTicket`
+  target reason.
 - Consistency holds: the action is performed only from a committed request, never
   a candidate; a late result after cancel is rejected.
 - Scenarios RS-SCH-001/003/004 and RS-CTRL-001 are covered by runtime tests; the

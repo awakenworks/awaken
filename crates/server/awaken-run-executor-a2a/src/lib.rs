@@ -14,31 +14,47 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
-use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+#[cfg(test)]
+use awaken_agent_contract::agent::awaiting::ResumeTicket;
+#[cfg(test)]
+use awaken_agent_contract::agent::message::Message;
+#[cfg(test)]
+use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 #[cfg(test)]
 use awaken_agent_contract::agent::run::Record as RunRecord;
 use awaken_agent_contract::agent::run::{EndCause, Failure, RunState};
-use awaken_agent_contract::agent::state::{
-    Action as StateAction, Command as StateCommand, MergePolicy, Scope, StateCell,
-};
+#[cfg(test)]
+use awaken_agent_contract::agent::state::Command as StateCommand;
+#[cfg(test)]
+use awaken_agent_contract::agent::state::{MergePolicy, Scope};
 use awaken_agent_contract::thread::commit::RunDisposition;
+#[cfg(test)]
+use awaken_protocol_a2a::Task;
+use awaken_protocol_a2a::TaskState;
 use awaken_protocol_a2a::client::{get_task, send_message, try_cancel_task};
-use awaken_protocol_a2a::{Task, TaskState};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{
     Cancellation, Error, ExecutorCapabilities, Result, RunAttemptExecutor, RunExecutor, Wait,
+    verify_attempt_ownership,
 };
 use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
-use awaken_runtime_contract::resolved::{Backend, ResolvedModelCandidate};
-use awaken_runtime_contract::resume::{
-    PermissionDecision, ResumeCommand, ResumeResult, validate_resume,
-};
+use awaken_runtime_contract::resolved::ResolvedModelCandidate;
+#[cfg(test)]
+use awaken_runtime_contract::resume::ResumeResult;
+use awaken_runtime_contract::resume::{ResumeCommand, validate_resume};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::terminal::{CommittedTerminalRun, deliver_committed_terminal};
+#[cfg(test)]
+use awaken_runtime_contract::terminal::CommittedTerminalRun;
 
+mod run_commit;
 mod task_driver;
+mod task_projection;
+mod task_state;
+
 pub use awaken_protocol_a2a::{HttpTransport, Transport};
+use run_commit::*;
+use task_projection::*;
+use task_state::*;
 
 /// Resolves one publication-pinned remote candidate into a live transport.
 ///
@@ -57,45 +73,6 @@ pub trait TransportResolver: Send + Sync {
 /// Drives a remote A2A agent as a [`RunAttemptExecutor`].
 pub struct A2aRunExecutor {
     transport_resolver: Arc<dyn TransportResolver>,
-}
-
-const A2A_TASK_STATE_KEY: &str = "__a2a_task";
-/// The opaque remote identity committed immediately after `message:send` returns.
-/// It is Run-scoped state, so a replacement worker can reattach without sending a
-/// second user message and durable cancellation can address the same remote task.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TaskReference {
-    endpoint: String,
-    task_id: String,
-    context_id: String,
-}
-
-impl TaskReference {
-    fn from_task(endpoint: &str, task: &Task) -> Self {
-        Self {
-            endpoint: endpoint.to_string(),
-            task_id: task.id.clone(),
-            context_id: task.context_id.clone(),
-        }
-    }
-
-    fn validate(self) -> Result<Self> {
-        let missing = [
-            ("endpoint", self.endpoint.as_str()),
-            ("task_id", self.task_id.as_str()),
-            ("context_id", self.context_id.as_str()),
-        ]
-        .into_iter()
-        .find(|(_, value)| value.is_empty())
-        .map(|(name, _)| name);
-        match missing {
-            Some(name) => Err(Error::Execution(format!(
-                "durable A2A task is missing {name}"
-            ))),
-            None => Ok(self),
-        }
-    }
 }
 
 impl A2aRunExecutor {
@@ -148,197 +125,6 @@ fn ensure_supported_narrowing(
     Ok(())
 }
 
-/// The turn's prompt: the concatenated text of the activation's input.
-fn prompt_of(input: &[Message]) -> String {
-    input
-        .iter()
-        .map(Message::text_content)
-        .filter(|t| !t.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-/// The agent's reply from a returned task: its durable artifacts, else the terminal
-/// status message, else the last history message.
-fn task_reply(task: &Task) -> String {
-    let artifacts: Vec<String> = task
-        .artifacts
-        .iter()
-        .map(|a| a.text())
-        .filter(|t| !t.is_empty())
-        .collect();
-    if !artifacts.is_empty() {
-        return artifacts.join("\n");
-    }
-    if let Some(message) = &task.status.message {
-        let text = message.text();
-        if !text.is_empty() {
-            return text;
-        }
-    }
-    task.history.last().map(|m| m.text()).unwrap_or_default()
-}
-
-/// The run's end derived from a task that reached a lifecycle boundary. Do not
-/// collapse every returned task to a natural end: a `failed` remote task is an
-/// execution fault and a `canceled` one is a cancellation. Pollable states remain
-/// indeterminate until the shared task driver reaches a terminal or await boundary
-/// and must never be projected as success (G26).
-fn end_cause_of(state: &TaskState) -> EndCause {
-    match state {
-        TaskState::Completed => EndCause::NaturalEnd,
-        TaskState::Failed => EndCause::Error(Failure::Inference {
-            code: "a2a_task_failed".to_string(),
-            message: "remote A2A task ended in the failed state".to_string(),
-        }),
-        TaskState::Canceled => EndCause::Cancelled,
-        TaskState::Rejected => EndCause::Error(Failure::Inference {
-            code: "a2a_task_rejected".to_string(),
-            message: "remote A2A task ended in the rejected state".to_string(),
-        }),
-        TaskState::Submitted
-        | TaskState::Working
-        | TaskState::InputRequired
-        | TaskState::AuthRequired
-        | TaskState::Unknown => EndCause::Indeterminate,
-    }
-}
-
-fn task_reference_state(reference: &TaskReference) -> Result<StateCommand> {
-    task_reference_cell()
-        .write(reference)
-        .map_err(|error| Error::Execution(error.to_string()))
-}
-
-fn task_reference_cell() -> StateCell<TaskReference> {
-    StateCell::new(Scope::Run, MergePolicy::Disjoint, A2A_TASK_STATE_KEY)
-}
-
-fn decode_task_reference(value: &serde_json::Value) -> Result<TaskReference> {
-    task_reference_cell()
-        .decode(value)
-        .map_err(|error| Error::Execution(error.to_string()))?
-        .validate()
-}
-
-fn clear_task_reference_state() -> StateCommand {
-    task_reference_cell().remove()
-}
-
-fn restored_task_reference(
-    context: &RuntimeRunContext,
-    activation: &RunActivation,
-) -> Result<Option<TaskReference>> {
-    let Some(reader) = &context.reader else {
-        return Ok(None);
-    };
-    for command in reader
-        .committed_state(&activation.thread_id)
-        .into_iter()
-        .rev()
-    {
-        if command.scope != Scope::Run
-            || command.run_id.as_ref() != Some(&activation.run_id)
-            || command.key.0 != A2A_TASK_STATE_KEY
-        {
-            continue;
-        }
-        return match command.action {
-            StateAction::Set(value) => decode_task_reference(&value).map(Some),
-            StateAction::Remove => Ok(None),
-        };
-    }
-    Ok(None)
-}
-
-fn remote_candidate_of(activation: &RunActivation) -> Result<&ResolvedModelCandidate> {
-    let backend = Backend::from_ref(&activation.snapshot.resolved_spec.model_binding.backend_ref);
-    if !matches!(backend, Backend::Remote(_)) {
-        return Err(Error::Execution(
-            "A2A executor received a non-remote backend".to_string(),
-        ));
-    }
-    Ok(&activation.snapshot.resolved_spec.model_binding)
-}
-
-fn endpoint_of(candidate: &ResolvedModelCandidate) -> Result<String> {
-    Backend::from_ref(&candidate.binding().backend_ref)
-        .remote_endpoint()
-        .map(str::to_string)
-        .ok_or_else(|| Error::Execution("A2A executor received a non-remote backend".to_string()))
-}
-
-fn ensure_endpoint(reference: &TaskReference, endpoint: &str) -> Result<()> {
-    if reference.endpoint == endpoint {
-        Ok(())
-    } else {
-        Err(Error::Execution(format!(
-            "durable A2A task belongs to endpoint {:?}, not {:?}",
-            reference.endpoint, endpoint
-        )))
-    }
-}
-
-async fn finish_invalid_task_reference(
-    context: &RuntimeRunContext,
-    activation: &RunActivation,
-    error: Error,
-) -> Result<RunState> {
-    let message = error.to_string();
-    finish_terminal(
-        context,
-        activation,
-        vec![Message::text(
-            MessageId(format!("a2a-state-error-{}", activation.run_id.0)),
-            Role::Assistant,
-            message.clone(),
-        )],
-        EndCause::Error(Failure::Inference {
-            code: "a2a_durable_state_invalid".to_string(),
-            message,
-        }),
-    )
-    .await
-}
-
-fn resume_text(result: &ResumeResult) -> String {
-    match result {
-        ResumeResult::ToolResult(output) => output.text(),
-        ResumeResult::Input(text) => text.clone(),
-        ResumeResult::Permission(PermissionDecision::Allow { note }) => {
-            note.clone().unwrap_or_else(|| "allow".to_string())
-        }
-        ResumeResult::Permission(PermissionDecision::Deny { reason }) => {
-            reason.clone().unwrap_or_else(|| "deny".to_string())
-        }
-    }
-}
-
-fn awaiting_ticket(activation: &RunActivation, task: &Task) -> ResumeTicket {
-    ResumeTicket::new(
-        format!("a2a:{}:{:?}", task.id, task.status.state),
-        activation.run_id.clone(),
-        activation.thread_id.clone(),
-        &activation.snapshot.id.0,
-        &activation.snapshot.resolved_spec.catalog_fingerprint.0,
-        AwaitTarget::RemoteInput {
-            reason: match task.status.state {
-                TaskState::InputRequired => RemoteInputReason::UserInput,
-                TaskState::AuthRequired => RemoteInputReason::ExternalEvent,
-                _ => unreachable!("only input/auth-required tasks await"),
-            },
-            call_id: task.id.clone(),
-        },
-    )
-    .with_delegation_origin(activation.delegation_origin.clone())
-    .with_data_subject(
-        activation
-            .data_subject_id
-            .as_ref()
-            .map(|subject| subject.0.clone()),
-    )
-}
-
 #[async_trait]
 impl RunExecutor for A2aRunExecutor {
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -357,10 +143,10 @@ impl RunExecutor for A2aRunExecutor {
         let Ok(candidate) = remote_candidate_of(&activation) else {
             // Reached without a remote backend — a wiring fault; fail closed.
             let mut messages = activation.input.clone();
-            messages.push(Message::text(
-                MessageId("a2a-err-1".to_string()),
-                Role::Assistant,
-                "backend is not an A2A endpoint".to_string(),
+            messages.push(assistant_message(
+                &context,
+                &activation,
+                "backend is not an A2A endpoint",
             ));
             return finish_terminal(
                 &context,
@@ -386,18 +172,23 @@ impl RunExecutor for A2aRunExecutor {
         {
             return finish_invalid_task_reference(&context, &activation, error).await;
         }
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
             .await
             .map_err(Error::Execution)?;
         let task = match restored {
-            Some(reference) => get_task(transport.as_ref(), &reference.task_id)
-                .await
-                .map_err(|error| Error::Execution(error.to_string()))?,
+            Some(reference) => {
+                verify_attempt_ownership(context.ownership.as_deref()).await?;
+                get_task(transport.as_ref(), &reference.task_id)
+                    .await
+                    .map_err(|error| Error::Execution(error.to_string()))?
+            }
             None => {
                 let prompt = prompt_of(&activation.input);
                 let message_id = format!("a2a-msg-{}", activation.run_id.0);
+                verify_attempt_ownership(context.ownership.as_deref()).await?;
                 let task = match send_message(
                     transport.as_ref(),
                     None,
@@ -410,9 +201,9 @@ impl RunExecutor for A2aRunExecutor {
                     Ok(task) => task,
                     Err(err) => {
                         let mut messages = activation.input.clone();
-                        messages.push(Message::text(
-                            MessageId("a2a-err-1".to_string()),
-                            Role::Assistant,
+                        messages.push(assistant_message(
+                            &context,
+                            &activation,
                             format!("remote agent error: {err}"),
                         ));
                         return finish_terminal(
@@ -440,7 +231,7 @@ impl RunExecutor for A2aRunExecutor {
                 task
             }
         };
-        drive_task(transport, &endpoint, &activation, &context, task).await
+        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
     }
 }
 
@@ -481,6 +272,8 @@ impl RunAttemptExecutor for A2aRunExecutor {
         if let Err(error) = ensure_endpoint(&reference, &endpoint) {
             return finish_invalid_task_reference(&context, &activation, error).await;
         }
+        let text = resume_text(&command.result)?;
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
@@ -490,12 +283,13 @@ impl RunAttemptExecutor for A2aRunExecutor {
             "a2a-resume-{}-{}",
             activation.run_id.0, ticket.correlation_id
         );
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let task = send_message(
             transport.as_ref(),
             None,
             &reference.context_id,
             &message_id,
-            &resume_text(&command.result),
+            &text,
         )
         .await
         .map_err(|error| Error::Execution(error.to_string()))?;
@@ -509,7 +303,7 @@ impl RunAttemptExecutor for A2aRunExecutor {
             ))?],
         )
         .await?;
-        drive_task(transport, &endpoint, &activation, &context, task).await
+        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
     }
 
     async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
@@ -519,11 +313,13 @@ impl RunAttemptExecutor for A2aRunExecutor {
             return Ok(());
         };
         ensure_endpoint(&reference, &endpoint)?;
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let transport = self
             .transport_resolver
             .resolve(candidate, &context)
             .await
             .map_err(Error::Execution)?;
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         let task = get_task(transport.as_ref(), &reference.task_id)
             .await
             .map_err(|error| Error::Execution(error.to_string()))?;
@@ -533,130 +329,11 @@ impl RunAttemptExecutor for A2aRunExecutor {
         ) {
             return Ok(());
         }
+        verify_attempt_ownership(context.ownership.as_deref()).await?;
         try_cancel_task(transport.as_ref(), &reference.task_id)
             .await
             .map_err(|error| Error::Execution(error.to_string()))
     }
-}
-
-async fn drive_task(
-    transport: Arc<dyn Transport>,
-    endpoint: &str,
-    activation: &RunActivation,
-    context: &RuntimeRunContext,
-    task: Task,
-) -> Result<RunState> {
-    let task =
-        match task_driver::poll_to_boundary(transport.clone(), task, context.cancellation.as_ref())
-            .await
-        {
-            Ok(task) => task,
-            Err(task_driver::PollError::Cancelled) => {
-                return finish_terminal(context, activation, Vec::new(), EndCause::Cancelled).await;
-            }
-            Err(task_driver::PollError::Timeout) => {
-                return Err(Error::Execution(
-                    "remote A2A task did not reach a boundary in time".to_string(),
-                ));
-            }
-            Err(task_driver::PollError::Client(error)) => {
-                return Err(Error::Execution(error.to_string()));
-            }
-        };
-    let reply = task_reply(&task);
-    let messages = (!reply.is_empty())
-        .then(|| {
-            Message::text(
-                MessageId(format!("a2a-{}-{}", activation.run_id.0, task.id)),
-                Role::Assistant,
-                reply,
-            )
-        })
-        .into_iter()
-        .collect();
-    match task.status.state {
-        TaskState::InputRequired | TaskState::AuthRequired => {
-            let reference = TaskReference::from_task(endpoint, &task);
-            commit_boundary(
-                context,
-                activation,
-                RunDisposition::awaiting(awaiting_ticket(activation, &task)),
-                messages,
-                vec![task_reference_state(&reference)?],
-            )
-            .await?;
-            Ok(RunState::Awaiting)
-        }
-        TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected => {
-            finish_terminal(
-                context,
-                activation,
-                messages,
-                end_cause_of(&task.status.state),
-            )
-            .await
-        }
-        TaskState::Submitted | TaskState::Working | TaskState::Unknown => {
-            unreachable!("the shared task driver returns only a boundary")
-        }
-    }
-}
-
-async fn finish_terminal(
-    context: &RuntimeRunContext,
-    activation: &RunActivation,
-    messages: Vec<Message>,
-    cause: EndCause,
-) -> Result<RunState> {
-    commit_boundary(
-        context,
-        activation,
-        RunDisposition::ended(activation.run_id.clone(), cause.clone()),
-        messages,
-        vec![clear_task_reference_state()],
-    )
-    .await?;
-    Ok(RunState::Ended(cause))
-}
-
-/// Commit one remote lifecycle boundary through the same atomic Run boundary as
-/// Native and ACP. The task reference is therefore never ahead of its Run state.
-async fn commit_boundary(
-    context: &RuntimeRunContext,
-    activation: &RunActivation,
-    disposition: RunDisposition,
-    messages: Vec<Message>,
-    state: Vec<StateCommand>,
-) -> Result<()> {
-    let coordinator = context
-        .commit
-        .as_ref()
-        .ok_or_else(|| Error::Commit("A2A execution requires a CommitCoordinator".to_string()))?;
-    let terminal_cause = match disposition.state() {
-        RunState::Ended(cause) => Some(cause),
-        RunState::Running | RunState::Awaiting => None,
-    };
-    awaken_agent_contract::thread::commit::commit_run(
-        coordinator.as_ref(),
-        &activation.thread_id,
-        disposition,
-        messages,
-        state,
-    )
-    .await
-    .map_err(|error| Error::Commit(error.to_string()))?;
-
-    if let Some(cause) = terminal_cause {
-        let terminal = CommittedTerminalRun {
-            run_id: activation.run_id.clone(),
-            thread_id: activation.thread_id.clone(),
-            cause,
-        };
-        // The shared helper isolates observer failures from the committed
-        // remote Run result and permits recovery redelivery.
-        let _ = deliver_committed_terminal(&context.terminal_observers, &terminal).await;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -673,11 +350,16 @@ mod tests {
         Message as A2aMessage, MessageKind, MessageRole, Part as A2aPart, TaskKind, TaskStatus,
     };
     use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
+    use awaken_runtime_contract::runtime_context::{
+        AttemptOwnershipError, AttemptOwnershipVerifier,
+    };
     use awaken_runtime_contract::snapshot::{
         AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
     };
     use awaken_runtime_contract::terminal::{RunTerminalObserver, RunTerminalObserverError};
+    use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct ScriptedTransport {
         replies: Mutex<std::collections::VecDeque<std::result::Result<Response, String>>>,
@@ -718,7 +400,19 @@ mod tests {
         Ok(Response::new(200, body.as_bytes().to_vec()))
     }
 
-    struct FixedTransportResolver(Arc<dyn Transport>);
+    struct FixedTransportResolver {
+        transport: Arc<dyn Transport>,
+        resolutions: AtomicUsize,
+    }
+
+    impl FixedTransportResolver {
+        fn new(transport: Arc<dyn Transport>) -> Self {
+            Self {
+                transport,
+                resolutions: AtomicUsize::new(0),
+            }
+        }
+    }
 
     #[async_trait]
     impl TransportResolver for FixedTransportResolver {
@@ -727,12 +421,51 @@ mod tests {
             _candidate: &ResolvedModelCandidate,
             _context: &RuntimeRunContext,
         ) -> std::result::Result<Arc<dyn Transport>, String> {
-            Ok(self.0.clone())
+            self.resolutions.fetch_add(1, Ordering::SeqCst);
+            Ok(self.transport.clone())
         }
     }
 
     fn scripted_executor(transport: Arc<ScriptedTransport>) -> A2aRunExecutor {
-        A2aRunExecutor::new(Arc::new(FixedTransportResolver(transport)))
+        A2aRunExecutor::new(Arc::new(FixedTransportResolver::new(transport)))
+    }
+
+    #[derive(Clone, Copy)]
+    enum OwnershipDecision {
+        Current,
+        Lost,
+        Unavailable,
+    }
+
+    struct ScriptedOwnership {
+        decisions: Mutex<VecDeque<OwnershipDecision>>,
+    }
+
+    impl ScriptedOwnership {
+        fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
+            Self {
+                decisions: Mutex::new(decisions.into_iter().collect()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl AttemptOwnershipVerifier for ScriptedOwnership {
+        async fn verify_current(&self) -> std::result::Result<(), AttemptOwnershipError> {
+            match self
+                .decisions
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(OwnershipDecision::Current)
+            {
+                OwnershipDecision::Current => Ok(()),
+                OwnershipDecision::Lost => Err(AttemptOwnershipError::Lost),
+                OwnershipDecision::Unavailable => {
+                    Err(AttemptOwnershipError::Unavailable("authority down".into()))
+                }
+            }
+        }
     }
 
     #[derive(Default)]
@@ -992,7 +725,7 @@ mod tests {
 
     #[test]
     fn prompt_of_joins_inputs_with_newlines_and_drops_empty_text() {
-        // Multi-turn input: the non-empty texts are joined by "\n"; a message whose
+        // Multi-Step input: the non-empty texts are joined by "\n"; a message whose
         // text is empty contributes nothing (not a blank line).
         let input = vec![
             Message::text(MessageId("u0".into()), Role::User, "first"),
@@ -1220,15 +953,21 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_transport_error_ends_with_a2a_error() {
-        // Bind then drop the listener: the port now refuses connections, so the dial
-        // fails and the executor ends on a classified a2a_error (not a panic).
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        drop(listener);
+        // C1: the remote candidate resolves through the test-only fixed resolver.
+        // C2: its first message send returns a deterministic transport error.
+        // E1: execution ends with the classified `a2a_error` terminal cause.
+        // E2: the committed assistant message reports a remote-agent error.
+        // K1: no socket, port reuse, retry, sleep, or second driver participates.
+        // K2: the scripted transport is the existing test seam; production HTTP semantics stay
+        // unchanged. Decision: C1 && C2 => E1 && E2; sibling cases cover successful, HTTP-error,
+        // and response-decoding outcomes.
+        let transport = Arc::new(ScriptedTransport::new(vec![Err(
+            "connection refused".to_string()
+        )]));
         let rec = Arc::new(Rec::default());
-        let state = A2aRunExecutor::over_http()
+        let state = scripted_executor(transport)
             .execute(
-                activation(&format!("a2a:http://{addr}")),
+                activation("a2a:http://remote.invalid"),
                 RuntimeRunContext::new().with_commit(rec.clone()),
             )
             .await
@@ -1461,6 +1200,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a2a_creation_and_polling_require_live_attempt_ownership() {
+        // Causes: the fixtures below establish `a2a creation and polling require live attempt
+        // ownership` with the concrete inputs, state, dependencies, and failure triggers used by
+        // this case.
+        // Constraints/invariants: the current fenced attempt and committed context are
+        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1=attempt authority is absent/current/lost/down;
+        // C2=the task completes in message:send or remains pollable; C3=authority
+        // is lost after creation but before the first GET. Effects: E1=resolve
+        // transport once and send exactly one message; E2=zero resolver/HTTP
+        // calls; E3=retain the one created-task POST but issue zero polling GETs.
+        // Absence is the direct/embedded compatibility path.
+        //
+        // | Rule | Authority sequence       | Task       | Effect |
+        // | O1   | absent                   | completed  | E1     |
+        // | O2   | current                  | completed  | E1     |
+        // | O3   | lost/down                | -          | E2     |
+        // | O4   | current,current,lost     | working    | E3     |
+        for (label, ownership) in [
+            ("O1", None),
+            (
+                "O2",
+                Some(
+                    Arc::new(ScriptedOwnership::new([OwnershipDecision::Current]))
+                        as Arc<dyn AttemptOwnershipVerifier>,
+                ),
+            ),
+        ] {
+            let transport = Arc::new(ScriptedTransport::new(vec![response(
+                r#"{"task":{"kind":"task","id":"owned","contextId":"ctx","status":{"state":"completed"}}}"#,
+            )]));
+            let resolver = Arc::new(FixedTransportResolver::new(transport.clone()));
+            let mut context = RuntimeRunContext::new().with_commit(Arc::new(Rec::default()));
+            context.ownership = ownership;
+            assert_eq!(
+                A2aRunExecutor::new(resolver.clone())
+                    .execute(activation("a2a:http://remote.invalid"), context)
+                    .await
+                    .expect("O1/O2 complete"),
+                RunState::Ended(EndCause::NaturalEnd),
+                "{label}/E1"
+            );
+            assert_eq!(resolver.resolutions.load(Ordering::SeqCst), 1, "{label}/E1");
+            assert_eq!(transport.seen.lock().unwrap().len(), 1, "{label}/E1");
+        }
+
+        for (label, decision) in [
+            ("O3-lost", OwnershipDecision::Lost),
+            ("O3-down", OwnershipDecision::Unavailable),
+        ] {
+            let transport = Arc::new(ScriptedTransport::new(Vec::new()));
+            let resolver = Arc::new(FixedTransportResolver::new(transport.clone()));
+            let context = RuntimeRunContext::new()
+                .with_commit(Arc::new(Rec::default()))
+                .with_ownership(Arc::new(ScriptedOwnership::new([decision])));
+            A2aRunExecutor::new(resolver.clone())
+                .execute(activation("a2a:http://remote.invalid"), context)
+                .await
+                .expect_err("O3 stale authority fails before resolution");
+            assert_eq!(resolver.resolutions.load(Ordering::SeqCst), 0, "{label}/E2");
+            assert!(transport.seen.lock().unwrap().is_empty(), "{label}/E2");
+        }
+
+        let transport = Arc::new(ScriptedTransport::new(vec![response(
+            r#"{"task":{"kind":"task","id":"working","contextId":"ctx","status":{"state":"working"}}}"#,
+        )]));
+        let resolver = Arc::new(FixedTransportResolver::new(transport.clone()));
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(Rec::default()))
+            .with_ownership(Arc::new(ScriptedOwnership::new([
+                OwnershipDecision::Current,
+                OwnershipDecision::Current,
+                OwnershipDecision::Lost,
+            ])));
+        A2aRunExecutor::new(resolver)
+            .execute(activation("a2a:http://remote.invalid"), context)
+            .await
+            .expect_err("O4 ownership loss fences the first poll");
+        assert_eq!(
+            transport
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/v1/a2a/message:send"],
+            "O4/E3"
+        );
+    }
+
+    #[tokio::test]
+    async fn a2a_resume_and_cancel_recheck_between_remote_operations() {
+        // Causes: the fixtures below establish `a2a resume and cancel recheck between remote
+        // operations` with the concrete inputs, state, dependencies, and failure triggers used by
+        // this case.
+        // Constraints/invariants: the current fenced attempt and committed context are
+        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1=a durable input-required task exists; C2=the
+        // replacement authority stays current through resolver/operation or is
+        // lost immediately before send/cancel. Effects: E1=resume sends once;
+        // E2=cancel GETs then cancels once; E3=lost resume sends nothing; E4=lost
+        // cancel performs its already-authorized GET but no cancel POST.
+        // Successful current/absent rules are owned by the existing replacement
+        // resume and durable-cancel tests; this table owns the between-operation
+        // stale rules.
+        //
+        // | Rule | Operation | Authority sequence       | Effect |
+        // | O1   | resume    | current,lost             | E3     |
+        // | O2   | cancel    | current,current,lost     | E4     |
+        let resume_transport = Arc::new(ScriptedTransport::new(vec![response(
+            r#"{"task":{"kind":"task","id":"resume-task","contextId":"resume-ctx","status":{"state":"input-required"}}}"#,
+        )]));
+        let resume_rec = Arc::new(Rec::default());
+        let resume_activation = activation("a2a:http://remote.invalid");
+        let base_resume_context = || {
+            RuntimeRunContext::new()
+                .with_commit(resume_rec.clone())
+                .with_reader(resume_rec.clone())
+        };
+        assert_eq!(
+            scripted_executor(resume_transport.clone())
+                .execute(resume_activation.clone(), base_resume_context())
+                .await
+                .expect("seed resume boundary"),
+            RunState::Awaiting
+        );
+        let ticket = resume_rec
+            .resume_ticket(&resume_activation.run_id)
+            .expect("durable resume ticket");
+        let command = ResumeCommand::from_ticket(&ticket, ResumeResult::Input("more".into()), 0);
+        let stale_resume =
+            base_resume_context().with_ownership(Arc::new(ScriptedOwnership::new([
+                OwnershipDecision::Current,
+                OwnershipDecision::Lost,
+            ])));
+        scripted_executor(resume_transport.clone())
+            .resume(resume_activation, command, stale_resume)
+            .await
+            .expect_err("O1 lost authority fences resume send");
+        assert_eq!(resume_transport.seen.lock().unwrap().len(), 1, "O1/E3");
+
+        let active = r#"{"kind":"task","id":"cancel-task","contextId":"cancel-ctx","status":{"state":"working"}}"#;
+        let cancel_transport = Arc::new(ScriptedTransport::new(vec![
+            response(
+                r#"{"task":{"kind":"task","id":"cancel-task","contextId":"cancel-ctx","status":{"state":"input-required"}}}"#,
+            ),
+            response(active),
+        ]));
+        let cancel_rec = Arc::new(Rec::default());
+        let cancel_activation = activation("a2a:http://remote.invalid");
+        let base_cancel_context = || {
+            RuntimeRunContext::new()
+                .with_commit(cancel_rec.clone())
+                .with_reader(cancel_rec.clone())
+        };
+        assert_eq!(
+            scripted_executor(cancel_transport.clone())
+                .execute(cancel_activation.clone(), base_cancel_context())
+                .await
+                .expect("seed cancellation boundary"),
+            RunState::Awaiting
+        );
+        let stale_cancel =
+            base_cancel_context().with_ownership(Arc::new(ScriptedOwnership::new([
+                OwnershipDecision::Current,
+                OwnershipDecision::Current,
+                OwnershipDecision::Lost,
+            ])));
+        scripted_executor(cancel_transport.clone())
+            .cancel(cancel_activation, stale_cancel)
+            .await
+            .expect_err("O2 lost authority fences cancel POST");
+        assert_eq!(
+            cancel_transport
+                .seen
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|(_, path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/v1/a2a/message:send", "/v1/a2a/tasks/cancel-task"],
+            "O2/E4"
+        );
+    }
+
+    #[tokio::test]
     async fn replacement_executor_reattaches_by_the_committed_task_id() {
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
@@ -1517,6 +1447,21 @@ mod tests {
 
     #[tokio::test]
     async fn replacement_executor_resumes_input_on_the_committed_context() {
+        // Causes: the fixtures below establish `replacement executor` with the concrete inputs,
+        // state, dependencies, and failure triggers used by this case.
+        // Constraints/invariants: the current fenced attempt and committed context are
+        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 a fresh remote task returns InputRequired with
+        // one reply; C2 its durable resume returns Completed with another reply.
+        // Effects: E1 both replies commit in the existing ThreadCommit stream;
+        // E2 C1 owns canonical assistant Step 0; E3 C2 reads that committed
+        // prefix and owns Step 1; E4 the resume addresses the committed context.
+        //
+        // | Rule | first boundary | resume boundary | Effects |
+        // | A1   | InputRequired  | -               | E1+E2  |
+        // | A2   | committed A1   | Completed       | E1+E3+E4 |
         let transport = Arc::new(ScriptedTransport::new(vec![
             response(
                 r#"{"task":{"kind":"task","id":"remote-input","contextId":"ctx-input","status":{"state":"input-required","message":{"kind":"message","messageId":"m","role":"agent","parts":[{"kind":"text","text":"which file?"}]}}}}"#,
@@ -1548,11 +1493,18 @@ mod tests {
 
         assert_eq!(
             scripted_executor(transport.clone())
-                .resume(activation, command, context())
+                .resume(activation.clone(), command, context())
                 .await
                 .expect("replacement resumes"),
             RunState::Ended(EndCause::NaturalEnd)
         );
+        let assistant_steps = rec
+            .committed_messages(&activation.thread_id)
+            .into_iter()
+            .filter(|message| message.role == Role::Assistant)
+            .map(|message| message.id.assistant_step_of(&activation.run_id))
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_steps, [Some(0), Some(1)], "A1-A2/E1-E3");
         let seen = transport.seen.lock().unwrap();
         assert_eq!(seen.len(), 2);
         let body = seen[1].2.as_deref().expect("resume body");
@@ -1726,6 +1678,16 @@ mod tests {
 
     #[test]
     fn durable_reference_and_resume_projection_fail_closed() {
+        // Constraints/invariants: the current fenced attempt and committed context are
+        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
+        // Coverage rationale: `durable reference and resume projection fail closed` is one
+        // independent branch selecting `all output, state, side-effect, error, and terminal
+        // assertions below hold together`; a multi-row decision table is not applicable, and
+        // sibling tests own alternate causes.
+        // Causes: C1 exact non-empty reference; C2 missing/empty/unknown field;
+        // C3 endpoint mismatch; C4 concrete resume result; C5 native Continue.
+        // Effects: E1 typed decode; E2/E3 rejection; E4 payload; E5 no payload.
+        // Rules: C1=>E1; C2=>E2; C1+C3=>E3; C4=>E4; C5=>E5.
         let valid = serde_json::json!({
             "endpoint": "http://remote.invalid",
             "task_id": "task-7",
@@ -1737,22 +1699,34 @@ mod tests {
             let mut invalid = valid.clone();
             invalid.as_object_mut().unwrap().remove(field);
             assert!(decode_task_reference(&invalid).is_err(), "missing {field}");
+
+            let mut empty = valid.clone();
+            empty[field] = serde_json::Value::String(String::new());
+            assert!(decode_task_reference(&empty).is_err(), "empty {field}");
         }
+        let mut unknown = valid.clone();
+        unknown["unexpected"] = serde_json::Value::Bool(true);
+        assert!(decode_task_reference(&unknown).is_err(), "unknown field");
         assert!(ensure_endpoint(&reference, "http://other.invalid").is_err());
 
-        assert_eq!(resume_text(&ResumeResult::Input("input".into())), "input");
+        assert_eq!(
+            resume_text(&ResumeResult::Input("input".into())).unwrap(),
+            "input"
+        );
         assert_eq!(
             resume_text(&ResumeResult::ToolResult(
                 awaken_runtime_contract::tool::ToolOutput::ok("call", "tool")
-            )),
+            ))
+            .unwrap(),
             "tool"
         );
-        assert_eq!(resume_text(&ResumeResult::allow()), "allow");
-        assert_eq!(resume_text(&ResumeResult::deny(None)), "deny");
+        assert_eq!(resume_text(&ResumeResult::allow()).unwrap(), "allow");
+        assert_eq!(resume_text(&ResumeResult::deny(None)).unwrap(), "deny");
         assert_eq!(
-            resume_text(&ResumeResult::deny(Some("because".into()))),
+            resume_text(&ResumeResult::deny(Some("because".into()))).unwrap(),
             "because"
         );
+        assert!(resume_text(&ResumeResult::Continue).is_err(), "C5/E5");
     }
 
     fn resume_command(activation: &RunActivation) -> ResumeCommand {
@@ -1767,6 +1741,7 @@ mod tests {
                 .catalog_fingerprint
                 .clone(),
             result: ResumeResult::Input("answer".into()),
+            context_messages: Vec::new(),
             now_ms: 0,
         }
     }

@@ -135,6 +135,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
+    awaken_session_contract::validate_agent_tools(&authored_toolsets)?;
     Ok(AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
@@ -592,6 +593,28 @@ mod tests {
         .expect("typed toolset parses");
         assert_eq!(config.toolsets.len(), 1);
         assert_eq!(managed_from_agent_config(&config, false)["tools"], tools);
+    }
+
+    #[test]
+    fn managed_agent_toolset_rejects_unknown_members_before_normalization() {
+        // Cause/effect graph: C1 an official Agent toolset contains a closed-set
+        // member or C2 an unknown name. Effects: E1 C1 reaches the canonical
+        // policy normalizer; E2 C2 is rejected before any lossy projection.
+        // Decision rows: known=>normalize; unknown=>error/no AgentConfig.
+        // Constraint: validation and normalization share the Session-contract
+        // member authority; Config Service cannot admit a parallel tool path.
+        let error = agent_config_from_managed(
+            "invalid-toolset".into(),
+            &json!({
+                "model": "test",
+                "tools": [{
+                    "type": "agent_toolset_20260401",
+                    "configs": [{"name": "parallel_web_search"}]
+                }]
+            }),
+        )
+        .expect_err("unknown Agent-tool member must fail before normalization");
+        assert_eq!(error, "unknown agent tool `parallel_web_search`");
     }
 
     #[test]

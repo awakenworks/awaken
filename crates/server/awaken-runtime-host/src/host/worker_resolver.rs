@@ -13,54 +13,6 @@ pub(super) mod test_support;
 use claimed_session::install_claimed_session_projection;
 pub(crate) use resolver::HostWorkerResolver;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SessionRealizationWorkerEffect {
-    /// Keep the claim parked while the Session Work slot is occupied.
-    Defer,
-    /// Relinquish the claim through the retryable execution-failure path.
-    Relinquish,
-    /// Settle the still-current claim with an absorbing Run failure.
-    Absorb,
-}
-
-const fn session_realization_worker_effect(
-    disposition: awaken_session_contract::SessionRealizationControlDisposition,
-) -> SessionRealizationWorkerEffect {
-    match disposition {
-        awaken_session_contract::SessionRealizationControlDisposition::NotReady => {
-            SessionRealizationWorkerEffect::Defer
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Retryable => {
-            SessionRealizationWorkerEffect::Relinquish
-        }
-        awaken_session_contract::SessionRealizationControlDisposition::Terminal => {
-            SessionRealizationWorkerEffect::Absorb
-        }
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn session_realization_control_disposition_projects_exact_worker_effect() {
-    let selector = kani::any::<u8>() % 3;
-    let (disposition, expected) = match selector {
-        0 => (
-            awaken_session_contract::SessionRealizationControlDisposition::NotReady,
-            SessionRealizationWorkerEffect::Defer,
-        ),
-        1 => (
-            awaken_session_contract::SessionRealizationControlDisposition::Retryable,
-            SessionRealizationWorkerEffect::Relinquish,
-        ),
-        _ => (
-            awaken_session_contract::SessionRealizationControlDisposition::Terminal,
-            SessionRealizationWorkerEffect::Absorb,
-        ),
-    };
-
-    assert_eq!(session_realization_worker_effect(disposition), expected);
-}
-
 #[cfg(test)]
 mod tests {
     use super::claimed_dispatch::adopt_bound_sandbox;
@@ -73,99 +25,275 @@ mod tests {
     use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshotId};
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    /// C1-C3: a cold Worker must derive eager-vs-deferred provisioning only from
-    /// the immutable dispatch envelope. Legacy absence remains eager, an exact
-    /// on-tool-use projection stays sandbox-free during Brain resolution, and a
-    /// malformed projection is rejected by claim admission before any Worker or
-    /// Sandbox effect. Moving C3 earlier preserves fail-closed behavior while
-    /// keeping one projection decoder at the run-ingress contract boundary.
     #[tokio::test]
-    async fn cold_worker_runtime_projection_decision_table() {
+    async fn session_run_reservation_repair_skips_execution_realization() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Cause/effect graph: C1 a complete self-affine Session Run reservation
+        // expires; C2 the queue grants its dedicated recovery claim; C3 no
+        // Session Environment has been realized. Effects: E1 the claim is marked
+        // admission-only; E2 Host resolves the existing environment-free boundary
+        // Worker; E3 no Session Environment or Sandbox side effect is created.
+        // Decision rule R1=C1+C2+C3=>E1+E2+E3. Ordinary and cancellation claims
+        // retain their existing resolver tables in this module.
         use awaken_run_ingress::{Clock, DispatchQueue};
 
         let now = awaken_run_ingress::SystemClock.now_ms();
         let store = Arc::new(
             awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
         );
-        let host = Arc::new(
-            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(store.clone()),
+        let session_id = "reservation-repair";
+        let run_id = "reservation-repair-run";
+        let request = awaken_run_ingress::RunDispatch::new(test_activation(session_id, run_id))
+            .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
+        assert_eq!(
+            store
+                .reserve_session_run(request, now)
+                .await
+                .expect("R1 reserve"),
+            awaken_run_ingress::SessionRunReservationOutcome::Reserved,
+            "R1/C1"
         );
-        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let claimed = store
+            .claim("repair-worker", 1_000, now + 1, &Default::default())
+            .await
+            .expect("R1 recovery claim")
+            .expect("R1 expired reservation is claimable");
+        assert!(claimed.session_activity_admission_required, "R1/E1");
+
+        let storage = tempfile::tempdir().expect("storage");
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_store_dir(storage.path())
+                .with_dispatch_store(store),
+        );
+        HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        }
+        .worker_for_claimed(&claimed)
+        .await
+        .expect("R1/E2 environment-free worker");
+        assert!(
+            host.session_environment(session_id).await.is_none(),
+            "R1/E3"
+        );
+    }
+
+    #[tokio::test]
+    async fn ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker() {
+        // Constraint/Invariant: the authoritative inputs and ownership boundaries
+        // documented here remain the only decision source; no parallel path is admitted.
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        // Cause/effect graph: C1 the local Runtime authority is ephemeral; C2 the
+        // parent Session therefore uses direct foreground ingress; C3 an ordinary
+        // child Run is claimed from that same authority's dispatch queue with
+        // parent affinity. Effects: E1 resolution reuses the parent commit,
+        // Environment, and attempt context; E2 it constructs the existing child
+        // boundary Worker without requiring a second per-Session durable ingress.
+        // The durable-parent sibling paths are covered by cold-worker recovery.
+        //
+        // | Rule | Authority | Parent ingress | Claimed Thread | Effect |
+        // |---|---|---|---|---|
+        // | E1 | ephemeral | direct | child != parent | E1+E2 |
+        use awaken_run_ingress::{DispatchQueue as _, WorkerResolver as _};
+
+        let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let parent = awaken_agent_contract::agent::thread::Id("ephemeral-parent".into());
+        let child = awaken_agent_contract::agent::thread::Id("ephemeral-child".into());
+        let run = awaken_agent_contract::agent::run::Id("ephemeral-child-run".into());
+        let parent_ctx = host
+            .ctx_for(&parent.0, None)
+            .await
+            .expect("E1 direct parent context");
+        assert!(parent_ctx.durable_ingress.is_none(), "E1 precondition");
+        let store = host.dispatch_store().expect("ephemeral dispatch authority");
+        store
+            .enqueue(
+                awaken_run_ingress::RunDispatch::new(test_activation(&child.0, &run.0))
+                    .for_session(parent.clone())
+                    .with_session_activity_epoch(7),
+            )
+            .await
+            .expect("E1 child admission");
+        let claimed = store
+            .claim("ephemeral-worker", 1_000, 0, &Default::default())
+            .await
+            .expect("E1 claim")
+            .expect("E1 child work");
         let resolver = HostWorkerResolver {
             host: Arc::downgrade(&host),
         };
 
-        let legacy = claim(&store, "cold-legacy", "run-legacy", "worker-a", now).await;
         resolver
-            .worker_for_claimed(&legacy)
+            .worker_for_claimed(&claimed)
             .await
-            .expect("C1 legacy projection remains eager");
+            .expect("E1/E2 child boundary resolution");
+    }
+
+    #[tokio::test]
+    async fn claimed_root_worker_is_independent_from_foreground_delivery_durability() {
+        // Decision rule: execute every reachable cause partition documented here and
+        // require its stated effects, including each fail-closed outcome.
+        // Cause/effect graph: C1 foreground delivery is direct or durable; C2
+        // this process is a local execution owner or coordinator-only; C3 a root
+        // continuation has already been accepted into the dispatch queue.
+        // Effects: E1 direct foreground remains non-durable; E2 a local direct
+        // Session exposes and executes through its canonical claimed Worker; E3
+        // durable foreground and claim resolution share the exact Worker `Arc`;
+        // E4 coordinator-only resolution rejects before constructing a context.
+        // Constraint: child-affinity construction is distinct and remains owned
+        // by `ephemeral_parent_routes_a_coordinated_child_through_the_boundary_worker`.
+        //
+        // | Rule | Foreground | Local owner | Claimed root | Effect |
+        // |---|---|---|---|---|
+        // | R1 | direct | yes | yes | E1+E2 |
+        // | R2 | durable | yes | no | E3 |
+        // | R3 | durable | no | yes | E4 |
+        use awaken_run_ingress::{Clock as _, DispatchQueue as _, WorkerResolver as _};
+
+        let ephemeral = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
+        let coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+            Arc::new(crate::coordination::RecordingSessionAgentCoordination::default());
+        crate::ManagedHost::new(ephemeral.clone())
+            .install_agent_coordination_application(Arc::downgrade(&coordination))
+            .expect("R1 coordination authority");
+        let session_id = "ephemeral-report-root";
+        let direct = ephemeral
+            .ctx_for(session_id, None)
+            .await
+            .expect("R1 direct context");
+        assert!(!direct.durable, "R1/E1");
+        assert!(direct.durable_ingress.is_none(), "R1/E1");
+
+        let child_run = RunId("reported-child-run".into());
+        let report_id = MessageId::agent_thread_report(&child_run);
+        ephemeral
+            .continue_session_agent_report(
+                awaken_session_contract::SessionAgentReportContinuation {
+                    session_id: session_id.into(),
+                    source_thread_id: ThreadId("reported-child-thread".into()),
+                    source_run_id: child_run,
+                    session_activity_epoch: 7,
+                    message: Message::text(report_id.clone(), Role::User, "child report"),
+                },
+            )
+            .await
+            .expect("R1 queue root continuation");
+        let ephemeral_store = ephemeral.dispatch_store().expect("R1 dispatch authority");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let claimed = ephemeral_store
+            .claim(
+                ephemeral.dispatch_owner(),
+                awaken_run_ingress::DEFAULT_LEASE_MS,
+                now,
+                &Default::default(),
+            )
+            .await
+            .expect("R1 claim root continuation")
+            .expect("R1 root continuation is runnable");
+        let ephemeral_resolver = HostWorkerResolver {
+            host: Arc::downgrade(&ephemeral),
+        };
+        let worker = ephemeral_resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("R1/E2 resolve direct Session claim");
+        let resident = ephemeral
+            .session_slots
+            .read(session_id, |slot| slot.runtime.clone())
+            .flatten()
+            .expect("R1 resident Session context");
+        assert!(Arc::ptr_eq(&worker, &resident.claimed_worker), "R1/E2");
+        let (_, state) = worker
+            .drive_claimed(claimed, Arc::new(awaken_run_ingress::ManualClock::new(now)))
+            .await
+            .expect("R1/E2 execute root continuation")
+            .expect("R1/E2 root continuation settles");
+        assert!(matches!(state, RunState::Ended(_)), "R1/E2");
         assert!(
-            host.session_environment("cold-legacy").await.is_some(),
-            "C1"
+            ephemeral
+                .committed_messages(session_id)
+                .await
+                .expect("R1 committed transcript")
+                .iter()
+                .any(|message| message.id == report_id),
+            "R1/E2 report reached the root Run"
         );
 
-        let runtime = awaken_run_ingress::SessionRuntimeEnvelope::from_projection(
-            deferred_environment(),
-            Some(Default::default()),
-            Vec::new(),
+        let durable_store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("R2 dispatch store"),
+        );
+        let durable = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub").with_dispatch_store(durable_store),
+        );
+        let durable_thread = ThreadId("durable-claimed-root".into());
+        let durable_ctx = durable
+            .ctx_for(&durable_thread.0, None)
+            .await
+            .expect("R2 durable context");
+        let durable_ingress = durable_ctx
+            .durable_ingress
+            .as_ref()
+            .expect("R2 durable foreground ingress");
+        assert!(durable_ctx.durable, "R2 precondition");
+        assert!(
+            Arc::ptr_eq(
+                &durable_ctx.claimed_worker,
+                &durable_ingress.worker_handle()
+            ),
+            "R2/E3 durable ingress owns the canonical claimed Worker"
+        );
+        let durable_resolver = HostWorkerResolver {
+            host: Arc::downgrade(&durable),
+        };
+        let resolved = durable_resolver
+            .worker_for(&durable_thread, None)
+            .await
+            .expect("R2 resolve resident durable worker");
+        assert!(
+            Arc::ptr_eq(&resolved, &durable_ctx.claimed_worker),
+            "R2/E3 resolver reuses the same Worker Arc"
+        );
+
+        let coordinator_store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+                .expect("R3 dispatch store"),
+        );
+        let coordinator = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_coordinator_dispatch_store(coordinator_store.clone()),
+        );
+        let coordinator_thread = "coordinator-only-claimed-root";
+        let coordinator_claim = claim(
+            &coordinator_store,
+            coordinator_thread,
+            "coordinator-only-run",
+            "remote-worker",
+            now,
         )
-        .expect("encode runtime projection");
-        store
-            .enqueue(
-                awaken_run_ingress::RunDispatch::new(test_activation(
-                    "cold-deferred",
-                    "run-deferred",
-                ))
-                .with_session_runtime(runtime),
-            )
+        .await;
+        let coordinator_resolver = HostWorkerResolver {
+            host: Arc::downgrade(&coordinator),
+        };
+        let error = match coordinator_resolver
+            .worker_for_claimed(&coordinator_claim)
             .await
-            .expect("enqueue deferred projection");
-        let deferred = store
-            .claim("worker-a", 1_000, now, &Default::default())
-            .await
-            .expect("claim deferred projection")
-            .expect("deferred projection available");
-        resolver
-            .worker_for_claimed(&deferred)
-            .await
-            .expect("C2 cold Brain resolution stays deferred");
+        {
+            Ok(_) => panic!("R3/E4 coordinator-only Host must not resolve locally"),
+            Err(error) => error,
+        };
         assert!(
-            host.session_environment("cold-deferred").await.is_none(),
-            "C2"
+            error.to_string().contains("coordinator-only Host"),
+            "R3/E4: {error}"
         );
         assert!(
-            host.session_slots
-                .read("cold-deferred", |slot| slot.deferred_executor.is_some()
-                    && slot.tools.as_ref().is_some_and(|tools| {
-                        tools == &awaken_session_contract::SessionToolConfiguration::default()
-                    }))
-                .unwrap_or(false),
-            "C2"
-        );
-
-        store
-            .enqueue(
-                awaken_run_ingress::RunDispatch::new(test_activation(
-                    "cold-invalid",
-                    "run-invalid",
-                ))
-                .with_session_runtime(awaken_run_ingress::SessionRuntimeEnvelope::new("{")),
-            )
-            .await
-            .expect("enqueue invalid projection");
-        let error = store
-            .claim("worker-a", 1_000, now, &Default::default())
-            .await
-            .expect_err("C3 malformed runtime projection must fail claim admission");
-        assert!(
-            error
-                .to_string()
-                .contains("Session runtime credential projection is invalid")
-        );
-        assert!(
-            host.session_environment("cold-invalid").await.is_none(),
-            "C3"
+            coordinator
+                .session_slots
+                .read(coordinator_thread, |slot| slot.runtime.is_none())
+                .unwrap_or(true),
+            "R3/E4 rejects before context construction"
         );
     }
 
@@ -275,9 +403,152 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("incomplete Agent publication closure"),
+                .contains("invalid Agent publication closure"),
             "D2/E2: {error}"
         );
+    }
+
+    #[tokio::test]
+    async fn claimed_root_cache_is_bound_to_the_exact_dispatch_publication_closure() {
+        // Cause/effect graph: C1 an unclaimed warm context exists; C2 a claim
+        // carries the same root but a different unversioned child publication;
+        // C3 run/owner/lease epoch change while the publication closure and
+        // effective model remain identical; C4 only the per-run effective model
+        // changes. Effects: E1 C1+C2 rebuilds instead of inheriting the warm
+        // catalog source; E2 the cache records exactly the frozen root/non-root
+        // publications and effective fallback model captured by Runtime plugins;
+        // E3 C3 reuses that Runtime; E4 C4 rebuilds it. Constraints: claim and
+        // lease identity remain attempt context, while publication/model inputs
+        // are Runtime construction inputs. Rules K1=C1+C2=>E1+E2,
+        // K2=C3=>E3, K3=C4=>E4.
+        use awaken_run_ingress::{Clock, DispatchQueue};
+        use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+
+        let child_v1 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+            .instructions("catalog v1")
+            .model(ModelBinding::new("test", "model", "native"))
+            .fingerprint("researcher-v1")
+            .build();
+        let child_v2 = awaken_runtime_contract::ExecutableAgentSnapshot::builder("researcher")
+            .instructions("claimed v2")
+            .model(ModelBinding::new("test", "model", "native"))
+            .fingerprint("researcher-v2")
+            .build();
+        let mut activation = test_activation("claimed-cache", "run-claimed-cache");
+        activation.snapshot.resolved_spec.plugin_config.agent = AgentBindings {
+            delegates: vec![AgentDelegateBinding {
+                agent_id: AgentId("researcher".into()),
+                source_revision: None,
+                recursive_self: false,
+            }],
+            ..Default::default()
+        };
+        activation.snapshot.resolved_spec.model_candidates = vec![
+            awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+                "test",
+                "alternate-model",
+                "native",
+            )),
+        ];
+        activation
+            .snapshot
+            .recompute_fingerprint()
+            .expect("coherent root fixture");
+        let root = activation.snapshot.clone();
+        let catalog = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([child_v1])
+            .expect("warm catalog source");
+        let store = Arc::new(
+            awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+        );
+        let host = Arc::new(
+            SharedHost::new(Arc::new(AdoptionModel), "stub")
+                .with_dispatch_store(store.clone())
+                .with_agent_publications(Arc::new(catalog)),
+        );
+        let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+        let warm = host
+            .ctx_for_snapshot_with_sandbox("claimed-cache", Some("agent-a"), Some(root), None)
+            .await
+            .expect("K1 warm unclaimed context");
+        let request = awaken_run_ingress::RunDispatch::new(activation)
+            .with_agent_publications(vec![child_v2]);
+        store.enqueue(request).await.expect("enqueue K1");
+        let now = awaken_run_ingress::SystemClock.now_ms();
+        let claimed = store
+            .claim("worker-a", 30_000, now, &Default::default())
+            .await
+            .expect("claim K1")
+            .expect("K1 available");
+        let expected_identity = RuntimePublicationIdentity::from_publications(
+            &claimed.request.activation.snapshot,
+            &claimed.request.agent_publications,
+            claimed.request.activation.effective_model_ref(),
+        );
+        let resolver = HostWorkerResolver {
+            host: Arc::downgrade(&host),
+        };
+        resolver
+            .worker_for_claimed(&claimed)
+            .await
+            .expect("K1 claimed resolve");
+        let claimed_ctx = host
+            .session_slots
+            .read("claimed-cache", |slot| slot.runtime.clone())
+            .flatten()
+            .expect("K1 claimed context resident");
+        assert!(!Arc::ptr_eq(&warm, &claimed_ctx), "K1/E1");
+        assert_eq!(
+            claimed_ctx.runtime_publication_identity.as_ref(),
+            Some(&expected_identity),
+            "K1/E2"
+        );
+        let reclaimed = store
+            .claim("worker-b", 30_000, now + 31_000, &Default::default())
+            .await
+            .expect("K2 reclaim")
+            .expect("K2 expired claim available");
+        resolver
+            .worker_for_claimed(&reclaimed)
+            .await
+            .expect("K2 same publications under a different claim");
+        let retried = host
+            .session_slots
+            .read("claimed-cache", |slot| slot.runtime.clone())
+            .flatten()
+            .expect("K2 context resident");
+        assert!(Arc::ptr_eq(&claimed_ctx, &retried), "K2/E3");
+
+        store
+            .settle(
+                &reclaimed.lease.run_id,
+                reclaimed.lease.epoch,
+                awaken_run_ingress::DispatchOutcome::Done,
+                &[],
+            )
+            .await
+            .expect("settle K2");
+        let mut changed_model_request = reclaimed.request;
+        changed_model_request.activation.run_id = RunId("run-claimed-cache-model".into());
+        changed_model_request.activation.model_ref_override = Some("alternate-model".into());
+        store
+            .enqueue(changed_model_request)
+            .await
+            .expect("enqueue K3");
+        let changed_model = store
+            .claim("worker-c", 30_000, now + 32_000, &Default::default())
+            .await
+            .expect("claim K3")
+            .expect("K3 dispatch available");
+        resolver
+            .worker_for_claimed(&changed_model)
+            .await
+            .expect("K3 effective-model change");
+        let model_changed_ctx = host
+            .session_slots
+            .read("claimed-cache", |slot| slot.runtime.clone())
+            .flatten()
+            .expect("K3 context resident");
+        assert!(!Arc::ptr_eq(&retried, &model_changed_ctx), "K3/E4");
     }
 
     /// D1-D5: durable lazy placement is fenced by the current dispatch claim.
@@ -403,7 +674,7 @@ mod tests {
     struct RecordingMcpRealizer {
         calls: std::sync::Mutex<Vec<&'static str>>,
         fail_stage: std::sync::atomic::AtomicBool,
-        required_runtime: Option<(std::sync::Weak<SharedHost>, String)>,
+        required_physical_environment: Option<(std::sync::Weak<SharedHost>, String)>,
     }
 
     #[async_trait::async_trait]
@@ -414,16 +685,18 @@ mod tests {
         ) -> Result<awaken_session_contract::McpRealizationReceipt, awaken_session_contract::RunError>
         {
             self.calls.lock().unwrap().push("stage");
-            if let Some((host, thread)) = &self.required_runtime {
-                let resident = host.upgrade().is_some_and(|host| {
+            if let Some((host, thread)) = &self.required_physical_environment {
+                let physical_only = host.upgrade().is_some_and(|host| {
                     host.session_slots
-                        .read(thread, |slot| slot.runtime.is_some())
+                        .read(thread, |slot| {
+                            slot.environment.is_some() && slot.runtime.is_none()
+                        })
                         .unwrap_or(false)
                 });
-                if !resident {
+                if !physical_only {
                     return Err(awaken_session_contract::RunError::classified(
-                        "test_session_runtime_missing",
-                        "claimed MCP stage ran before its immutable Agent snapshot opened the Session",
+                        "test_session_physical_environment_missing",
+                        "claimed MCP stage requires the physical Environment but no parent Runtime",
                     ));
                 }
             }
@@ -468,9 +741,9 @@ mod tests {
          * Run carries its exact immutable snapshot and non-default backend
          * projection; C3 its Session runtime envelope contains a sandbox-stdio
          * MCP stage; C4 the Session has no resident Runtime/Environment. Effects:
-         * E1 open the canonical Session Runtime from the claimed snapshot before
-         * MCP staging; E2 stage and publish the exact MCP generation; E3 rebuild
-         * the Runtime after publication invalidates its pre-stage projection;
+         * E1 open only the physical Session Environment from the claimed snapshot
+         * before MCP staging; E2 stage and publish the exact MCP generation; E3
+         * build the root Runtime once after publication, never as stage substrate;
          * E4 never consult or synthesize a second publication source. Rule S1:
          * C1+C2+C3+C4=>E1+E2+E3+E4. The adjacent malformed-envelope and stale-
          * claim rules retain fail-closed coverage for invalid authority. */
@@ -482,7 +755,7 @@ mod tests {
         );
         let thread = "cold-stdio-recovery";
         let realizer = Arc::new(RecordingMcpRealizer {
-            required_runtime: Some((Arc::downgrade(&host), thread.into())),
+            required_physical_environment: Some((Arc::downgrade(&host), thread.into())),
             ..Default::default()
         });
         let _managed = crate::ManagedHost::new(host.clone())
@@ -842,6 +1115,11 @@ mod tests {
 
     #[tokio::test]
     async fn resource_manifest_must_match_the_durable_execution_scope() {
+        // Test design. Causes: C1 a claim's execution scope is workspace-b while
+        // its frozen Resource manifest names workspace-a. Effects: E1 resolution
+        // fails before sandbox creation; E2 no mismatched manifest is installed.
+        // Constraint/Invariant: durable execution scope owns Resource tenancy.
+        // Decision rule: exercise the unequal-scope partition and require E1/E2.
         let storage = tempfile::tempdir().expect("storage");
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
@@ -868,6 +1146,7 @@ mod tests {
             cancellation_requested: false,
             pending: Vec::new(),
             recovered: false,
+            session_activity_admission_required: false,
             sandbox: None,
             assignment: None,
         };
@@ -890,6 +1169,11 @@ mod tests {
 
     #[tokio::test]
     async fn malformed_resource_manifest_is_rejected_before_sandbox_creation() {
+        // Test design. Causes: C1 a scope-matched claim carries malformed manifest
+        // JSON. Effects: E1 resolution rejects it; E2 sandbox creation and Resource
+        // projection remain untouched. Constraint/Invariant: manifest validation
+        // precedes every live effect. Decision rule: exercise malformed input and
+        // require fail-closed zero creation.
         let storage = tempfile::tempdir().expect("storage");
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
@@ -918,6 +1202,7 @@ mod tests {
             cancellation_requested: false,
             pending: Vec::new(),
             recovered: false,
+            session_activity_admission_required: false,
             sandbox: None,
             assignment: None,
         };
@@ -1546,6 +1831,11 @@ mod tests {
 
     #[tokio::test]
     async fn cancellation_resolution_does_not_touch_an_invalid_sandbox_binding() {
+        // Test design. Causes: C1 a cancellation-only claim carries an invalid
+        // opaque sandbox binding. Effects: E1 cancellation resolves without
+        // parsing/adopting that binding; E2 no sandbox side effect occurs.
+        // Constraint/Invariant: terminal control does not require execution
+        // realization. Decision rule: exercise C1 and require control-only success.
         let storage = tempfile::tempdir().expect("storage");
         let host = Arc::new(
             SharedHost::new(Arc::new(AdoptionModel), "stub").with_store_dir(storage.path()),
@@ -1591,6 +1881,7 @@ mod tests {
             cancellation_requested: true,
             pending: Vec::new(),
             recovered: false,
+            session_activity_admission_required: false,
             sandbox: Some("this is deliberately not a sandbox handle".to_string()),
             assignment: None,
         };

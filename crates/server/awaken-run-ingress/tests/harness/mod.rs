@@ -51,6 +51,12 @@ pub const SNAP: &str = "snapshot-1";
 pub const THREAD: &str = "thread-1";
 pub const TICKET: &str = "ticket-1";
 
+/// One deterministic edge clock shared by claim, renewal, ownership checks, and
+/// settlement in a direct Worker drive.
+pub fn clock(now_ms: u64) -> Arc<dyn awaken_run_ingress::Clock> {
+    Arc::new(awaken_run_ingress::ManualClock::new(now_ms))
+}
+
 /// Always answers with fixed text — a fresh run ends naturally in one step.
 struct TextLlm(&'static str);
 #[async_trait::async_trait]
@@ -350,6 +356,7 @@ pub fn pending(
         correlation_id: correlation.to_string(),
         available_at_ms: None,
         result,
+        context_messages: Vec::new(),
     }
 }
 
@@ -586,6 +593,7 @@ pub struct FlakyDispatchStore {
     inner: Arc<awaken_run_ingress::MemoryDispatchStore>,
     fail_claims: AtomicUsize,
     claim_attempts: AtomicUsize,
+    renewal_attempts: AtomicUsize,
     fail_retry_exhaustion_claims: AtomicUsize,
     retry_exhaustion_claim_attempts: AtomicUsize,
 }
@@ -598,6 +606,7 @@ impl FlakyDispatchStore {
             inner: Arc::new(awaken_run_ingress::MemoryDispatchStore::new()),
             fail_claims: AtomicUsize::new(fail_claims),
             claim_attempts: AtomicUsize::new(0),
+            renewal_attempts: AtomicUsize::new(0),
             fail_retry_exhaustion_claims: AtomicUsize::new(0),
             retry_exhaustion_claim_attempts: AtomicUsize::new(0),
         }
@@ -617,6 +626,12 @@ impl FlakyDispatchStore {
     /// Total ordinary queue claims, including injected failures and empty polls.
     pub fn claim_attempts(&self) -> usize {
         self.claim_attempts.load(Ordering::SeqCst)
+    }
+
+    /// Total exact-claim renewal writes, used to prove one renewal task owns a
+    /// Pool claim across resolver-to-Worker handoff.
+    pub fn renewal_attempts(&self) -> usize {
+        self.renewal_attempts.load(Ordering::SeqCst)
     }
 
     pub fn retry_exhaustion_claim_attempts(&self) -> usize {
@@ -727,6 +742,7 @@ impl awaken_run_ingress::DispatchQueue for FlakyDispatchStore {
         lease_ms: u64,
         now_ms: u64,
     ) -> Result<bool, awaken_run_ingress::DispatchError> {
+        self.renewal_attempts.fetch_add(1, Ordering::SeqCst);
         self.inner
             .renew_lease(run_id, owner, lease_ms, now_ms)
             .await
@@ -919,6 +935,7 @@ pub async fn assert_pending_revision_cas<S: awaken_run_ingress::Inbox>(store: &S
         correlation_id: TICKET.to_string(),
         available_at_ms: None,
         result,
+        context_messages: Vec::new(),
     };
     store
         .append(input(ResumeResult::Input("a".to_string())))
@@ -973,6 +990,7 @@ pub async fn assert_cross_thread_outbox<S: awaken_run_ingress::Dispatch>(store: 
         thread_id: target.clone(),
         correlation_id: "c2".to_string(),
         available_at_ms: None,
+        context_messages: Vec::new(),
         result: ResumeResult::Input("hi".to_string()),
     };
 
@@ -1008,6 +1026,7 @@ pub async fn assert_message_idempotency_conflicts<S: awaken_run_ingress::Dispatc
         thread_id: ThreadId("thread-idempotency".to_string()),
         correlation_id: "correlation-idempotency".to_string(),
         available_at_ms: None,
+        context_messages: Vec::new(),
         result: ResumeResult::Input(content.to_string()),
     };
 
@@ -1102,6 +1121,7 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
             correlation_id: TICKET.to_string(),
             available_at_ms: Some(1_000),
             result: ResumeResult::allow(),
+            context_messages: Vec::new(),
         })
         .await
         .unwrap();
@@ -1158,6 +1178,7 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S
                 thread_id: ThreadId(THREAD.to_string()),
                 correlation_id: TICKET.to_string(),
                 available_at_ms: Some(available_at),
+                context_messages: Vec::new(),
                 result: ResumeResult::Input("future".to_string()),
             })
             .await
@@ -1299,6 +1320,18 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// fenced Done settlement, including across a running lease's expiry. Every
 /// backend must match.
 pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
+    // Cause/effect graph: C1 row is Pending/Leased/Awaiting/Done; C2 cancellation
+    // is absent/persisted; C3 claim epoch is current/stale. Effects: E1 the
+    // claim-fenced guard exposes the same cancellation bit as the claimed row;
+    // E2 cancellation remains claimable until Done; E3 a revoked epoch cannot
+    // commit/settle; E4 Done is terminal and idempotent.
+    //
+    // | Rule | State | Cancel | Claim | Effect |
+    // |---|---|---|---|---|
+    // | C1 | Leased | no | current | guard false |
+    // | C2 | Pending/Awaiting | yes | current | E1+E2, guard true |
+    // | C3 | Leased then cancelled | yes | stale | E3 |
+    // | C4 | Done | any | any | E4 |
     use awaken_run_ingress::RunDispatch;
     let thread = Some(ThreadId(THREAD.to_string()));
 
@@ -1332,6 +1365,13 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .unwrap()
         .expect("cancellation intent is claimable");
     assert!(cancelled.cancellation_requested);
+    let cancelled_guard = store
+        .lock_commit_epoch(&awaken_run_ingress::RunClaim::from(&cancelled.lease))
+        .await
+        .unwrap()
+        .expect("C2 current cancellation claim has a guard");
+    assert!(cancelled_guard.cancellation_requested(), "C2/E1");
+    drop(cancelled_guard);
     store
         .settle(
             &RunId("run-1".to_string()),
@@ -1358,6 +1398,13 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap()
         .expect("running owner");
+    let live_guard = store
+        .lock_commit_epoch(&awaken_run_ingress::RunClaim::from(&old_owner.lease))
+        .await
+        .unwrap()
+        .expect("C1 current ordinary claim has a guard");
+    assert!(!live_guard.cancellation_requested(), "C1/E1");
+    drop(live_guard);
     assert_eq!(
         store.cancel(&RunId("run-2".to_string())).await.unwrap(),
         thread,
@@ -1377,6 +1424,13 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
         .unwrap()
         .expect("revoked cancellation intent is immediately recovered");
     assert!(reclaimed.cancellation_requested);
+    let reclaimed_guard = store
+        .lock_commit_epoch(&awaken_run_ingress::RunClaim::from(&reclaimed.lease))
+        .await
+        .unwrap()
+        .expect("C2 reclaimed cancellation has a guard");
+    assert!(reclaimed_guard.cancellation_requested(), "C2/E1");
+    drop(reclaimed_guard);
     assert!(
         reclaimed.lease.epoch >= 3,
         "revoke and re-claim both advance the fence"
@@ -1659,8 +1713,9 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
     assert!(store.list_dispatches().await.unwrap()[0].sandbox_bound);
 }
 
-/// Shared spec for the daemon's bulk lease renewal (ADR-0024): renewing an owner's
-/// in-flight leases keeps them from being reclaimed. Every backend matches.
+/// Shared compatibility spec for the signed remote-owner bulk-renewal transport
+/// adapter (ADR-0024 D3): renewing that owner's claims prevents remote recovery.
+/// Local Service/Pool execution uses the exact-claim guard instead.
 pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunDispatch;
 
@@ -1749,10 +1804,9 @@ pub async fn assert_relinquish_claim<S: awaken_run_ingress::Dispatch>(store: &S)
     assert_eq!(leased[0].attempt_count, 0, "R2");
 }
 
-/// Shared spec for the near-expiry heartbeat (ADR-0024, O3): a bulk renewal only
-/// touches leases within half a lease of expiring, so a fresh claim — a full lease
-/// out — is left untouched and its original lease still expires on schedule. Every
-/// backend matches.
+/// Shared spec for the remote-owner bulk adapter's near-expiry policy (ADR-0024
+/// D3): it touches only leases within half a lease of expiry, so a fresh claim is
+/// left unchanged. Every backend must preserve this transport compatibility.
 pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunDispatch;
 
@@ -2137,11 +2191,18 @@ pub async fn assert_dedupe_ignores_dead_lettered<S: awaken_run_ingress::Dispatch
     );
 }
 
-/// Shared spec (single-writer-per-thread, ADR-0022, on the WAKE path): an awaiting run
-/// with due input is NOT woken while its own thread already has another run in
-/// flight — waking it would put two concurrent runs on one thread. The suppressed
-/// run becomes claimable only once the in-flight run settles and frees the thread.
-/// Every backend must match.
+/// ADR-0022 wake-path cause/effect graph. C1 one Run is Awaiting; C2 a fresh peer
+/// is Pending; C3 terminal cancellation claims that peer; C4 matching input is
+/// delivered to the Awaiting Run; C5 the cancellation claim settles. E1 C2 stays
+/// queued behind C1; E2 cancellation may temporarily own the Thread; E3 C4 cannot
+/// wake C1 while C3 is Running; E4 C5 releases C1 to wake exactly once.
+///
+/// | Rule | Awaiting | Peer | Input | Effect |
+/// |---|---|---|---|---|
+/// | W1 | yes | fresh Pending | none | E1 |
+/// | W2 | yes | cancelled Pending | none | E2 |
+/// | W3 | yes | Running(cancel) | due | E3 |
+/// | W4 | yes | Done | due | E4 |
 pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::Dispatch>(
     store: &S,
 ) {
@@ -2170,7 +2231,9 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         .await
         .unwrap();
 
-    // run-2 (same thread) is claimed and left in flight, so the thread is now busy.
+    // A fresh run-2 stays queued behind run-1. Cancellation is the existing
+    // terminal-control exception that can claim it, constructing a reachable
+    // Running-peer state without violating ordinary admission.
     store
         .enqueue(RunDispatch::new(activation("run-2")))
         .await
@@ -2180,8 +2243,21 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
             .claim("w", 10_000, 1, &Default::default())
             .await
             .unwrap()
+            .is_none(),
+        "W1: a fresh peer stays queued behind Awaiting"
+    );
+    store
+        .cancel(&RunId("run-2".to_string()))
+        .await
+        .unwrap()
+        .expect("W2 cancellation target exists");
+    assert!(
+        store
+            .claim("w", 10_000, 1, &Default::default())
+            .await
+            .unwrap()
             .is_some(),
-        "run-2 claims the free thread"
+        "W2: cancellation may claim past an Awaiting peer"
     );
 
     // Deliver input that answers run-1's await. run-1 is now wakeable *by input* — but
@@ -2203,7 +2279,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
             .await
             .unwrap()
             .is_none(),
-        "the awaiting run is not woken while its thread already runs another",
+        "W3: the awaiting run is not woken while its thread already runs another",
     );
 
     // run-2 settles Done, freeing the thread; now the wake fires and hands run-1 its
@@ -2216,7 +2292,7 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
         .claim("w", 10_000, 3, &Default::default())
         .await
         .unwrap()
-        .expect("the freed thread lets run-1 wake");
+        .expect("W4: the freed thread lets run-1 wake");
     assert_eq!(claimed.request.run_id().0, "run-1");
     assert_eq!(claimed.pending.len(), 1);
     assert_eq!(claimed.pending[0].message_id, "m-wake");

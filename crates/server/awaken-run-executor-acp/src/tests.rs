@@ -1,6 +1,7 @@
 //! End-to-end tests with in-memory fakes: a scripted duplex channel stands in for
 //! the launched CLI — no daemon, no network.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -12,7 +13,7 @@ use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadV
 use awaken_provisioning_contract::{ExitStatus, ProcessHandle, SandboxError, Signal};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, ResolvedSpec};
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{AttemptOwnershipError, RuntimeRunContext};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
@@ -267,7 +268,7 @@ fn only_pre_session_acp_transport_failures_are_retryable() {
 /// A source that scripts a duplex agent: reads the prompt line, emits `frames`.
 struct ScriptedSource {
     frames: Vec<String>,
-    /// When set, `open` fails with this launch fault instead of scripting a turn.
+    /// When set, `open` fails with this launch fault instead of scripting a Run.
     open_error: Option<String>,
 }
 
@@ -305,6 +306,246 @@ impl AgentChannelSource for ScriptedSource {
             expected_capability: None,
         })
     }
+}
+
+#[derive(Clone)]
+enum OwnershipDecision {
+    Current,
+    Lost,
+    Unavailable,
+}
+
+struct ScriptedOwnership {
+    decisions: Mutex<std::collections::VecDeque<OwnershipDecision>>,
+}
+
+impl ScriptedOwnership {
+    fn new(decisions: impl IntoIterator<Item = OwnershipDecision>) -> Self {
+        Self {
+            decisions: Mutex::new(decisions.into_iter().collect()),
+        }
+    }
+}
+
+#[async_trait]
+impl AttemptOwnershipVerifier for ScriptedOwnership {
+    async fn verify_current(&self) -> std::result::Result<(), AttemptOwnershipError> {
+        match self
+            .decisions
+            .lock()
+            .unwrap()
+            .pop_front()
+            .unwrap_or(OwnershipDecision::Current)
+        {
+            OwnershipDecision::Current => Ok(()),
+            OwnershipDecision::Lost => Err(AttemptOwnershipError::Lost),
+            OwnershipDecision::Unavailable => {
+                Err(AttemptOwnershipError::Unavailable("authority down".into()))
+            }
+        }
+    }
+}
+
+struct CountingProcess {
+    polls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl ProcessHandle for CountingProcess {
+    fn id(&self) -> &str {
+        "counting-process"
+    }
+
+    async fn wait(&self) -> std::result::Result<ExitStatus, SandboxError> {
+        Ok(ExitStatus {
+            code: Some(0),
+            signaled: false,
+        })
+    }
+
+    async fn poll(&self) -> std::result::Result<Option<ExitStatus>, SandboxError> {
+        self.polls.fetch_add(1, Ordering::SeqCst);
+        Ok(Some(ExitStatus {
+            code: Some(0),
+            signaled: false,
+        }))
+    }
+
+    async fn signal(&self, _signal: Signal) -> std::result::Result<(), SandboxError> {
+        Ok(())
+    }
+}
+
+struct CountingSource {
+    opens: Arc<AtomicUsize>,
+    prompts: Arc<AtomicUsize>,
+    process_polls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentChannelSource for CountingSource {
+    async fn open(
+        &self,
+        _activation: &RunActivation,
+        _context: &RuntimeRunContext,
+    ) -> std::result::Result<AgentSession, OpenError> {
+        self.opens.fetch_add(1, Ordering::SeqCst);
+        let (ours, mut theirs) = tokio::io::duplex(4096);
+        let prompts = self.prompts.clone();
+        tokio::spawn(async move {
+            let mut prompt = String::new();
+            let mut reader = BufReader::new(&mut theirs);
+            if reader.read_line(&mut prompt).await.is_ok() && !prompt.is_empty() {
+                prompts.fetch_add(1, Ordering::SeqCst);
+            }
+            let _ = theirs
+                .write_all(b"{\"type\":\"message\",\"text\":\"done\"}\n")
+                .await;
+            let _ = theirs
+                .write_all(b"{\"type\":\"turn_end\",\"reason\":\"natural_end\"}\n")
+                .await;
+            let _ = theirs.flush().await;
+        });
+        Ok(AgentSession {
+            channel: Box::new(ours),
+            process: Arc::new(CountingProcess {
+                polls: self.process_polls.clone(),
+            }),
+            codec: Codec::Newline,
+            workspace_cwd: None,
+            mcp_session_servers: Vec::new(),
+            session_model: None,
+            session_mode: None,
+            session_config_options: Vec::new(),
+            expected_capability: None,
+        })
+    }
+}
+
+fn counting_executor() -> (
+    AcpRunExecutor,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+    Arc<AtomicUsize>,
+) {
+    let opens = Arc::new(AtomicUsize::new(0));
+    let prompts = Arc::new(AtomicUsize::new(0));
+    let process_polls = Arc::new(AtomicUsize::new(0));
+    (
+        AcpRunExecutor::new(Arc::new(CountingSource {
+            opens: opens.clone(),
+            prompts: prompts.clone(),
+            process_polls: process_polls.clone(),
+        })),
+        opens,
+        prompts,
+        process_polls,
+    )
+}
+
+#[tokio::test]
+async fn acp_external_steps_recheck_live_attempt_ownership() {
+    // Causes: the fixtures below establish `acp external steps recheck live attempt ownership` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1=authority absent/current/lost/unavailable;
+    // C2=loss occurs before process open, after open but before prompt, or
+    // between two ACP Steps. Effects: E1=open/send exactly once while current;
+    // E2=return attempt error with zero later external calls; E3=reap a process
+    // opened before authority was lost. Absence is the direct/embedded
+    // compatibility topology, never a bypass for a bound authority.
+    //
+    // | Rule | Authority sequence          | Opens | Prompts | Effect |
+    // | O1   | absent/current              | 1     | 1       | E1     |
+    // | O2   | lost/unavailable before open| 0     | 0       | E2     |
+    // | O3   | current -> lost             | 1     | 0       | E2+E3  |
+    // | O4   | current x3 -> lost          | 1     | 1       | E1+E2  |
+    for ownership in [
+        None,
+        Some(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+        ])) as Arc<dyn AttemptOwnershipVerifier>),
+    ] {
+        let (executor, opens, prompts, _) = counting_executor();
+        let mut context =
+            RuntimeRunContext::new().with_commit(Arc::new(RecordingCoordinator::default()));
+        if let Some(ownership) = ownership {
+            context = context.with_ownership(ownership);
+        }
+        assert_eq!(
+            executor
+                .execute(activation_without_session_home(), context)
+                .await
+                .expect("O1"),
+            RunState::Ended(EndCause::NaturalEnd)
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 1, "O1/E1");
+        assert_eq!(prompts.load(Ordering::SeqCst), 1, "O1/E1");
+    }
+
+    for decision in [OwnershipDecision::Lost, OwnershipDecision::Unavailable] {
+        let (executor, opens, prompts, _) = counting_executor();
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(RecordingCoordinator::default()))
+            .with_ownership(Arc::new(ScriptedOwnership::new([decision])));
+        assert!(
+            executor
+                .execute(activation_without_session_home(), context)
+                .await
+                .is_err(),
+            "O2/E2"
+        );
+        assert_eq!(opens.load(Ordering::SeqCst), 0, "O2/E2");
+        assert_eq!(prompts.load(Ordering::SeqCst), 0, "O2/E2");
+    }
+
+    let (executor, opens, prompts, process_polls) = counting_executor();
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(RecordingCoordinator::default()))
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Lost,
+        ])));
+    assert!(
+        executor
+            .execute(activation_without_session_home(), context)
+            .await
+            .is_err(),
+        "O3/E2"
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "O3");
+    assert_eq!(prompts.load(Ordering::SeqCst), 0, "O3/E2");
+    assert!(process_polls.load(Ordering::SeqCst) > 0, "O3/E3");
+
+    use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
+    let inbox = LiveInbox::new();
+    let _ = inbox.offer_as(
+        MessageOrigin::External,
+        Message::text(MessageId("steer".into()), Role::User, "continue"),
+    );
+    let (executor, opens, prompts, _) = counting_executor();
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(RecordingCoordinator::default()))
+        .with_live_inbox(inbox)
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Lost,
+        ])));
+    assert!(
+        executor
+            .execute(activation_without_session_home(), context)
+            .await
+            .is_err(),
+        "O4/E2"
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "O4/E1");
+    assert_eq!(prompts.load(Ordering::SeqCst), 1, "O4/E1");
 }
 
 #[derive(Default)]
@@ -470,6 +711,17 @@ pub(crate) fn activation() -> RunActivation {
     }
 }
 
+fn activation_without_session_home() -> RunActivation {
+    let mut activation = activation();
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::host(ModelBinding::new(
+            "prov",
+            "model",
+            "acp:ownership-probe",
+        ));
+    activation
+}
+
 #[test]
 fn acp_prompt_orders_frozen_policy_context_and_authoritative_input() {
     // Cause/effect graph: frozen instructions (C1), transient backend context
@@ -547,7 +799,7 @@ const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
             *) K=new; printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
           esac;; \
         *'\"id\":3'*) \
-          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"turn:%s\"}}}}\\n' \"$K\"; \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"run:%s\"}}}}\\n' \"$K\"; \
           printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
           exit 0;; \
       esac; \
@@ -555,7 +807,7 @@ const SESSION_CARRY_AGENT: &str = "while IFS= read -r line; do \
 
 #[test]
 fn advertises_remote_abort_and_auth_wait() {
-    // The supervisor interrupts the opaque CLI turn on cancel, and the ACP
+    // The supervisor interrupts the opaque CLI Run on cancel, and the ACP
     // permission flow awaits on an authorization decision (ADR-0055).
     let caps = exec(vec![]).capabilities();
     assert_eq!(caps.cancellation, Cancellation::RemoteAbort);
@@ -593,6 +845,14 @@ async fn resume_requires_history_then_an_active_ticket() {
 
 #[test]
 fn restored_session_is_typed_fail_closed_and_backend_scoped() {
+    // Causes: the fixtures below establish `restored session` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is typed fail closed and backend scoped` and every asserted
+    // state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Decision table for the durable state boundary:
     // C1 absent/removed -> no resume; C2 exact typed identity -> resume;
     // C3 other backend -> no resume; C4 empty or schema-drifted identity -> error.
@@ -643,6 +903,8 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
     }
 
     let exact = run_state(
+        &context,
+        &activation.thread_id,
         &TokenUsage::default(),
         "model",
         &activation.snapshot.resolved_spec.model_binding.backend_ref,
@@ -704,17 +966,31 @@ fn restored_session_is_typed_fail_closed_and_backend_scoped() {
 }
 
 #[test]
-fn an_existing_pending_tool_use_is_not_duplicated() {
+fn pending_tool_use_is_deduplicated_or_minted_in_the_canonical_step_family() {
+    // Causes: the fixtures below establish `pending tool use` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_protocol_acp::PermissionAsk;
 
+    // Cause/effect graph: C1 the ACP permission request's ToolUse is already in
+    // the attempt transcript; C2 it is absent. Effects: E1 C1 appends nothing
+    // and does not consume a Step; E2 C2 appends one canonical assistant Step.
+    //
+    // | Rule | matching ToolUse | Effect |
+    // | P1   | yes              | E1     |
+    // | P2   | no               | E2     |
+    let run = RunId("run-1".into());
     let ask = PermissionAsk {
         tool: "bash".into(),
         call_id: "call-7".into(),
         arguments: serde_json::json!({"cmd": "pwd"}),
     };
     let mut messages = vec![Message {
-        id: MessageId("tool-use".into()),
+        id: MessageId::assistant(&run, 0),
         role: Role::Assistant,
         content: vec![ContentBlock::tool_use(
             "call-7",
@@ -722,48 +998,90 @@ fn an_existing_pending_tool_use_is_not_duplicated() {
             serde_json::json!({"cmd": "pwd"}),
         )],
     }];
-    ensure_pending_tool_use(&RunId("run-1".into()), &mut messages, &ask);
-    assert_eq!(messages.len(), 1);
+    let mut next_step = 1;
+    ensure_pending_tool_use(&run, &mut next_step, &mut messages, &ask);
+    assert_eq!(messages.len(), 1, "P1/E1");
+    assert_eq!(next_step, 1, "P1/E1");
+
+    let absent = PermissionAsk {
+        call_id: "call-8".into(),
+        ..ask
+    };
+    ensure_pending_tool_use(&run, &mut next_step, &mut messages, &absent);
+    assert_eq!(messages.len(), 2, "P2/E2");
+    assert_eq!(messages[1].id, MessageId::assistant(&run, 1), "P2/E2");
+    assert_eq!(next_step, 2, "P2/E2");
 }
 
 #[test]
-fn acp_message_ids_are_replay_stable_and_cross_activation_unique() {
+fn acp_fact_ids_follow_the_role_specific_identity_authority() {
+    // Causes: the fixtures below establish `acp fact ids follow the role specific identity
+    // authority` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph:
-    // C1 same Run + activation namespace + suffix -> E1 same id for replay.
-    // C2 Run differs, C3 activation/turn differs, or C4 suffix differs -> E2
-    // unique id. FMECA FM1: the old Run+wire-sequence key collided when an ACP
-    // permission resume restarted its sequence, causing a real publish_result to
-    // be discarded as a replay; the stable activation+ordinal namespace is the
-    // mitigation.
+    // C1 an assistant cursor starts/replays at the same committed prefix; C2 it
+    // advances; C3 the Run differs; C4 a Tool-result fact has the same/different
+    // activation namespace or suffix. Effects: E1 C1 mints the same canonical
+    // Run/Step id; E2 C2/C3 stay unique; E3 C4 remains stable/unique in ACP's
+    // private non-assistant family and never classifies as an assistant Step.
+    // FMECA FM1: wire sequence restarted on permission resume and collided; the
+    // committed assistant cursor now owns that boundary, while Tool results keep
+    // their activation namespace because they have no assistant Step semantics.
     //
-    // | Rule | C2 | C3 | C4 | Effect |
-    // | ID1  | F  | F  | F  | E1     |
-    // | ID2  | T  | *  | *  | E2     |
-    // | ID3  | F  | T  | *  | E2     |
-    // | ID4  | F  | F  | T  | E2     |
+    // | Rule | role      | Run/cursor or namespace | Effect |
+    // | ID1  | Assistant | same prefix replay      | E1     |
+    // | ID2  | Assistant | next Step / other Run   | E2     |
+    // | ID3  | Tool      | same/different fact key | E3     |
     let run_one = RunId("run-1".into());
     let run_two = RunId("run-2".into());
+    let mut first = 0;
+    let first_zero = take_assistant_message_id(&run_one, &mut first);
+    let first_one = take_assistant_message_id(&run_one, &mut first);
+    let mut replay = 0;
 
     assert_eq!(
-        acp_message_id(&run_one, "initial:0", 1),
-        acp_message_id(&run_one, "initial:0", 1)
+        first_zero,
+        take_assistant_message_id(&run_one, &mut replay),
+        "ID1/E1"
     );
+    assert_eq!(first_zero, MessageId::assistant(&run_one, 0), "ID1/E1");
+    assert_eq!(first_one, MessageId::assistant(&run_one, 1), "ID2/E2");
+    let mut other = 0;
     assert_ne!(
-        acp_message_id(&run_one, "initial:0", 1),
-        acp_message_id(&run_two, "initial:0", 1)
+        first_zero,
+        take_assistant_message_id(&run_two, &mut other),
+        "ID2/E2"
     );
+
+    let tool = acp_tool_message_id(&run_one, "initial:0", 1);
+    assert_eq!(
+        tool,
+        acp_tool_message_id(&run_one, "initial:0", 1),
+        "ID3/E3"
+    );
+    assert_ne!(tool, acp_tool_message_id(&run_one, "resume:0", 1), "ID3/E3");
     assert_ne!(
-        acp_message_id(&run_one, "initial:0", 1),
-        acp_message_id(&run_one, "resume:0", 1)
+        tool,
+        acp_tool_message_id(&run_one, "initial:0", 2),
+        "ID3/E3"
     );
-    assert_ne!(
-        acp_message_id(&run_one, "initial:0", 1),
-        acp_message_id(&run_one, "initial:0", 2)
-    );
+    assert_eq!(tool.assistant_step_of(&run_one), None, "ID3/E3");
 }
 
 #[tokio::test]
 async fn regenerated_approved_tool_projects_as_one_logical_call() {
+    // Causes: the fixtures below establish `regenerated approved tool` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `projects as one logical call` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect/FMECA: C1=the awaiting transcript already owns original call
     // O; C2=replacement ACP emits semantically identical call N; C3=N completes;
     // C4=a later identical call occurs. C1+C2+C3 -> E1 suppress duplicate N use
@@ -778,8 +1096,14 @@ async fn regenerated_approved_tool_projects_as_one_logical_call() {
         arguments: serde_json::json!({"cmd": "echo approved"}),
         allow: true,
     };
-    let mut appender =
-        CollectingAppender::new(run, "permission-resume:0".into(), None, Some(&decision));
+    let mut appender = CollectingAppender::new(
+        run,
+        "permission-resume:0".into(),
+        0,
+        None,
+        None,
+        Some(&decision),
+    );
     appender
         .append(
             1,
@@ -844,7 +1168,7 @@ impl LaunchObserver for RecordingObserver {
 #[tokio::test]
 async fn observer_starts_at_launch_after_startup_acquisition() {
     // Wrapper acquisition belongs to product startup. A run observes only launch
-    // and protocol readiness, so no network/package phase can occur per turn.
+    // and protocol readiness, so no network/package phase can occur per Run.
     let observer = Arc::new(RecordingObserver::default());
     let e = AcpRunExecutor::new(Arc::new(ScriptedSource {
         frames: vec![
@@ -895,8 +1219,19 @@ async fn observer_sees_failed_when_the_launch_faults() {
     );
 }
 
+/// Cause/effect design: C1 ACP emits `working`, `done`, then a natural terminal;
+/// C2 the activation supplies user input `do it`. Effects: E1 the Run ends
+/// NaturalEnd; E2 one commit contains the user message plus one assistant message
+/// with concatenated text; E3 that commit carries the terminal state. Decision
+/// rule D1=C1+C2=>E1+E2+E3.
 #[tokio::test]
-async fn drives_a_turn_commits_messages_and_returns_natural_end() {
+async fn drives_a_step_commits_messages_and_returns_natural_end() {
+    // Causes: the fixtures below establish `drives a step commits messages and` with the concrete
+    // inputs, state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let e = exec(vec![
         r#"{"type":"message","text":"working"}"#.into(),
         r#"{"type":"message","text":"done"}"#.into(),
@@ -925,6 +1260,14 @@ async fn drives_a_turn_commits_messages_and_returns_natural_end() {
 
 #[tokio::test]
 async fn an_empty_natural_end_is_a_provider_failure() {
+    // Causes: the fixtures below establish `an empty natural end` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is a provider failure` and every asserted state transition or
+    // side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     let e = exec(vec![r#"{"type":"turn_end","reason":"natural_end"}"#.into()]);
     let coord = Arc::new(RecordingCoordinator::default());
     let state = e
@@ -945,7 +1288,7 @@ async fn an_empty_natural_end_is_a_provider_failure() {
     );
     assert!(
         !commits[0].messages[1].text_content().is_empty(),
-        "an empty opaque-provider turn must not remain an empty public response"
+        "an empty opaque-provider Run must not remain an empty public response"
     );
 }
 
@@ -1051,10 +1394,22 @@ async fn contiguous_acp_text_chunks_commit_as_one_message_but_tools_break_the_st
 
 #[tokio::test]
 async fn acp_message_id_change_preserves_distinct_assistant_messages() {
-    // Cause/effect table: C1 adjacent chunks without ids remain one legacy
+    // Causes: the fixtures below establish `acp message id change` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 adjacent chunks without ids remain one legacy
     // stream; C2 a new ACP message id starts another message; C3 repeated id
-    // continues it. Effects: E1 diagnostics and deliverables stay distinct,
-    // while E2 token chunks for one deliverable remain coalesced.
+    // continues it. Effects: E1 diagnostics and deliverables stay distinct; E2
+    // token chunks for one deliverable remain coalesced; E3 each new logical
+    // assistant Message receives the next canonical Run/Step id.
+    //
+    // | Rule | previous ACP message id | current id | Effect |
+    // | T1   | absent                  | absent     | E2+E3(step 0) |
+    // | T2   | absent                  | new        | E1+E3(step 1) |
+    // | T3   | same                    | same       | E2, no new Step |
     let e = exec(vec![
         r#"{"type":"message","text":"diagnostic"}"#.into(),
         r#"{"type":"message","text":"deliver","message_id":"026a96a1-698c-472e-9a08-ef52a4530f79"}"#.into(),
@@ -1074,17 +1429,28 @@ async fn acp_message_id_change_preserves_distinct_assistant_messages() {
     assert_eq!(messages.len(), 3, "input, diagnostic, then deliverable");
     assert_eq!(messages[1].text_content(), "diagnostic", "E1");
     assert_eq!(messages[2].text_content(), "deliverable", "E2");
+    let run = RunId("run-1".into());
+    assert_eq!(messages[1].id, MessageId::assistant(&run, 0), "T1/E3");
+    assert_eq!(messages[2].id, MessageId::assistant(&run, 1), "T2-T3/E3");
 }
 
 #[tokio::test]
-async fn live_inbox_steer_folds_into_a_relaunched_turn() {
+async fn live_inbox_steer_folds_into_a_relaunched_run() {
+    // Causes: the fixtures below establish `live inbox steer folds into a relaunched run` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // ADR-0054 P4: a steer message queued on the run's live inbox is drained at the
-    // turn boundary, folded (re-identified) into the transcript, and drives a second
-    // relaunched turn — so steer/redirect reaches an external-CLI run.
+    // Run boundary, folded (re-identified) into the transcript, and drives a second
+    // relaunched Run — so steer/redirect reaches an external-CLI Run.
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
 
     let e = exec(vec![
-        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"message","text":"Run"}"#.into(),
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
     ]);
     let inbox = LiveInbox::new();
@@ -1119,15 +1485,25 @@ async fn live_inbox_steer_folds_into_a_relaunched_turn() {
 
 #[tokio::test]
 async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
+    // Causes: the fixtures below establish `a requested pause awaits the run on a resume ticket`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `a requested pause awaits the run on a resume ticket` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     // ADR-0054 P5/U2: an operator pause requested by the next boundary awaits the ACP
     // run durably — `RunState::Awaiting` on a no-tool `ManualPause` ticket — rather than
-    // ending, even though the turn reached a natural end. The turn's messages commit
+    // ending, even though the Run reached a natural end. The Run's messages commit
     // before the await (clean commit-then-await), mirroring the native engine.
     use awaken_agent_contract::agent::awaiting::AwaitReason;
     use awaken_runtime_contract::pause::PauseSignal;
 
     let e = exec(vec![
-        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"message","text":"Run"}"#.into(),
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
     ]);
     let pause = PauseSignal::new();
@@ -1150,13 +1526,13 @@ async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
     );
     let commits = coord.commits.lock().unwrap();
     assert_eq!(commits.len(), 1, "one commit at the await boundary");
-    // The in-flight turn commits before the await.
+    // The in-flight Run commits before the await.
     assert!(
         commits[0]
             .messages
             .iter()
-            .any(|m| m.text_content() == "turn"),
-        "the turn's assistant text commits before awaiting"
+            .any(|m| m.text_content() == "Run"),
+        "the Run's assistant text commits before awaiting"
     );
     // A resumable no-tool `ManualPause` ticket rode the same commit.
     let ticket = commits[0]
@@ -1173,6 +1549,16 @@ async fn a_requested_pause_awaits_the_run_on_a_resume_ticket() {
 
 #[tokio::test]
 async fn a_pause_commits_in_flight_steer_before_awaiting() {
+    // Causes: the fixtures below establish `a pause commits in flight steer before awaiting` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `a pause commits in flight steer before awaiting` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     // Pause preempts queued input, but the in-flight steer is not lost: it rides out
     // with the await (fold) and commits before the run awaits (boundary priority is
     // pause > queued-input > idle).
@@ -1181,7 +1567,7 @@ async fn a_pause_commits_in_flight_steer_before_awaiting() {
     use awaken_runtime_contract::pause::PauseSignal;
 
     let e = exec(vec![
-        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"message","text":"Run"}"#.into(),
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
     ]);
     let inbox = LiveInbox::new();
@@ -1475,6 +1861,99 @@ async fn a_local_dir_session_home_is_restored_before_and_harvested_after() {
     );
 }
 
+#[tokio::test]
+async fn session_home_writes_require_live_attempt_ownership() {
+    // Causes: the fixtures below establish `session home` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1=a LocalDir session-home binding exists;
+    // C2=authority is current/lost/down before restore; C3=authority is lost
+    // after the ACP Step but before harvest. Effects: E1=restore and harvest
+    // exactly once; E2=zero session-home/process calls; E3=restore once but
+    // never harvest stale process state. The absent compatibility path is owned
+    // by `a_local_dir_session_home_is_restored_before_and_harvested_after`.
+    //
+    // | Rule | Authority sequence          | Home calls       | Effect |
+    // | O1   | current x5                  | restore, harvest | E1     |
+    // | O2   | lost/down                   | none             | E2     |
+    // | O3   | current x4, lost            | restore          | E3     |
+    let recorder = Arc::new(RecordingSessionHome::default());
+    let (executor, opens, prompts, _) = counting_executor();
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(RecordingCoordinator::default()))
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+        ])));
+    assert_eq!(
+        executor
+            .with_session_home(recorder.clone())
+            .execute(activation(), context)
+            .await
+            .expect("O1 current authority"),
+        RunState::Ended(EndCause::NaturalEnd),
+        "O1/E1"
+    );
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "O1/E1");
+    assert_eq!(prompts.load(Ordering::SeqCst), 1, "O1/E1");
+    assert_eq!(
+        recorder
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(kind, _, _)| kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["restore", "harvest"],
+        "O1/E1"
+    );
+
+    for (label, decision) in [
+        ("lost", OwnershipDecision::Lost),
+        ("down", OwnershipDecision::Unavailable),
+    ] {
+        let recorder = Arc::new(RecordingSessionHome::default());
+        let (executor, opens, _, _) = counting_executor();
+        let context = RuntimeRunContext::new()
+            .with_commit(Arc::new(RecordingCoordinator::default()))
+            .with_ownership(Arc::new(ScriptedOwnership::new([decision])));
+        executor
+            .with_session_home(recorder.clone())
+            .execute(activation(), context)
+            .await
+            .expect_err("O2 stale authority fences restore");
+        assert!(recorder.calls.lock().unwrap().is_empty(), "O2/E2 {label}");
+        assert_eq!(opens.load(Ordering::SeqCst), 0, "O2/E2 {label}");
+    }
+
+    let recorder = Arc::new(RecordingSessionHome::default());
+    let (executor, opens, prompts, _) = counting_executor();
+    let context = RuntimeRunContext::new()
+        .with_commit(Arc::new(RecordingCoordinator::default()))
+        .with_ownership(Arc::new(ScriptedOwnership::new([
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Current,
+            OwnershipDecision::Lost,
+        ])));
+    executor
+        .with_session_home(recorder.clone())
+        .execute(activation(), context)
+        .await
+        .expect_err("O3 stale authority fences harvest");
+    assert_eq!(opens.load(Ordering::SeqCst), 1, "O3/E3");
+    assert_eq!(prompts.load(Ordering::SeqCst), 1, "O3/E3");
+    assert_eq!(recorder.calls.lock().unwrap()[0].0, "restore", "O3/E3");
+    assert_eq!(recorder.calls.lock().unwrap().len(), 1, "O3/E3");
+}
+
 #[test]
 fn session_home_binding_is_none_for_a_non_acp_backend() {
     // A native (non-ACP) backend has no CLI session-home — the binding is absent, so
@@ -1656,6 +2135,12 @@ async fn resumed_permission_is_one_shot_and_semantically_exact_across_new_wire_i
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_session() {
+    // Causes: the fixtures below establish `permission wait survives executor replacement and` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // FMECA cause-effect graph: C1=ACP agent requests permission; C2=neutral
     // policy requires confirmation; C3=the first executor/process exits after
     // committing the wait; C4=replacement loads the durable ACP session;
@@ -1664,12 +2149,12 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
     // cannot keep an in-memory authority alive; E3=replacement uses
     // `session/load` and may regenerate the same request under a new wire id;
     // E4=the exact semantic request receives the allow/reject option once;
-    // E5=one terminal continuation consumes the ticket.
+    // E5=one terminal continuation consumes the ticket; E6=the replacement's
+    // assistant output advances from the committed permission ToolUse Step.
     //
-    // | Rule | C1 | C2 | C3 | C4 | C5    | E1 | E2 | E3 | E4     | E5 |
-    // |---|---|---|---|---|---|---|---|---|---|---|
-    // | AR1 | T | T | T | T | allow | T | T | T | allow  | T |
-    // | AR2 | T | T | T | T | deny  | T | T | T | reject | T |
+    // | Rule | C1 | C2 | C3 | C4 | C5    | E1-E3 | E4     | E5 | E6 |
+    // | AR1  | T  | T  | T  | T  | allow | T     | allow  | T  | steps 0,1 |
+    // | AR2  | T  | T  | T  | T  | deny  | T     | reject | T  | steps 0,1 |
     //
     // Invalid free-form input and stale/mismatched ticket rules belong to the
     // authoritative runtime resume state machine and are covered in
@@ -1861,6 +2346,14 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
         let prompts = prompts.lock().unwrap();
         assert_eq!(prompts.len(), 1);
         assert!(prompts[0].contains(if allow { "approved" } else { "denied" }));
+        let run = RunId("run-1".into());
+        let assistant_steps = committed
+            .messages()
+            .iter()
+            .filter(|message| message.role == Role::Assistant)
+            .filter_map(|message| message.id.assistant_step_of(&run))
+            .collect::<Vec<_>>();
+        assert_eq!(assistant_steps, vec![0, 1], "AR1-AR2/E6");
         assert!(
             committed
                 .resume_ticket_for(&RunId("run-1".into()))
@@ -1872,16 +2365,24 @@ async fn permission_wait_survives_executor_replacement_and_resumes_the_loaded_se
 
 #[tokio::test]
 async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
+    // Causes: the fixtures below establish `a tool call and its result commit as neutral messages`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::content::ContentBlock;
 
     // Causal graph:
     // ACP frames -> AcpProjectedEvent staging -> executor ACL -> committed Message.
     //
     // Decision table:
-    // | projected input | committed role      | committed block | correlation |
-    // | tool_call       | Assistant           | ToolUse         | ACP id       |
-    // | tool_result     | Tool                | ToolResult       | same ACP id  |
-    // | turn_end        | no extra message    | —                | —            |
+    // | projected input | committed role | committed block | Message identity | correlation |
+    // | tool_call       | Assistant      | ToolUse         | canonical Run/Step | ACP id |
+    // | tool_result     | Tool           | ToolResult       | private ACP fact   | same ACP id |
+    // | turn_end        | no message     | —                | —                  | — |
     // This is intentionally a behavior test: success requires a terminal run and
     // an externally readable neutral transcript, not merely wire deserialization.
 
@@ -1907,6 +2408,11 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
 
     // The call is an assistant ToolUse carrying the correlating id.
     assert_eq!(messages[1].role, Role::Assistant);
+    assert_eq!(
+        messages[1].id,
+        MessageId::assistant(&RunId("run-1".into()), 0),
+        "assistant ToolUse shares the canonical Run/Step identity family"
+    );
     match &messages[1].content[0] {
         ContentBlock::ToolUse { id, name, input } => {
             assert_eq!(id, "c1");
@@ -1919,6 +2425,11 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
     // The result is a Role::Tool ToolResult addressed to that call — proving the
     // external agent's tool output now reaches the neutral transcript.
     assert_eq!(messages[2].role, Role::Tool);
+    assert_eq!(
+        messages[2].id.assistant_step_of(&RunId("run-1".into())),
+        None,
+        "Role::Tool remains outside assistant Step classification"
+    );
     match &messages[2].content[0] {
         ContentBlock::ToolResult {
             tool_use_id,
@@ -1934,15 +2445,26 @@ async fn a_tool_call_and_its_result_commit_as_neutral_messages() {
 
 #[tokio::test]
 async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
+    // Causes: the fixtures below establish `acp tool results use the bound spiller and fail closed`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause-effect graph:
-    // C1=ACP projects ToolResult; C2=spiller succeeds; C3=spiller fails.
+    // C1=ACP projects ToolResult; C2=spiller succeeds; C3=spiller fails;
+    // C4=the attempt loses ownership before the spiller boundary.
     // C1+C2 -> transformed result alone enters the neutral transcript.
-    // C1+C3 -> appender rejects the fact, turn ends as an error, and no Tool
+    // C1+C3 -> appender rejects the fact, the Run ends as an error, and no Tool
     // result carrying the unmaterialized payload commits.
+    // C1+C4 -> the attempt fails and the spiller receives no call.
     //
     // | Rule | ACP result | spill | Expected effect |
     // | A1 | yes | success | stable run/call sent once; preview committed |
     // | A2 | yes | failure | terminal error; no Tool-role result committed |
+    // | A3 | yes | ownership lost | attempt error; zero spill/commit effects |
     let frames = || {
         vec![
             r#"{"type":"tool_call","id":"c1","name":"read","input":{"path":"a.txt"}}"#.into(),
@@ -2000,6 +2522,33 @@ async fn acp_tool_results_use_the_bound_spiller_and_fail_closed() {
             .iter()
             .all(|message| message.role != Role::Tool),
         "A2"
+    );
+
+    let stale_seen = Arc::new(Mutex::new(Vec::new()));
+    let stale_commits = Arc::new(RecordingCoordinator::default());
+    let error = exec(frames())
+        .execute(
+            activation_without_session_home(),
+            RuntimeRunContext::new()
+                .with_commit(stale_commits.clone())
+                .with_tool_output_spiller(Arc::new(SpillProbe {
+                    fail: false,
+                    seen: stale_seen.clone(),
+                }))
+                .with_ownership(Arc::new(ScriptedOwnership::new([
+                    OwnershipDecision::Current,
+                    OwnershipDecision::Current,
+                    OwnershipDecision::Lost,
+                    OwnershipDecision::Lost,
+                ]))),
+        )
+        .await
+        .expect_err("A3 ownership loss is an attempt error");
+    assert!(error.to_string().contains("no longer owns"), "A3: {error}");
+    assert!(stale_seen.lock().unwrap().is_empty(), "A3 zero spill");
+    assert!(
+        stale_commits.commits.lock().unwrap().is_empty(),
+        "A3 zero commit"
     );
 }
 
@@ -2165,7 +2714,7 @@ fn a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code() {
     ));
 }
 
-// Fail-open guard (the class found in run-executor-a2a): a clean turn that ends on
+// Fail-open guard (the class found in run-executor-a2a): a clean Run that ends on
 // `TerminationReason::Error` — the agent reporting an error as its own terminal frame,
 // NOT a driver/IO fault — flows through the `Idle` boundary arm's `end_cause`. It must
 // map to a terminal ERROR, never to a success (`NaturalEnd`), or a failed run would be
@@ -2173,6 +2722,15 @@ fn a_rate_limited_acp_failure_ends_error_with_the_acp_failure_code() {
 // stream test (a driver `Err`, i.e. `failure_cause`) never reaches.
 #[tokio::test]
 async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
+    // Causes: the fixtures below establish `a clean error turn end` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `maps to error not natural end` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `a clean error turn end` is one independent branch selecting `maps to
+    // error not natural end`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     let e = exec(vec![
         r#"{"type":"message","text":"partial"}"#.into(),
         r#"{"type":"turn_end","reason":"error"}"#.into(),
@@ -2188,7 +2746,7 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
 
     assert!(
         matches!(state, RunState::Ended(EndCause::Error(_))),
-        "a clean error turn must end in a terminal Error, got {state:?}"
+        "a clean error Run must end in a terminal Error, got {state:?}"
     );
     assert_ne!(
         state,
@@ -2204,11 +2762,20 @@ async fn a_clean_error_turn_end_maps_to_error_not_natural_end() {
     ));
 }
 
-// A clean turn that ends on `TerminationReason::TimedOut` (the agent/supervisor
-// reporting the turn hit its deadline) maps through `end_cause` to a terminal
+// A clean Run that ends on `TerminationReason::TimedOut` (the agent/supervisor
+// reporting the Run hit its deadline) maps through `end_cause` to a terminal
 // `Stopped`, never to a success — the last untested clean-outcome row.
 #[tokio::test]
 async fn a_timed_out_turn_end_maps_to_stopped_not_natural_end() {
+    // Causes: the fixtures below establish `a timed out turn end` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `maps to stopped not natural end` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `a timed out turn end` is one independent branch selecting `maps to
+    // stopped not natural end`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     let e = exec(vec![r#"{"type":"turn_end","reason":"timed_out"}"#.into()]);
     let state = e
         .execute(
@@ -2219,7 +2786,7 @@ async fn a_timed_out_turn_end_maps_to_stopped_not_natural_end() {
         .unwrap();
     assert!(
         matches!(state, RunState::Ended(EndCause::Stopped(_))),
-        "a timed-out turn must end Stopped, got {state:?}"
+        "a timed-out Run must end Stopped, got {state:?}"
     );
     assert_ne!(state, RunState::Ended(EndCause::NaturalEnd));
 }
@@ -2271,10 +2838,21 @@ async fn a_login_required_launch_fault_surfaces_a_login_prompt() {
     assert!(prompt.contains("login"), "{prompt}");
 }
 
-// ── R7: ACP mid-switch relaunches the CLI per turn ───────────────────────────
+// ── R7: ACP mid-switch relaunches the CLI per Run ────────────────────────────
 
 #[tokio::test]
-async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
+async fn acp_relaunches_the_cli_every_run_so_a_model_switch_takes_effect() {
+    // Causes: the fixtures below establish `acp relaunches the cli every run so a model switch
+    // takes effect` with the concrete inputs, state, dependencies, and failure triggers used by
+    // this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `acp relaunches the cli every run so a model switch takes effect` is one
+    // independent branch selecting `all output, state, side-effect, error, and terminal assertions
+    // below hold together`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct CountingSource(Arc<AtomicUsize>);
@@ -2314,7 +2892,7 @@ async fn acp_relaunches_the_cli_every_turn_so_a_model_switch_takes_effect() {
     let exec = AcpRunExecutor::new(Arc::new(CountingSource(opens.clone())));
     assert_eq!(exec.model_switch(), ModelSwitch::Relaunch);
 
-    // Two turns → two launches: an ACP thread relaunches its CLI each turn, which
+    // Two Runs → two launches: an ACP Thread relaunches its CLI each Run, which
     // is how a re-staged model takes effect (R7).
     let commit = Arc::new(RecordingCoordinator::default());
     exec.execute(
@@ -2391,99 +2969,6 @@ async fn projecting_source_plans_launch_from_resolved_model_and_host_env() {
     assert_eq!(env("CLAUDE_CONFIG_DIR"), Some("/run/agent/.claude"));
 }
 
-/// A resolver that supplies a config-home dir under an arbitrary env key.
-#[cfg(unix)]
-struct ConfigHomeAt {
-    key: &'static str,
-    dir: String,
-}
-#[cfg(unix)]
-#[async_trait]
-impl LaunchResolver for ConfigHomeAt {
-    async fn model(
-        &self,
-        _a: &RunActivation,
-        _context: &RuntimeRunContext,
-    ) -> std::result::Result<ResolvedModel, OpenError> {
-        Ok(ResolvedModel::Managed {
-            base_url: "u".into(),
-            model: "m".into(),
-            process_secret: None,
-            credential_artifact: None,
-            acp: None,
-        })
-    }
-    fn extra_env(
-        &self,
-        _a: &RunActivation,
-    ) -> std::result::Result<Vec<(String, String)>, OpenError> {
-        Ok(vec![(self.key.to_string(), self.dir.clone())])
-    }
-}
-
-/// End to end through the real launch path: a run that declares an MCP server on its ACP
-/// plugin config (what the host's `overlay_acp_mcp` produces) makes `open()` write the
-/// a legacy adapter config into an isolated config home before it spawns — proving the whole
-/// host→plugin_config→config-file chain. The file contains only the mediated route;
-/// credential material and references remain outside the ACP process contract.
-#[tokio::test]
-#[cfg(unix)]
-async fn open_writes_legacy_mcp_config_into_the_isolated_config_home() {
-    let dir = std::env::temp_dir().join(format!("awaken-acpmcp-e2e-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-
-    // A synthetic legacy ConfigFileToml row with a cheap spawnable command. Codex
-    // deliberately does not use this protocol.
-    let mut cli = *acp_cli("claude").expect("claude in the catalog");
-    cli.acquisition = AcpAcquisition::Direct {
-        executable: "/bin/sh",
-        args: &["-c", "exit 0"],
-    };
-    cli.mcp_interface = McpInterface::ConfigFileToml {
-        path: "config.toml",
-    };
-    cli.config_home_env = Some("TEST_CONFIG_HOME");
-    cli.session_export_excludes = &["config.toml"];
-    let source = ProjectingChannelSource::new(
-        cli,
-        Arc::new(ConfigHomeAt {
-            key: cli.config_home_env.expect("test CLI has config home"),
-            dir: dir.to_string_lossy().to_string(),
-        }),
-    );
-
-    let mut act = activation();
-    act.snapshot.resolved_spec.plugin_config.insert(
-        "acp".to_string(),
-        serde_json::json!({
-            "mcp_servers": [{
-                "name": "github",
-                "transport": { "kind": "http", "url": "http://127.0.0.1/session/t1/mcp/github/1" }
-            }]
-        }),
-    );
-
-    // open() writes the config.toml before spawning the (immediately-exiting) child.
-    let session = source
-        .open(&act, &RuntimeRunContext::new())
-        .await
-        .expect("open");
-    drop(session); // reap the child
-
-    let written = std::fs::read_to_string(dir.join("config.toml")).expect("config.toml written");
-    assert!(
-        written.contains("[mcp_servers.github]"),
-        "server section present: {written}"
-    );
-    assert!(
-        !written.to_ascii_lowercase().contains("credential")
-            && !written.to_ascii_lowercase().contains("authorization"),
-        "ACP config contains no credential channel: {written}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
 /// A fake ACP agent (JSON-RPC, shell builtins only) reports whether `session/new`
 /// carried the MCP server and whether a forbidden credential marker leaked. It
 /// classifies the request as `saw-github` plus either `noauth` or `credential-leaked`.
@@ -2504,8 +2989,8 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
     done";
 
 /// End to end over the REAL ACP JSON-RPC codec: a run that declares an MCP server on
-/// its ACP plugin config (what the host's `overlay_acp_mcp` produces for an `AcpSession`
-/// CLI) makes `open()` stage it as a session server and `drive()` inject it into the
+/// its ACP plugin config (what the host's `overlay_acp_mcp` produces) makes
+/// `open()` stage it as a Session server and `drive()` inject it into the
 /// `session/new` request — the D5 seam. The fake agent echoes that it saw the server and
 /// that no credential channel is present, proving the whole
 /// host→plugin_config→session/new chain is route-only. Gated on `real-acp`: only
@@ -2514,7 +2999,7 @@ const FAKE_ACP_MCP_ECHO_SCRIPT: &str = "while IFS= read -r line; do \
 #[tokio::test]
 #[cfg(unix)]
 async fn open_and_drive_inject_the_mcp_server_into_session_new_for_an_acp_session_cli() {
-    // A claude row (AcpSession, session/new delivery) with a cheap JSON-RPC echo agent.
+    // The canonical Claude row with a cheap JSON-RPC echo executable override.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
     cli.acquisition = AcpAcquisition::Direct {
         executable: "/bin/sh",
@@ -2619,26 +3104,35 @@ async fn retained_inline_mcp_credential_is_ignored_before_session_new() {
     );
 }
 
-/// The ACP `acp_session_id` is carried across the per-turn relaunch loop (R7): the id
-/// negotiated on turn 1's `session/new` is threaded into turn 2's config, so the
+/// The ACP `acp_session_id` is carried across the per-Run relaunch loop (R7): the id
+/// negotiated on Run 1's `session/new` is threaded into Run 2's config, so the
 /// relaunched CLI is resumed via `session/load` with the SAME id (context survives)
 /// rather than starting fresh. A fake ACP CLI (JSON-RPC, shell builtins) advertises
-/// `loadSession` and, per turn, reports which session verb it received — `new` (turn 1,
-/// no prior id) or `load-s1` (turn 2, resumed with the carried id `s1`). Each relaunch
+/// `loadSession` and, per Run, reports which session verb it received — `new` (Run 1,
+/// no prior id) or `load-s1` (Run 2, resumed with the carried id `s1`). Each relaunch
 /// is a fresh child (the shell var resets), so the only thing that can carry `s1` into
-/// turn 2 is the executor threading it through `config.session_id`. Gated on `real-acp`:
+/// Run 2 is the executor threading it through `config.session_id`. Gated on `real-acp`:
 /// only the official codec negotiates/loads a session id (the newline stand-in leaves it
 /// `None`).
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 #[cfg(unix)]
-async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
+async fn acp_session_id_is_carried_across_the_per_run_relaunch() {
+    // Causes: the fixtures below establish `acp session id` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is carried across the per run relaunch` and every asserted
+    // state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `acp session id` is one independent branch selecting `is carried across
+    // the per run relaunch`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
 
     // id:1 initialize (advertise loadSession) · id:2 session/new|load · id:3 prompt.
     // The id:2 request distinguishes the verb by whether the carried id `s1` is present
-    // in it: turn 1's session/new has none (→ `new`, returns sessionId s1); turn 2's
-    // session/load carries `s1` (→ `load-s1`, empty result). The turn's agent message
+    // in it: Run 1's session/new has none (→ `new`, returns sessionId s1); Run 2's
+    // session/load carries `s1` (→ `load-s1`, empty result). The Run's agent message
     // echoes which verb fired, so the committed transcript proves the carry.
     let mut cli = *acp_cli("claude").expect("claude in the catalog");
     cli.acquisition = AcpAcquisition::Direct {
@@ -2657,8 +3151,8 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
     ));
     let e = AcpRunExecutor::new(source);
 
-    // One queued steer forces exactly one relaunch → a second turn (without it the run
-    // ends after turn 1 and never relaunches, so the carry is never exercised).
+    // One queued steer forces exactly one relaunch → a second Run (without it the Run
+    // ends after Run 1 and never relaunches, so the carry is never exercised).
     let inbox = LiveInbox::new();
     let _ = inbox.offer_as(
         MessageOrigin::External,
@@ -2683,13 +3177,13 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
         .map(|m| m.text_content())
         .collect();
     assert!(
-        texts.iter().any(|t| t == "turn:new"),
-        "turn 1 opened a fresh session via session/new; got {texts:?}"
+        texts.iter().any(|t| t == "run:new"),
+        "Run 1 opened a fresh session via session/new; got {texts:?}"
     );
     assert!(
-        texts.iter().any(|t| t == "turn:load-s1"),
-        "turn 2 resumed via session/load carrying the id `s1` — acp_session_id survived \
-         the per-turn relaunch; got {texts:?}"
+        texts.iter().any(|t| t == "run:load-s1"),
+        "Run 2 resumed via session/load carrying the id `s1` — acp_session_id survived \
+         the per-Run relaunch; got {texts:?}"
     );
 }
 
@@ -2699,6 +3193,15 @@ async fn acp_session_id_is_carried_across_the_per_turn_relaunch() {
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 async fn paused_run_resumes_after_executor_replacement_with_the_committed_session_id() {
+    // Causes: the fixtures below establish `paused run` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `resumes after executor replacement with the committed session
+    // id` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `paused run` is one independent branch selecting `resumes after executor
+    // replacement with the committed session id`; a multi-row decision table is not applicable, and
+    // sibling tests own alternate causes.
     use awaken_runtime_contract::pause::PauseSignal;
     use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 
@@ -2755,9 +3258,9 @@ async fn paused_run_resumes_after_executor_replacement_with_the_committed_sessio
         .iter()
         .map(Message::text_content)
         .collect();
-    assert!(texts.iter().any(|text| text == "turn:new"));
+    assert!(texts.iter().any(|text| text == "run:new"));
     assert!(
-        texts.iter().any(|text| text == "turn:load-s1"),
+        texts.iter().any(|text| text == "run:load-s1"),
         "replacement must restore the durable id and use session/load; got {texts:?}"
     );
     assert!(
@@ -2801,11 +3304,11 @@ async fn projecting_source_reads_the_cli_compact_window_from_config() {
     assert_eq!(window, Some("262144"));
 }
 
-// ── Cancellation, multi-turn usage, and mid-loop relaunch failure ────────────
+// ── Cancellation, multi-Run usage, and mid-loop relaunch failure ─────────────
 
-/// A pre-cancelled run token ends the turn `Cancelled` (lease revocation / interrupt
+/// A pre-cancelled Run token ends the Run `Cancelled` (lease revocation / interrupt
 /// at the executor level): the agent hangs with no `turn_end`, so the only way the
-/// turn ends is the supervisor's cancel branch → `EndCause::Cancelled`.
+/// Run ends is the supervisor's cancel branch → `EndCause::Cancelled`.
 #[tokio::test]
 async fn a_cancelled_token_ends_the_run_cancelled() {
     use awaken_runtime_contract::CancellationToken;
@@ -2827,7 +3330,7 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
                     .write_all(b"{\"type\":\"message\",\"text\":\"working\"}\n")
                     .await;
                 let _ = theirs.flush().await;
-                // Hold the stream open (never turn_end), so only cancel ends the turn.
+                // Hold the stream open (never `turn_end`), so only cancel ends the Run.
                 std::future::pending::<()>().await;
                 drop(theirs);
             });
@@ -2861,19 +3364,28 @@ async fn a_cancelled_token_ends_the_run_cancelled() {
     assert_eq!(state, RunState::Ended(EndCause::Cancelled));
 }
 
-/// Token usage is summed across relaunched turns: each launched turn emits a usage
-/// frame, and a live-inbox steer forces a second turn, so the single committed
-/// `__usage` tally is the sum of both turns — a per-turn overwrite would under-report.
+/// Cause/effect design: C1 every launched ACP Run reports usage 10/20/5; C2 one
+/// external live-inbox message forces a second launch. Effect E1: the single
+/// committed `__usage` Set totals 20/40/10 rather than overwriting the first Run.
+/// Decision rule U1=C1+C2=>E1; a single launch is the non-accumulating base row.
 #[tokio::test]
-async fn usage_accumulates_across_relaunched_turns() {
+async fn usage_accumulates_across_relaunched_runs() {
+    // Causes: the fixtures below establish `usage` with the concrete inputs, state, dependencies,
+    // and failure triggers used by this case.
+    // Effects: the observable result `accumulates across relaunched runs` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     use awaken_agent_contract::agent::state::Action;
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
     use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
 
-    // Every launched turn (the ScriptedSource re-emits its frames on each open) reports
-    // the same usage; two turns → the tally must double.
+    // Every launched Run (the ScriptedSource re-emits its frames on each open) reports
+    // the same usage; two Runs → the tally must double.
     let e = exec(vec![
-        r#"{"type":"message","text":"turn"}"#.into(),
+        r#"{"type":"message","text":"Run"}"#.into(),
         r#"{"type":"usage","prompt_tokens":10,"completion_tokens":20,"cache_read_tokens":5}"#
             .into(),
         r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
@@ -2913,16 +3425,116 @@ async fn usage_accumulates_across_relaunched_turns() {
             cache_read_tokens: 10,
             cache_creation_tokens: 0,
         },
-        "usage is summed across the two relaunched turns, not overwritten"
+        "usage is summed across the two relaunched Runs, not overwritten"
+    );
+}
+
+/// Cause/effect design for cumulative usage across independent executions.
+/// C1 a first ACP Run commits 10/20/5; C2 a fresh executor (the process-restart
+/// shape) rebuilds the same Thread prefix through `CommittedThreadView`; C3 a
+/// distinct second Run reports the same delta; C4 an ambiguous retry derives a
+/// commit twice from one unchanged recovery prefix. Effects: E1 C2 retains C1;
+/// E2 C3 commits 20/40/10 through the sole `ThreadUsageKey`; E3 C4 produces an
+/// identical command, so the existing operation-id/payload-hash fence can return
+/// its original receipt without a second append. Constraints: the local Host's
+/// per-Thread execution lock serializes read/commit, while a remote Worker uses
+/// `expected_thread_version` plus stable operation id; this executor must not
+/// create a second counter or retry authority. Decision rules: U2=C1+C2+C3=>E1+E2;
+/// U3=C1+C2+C4=>E3; a stale concurrent contender is rejected by the commit fence
+/// before state append and is therefore not simulated as a successful commit here.
+#[tokio::test]
+async fn usage_accumulates_across_independent_runs_with_a_rebuilt_reader() {
+    // Causes: the fixtures below establish `usage` with the concrete inputs, state, dependencies,
+    // and failure triggers used by this case.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    use awaken_runtime_contract::llm::{THREAD_USAGE_STATE_KEY, ThreadUsage, TokenUsage};
+
+    let frames = || {
+        vec![
+            r#"{"type":"message","text":"Run"}"#.into(),
+            r#"{"type":"usage","prompt_tokens":10,"completion_tokens":20,"cache_read_tokens":5}"#
+                .into(),
+            r#"{"type":"turn_end","reason":"natural_end"}"#.into(),
+        ]
+    };
+    let coordinator = Arc::new(RecordingCoordinator::default());
+    exec(frames())
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(coordinator.clone())
+                .with_reader(coordinator.clone()),
+        )
+        .await
+        .expect("first ACP Run");
+
+    let mut second = activation();
+    second.run_id = RunId("run-2".into());
+    second.input = vec![Message::text(
+        MessageId("u2".into()),
+        Role::User,
+        "do it again",
+    )];
+    let retry_context = || {
+        RuntimeRunContext::new()
+            .with_commit(coordinator.clone())
+            .with_reader(coordinator.clone())
+    };
+    let delta = TokenUsage {
+        prompt_tokens: 10,
+        completion_tokens: 20,
+        cache_read_tokens: 5,
+        cache_creation_tokens: 0,
+    };
+    assert_eq!(
+        usage_state(&retry_context(), &second.thread_id, &delta, "model").unwrap(),
+        usage_state(&retry_context(), &second.thread_id, &delta, "model").unwrap(),
+        "U3/E3 the same recovery prefix derives an identical retry payload",
+    );
+
+    exec(frames())
+        .execute(second, retry_context())
+        .await
+        .expect("fresh executor continues the committed Thread");
+
+    let commands = coordinator.committed_state(&ThreadId("thread-1".into()));
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.key.0 == THREAD_USAGE_STATE_KEY)
+            .count(),
+        2,
+        "U2 each distinct Run commits one cumulative Set",
+    );
+    assert_eq!(
+        ThreadUsage::from_committed_state(&commands).by_model["model"],
+        TokenUsage {
+            prompt_tokens: 20,
+            completion_tokens: 40,
+            cache_read_tokens: 10,
+            cache_creation_tokens: 0,
+        },
+        "U2/E2 a fresh executor extends rather than replaces committed usage",
     );
 }
 
 /// A relaunch that fails to reopen the channel mid-run (the `BoundaryOutcome::Continue`
 /// branch) commits a classified terminal failure — distinct from the initial-open
-/// fault. The first open scripts a turn; a steer forces a relaunch; the second open
-/// fails, so the run ends `Error` after exactly two open attempts.
+/// fault. The first open scripts a Run; a steer forces a relaunch; the second open
+/// fails, so the Run ends `Error` after exactly two open attempts.
 #[tokio::test]
 async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
+    // Causes: the fixtures below establish `a relaunch open failure mid run classifies and ends`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Coverage rationale: `a relaunch open failure mid run classifies and ends` is one independent
+    // branch selecting `all output, state, side-effect, error, and terminal assertions below hold
+    // together`; a multi-row decision table is not applicable, and sibling tests own alternate
+    // causes.
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use awaken_runtime_contract::live_inbox::{LiveInbox, MessageOrigin};
@@ -2946,7 +3558,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
                 let mut r = BufReader::new(&mut theirs);
                 let _ = r.read_line(&mut p).await;
                 for f in [
-                    r#"{"type":"message","text":"turn"}"#,
+                    r#"{"type":"message","text":"Run"}"#,
                     r#"{"type":"turn_end","reason":"natural_end"}"#,
                 ] {
                     let _ = theirs.write_all(f.as_bytes()).await;
@@ -2993,7 +3605,7 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
     assert_eq!(
         opens.load(Ordering::SeqCst),
         2,
-        "the first open ran the turn; the relaunch attempted a second open and failed"
+        "the first open ran the Run; the relaunch attempted a second open and failed"
     );
 }
 
@@ -3004,12 +3616,12 @@ async fn a_relaunch_open_failure_mid_run_classifies_and_ends() {
 // (`open_and_drive_inject_*`). What was missing is the parity across the whole
 // catalog *through the executor's own launch seam*: that EVERY row
 // (claude/codex/gemini/opencode) projects a launchable process through
-// `ProjectingChannelSource` and drives a plain turn to a committed reply. This is
+// `ProjectingChannelSource` and drives a plain Run to a committed reply. This is
 // the hermetic analogue of awaken-next's `e2e_external_cli_acp` multi-CLI matrix
 // — no real binaries, so the drive path's row-agnosticism is pinned in CI.
 
 /// A model resolver for the matrix: fixed coordinates, no per-run env (a plain
-/// turn declares no MCP, so no config-home is needed — keeping it row-agnostic).
+/// Run declares no MCP, so no config-home is needed — keeping it row-agnostic).
 struct MatrixModel {
     artifact_path: Option<&'static str>,
 }
@@ -3168,16 +3780,22 @@ const PONG_ECHO: &str = "while IFS= read -r line; do \
       esac; \
     done";
 
-/// Drive EVERY catalog row to a committed reply over the real ACP JSON-RPC codec.
-/// Each row is launched via `ProjectingChannelSource` (the production seam), with
-/// its command swapped for the hermetic `PONG_ECHO` agent — so the projection,
-/// spawn, codec, drive, and commit path is exercised identically for
-/// claude/codex/gemini/opencode. Gated on `real-acp`: only the official codec
-/// serializes the `session/new`→prompt handshake the agent answers.
+/// Cause/effect design for every ACP catalog row: C1 `model_delivery` is absent;
+/// C2 it is present and the row launches the hermetic `PONG_ECHO` through the
+/// production projection/spawn/official-codec seam. Effects: E1 C1 fails before
+/// spawn with `credential_driver_required`; E2 C2 ends naturally and commits
+/// `pong`. Decision table: R1=C1=>E1; R2=C2=>E2. This covers the same path for
+/// claude/codex/gemini/opencode without substituting a codec fake.
 #[cfg(feature = "real-acp")]
 #[tokio::test]
 #[cfg(unix)]
-async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
+async fn every_backend_row_drives_a_plain_run_to_a_committed_reply() {
+    // Causes: the fixtures below establish `every backend row` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Constraints/invariants: the current fenced attempt and committed context are authoritative;
+    // remote protocol state cannot become a parallel Run or transcript truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     for row in known_acp_clis() {
         if row.model_delivery.is_none() {
             let error = ProjectingChannelSource::new(*row, Arc::new(MatrixModel::for_cli(row)))
@@ -3216,7 +3834,7 @@ async fn every_backend_row_drives_a_plain_turn_to_a_committed_reply() {
         assert_eq!(
             state,
             RunState::Ended(EndCause::NaturalEnd),
-            "{}: a plain turn ends naturally",
+            "{}: a plain Run ends naturally",
             row.id
         );
         let commits = coord.commits.lock().unwrap();

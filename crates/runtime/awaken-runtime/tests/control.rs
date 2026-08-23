@@ -3,7 +3,7 @@
 
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 use awaken_agent_contract::agent::content::ContentBlock;
@@ -14,11 +14,15 @@ use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::execution::{Error, RunExecutor};
+use awaken_runtime_contract::live_inbox::{LiveInbox, Offer};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
+use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+use awaken_runtime_contract::runtime_context::{
+    AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
+};
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
@@ -257,6 +261,144 @@ impl LlmExecutor for ToolCallingLlm {
     }
 }
 
+struct MultiClientToolLlm(AtomicUsize);
+
+#[async_trait::async_trait]
+impl LlmExecutor for MultiClientToolLlm {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(ChatResponse {
+            output: AssistantOutput::from_tool_calls(vec![
+                awaken_runtime_contract::llm::ToolCall {
+                    call_id: "call-a".into(),
+                    tool_id: "client-a".into(),
+                    arguments: serde_json::json!({}),
+                },
+                awaken_runtime_contract::llm::ToolCall {
+                    call_id: "call-b".into(),
+                    tool_id: "client-b".into(),
+                    arguments: serde_json::json!({}),
+                },
+            ]),
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn awaiting_tool_interrupt_resolves_the_whole_batch_without_inference() {
+    // Cause/effect graph: C1 Run is Awaiting vs non-awaiting/terminal; C2 the
+    // open ToolBatch has one or many unfinished calls; C3 command is exact
+    // replay. Effects: E1 every unfinished call receives the fixed error in
+    // original batch order; E2 the same commit finalizes the batch and ends with
+    // NaturalEnd; E3 no model request occurs; E4 exact terminal replay is a
+    // no-op; E5 non-awaiting input fails closed.
+    //
+    // | Rule | State | Pending | Replay | Effect |
+    // | I1 | Awaiting | multiple | no | E1+E2+E3 |
+    // | I2 | Ended by I1 | none | yes | E4 |
+    // | I3 | absent/Running | any | no | E5 |
+    // Constraints/invariants: one atomic terminal commit resolves the entire
+    // ordered batch; interrupt never resamples the model or partially settles it.
+    const INTERRUPTED: &str = "Tool execution was interrupted before completion. Please retry.";
+    let llm = Arc::new(MultiClientToolLlm(AtomicUsize::new(0)));
+    let runtime = Runtime::new().with_llm(llm.clone());
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let mut run = activation();
+    run.snapshot.resolved_spec.tool_descriptors = vec![
+        ToolDescriptor::client_executed(
+            "client-a",
+            "client tool a",
+            serde_json::json!({"type": "object"}),
+        ),
+        ToolDescriptor::client_executed(
+            "client-b",
+            "client tool b",
+            serde_json::json!({"type": "object"}),
+        ),
+    ];
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+    assert_eq!(
+        runtime
+            .execute(run, context.clone())
+            .await
+            .expect("I1 initial tool batch"),
+        RunState::Awaiting
+    );
+    assert_eq!(llm.0.load(Ordering::SeqCst), 1, "I1 initial inference");
+
+    let ended = runtime
+        .interrupt_awaiting_tools(
+            RunId("run-1".into()),
+            ThreadId("thread-1".into()),
+            context.clone(),
+        )
+        .await
+        .expect("I1 interrupt");
+    assert_eq!(ended, RunState::Ended(EndCause::NaturalEnd), "I2/E2");
+    assert_eq!(llm.0.load(Ordering::SeqCst), 1, "I1/E3 no resample");
+
+    let committed = commit.committed();
+    let results = committed
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::Tool)
+        .flat_map(|message| message.content.iter())
+        .filter_map(|block| match block {
+            ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => Some((
+                tool_use_id.as_str(),
+                awaken_agent_contract::agent::content::extract_text(content),
+                *is_error,
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        results,
+        vec![
+            ("call-a", INTERRUPTED.to_string(), true),
+            ("call-b", INTERRUPTED.to_string(), true),
+        ],
+        "I1/E1 ordered fixed errors"
+    );
+
+    let commits_before_replay = commit.commit_count();
+    assert_eq!(
+        runtime
+            .interrupt_awaiting_tools(
+                RunId("run-1".into()),
+                ThreadId("thread-1".into()),
+                context.clone(),
+            )
+            .await
+            .expect("I2 exact replay"),
+        RunState::Ended(EndCause::NaturalEnd),
+        "I2/E4"
+    );
+    assert_eq!(commit.commit_count(), commits_before_replay, "I2/E4");
+    assert!(
+        runtime
+            .interrupt_awaiting_tools(
+                RunId("missing".into()),
+                ThreadId("thread-1".into()),
+                context,
+            )
+            .await
+            .is_err(),
+        "I3/E5"
+    );
+}
+
 struct HangingTool {
     started: Arc<Notify>,
     dropped: Arc<AtomicBool>,
@@ -392,6 +534,12 @@ async fn direct_ingress_cancel_on_unknown_run_is_not_active() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn wake_on_an_active_run_is_accepted() {
+    // Test design — Causes: C1 an execution has crossed into a live gated model
+    // call; C2 a Wake targets that exact active Run. Effects: delivery returns
+    // Ok and, after release, the same Run completes naturally.
+    // Constraints/invariants: Wake is an accepted no-op in this Runtime; it must
+    // neither create another attempt nor terminate the live one. Decision rule
+    // W1=C1+C2=>accepted delivery plus one unchanged terminal outcome.
     let started = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
     let runtime = Arc::new(Runtime::new().with_llm(Arc::new(GatedLlm {
@@ -416,4 +564,152 @@ async fn wake_on_an_active_run_is_accepted() {
     release.notify_one();
     let outcome = handle.await.expect("join").expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+}
+
+struct SwitchableOwnership(AtomicUsize);
+
+#[async_trait::async_trait]
+impl AttemptOwnershipVerifier for SwitchableOwnership {
+    async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+        match self.0.load(Ordering::SeqCst) {
+            0 => Ok(()),
+            1 => Err(AttemptOwnershipError::Lost),
+            _ => Err(AttemptOwnershipError::Unavailable(
+                "test authority down".into(),
+            )),
+        }
+    }
+}
+
+#[tokio::test]
+async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed() {
+    // Cause/effect graph: C1 an old attempt is registered for Run R/Thread T;
+    // C2 a replacement claim registers the same R/T with a different inbox; C3
+    // the old RAII guard drops; C4 replacement ownership is current, lost, or
+    // unavailable; C5 lookup names T or another Thread. Effects: E1 C2+C3 keeps
+    // the replacement registration; E2 current+T returns exactly its Run id,
+    // inbox and live controls; E3 wrong Thread/lost/unavailable/removed all fail
+    // closed; E4 a rejected lookup/control does not mutate either inbox or pause
+    // signal.
+    // Constraint: one registry is the source for run control and Thread lookup;
+    // neither foreground state nor a second inbox map may establish liveness.
+    //
+    // | Rule | generation | ownership | Thread | effect |
+    // |---|---|---|---|---|
+    // | A1 | replacement after old drop | current | T | E1 + E2 |
+    // | A2 | replacement | current | other | E3 + E4 |
+    // | A3 | replacement | lost | T | E3 + E4 |
+    // | A4 | replacement | unavailable | T | E3 + E4 |
+    // | A5 | removed | n/a | T | E3 + E4 |
+    let runtime = Runtime::new();
+    let run_id = RunId("replacement-run".into());
+    let thread_id = ThreadId("replacement-thread".into());
+    let other_thread = ThreadId("other-thread".into());
+
+    let old_inbox = LiveInbox::new();
+    let old = runtime.register_attempt_controls(
+        &run_id,
+        &thread_id,
+        &RuntimeRunContext::new().with_live_inbox(old_inbox.clone()),
+    );
+
+    let ownership = Arc::new(SwitchableOwnership(AtomicUsize::new(0)));
+    let replacement_inbox = LiveInbox::new();
+    let replacement_pause = PauseSignal::new();
+    let replacement = runtime.register_attempt_controls(
+        &run_id,
+        &thread_id,
+        &RuntimeRunContext::new()
+            .with_live_inbox(replacement_inbox.clone())
+            .with_pause(replacement_pause.clone())
+            .with_ownership(ownership.clone()),
+    );
+    runtime.deregister_attempt_controls(&old);
+
+    assert_eq!(
+        runtime.active_attempt_run_id(&thread_id).await,
+        Some(run_id.clone()),
+        "A1/E1+E2 exact Run id"
+    );
+    let resolved = runtime
+        .active_attempt_live_inbox(&thread_id)
+        .await
+        .expect("A1/E1+E2 replacement remains current");
+    assert!(matches!(
+        resolved.offer(Message::text(
+            MessageId("replacement-input".into()),
+            Role::User,
+            "replacement"
+        )),
+        Offer::Accepted(_)
+    ));
+    assert!(old_inbox.list().is_empty(), "A1/E2 exact replacement inbox");
+    assert_eq!(replacement_inbox.list().len(), 1, "A1/E2");
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&other_thread)
+            .await
+            .is_none(),
+        "A2/E3"
+    );
+    assert!(
+        runtime.active_attempt_run_id(&other_thread).await.is_none(),
+        "A2/E3"
+    );
+    runtime
+        .deliver_to_current_attempt(LiveCommand::Pause {
+            run_id: run_id.clone(),
+        })
+        .await
+        .expect("A1/E2 pause uses the same entry");
+    assert!(replacement_pause.requested(), "A1/E2");
+
+    ownership.0.store(1, Ordering::SeqCst);
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&thread_id)
+            .await
+            .is_none(),
+        "A3/E3"
+    );
+    assert!(
+        runtime.active_attempt_run_id(&thread_id).await.is_none(),
+        "A3/E3"
+    );
+    assert_eq!(
+        runtime
+            .deliver_to_current_attempt(LiveCommand::Wake {
+                run_id: run_id.clone(),
+                reason: "stale".into(),
+            })
+            .await,
+        Err(ControlError::NotActive),
+        "A3/E3+E4"
+    );
+
+    ownership.0.store(2, Ordering::SeqCst);
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&thread_id)
+            .await
+            .is_none(),
+        "A4/E3"
+    );
+    assert!(
+        runtime.active_attempt_run_id(&thread_id).await.is_none(),
+        "A4/E3"
+    );
+
+    runtime.deregister_attempt_controls(&replacement);
+    assert!(
+        runtime
+            .active_attempt_live_inbox(&thread_id)
+            .await
+            .is_none(),
+        "A5/E3"
+    );
+    assert!(
+        runtime.active_attempt_run_id(&thread_id).await.is_none(),
+        "A5/E3"
+    );
 }

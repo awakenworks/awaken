@@ -42,11 +42,10 @@ fn agui_events(outcome: &StepOutcome) -> Vec<AgUiEvent> {
     agui::encode_step(outcome, "t1", "r1")
 }
 
-/// The managed `OutboundKind`s for a committed step. Managed drops `RunStarted`
-/// and has no single `encode_step(outcome)` (its `project_step` takes a
-/// session projection (which derives failures from `EndCause::Error`), so drive
-/// the transcoder over the
-/// same neutral facts the other wires fold from `outcome`.
+/// The managed `OutboundKind`s for a committed Step. Managed drops `RunStarted`
+/// and projects the same neutral facts one by one; Session state separately owns
+/// lifecycle and failure projection. Drive the transcoder over the same facts
+/// the other wires fold from `outcome`.
 fn managed_events(outcome: &StepOutcome) -> Vec<OutboundKind> {
     let pending = outcome
         .pending()
@@ -144,8 +143,6 @@ fn finished(msgs: Vec<Message>) -> StepOutcome {
     StepOutcome::ended(
         msgs,
         awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-        false,
-        false,
     )
 }
 
@@ -168,6 +165,15 @@ fn a_natural_finish_is_a_clean_terminal_on_every_wire() {
 
 #[test]
 fn awaiting_on_a_tool_is_action_required_on_every_wire() {
+    // Causes: the fixtures below establish `awaiting on a tool` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is action required on every wire` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `awaiting on a tool` is one independent branch selecting `is action
+    // required on every wire`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     let outcome = StepOutcome::awaiting(
         vec![assistant_tool(
             "a1",
@@ -181,8 +187,6 @@ fn awaiting_on_a_tool_is_action_required_on_every_wire() {
             input: serde_json::json!({}),
             client_executed: true,
         }),
-        false,
-        false,
     );
     let (reason, _) = ai_terminal(&ai_events(&outcome));
     assert_eq!(reason.as_deref(), Some("tool-calls"));
@@ -197,14 +201,21 @@ fn awaiting_on_a_tool_is_action_required_on_every_wire() {
 
 #[test]
 fn a_failure_surfaces_as_an_error_wherever_the_wire_can_and_never_as_success() {
+    // Causes: the fixtures below establish `a failure` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `surfaces as an error wherever the wire can and never as
+    // success` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `a failure` is one independent branch selecting `surfaces as an error
+    // wherever the wire can and never as success`; a multi-row decision table is not applicable,
+    // and sibling tests own alternate causes.
     let outcome = StepOutcome::ended(
         vec![assistant("a1", "partial")],
         EndCause::Error(Failure::Inference {
             code: "inference_failed".into(),
             message: "upstream is down".into(),
         }),
-        false,
-        false,
     );
     // AI-SDK: an `error` frame plus finish("error") — never finish("stop").
     let ai = ai_events(&outcome);
@@ -223,6 +234,14 @@ fn a_failure_surfaces_as_an_error_wherever_the_wire_can_and_never_as_success() {
 
 #[test]
 fn budget_exhaustion_is_a_finish_for_streaming_wires_but_failed_for_a2a() {
+    // Causes: the fixtures below establish `budget exhaustion` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is a finish for streaming wires but failed for a2a` and every
+    // asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Cause/effect decision table for the four terminal causes is exercised by
     // this section: NaturalEnd, Awaiting, Error, and MaxSteps each project once
     // through every wire from the same authoritative RunState.
@@ -230,12 +249,7 @@ fn budget_exhaustion_is_a_finish_for_streaming_wires_but_failed_for_a2a() {
     // the streaming wires (no "exhausted" finish reason exists), a distinct
     // `RetriesExhausted` on managed, and — because A2A has only completed/failed —
     // a `failed` task. Pins all four so a refactor can't quietly realign them.
-    let outcome = StepOutcome::ended(
-        vec![assistant("a1", "ran out")],
-        EndCause::MaxSteps,
-        false,
-        false,
-    );
+    let outcome = StepOutcome::ended(vec![assistant("a1", "ran out")], EndCause::MaxSteps);
     let ai = ai_events(&outcome);
     let (reason, errored) = ai_terminal(&ai);
     assert_eq!(reason.as_deref(), Some("stop"), "ai-sdk: {ai:?}");

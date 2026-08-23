@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
-import { REPO_ROOT, stopServer, waitForPort } from './harness.mjs';
+import { REPO_ROOT, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
 import { sqliteRun, sqliteScalar } from './sqlite.mjs';
 // @ts-ignore -- shared Cargo artifact resolver intentionally serves TS scenarios.
@@ -26,9 +26,13 @@ const MARKER = 'RECOVERY-BINDING-OK';
 const ACP_FIXTURE = `process.stdin.once('data',()=>{console.log(JSON.stringify({type:'message',text:'${MARKER}'}));console.log(JSON.stringify({type:'turn_end',reason:'natural_end'}))})`;
 
 type Binding = {
-  provider_kind: string;
   sandbox_id: string;
-  extra?: { container_id?: string; outputs_path?: string };
+  payload: {
+    schema: string;
+    container_id?: string;
+    provider_kind?: string;
+    [key: string]: unknown;
+  };
 };
 
 function buildBrain(): string {
@@ -37,7 +41,7 @@ function buildBrain(): string {
     packageName: 'awaken-scenario-host',
     targetName: 'awaken-scenario-host',
     features: ['container-docker'],
-  });
+  } as any);
 }
 
 function ensureImage(): void {
@@ -78,31 +82,67 @@ function binding(storage: string, sessionId: string): Binding {
 }
 
 function rewriteBinding(storage: string, sessionId: string, encoded: string): void {
-  const id = sessionId.replaceAll("'", "''");
   const database = path.join(storage, 'sessions.db');
-  const aggregate = JSON.parse(String(sqliteScalar(
+  const preservedAggregate = sqliteScalar(
     database,
-    `SELECT aggregate_json FROM managed_session WHERE session_id = '${id}'`,
-  )));
-  aggregate.environment = { phase: 'resident', binding: encoded };
-  const value = JSON.stringify(aggregate).replaceAll("'", "''");
+    `SELECT json_remove(aggregate_json, '$.environment.binding')
+       FROM managed_session WHERE session_id = ?`,
+    sessionId,
+  );
+  assert.equal(typeof preservedAggregate, 'string', `Session ${sessionId} aggregate exists`);
+  assert.equal(
+    sqliteScalar(
+      database,
+      `SELECT json_extract(aggregate_json, '$.environment.phase')
+         FROM managed_session WHERE session_id = ?`,
+      sessionId,
+    ),
+    'resident',
+    `Session ${sessionId} remains resident while its binding is faulted`,
+  );
   // Cause/effect graph / decision table for durable corruption injection:
-  // C1=root aggregate exists; C2=environment binding is damaged; C3=legacy
-  // compatibility column differs. C1+C2 must drive recovery regardless of C3:
-  // the aggregate is the sole authority and the old column is never dual-written.
+  // C1=root aggregate exists; C2=its closed typed environment binding is
+  // damaged; C3=the non-authoritative indexed projection differs; C4=all other
+  // Resident facts (effect, generation, idle edge) remain exact. C1+C2+C4 must
+  // drive recovery regardless of C3: the aggregate is the sole authority and
+  // the indexed projection is never a fallback durable handle.
   //
-  // | Rule | aggregate binding | legacy column | recovery result |
-  // | A1   | valid + available | stale/null    | adopt           |
-  // | A2   | corrupt/foreign   | any           | fail closed     |
-  // | A3   | valid + unavailable| any          | fail closed     |
+  // | Rule | aggregate binding | other Resident facts | indexed projection | result |
+  // | A1   | valid + available | preserved            | stale/null         | adopt |
+  // | A2   | corrupt/foreign   | preserved            | any                | fail closed |
+  // | A3   | valid + unavailable| preserved           | any                | fail closed |
   // A3 is distinct from a dispatch run explicitly pinned to
   // RebuildFromCommittedTruth; Managed Session restoration promises continuity.
   assert.equal(
     Number(sqliteRun(
       database,
-      `UPDATE managed_session SET aggregate_json = '${value}' WHERE session_id = '${id}'`,
+      `UPDATE managed_session
+         SET aggregate_json = json_set(aggregate_json, '$.environment.binding', ?)
+         WHERE session_id = ?`,
+      encoded,
+      sessionId,
     ).changes),
     1,
+  );
+  assert.equal(
+    sqliteScalar(
+      database,
+      `SELECT json_extract(aggregate_json, '$.environment.binding')
+         FROM managed_session WHERE session_id = ?`,
+      sessionId,
+    ),
+    encoded,
+    `Session ${sessionId} stores the exact faulted binding`,
+  );
+  assert.equal(
+    sqliteScalar(
+      database,
+      `SELECT json_remove(aggregate_json, '$.environment.binding')
+         FROM managed_session WHERE session_id = ?`,
+      sessionId,
+    ),
+    preservedAggregate,
+    `Session ${sessionId} preserves every non-binding aggregate fact`,
   );
 }
 
@@ -113,15 +153,25 @@ async function createRealizedSession(client: Anthropic, name: string): Promise<s
     environment_id: 'env_local',
     betas: BETAS,
   });
-  await client.beta.sessions.events.send(created.id, {
+  // Realization decision rules: R1 accepted receipt unprocessed => wait; R2
+  // exact receipt processed + later MARKER => durable container realized; R3
+  // older markers or earlier-only history => ineligible for this Session Run.
+  const receipt = await client.beta.sessions.events.send(created.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: `realize ${name}` }] }],
     betas: BETAS,
   });
-  const observed: unknown[] = [];
-  for await (const event of client.beta.sessions.events.list(created.id, { betas: BETAS })) {
-    observed.push(event);
-  }
-  assert.ok(JSON.stringify(observed).includes(MARKER), `${name} realized its real container`);
+  const acceptedId = receipt.data?.[0]?.id;
+  assert.equal(typeof acceptedId, 'string', `${name} exact User Event receipt`);
+  const observed = await waitForSessionEventReceipt(
+    client,
+    created.id,
+    acceptedId,
+    BETAS,
+    ({ delta }: { delta: any[] }) => JSON.stringify(delta).includes(MARKER),
+    `${name} Session container to commit its Agent marker`,
+    { timeoutMs: 180_000, pollMs: 100 },
+  );
+  assert.ok(JSON.stringify(observed.delta).includes(MARKER), `${name} realized its real container`);
   return created.id;
 }
 
@@ -142,31 +192,49 @@ async function expectRestoreFailure(
     }),
   });
   const body = await response.text();
-  // Durable-ingress outcome decision table: C1 restoration fails before enqueue
-  // -> synchronous 500; C2 the durable command is accepted before the Worker
-  // observes corruption -> 200 receipt followed by committed `session.error`.
-  // Both fail closed; C2 must never be mistaken for successful execution merely
-  // because command acknowledgement and outcome use separate boundaries.
+  // Durable-ingress outcome decision table: C1 invalid wire/admission state ->
+  // synchronous 500; C2 the Session-root command is durably accepted before
+  // the Worker observes a retryable restoration fault -> 200 exact receipt that
+  // remains unprocessed, with no Agent/model/tool effect. Both fail closed; C2
+  // must remain retryable rather than being compensated or falsely terminated.
   //
   // | Rule | Admission | Runtime restore | Observable outcome |
   // | F1 | reject | not run | HTTP 500 error |
-  // | F2 | accept | corrupt/unavailable | HTTP 200 + committed session.error |
+  // | F2 | accept | corrupt/unavailable | HTTP 200 + retained unprocessed receipt |
   if (response.status === 500) {
     assert.ok(body.includes('error'), `${marker} returned a structured error: ${body}`);
     return;
   }
   assert.equal(response.status, 200, `${marker} admission shape: ${response.status} ${body}`);
-  const deadline = Date.now() + 30_000;
-  let observed: any[] = [];
-  do {
-    observed = [];
-    for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-      observed.push(event);
-    }
-    if (observed.some((event) => event.type === 'session.error')) return;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  } while (Date.now() <= deadline);
-  assert.fail(`${marker} did not commit session.error: ${JSON.stringify(observed)}`);
+  const accepted = JSON.parse(body).data?.[0];
+  const acceptedId = accepted?.id;
+  assert.equal(typeof acceptedId, 'string', `${marker} exact User Event receipt`);
+  assert.equal(accepted.processed_at, null, `${marker} effect failure is not falsely processed`);
+  // Absence is observed over one bounded reconciliation window. A positive wait
+  // would be the wrong oracle because retryable custody intentionally has no
+  // terminal event until the damaged external binding is repaired.
+  await new Promise((resolve) => setTimeout(resolve, 750));
+  const observed: any[] = [];
+  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+    observed.push(event);
+  }
+  const acceptedAt = observed.findIndex((event) => event.id === acceptedId);
+  assert.notEqual(acceptedAt, -1, `${marker} retained its exact User Event`);
+  assert.equal(observed[acceptedAt].processed_at, null, `${marker} retained retryable custody`);
+  const delta = observed.slice(acceptedAt + 1);
+  assert.ok(
+    !delta.some((event) => [
+      'agent.message',
+      'agent.tool_use',
+      'agent.tool_result',
+      'session.error',
+      'session.status_idle',
+      'session.usage',
+      'span.model_request_start',
+      'span.model_request_end',
+    ].includes(event.type)),
+    `${marker} fabricated no execution/terminal effect: ${JSON.stringify(delta)}`,
+  );
 }
 
 function removeContainers(ids: Iterable<string>): void {
@@ -179,6 +247,21 @@ function knownContainer(shortId: string, ...sets: Set<string>[]): boolean {
 }
 
 async function main(): Promise<void> {
+  // Test design (Session Environment recovery faults). Causes: C1=a real
+  // container-backed Session has one closed `container_v1` durable handle;
+  // C2=after a crash that handle is malformed JSON, names a foreign Session,
+  // contains a structurally valid foreign-provider payload, omits the exact
+  // container locator, or names a stopped/deleted container; C3=the replacement
+  // process restores from the aggregate; C4=the fault is observed before or
+  // after durable Event admission. Effects: E1=every C2 arm fails closed before
+  // model/tool execution; E2a=pre-admission observation returns structured 500,
+  // or E2b=post-admission observation retains the exact unprocessed User receipt
+  // with no terminal effect; E3=no replacement or unrelated container is
+  // created. Constraint K: the aggregate's exact typed handle,
+  // Session owner, provider payload, and live physical locator must all agree;
+  // recovery never guesses, synthesizes, or falls back to an indexed column.
+  // Decision rules F1-F6 pair C1+C3 with each C2 arm and require E1+E3 plus
+  // E2a/E2b according to C4; acknowledgement never manufactures completion.
   if (spawnSync('docker', ['version'], { stdio: 'ignore' }).status !== 0) {
     throw new Error('real Docker is required for Session recovery fault coverage');
   }
@@ -195,7 +278,7 @@ async function main(): Promise<void> {
   let brain = spawnBrain(binary, storage);
   const containers = new Set<string>();
   try {
-    await waitForPort(PORT, 180_000, brain);
+    await waitForPort(PORT, 180_000, brain as any);
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
 
     // Cause graph / decision table for the immutable Agent fixture:
@@ -224,7 +307,13 @@ async function main(): Promise<void> {
     ]) {
       const sessionId = await createRealizedSession(client, name);
       cases.set(name, sessionId);
-      const containerId = binding(storage, sessionId).extra?.container_id;
+      const durableBinding = binding(storage, sessionId);
+      assert.equal(
+        durableBinding.payload.schema,
+        'container_v1',
+        `${name} binding uses the canonical container payload`,
+      );
+      const containerId = durableBinding.payload.container_id;
       assert.ok(containerId, `${name} binding carries its physical container locator`);
       containers.add(containerId);
     }
@@ -240,20 +329,20 @@ async function main(): Promise<void> {
     rewriteBinding(storage, cases.get('wrong-session')!, JSON.stringify(wrongSession));
 
     const wrongProvider = binding(storage, cases.get('wrong-provider')!);
-    wrongProvider.provider_kind = 'namespace';
+    wrongProvider.payload = { schema: 'unmanaged', provider_kind: 'bwrap' };
     rewriteBinding(storage, cases.get('wrong-provider')!, JSON.stringify(wrongProvider));
 
     const missingLocator = binding(storage, cases.get('missing-locator')!);
-    delete missingLocator.extra;
+    delete missingLocator.payload.container_id;
     rewriteBinding(storage, cases.get('missing-locator')!, JSON.stringify(missingLocator));
 
-    const stopped = binding(storage, cases.get('stopped-container')!).extra!.container_id!;
+    const stopped = binding(storage, cases.get('stopped-container')!).payload.container_id!;
     execFileSync('docker', ['stop', stopped], { stdio: 'ignore' });
-    const deleted = binding(storage, cases.get('deleted-container')!).extra!.container_id!;
+    const deleted = binding(storage, cases.get('deleted-container')!).payload.container_id!;
     execFileSync('docker', ['rm', '-f', deleted], { stdio: 'ignore' });
 
     brain = spawnBrain(binary, storage);
-    await waitForPort(PORT, 180_000, brain);
+    await waitForPort(PORT, 180_000, brain as any);
     for (const [name, sessionId] of cases) {
       await expectRestoreFailure(client, sessionId, name);
       const afterFault = execFileSync(

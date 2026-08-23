@@ -16,6 +16,7 @@ DRIVER="$REPO_ROOT/e2e/k3d/distributed_control_driver.ts"
 API_PF_LOG="${TMPDIR:-/tmp}/adr71_api_pf.log"
 API_PF=""
 STOPPED_NODE=""
+WORKER_TLS_DIR=""
 export CARGO_CACHE_AUTOCLEAN=0
 
 log() { echo -e "\n\033[1;36m== $* ==\033[0m"; }
@@ -24,6 +25,7 @@ err() { echo -e "\033[1;31m$*\033[0m"; }
 
 cleanup() {
   local status=$?
+  [ -z "$WORKER_TLS_DIR" ] || rm -rf -- "$WORKER_TLS_DIR"
   if [ "$status" -ne 0 ] && [ "${ADR71_KEEP_FAILED_CLUSTER:-0}" = "1" ]; then
     err "retaining failed k3d cluster $CLUSTER for diagnostics"
     return
@@ -120,6 +122,27 @@ DNS_NODES=$(kubectl -n kube-system get pod -l k8s-app=kube-dns \
 [ "$DNS_NODES" = "2" ] || { err "CoreDNS is not ready on two distinct nodes"; exit 1; }
 kubectl create namespace "$NS" >/dev/null 2>&1 || true
 
+# Worker transport TLS cause/effect decision table:
+# C1 one explicit DNS SAN for the Coordinator Service + C2 the matching private
+# CA is mounted into Workers + C3 the leaf/key volume is mounted only into the
+# TLS sidecar container + C4 Service and NetworkPolicy route Workers only to
+# sidecar port 3443 -> E1 WorkerUpstream admits HTTPS and validates the private
+# cluster identity without a global TLS bypass. Any false cause -> E2 the static
+# deployment contract fails for a missing input, or the existing TLS handshake
+# fails before signed registration for a mismatched CA/SAN.
+# K1 tls_identity_fixture.mjs is the sole E2E certificate generator; production
+# trust admission remains owned by WorkerUpstream. D1=C1+C2+C3+C4=>E1;
+# D2=!C1||!C2||!C3||!C4=>E2. The live rollout below is the positive DNS-SAN/
+# sidecar rule; the credential-materialization E2E reuses the fixture for IP SAN.
+WORKER_TLS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/adr71-worker-tls.XXXXXX")
+node "$REPO_ROOT/e2e/fixtures/tls_identity_fixture.mjs" \
+  "$WORKER_TLS_DIR" "Awaken ADR71 Worker CA" coordinator DNS:coordinator
+kubectl -n "$NS" create configmap adr71-worker-upstream-ca \
+  --from-file=ca.crt="$WORKER_TLS_DIR/worker-test-ca.pem" >/dev/null
+kubectl -n "$NS" create secret tls adr71-worker-upstream-tls \
+  --cert="$WORKER_TLS_DIR/worker-test-server.pem" \
+  --key="$WORKER_TLS_DIR/worker-test-server.key" >/dev/null
+
 # Kube-API egress cause/effect decision table: A1 a CNI evaluates the Service
 # ClusterIP before DNAT -> a ClusterIP rule may work but is not portable; A2 it
 # evaluates the backend after DNAT (K3S) -> that same rule silently blocks every
@@ -151,9 +174,10 @@ log "3/10 deploy replicated authorities, real Workers, and PostgreSQL standby"
 # K2 primary + streaming standby + bounded per-replica pools -> all four owner
 # databases migrate without exhausting the shared server connection budget;
 # K3 two anti-affined role replicas -> one Pod/node loss leaves an endpoint;
-# K4 Worker template + identity-specific signer + namespace-scoped K8s runtime ->
-# real Worker starts without seal key/DB, creates an isolated Session Pod, and
-# resolves exact Credential/File/Memory/Skill projections there;
+# K4 Worker template + identity-specific signer + private-CA HTTPS edge +
+# namespace-scoped K8s runtime -> real Worker starts without seal key/DB,
+# creates an isolated Session Pod, and resolves exact Credential/File/Memory/
+# Skill projections there; Worker egress cannot bypass TLS on port 3001;
 # K5 one Ingress -> public paths route by owner and every private path stays absent.
 kubectl -n "$NS" apply -k "$DEPLOY_DIR/distributed-control" >/dev/null
 kubectl -n "$NS" rollout status statefulset/postgres-primary --timeout=180s
@@ -179,14 +203,18 @@ for pod in worker-0 worker-1; do
   kubectl -n "$NS" exec "$pod" -- /bin/sh -ec \
     '! grep -q ":1538 " /proc/net/tcp /proc/net/tcp6 2>/dev/null'
 done
-# Materialization-location decision table: M1 a Managed File path is normalized
-# below the one live-input root; M2 a Memory mount is rooted below the container
-# workspace's `.mnt`; M3 an explicitly filesystem-backed Skill is projected into
-# the runtime-owned `.skills`; M4 an instruction-only Skill has no filesystem
-# effect and therefore cannot prove materialization. This fixture selects
-# M1+M2+M3 and probes each canonical path independently in the isolated Session
-# Pod. An absent path or content mismatch fails instead of accepting a marker
-# found in an unrelated Resource tree.
+# Materialization-location cause/effect table: C1 a Managed File path is
+# normalized below the one live-input root; C2 a Memory mount preserves the
+# Managed absolute `/mnt` path; C3 a multipart filesystem Skill owns the opaque
+# catalog id returned by bootstrap; C4 an instruction-only Skill has no
+# filesystem effect. E1 C1+C2+C3 project the three exact markers; E2 C4 cannot
+# prove materialization. K1 K8s creation awaits File and Memory projection;
+# K2 the later awaited Skill wiring atomically commits `.skills` before inference,
+# so the completed stage-4 Provider marker is downstream readiness for all three;
+# K3 the runtime projector alone maps the returned Skill id to `.skills` and this
+# probe must not recompute it. D1 selects C1+C2+C3 and requires each
+# canonical path independently; D2 excludes C4. Missing content fails without a
+# second polling authority or accepting a marker from another Resource tree.
 SESSION_PODS=$(kubectl -n "$NS" get pods -l app=awaken-sandbox \
   -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}')
 [ -n "$SESSION_PODS" ] || { err "no isolated Session Pod realized the run"; diagnostics; exit 1; }
@@ -202,10 +230,10 @@ while IFS='|' read -r kind path marker; do
   done <<<"$SESSION_PODS"
   [ "$found" = "1" ] \
     || { err "no Session Pod contained the pinned ${kind} marker"; diagnostics; exit 1; }
-done <<'MATERIALIZATION_CASES'
+done <<MATERIALIZATION_CASES
 FILE|/mnt/session/uploads/inputs/adr71-input.txt|ADR71-FILE-MATERIALIZED
-MEMORY|/workspace/.mnt/memory/fact.md|ADR71-MEMORY-MATERIALIZED
-SKILL|/workspace/.skills/adr71-skill/SKILL.md|ADR71-SKILL-MATERIALIZED
+MEMORY|/mnt/memory/fact.md|ADR71-MEMORY-MATERIALIZED
+SKILL|/workspace/.skills/${SKILL_ID}/SKILL.md|ADR71-SKILL-MATERIALIZED
 MATERIALIZATION_CASES
 ok "Workers have no DB socket/config/seal; the Session Pod owns every exact Resource projection"
 

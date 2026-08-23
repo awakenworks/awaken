@@ -24,9 +24,11 @@ use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use awaken_runtime_contract::resume::ResumeResult;
 
 use crate::dispatch::{
-    CasOutcome, Claimed, CommitEpochGuard, CredentialRealizationReceipt, Dispatch,
-    DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary, Inbox,
-    Outbox, PendingInput, PendingRecord, RunClaim, SettleOutcome, SubmitOptions,
+    CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission, CredentialRealizationReceipt,
+    Dispatch, DispatchCompletion, DispatchError, DispatchOutcome, DispatchQueue, DispatchSummary,
+    Inbox, Outbox, PendingInput, PendingRecord, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 #[cfg(feature = "durable")]
 use crate::postgres::PostgresDispatchStore;
@@ -275,6 +277,41 @@ macro_rules! delegate {
 
 #[async_trait]
 impl DispatchQueue for AnyDispatchStore {
+    async fn reserve_session_run(
+        &self,
+        request: RunDispatch,
+        reservation_deadline_ms: u64,
+    ) -> Result<SessionRunReservationOutcome, DispatchError> {
+        delegate!(self, reserve_session_run(request, reservation_deadline_ms))
+    }
+
+    async fn activate_session_run_reservation(
+        &self,
+        run_id: &RunId,
+        session_thread_id: &ThreadId,
+        session_activity_epoch: u64,
+    ) -> Result<SessionRunReservationActivation, DispatchError> {
+        delegate!(
+            self,
+            activate_session_run_reservation(run_id, session_thread_id, session_activity_epoch)
+        )
+    }
+
+    async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
+        delegate!(self, reject_session_run_reservation(run_id))
+    }
+
+    async fn resolve_claimed_session_run_reservation(
+        &self,
+        claim: &RunClaim,
+        resolution: SessionRunReservationResolution,
+    ) -> Result<SettleOutcome, DispatchError> {
+        delegate!(
+            self,
+            resolve_claimed_session_run_reservation(claim, resolution)
+        )
+    }
+
     async fn worker_owns_run(
         &self,
         identity: &crate::WorkerIdentity,
@@ -286,6 +323,13 @@ impl DispatchQueue for AnyDispatchStore {
 
     async fn claim_is_current(&self, claim: &RunClaim, now_ms: u64) -> Result<bool, DispatchError> {
         delegate!(self, claim_is_current(claim, now_ms))
+    }
+
+    async fn lock_session_run_reservation_epoch(
+        &self,
+        claim: &RunClaim,
+    ) -> Result<Option<CommitEpochGuard>, DispatchError> {
+        delegate!(self, lock_session_run_reservation_epoch(claim))
     }
 
     async fn record_credential_realization(
@@ -339,6 +383,14 @@ impl DispatchQueue for AnyDispatchStore {
         options: SubmitOptions,
     ) -> Result<(), DispatchError> {
         delegate!(self, enqueue_with(request, options))
+    }
+
+    async fn enqueue_session_child(
+        &self,
+        request: RunDispatch,
+        admission: SessionChildAdmission,
+    ) -> Result<(), DispatchError> {
+        delegate!(self, enqueue_session_child(request, admission))
     }
 
     async fn claim_new_run(
@@ -622,7 +674,34 @@ impl Outbox for AnyDispatchStore {
         delegate!(self, stage(input))
     }
 
+    async fn stage_session_resume(
+        &self,
+        input: PendingInput,
+        session_thread_id: &ThreadId,
+        prior_session_activity_epoch: Option<u64>,
+        session_activity_epoch: u64,
+    ) -> Result<bool, DispatchError> {
+        delegate!(
+            self,
+            stage_session_resume(
+                input,
+                session_thread_id,
+                prior_session_activity_epoch,
+                session_activity_epoch
+            )
+        )
+    }
+
     async fn relay(&self) -> Result<usize, DispatchError> {
         delegate!(self, relay())
+    }
+
+    async fn relay_and_enqueue(
+        &self,
+        input: PendingInput,
+        request: RunDispatch,
+        admission: ContinuationAdmission,
+    ) -> Result<(), DispatchError> {
+        delegate!(self, relay_and_enqueue(input, request, admission))
     }
 }

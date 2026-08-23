@@ -25,6 +25,7 @@ use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::{Id as RunId, Record as RunRecord, RunState};
 use awaken_agent_contract::agent::state::Command as StateCommand;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::audit::kind::Kind as AuditKind;
 use awaken_agent_contract::audit::record::Record as EventRecord;
 use awaken_agent_contract::thread::commit::coordinator::{
     Coordinator as CommitCoordinator, Error, OperationCoordinator,
@@ -37,7 +38,8 @@ use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventSco
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::lifecycle::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleFeed, RunLifecycleFeedError,
-    RunLifecyclePage, classify_run_lifecycle_event,
+    RunLifecyclePage, classify_run_lifecycle_record, decode_run_lifecycle_cursor,
+    encode_run_lifecycle_cursor,
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
@@ -63,12 +65,6 @@ fn increment_authority(value: u64) -> Result<u64, Error> {
     StoredU64::try_from(value)
         .and_then(|value| value.checked_add(1))
         .map(StoredU64::domain_value)
-        .map_err(|error| Error::Rejected(error.to_string()))
-}
-
-fn event_authority(sequence: u64, offset: usize) -> Result<StoredU64, Error> {
-    StoredU64::try_from(sequence)
-        .and_then(|value| value.checked_scale_and_offset(1_000, offset))
         .map_err(|error| Error::Rejected(error.to_string()))
 }
 
@@ -398,15 +394,19 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
             let mut statement = conn
                 .prepare(&format!(
                     "WITH lifecycle AS (\
-                         SELECT event.sequence, event.run_id, run.thread_id, event.payload, \
-                                lag(event.payload) OVER (\
-                                    PARTITION BY event.run_id ORDER BY event.sequence\
-                                ) AS previous_payload \
+                         SELECT event.sequence, event.run_id, run.thread_id, event.kind, event.payload, \
+                                (SELECT prior.payload FROM {NS}_event AS prior \
+                                 WHERE prior.run_id = event.run_id \
+                                   AND prior.sequence < event.sequence \
+                                   AND prior.kind IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"') \
+                                 ORDER BY prior.sequence DESC LIMIT 1) AS previous_payload \
                          FROM {NS}_event AS event \
                          JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
-                         WHERE event.kind IN ('\"RunStateChanged\"', '\"RunPhaseChanged\"')\
+                         WHERE event.kind IN (\
+                             '\"RunStateChanged\"', '\"RunPhaseChanged\"', '\"RunRescheduled\"'\
+                         )\
                      ) \
-                     SELECT sequence, run_id, thread_id, payload, previous_payload \
+                     SELECT sequence, run_id, thread_id, kind, payload, previous_payload \
                      FROM lifecycle WHERE sequence > ?1 ORDER BY sequence LIMIT ?2"
                 ))
                 .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
@@ -417,7 +417,8 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, String>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 })
                 .map_err(|error| RunLifecycleFeedError::Rejected(error.to_string()))?;
@@ -427,11 +428,16 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
         };
 
         let mut events = Vec::with_capacity(rows.len());
-        for (sequence, run_id, thread_id, payload, previous_payload) in rows {
+        for (sequence, run_id, thread_id, kind, payload, previous_payload) in rows {
             let sequence = u64::try_from(sequence).map_err(|_| {
                 RunLifecycleFeedError::Rejected(
                     "persisted lifecycle sequence is negative".to_string(),
                 )
+            })?;
+            let audit_kind = serde_json::from_str::<AuditKind>(&kind).map_err(|error| {
+                RunLifecycleFeedError::Rejected(format!(
+                    "persisted lifecycle event {sequence} has an invalid kind: {error}"
+                ))
             })?;
             let payload = serde_json::from_str::<serde_json::Value>(&payload)
                 .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
@@ -439,6 +445,12 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                 payload.get("state").cloned().unwrap_or_default(),
             )
             .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
+            let await_reason = payload
+                .get("await_reason")
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| RunLifecycleFeedError::InvalidState { sequence })?;
             let previous = previous_payload
                 .map(|payload| {
                     serde_json::from_str::<serde_json::Value>(&payload)
@@ -450,10 +462,17 @@ impl RunLifecycleFeed for SqliteCommitCoordinator {
                 .transpose()?;
             events.push(RunLifecycleEvent {
                 cursor: RunLifecycleCursor(sequence),
+                source_commit_cursor: decode_run_lifecycle_cursor(RunLifecycleCursor(sequence)).0,
                 thread_id: ThreadId(thread_id),
                 run_id: RunId(run_id),
-                kind: classify_run_lifecycle_event(&state, previous.as_ref()),
+                kind: classify_run_lifecycle_record(&audit_kind, &state, previous.as_ref())
+                    .ok_or_else(|| {
+                        RunLifecycleFeedError::Rejected(format!(
+                            "persisted lifecycle event {sequence} has a non-lifecycle kind"
+                        ))
+                    })?,
                 state,
+                await_reason,
             });
         }
         let next_cursor = events.last().map_or(cursor, |event| event.cursor);
@@ -534,6 +553,38 @@ impl RunRecoverySource for SqliteCommitCoordinator {
 
         let messages = read_thread_json_rows::<Message>(&tx, "message", thread_id)?;
         let state = read_thread_json_rows::<StateCommand>(&tx, "state_command", thread_id)?;
+        let mut events = Vec::new();
+        {
+            let mut statement = tx
+                .prepare(&format!(
+                    "SELECT event.sequence, event.run_id, event.kind, event.payload \
+                     FROM {NS}_event AS event \
+                     JOIN {NS}_run_record AS run ON run.run_id = event.run_id \
+                     WHERE run.thread_id = ?1 ORDER BY event.sequence"
+                ))
+                .map_err(recovery_reject)?;
+            let rows = statement
+                .query_map(params![&thread_id.0], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })
+                .map_err(recovery_reject)?;
+            for row in rows {
+                let (sequence, run_id, kind, payload) = row.map_err(recovery_reject)?;
+                events.push(EventRecord {
+                    sequence: StoredU64::try_from(sequence)
+                        .map(StoredU64::domain_value)
+                        .map_err(recovery_reject)?,
+                    run_id: RunId(run_id),
+                    kind: serde_json::from_str(&kind).map_err(recovery_reject)?,
+                    payload: serde_json::from_str(&payload).map_err(recovery_reject)?,
+                });
+            }
+        }
         let mut resume_tickets = Vec::new();
         {
             let mut statement = tx
@@ -565,6 +616,7 @@ impl RunRecoverySource for SqliteCommitCoordinator {
             latest_run_id,
             messages,
             state,
+            events,
             resume_tickets,
             thread_version: StoredU64::try_from(thread_version)
                 .map(StoredU64::domain_value)
@@ -852,13 +904,14 @@ fn write_commit_rows(
     }
 
     for (offset, draft) in commit.events.iter().enumerate() {
-        let sequence = event_authority(next, offset)?;
+        let sequence = encode_run_lifecycle_cursor(next, offset)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         tx.execute(
             &format!(
                 "INSERT INTO {p}_event (sequence, run_id, kind, payload) VALUES (?1,?2,?3,?4)"
             ),
             params![
-                sequence.database_value(),
+                encode_authority(sequence.0)?,
                 run_id,
                 json(&draft.kind)?,
                 json(&draft.payload)?
@@ -931,8 +984,10 @@ fn advance_projection(
         projection.state.push((thread_id.clone(), command));
     }
     for (offset, draft) in commit.events.into_iter().enumerate() {
+        let cursor = encode_run_lifecycle_cursor(sequence, offset)
+            .map_err(|error| Error::Rejected(error.to_string()))?;
         projection.events.push(EventRecord {
-            sequence: event_authority(sequence, offset)?.domain_value(),
+            sequence: cursor.0,
             run_id: run_id.clone(),
             kind: draft.kind,
             payload: draft.payload,

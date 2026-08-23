@@ -85,7 +85,6 @@ pub(super) async fn infer_with_retry(
     capture: &awaken_runtime_contract::CaptureDecision,
     content_sink: content::SinkTarget<'_>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
-    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     infer_with_retry_observed(
         llm,
@@ -98,11 +97,15 @@ pub(super) async fn infer_with_retry(
         capture,
         content_sink,
         metrics,
-        reschedules,
-        None,
         None,
     )
     .await
+    .result
+}
+
+pub(super) struct ObservedModelRequest {
+    pub(super) result: std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error>,
+    pub(super) observation: awaken_runtime_contract::llm::ModelRequestObservation,
 }
 
 #[tracing::instrument(
@@ -135,17 +138,8 @@ pub(super) async fn infer_with_retry_observed(
     capture: &awaken_runtime_contract::CaptureDecision,
     content_sink: content::SinkTarget<'_>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
-    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
-    model_requests: Option<
-        &std::sync::Arc<
-            std::sync::Mutex<Vec<awaken_runtime_contract::llm::ModelRequestObservation>>,
-        >,
-    >,
-    rescheduled_run: Option<(
-        &std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-        &RunId,
-    )>,
-) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
+    ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
+) -> ObservedModelRequest {
     let span = tracing::Span::current();
     // The routing model id, captured before `request` moves into the retry loop —
     // it labels both the span and the metric (structure only, never content).
@@ -165,6 +159,7 @@ pub(super) async fn infer_with_retry_observed(
         &content::render_chat_messages(&request.messages),
     )
     .await;
+    let mut retry_count = 0;
     let result = infer_with_retry_inner(
         llm,
         request,
@@ -174,8 +169,8 @@ pub(super) async fn infer_with_retry_observed(
         checkpoint,
         resume,
         metrics,
-        reschedules,
-        rescheduled_run,
+        &mut retry_count,
+        ownership,
     )
     .await;
     // Any return means recovery concluded in-process, so the checkpoint (if any)
@@ -232,21 +227,19 @@ pub(super) async fn infer_with_retry_observed(
         input_tokens,
         output_tokens,
     });
-    if let Some(observations) = model_requests {
-        let observation = awaken_runtime_contract::llm::ModelRequestObservation {
-            is_error: result.is_err(),
-            usage: result
-                .as_ref()
-                .ok()
-                .and_then(|response| response.usage)
-                .unwrap_or_default(),
-        };
-        observations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(observation);
+    let observation = awaken_runtime_contract::llm::ModelRequestObservation {
+        is_error: result.is_err(),
+        usage: result
+            .as_ref()
+            .ok()
+            .and_then(|response| response.usage)
+            .unwrap_or_default(),
+        retry_count,
+    };
+    ObservedModelRequest {
+        result,
+        observation,
     }
-    result
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -259,11 +252,8 @@ async fn infer_with_retry_inner(
     checkpoint: Option<&CheckpointCtx<'_>>,
     resume: Option<StreamCheckpoint>,
     metrics: &dyn awaken_runtime_contract::metrics::MetricsRecorder,
-    reschedules: Option<&std::sync::Arc<std::sync::atomic::AtomicU32>>,
-    rescheduled_run: Option<(
-        &std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-        &RunId,
-    )>,
+    retry_count: &mut u32,
+    ownership: Option<&dyn awaken_runtime_contract::AttemptOwnershipVerifier>,
 ) -> std::result::Result<ChatResponse, awaken_runtime_contract::llm::Error> {
     let model = request.model_binding.model_ref.clone();
     let sink = ContinuationSink::new(sink);
@@ -274,6 +264,7 @@ async fn infer_with_retry_inner(
     // Cross-process resume: reproduce in-process the plan a fresh interruption
     // would have taken from this persisted partial.
     if let Some(cp) = resume {
+        *retry_count = cp.retry_count;
         let completed = parse_completed(&cp.partial_tools);
         if !completed.is_empty() {
             // R2: the model had finished its tool calls before the crash — run
@@ -296,6 +287,17 @@ async fn infer_with_retry_inner(
             continuation_request(&request, &prefix)
         };
         sink.reset();
+        // The dispatch claim is a live side-effect fence, distinct from the
+        // once-per-logical-request application gate. Recheck it immediately
+        // before every provider attempt so a lease lost during backoff cannot
+        // spend another remote request before the eventual commit CAS notices.
+        awaken_runtime_contract::execution::verify_attempt_ownership(ownership)
+            .await
+            .map_err(|error| {
+                awaken_runtime_contract::llm::Error::Unauthorized(format!(
+                    "model request attempt no longer owns execution: {error}"
+                ))
+            })?;
         let attempt_result = tokio::time::timeout(
             policy.attempt_timeout,
             llm.infer_streaming(attempt_request, &sink),
@@ -334,20 +336,28 @@ async fn infer_with_retry_inner(
                 let combined_text = format!("{prefix}{}", snapshot.text);
 
                 if retryable {
+                    let completed = parse_completed(&snapshot.tools);
                     // Boundary flush (Phase 3): persist the whole in-flight partial
                     // so a crash during recovery resumes here. The runtime still
                     // degrades deliberately, but the backend error is observable.
                     if let Some(ctx) = checkpoint
                         && let Err(error) = ctx
                             .store
-                            .put(ctx.checkpoint(combined_text.clone(), snapshot.tools.clone()))
+                            .put(ctx.checkpoint(
+                                combined_text.clone(),
+                                snapshot.tools.clone(),
+                                if completed.is_empty() {
+                                    retry_count.saturating_add(1)
+                                } else {
+                                    *retry_count
+                                },
+                            ))
                             .await
                     {
                         tracing::warn!(run_id = %ctx.run_id, %error, "failed to persist stream checkpoint");
                     }
                     // R2: tool calls finished before the drop → execute them now
                     // rather than re-inferring, even if the retry budget is spent.
-                    let completed = parse_completed(&snapshot.tools);
                     if !completed.is_empty() {
                         return Ok(synthesized_tool_response(&combined_text, completed));
                     }
@@ -363,16 +373,7 @@ async fn infer_with_retry_inner(
                     // R1/R3/R4 collapse: continue from the combined text (empty ⇒
                     // clean restart); any still-open tool call is dropped.
                     prefix = combined_text;
-                    // Count this transparent retry so the host can surface
-                    // `session.status_rescheduled` (auto-recovery observability).
-                    if let Some(c) = reschedules {
-                        c.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    if let Some((runs, run_id)) = rescheduled_run {
-                        runs.lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner)
-                            .insert(run_id.0.clone());
-                    }
+                    *retry_count = retry_count.saturating_add(1);
                     tokio::time::sleep(policy.delay_before_retry(&err, attempt)).await;
                     attempt += 1;
                 } else {
@@ -389,41 +390,59 @@ async fn infer_with_retry_inner(
 pub(super) struct StreamDeltaSink<'a> {
     pub(super) context: &'a RuntimeRunContext,
     pub(super) run_id: &'a RunId,
+    pub(super) thread_id: &'a ThreadId,
+    pub(super) step: usize,
+    pub(super) response: usize,
 }
 
 #[async_trait]
 impl DeltaSink for StreamDeltaSink<'_> {
     async fn on_text(&self, chunk: &str) {
-        emit(
+        emit_stream(
             self.context,
-            self.run_id,
-            AgentEvent::Delta(Delta::TextDelta {
-                delta: chunk.to_string(),
-            }),
+            StreamObservation::assistant_delta(
+                self.run_id.clone(),
+                self.thread_id.clone(),
+                self.step,
+                self.response,
+                AgentEvent::Delta(Delta::TextDelta {
+                    delta: chunk.to_string(),
+                }),
+            ),
         )
         .await;
     }
 
     async fn on_reasoning(&self, chunk: &str) {
-        emit(
+        emit_stream(
             self.context,
-            self.run_id,
-            AgentEvent::Delta(Delta::ReasoningDelta {
-                delta: chunk.to_string(),
-            }),
+            StreamObservation::assistant_delta(
+                self.run_id.clone(),
+                self.thread_id.clone(),
+                self.step,
+                self.response,
+                AgentEvent::Delta(Delta::ReasoningDelta {
+                    delta: chunk.to_string(),
+                }),
+            ),
         )
         .await;
     }
 
     async fn on_tool_call_delta(&self, call_id: &str, tool_id: &str, args_delta: &str) {
-        emit(
+        emit_stream(
             self.context,
-            self.run_id,
-            AgentEvent::Delta(Delta::ToolCallDelta {
-                id: call_id.to_string(),
-                name: tool_id.to_string(),
-                args_delta: args_delta.to_string(),
-            }),
+            StreamObservation::assistant_delta(
+                self.run_id.clone(),
+                self.thread_id.clone(),
+                self.step,
+                self.response,
+                AgentEvent::Delta(Delta::ToolCallDelta {
+                    id: call_id.to_string(),
+                    name: tool_id.to_string(),
+                    args_delta: args_delta.to_string(),
+                }),
+            ),
         )
         .await;
     }
@@ -572,13 +591,19 @@ pub(super) struct CheckpointCtx<'a> {
 }
 
 impl CheckpointCtx<'_> {
-    fn checkpoint(&self, text: String, tools: Vec<PartialToolCall>) -> StreamCheckpoint {
+    fn checkpoint(
+        &self,
+        text: String,
+        tools: Vec<PartialToolCall>,
+        retry_count: u32,
+    ) -> StreamCheckpoint {
         StreamCheckpoint {
             run_id: self.run_id.clone(),
             thread_id: self.thread_id.clone(),
             model: self.model.clone(),
             partial_text: text,
             partial_tools: tools,
+            retry_count,
         }
     }
 }

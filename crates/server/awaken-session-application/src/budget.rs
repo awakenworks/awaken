@@ -1,8 +1,8 @@
 //! Session-root list-cost admission and cumulative usage settlement.
 
 use awaken_session_contract::{
-    ManagedBudgetUsageCursor, ManagedLifecycleFact, ManagedModelUsageCursor, PersistedSession,
-    SessionBudgetState, SessionUsage,
+    ManagedBudgetUsageCursor, ManagedLifecycleFact, PersistedSession, SessionBudgetState,
+    SessionUsage,
 };
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
@@ -41,63 +41,46 @@ impl SessionApplication {
                     )
                 })?;
             let was_admissible = session.budget.can_admit_model_request();
-            let mut by_model = usage
-                .by_model
-                .iter()
-                .map(|(model, usage)| {
-                    (
-                        model.clone(),
-                        ManagedModelUsageCursor {
-                            input_tokens: usage.input_tokens,
-                            output_tokens: usage.output_tokens,
-                            cache_read_tokens: usage.cache_read_tokens,
-                            cache_creation_tokens: usage.cache_creation_tokens,
-                        },
-                    )
-                })
-                .collect::<std::collections::BTreeMap<_, _>>();
-            if by_model.is_empty()
-                && (usage.input_tokens != 0
-                    || usage.output_tokens != 0
-                    || usage.cache_read_tokens != 0
-                    || usage.cache_creation_tokens != 0)
-            {
-                by_model.insert(
-                    fallback_model,
-                    ManagedModelUsageCursor {
-                        input_tokens: usage.input_tokens,
-                        output_tokens: usage.output_tokens,
-                        cache_read_tokens: usage.cache_read_tokens,
-                        cache_creation_tokens: usage.cache_creation_tokens,
-                    },
-                );
-            }
             let active_seconds = session
                 .budget
                 .usage_cursor()
                 .map_or(usage.active_seconds, |cursor| {
                     cursor.active_seconds.max(usage.active_seconds)
                 });
-            session
+            let mut usage_cursor =
+                ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
+                    .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
+            usage_cursor.active_seconds = active_seconds;
+            let usage_changed = session
                 .budget
-                .reconcile_cumulative_usage(ManagedBudgetUsageCursor {
-                    by_model,
-                    active_seconds,
-                    web_fetch_requests: usage.web_fetch_requests,
-                    web_search_requests: usage.web_search_requests,
-                })
+                .reconcile_cumulative_usage(usage_cursor)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
             let reached_now = was_admissible && !session.budget.can_admit_model_request();
-            let lifecycle_facts = if reached_now {
-                if let SessionBudgetState::Active {
-                    reached_event_emitted,
-                    ..
-                } = &mut session.budget
-                {
-                    *reached_event_emitted = true;
-                }
+            let reach_transition = if reached_now {
+                Some(
+                    session
+                        .budget
+                        .record_reach_transition()
+                        .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?
+                        .ok_or_else(|| {
+                            SessionMutationError::Unavailable(
+                                "reached Session budget did not append transition provenance"
+                                    .into(),
+                            )
+                        })?,
+                )
+            } else {
+                None
+            };
+            if !usage_changed && !reached_now {
+                return Ok(BudgetSettlementOutcome {
+                    session,
+                    reached_now: false,
+                });
+            }
+            let lifecycle_facts = if let Some(transition) = &reach_transition {
                 vec![ManagedLifecycleFact {
-                    id: format!("budget-reached:{session_id}:{}", session.revision.0),
+                    id: format!("budget-reached:{session_id}:{}", transition.generation),
                     object_id: session_id.to_owned(),
                     workspace_id: Some(owner_scope.clone()),
                     event_type: "session.budget_reached".into(),

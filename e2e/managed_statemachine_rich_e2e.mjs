@@ -11,7 +11,15 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38188);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -24,12 +32,25 @@ async function main() {
   await waitForPort(PORT);
   try {
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact User receipt; C2=two successful result-gated transitions and
+    // end_turn. E1=the post-C1 delta owns both transitions. K: prior terminal
+    // history is ineligible. Decision R1 C1&&!C2=>retry; R2 C1+C2=>assert s2.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'walk the keyed machine' }] }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'R1 exact rich-machine User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => delta.filter((event) => event.type === 'agent.tool_use').length === 2
+        && delta.filter((event) => event.type === 'agent.tool_result').length === 2
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'R1 rich state-machine Run to commit both transitions',
+    );
 
     const toolUses = events.filter((e) => e.type === 'agent.tool_use');
     assert.equal(toolUses.length, 2, 'the model made two glob calls');

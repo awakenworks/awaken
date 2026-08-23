@@ -20,6 +20,8 @@ impl awaken_run_ingress_testkit::ConformanceClock for awaken_run_ingress_testkit
 pub fn awaken_run_ingress_testkit::DirectCommandClock::set(&self, u64)
 impl<F> awaken_run_ingress_testkit::ConformanceClock for F where F: core::ops::function::Fn(u64) + core::marker::Send + core::marker::Sync
 pub fn F::set(&self, u64)
+pub async fn awaken_run_ingress_testkit::assert_atomic_report_continuation_conformance(&dyn awaken_run_ingress_contract::dispatch::Dispatch, &str)
 pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities)
 pub async fn awaken_run_ingress_testkit::assert_dispatch_conformance_with_clock(&dyn awaken_run_ingress_contract::dispatch::DispatchQueue, &str, awaken_run_ingress_testkit::ConformanceCapabilities, &dyn awaken_run_ingress_testkit::ConformanceClock)
 pub async fn awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance<S>(&S, &str) where S: awaken_run_ingress_contract::dispatch::DispatchQueue + awaken_run_ingress_contract::operational::DispatchOperationalFeed + ?core::marker::Sized
+pub async fn awaken_run_ingress_testkit::assert_session_reply_activity_rotation_conformance(&dyn awaken_run_ingress_contract::dispatch::Dispatch, &str)

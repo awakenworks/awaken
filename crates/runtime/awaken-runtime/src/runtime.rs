@@ -4,9 +4,11 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::delegation::{ChildRunCancellation, DelegationId};
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
 use awaken_runtime_contract::delegation::{DelegationExecutionError, RunDelegationService};
+use awaken_runtime_contract::live_inbox::LiveInbox;
 use awaken_runtime_contract::llm::LlmExecutor;
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::permission::ToolGateHook;
@@ -16,6 +18,7 @@ use awaken_runtime_contract::plugin::{
 };
 use awaken_runtime_contract::snapshot::{ExecutableAgentSnapshot, ExecutableAgentSnapshotId};
 use awaken_runtime_contract::tool::{RawTool, RawToolRegistry};
+use awaken_runtime_contract::{AttemptOwnershipVerifier, RuntimeRunContext};
 use parking_lot::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -39,6 +42,84 @@ impl Default for FailureCeiling {
     fn default() -> Self {
         Self(NonZeroUsize::MIN)
     }
+}
+
+/// Opaque identity for one process-local attempt-control registration.
+///
+/// The generation prevents a stale attempt's RAII guard from removing a newer
+/// claim for the same Run after ownership has moved.
+pub struct AttemptControlRegistration {
+    run_id: RunId,
+    generation: u64,
+}
+
+struct ActiveAttemptControl {
+    generation: u64,
+    thread_id: ThreadId,
+    cancellation: Option<CancellationToken>,
+    pause: Option<PauseSignal>,
+    live_inbox: Option<LiveInbox>,
+    ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
+}
+
+impl ActiveAttemptControl {
+    fn can_receive_wake(&self) -> bool {
+        self.cancellation.is_some() || self.pause.is_some() || self.live_inbox.is_some()
+    }
+}
+
+#[derive(Default)]
+struct ActiveAttemptControls {
+    next_generation: u64,
+    by_run: HashMap<RunId, ActiveAttemptControl>,
+}
+
+impl ActiveAttemptControls {
+    fn register(
+        &mut self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+        context: &RuntimeRunContext,
+    ) -> AttemptControlRegistration {
+        self.next_generation = self
+            .next_generation
+            .checked_add(1)
+            .expect("active-attempt registration generation exhausted");
+        let generation = self.next_generation;
+        self.by_run.insert(
+            run_id.clone(),
+            ActiveAttemptControl {
+                generation,
+                thread_id: thread_id.clone(),
+                cancellation: context.cancellation.clone(),
+                pause: context.pause.clone(),
+                live_inbox: context.live_inbox.clone(),
+                ownership: context.ownership.clone(),
+            },
+        );
+        AttemptControlRegistration {
+            run_id: run_id.clone(),
+            generation,
+        }
+    }
+
+    fn deregister(&mut self, registration: &AttemptControlRegistration) {
+        let current = self
+            .by_run
+            .get(&registration.run_id)
+            .is_some_and(|entry| entry.generation == registration.generation);
+        if current {
+            self.by_run.remove(&registration.run_id);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct ActiveAttemptSnapshot {
+    run_id: RunId,
+    generation: u64,
+    live_inbox: Option<LiveInbox>,
+    ownership: Option<Arc<dyn AttemptOwnershipVerifier>>,
 }
 
 /// The runtime core resolves snapshots and executes runs through injected ports.
@@ -68,11 +149,10 @@ pub struct Runtime {
     /// Installed plugin factories; the active subset for a run is chosen by the
     /// resolved spec's `plugin_ids` and merged under capability bounds (G30).
     plugins: Vec<Arc<dyn Plugin>>,
-    /// Cancellation tokens for in-flight runs, so live control can steer them.
-    active_runs: Mutex<HashMap<RunId, CancellationToken>>,
-    /// Pause signals for in-flight runs, so live control can await them at the next
-    /// safe boundary (ADR-0054). Mirrors `active_runs`, keyed the same way.
-    active_pauses: Mutex<HashMap<RunId, PauseSignal>>,
+    /// One process-local registry for every capability of an executing attempt.
+    /// It is observation/control only: the dispatch claim and Thread commit remain
+    /// the durable authorities.
+    active_attempt_controls: Mutex<ActiveAttemptControls>,
     /// How retryable inference failures are retried (attempts and backoff).
     retry_policy: crate::retry::LlmRetryPolicy,
     /// How many continuation rounds a `MaxTokens`-truncated text step may use
@@ -368,50 +448,158 @@ impl Runtime {
         self.run_delegation.as_ref()
     }
 
-    /// Track an in-flight run's cancellation token so `LiveRunControl` can reach
-    /// it. Called at the start of execution when the context carries a token.
-    pub(crate) fn register_run(&self, run_id: &RunId, token: CancellationToken) {
-        self.active_runs.lock().insert(run_id.clone(), token);
-    }
-
-    /// Stop tracking a run once it reaches a terminal state.
-    pub(crate) fn deregister_run(&self, run_id: &RunId) {
-        self.active_runs.lock().remove(run_id);
-    }
-
-    /// Track an in-flight run's pause signal so `LiveRunControl` can await it.
-    /// Called at the start of execution when the context carries a signal.
-    pub(crate) fn register_pause(&self, run_id: &RunId, pause: PauseSignal) {
-        self.active_pauses.lock().insert(run_id.clone(), pause);
-    }
-
-    /// Stop tracking a run's pause signal once it reaches a terminal state.
-    pub(crate) fn deregister_pause(&self, run_id: &RunId) {
-        self.active_pauses.lock().remove(run_id);
-    }
-
-    /// Register the neutral control handles for an attempt driven by an external
-    /// [`RunAttemptExecutor`](awaken_runtime_contract::execution::RunAttemptExecutor).
-    /// Native execution registers the same handles inside `Runtime::execute`; the
-    /// durable worker uses this boundary so ACP/A2A attempts participate in the
-    /// one live-control registry instead of growing an executor-specific channel.
+    /// Register every neutral live handle for one executing attempt.
+    ///
+    /// Native execution and the durable Worker share this boundary, so cancel,
+    /// pause, wake and live-inbox discovery cannot drift into separate registries.
+    /// The returned generation must be supplied to deregistration; an older claim
+    /// is then unable to erase a replacement claim's handles for the same Run.
+    #[must_use]
     pub fn register_attempt_controls(
         &self,
         run_id: &RunId,
-        context: &awaken_runtime_contract::runtime_context::RuntimeRunContext,
-    ) {
-        if let Some(token) = &context.cancellation {
-            self.register_run(run_id, token.clone());
-        }
-        if let Some(pause) = &context.pause {
-            self.register_pause(run_id, pause.clone());
+        thread_id: &ThreadId,
+        context: &RuntimeRunContext,
+    ) -> AttemptControlRegistration {
+        self.active_attempt_controls
+            .lock()
+            .register(run_id, thread_id, context)
+    }
+
+    /// Remove one exact attempt registration after any executor return path.
+    pub fn deregister_attempt_controls(&self, registration: &AttemptControlRegistration) {
+        self.active_attempt_controls.lock().deregister(registration);
+    }
+
+    fn active_attempt_snapshot(&self, run_id: &RunId) -> Option<ActiveAttemptSnapshot> {
+        self.active_attempt_controls
+            .lock()
+            .by_run
+            .get(run_id)
+            .map(|entry| ActiveAttemptSnapshot {
+                run_id: run_id.clone(),
+                generation: entry.generation,
+                live_inbox: entry.live_inbox.clone(),
+                ownership: entry.ownership.clone(),
+            })
+    }
+
+    async fn ownership_is_current(snapshot: &ActiveAttemptSnapshot) -> bool {
+        match &snapshot.ownership {
+            Some(ownership) => ownership.verify_current().await.is_ok(),
+            None => true,
         }
     }
 
-    /// Remove attempt controls after any executor return path.
-    pub fn deregister_attempt_controls(&self, run_id: &RunId) {
-        self.deregister_run(run_id);
-        self.deregister_pause(run_id);
+    fn registration_is_current(&self, snapshot: &ActiveAttemptSnapshot) -> bool {
+        self.active_attempt_controls
+            .lock()
+            .by_run
+            .get(&snapshot.run_id)
+            .is_some_and(|entry| entry.generation == snapshot.generation)
+    }
+
+    async fn active_attempt_for_thread(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Option<ActiveAttemptSnapshot> {
+        let candidates = self
+            .active_attempt_controls
+            .lock()
+            .by_run
+            .iter()
+            .filter(|(_, entry)| entry.thread_id == *thread_id)
+            .map(|(run_id, entry)| ActiveAttemptSnapshot {
+                run_id: run_id.clone(),
+                generation: entry.generation,
+                live_inbox: entry.live_inbox.clone(),
+                ownership: entry.ownership.clone(),
+            })
+            .collect::<Vec<_>>();
+
+        let mut current = Vec::new();
+        for candidate in candidates {
+            if Self::ownership_is_current(&candidate).await
+                && self.registration_is_current(&candidate)
+            {
+                current.push(candidate);
+            }
+        }
+        if current.len() != 1 {
+            return None;
+        }
+        let candidate = current.pop().expect("one current candidate");
+        self.registration_is_current(&candidate)
+            .then_some(candidate)
+    }
+
+    /// Resolve the single locally executing, currently owned Run for a Thread.
+    /// An idle Thread, a remote attempt, an ambiguous overlap, or a stale claim
+    /// all fail closed to `None`.
+    pub async fn active_attempt_run_id(&self, thread_id: &ThreadId) -> Option<RunId> {
+        self.active_attempt_for_thread(thread_id)
+            .await
+            .map(|attempt| attempt.run_id)
+    }
+
+    /// Resolve the single locally executing, currently owned attempt inbox for a
+    /// Thread. Callers fall back to durable Session events when the exact local
+    /// attempt has no inbox.
+    pub async fn active_attempt_live_inbox(&self, thread_id: &ThreadId) -> Option<LiveInbox> {
+        self.active_attempt_for_thread(thread_id)
+            .await
+            .and_then(|attempt| attempt.live_inbox)
+    }
+
+    /// Deliver only when the registered attempt still owns its dispatch claim.
+    /// Direct attempts have no claim verifier and are current while registered.
+    pub async fn deliver_to_current_attempt(
+        &self,
+        command: LiveCommand,
+    ) -> Result<(), ControlError> {
+        let run_id = match &command {
+            LiveCommand::Cancel { run_id }
+            | LiveCommand::Pause { run_id }
+            | LiveCommand::Wake { run_id, .. } => run_id,
+        };
+        let snapshot = self
+            .active_attempt_snapshot(run_id)
+            .ok_or(ControlError::NotActive)?;
+        if !Self::ownership_is_current(&snapshot).await {
+            return Err(ControlError::NotActive);
+        }
+        let controls = self.active_attempt_controls.lock();
+        let entry = controls
+            .by_run
+            .get(&snapshot.run_id)
+            .filter(|entry| entry.generation == snapshot.generation)
+            .ok_or(ControlError::NotActive)?;
+        Self::deliver_registered(entry, command)
+    }
+
+    fn deliver_registered(
+        attempt: &ActiveAttemptControl,
+        command: LiveCommand,
+    ) -> Result<(), ControlError> {
+        match command {
+            LiveCommand::Cancel { .. } => attempt
+                .cancellation
+                .as_ref()
+                .ok_or(ControlError::NotActive)
+                .map(CancellationToken::cancel),
+            LiveCommand::Pause { .. } => attempt
+                .pause
+                .as_ref()
+                .ok_or(ControlError::NotActive)
+                .map(PauseSignal::request),
+            LiveCommand::Wake { .. } if attempt.can_receive_wake() => {
+                if let Some(inbox) = &attempt.live_inbox {
+                    inbox.wake();
+                }
+                Ok(())
+            }
+            LiveCommand::Wake { .. } => Err(ControlError::NotActive),
+        }
     }
 
     /// Register an executable snapshot for by-id resolution. Returns the id so
@@ -454,6 +642,21 @@ impl Runtime {
         awaken_runtime_contract::execution::Error,
     > {
         crate::engine::run_commands::cancel_run(self, run_id, thread_id, context).await
+    }
+
+    /// Resolve an Awaiting tool Run's authoritative ToolBatch with fixed
+    /// interruption errors and end it without sampling the model.
+    pub async fn interrupt_awaiting_tools(
+        &self,
+        run_id: RunId,
+        thread_id: awaken_agent_contract::agent::thread::Id,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::run_commands::interrupt_awaiting_tools(self, run_id, thread_id, context)
+            .await
     }
 
     /// Retry every durable child-cancellation intent retained on `thread`.
@@ -516,39 +719,13 @@ impl Runtime {
 
 impl LiveRunControl for Runtime {
     fn deliver(&self, command: LiveCommand) -> Result<(), ControlError> {
-        match command {
-            // Cancellation is cooperative: signal the token; the loop observes it
-            // at the next Step boundary and commits a terminal Cancelled result.
-            LiveCommand::Cancel { run_id } => {
-                let active = self.active_runs.lock();
-                active.get(&run_id).ok_or(ControlError::NotActive)?.cancel();
-                Ok(())
-            }
-            // Pause is cooperative: signal the pause; the loop observes it at the
-            // next safe boundary and commits a durable `ManualPause` await (ADR-0054).
-            LiveCommand::Pause { run_id } => {
-                let active = self.active_pauses.lock();
-                active
-                    .get(&run_id)
-                    .ok_or(ControlError::NotActive)?
-                    .request();
-                Ok(())
-            }
-            // Wake is a live nudge for an in-flight run: verify a live subscriber
-            // (the run is registered active) accepts it, then it is a no-op — durable
-            // resume of a AWAITING run goes through `Runtime::resume` with a validated
-            // `ResumeCommand`, not this live channel. Fail closed when no live run
-            // accepts it (G5: a wake with no subscriber is a hard error, not a silent
-            // success), so the durable live-control seam surfaces `NoSubscriber`
-            // rather than reporting a phantom wake.
-            LiveCommand::Wake { run_id, .. } => {
-                let active = self.active_runs.lock();
-                if active.contains_key(&run_id) {
-                    Ok(())
-                } else {
-                    Err(ControlError::NotActive)
-                }
-            }
-        }
+        let run_id = match &command {
+            LiveCommand::Cancel { run_id }
+            | LiveCommand::Pause { run_id }
+            | LiveCommand::Wake { run_id, .. } => run_id,
+        };
+        let controls = self.active_attempt_controls.lock();
+        let attempt = controls.by_run.get(run_id).ok_or(ControlError::NotActive)?;
+        Self::deliver_registered(attempt, command)
     }
 }

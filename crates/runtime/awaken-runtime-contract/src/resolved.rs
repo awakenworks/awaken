@@ -1016,8 +1016,10 @@ pub enum ToolKind {
     /// result through the normal durable resume ticket.
     ClientExecuted,
     AgentDelegation,
-    /// Model-facing consultation capability executed by the runtime against
-    /// the publication-pinned advisor candidate, never a host `RawTool`.
+    /// Model-facing consultation capability executed through the runtime's
+    /// durable [`RunDelegationService`](crate::delegation::RunDelegationService)
+    /// against the publication-pinned advisor candidate, never a host `RawTool`
+    /// or a second inline model path.
     Advisor,
 }
 
@@ -1283,6 +1285,14 @@ pub const TOOL_OPEN_ID: &str = "tool__open";
 
 /// Reserved model-facing name of the advisor service tool.
 pub const ADVISOR_TOOL_ID: &str = "advisor";
+/// Model-visible notice used when the configured Advisor capability is absent.
+/// Runtime and Host share this value so fresh and recovered calls cannot expose
+/// different failure text.
+pub const ADVISOR_UNAVAILABLE_NOTICE: &str = "Advisor consultation unavailable.";
+/// Model-visible notice for a terminal Advisor child failure or targeted
+/// interruption. The underlying child failure remains in its own Run lifecycle;
+/// only this generic text crosses back into the primary model transcript.
+pub const ADVISOR_FAILURE_NOTICE: &str = "Advisor consultation failed.";
 
 /// Build the reserved `tool_open` descriptor from the still-deferred tools: its
 /// description lists each deferred tool's model-facing name + description so the model

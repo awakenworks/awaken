@@ -127,6 +127,8 @@ async function main() {
       pass('retrieve unknown session -> 404 + not_found_error');
 
       // --- send to unknown session -> 404 (the write path guards too) ---
+      // Negative rule N1: C1 unknown id => E1 SDK 404 and no receipt. Constraint
+      // K1: without admission there is no processed-receipt observation path.
       await assert.rejects(
         () =>
           client.beta.sessions.events.send('sesn_does_not_exist', {
@@ -176,6 +178,9 @@ async function main() {
       pass('archive -> archived_at + status terminated + session.status_terminated event');
 
       // An archived session is read-only: events.send is refused with 409.
+      // Negative rule N2: C2 archived terminal => E2 SDK 409 and no receipt;
+      // K2 forbids treating the independently listed archive event as send
+      // completion. Decisions N1=C1=>E1; N2=C2=>E2.
       await assert.rejects(
         () =>
           client.beta.sessions.events.send(session.id, {

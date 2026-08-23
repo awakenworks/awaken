@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Role;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_runtime_contract::ToolRecoveryPolicy;
 use awaken_runtime_contract::delegation::{
     DelegationExecutionError, DelegationRequest, DelegationResume, DelegationStep,
     RunDelegationService,
@@ -14,6 +15,7 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, THREAD_USAGE_STATE_KEY, ThreadUsage,
     TokenUsage, ToolCall,
 };
+use awaken_runtime_contract::resolved::ToolKind;
 use awaken_runtime_contract::resume::{PermissionDecision, ResumeCommand, ResumeResult};
 use awaken_runtime_examples::prelude::*;
 
@@ -153,6 +155,15 @@ impl RunDelegationService for AwaitingResolver {
             "the durable continuation round-trips"
         );
         let input = match request.result {
+            // `Continue` is owned exclusively by a closed BudgetReached pause
+            // target. A delegation ticket can deliver only concrete input,
+            // permission, or tool output, so this test resolver fails closed if
+            // an upstream validator ever violates that target/result matrix.
+            ResumeResult::Continue => {
+                return Err(DelegationExecutionError::new(
+                    "message-free Continue cannot resume a delegation",
+                ));
+            }
             ResumeResult::Input(text) => text,
             ResumeResult::ToolResult(output) => output.text(),
             ResumeResult::Permission(PermissionDecision::Allow { note }) => {
@@ -170,14 +181,22 @@ impl RunDelegationService for AwaitingResolver {
 }
 
 fn config() -> ExecutableAgentSnapshot {
+    // Cause/effect rule D1: an installed delegation service (C1) is executable only
+    // when the frozen snapshot authorizes the same tool as AgentDelegation (C2);
+    // C1+C2 routes the call through the service (E1). The Runtime delegation suite
+    // owns the complementary missing/wrong-kind rejection rules.
     ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("demo", "stub", "stub"))
-        .tool(ToolDescriptor::pinned(
-            "demo",
-            "agent_run",
-            "Delegate to a sub-agent",
-            serde_json::json!({ "type": "object" }),
-        ))
+        .tool(
+            ToolDescriptor::pinned(
+                "demo",
+                "agent_run",
+                "Delegate to a sub-agent",
+                serde_json::json!({ "type": "object" }),
+            )
+            .with_kind(ToolKind::AgentDelegation)
+            .with_recovery(ToolRecoveryPolicy::durable_request()),
+        )
         .max_steps(8)
         .build()
 }
@@ -224,6 +243,11 @@ async fn the_kernel_runs_agent_run_through_the_resolver() {
 
 #[tokio::test]
 async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
+    // Test design — Causes: the coordinator reports zero usage while one child
+    // returns model-attributed token usage. Effects: the parent Thread tally
+    // equals and attributes the child's spend. Constraints/invariants: child
+    // usage is folded exactly once without replacing the child's own truth.
+    // Decision rule U1: zero parent+one child=>parent totals 13/5 for sub-model.
     let runtime = Runtime::new()
         .with_llm(Arc::new(CoordinatorLlm))
         .with_gate(Arc::new(allow_all()))
@@ -246,7 +270,7 @@ async fn a_delegates_usage_folds_into_the_parent_thread_tally() {
     let thread_id = commit
         .committed()
         .thread_id
-        .expect("the turn committed a thread");
+        .expect("the Run committed a Thread");
     let mut tally = ThreadUsage::default();
     for cmd in commit.committed_state(&thread_id) {
         use awaken_agent_contract::agent::state::{Action, Scope};

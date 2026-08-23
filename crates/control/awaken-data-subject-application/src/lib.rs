@@ -136,6 +136,16 @@ pub enum UserProfileRelationship {
     Internal,
 }
 
+/// Protocol-neutral access model introduced by the current User Profiles wire.
+/// It remains optional so legacy relationship-only profiles retain their exact
+/// authored provenance instead of being silently rewritten on read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserProfileAccessType {
+    Application,
+    Passthrough,
+}
+
 /// Protocol-neutral lifecycle of an authorization-style trust grant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -165,6 +175,8 @@ pub struct DataSubject {
     pub metadata: BTreeMap<String, String>,
     #[serde(default)]
     pub relationship: UserProfileRelationship,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access_type: Option<UserProfileAccessType>,
     /// Authorization-style grants are deliberately separate from GDPR consent.
     #[serde(default)]
     pub trust_grants: BTreeMap<String, UserProfileTrustGrant>,
@@ -194,6 +206,7 @@ impl DataSubject {
             external_id: None,
             metadata: BTreeMap::new(),
             relationship: UserProfileRelationship::default(),
+            access_type: None,
             trust_grants: BTreeMap::new(),
             name: None,
             consents: Vec::new(),
@@ -396,6 +409,7 @@ pub struct CreateUserProfileCommand {
     pub org: String,
     pub metadata: BTreeMap<String, String>,
     pub relationship: UserProfileRelationship,
+    pub access_type: Option<UserProfileAccessType>,
     pub external_id: Option<String>,
     pub name: Option<String>,
 }
@@ -404,6 +418,7 @@ pub struct CreateUserProfileCommand {
 pub struct UpdateUserProfileCommand {
     pub metadata: Option<BTreeMap<String, String>>,
     pub relationship: Option<UserProfileRelationship>,
+    pub access_type: Option<Option<UserProfileAccessType>>,
     pub trust_grants: Option<BTreeMap<String, UserProfileTrustGrant>>,
     pub external_id: Option<UserProfileFieldUpdate<String>>,
     pub name: Option<UserProfileFieldUpdate<String>>,
@@ -422,6 +437,7 @@ pub struct UserProfileRecord {
     pub updated_at: i64,
     pub metadata: BTreeMap<String, String>,
     pub relationship: UserProfileRelationship,
+    pub access_type: Option<UserProfileAccessType>,
     pub trust_grants: BTreeMap<String, UserProfileTrustGrant>,
     pub external_id: Option<String>,
     pub name: Option<String>,
@@ -436,6 +452,7 @@ impl From<&DataSubject> for UserProfileRecord {
             updated_at: subject.updated_at,
             metadata: subject.metadata.clone(),
             relationship: subject.relationship,
+            access_type: subject.access_type,
             trust_grants: subject.trust_grants.clone(),
             external_id: subject.external_id.clone(),
             name: subject.name.clone(),
@@ -556,6 +573,7 @@ impl DataSubjectApplication {
             let mut subject = DataSubject::new(id, command.org.clone(), now);
             subject.metadata = command.metadata.clone();
             subject.relationship = command.relationship;
+            subject.access_type = command.access_type;
             subject.external_id = command.external_id.clone();
             subject.name = command.name.clone();
             match self.repo.create(subject.clone()).await {
@@ -615,6 +633,10 @@ impl DataSubjectApplication {
             if let Some(relationship) = command.relationship {
                 changed |= subject.relationship != relationship;
                 subject.relationship = relationship;
+            }
+            if let Some(access_type) = command.access_type {
+                changed |= subject.access_type != access_type;
+                subject.access_type = access_type;
             }
             if let Some(patch) = &command.metadata {
                 for (key, value) in patch {

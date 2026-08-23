@@ -396,6 +396,8 @@ mod tests {
         // | I2   | -  | 1  | 0  | 0  | E1     |
         // | I3   | -  | -  | 1  | 0  | E2     |
         // | I4   | -  | -  | 0  | 1  | E2     |
+        // Constraints/invariants: only executable base+config define recipe
+        // identity; authoring metadata and Environment coordinates never do.
         let config = EnvironmentConfig::Cloud {
             networking: Default::default(),
             packages: EnvironmentPackages {

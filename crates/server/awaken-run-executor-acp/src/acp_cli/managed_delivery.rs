@@ -72,57 +72,6 @@ pub enum ManagedCredentialDelivery {
     Artifact(CredentialArtifactSpec),
 }
 
-/// How a CLI receives its MCP servers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum McpInterface {
-    /// Passed at `session/new` (the ACP `mcpServers` param).
-    AcpSession,
-    /// Written into a config file inside an isolated home for legacy adapters.
-    ConfigFileToml { path: &'static str },
-}
-
-use awaken_runtime_contract::resolved::{
-    AcpMcpServer as McpServerConfig, AcpMcpTransport as McpTransport,
-};
-
-/// How the projected MCP servers are handed to a launched CLI — the realization of the
-/// row's [`McpInterface`]. A `ConfigFileToml` CLI gets a file to write into its config
-/// home before launch; an `AcpSession` CLI gets the servers to pass at `session/new`.
-/// Data, not a `match adapter_kind`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum McpDelivery {
-    /// Write `contents` to `<config_home>/<path>` before launch.
-    ConfigFile {
-        path: &'static str,
-        contents: String,
-    },
-    /// Pass these servers in the ACP `session/new` `mcpServers` param.
-    SessionServers(Vec<McpServerConfig>),
-}
-
-/// Render an MCP server set as the legacy `config.toml` fragment used by the
-/// canonical config-file test adapter (`[mcp_servers.<name>]`). Production rows
-/// currently use in-band ACP Session delivery. Only transport and credential
-/// references are written, never secret material.
-fn render_mcp_config_toml(servers: &[McpServerConfig]) -> String {
-    let mut out = String::new();
-    for server in servers {
-        out.push_str(&format!("[mcp_servers.{}]\n", server.name));
-        match &server.transport {
-            McpTransport::Stdio { command, args } => {
-                out.push_str(&format!("command = {command:?}\n"));
-                let rendered: Vec<String> = args.iter().map(|arg| format!("{arg:?}")).collect();
-                out.push_str(&format!("args = [{}]\n", rendered.join(", ")));
-            }
-            McpTransport::Http { url } => {
-                out.push_str(&format!("url = {url:?}\n"));
-            }
-        }
-        out.push('\n');
-    }
-    out
-}
-
 impl ManagedCredentialDelivery {
     /// Select an artifact only when this profile and the pinned credential shape
     /// require one.
@@ -176,18 +125,5 @@ impl super::AcpCli {
     #[must_use]
     pub fn supports_model_api_dialect(self, dialect: &str) -> bool {
         self.model_api_dialects.contains(&dialect)
-    }
-
-    /// Project the MCP servers a run needs onto this CLI's catalog-declared
-    /// delivery mechanism.
-    #[must_use]
-    pub fn project_mcp(&self, servers: &[McpServerConfig]) -> McpDelivery {
-        match self.mcp_interface {
-            McpInterface::ConfigFileToml { path } => McpDelivery::ConfigFile {
-                path,
-                contents: render_mcp_config_toml(servers),
-            },
-            McpInterface::AcpSession => McpDelivery::SessionServers(servers.to_vec()),
-        }
     }
 }

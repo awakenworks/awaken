@@ -286,26 +286,56 @@ pass.
 
 ## Verification
 
-The decision-table suite covers satisfaction, revision, maximum budget and
-acknowledgment, rubric mismatch, invalid Judge output, Worker/Grader failure,
-interrupt in every live phase, stale versions, duplicate commands, restart at
-every external-IO boundary, snapshot pinning, message-range projection, usage
-idempotency, and Grader capability denial.
+Executable cause/effect inventories, decision tables, backend combinations,
+fault injection, and expected event sequences are owned only by comments beside
+the Rust and official-SDK tests that execute them. This ADR does not restate
+that executable design.
 
-The Runtime lifecycle suite additionally covers:
+The [`OutcomeLifecycle`](../../formal/tla/OutcomeLifecycle.tla) model checks the
+Outcome phase/result, stable-identity, budget, and acknowledgment invariants.
+Formal obligation mapping and changed-line E2E coverage thresholds, reachability
+waivers, and stale-waiver rejection remain owned by the repository's formal and
+coverage CI scripts.
 
-- Phase hooks execute only at their declared Step phase;
-- continuation guards run before terminal commit and may continue a Run;
-- terminal observers see only committed `Ended` facts;
-- Awaiting does not trigger terminal observers;
-- NaturalEnd, Cancelled, Stopped, MaxSteps, and Error share terminal delivery;
-- observer failure cannot change committed `RunResult`;
-- a crash after terminal commit is repaired by redelivery;
-- duplicate Memory extraction observations yield one intent and receipt.
+## Amendment (2026-08-22): Durable continuation and failure containment
 
-The Worker/Grader backend matrix remains Native/Native, Native/ACP, ACP/Native,
-and ACP/ACP. Formal state-machine verification and deterministic TypeScript E2E
-continue to cover the complete Managed `user.define_outcome` lifecycle and
-recovery. Changed executable Rust lines must meet the repository's E2E coverage
-policy; exclusions require explicit reachability evidence and may not hide
-Outcome or terminal-observer application logic.
+This amendment clarifies D3, D5, D6, D9, and D10 without changing their
+ownership.
+
+`RunState::Awaiting` is an external-input boundary, not an Outcome business
+result or infrastructure failure. The active aggregate remains committed on the
+Worker Thread. An allow, deny, or client-tool result must resume the exact
+pending ordinary Run; after that input commits, the controller reloads
+`outcome/active` and drives the same aggregate again. The resumed Run may await
+again or end and proceed to grading. With no active aggregate,
+`resume_active` returns `None` and never reconstructs a definition. No protocol
+continuation registry or process-local cursor participates in this path.
+
+The crate boundary is a compile-time ownership fence:
+`awaken-ext-goal` depends on neutral Run, Thread, and Grader ports, not on
+Managed DTOs, Runtime Host, HTTP, or a concrete store. Runtime Host and Session
+application compose those ports; the Managed adapter validates input and
+projects committed facts. Lifecycle projection owns ordinary messages, tools,
+and resume correlation. Outcome projection adds evaluation facts only and must
+not emit those lifecycle facts a second time. A retained HTTP receipt is
+acceptance, not completion; committed Thread state and terminal projection are
+the oracle, never model prose or an in-process cache.
+
+The following FMECA records residual risk after the controls in this ADR.
+Severity (`S`), occurrence (`O`), and detection difficulty (`D`) use 1–5;
+`RPN = S × O × D`.
+
+| ID | Failure mode and end effect | S/O/D · RPN | Authoritative containment |
+| --- | --- | --- | --- |
+| OF1 | Awaiting is treated as request/runtime failure, so valid HITL emits `session.error` | 4/2/3 · 24 | D3's typed external boundary; project only committed lifecycle truth |
+| OF2 | Resumed permission input commits but the controller is not driven again, leaving the aggregate live forever | 4/2/4 · 32 | one `resume_active` path reloads the durable active pointer after ordinary Run resume |
+| OF3 | Lifecycle and Outcome projection both emit messages or tools, duplicating UI facts and drifting resume identity | 4/2/3 · 24 | D10's projection split: lifecycle facts once, Outcome evaluation facts only |
+| OF4 | The extension requires Server composition and cannot run embedded | 4/2/2 · 16 | D3/D9 neutral-port dependency fence; Server layers remain optional adapters |
+| OF5 | Continue without an active aggregate guesses a definition and creates a ghost workflow | 4/1/3 · 12 | absence returns `None`; only explicit definition creates an aggregate |
+| OF6 | Repeated protected calls or deny results lose correlation, skip grading, or create another aggregate | 5/2/3 · 30 | exact pending Run identity and the same durable active pointer govern every boundary |
+| OF7 | Replacement after Worker commit repeats inference or grades mutable current configuration | 5/1/3 · 15 | D6/D7 stable Run identities, immutable binding, version guard, and committed-state replay |
+
+All containment is fail-closed. Resume mismatches are rejected before side
+effects; persistence, execution, and parsing faults remain typed infrastructure
+errors; and no mitigation introduces a second status, transcript, cursor,
+Outcome repository, or fallback snapshot.

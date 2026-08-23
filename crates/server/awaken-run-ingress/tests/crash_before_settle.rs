@@ -25,8 +25,8 @@
 
 mod harness;
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
@@ -35,6 +35,9 @@ use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::lifecycle::{
+    CheckpointRunLifecycleFeed, RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed,
+};
 use awaken_run_ingress::{
     Dispatch, DispatchOutcome, DispatchQueue, DispatchWorker, Inbox, MemoryDispatchStore,
     RunDispatch, SqliteDispatchStore,
@@ -52,7 +55,11 @@ use harness::{THREAD, TICKET, activation, input_echo_runtime, pending, tool_runt
 const LEASE: u64 = 1_000;
 
 #[derive(Default)]
-struct TerminalCount(AtomicUsize);
+struct TerminalCount {
+    attempts: AtomicUsize,
+    successes: AtomicUsize,
+    span_names: Mutex<Vec<Option<&'static str>>>,
+}
 
 #[async_trait::async_trait]
 impl RunTerminalObserver for TerminalCount {
@@ -64,7 +71,16 @@ impl RunTerminalObserver for TerminalCount {
         &self,
         _terminal: &CommittedTerminalRun,
     ) -> Result<(), RunTerminalObserverError> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.span_names
+            .lock()
+            .unwrap()
+            .push(tracing::Span::current().metadata().map(|meta| meta.name()));
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(RunTerminalObserverError(
+                "injected first delivery failure".to_string(),
+            ));
+        }
+        self.successes.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }
@@ -84,6 +100,22 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     // recovering owner then reclaims after the lease lapses, delivers the SAME
     // pending exactly once (the gated tool runs once), and only THEN is the pending
     // consumed. It is never delivered a third time.
+    //
+    // Reschedule cause/effect graph: C1 the wake claim expires without settle;
+    // C2 its replacement claim is recovered; C3 the exact pending reply makes
+    // that replacement execute; C4 the completed claim settles. Effects: E1 the
+    // pending is delivered exactly once; E2 the existing lifecycle log records
+    // Rescheduled before the resumed attempt's ordinary Running checkpoints and
+    // terminal completion; E3 a later tick has no dispatch and cannot duplicate
+    // the fact.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effects |
+    // |---|---|---|---|---|---|
+    // | R1 | T | T | T | T | E1,E2,E3 |
+    // Constraint/Invariant: input is consumed only by a fenced successful
+    // settlement, while lifecycle remains the single retry fact log. Decision rule:
+    // R1 exercises the crash window and proves one delivery, ordered
+    // reschedule, and no third claim.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -98,7 +130,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         .await
         .unwrap();
     assert_eq!(
-        worker.tick(0).await.unwrap(),
+        worker.tick(harness::clock(0)).await.unwrap(),
         Some((run.clone(), RunState::Awaiting)),
         "the fresh run awaits on the gate ticket"
     );
@@ -143,7 +175,7 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
 
     // Recovery: after the lease lapses, the worker reclaims and delivers the SAME
     // pending exactly once, driving the run to completion.
-    let recovered = worker.tick(10 + LEASE + 1).await.unwrap();
+    let recovered = worker.tick(harness::clock(10 + LEASE + 1)).await.unwrap();
     assert_eq!(
         recovered,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -154,6 +186,26 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         1,
         "the re-delivered input drove the gated tool exactly once"
     );
+    let lifecycle = CheckpointRunLifecycleFeed::new(commit.clone())
+        .events_after(RunLifecycleCursor::default(), 20)
+        .await
+        .expect("R1 lifecycle feed");
+    assert_eq!(
+        lifecycle
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            RunLifecycleEventKind::Running,
+            RunLifecycleEventKind::Awaiting,
+            RunLifecycleEventKind::Rescheduled,
+            RunLifecycleEventKind::Resumed,
+            RunLifecycleEventKind::Running,
+            RunLifecycleEventKind::Completed,
+        ],
+        "R1/E2"
+    );
 
     // Consumed only after settle, and never re-delivered a third time.
     assert_eq!(
@@ -163,7 +215,11 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
     );
     assert_eq!(store.dispatch_count(), 0, "the settled dispatch is gone");
     assert!(
-        worker.tick(10 + 2 * LEASE).await.unwrap().is_none(),
+        worker
+            .tick(harness::clock(10 + 2 * LEASE))
+            .await
+            .unwrap()
+            .is_none(),
         "nothing is left to drive"
     );
     assert_eq!(
@@ -171,6 +227,11 @@ async fn crash_before_settle_re_delivers_bound_pending_exactly_once() {
         1,
         "and the tool never ran again"
     );
+    let replay = CheckpointRunLifecycleFeed::new(commit)
+        .events_after(lifecycle.next_cursor, 20)
+        .await
+        .expect("R1 replay after terminal cursor");
+    assert!(replay.events.is_empty(), "R1/E3");
 }
 
 /// Store-level spec (both backends must match): a claim HANDS a run's bound pending
@@ -269,6 +330,13 @@ async fn bound_pending_survives_claim_without_settle_sqlite() {
 
 #[tokio::test]
 async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
+    // Test design. Causes: C1 idle-thread input is unbound; C2 a fresh claim is
+    // dropped before drain/settle; C3 its lease expires and recovery claims it;
+    // C4 a later fresh Run uses the same Thread. Effects: E1 C2 does not consume
+    // input; E2 C3 delivers and consumes it once; E3 C4 cannot redeliver it.
+    // Constraint/Invariant: claims only read input; exact settlement owns
+    // consumption. Decision rule: exercise C1+C2+C3, then C4 as the duplicate
+    // probe and require one transcript occurrence.
     // Unbound idle-thread input (empty run id) is drained into a FRESH run by the
     // worker and recorded consumed only via that run's settle. An owner claims the
     // fresh run but crashes before it drains/settles — modeled by a dropped claim.
@@ -325,7 +393,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
 
     // Recovery: the worker reclaims the fresh run after the lease lapses, drains the
     // unbound input into the run's activation, delivers it exactly once, and settles.
-    let recovered = worker.tick(LEASE + 1).await.unwrap();
+    let recovered = worker.tick(harness::clock(LEASE + 1)).await.unwrap();
     assert_eq!(
         recovered,
         Some((
@@ -362,7 +430,7 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
         .enqueue(RunDispatch::new(harness::activation("run-2")))
         .await
         .unwrap();
-    let next = worker.tick(LEASE + 2).await.unwrap();
+    let next = worker.tick(harness::clock(LEASE + 2)).await.unwrap();
     assert_eq!(
         next,
         Some((
@@ -384,6 +452,24 @@ async fn crash_before_settle_re_delivers_unbound_inbox_input_exactly_once() {
 
 #[tokio::test]
 async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
+    // Test design.
+    // C: C1 a fresh attempt drains unbound input, commits Ended, then crashes
+    // before settle; C2 the first terminal-observer delivery fails; C3 its lease
+    // expires and replay succeeds; C4 a later ordinary durable Run also ends; C5
+    // each claim carries the persisted durable causal context.
+    // E: E1 C2 leaves committed Ended authoritative but withholds Done and inbox
+    // consumption; E2 C3 publishes the terminal fact successfully exactly once,
+    // then settles Done and consumes only committed transcript ids; E3 C4 uses
+    // the same Worker-owned delivery once, without a parallel Runtime delivery;
+    // E4 all fresh/replayed deliveries execute under the claim's sole
+    // `wake.dispatch` continuation, so detached auxiliary work can inherit it.
+    // K: committed Run truth is never rewritten by observer failure; the leased
+    // dispatch is the sole replay authority, and only successful delivery permits
+    // terminal settlement and consumption.
+    // D: R1=(C1,C2) => Ended + Leased + input retained + zero successes;
+    // R2=(C1,C3) => Ended + Done + input consumed + one success;
+    // R3=(C4,C5) => Done + one additional attempt and success + E4, proving one
+    // owner and one durable trace relay.
     // Regression: the harder crash window. A fresh run drains unbound idle-thread
     // input into its activation, COMMITS its terminal record, then crashes BEFORE
     // settle. On recovery the worker sees a terminal committed record and settles
@@ -392,6 +478,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
     // rows linger and a later fresh run on the thread drains the SAME user input a
     // second time (a duplicate delivery across runs). Committed truth is authority:
     // a row IS consumed iff its message id appears in the committed transcript.
+    awaken_observability::init(&awaken_observability::ObservabilityConfig::default());
     let runtime = input_echo_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -459,13 +546,56 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         "u1 still lingers in the inbox"
     );
 
-    // Recovery: the worker reclaims the now-terminal run, settles Done, and consumes
-    // the delivered unbound input from committed truth.
+    // The first recovery delivery fails after Ended is already committed. It must
+    // not settle Done or consume the input needed by the same dispatch's replay.
     let observer = Arc::new(TerminalCount::default());
     let worker = DispatchWorker::new(runtime.clone(), store.clone(), commit.clone(), "w")
         .with_context(RuntimeRunContext::new().with_terminal_observer(observer.clone()))
         .with_lease_ms(LEASE);
-    let recovered = worker.tick(LEASE + 1).await.unwrap();
+    let delivery_error = worker
+        .tick(harness::clock(LEASE + 1))
+        .await
+        .expect_err("the first terminal-observer delivery is injected to fail");
+    assert!(
+        matches!(
+            delivery_error,
+            awaken_run_ingress::Error::Execution(
+                awaken_runtime_contract::execution::Error::Execution(message)
+            ) if message.contains("durable-recovery-test")
+                && message.contains("dispatch settlement withheld")
+        ),
+        "observer delivery failure uses the existing execution-error seam"
+    );
+    assert_eq!(
+        commit.run_state(&run),
+        Some(RunState::Ended(EndCause::NaturalEnd)),
+        "post-commit observer failure cannot rewrite the Run result"
+    );
+    let rows = store.list_dispatches().await.unwrap();
+    assert_eq!(rows.len(), 1, "the failed delivery retains its dispatch");
+    assert_eq!(
+        rows[0].state,
+        awaken_run_ingress::DispatchState::Leased,
+        "observer failure withholds Done until lease-expiry recovery"
+    );
+    assert!(
+        store
+            .completion_events_after(0, 10)
+            .await
+            .unwrap()
+            .is_empty(),
+        "no Done tombstone is published before observer success"
+    );
+    assert!(
+        list_has_u1(store.as_ref(), &thread).await,
+        "settlement-gated inbox consumption is also withheld"
+    );
+    assert_eq!(observer.attempts.load(Ordering::SeqCst), 1);
+    assert_eq!(observer.successes.load(Ordering::SeqCst), 0);
+
+    // Once that failed claim's lease expires, committed truth is redelivered. Only
+    // the successful replay may settle Done and consume the delivered input.
+    let recovered = worker.tick(harness::clock(2 * LEASE + 2)).await.unwrap();
     assert_eq!(
         recovered,
         Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
@@ -476,9 +606,25 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         "the delivered unbound input is consumed on the recovery settle, not orphaned"
     );
     assert_eq!(
-        observer.0.load(Ordering::SeqCst),
+        observer.attempts.load(Ordering::SeqCst),
+        2,
+        "recovery makes one failed delivery and one lease-expiry replay"
+    );
+    assert_eq!(
+        observer.successes.load(Ordering::SeqCst),
         1,
-        "recovery redelivers the committed terminal fact after the crash gap"
+        "the recovered terminal fact has exactly one successful publication"
+    );
+    let completions = store.completion_events_after(0, 10).await.unwrap();
+    assert_eq!(
+        completions.len(),
+        1,
+        "successful replay settles exactly once"
+    );
+    assert_eq!(completions[0].run_id, run);
+    assert!(
+        store.list_dispatches().await.unwrap().is_empty(),
+        "Done is represented by the completion tombstone, not a live row"
     );
 
     // A later fresh run on the same thread does NOT drain u1 again: exactly one
@@ -488,7 +634,7 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         .await
         .unwrap();
     assert_eq!(
-        worker.tick(LEASE + 2).await.unwrap(),
+        worker.tick(harness::clock(2 * LEASE + 3)).await.unwrap(),
         Some((
             RunId("run-2".to_string()),
             RunState::Ended(EndCause::NaturalEnd)
@@ -505,14 +651,34 @@ async fn recovering_a_terminal_run_consumes_its_delivered_unbound_input() {
         "the user's unbound input drove exactly one run — no duplicate re-delivery"
     );
     assert_eq!(
-        observer.0.load(Ordering::SeqCst),
+        observer.attempts.load(Ordering::SeqCst),
+        3,
+        "ordinary durable execution adds one Worker-owned observer attempt"
+    );
+    assert_eq!(
+        observer.successes.load(Ordering::SeqCst),
         2,
-        "the later run uses the same observer through ordinary durable execution"
+        "ordinary durable execution adds one success without Runtime duplication"
+    );
+    assert_eq!(
+        observer.span_names.lock().unwrap().as_slice(),
+        [
+            Some("wake.dispatch"),
+            Some("wake.dispatch"),
+            Some("wake.dispatch")
+        ],
+        "R1-R3/E4 every Worker-owned terminal delivery stays inside its claim relay"
     );
 }
 
 #[tokio::test]
 async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
+    // Test design. Causes: C1 terminal committed truth omits an unbound message
+    // that arrived after the attempt; C2 recovery settles the terminal Run.
+    // Effects: E1 C2 does not consume the omitted row; E2 a later Run receives it.
+    // Constraint/Invariant: terminal recovery may consume only input evidenced in
+    // the committed transcript. Decision rule: exercise the absent-id partition
+    // and require later delivery, complementing the present-id test above.
     // The dual of the fix: an unbound row that the crashed attempt did NOT deliver
     // (its message id is absent from the committed transcript — it arrived after the
     // terminal commit) must be LEFT in the inbox on recovery, not swept away. No loss.
@@ -557,7 +723,7 @@ async fn recovering_a_terminal_run_keeps_undelivered_unbound_input() {
     let worker =
         DispatchWorker::new(runtime, store.clone(), commit.clone(), "w").with_lease_ms(LEASE);
     assert_eq!(
-        worker.tick(LEASE + 1).await.unwrap(),
+        worker.tick(harness::clock(LEASE + 1)).await.unwrap(),
         Some((run, RunState::Ended(EndCause::NaturalEnd)))
     );
     assert!(
@@ -661,6 +827,13 @@ async fn unbound_consumed_on_settle_not_on_read_sqlite() {
 
 #[tokio::test]
 async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
+    // Test design. Causes: C1 a file-backed SQLite Run commits await, resume, and
+    // terminal deltas; C2 the store is dropped/reopened; C3 a later commit is
+    // rejected by terminal-finality. Effects: E1 C1 is one atomic projection;
+    // E2 C2 rebuilds identical truth; E3 C3 adds no partial rows. Constraint/
+    // Invariant: messages, state, events, run fact, ticket, and fence commit or
+    // roll back together. Decision rule: cover successful replay and an inducible
+    // rejected commit because the public API cannot tear a transaction mid-write.
     // A commit writes messages + state + events + run-fact + ticket in ONE SQLite
     // transaction (`write_commit`). We drive a fully-embedded durable run (SQLite
     // dispatch queue AND SQLite commit boundary) through await -> resume -> end over
@@ -699,7 +872,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
             .await
             .unwrap();
         assert_eq!(
-            worker.tick(0).await.unwrap(),
+            worker.tick(harness::clock(0)).await.unwrap(),
             Some((run.clone(), RunState::Awaiting)),
             "the fresh run awaits on the gate"
         );
@@ -714,7 +887,7 @@ async fn commit_is_atomic_and_survives_replay_with_no_orphans() {
             .await
             .unwrap();
         assert_eq!(
-            worker.tick(1).await.unwrap(),
+            worker.tick(harness::clock(1)).await.unwrap(),
             Some((run.clone(), RunState::Ended(EndCause::NaturalEnd))),
             "the correctly-correlated input resumes the run to completion"
         );

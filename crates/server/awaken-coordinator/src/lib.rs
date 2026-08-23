@@ -4,8 +4,8 @@
 //! the thread-keyed session substrate) and mounts public protocol adapters over
 //! it. Each adapter is a thin translator from its wire
 //! vocabulary to the host's neutral operations; because every adapter keys by the
-//! same thread id and drives the same coordinator, a turn started through one
-//! protocol can be resumed or observed through another on the *same thread*.
+//! same Thread id and drives the same coordinator, a Run started through one
+//! protocol can be resumed or observed through another on the *same Thread*.
 //!
 //! This crate is the Coordinator owner: its canonical
 //! [`build_coordinator_component`] assembles Deployment/Session scheduling and
@@ -32,7 +32,11 @@ pub mod data_subject_boundary;
 mod extraction_references;
 #[cfg(test)]
 mod inference_publication_tests;
+mod managed_application;
+mod managed_lifecycle;
 pub mod mcp_export;
+pub use managed_application::install_managed_agent_coordination;
+pub use managed_lifecycle::{ManagedLifecycleCompositionError, install_managed_lifecycle_delivery};
 mod runtime_authority;
 pub mod webhooks;
 pub mod worker_observation_boundary;
@@ -422,9 +426,9 @@ fn local_managed_state_over(
     let runtime = Arc::new(runtime);
     let mut application = awaken_session_application::SessionApplication::new_with_configuration(
         runtime.clone(),
-        runtime,
+        runtime.clone(),
         session_repo,
-        environments,
+        environments.clone(),
         awaken_session_application::SessionApplicationConfiguration {
             execution_placement,
             local_realization_owner,
@@ -440,7 +444,10 @@ fn local_managed_state_over(
     if let Some(resolver) = model_publication_resolver {
         application.set_model_publication_resolver(resolver);
     }
-    Arc::new(ManagedState::from_application(Arc::new(application)))
+    let application = Arc::new(application);
+    install_managed_agent_coordination(&runtime, &application)
+        .expect("scenario Session coordination application binds once");
+    Arc::new(ManagedState::from_application(application, environments))
 }
 
 // The **worker** lifecycle moved to the production `awaken-worker` crate. In the
@@ -487,11 +494,11 @@ fn scenario_dream_process_store(
 }
 
 #[cfg(feature = "test-support")]
-fn with_scenario_session_lifecycle(
-    router: Router,
-    session_application: Arc<awaken_session_application::SessionApplication>,
-) -> Router {
+fn with_scenario_session_lifecycle(router: Router, managed_state: Arc<ManagedState>) -> Router {
     let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    install_managed_lifecycle_delivery(&managed_state, None, &lifecycle)
+        .expect("scenario Managed lifecycle delivery binds before traffic");
+    let session_application = managed_state.session_application();
     coordinator_component::register_session_lifecycle(&lifecycle, session_application);
     // The Router owns the same process-lifecycle handle as the Scenario surface.
     // Dropping the test server drops the composition; the Tokio runtime then
@@ -586,8 +593,8 @@ pub fn mount_with_managed_and_application_access_and_models(
     let dream_process_store = scenario_dream_process_store(host.as_ref());
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_registry.clone());
+    let supervised_state = managed_state.clone();
     let session_application = managed_state.session_application();
-    let supervised_sessions = session_application.clone();
     let worker_file_application = host
         .file_application()
         .expect("test-support File application");
@@ -603,6 +610,7 @@ pub fn mount_with_managed_and_application_access_and_models(
             application_access: Some(application_access),
             model_inventory: Some(model_inventory),
             dream_process_store,
+            executable_projection_refresh: None,
         },
         ManagedRoutingExtensions {
             resource_management_router: resources,
@@ -623,7 +631,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         worker_private,
         remote_worker_required,
     );
-    with_scenario_session_lifecycle(public, supervised_sessions)
+    with_scenario_session_lifecycle(public, supervised_state)
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -650,6 +658,157 @@ pub struct ManagedApplicationServices {
     pub model_inventory:
         Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
     pub dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
+    pub executable_projection_refresh:
+        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+}
+
+struct RefreshingExecutableAgentInventory {
+    source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
+    refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+}
+
+#[async_trait::async_trait]
+impl awaken_executable_agent_contract::ExecutableAgentInventorySource
+    for RefreshingExecutableAgentInventory
+{
+    async fn current_registrations(
+        &self,
+        workspace_id: &str,
+    ) -> Result<
+        Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+        awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+    > {
+        self.refresh.refresh().await.map_err(|error| {
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError::Unavailable(error)
+        })?;
+        self.source.current_registrations(workspace_id).await
+    }
+}
+
+struct RefreshingEnvironmentWarmups {
+    source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource>,
+    refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::EnvironmentWarmupSource for RefreshingEnvironmentWarmups {
+    async fn current_environment_warmups(
+        &self,
+    ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+        self.refresh.refresh().await?;
+        self.source.current_environment_warmups().await
+    }
+}
+
+#[cfg(test)]
+mod executable_projection_refresh_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    #[derive(Default)]
+    struct ToggleRefresh {
+        fail: AtomicBool,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::ExecutableProjectionRefresh for ToggleRefresh {
+        async fn refresh(&self) -> Result<(), String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                Err("projection unavailable".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct Inventory(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl awaken_executable_agent_contract::ExecutableAgentInventorySource for Inventory {
+        async fn current_registrations(
+            &self,
+            _workspace_id: &str,
+        ) -> Result<
+            Vec<awaken_executable_agent_contract::ExecutableAgentRegistration>,
+            awaken_executable_agent_contract::ExecutableAgentRegistrationError,
+        > {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    #[derive(Default)]
+    struct Warmups(AtomicUsize);
+
+    #[async_trait::async_trait]
+    impl awaken_session_contract::EnvironmentWarmupSource for Warmups {
+        async fn current_environment_warmups(
+            &self,
+        ) -> Result<Vec<awaken_session_contract::EnvironmentSnapshot>, String> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn shared_inventory_and_warmup_adapters_fail_before_source_reads() {
+        // Causes: C1 executable refresh succeeds/fails; C2 Agent inventory is
+        // consumed by Models/Dream; C3 Environment warmups are consumed by the
+        // Worker. Effects: E1 failure reaches each consumer as unavailable and
+        // its source is not read; E2 recovery delegates once. Constraints: K1
+        // adapters own no cursor/cache; K2 Models and Dream share one wrapped
+        // inventory. Decision table: D1 !C1+C2=>E1; D2 !C1+C3=>E1;
+        // D3 C1+C2+C3=>E2.
+        let refresh = Arc::new(ToggleRefresh::default());
+        let inventory = Arc::new(Inventory::default());
+        let warmups = Arc::new(Warmups::default());
+        let refreshing_inventory = RefreshingExecutableAgentInventory {
+            source: inventory.clone(),
+            refresh: refresh.clone(),
+        };
+        let refreshing_warmups = RefreshingEnvironmentWarmups {
+            source: warmups.clone(),
+            refresh: refresh.clone(),
+        };
+        refresh.fail.store(true, Ordering::SeqCst);
+        assert!(
+            awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations(
+                &refreshing_inventory,
+                "workspace",
+            )
+            .await
+            .is_err(),
+            "D1/E1"
+        );
+        assert!(
+            awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+                &refreshing_warmups,
+            )
+            .await
+            .is_err(),
+            "D2/E1"
+        );
+        assert_eq!(inventory.0.load(Ordering::SeqCst), 0, "D1/E1");
+        assert_eq!(warmups.0.load(Ordering::SeqCst), 0, "D2/E1");
+
+        refresh.fail.store(false, Ordering::SeqCst);
+        awaken_executable_agent_contract::ExecutableAgentInventorySource::current_registrations(
+            &refreshing_inventory,
+            "workspace",
+        )
+        .await
+        .unwrap();
+        awaken_session_contract::EnvironmentWarmupSource::current_environment_warmups(
+            &refreshing_warmups,
+        )
+        .await
+        .unwrap();
+        assert_eq!(inventory.0.load(Ordering::SeqCst), 1, "D3/E2");
+        assert_eq!(warmups.0.load(Ordering::SeqCst), 1, "D3/E2");
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -788,8 +947,8 @@ fn mount_with_managed_over(
     // Dreams share the concrete sessions.db aggregate in product startup; keep
     // crash/recovery fixtures on that same ownership boundary.
     let dream_process_store = scenario_dream_process_store(host.as_ref());
+    let supervised_state = managed_state.clone();
     let session_application = managed_state.session_application();
-    let supervised_sessions = session_application.clone();
     let (resources, memory_stores) =
         resource_management_router_from_host(&host, resource_registry.clone());
     let worker_file_application = host
@@ -808,6 +967,7 @@ fn mount_with_managed_over(
                 application_access,
                 model_inventory: None,
                 dream_process_store,
+                executable_projection_refresh: None,
             },
             ManagedRoutingExtensions {
                 resource_management_router: resources,
@@ -829,7 +989,7 @@ fn mount_with_managed_over(
         remote_worker_required,
     );
     (
-        with_scenario_session_lifecycle(public, supervised_sessions),
+        with_scenario_session_lifecycle(public, supervised_state),
         dreams,
     )
 }
@@ -855,6 +1015,7 @@ fn mount_with_managed_over_and_models(
         application_access,
         model_inventory,
         dream_process_store,
+        executable_projection_refresh,
     } = applications;
     let ManagedRoutingExtensions {
         resource_management_router,
@@ -866,6 +1027,29 @@ fn mount_with_managed_over_and_models(
         repository_transport_authorizer,
         worker_directory,
     } = routing;
+    // The Worker warmup projection is part of the same private transport in
+    // production and Scenario compositions. Its source is the exact Environment
+    // execution application already used by Session admission; this adapter owns
+    // no second catalog, WorkQueue, cache, or receipt state.
+    let environment_warmup_source: Arc<dyn awaken_session_contract::EnvironmentWarmupSource> =
+        match executable_projection_refresh.clone() {
+            Some(refresh) => Arc::new(RefreshingEnvironmentWarmups {
+                source: managed_state.environment_execution(),
+                refresh,
+            }),
+            None => managed_state.environment_execution(),
+        };
+    let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(
+        environment_warmup_source,
+        worker_directory.clone(),
+        worker_authenticator.clone(),
+    );
+    let model_inventory =
+        model_inventory.map(|source| match executable_projection_refresh.clone() {
+            Some(refresh) => Arc::new(RefreshingExecutableAgentInventory { source, refresh })
+                as Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
+            None => source,
+        });
     // This is the sole Coordinator-owned installation point. It runs after the
     // Session provider is selected, and `install_memory_mounter` updates every
     // provider atomically while preserving an explicitly injected Worker adapter.
@@ -1004,10 +1188,12 @@ fn mount_with_managed_over_and_models(
             policy: worker_placement_policy
                 .unwrap_or_else(|| worker_placement::shared_worker_placement_policy()),
             sessions: session_application.clone(),
+            coordination: session_application.clone(),
             session_work: session_application.clone(),
             authenticator: worker_authenticator.clone(),
             recovery: host.worker_recovery_source(),
             completion: host.worker_completion_sink(),
+            terminal_observer: host.worker_memory_settlement_observer(),
             stream_sink: host.worker_stream_sink(),
         },
     );
@@ -1078,7 +1264,8 @@ fn mount_with_managed_over_and_models(
             dispatch_router,
             resource_worker,
             commit,
-        );
+        )
+        .merge(environment_warmups);
     // The Models API (`/v1/models`) over the deployment's model directory.
     let models = model_inventory.map_or_else(
         || models_router(std::sync::Arc::new(default_models())),

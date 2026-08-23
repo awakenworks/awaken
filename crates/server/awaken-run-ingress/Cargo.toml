@@ -13,6 +13,7 @@ authority = "run-ingress"
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-run-ingress-contract = { workspace = true }
+awaken-session-contract.workspace = true
 awaken-runtime = { workspace = true }
 awaken-ext-builtin-tools = { workspace = true }
 # W3C traceparent capture (submit) + `wake.dispatch` span (worker) so a durably
@@ -22,7 +23,6 @@ tracing = "0.1"
 async-trait.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
-sha2 = "0.10"
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -55,7 +55,7 @@ awaken-run-ingress-testkit = { workspace = true }
 awaken-store-inmem.workspace = true
 awaken-store-postgres = { workspace = true }
 awaken-store-sqlite = { workspace = true, features = ["test-support"] }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "test-util"] }
 
 [[test]]
 name = "any_store"

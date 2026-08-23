@@ -15,7 +15,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  pass,
+  startUpstream,
+  realServerEnv,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38177);
 const BASE = `http://127.0.0.1:${PORT}`;
@@ -39,10 +47,23 @@ async function main() {
     // A normal turn creates the session and its durable dispatch queue.
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: BASE });
     const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    await client.beta.sessions.events.send(session.id, {
+    // C1=exact setup receipt; C2=healthy durable Run terminal. E1=C2 makes the
+    // queue clean before ops queries. K: ops endpoints never drive Session
+    // settlement. Decision O1 C1&&!C2=>retry; O2 C1+C2=>query clean queue.
+    const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'OPS-SETUP' }] }],
       betas: BETAS,
     });
+    const receiptId = receipt.data[0]?.id;
+    assert.equal(typeof receiptId, 'string', 'O1 exact durable setup receipt');
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptId,
+      BETAS,
+      ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'O1 durable setup Run to commit before queue inspection',
+    );
     const T = session.id;
 
     // reconcile (ADR-0011): reclaim runnable work; a clean queue reconciles to none.

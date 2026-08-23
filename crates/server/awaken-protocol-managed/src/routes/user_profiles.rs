@@ -15,7 +15,7 @@ use axum::{Json, Router};
 
 use crate::routes::ManagedJson;
 use crate::types::user_profile::{
-    EnrollmentUrl, Relationship, TrustGrant, TrustGrantStatus, UserProfile,
+    AccessType, EnrollmentUrl, Relationship, TrustGrant, TrustGrantStatus, UserProfile,
     UserProfileCreateParams, UserProfileUpdateParams,
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
@@ -102,6 +102,52 @@ fn relationship_to_wire(value: UserProfileRelationship) -> Relationship {
     }
 }
 
+fn access_type_to_application(
+    value: AccessType,
+) -> awaken_data_subject_application::UserProfileAccessType {
+    match value {
+        AccessType::Application => {
+            awaken_data_subject_application::UserProfileAccessType::Application
+        }
+        AccessType::Passthrough => {
+            awaken_data_subject_application::UserProfileAccessType::Passthrough
+        }
+    }
+}
+
+fn access_type_to_wire(
+    value: awaken_data_subject_application::UserProfileAccessType,
+) -> AccessType {
+    match value {
+        awaken_data_subject_application::UserProfileAccessType::Application => {
+            AccessType::Application
+        }
+        awaken_data_subject_application::UserProfileAccessType::Passthrough => {
+            AccessType::Passthrough
+        }
+    }
+}
+
+fn access_type_relationship(value: AccessType) -> Relationship {
+    match value {
+        AccessType::Application => Relationship::External,
+        AccessType::Passthrough => Relationship::Resold,
+    }
+}
+
+fn validate_access_relationship(
+    access_type: AccessType,
+    relationship: Relationship,
+) -> Result<(), WireError> {
+    if access_type_relationship(access_type) == relationship {
+        Ok(())
+    } else {
+        Err(bad_request(
+            "access_type and relationship describe different profile access models",
+        ))
+    }
+}
+
 fn grant_to_application(value: TrustGrant) -> UserProfileTrustGrant {
     UserProfileTrustGrant {
         status: match value.status {
@@ -133,6 +179,7 @@ fn project(record: UserProfileRecord) -> UserProfile {
         ),
         metadata: record.metadata,
         relationship: relationship_to_wire(record.relationship),
+        access_type: record.access_type.map(access_type_to_wire),
         trust_grants: record
             .trust_grants
             .into_iter()
@@ -150,12 +197,20 @@ async fn create_profile(
 ) -> Result<Json<UserProfile>, WireError> {
     check_len("external_id", params.external_id.as_deref())?;
     check_len("name", params.name.as_deref())?;
+    if let (Some(access_type), Some(relationship)) = (params.access_type, params.relationship) {
+        validate_access_relationship(access_type, relationship)?;
+    }
+    let relationship = params
+        .relationship
+        .or_else(|| params.access_type.map(access_type_relationship))
+        .unwrap_or_default();
     state
         .application
         .create_user_profile(CreateUserProfileCommand {
             org: state.org.clone(),
             metadata: params.metadata,
-            relationship: relationship_to_application(params.relationship),
+            relationship: relationship_to_application(relationship),
+            access_type: params.access_type.map(access_type_to_application),
             external_id: params.external_id,
             name: params.name,
         })
@@ -215,6 +270,29 @@ async fn update_profile(
             .map(|(name, grant)| (name, grant_to_application(grant)))
             .collect::<BTreeMap<_, _>>()
     });
+    if let (Some(Some(access_type)), Some(relationship)) = (params.access_type, params.relationship)
+    {
+        validate_access_relationship(access_type, relationship.unwrap_or_default())?;
+    }
+    let (access_type, relationship) = match (params.access_type, params.relationship) {
+        (Some(Some(access_type)), None) => (
+            Some(Some(access_type_to_application(access_type))),
+            Some(relationship_to_application(access_type_relationship(
+                access_type,
+            ))),
+        ),
+        (Some(access_type), relationship) => (
+            Some(access_type.map(access_type_to_application)),
+            relationship.map(|value| relationship_to_application(value.unwrap_or_default())),
+        ),
+        (None, Some(relationship)) => (
+            Some(None),
+            Some(relationship_to_application(
+                relationship.unwrap_or_default(),
+            )),
+        ),
+        (None, None) => (None, None),
+    };
     state
         .application
         .update_user_profile(
@@ -222,9 +300,8 @@ async fn update_profile(
             &id,
             UpdateUserProfileCommand {
                 metadata: params.metadata,
-                relationship: params
-                    .relationship
-                    .map(|value| relationship_to_application(value.unwrap_or_default())),
+                relationship,
+                access_type,
                 trust_grants,
                 external_id: field_update(params.external_id),
                 name: field_update(params.name),

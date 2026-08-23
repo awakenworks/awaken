@@ -153,19 +153,22 @@ impl SharedHost {
     }
 
     pub fn dispatch_store(&self) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, HostError> {
-        self.dispatch_store_override.clone().map_or_else(
-            || {
-                self.authority
-                    .as_ref()
-                    .map(|authority| authority.dispatch_store())
-                    .ok_or_else(|| {
-                        HostError::internal(
-                            "database-less Worker requires an injected dispatch transport",
-                        )
-                    })
-            },
-            Ok,
-        )
+        self.optional_dispatch_store().ok_or_else(|| {
+            HostError::internal("database-less Worker requires an injected dispatch transport")
+        })
+    }
+
+    /// Existing durable dispatch authority when this topology has one. Direct
+    /// foreground Sessions can still recover their root pause from committed
+    /// Thread truth without manufacturing a queue merely for discovery.
+    pub(crate) fn optional_dispatch_store(
+        &self,
+    ) -> Option<Arc<awaken_run_ingress::AnyDispatchStore>> {
+        self.dispatch_store_override.clone().or_else(|| {
+            self.authority
+                .as_ref()
+                .map(|authority| authority.dispatch_store())
+        })
     }
 
     /// Test/scenario construction with resources but no explicit deployment or
@@ -395,6 +398,7 @@ impl SharedHost {
             Arc::new(awaken_resource_contract::UnavailableArtifactPublisher)
         };
         let capture_decision = crate::redact::capture_decision(deployment.content_capture, false);
+        let hub = Arc::new(ThreadEventHub::new());
         Self {
             llm,
             model_ref,
@@ -426,7 +430,7 @@ impl SharedHost {
             plugin_config: std::collections::BTreeMap::new(),
             web_search_providers: awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
             credential_materializer: None,
-            hub: Arc::new(ThreadEventHub::new()),
+            hub: hub.clone(),
             // `with_store_dir` still overrides this environment-derived default.
             store_dir: store_dir.clone(),
             // A shared root (e.g. a networked mount) enables cross-machine ACP
@@ -445,6 +449,7 @@ impl SharedHost {
             agent_publications: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
+            agent_coordination: std::sync::RwLock::new(None),
             #[cfg(any(test, feature = "test-support"))]
             file_store,
             file_content_source,
@@ -471,7 +476,7 @@ impl SharedHost {
                     None
                 }
             },
-            completion: Arc::new(CompletionRegistry::default()),
+            completion: Arc::new(CompletionRegistry::new(hub)),
             worker_stream_publisher: None,
             environment_binding_sink: std::sync::RwLock::new(None),
             capture_sink: std::sync::RwLock::new(None),
@@ -739,7 +744,7 @@ impl SharedHost {
     /// settle boundary.
     ///
     /// A coordinator-only embedding has no local dispatch pool. Its foreground
-    /// Managed Session turn therefore registers with this sink before enqueueing
+    /// Managed Session Run therefore registers with this sink before enqueueing
     /// and the remote Worker transport projects the committed terminal/awaiting
     /// state back into the same host. The sink is notification-only: committed
     /// Run truth remains authoritative and the bounded timeout retains its
@@ -799,11 +804,11 @@ impl SharedHost {
         self.capture_decision.level
     }
 
-    /// Enable context compaction. Once a turn's conversation exceeds `threshold`
+    /// Enable context compaction. Once a Run's conversation exceeds `threshold`
     /// messages, the `compact` plugin's `BeforeInference` hook summarizes everything
     /// but the last `keep_last` messages (through a `compactor` sub-agent) and injects
     /// the summary as request-only context and then activates a matching Run-scoped
-    /// window so those covered raw turns drop from the model view. Non-destructive:
+    /// window so those covered raw Steps drop from the model view. Non-destructive:
     /// committed truth is never rewritten (G13). The bounds are also exposed as the
     /// `compact` config section, so a per-run `plugin_config` can override them.
     pub fn with_compaction(self, threshold: usize, keep_last: usize) -> Self {
@@ -836,14 +841,6 @@ impl SharedHost {
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
         self.compaction = Some(crate::compact::Compaction { config });
-        self
-    }
-
-    /// Test-support shorthand for an unauthenticated Worker upstream.
-    #[cfg(any(test, feature = "test-support"))]
-    #[must_use]
-    pub fn with_upstream(mut self, url: impl Into<String>) -> Self {
-        self.upstream = Some(awaken_worker_transport_security::WorkerUpstream::new(url));
         self
     }
 
@@ -1349,7 +1346,7 @@ impl SharedHost {
         self.session_provider.shutdown_capacity().await;
     }
 
-    /// Bind `model_ref` to `thread` (R2/R5), staged before its first turn.
+    /// Bind `model_ref` to `thread` (R2/R5), staged before its first Run.
     pub fn register_thread_model(&self, thread: &str, model_ref: impl Into<String>) {
         self.inference_routing.register(thread, model_ref);
     }
@@ -1384,7 +1381,7 @@ impl SharedHost {
     }
 
     /// The primary model currently selected for `thread`, including a Managed
-    /// per-session/per-turn override. This is a read-only projection of the same
+    /// per-Session/per-Run override. This is a read-only projection of the same
     /// inference-routing source that execution consumes.
     pub fn model_for_thread(&self, thread: &str) -> String {
         self.inference_routing.model_ref(thread, &self.model_ref)
@@ -1410,53 +1407,21 @@ impl SharedHost {
         sandbox: Arc<crate::session_environment::SessionEnvironment>,
         commit: Arc<crate::store::HostCommit>,
         parent_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        publication_source: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
     ) -> Result<Option<Arc<dyn RunDelegationService>>, HostError> {
         let Some(parent_snapshot) = parent_snapshot else {
             return Ok(None);
         };
-        if parent_snapshot
-            .resolved_spec
-            .plugin_config
-            .agent
-            .delegates
-            .is_empty()
-        {
+        let agent_bindings = &parent_snapshot.resolved_spec.plugin_config.agent;
+        if agent_bindings.delegates.is_empty() && agent_bindings.advisor.is_none() {
             return Ok(None);
         }
         let workspace = self.thread_workspace(thread);
-        let delivered = self
-            .session_slots
-            .read(thread, |slot| slot.agent_publications.clone())
-            .unwrap_or_default();
-        let delivered_source = (!delivered.is_empty())
-            .then(|| awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(delivered))
-            .transpose()
-            .map_err(|error| {
-                HostError::bad_request(format!("invalid claimed Agent publications: {error}"))
-            })?
-            .map(|source| {
-                Arc::new(source) as Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>
-            });
-        let publication_source = delivered_source.or_else(|| self.agent_publications.clone());
-        let agent_publications = awaken_runtime_contract::freeze_delegation_publications(
-            parent_snapshot,
-            publication_source.as_deref(),
-            &workspace,
-        )
-        .map_err(|error| {
-            HostError::bad_request(format!(
-                "cannot freeze Agent delegation publications: {error}"
-            ))
-        })?;
-        let frozen_source = Arc::new(
-            awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new(
-                agent_publications.clone(),
-            )
-            .map_err(|error| {
-                HostError::bad_request(format!("invalid Agent publication closure: {error}"))
-            })?,
-        );
-        let scheduler = if self.deployment.durable {
+        // Use the same topology decision as pool startup. Ephemeral and durable
+        // Runtime authorities both own dispatch; gating children on persistence
+        // durability leaves a claim-bound parent executing its child with the
+        // parent's checkpoint/commit projection instead of a child claim.
+        let scheduler = if self.runs_local_dispatch_pool() {
             let recovery_projection = commit.recovery_projection();
             let claimed_commit = self
                 .upstream
@@ -1471,7 +1436,7 @@ impl SharedHost {
                 claimed_commit,
                 recovery_projection,
                 session_resources: self.thread_resource_manifest(thread),
-                agent_publications,
+                publication_source: Some(publication_source.clone()),
             })
         } else {
             None
@@ -1493,9 +1458,9 @@ impl SharedHost {
                 acp,
                 remote: self.remote_attempt_executor.clone(),
                 remote_credentials: self.remote_credential_realization.clone(),
-                web_search: Some(self.web_search_plugin(thread)),
+                web_search: Some(self.web_search_plugin(thread, None)),
             },
-            Some(frozen_source),
+            Some(publication_source),
             workspace,
         )
         .map_err(|error| HostError::bad_request(error.to_string()))?
@@ -1503,14 +1468,15 @@ impl SharedHost {
         Ok(Some(Arc::new(service)))
     }
 
-    /// Spawn the one process-level [`DispatchPool`] (O2), once, when durable ingress
-    /// is enabled. Called by `mount` — the single seam that owns an `Arc<SharedHost>`
-    /// — because the pool's resolver needs a back-reference to open sessions. The
-    /// pool is the sole claimer of the shared queue; it drives each claimed run by
-    /// routing it to the worker that owns its thread (recovering crashed runs and
-    /// draining background submissions without a foreground request). Idempotent.
+    /// Spawn the one process-level [`DispatchPool`] (O2), once, whenever this Host
+    /// owns local execution. Called by `mount` — the single seam that owns an
+    /// `Arc<SharedHost>` — because the pool's resolver needs a back-reference to
+    /// open sessions. Durable and ephemeral Runtime authorities expose the same
+    /// dispatch owner; asynchronous Session children use it in either deployment.
+    /// A coordinator-only Host remains admission-only through the existing
+    /// `disable_local_pool` topology fence. Idempotent.
     pub fn ensure_dispatch_pool(self: &Arc<Self>) {
-        if !self.deployment.durable || self.dispatch_pool.get().is_some() {
+        if !self.runs_local_dispatch_pool() || self.dispatch_pool.get().is_some() {
             return;
         }
         let Ok(store) = self.dispatch_store() else {

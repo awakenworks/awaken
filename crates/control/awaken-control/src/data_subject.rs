@@ -260,12 +260,15 @@ mod tests {
         // application mutates that exact aggregate, E2 the read projects Full.
         // Decision rule R1 = C1+C2+C3 -> E1+E2. Missing/cross-org/error rules are
         // covered by the application decision table.
+        // Constraints/invariants: the HTTP adapter owns no parallel consent state
+        // and cannot cross the configured organization boundary.
         let application = application();
         let profile = application
             .create_user_profile(CreateUserProfileCommand {
                 org: "org_1".into(),
                 metadata: Default::default(),
                 relationship: UserProfileRelationship::External,
+                access_type: None,
                 external_id: None,
                 name: None,
             })

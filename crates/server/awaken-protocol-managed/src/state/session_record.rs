@@ -4,6 +4,16 @@ use std::collections::{HashMap, HashSet};
 
 use super::*;
 
+pub(super) struct ProjectedToolIndex {
+    pub(super) all: HashSet<String>,
+    pub(super) mcp: Vec<String>,
+    pub(super) latest: HashMap<String, String>,
+    /// Exact committed source occurrence of every qualified tool-use Event.
+    /// Rebuilt from the append-only Event log; never persisted as another
+    /// projection cursor or tool authority.
+    pub(super) sources: HashSet<(String, String)>,
+}
+
 pub(super) struct SessionRecord {
     pub(super) agent_id: String,
     pub(super) session: Session,
@@ -13,14 +23,23 @@ pub(super) struct SessionRecord {
     /// Runtime message identities already lowered into `events`. The transcript
     /// is durable authority; this set only prevents a peer refresh and the local
     /// request finisher from projecting the same committed message twice.
-    pub(super) projected_message_ids: HashSet<String>,
-    /// Child Runtime message identities already lowered into the same Session
-    /// event projection. The qualified key prevents two isolated child Runs from
-    /// colliding when a provider reuses a message id.
-    pub(super) projected_child_message_ids: HashSet<(String, String)>,
-    /// Disposable ownership index for events projected from child transcripts.
-    /// The event remains in `events`; this map only filters the one projection
-    /// into the primary or matching child Managed Thread.
+    pub(super) projected_thread_message_ids: HashSet<(String, String)>,
+    /// Latest ordinary Run identity observed for each derived child Thread. This
+    /// lets the local primary-step projection detect a newly committed follow-up
+    /// before the warm projector has refreshed the disposable Thread cache.
+    pub(super) projected_child_latest_run_ids:
+        std::collections::HashMap<String, awaken_agent_contract::agent::run::Id>,
+    /// The optional root Run owner and reason whose aggregate idle event is
+    /// waiting for coordinated Thread settlement. The owner lets a later terminal
+    /// of that same Run supersede an earlier Awaiting reason without allowing an
+    /// unrelated terminal to overwrite it. This is disposable event-projector
+    /// continuation state, never Session lifecycle authority.
+    pub(super) deferred_session_stop_reason:
+        Option<(Option<awaken_agent_contract::agent::run::Id>, StopReason)>,
+    /// Disposable visibility owner for transcript-derived events. Most entries
+    /// name the child whose local stream owns the event; advisor advice names the
+    /// primary because the official wire excludes that delivery from the
+    /// advisor Thread stream. The event itself remains in the one `events` log.
     pub(super) event_thread_owners: HashMap<String, String>,
     /// Last committed Run lifecycle fact consumed by this disposable projection.
     pub(super) projected_lifecycle_cursor: awaken_agent_contract::RunLifecycleCursor,
@@ -28,45 +47,96 @@ pub(super) struct SessionRecord {
     /// feed. A Run may await and resume repeatedly, so Run id alone is not an
     /// idempotency key; each terminal transition owns a distinct cursor.
     pub(super) projected_terminal_cursors: HashSet<awaken_agent_contract::RunLifecycleCursor>,
+    /// Latest append-only shared-budget transition lowered into Managed events.
+    /// This is a disposable projection cursor over `SessionBudgetState`, never
+    /// a second accounting or terminal-state authority.
+    pub(super) projected_budget_reach_generation: u64,
     /// Subagent child threads spawned in this Session. Each is announced by a
     /// `session.thread_created` event and remains a projection of durable truth.
     pub(super) child_threads: Vec<SessionThread>,
+    /// Cumulative usage for the primary logical Thread, read from the same
+    /// parent Session commit partition as child usage. This is a disposable wire
+    /// projection; committed ThreadUsage remains the sole accounting authority.
+    pub(super) primary_thread_usage: Option<crate::types::SessionThreadUsage>,
 }
 
 impl SessionRecord {
-    /// Project a Runtime lifecycle hint without allowing the disposable event
-    /// view to reverse the Session application's realization, recovery, or
-    /// terminal transition. Runtime feeds may be consumed after any of those
-    /// CASes, but they are not a second authority for Session lifecycle state.
-    pub(super) fn project_runtime_status(&mut self, status: SessionStatus) {
-        if Self::accepts_runtime_status(self.session.status) {
-            self.session.status = status;
-        }
+    /// Derive the exact tool-use Events named by a primary-visible
+    /// `requires_action` boundary. The append-only Event vector remains the
+    /// only projection truth; this set exists only for one list/live filtering
+    /// pass and is never persisted as a parallel index.
+    pub(super) fn primary_answerable_event_ids(&self) -> HashSet<&str> {
+        self.events
+            .iter()
+            .filter(|event| {
+                self.event_thread_owners
+                    .get(&event.id)
+                    .is_none_or(|owner| owner == &self.session.id)
+            })
+            .filter_map(|event| match &event.kind {
+                OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::RequiresAction { event_ids },
+                }
+                | OutboundKind::SessionThreadStatusIdle {
+                    stop_reason: StopReason::RequiresAction { event_ids },
+                    ..
+                } => Some(event_ids.as_slice()),
+                _ => None,
+            })
+            .flatten()
+            .map(String::as_str)
+            .collect()
     }
 
-    fn accepts_runtime_status(status: SessionStatus) -> bool {
-        matches!(status, SessionStatus::Idle | SessionStatus::Running)
-    }
-
-    /// IDs already lowered into tool-use events, plus the MCP subset needed to
-    /// classify later results. One scan owns both projections so refresh and
-    /// local completion cannot grow separate deduplication rules.
-    pub(super) fn projected_tool_ids(&self) -> (HashSet<String>, Vec<String>) {
+    /// One owner-aware index over the sole event projection. All tool
+    /// classification, MCP correlation, and public-id lookup consume this same
+    /// scan so root/child and legacy-qualified ids cannot drift.
+    pub(super) fn projected_tool_index_for(
+        &self,
+        owner_thread_id: Option<&str>,
+    ) -> ProjectedToolIndex {
         let mut all = HashSet::new();
         let mut mcp = Vec::new();
+        let mut latest = HashMap::new();
+        let mut sources = HashSet::new();
         for event in &self.events {
+            if self.event_thread_owners.get(&event.id).map(String::as_str) != owner_thread_id {
+                continue;
+            }
+            let runtime_call_id = crate::project::decode_managed_tool_event_id(&event.id)
+                .map_or(event.id.as_str(), |identity| identity.call_id);
+            if let Some(identity) = crate::project::decode_managed_tool_event_id(&event.id) {
+                sources.insert((identity.source_id.to_string(), identity.call_id.to_string()));
+            }
             match event.kind {
                 OutboundKind::AgentToolUse { .. } | OutboundKind::AgentCustomToolUse { .. } => {
-                    all.insert(event.id.clone());
+                    all.insert(runtime_call_id.to_string());
+                    latest.insert(runtime_call_id.to_string(), event.id.clone());
                 }
                 OutboundKind::AgentMcpToolUse { .. } => {
-                    all.insert(event.id.clone());
-                    mcp.push(event.id.clone());
+                    all.insert(runtime_call_id.to_string());
+                    mcp.push(runtime_call_id.to_string());
+                    latest.insert(runtime_call_id.to_string(), event.id.clone());
                 }
                 _ => {}
             }
         }
-        (all, mcp)
+        ProjectedToolIndex {
+            all,
+            mcp,
+            latest,
+            sources,
+        }
+    }
+
+    pub(super) fn message_was_projected(&self, thread_id: &str, message_id: &str) -> bool {
+        self.projected_thread_message_ids
+            .contains(&(thread_id.to_string(), message_id.to_string()))
+    }
+
+    pub(super) fn consume_message(&mut self, thread_id: &str, message_id: &str) -> bool {
+        self.projected_thread_message_ids
+            .insert((thread_id.to_string(), message_id.to_string()))
     }
 
     pub(super) fn new(
@@ -74,19 +144,21 @@ impl SessionRecord {
         session: Session,
         resource_state: awaken_session_contract::SessionResourceState,
         events: Vec<Event>,
-        projected_message_ids: HashSet<String>,
     ) -> Self {
         Self {
             agent_id,
             session,
             resource_state,
             events,
-            projected_message_ids,
-            projected_child_message_ids: Default::default(),
+            projected_thread_message_ids: Default::default(),
+            projected_child_latest_run_ids: Default::default(),
+            deferred_session_stop_reason: None,
             event_thread_owners: Default::default(),
             projected_lifecycle_cursor: Default::default(),
             projected_terminal_cursors: Default::default(),
+            projected_budget_reach_generation: 0,
             child_threads: Vec::new(),
+            primary_thread_usage: None,
         }
     }
 
@@ -102,37 +174,5 @@ impl SessionRecord {
             .map(|input| resolved_resource_dto(&session.id, input))
             .collect();
         session
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_status_projection_decision_table_preserves_application_authority() {
-        // Cause/effect graph: C1=the durable application status is an ordinary
-        // Runtime phase (idle/running); C2=it is a realization/recovery phase
-        // (rescheduling, including internal prepare/activate); C3=it is terminal;
-        // C4=a delayed Runtime lifecycle hint arrives.
-        // E1=the disposable wire status follows the Runtime hint; E2=the wire
-        // status retains the application's stronger state. Constraint: exactly
-        // one of C1/C2/C3 is true. Decision table:
-        // | Rule | C1 | C2 | C3 | C4 | Effect |
-        // | R1   | T  | F  | F  | T  | E1     |
-        // | R2   | F  | T  | F  | T  | E2     |
-        // | R3   | F  | F  | T  | T  | E2     |
-        for initial in [SessionStatus::Idle, SessionStatus::Running] {
-            assert!(
-                SessionRecord::accepts_runtime_status(initial),
-                "R1/{initial:?}"
-            );
-        }
-        for initial in [SessionStatus::Rescheduling, SessionStatus::Terminated] {
-            assert!(
-                !SessionRecord::accepts_runtime_status(initial),
-                "R2-R3/{initial:?}"
-            );
-        }
     }
 }

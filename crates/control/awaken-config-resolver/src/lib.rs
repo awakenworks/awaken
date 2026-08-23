@@ -233,6 +233,9 @@ mod offering_selection_tests {
         // Rules: no qualifier+C6 -> E3; provider narrows to one -> E1;
         // provider+name -> E1; provider+API chooses the exact dialect -> E1;
         // exact endpoint -> E1; both endpoint forms -> E4.
+        // Constraints/invariants: qualifiers only narrow active Offerings; zero
+        // or multiple matches fail before credential materialization, and no
+        // `provider:model` parser or arbitrary first-match fallback participates.
         let catalog = ProviderCatalog {
             offerings: vec![
                 offering("anyrouter", "anyrouter.open_ai_chat.primary"),
@@ -843,6 +846,10 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_model_fails_closed() {
+        // Test design — Cause: a legacy bare model id matches no active Offering.
+        // Effect: resolution returns ModelUnresolved before credential lookup.
+        // Constraints: zero matches never select a default route. Decision rule
+        // T4=unresolved legacy identity=>fail closed.
         let store = InMemorySecretStore::new();
         let sources: HashMap<String, CredentialSource> = HashMap::new();
         let err = resolve_inference(
@@ -859,6 +866,11 @@ mod tests {
 
     #[tokio::test]
     async fn unqualified_duplicate_model_is_ambiguous_and_endpoint_target_is_exact() {
+        // Test design — Causes: C1 a bare model id has two active Offerings; C2
+        // a structured target pins provider+endpoint. Effects: C1 returns
+        // ModelAmbiguous; C2 resolves the exact triple. Constraints: structured
+        // qualifiers never fall back and ambiguity is rejected before secrets.
+        // Decision rules T3=C1=>ambiguous; T1=C1+C2=>the pinned endpoint only.
         let mut cat = catalog();
         let mut endpoint = cat.endpoints["ep1"].clone();
         endpoint.id = awaken_model_catalog::ProtocolEndpointId::new("ep2");

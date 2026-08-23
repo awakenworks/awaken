@@ -18,6 +18,8 @@ import {
   startUpstream,
   stopServer,
   waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
 } from './harness.mjs';
 import {
   readSpans,
@@ -55,14 +57,29 @@ async function createAndTurn(base, text, resources = []) {
     resources,
     betas: BETAS,
   });
-  const send = await fetch(`${base}/v1/sessions/${session.id}/events`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
-    body: JSON.stringify({
-      events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
-    }),
+  const receipt = await client.beta.sessions.events.send(session.id, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
   });
-  assert.equal(send.status, 200, 'turn accepted');
+  // Trace-capture decision table: C1=official SDK create/send returns an exact
+  // durable User receipt; C2=Run reconciliation may finish after admission;
+  // C3=the caller will stop/flush the span processor. E1=anchor on the exact
+  // processed receipt; E2=observe its later agent.message + aggregate idle;
+  // E3=only then allow C3 so the completed model/tool span tree is capturable.
+  // K: the SDK still traverses the served route, while the canonical receipt
+  // adapter only reads official history and never drives the Runtime.
+  // Decision T1 C1&&!C2=>keep observing; T2 C1+C2=>E1+E2; T3 T2+C3=>E3.
+  const receiptId = receipt.data?.[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'T1 exact trace-turn User Event receipt');
+  await waitForSessionEventReceipt(
+    client,
+    session.id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `T1 trace turn ${JSON.stringify(text)} to commit before span flush`,
+  );
   return session;
 }
 
@@ -78,7 +95,7 @@ const CAPTURE_BEHAVIOR = { echo: 'echo', statemachine: 'stateMachine', memory: '
 // wire. Each call runs its own fake upstream reproducing that mode's behavior.
 // Background work is awaited through its observable resource effect rather than a
 // timing guess, so a captured aux span proves the governed binding actually ran.
-async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0 } = {}) {
+async function captureTurn(mode, port, file, text, { extraEnv = {} } = {}) {
   fs.rmSync(file, { force: true });
   const behavior = CAPTURE_BEHAVIOR[mode] ?? 'echo';
   const up = await startUpstream(behavior);
@@ -86,8 +103,8 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
     mode === 'echo' ? realServerEnv(behavior, up) : realServerEnv(behavior, up, { mode });
   const { server } = spawnServer(mode === 'echo' ? 'real' : mode, port, {
     AWAKEN_TRACE_FILE: file,
-    ...extraEnv,
     ...realEnv,
+    ...extraEnv,
   });
   try {
     await waitForPort(port);
@@ -120,8 +137,6 @@ async function captureTurn(mode, port, file, text, { extraEnv = {}, settleMs = 0
         await sleep(100);
       }
       assert.ok(extracted, 'background extraction committed to the bound MemoryStore');
-    } else if (settleMs) {
-      await sleep(settleMs);
     }
     await stopServer(server);
     return readSpans(file);
@@ -161,7 +176,26 @@ async function captureDurable(port, file, storeDir) {
       body: JSON.stringify({ text: 'DURABLE-TRACE' }),
     });
     assert.equal(res.status, 200, 'background submit accepted');
-    await sleep(3000); // let the daemon drain + execute the run
+    const admitted = await res.json();
+    assert.equal(admitted.queued, true, 'D1 durable trace Run is queued');
+    assert.equal(typeof admitted.run_id, 'string', 'D1 durable trace Run id');
+    // Durable-flush decision table: C1=submit_background durably queues a Run;
+    // C2=the daemon later claims and drives it; C3=an Assistant message commits.
+    // E1=only C3 authorizes server stop/span flush. K: HTTP 200 and elapsed time
+    // prove C1 only; committed Thread history is the existing C2/C3 authority.
+    // Decision D1 C1&&!C3=>keep observing; D2 C1+C2+C3=>E1.
+    await waitForValue(
+      async () => {
+        const response = await fetch(`${base}/v1/durable/threads/${session.id}/messages`);
+        assert.equal(response.status, 200, 'D1 durable trace messages remain readable');
+        return (await response.json()).messages ?? [];
+      },
+      (messages) => messages.some(
+        (message) => message.role === 'Assistant' && (message.text ?? '').length > 0,
+      ),
+      'D1 durable trace daemon to commit an Assistant reply before span flush',
+      { timeoutMs: 20_000, pollMs: 150 },
+    );
     await stopServer(server);
     return readSpans(file);
   } finally {
@@ -225,11 +259,29 @@ async function main() {
     const glob = assertToolSpan(toolSpans, 'glob');
     pass(`OTel GenAI tool span intact: invoke_agent → "${glob.name}" (call ${glob.attributes['gen_ai.tool.call.id']})`);
 
-    // 4) Spawn boundary: a background memory-extraction sub-run stays on the turn's
-    //    trace via an `aux.background` span (memory mode drives the extraction).
-    const memSpans = await captureTurn('memory', PORT + 2, `${FILE}.mem`, 'remember fact-sky', {
-      settleMs: 1500,
-    });
+    // 4) Spawn boundary decision table. C1 the admitted User Event persists its
+    // traceparent on one durable RunDispatch; C2 the daemon owns terminal replay;
+    // C3 the Worker-owned post-commit observer enqueues Memory extraction; C4 its
+    // detached sub-run starts only after the MemoryStore effect is observable.
+    // E1 aux.background descends through wake.dispatch to sessions.events.send;
+    // E2 the extractor runtime.run is below aux.background; E3 one Memory effect
+    // completes before trace flush. K: RunDispatch is the sole causal relay and
+    // the MemoryStore write is the completion authority—there is no timing wait.
+    // D1: C1+C2+C3+C4 => E1+E2+E3.
+    const memoryRoot = `/tmp/awaken-trace-memory-${process.pid}`;
+    cleanupFixtureTree(memoryRoot);
+    let memSpans;
+    try {
+      memSpans = await captureTurn('memory', PORT + 2, `${FILE}.mem`, 'remember fact-sky', {
+        extraEnv: {
+          SESSION_DEPLOYMENT_INGRESS: 'durable',
+          AWAKEN_DISPATCH_DAEMON: '1',
+          SESSION_DEPLOYMENT_STORAGE_DIR: memoryRoot,
+        },
+      });
+    } finally {
+      cleanupFixtureTree(memoryRoot);
+    }
     assertValidIds(memSpans);
     assertConnected(memSpans);
     assertBackgroundLinked(memSpans);

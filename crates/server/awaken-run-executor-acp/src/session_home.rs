@@ -1,8 +1,8 @@
 //! Cross-directory / cross-machine recovery of a local-dir ACP CLI's session.
 //!
 //! A CLI like Claude Code or Codex keeps its conversation under a subtree of its
-//! config home (`projects/`, `sessions/`). Our per-turn relaunch and distributed
-//! dispatch mean a later turn may run in a different directory — or on a different
+//! config home (`projects/`, `sessions/`). Our per-Run relaunch and distributed
+//! dispatch mean a later Run may execute in a different directory — or on a different
 //! worker — where that subtree is absent, so `session/load` finds nothing. This
 //! module restores the thread's session subtree into the config home before a run
 //! and harvests it back after, keyed by (thread, adapter), so the session survives
@@ -254,6 +254,18 @@ mod tests {
 
     #[tokio::test]
     async fn recovers_a_session_across_config_homes_and_leaves_credentials_behind() {
+        // Causes: the fixtures below establish `recovers a session across config homes and leaves
+        // credentials behind` with the concrete inputs, state, dependencies, and failure triggers
+        // used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: the current fenced attempt and committed context are
+        // authoritative; remote protocol state cannot become a parallel Run or transcript truth.
+        // Coverage rationale: `recovers a session across config homes and leaves credentials
+        // behind` is one independent branch selecting `all output, state, side-effect, error, and
+        // terminal assertions below hold together`; a multi-row decision table is not applicable,
+        // and sibling tests own alternate causes.
         let store_a = tempfile::tempdir().unwrap();
         let store_b = tempfile::tempdir().unwrap();
         let blob_root = tempfile::tempdir().unwrap();
@@ -268,7 +280,7 @@ mod tests {
         // credential at the config-home root (outside it).
         let home_a = ConfigHome::open(Some(store_a.path()), "t1").unwrap();
         home_a
-            .write("projects/conv/session.jsonl", b"turn-1")
+            .write("projects/conv/session.jsonl", b"run-1")
             .unwrap();
         home_a
             .write(".credentials.json", b"local-auth-bytes")
@@ -289,7 +301,7 @@ mod tests {
                 .read("projects/conv/session.jsonl")
                 .unwrap()
                 .as_deref(),
-            Some(&b"turn-1"[..]),
+            Some(&b"run-1"[..]),
             "the session recovered across the directory change"
         );
         assert!(

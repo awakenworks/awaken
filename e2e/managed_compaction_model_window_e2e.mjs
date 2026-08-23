@@ -9,16 +9,16 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import {
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38261);
 const BETAS = ['managed-agents-2026-04-01'];
-
-async function allEvents(client, id) {
-  const evs = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) evs.push(ev);
-  return evs;
-}
 
 async function main() {
   if (!process.env.KIMI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
@@ -41,13 +41,26 @@ async function main() {
     const big = (n) => `Message ${n}. ` + 'Please keep this context in mind. '.repeat(40);
     let compacted = false;
     let turns = 0;
+    // Model-window decision M1: C1 exact per-turn receipt and C2 live reply;
+    // C3 cumulative model-owned window threshold. E1 receipt-scoped reply;
+    // E2 compaction after C3. K1 earlier replies cannot satisfy a later turn.
+    // D1=C1+C2=>E1; D2=D1+C3=>E2.
     for (let i = 1; i <= 6 && !compacted; i += 1) {
       turns = i;
-      await client.beta.sessions.events.send(s.id, {
+      const receipt = (await client.beta.sessions.events.send(s.id, {
         betas: BETAS,
         events: [{ type: 'user.message', content: [{ type: 'text', text: big(i) }] }],
-      });
-      const types = (await allEvents(client, s.id)).map((e) => e.type);
+      })).data[0];
+      const observation = await waitForSessionEventReceipt(
+        client,
+        s.id,
+        receipt.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+        `model-window compaction turn ${i}`,
+        { timeoutMs: 180_000 },
+      );
+      const types = observation.events.map((e) => e.type);
       assert.ok(types.includes('agent.message'), `turn ${i}: the real model replied — ${types.join(',')}`);
       compacted = types.includes('agent.thread_context_compacted');
     }

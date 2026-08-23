@@ -10,7 +10,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::event::{AgentEvent, Fact};
+use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
 use awaken_runtime::{CircuitBreakerConfig, LlmRetryPolicy, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::RunExecutor;
@@ -81,7 +81,7 @@ impl LlmExecutor for PermanentThenOkLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text("recovered".to_string()),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -106,15 +106,15 @@ impl LlmExecutor for FlakyLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text("recovered".to_string()),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
 }
 
-/// Emits `truncated_turns` text responses stopped by `MaxTokens`, then a final response.
+/// Emits `truncated_steps` text responses stopped by `MaxTokens`, then a final response.
 struct TruncatingLlm {
-    truncated_turns: usize,
+    truncated_steps: usize,
     calls: Arc<AtomicUsize>,
 }
 
@@ -125,7 +125,7 @@ impl LlmExecutor for TruncatingLlm {
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
-        if n < self.truncated_turns {
+        if n < self.truncated_steps {
             Ok(ChatResponse {
                 output: AssistantOutput::text(format!("chunk-{n}")),
                 usage: None,
@@ -135,7 +135,7 @@ impl LlmExecutor for TruncatingLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text("the end".to_string()),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -167,7 +167,7 @@ impl LlmExecutor for TruncatedToolCallLlm {
             Ok(ChatResponse {
                 output: AssistantOutput::text("done".to_string()),
                 usage: None,
-                stop_reason: Some(StopReason::EndTurn),
+                stop_reason: Some(StopReason::NaturalEnd),
             })
         }
     }
@@ -304,16 +304,26 @@ async fn transient_error_then_success_recovers() {
     assert_eq!(calls.load(Ordering::SeqCst), 2);
 }
 
+/// MaxTokens live-coordinate cause/effect table: C1 response 0 truncates and
+/// commits a partial; C2 response 1 completes the same assistant step; E1 both
+/// keep the same `(run,thread,step)`; E2 C2 advances only `response`; E3 the
+/// transcript still commits partial/prompt/final. Rules M1=C1=>response 0+E3,
+/// M2=C1+C2=>response [0,1]+E1+E2+E3.
+/// Constraints/invariants: continuation remains in one Run/Thread/Step and only
+/// the response coordinate advances; transcript order is append-only.
 #[tokio::test]
 async fn max_tokens_truncation_continues_in_place_and_recovers() {
     let calls = Arc::new(AtomicUsize::new(0));
     let runtime = Runtime::new().with_llm(Arc::new(TruncatingLlm {
-        truncated_turns: 1,
+        truncated_steps: 1,
         calls: calls.clone(),
     }));
 
     let commit = Arc::new(MemoryCommitCoordinator::new());
-    let context = RuntimeRunContext::new().with_commit(commit.clone());
+    let stream = Arc::new(MemoryStreamSink::new());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_stream_sink(stream.clone());
     let outcome = runtime.execute(activation(), context).await.expect("runs");
 
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
@@ -348,15 +358,53 @@ async fn max_tokens_truncation_continues_in_place_and_recovers() {
         texts.iter().any(|t| t == "Assistant:the end"),
         "final response is committed: {texts:?}"
     );
+    let coordinates = stream
+        .observations()
+        .into_iter()
+        .filter_map(|observation| {
+            matches!(
+                observation.event.kind,
+                AgentEvent::Delta(Delta::TextDelta { .. })
+            )
+            .then_some(observation.assistant_response)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(coordinates.len(), 2, "M2 one delta per model response");
+    assert_eq!(
+        coordinates
+            .iter()
+            .map(|coordinate| coordinate
+                .as_ref()
+                .expect("M1/M2 Runtime coordinate")
+                .response)
+            .collect::<Vec<_>>(),
+        vec![0, 1],
+        "M2/E2"
+    );
+    assert!(
+        coordinates.iter().all(|coordinate| {
+            coordinate.as_ref().is_some_and(|coordinate| {
+                coordinate.thread_id == ThreadId("thread-1".into()) && coordinate.step == 0
+            })
+        }),
+        "M1/M2 E1"
+    );
 }
 
+/// Cause/effect design: C1 every model response is truncated by max tokens; C2
+/// the continuation retry budget is two. Effects: E1 the Runtime performs one
+/// initial inference plus two continuations; E2 exhaustion lets the accumulated
+/// text-only Step stand as NaturalEnd. Decision rule X1=C1+C2=>E1+E2; recovery
+/// before exhaustion is covered by the preceding continuation test.
+/// Constraints/invariants: the continuation budget is exact and bounded; a
+/// text-only partial may stand, but no extra request exceeds the configured two.
 #[tokio::test]
-async fn max_tokens_budget_exhausted_lets_the_partial_turn_stand() {
+async fn max_tokens_budget_exhausted_lets_the_partial_step_stand() {
     let calls = Arc::new(AtomicUsize::new(0));
     // Every response truncates; the per-Step budget (2) bounds the continuations.
     let runtime = Runtime::new()
         .with_llm(Arc::new(TruncatingLlm {
-            truncated_turns: usize::MAX,
+            truncated_steps: usize::MAX,
             calls: calls.clone(),
         }))
         .with_max_continuation_retries(2);

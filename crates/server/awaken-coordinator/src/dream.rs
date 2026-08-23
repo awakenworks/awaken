@@ -297,9 +297,11 @@ fn dream_tool_configuration() -> SessionToolConfiguration {
                 "bash", "read", "write", "edit", "glob", "grep", "move", "delete",
             ]
             .into_iter()
-            .map(|name| awaken_agent_contract::ToolPolicyOverride {
-                name: name.into(),
-                policy: awaken_agent_contract::ToolExecutionPolicy::default(),
+            .map(|name| {
+                awaken_agent_contract::ToolPolicyOverride::new(
+                    name,
+                    awaken_agent_contract::ToolExecutionPolicy::default(),
+                )
             })
             .collect(),
         }],
@@ -525,7 +527,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                 runtime_interval: None,
             };
             self.sessions
-                .terminate_session(&preparation.session_id, &archived_at, fact)
+                .force_terminate_session(&preparation.session_id, &archived_at, fact)
                 .await
                 .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
             for file_id in &preparation.transcript_file_ids {
@@ -552,7 +554,7 @@ impl DreamExecutor for BuiltInDreamAgent {
 }
 
 /// Dream completion is stricter than ordinary interactive Session settlement:
-/// an interactive turn always returns to `idle` after projecting a terminal
+/// an interactive Run always returns to `idle` after projecting a terminal
 /// `session.error`, while a background Dream must surface that same terminal
 /// Run fact as a failed Dream. Keeping this as an exhaustive match prevents a
 /// new Runtime terminal variant from being silently classified as success.
@@ -664,7 +666,7 @@ mod tests {
 
     #[test]
     fn dream_run_terminal_decision_table_fails_closed() {
-        // Causal decision table: only a natural terminal model turn proves the
+        // Causal decision table: only a natural terminal model response proves the
         // unattended consolidation completed. Provider failures, tool awaits,
         // cancellation, policy stops, step exhaustion, asynchronous ambiguity,
         // and an impossible escaped Running state must all fail the Dream.
@@ -699,6 +701,13 @@ mod tests {
 
     #[test]
     fn dream_tool_policy_allows_bash_and_files_but_denies_everything_else() {
+        // Cause/effect graph: C1 one of the eight Dream workspace tools is
+        // selected -> E1 its explicit override is enabled and AlwaysAllow;
+        // C2 any unlisted Agent tool is selected -> E2 the default-deny policy
+        // remains authoritative; C3 a client tool is requested -> E3 none is
+        // exposed. Invariant: tool admission cannot widen the Environment and
+        // read-only mount boundaries. Decision rules R1=C1=>E1, R2=C2=>E2,
+        // R3=C3=>E3 form the minimum partition coverage for this closed policy.
         let tools = dream_tool_configuration();
         assert!(tools.client_tools.is_empty());
         assert_eq!(tools.toolsets.len(), 1);

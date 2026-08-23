@@ -13,7 +13,7 @@ use awaken_authz_enforce::{EnforceEngine, TokenSpec, guard};
 use awaken_config_resolver::{
     InMemoryWebhookStore, WebhookEndpointDef, WebhookMutationIntent, WebhookStore,
 };
-use awaken_coordinator::webhooks;
+use awaken_coordinator::{install_managed_lifecycle_delivery, webhooks};
 use awaken_credential_vault::{InMemorySecretStore, SecretRef, SecretStore};
 use awaken_protocol_managed::ManagedState;
 use awaken_runtime_contract::llm::{ChatRequest, ChatResponse, LlmExecutor};
@@ -36,7 +36,7 @@ impl LlmExecutor for DeadModel {
         &self,
         _request: ChatRequest,
     ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        unreachable!("create_session never runs a turn")
+        unreachable!("create_session never starts a Run")
     }
 }
 
@@ -49,11 +49,24 @@ async fn receive(State(inbox): State<Inbox>, headers: HeaderMap, body: String) -
 
 #[tokio::test]
 async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
-    // Cause/effect graph: C1 the guard resolves the owning workspace; C2 create
-    // and archive commit stable lifecycle facts; C3 the one supervised outbox
-    // wakes; C4 service cancellation follows delivery. Effects: E1 signed,
-    // scoped idled and terminated events; E2 no duplicate delivery; E3 the
-    // outbox loop joins. Decision rules: R1=C1+C2+C3 -> E1+E2; R2=C4 -> E3.
+    // Causes: the fixtures below establish `a guarded live session delivers a signed scoped
+    // webhook` with the concrete inputs, state, dependencies, and failure triggers used by this
+    // case.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 the guard resolves the owning workspace; C2 the
+    // canonical Coordinator installer binds one notifier before traffic; C3
+    // create and archive commit stable lifecycle facts; C4 the loopback delivery
+    // resolves signing material; C5 service cancellation follows delivery.
+    // Effects: E1 signed, scoped idled and terminated events; E2 no duplicate
+    // delivery; E3 the sole outbox loop joins.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | C5 | Effects |
+    // |---|---|---|---|---|---|---|
+    // | L1 | yes | yes | create+archive | yes | no | E1,E2 |
+    // | L2 | any | yes | any | any | yes | E3 |
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     // 1. Real receiver.
     let inbox: Inbox = Arc::new(Mutex::new(Vec::new()));
@@ -93,20 +106,14 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     store.begin_mutation(intent.clone()).unwrap();
     store.apply_mutation(&intent).unwrap();
     store.complete_mutation(&intent).unwrap();
-    // The guarded production posture would refuse this loopback receiver (SSRF
-    // pin/admission), so use the loopback assembly for the in-process e2e.
-    let (notifier, _crud) =
-        webhooks::assemble_loopback(store, secrets, None, sessions.clone(), &service_lifecycle);
-
-    // 3. A managed surface with the notifier, wrapped: guard resolves the owning
-    // workspace, the Session transaction owns the fact, and notifier is only a
-    // payload-free post-commit wake.
+    // 3. A managed surface over the canonical lifecycle composition. Only the
+    // delivery transport admits this in-process loopback receiver; notifier and
+    // replay ownership remain identical to production.
+    let delivery = webhooks::loopback_lifecycle_delivery(store, secrets, None);
     let host = Arc::new(SharedHost::new(Arc::new(DeadModel), "test"));
-    let managed = Arc::new(
-        ManagedState::new(ManagedHost::new(host))
-            .with_session_repo(sessions)
-            .with_lifecycle_notifier(notifier),
-    );
+    let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_session_repo(sessions));
+    install_managed_lifecycle_delivery(&managed, Some(delivery), &service_lifecycle)
+        .expect("L1 bind the sole lifecycle notifier before traffic");
     let engine = Arc::new(EnforceEngine::seeded());
     let token = engine
         .mint(TokenSpec {
@@ -234,5 +241,5 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     service_lifecycle
         .shutdown(std::time::Duration::from_secs(1))
         .await
-        .expect("R2/E3 supervised outbox joins");
+        .expect("L2/E3 supervised outbox joins");
 }

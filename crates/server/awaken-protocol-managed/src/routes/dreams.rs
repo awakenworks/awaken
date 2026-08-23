@@ -137,7 +137,7 @@ fn error_response(error: DreamApiError) -> (StatusCode, Json<ErrorResponse>) {
         DreamApiError::BadRequest(_) => (StatusCode::BAD_REQUEST, "invalid_request_error"),
         DreamApiError::NotFound => (StatusCode::NOT_FOUND, "not_found_error"),
         DreamApiError::Conflict(_) => (StatusCode::CONFLICT, "invalid_request_error"),
-        DreamApiError::Unavailable(_) => (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
+        DreamApiError::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
     };
     (status, Json(ErrorResponse::new(kind, error.to_string())))
 }

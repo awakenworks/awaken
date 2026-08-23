@@ -113,8 +113,6 @@ fn committed() -> StepOutcome {
             input: json!({"path": "x"}),
             client_executed: true,
         }),
-        false,
-        false,
     )
 }
 
@@ -230,6 +228,15 @@ impl RunApplication for PrefixMock {
 
 #[tokio::test]
 async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
+    // Causes: the fixtures below establish `run started and reasoning only prefix` with the
+    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `keeps committed text once` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: this adapter owns only its public wire mapping; the shared neutral
+    // Runtime and committed facts remain the single execution authority.
+    // Coverage rationale: `run started and reasoning only prefix` is one independent branch
+    // selecting `keeps committed text once`; a multi-row decision table is not applicable, and
+    // sibling tests own alternate causes.
     // CE-AG3/AG4 router rule: non-projected reasoning does not select a lossy
     // close path, and a live RUN_STARTED is never repeated by completion.
     let frames = frames_for(Arc::new(PrefixMock {
@@ -242,8 +249,6 @@ async fn run_started_and_reasoning_only_prefix_keeps_committed_text_once() {
         outcome: StepOutcome::ended(
             vec![Message::text(Id("a1".into()), Role::Assistant, "answer")],
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ),
     }))
     .await;
@@ -287,6 +292,15 @@ async fn text_only_prefix_and_committed_tool_emit_one_complete_tool_bracket() {
 
 #[tokio::test]
 async fn live_only_tool_is_closed_when_not_present_in_committed_outcome() {
+    // Causes: the fixtures below establish `live only tool` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `is closed when not present in committed outcome` and every
+    // asserted state transition or side effect must hold.
+    // Constraints/invariants: this adapter owns only its public wire mapping; the shared neutral
+    // Runtime and committed facts remain the single execution authority.
+    // Coverage rationale: `live only tool` is one independent branch selecting `is closed when not
+    // present in committed outcome`; a multi-row decision table is not applicable, and sibling
+    // tests own alternate causes.
     // CE-AG9 router rule: L={c1}, F=empty. Completion closes c1 before the
     // terminal event so a client never retains an open tool input bracket.
     let frames = frames_for(Arc::new(PrefixMock {
@@ -301,8 +315,6 @@ async fn live_only_tool_is_closed_when_not_present_in_committed_outcome() {
         outcome: StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ),
     }))
     .await;
@@ -367,8 +379,6 @@ impl RunApplication for HangupProbe {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

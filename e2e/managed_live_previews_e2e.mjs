@@ -18,13 +18,28 @@
 //     accumulator reconciles preview -> committed by id),
 //   - without the opt-in, NO preview frames appear (committed events only),
 //   - a bad event_deltas value is rejected 400,
-//   - the per-thread stream rejects the opt-in 400 (session-level only).
+//   - the per-thread stream accepts the official selector and, when opened after
+//     terminal commit, backfills committed events without inventing previews.
+//
+// Cause/effect graph: C1=session stream opts into `agent.message`; C2=the
+// Provider emits multiple text deltas before one durable assistant Message;
+// C3=the opt-in is omitted; C4=the requested delta family is unsupported;
+// C5=the official selector is used on a public primary Thread stream. Effects:
+// E1=C1+C2 yields one preview start plus ordered deltas sharing the eventual
+// committed id/content; E2=previews never enter the durable list; E3=C3 carries
+// committed events only; E4=C4 is 400 before streaming; E5=C5 is admitted and
+// backfills only committed Thread events after the Run is already terminal.
+// Decision table: P1(C1+C2)->E1+E2; P2(C3)->E3; P3(C4)->E4;
+// P4(C5+terminal Run)->E5. The authoritative Message projector owns durable
+// identity; preview state is stream-only and never a second event log.
+// Constraints/invariant: preview and committed frames reconcile by one Event id;
+// preview deltas never become durable history or satisfy terminal replay.
 //
 // Run: (from e2e/)  node managed_live_previews_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38455);
@@ -36,7 +51,7 @@ const HEADERS = {
 };
 
 // Open an SSE GET stream and read its `data:` frames to completion (the server
-// ends the stream after the turn's terminal `session.status_idle`). A timeout
+// ends the stream after the Run's terminal `session.status_idle`). A timeout
 // aborts a stream that never terminates so the test fails loudly instead of hanging.
 async function readSseToEnd(url) {
   const res = await fetch(url, { headers: HEADERS, signal: AbortSignal.timeout(20_000) });
@@ -65,8 +80,8 @@ async function readSseToEnd(url) {
 }
 
 // Open the stream first, then send concurrently, so the still-open stream sees the
-// turn's in-flight previews (the run commits synchronously inside `events.send`).
-async function streamTurn(baseUrl, client, sessionId, text, query) {
+// Run's in-flight previews (the Run commits synchronously inside `events.send`).
+async function streamRun(baseUrl, client, sessionId, text, query) {
   const url = `${baseUrl}/v1/sessions/${sessionId}/events/stream${query}`;
   // Subscribe (open the stream) before sending — the GET handler subscribes to the
   // session broadcast before its first byte, so previews can't slip the gap.
@@ -102,8 +117,21 @@ async function streamTurn(baseUrl, client, sessionId, text, query) {
     }
     if (idled) break;
   }
-  await send;
-  return frames;
+  const receipt = await send;
+  // Preview rule P0: C1=stream witnesses idle; C2=the concurrent POST returns
+  // its exact receipt; C3=its buffered Message/idle are committed. E1=return
+  // stream frames plus authoritative history. Constraint: previews never satisfy
+  // C3. C1+C2&&!C3=>observe; C1+C2+C3=>E1.
+  const observation = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receipt.data[0]?.id,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    'P0 streamed Run commits after its exact receipt',
+  );
+  return { frames, observation };
 }
 
 async function main() {
@@ -118,7 +146,7 @@ async function main() {
           environment_id: 'env_local',
           betas: BETAS,
         });
-        const frames = await streamTurn(
+        const { frames, observation } = await streamRun(
           baseUrl,
           client,
           session.id,
@@ -152,8 +180,7 @@ async function main() {
         assert.equal(streamedText, committedText, 'concatenated content_delta text equals the buffered message');
 
         // event_start / event_delta are stream-only — never in the committed log.
-        const listed = [];
-        for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) listed.push(ev);
+        const listed = observation.events;
         assert.ok(
           listed.every((e) => e.type !== 'event_start' && e.type !== 'event_delta'),
           'preview frames are never persisted in events.list()',
@@ -161,17 +188,17 @@ async function main() {
         pass(`live previews: event_start + ${deltas.length} content_delta reconcile to the buffered agent.message by id`);
       }
 
-      // --- no opt-in: the same turn streams committed events only, zero previews ---
+      // --- no opt-in: the same Run streams committed events only, zero previews ---
       {
         const session = await client.beta.sessions.create({
           agent: 'assistant',
           environment_id: 'env_local',
           betas: BETAS,
         });
-        const frames = await streamTurn(baseUrl, client, session.id, 'no-previews-here', '');
+        const { frames } = await streamRun(baseUrl, client, session.id, 'no-previews-here', '');
         assert.ok(
           frames.some((f) => f.type === 'agent.message'),
-          'the turn still delivered the committed agent.message',
+          'the Run still delivered the committed agent.message',
         );
         assert.ok(
           !frames.some((f) => f.type === 'event_start' || f.type === 'event_delta'),
@@ -195,11 +222,25 @@ async function main() {
         // Thread EventStreamParams officially supports the same selector. This
         // completed primary has no outstanding live deltas, but admission succeeds
         // and its committed terminal backfill closes the stream.
-        await client.beta.sessions.events.send(session.id, {
+        const receipt = await client.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'thread-preview-admission' }] }],
           betas: BETAS,
         });
-        const thread = `${baseUrl}/v1/sessions/${session.id}/threads/${session.id}:primary/stream?event_deltas[]=agent.message`;
+        await waitForSessionEventReceipt(
+          client,
+          session.id,
+          receipt.data[0]?.id,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+          'P4 Thread projection follows the exact terminal Session receipt',
+        );
+        const threads = [];
+        for await (const candidate of client.beta.sessions.threads.list(session.id, { betas: BETAS })) {
+          threads.push(candidate);
+        }
+        const primary = threads.find((candidate) => candidate.parent_thread_id === null);
+        assert.match(primary.id, /^sthr_/u, 'the primary exposes a public Thread id');
+        const thread = `${baseUrl}/v1/sessions/${session.id}/threads/${primary.id}/stream?event_deltas[]=agent.message`;
         const threadRes = await readSseToEnd(thread);
         assert.equal(threadRes.status, 200, 'the per-thread stream accepts official event_deltas[]');
         pass('event_deltas[] validation: unsupported value 400; official Thread selector accepted');

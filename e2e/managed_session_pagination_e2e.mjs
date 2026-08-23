@@ -1,5 +1,6 @@
-// Session-list contract from session-operations, exercised through both the raw
-// wire and the official SDK's BidirectionalPageCursor.
+// Session-list contract from session-operations, exercised through the pinned
+// official SDK's BidirectionalPageCursor. Raw HTTP remains only as the
+// independent malformed-cursor oracle.
 //
 // Cause/effect graph: order + filters + lifecycle -> stable ordered candidate set;
 // limit + opaque direction-bound cursor -> page and next/previous transitions;
@@ -32,8 +33,9 @@ const PORT = Number(process.env.E2E_PORT ?? 38431);
 const BETA = 'managed-agents-2026-04-01';
 const BETAS = [BETA];
 
-// Raw list request — the SDK would auto-paginate and swallow the cursor fields.
-async function listPage(baseUrl, params = {}, expectedStatus = 200) {
+// Raw negative wire oracle. Positive single-page reads use the SDK Page's
+// public data/next_page/prev_page fields below.
+async function rejectRawListPage(baseUrl, params = {}) {
   const url = new URL(`${baseUrl}/v1/sessions`);
   for (const [key, value] of Object.entries(params)) {
     for (const item of Array.isArray(value) ? value : [value]) {
@@ -43,15 +45,16 @@ async function listPage(baseUrl, params = {}, expectedStatus = 200) {
   const res = await fetch(url, {
     headers: { 'anthropic-beta': BETA, 'x-api-key': 'e2e-dummy' },
   });
-  assert.equal(res.status, expectedStatus, `list ${url.search} -> ${res.status}`);
-  return { status: res.status, body: await res.json() };
+  assert.equal(res.status, 400, `list ${url.search} -> ${res.status}`);
+  await res.json();
 }
 
 async function main() {
   await withRealServer('echo', PORT, async (baseUrl) => {
-    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
 
-    // Three sessions in one scope (the raw GET shares the x-api-key -> same scope).
+    // Three sessions in one SDK-owned x-api-key scope. The raw negative oracle
+    // below uses the same key solely to isolate cursor validation.
     const created = [];
     for (let i = 0; i < 3; i++) {
       const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -61,7 +64,7 @@ async function main() {
     pass('created 3 sessions');
 
     // L1: no limit/order uses official newest-first and exact bidirectional shape.
-    const { body: all } = await listPage(baseUrl);
+    const all = await client.beta.sessions.list({ betas: BETAS });
     const allIds = all.data.map((s) => s.id);
     for (const id of created) assert.ok(allIds.includes(id), `full page missing ${id}`);
     assert.equal(all.next_page, null, 'full page next_page=null');
@@ -74,7 +77,9 @@ async function main() {
     let cursor;
     let secondPage;
     for (let guard = 0; guard < 10; guard++) {
-      const { body: p } = await listPage(baseUrl, { limit: 1, order: 'asc', page: cursor });
+      const p = await client.beta.sessions.list({
+        limit: 1, order: 'asc', page: cursor, betas: BETAS,
+      });
       assert.ok(p.data.length <= 1, `limit=1 returned ${p.data.length} rows`);
       if (p.data.length === 0) break;
       walked.push(p.data[0].id);
@@ -95,42 +100,47 @@ async function main() {
     // L3: the second page's prev cursor returns the first page. The limit may change
     // when a cursor is reused; here it remains one to make the inverse exact.
     assert.ok(secondPage?.prev_page, 'a non-first page carries prev_page');
-    const { body: previous } = await listPage(baseUrl, {
-      limit: 1, order: 'asc', page: secondPage.prev_page,
+    const previous = await client.beta.sessions.list({
+      limit: 1, order: 'asc', page: secondPage.prev_page, betas: BETAS,
     });
     assert.equal(previous.data[0].id, walked[0], 'prev cursor returns the preceding page');
     pass('L3 prev_page navigates back to the preceding page');
 
     // L4/L5: an opaque cursor is order-bound and malformed cursors are caller errors.
-    await listPage(baseUrl, { limit: 1, order: 'desc', page: secondPage.prev_page }, 400);
-    await listPage(baseUrl, { limit: 1, page: 'sesn_does_not_exist' }, 400);
+    await rejectRawListPage(baseUrl, { limit: 1, order: 'desc', page: secondPage.prev_page });
+    await rejectRawListPage(baseUrl, { limit: 1, page: 'sesn_does_not_exist' });
     pass('L4/L5 order-conflicting and fabricated cursors reject with 400');
 
-    // L6: filters intersect. The SDK serializes statuses as `statuses[]`; the raw
-    // request proves the adapter accepts exactly that official spelling.
+    // L6: filters intersect. The SDK owns the official `statuses` array's wire
+    // serialization; this test observes only the public Page contract.
     const createdAt = all.data[0].created_at;
-    const { body: filtered } = await listPage(baseUrl, {
-      agent_id: 'assistant', agent_version: 1, 'statuses[]': ['idle'],
+    const filtered = await client.beta.sessions.list({
+      agent_id: 'assistant', agent_version: 1, statuses: ['idle'],
       'created_at[gte]': createdAt, 'created_at[lte]': createdAt,
+      betas: BETAS,
     });
     assert.equal(filtered.data.length, created.length, 'matching filters retain all three sessions');
-    const { body: wrongStatus } = await listPage(baseUrl, { 'statuses[]': ['running'] });
+    const wrongStatus = await client.beta.sessions.list({ statuses: ['running'], betas: BETAS });
     assert.equal(wrongStatus.data.length, 0, 'nonmatching status removes every idle session');
-    const { body: changedFilterPage } = await listPage(baseUrl, {
-      limit: 1, order: 'asc', page: secondPage.next_page, 'statuses[]': ['running'],
+    const changedFilterPage = await client.beta.sessions.list({
+      limit: 1, order: 'asc', page: secondPage.next_page, statuses: ['running'], betas: BETAS,
     });
     assert.deepEqual(changedFilterPage.data, [], 'cursor remains safe when another filter changes');
-    const { body: wrongDeployment } = await listPage(baseUrl, { deployment_id: 'depl_missing' });
+    const wrongDeployment = await client.beta.sessions.list({
+      deployment_id: 'depl_missing', betas: BETAS,
+    });
     assert.equal(wrongDeployment.data.length, 0, 'deployment filter is enforced');
-    const { body: wrongMemory } = await listPage(baseUrl, { memory_store_id: 'memstore_missing' });
+    const wrongMemory = await client.beta.sessions.list({
+      memory_store_id: 'memstore_missing', betas: BETAS,
+    });
     assert.equal(wrongMemory.data.length, 0, 'memory-store filter is enforced');
     pass('L6 agent/version/status/time/resource/deployment filters intersect');
 
     // L7: archive is excluded by default and restored by include_archived=true.
     await client.beta.sessions.archive(created[0], { betas: BETAS });
-    const { body: activeOnly } = await listPage(baseUrl);
+    const activeOnly = await client.beta.sessions.list({ betas: BETAS });
     assert.ok(!activeOnly.data.some((session) => session.id === created[0]), 'archived excluded by default');
-    const { body: includingArchived } = await listPage(baseUrl, { include_archived: true });
+    const includingArchived = await client.beta.sessions.list({ include_archived: true, betas: BETAS });
     assert.ok(includingArchived.data.some((session) => session.id === created[0]), 'archived included explicitly');
     pass('L7 include_archived controls archived membership');
 

@@ -1,7 +1,7 @@
 // HITL end-to-end with the official Anthropic TypeScript SDK: a mutating tool
 // parks for approval (requires_action + agent.tool_use{ask}); the client sends a
 // `user.tool_confirmation`. Covers BOTH the allow path (tool runs, read-back
-// succeeds) and the deny path (tool is blocked, the run still completes).
+// succeeds) and the deny path (tool is blocked, the Run still completes).
 //
 // Uses the probe server (AWAKEN_MODEL_MODE=probe): write probe.txt (asked), read
 // it back (allowed), reply.
@@ -10,16 +10,10 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer } from './harness.mjs';
+import { waitForSessionEventReceipt, withRealServer } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38102);
 const BETAS = ['managed-agents-2026-04-01'];
-
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
 
 async function newSession(client) {
   return client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
@@ -29,14 +23,39 @@ async function main() {
   await withRealServer('probe', PORT, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-    // ---------- allow path ----------
+    // Cause/effect graph: C1=an agent.tool_use is durably pending with ask;
+    // C2=the official SDK sends allow for its qualified Event id; C3=the SDK
+    // sends deny for its qualified Event id. Effects: E1=requires_action owns
+    // C1; E2=allow executes the write, emits its result, and ends the Run;
+    // E3=deny blocks the write but still ends the Run. Decision table:
+    // H1(C1+C2)->E1+E2; H2(C1+C3)->E1+E3. Wrong family/id and duplicate reply
+    // rules remain with the protocol/error-path owners. Constraints/invariant:
+    // the qualified tool-use Event id is the single decision authority and deny
+    // cannot execute the pending mutation.
+
+    // H1: allow path.
     {
       const session = await newSession(client);
-      await client.beta.sessions.events.send(session.id, {
+      const initialReceipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'HELLO-ALLOW' }] }],
         betas: BETAS,
       });
-      let events = await listEvents(client, session.id);
+      const initialReceiptId = initialReceipt.data[0]?.id;
+      assert.equal(typeof initialReceiptId, 'string', 'H1 exact User Event receipt');
+      let { events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        initialReceiptId,
+        BETAS,
+        ({ delta }) => {
+          const pending = delta.find((event) => event.type === 'agent.tool_use');
+          const idle = [...delta].reverse().find((event) => event.type === 'session.status_idle');
+          return pending?.evaluated_permission === 'ask'
+            && idle?.stop_reason?.type === 'requires_action'
+            && idle.stop_reason.event_ids.includes(pending.id);
+        },
+        'H1 asked tool use to become durably pending',
+      );
       const toolUse = events.find((e) => e.type === 'agent.tool_use');
       assert.ok(toolUse, 'expected agent.tool_use');
       assert.equal(toolUse.evaluated_permission, 'ask');
@@ -44,11 +63,21 @@ async function main() {
       assert.equal(idle.stop_reason.type, 'requires_action');
       assert.ok(idle.stop_reason.event_ids.includes(toolUse.id));
 
-      await client.beta.sessions.events.send(session.id, {
+      const confirmation = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
         betas: BETAS,
       });
-      events = await listEvents(client, session.id);
+      const confirmationId = confirmation.data[0]?.id;
+      assert.equal(typeof confirmationId, 'string', 'H1 exact confirmation receipt');
+      ({ events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        confirmationId,
+        BETAS,
+        ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn'
+          && JSON.stringify(delta.filter((event) => event.type === 'agent.tool_result').at(-1)?.content).includes('HELLO-ALLOW'),
+        'H1 allow confirmation to execute the tool and settle the Run',
+      ));
       const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
       assert.equal(lastIdle.stop_reason.type, 'end_turn');
       const results = events.filter((e) => e.type === 'agent.tool_result');
@@ -56,23 +85,47 @@ async function main() {
       console.log('  ok: allow -> tool runs, read-back succeeds');
     }
 
-    // ---------- deny path ----------
+    // H2: deny path.
     {
       const session = await newSession(client);
-      await client.beta.sessions.events.send(session.id, {
+      const initialReceipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'HELLO-DENY' }] }],
         betas: BETAS,
       });
-      let events = await listEvents(client, session.id);
+      const initialReceiptId = initialReceipt.data[0]?.id;
+      assert.equal(typeof initialReceiptId, 'string', 'H2 exact User Event receipt');
+      let { events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        initialReceiptId,
+        BETAS,
+        ({ delta }) => {
+          const pending = delta.find((event) => event.type === 'agent.tool_use');
+          const idle = [...delta].reverse().find((event) => event.type === 'session.status_idle');
+          return pending?.evaluated_permission === 'ask'
+            && idle?.stop_reason?.type === 'requires_action'
+            && idle.stop_reason.event_ids.includes(pending.id);
+        },
+        'H2 asked tool use to become durably pending',
+      );
       const toolUse = events.find((e) => e.type === 'agent.tool_use');
       assert.equal(events.find((e) => e.type === 'session.status_idle').stop_reason.type, 'requires_action');
 
-      await client.beta.sessions.events.send(session.id, {
+      const confirmation = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'deny', deny_message: 'not allowed' }],
         betas: BETAS,
       });
-      events = await listEvents(client, session.id);
-      // The run resumes and reaches a terminal turn even though the tool was denied.
+      const confirmationId = confirmation.data[0]?.id;
+      assert.equal(typeof confirmationId, 'string', 'H2 exact confirmation receipt');
+      ({ events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        confirmationId,
+        BETAS,
+        ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+        'H2 deny confirmation to block the tool and settle the Run',
+      ));
+      // The Run resumes and reaches its terminal wire reason even though the tool was denied.
       const lastIdle = [...events].reverse().find((e) => e.type === 'session.status_idle');
       assert.equal(lastIdle.stop_reason.type, 'end_turn');
       // The write was blocked, so the read-back does NOT contain the text.

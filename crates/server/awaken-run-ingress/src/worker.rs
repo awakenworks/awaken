@@ -1,6 +1,6 @@
 //! The dispatch worker: claim one runnable dispatch, run it, settle it.
 //!
-//! The worker is the only place that turns a durable dispatch into a runtime
+//! The worker is the only place that converts a durable dispatch into a Runtime
 //! attempt. It is additive over runtime control (G6): it never reaches into the
 //! loop, it calls the same `RunExecutor`/`Runtime::resume` a direct caller would,
 //! and it decides execute-vs-resume from *committed truth* — the awaiting ticket
@@ -11,11 +11,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+use awaken_agent_contract::ThreadCommit;
 use awaken_agent_contract::agent::awaiting::AwaitReason;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator as CommitCoordinator;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
@@ -30,14 +32,16 @@ use awaken_runtime_contract::{
     AttemptCredentialBinding, AttemptCredentialRealization, CredentialRealizationReceipt,
     CredentialRealizationRecordError, CredentialRealizationRecorder,
 };
+use awaken_session_contract::{SessionRunActivityAdmission, SessionRunActivityAdmissionMode};
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
 
 use crate::Error;
-use crate::clock::{Clock, SystemClock};
+use crate::clock::Clock;
 use crate::commit_fence::{ClaimedCommitCoordinator, ClaimedRunCommit, GuardedRunCommit};
 use crate::dispatch::{
-    Claimed, Dispatch, DispatchOutcome, DispatchState, PendingInput, RunClaim, SettleOutcome,
+    Claimed, Dispatch, DispatchOutcome, DispatchState, PendingInput, RunClaim,
+    SessionRunReservationResolution, SettleOutcome,
 };
 use crate::worker_context::WorkerContext;
 
@@ -55,10 +59,10 @@ pub struct DispatchWorker<S> {
     claimed_commit: Arc<dyn ClaimedRunCommit>,
     recovery_projection: Option<Arc<crate::RecoveryProjection>>,
     recovery_source: Option<Arc<dyn RunRecoverySource>>,
+    settlement_observer: Option<Arc<dyn crate::DispatchSettlementObserver>>,
     owner: String,
     lease_ms: u64,
     cancellation: Option<CancellationToken>,
-    ownership_clock: Arc<dyn Clock>,
     local_credential_capabilities: awaken_runtime_contract::CredentialRealizationCapabilities,
     worker_credential_resolver:
         Option<Arc<dyn awaken_runtime_contract::WorkerLocalCredentialResolver>>,
@@ -129,7 +133,7 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
 
 struct AttemptControlGuard {
     runtime: Arc<Runtime>,
-    run_id: RunId,
+    registration: awaken_runtime::AttemptControlRegistration,
 }
 
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
@@ -163,7 +167,7 @@ impl CommittedTerminalSettlement {
 
 impl Drop for AttemptControlGuard {
     fn drop(&mut self) {
-        self.runtime.deregister_attempt_controls(&self.run_id);
+        self.runtime.deregister_attempt_controls(&self.registration);
     }
 }
 
@@ -210,13 +214,19 @@ pub(crate) fn renew_claim_while_active<S: Dispatch + 'static>(
 }
 
 impl<S: Dispatch + 'static> DispatchWorker<S> {
-    fn renew_claim_while_driving(&self, claim: &RunClaim) -> ClaimLeaseRenewal {
-        renew_claim_while_active(
-            self.store.clone(),
-            claim,
-            self.lease_ms,
-            self.ownership_clock.clone(),
-        )
+    /// Rebuild the sole durable causal scope from the exact claimed instruction.
+    /// Every claim entry uses this helper so recovery, pre-execution failure, and
+    /// ordinary execution cannot drift into separate trace carrier rules.
+    fn claimed_dispatch_span(claimed: &Claimed) -> tracing::Span {
+        awaken_observability::dispatch_span(claimed.request.traceparent.as_deref())
+    }
+
+    fn renew_claim_while_driving(
+        &self,
+        claim: &RunClaim,
+        clock: Arc<dyn Clock>,
+    ) -> ClaimLeaseRenewal {
+        renew_claim_while_active(self.store.clone(), claim, self.lease_ms, clock)
     }
 
     async fn install_claimed_recovery_projection(
@@ -261,6 +271,57 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         projection.install(run_id, snapshot).map_err(|error| {
             crate::Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
         })
+    }
+
+    /// Persist the queue-authorized retry edge before any replacement attempt
+    /// can reach an execution dependency.
+    ///
+    /// The dispatch row remains the only recovery/attempt authority. This writes
+    /// its `Claimed.recovered` receipt through the same claim-fenced Thread
+    /// commit used by the Run, so a failed marker commit prevents unobservable
+    /// re-execution and is retried by the existing lease recovery path.
+    async fn commit_recovered_attempt(
+        &self,
+        claimed: &Claimed,
+        clock: Arc<dyn Clock>,
+    ) -> Result<(), Error> {
+        let run_id = claimed.request.run_id();
+        let disposition = recovered_attempt_disposition(
+            claimed.recovered,
+            run_id,
+            self.reader.run_state(run_id).as_ref(),
+            self.reader.resume_ticket(run_id),
+            &claimed.pending,
+        )?;
+        let Some(disposition) = disposition else {
+            return Ok(());
+        };
+        let claim = RunClaim::from(&claimed.lease);
+        let context = self.execution_context_with(
+            &claim,
+            claimed.request.execution_scope.as_ref(),
+            &None,
+            &[],
+            clock,
+        );
+        let coordinator = context.commit.ok_or_else(|| {
+            Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                "recovered dispatch has no claim-fenced commit coordinator".to_string(),
+            ))
+        })?;
+        coordinator
+            .commit(ThreadCommit::rescheduled(
+                claimed.request.thread_id().clone(),
+                disposition,
+                claimed.lease.epoch,
+            ))
+            .await
+            .map_err(|error| {
+                Error::Execution(awaken_runtime_contract::execution::Error::Execution(
+                    format!("commit recovered dispatch lifecycle: {error}"),
+                ))
+            })?;
+        Ok(())
     }
 
     /// Wire a worker to its runtime, dispatch store, and durable commit boundary.
@@ -312,10 +373,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             claimed_commit: Arc::new(GuardedRunCommit::new(commit, dispatch)),
             recovery_projection: None,
             recovery_source: None,
+            settlement_observer: None,
             owner: owner.into(),
             lease_ms: DEFAULT_LEASE_MS,
             cancellation: None,
-            ownership_clock: Arc::new(SystemClock),
             local_credential_capabilities: Default::default(),
             worker_credential_resolver: None,
         }
@@ -361,8 +422,28 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// Worker. Every claimed drive must load it before executor entry.
     #[must_use]
     pub fn with_recovery_projection(mut self, projection: Arc<crate::RecoveryProjection>) -> Self {
+        // `new` creates a local projection so every Worker has a coherent read
+        // boundary before topology is known. Replacing that boundary for a
+        // database-independent Worker must replace every reader as well as the
+        // install target; otherwise the fetched snapshot lands in one cache
+        // while resume selection and the Runtime read a second empty cache.
+        let reader: Arc<dyn CommittedThreadView> = projection.clone();
+        self.reader = reader.clone();
+        self.exec = self.exec.with_reader(reader);
         self.recovery_projection = Some(projection);
         self.recovery_source = None;
+        self
+    }
+
+    /// Install the one fallible hook that must complete after committed
+    /// Awaiting/Ended truth and before dispatch settlement. Its error leaves the
+    /// queue row intact so crash/transport recovery redelivers the same boundary.
+    #[must_use]
+    pub fn with_settlement_observer(
+        mut self,
+        observer: Arc<dyn crate::DispatchSettlementObserver>,
+    ) -> Self {
+        self.settlement_observer = Some(observer);
         self
     }
 
@@ -427,14 +508,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         self
     }
 
-    /// Install the same clock used by this Worker's dispatch authority. Tests and
-    /// embedded pools use this to keep ownership checks deterministic.
-    #[must_use]
-    pub fn with_ownership_clock(mut self, clock: Arc<dyn Clock>) -> Self {
-        self.ownership_clock = clock;
-        self
-    }
-
     #[must_use]
     pub fn with_local_credential_capabilities(
         mut self,
@@ -485,6 +558,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         execution_scope: Option<&crate::ExecutionScopeRef>,
         model_executor: &Option<Arc<dyn awaken_runtime_contract::llm::LlmExecutor>>,
         credential_bindings: &[AttemptCredentialBinding],
+        clock: Arc<dyn Clock>,
     ) -> RuntimeRunContext {
         // The base commit boundary, wrapped per drive because the fence epoch is per
         // claim. `self.store` (the dispatch queue) reports the run's current epoch, so
@@ -496,16 +570,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         let fenced: Arc<dyn CommitCoordinator> = Arc::new(coordinator);
         let dispatch: Arc<dyn crate::DispatchQueue> = self.store.clone();
-        let ownership = claim_bound_ownership_verifier(
-            dispatch.clone(),
-            claim.clone(),
-            self.ownership_clock.clone(),
-        );
+        let ownership = claim_bound_ownership_verifier(dispatch.clone(), claim.clone(), clock);
         let mut ctx = self
             .exec
             .runtime_context(self.cancellation.clone().unwrap_or_default(), Some(claim))
             .with_commit(fenced)
             .with_ownership(ownership);
+        // Durable ingress owns terminal delivery after committed truth is visible
+        // and before the dispatch is settled. Keep observers on `self.exec` for
+        // that replay, but do not let Runtime's best-effort finalizer create a
+        // parallel delivery path for this claimed attempt. Direct Runtime callers
+        // do not use this context builder and retain their existing behavior.
+        ctx.terminal_observers.clear();
         if let Some(scope) = execution_scope {
             ctx = ctx.with_execution_scope(scope.clone());
         }
@@ -590,8 +666,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn start_run(
         &self,
         request: awaken_run_ingress_contract::RunDispatch,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let now_ms = clock.now_ms();
         let unclaimed_request = request.clone();
         let claimed = self
             .store
@@ -612,7 +689,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             self.store.enqueue(unclaimed_request).await?;
             return Ok(None);
         };
-        self.drive_claimed(claimed, now_ms).await
+        self.drive_claimed(claimed, clock).await
     }
 
     /// Atomically deliver one durable input, claim its exact awaiting Run, and
@@ -621,8 +698,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn resume_run(
         &self,
         input: PendingInput,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let now_ms = clock.now_ms();
         let claimed = self
             .store
             .deliver_and_claim(
@@ -636,16 +714,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         let Some(claimed) = claimed else {
             return Ok(None);
         };
-        self.drive_claimed(claimed, now_ms).await
+        self.drive_claimed(claimed, clock).await
     }
 
     /// Claim and process at most one runnable dispatch. Returns the processed
     /// run's id and resulting state, or `None` when the queue is idle.
-    pub async fn tick(&self, now_ms: u64) -> Result<Option<(RunId, RunState)>, Error> {
+    pub async fn tick(&self, clock: Arc<dyn Clock>) -> Result<Option<(RunId, RunState)>, Error> {
+        let now_ms = clock.now_ms();
         let Some(claimed) = self.claim_one(now_ms).await? else {
             return Ok(None);
         };
-        self.drive_claimed(claimed, now_ms).await
+        self.drive_claimed(claimed, clock).await
     }
 
     /// Claim and drive one exact Run. This preserves queue isolation for callers
@@ -654,12 +733,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn tick_run(
         &self,
         run_id: &RunId,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let now_ms = clock.now_ms();
         let Some(claimed) = self.claim_run(run_id, now_ms).await? else {
             return Ok(None);
         };
-        self.drive_claimed(claimed, now_ms).await
+        self.drive_claimed(claimed, clock).await
     }
 
     /// Drive an already-[`claim_one`](Self::claim_one)ed dispatch to a settled
@@ -670,12 +750,153 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn drive_claimed(
         &self,
         claimed: Claimed,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
-        // Operational metrics (off the critical path): count this claim and time the
-        // whole drive on the SAME recorder the runtime meters model/tool calls with,
-        // so `awaken.dispatch.*` exports on the one OTLP pipeline. The timer records
-        // `drive.duration` on every exit path (including the early `?`/return arms).
+        let claim = RunClaim::from(&claimed.lease);
+        let lease_renewal = self.renew_claim_while_driving(&claim, clock.clone());
+        self.drive_claimed_with_renewal(claimed, clock, lease_renewal)
+            .await
+    }
+
+    /// Continue one exact drive with the renewal guard that already covered
+    /// pre-drive resolution. The process pool transfers its guard here instead
+    /// of starting an overlapping Tokio task at the Worker boundary.
+    pub(crate) async fn drive_claimed_with_renewal(
+        &self,
+        claimed: Claimed,
+        clock: Arc<dyn Clock>,
+        lease_renewal: ClaimLeaseRenewal,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        if claimed.session_activity_admission_required {
+            return self
+                .drive_claimed_inner(claimed, clock, lease_renewal)
+                .await;
+        }
+
+        // One executable claim owns one durable trace relay. Keep execution,
+        // committed-terminal replay, observer delivery, and fenced settlement
+        // inside the same `wake.dispatch` span; fragmenting the span around only
+        // the executor future disconnects post-commit background effects.
+        let dispatch = Self::claimed_dispatch_span(&claimed);
+        self.drive_claimed_inner(claimed, clock, lease_renewal)
+            .instrument(dispatch)
+            .await
+    }
+
+    async fn drive_claimed_inner(
+        &self,
+        claimed: Claimed,
+        clock: Arc<dyn Clock>,
+        _lease_renewal: ClaimLeaseRenewal,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        // One drive receives one edge-owned clock. Claim eligibility, lease
+        // renewal, pre-effect ownership checks, and settlement fencing must all
+        // read this same source; the Worker never substitutes a private clock.
+        let now_ms = clock.now_ms();
+        let run_id = claimed.request.run_id().clone();
+        let activation = claimed.request.activation.clone();
+        let thread_id = claimed.request.thread_id().clone();
+        // The fence token this drive holds. Every settle below carries it so a stale
+        // owner (whose lease lapsed and was re-claimed under a higher epoch) is
+        // rejected and abandons instead of clobbering the reclaimer's dispatch.
+        let claim = RunClaim::from(&claimed.lease);
+
+        // Cause/effect decision table for an expired Session Run reservation:
+        // C1=claim still current; C2=cancelled; C3=Session authority decision.
+        // E1=delete unstarted intent; E2=bind epoch and publish ordinary Pending;
+        // E3=return to Reserved for retry; E4=stale owner changes nothing.
+        //
+        // | Rule | C1 | C2 | C3 | Queue effect | Executor |
+        // |---|---|---|---|---|---|
+        // | R1 | T | T | receipt absent | E1 Rejected | never entered |
+        // | R2 | T | T | receipt present | E2 Pending(cancelled) | later cancellation claim |
+        // | R3 | T | F | admitted | E2 Pending | later ordinary claim |
+        // | R4 | T | F | rejected | E1 Rejected | never entered |
+        // | R5 | T | any | unavailable | E3 Reserved | never entered |
+        // | R6 | F | any | any | E4 Fenced | never entered |
+        if claimed.session_activity_admission_required {
+            let observer = self.settlement_observer.as_ref();
+            let observer_owns_fence =
+                observer.is_some_and(|observer| observer.owns_session_run_reservation_fence());
+            let local_guard = if observer.is_some() && !observer_owns_fence {
+                self.store
+                    .lock_session_run_reservation_epoch(&claim)
+                    .await?
+            } else {
+                None
+            };
+            let cancellation_requested = local_guard
+                .as_ref()
+                .map_or(claimed.cancellation_requested, |guard| {
+                    guard.cancellation_requested()
+                });
+            let mode = if cancellation_requested {
+                SessionRunActivityAdmissionMode::RecoverOnly
+            } else {
+                SessionRunActivityAdmissionMode::RecoverOrAdmit
+            };
+            let has_local_guard = local_guard.is_some();
+            let resolution = match observer {
+                Some(observer) if observer_owns_fence || has_local_guard => {
+                    observer
+                        .admit_session_run_activity(&claimed.request, &claim, mode)
+                        .await
+                }
+                Some(_) => Err(crate::DispatchSettlementError(
+                    "Session Run reservation claim is stale".to_string(),
+                )),
+                None => Err(crate::DispatchSettlementError(
+                    "Session Run activity admission observer is not installed".to_string(),
+                )),
+            };
+            // The guard spans only the Session CAS. Queue resolution acquires
+            // its own claim-fenced transaction after this lock is released.
+            drop(local_guard);
+            match resolution {
+                Ok(SessionRunActivityAdmission::Admitted {
+                    session_activity_epoch,
+                }) => {
+                    self.store
+                        .resolve_claimed_session_run_reservation(
+                            &claim,
+                            SessionRunReservationResolution::Admitted {
+                                session_activity_epoch,
+                            },
+                        )
+                        .await?;
+                }
+                Ok(SessionRunActivityAdmission::Rejected) => {
+                    self.store
+                        .resolve_claimed_session_run_reservation(
+                            &claim,
+                            SessionRunReservationResolution::Rejected,
+                        )
+                        .await?;
+                }
+                Err(error) => {
+                    let retry_at = crate::clock::deadline_millis(clock.now_ms(), self.lease_ms);
+                    self.store
+                        .resolve_claimed_session_run_reservation(
+                            &claim,
+                            SessionRunReservationResolution::Retry {
+                                reservation_deadline_ms: retry_at,
+                            },
+                        )
+                        .await?;
+                    tracing::warn!(
+                        run_id = %run_id.0,
+                        %error,
+                        "Session Run reservation admission deferred"
+                    );
+                }
+            }
+            return Ok(None);
+        }
+
+        // Only an executable claim enters Run metrics. ReservationLeased is a
+        // claim-fenced Session admission repair and returns above without model,
+        // tool, or Run settlement effects; counting it as a driven Run would
+        // inflate execution concurrency and recovery telemetry.
         self.runtime.metrics().record_dispatch_claimed();
         if claimed.recovered {
             self.runtime.metrics().record_dispatch_recovered();
@@ -689,16 +910,6 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Ok(Some(depth)) = self.store.runnable_depth(now_ms).await {
             self.runtime.metrics().record_dispatch_queue_depth(depth);
         }
-
-        let run_id = claimed.request.run_id().clone();
-        let activation = claimed.request.activation.clone();
-        let thread_id = claimed.request.thread_id().clone();
-        // The fence token this drive holds. Every settle below carries it so a stale
-        // owner (whose lease lapsed and was re-claimed under a higher epoch) is
-        // rejected and abandons instead of clobbering the reclaimer's dispatch.
-        let lease_epoch = claimed.lease.epoch;
-        let claim = RunClaim::from(&claimed.lease);
-        let _lease_renewal = self.renew_claim_while_driving(&claim);
         self.install_claimed_recovery_projection(&claim, &thread_id)
             .await?;
         let mut all_pending: Vec<String> = claimed
@@ -717,41 +928,53 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 claimed.request.execution_scope.as_ref(),
                 &None,
                 &[],
+                clock.clone(),
             );
             if let Err(error) = attempt_executor
                 .cancel(activation.clone(), context.clone())
                 .await
             {
                 return self
-                    .settle_if_terminal_or_raise(
-                        &run_id,
-                        &thread_id,
-                        lease_epoch,
-                        &all_pending,
-                        error,
-                    )
+                    .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
                     .await;
             }
-            let result = self
-                .runtime
-                .cancel_run(run_id.clone(), activation.thread_id.clone(), context)
-                .await;
+            let awaiting_tool_interrupt = claimed.request.session_activity_epoch.is_some()
+                && matches!(self.reader.run_state(&run_id), Some(RunState::Awaiting))
+                && self.reader.resume_ticket(&run_id).is_some_and(|ticket| {
+                    matches!(
+                        ticket.reason(),
+                        AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+                    )
+                });
+            let result = if awaiting_tool_interrupt {
+                self.runtime
+                    .interrupt_awaiting_tools(run_id.clone(), activation.thread_id.clone(), context)
+                    .await
+            } else {
+                self.runtime
+                    .cancel_run(run_id.clone(), activation.thread_id.clone(), context)
+                    .await
+            };
             let state = match result {
                 Ok(state) => state,
                 Err(error) => {
                     return self
-                        .settle_if_terminal_or_raise(
-                            &run_id,
-                            &thread_id,
-                            lease_epoch,
-                            &all_pending,
-                            error,
-                        )
+                        .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
                         .await;
                 }
             };
+            if matches!(&state, RunState::Ended(_)) {
+                self.redeliver_terminal_observers(&run_id, &thread_id)
+                    .await?;
+            }
             return Ok(self
-                .settle(&run_id, lease_epoch, DispatchOutcome::Done, &all_pending)
+                .settle(
+                    &claimed,
+                    Some(&state),
+                    DispatchOutcome::Done,
+                    &all_pending,
+                    &clock,
+                )
                 .await?
                 .applied()
                 .then_some((run_id, state)));
@@ -762,17 +985,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         // before the prior owner crashed, so the ACP fail-closed rule below
         // cannot accidentally make that input visible to a later Run.
         if let Some(settlement) = self
-            .settle_from_committed_terminal(&claimed, &mut all_pending)
+            .settle_from_committed_terminal(&claimed, &mut all_pending, &clock)
             .await?
         {
             return Ok(settlement.into_processed());
         }
 
-        // Cause/effect recovery rule A2: a reclaimed ACP turn is opaque. The
+        // Cause/effect recovery rule A2: a reclaimed ACP Run is opaque. The
         // previous Worker may have dispatched the prompt or an MCP effect but
         // failed before committing the reply. Re-executing here would duplicate
         // an external effect; the existing neutral Indeterminate terminal is the
-        // only sound committed truth until ACP exposes an idempotent turn receipt.
+        // only sound committed truth until ACP exposes an idempotent Run receipt.
         if claimed.recovered
             && awaken_runtime_contract::resolved::Backend::from_ref(
                 &activation
@@ -788,9 +1011,17 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 .end_claimed_before_execution(
                     &claimed,
                     awaken_agent_contract::agent::run::EndCause::Indeterminate,
+                    clock.clone(),
                 )
                 .await;
         }
+
+        // A native replacement attempt may execute only after its durable
+        // reschedule receipt crossed the exact claim epoch. Committed terminal
+        // recovery and opaque ACP terminalization returned above and therefore
+        // never fabricate a retry edge.
+        self.commit_recovered_attempt(&claimed, clock.clone())
+            .await?;
 
         let attempt_executor = self.attempt_executor();
         if !claimed.request.placement.required_credentials.is_empty() {
@@ -799,11 +1030,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     "worker-local credential resolver is not installed".to_string(),
                 ))
             })?;
-            let ownership = claim_bound_ownership_verifier(
-                self.store.clone(),
-                claim.clone(),
-                self.ownership_clock.clone(),
-            );
+            let ownership =
+                claim_bound_ownership_verifier(self.store.clone(), claim.clone(), clock.clone());
             ownership.verify_current().await.map_err(|error| {
                 Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                     format!("dispatch ownership was lost before credential revalidation: {error}"),
@@ -844,6 +1072,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &claimed.credential_bindings,
+            clock.clone(),
         );
         let model_executor = self
             .exec
@@ -851,18 +1080,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Some(executor) = &model_executor {
             execution_context = execution_context.with_model_executor(executor.clone());
         }
-        self.runtime
-            .register_attempt_controls(&run_id, &execution_context);
+        let registration = self.runtime.register_attempt_controls(
+            &run_id,
+            claimed.request.thread_id(),
+            &execution_context,
+        );
         let _attempt_control = AttemptControlGuard {
             runtime: self.runtime.clone(),
-            run_id: run_id.clone(),
+            registration,
         };
-        // Continue the admitting request's trace across the durable queue boundary:
-        // this `wake.dispatch` span's remote parent is the persisted traceparent, so
-        // the run driven below (`runtime.run` → …) nests under the trace that
-        // submitted it — even when a daemon in another task/process drains it.
-        let dispatch = awaken_observability::dispatch_span(claimed.request.traceparent.as_deref());
-
         let mut state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a
@@ -870,19 +1096,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             Some(ticket) if ticket.reason() == AwaitReason::ScheduledAction => {
                 match self
                     .perform_scheduled(&claim, now_ms, execution_context.clone())
-                    .instrument(dispatch.clone())
                     .await
                 {
                     Ok(state) => state,
                     Err(err) => {
                         return self
-                            .settle_if_terminal_or_raise(
-                                &run_id,
-                                &thread_id,
-                                lease_epoch,
-                                &all_pending,
-                                err,
-                            )
+                            .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                             .await;
                     }
                 }
@@ -900,21 +1119,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .cloned();
                 match matched {
                     Some(input) => {
-                        let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms);
+                        let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms)
+                            .with_context_messages(input.context_messages);
                         match attempt_executor
                             .resume(activation.clone(), command, execution_context.clone())
-                            .instrument(dispatch.clone())
                             .await
                         {
                             Ok(state) => state,
                             Err(err) => {
                                 return self
                                     .settle_if_terminal_or_raise(
-                                        &run_id,
-                                        &thread_id,
-                                        lease_epoch,
+                                        &claimed,
                                         &all_pending,
                                         err,
+                                        &clock,
                                     )
                                     .await;
                             }
@@ -925,10 +1143,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         // and leave the run awaiting for a later wake.
                         return Ok(self
                             .settle(
-                                &run_id,
-                                lease_epoch,
+                                &claimed,
+                                Some(&RunState::Awaiting),
                                 DispatchOutcome::Awaiting,
                                 &all_pending,
+                                &clock,
                             )
                             .await?
                             .applied()
@@ -940,13 +1159,16 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             // The committed run record disambiguates so recovery never re-runs a
             // terminal run, and any orphan pending is dropped on settle.
             None => match self
-                .settle_from_committed_terminal(&claimed, &mut all_pending)
+                .settle_from_committed_terminal(&claimed, &mut all_pending, &clock)
                 .await?
             {
                 Some(settlement) => return Ok(settlement.into_processed()),
                 None => {
-                    // Drain the thread inbox: input addressed to this thread with
-                    // no run yet (ADR-0021) becomes new input to this fresh run.
+                    // A continuation admission carries input bound to this exact
+                    // fresh Run. Generic idle-Thread input remains unbound and is
+                    // still consumed by the next fresh Run (ADR-0021). Never scan
+                    // another Run's bound input from the Thread inbox: two queued
+                    // continuations on one Thread must remain one-to-one.
                     let thread = claimed.request.thread_id().clone();
                     let unbound: Vec<PendingInput> = self
                         .store
@@ -957,14 +1179,18 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .filter(|input| input.run_id.0.is_empty())
                         .collect();
                     let mut activation = activation;
-                    // Prepend each delivered unbound *input* in arrival order. The
-                    // insert position tracks how many were actually inserted, not the
-                    // raw scan index — a non-`Input` unbound row (e.g. a stray
-                    // decision) is skipped without shifting the target, so a skipped
-                    // entry never desyncs the index and pushes a later insert past the
-                    // vector's end (which would panic).
+                    // Prepend each immediate fresh *input*. Claimed input with a
+                    // correlation belongs to an awaiting ticket and is deliberately
+                    // not reinterpreted as fresh input. The insert position tracks
+                    // how many values were actually inserted, so a non-`Input` row
+                    // cannot desync the index and cause a panic.
                     let mut at = 0;
-                    for input in &unbound {
+                    for input in claimed
+                        .pending
+                        .iter()
+                        .filter(|input| input.correlation_id.is_empty())
+                        .chain(unbound.iter())
+                    {
                         if let ResumeResult::Input(text) = &input.result {
                             activation.input.insert(
                                 at,
@@ -981,19 +1207,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     all_pending.extend(unbound.into_iter().map(|input| input.message_id));
                     match attempt_executor
                         .execute(activation, execution_context.clone())
-                        .instrument(dispatch.clone())
                         .await
                     {
                         Ok(state) => state,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(
-                                    &run_id,
-                                    &thread_id,
-                                    lease_epoch,
-                                    &all_pending,
-                                    err,
-                                )
+                                .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                                 .await;
                         }
                     }
@@ -1014,13 +1233,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         Ok(state) => state,
                         Err(err) => {
                             return self
-                                .settle_if_terminal_or_raise(
-                                    &run_id,
-                                    &thread_id,
-                                    lease_epoch,
-                                    &all_pending,
-                                    err,
-                                )
+                                .settle_if_terminal_or_raise(&claimed, &all_pending, err, &clock)
                                 .await;
                         }
                     };
@@ -1030,8 +1243,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
 
         let outcome = settle_outcome(&state)?;
+        if matches!(&state, RunState::Ended(_)) {
+            self.redeliver_terminal_observers(&run_id, &thread_id)
+                .await?;
+        }
         Ok(self
-            .settle(&run_id, lease_epoch, outcome, &all_pending)
+            .settle(&claimed, Some(&state), outcome, &all_pending, &clock)
             .await?
             .applied()
             .then_some((run_id, state)))
@@ -1044,13 +1261,14 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         all_pending: &mut Vec<String>,
+        clock: &Arc<dyn Clock>,
     ) -> Result<Option<CommittedTerminalSettlement>, Error> {
         let run_id = claimed.request.run_id().clone();
         let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
             return Ok(None);
         };
         let thread = claimed.request.thread_id().clone();
-        self.redeliver_terminal_observers(&run_id, &thread).await;
+        self.redeliver_terminal_observers(&run_id, &thread).await?;
 
         // A recovered fresh run that already committed a terminal record may
         // have drained unbound idle-thread input before dying prior to settle.
@@ -1073,10 +1291,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         all_pending.extend(consumed_unbound);
         let settled = self
             .settle(
-                &run_id,
-                claimed.lease.epoch,
+                claimed,
+                Some(&state),
                 DispatchOutcome::Done,
                 all_pending,
+                clock,
             )
             .await?;
         Ok(Some(if settled.applied() {
@@ -1092,17 +1311,65 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// exactly once regardless of which branch reached it.
     async fn settle(
         &self,
-        run_id: &RunId,
-        epoch: u64,
+        claimed: &Claimed,
+        expected_committed_state: Option<&RunState>,
         outcome: DispatchOutcome,
         consumed: &[String],
+        clock: &Arc<dyn Clock>,
     ) -> Result<SettleOutcome, Error> {
+        let run_id = claimed.request.run_id();
+        let claim = RunClaim::from(&claimed.lease);
+        if claimed.request.session_activity_epoch.is_some()
+            && let Some(expected) = expected_committed_state
+        {
+            let committed = self.reader.run_state(run_id).ok_or_else(|| {
+                Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "coordinated child Run {} has no committed settlement state",
+                    run_id.0
+                )))
+            })?;
+            if &committed != expected || settle_outcome(&committed)? != outcome {
+                return Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                    "coordinated child Run {} settlement does not match committed truth",
+                    run_id.0
+                ))));
+            }
+            if !self.store.claim_is_current(&claim, clock.now_ms()).await? {
+                return Ok(SettleOutcome::Fenced);
+            }
+            let observer = self.settlement_observer.as_ref().ok_or_else(|| {
+                Error::Dispatch(crate::DispatchError::Rejected(
+                    "coordinated child settlement observer is not installed".to_string(),
+                ))
+            })?;
+            observer
+                .before_settle(
+                    &claimed.request,
+                    &claim,
+                    &committed,
+                    claimed.cancellation_requested,
+                )
+                .await
+                .map_err(|error| {
+                    Error::Dispatch(crate::DispatchError::Rejected(error.to_string()))
+                })?;
+        } else if claimed.request.session_activity_epoch.is_some()
+            && outcome != DispatchOutcome::Awaiting
+        {
+            return Err(Error::Dispatch(crate::DispatchError::Rejected(
+                "coordinated child settlement has no committed boundary".to_string(),
+            )));
+        }
         let label = match outcome {
             DispatchOutcome::Done => "done",
             DispatchOutcome::Awaiting => "awaiting",
         };
         let started = std::time::Instant::now();
-        match self.store.settle(run_id, epoch, outcome, consumed).await {
+        match self
+            .store
+            .settle(run_id, claimed.lease.epoch, outcome, consumed)
+            .await
+        {
             Ok(result) => {
                 let commit_outcome = match result {
                     SettleOutcome::Applied => {
@@ -1145,12 +1412,13 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// a genuine fault and is re-raised unchanged.
     async fn settle_if_terminal_or_raise(
         &self,
-        run_id: &RunId,
-        thread_id: &ThreadId,
-        epoch: u64,
+        claimed: &Claimed,
         consumed: &[String],
         err: impl Into<Error>,
+        clock: &Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let run_id = claimed.request.run_id();
+        let thread_id = claimed.request.thread_id();
         self.refresh_local_recovery_projection(thread_id, run_id)
             .await?;
         match self.reader.run_state(run_id) {
@@ -1158,9 +1426,15 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 // This path lost a terminal-commit race. Redelivery is expected:
                 // the winning attempt may have crashed after commit and observers
                 // suppress duplicate effects by `(observer_id, run_id)`.
-                self.redeliver_terminal_observers(run_id, thread_id).await;
+                self.redeliver_terminal_observers(run_id, thread_id).await?;
                 Ok(self
-                    .settle(run_id, epoch, DispatchOutcome::Done, consumed)
+                    .settle(
+                        claimed,
+                        Some(&state),
+                        DispatchOutcome::Done,
+                        consumed,
+                        clock,
+                    )
                     .await?
                     .applied()
                     .then_some((run_id.clone(), state)))
@@ -1179,6 +1453,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         claimed: &Claimed,
         code: impl Into<String>,
         message: impl Into<String>,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::agent::run::{EndCause, Failure};
 
@@ -1186,10 +1461,10 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             code: code.into(),
             message: message.into(),
         });
-        let claim = RunClaim::from(&claimed.lease);
-        self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
-            .await?;
-        self.end_claimed_before_execution(claimed, cause).await
+        let dispatch = Self::claimed_dispatch_span(claimed);
+        self.prepare_and_end_claimed_before_execution(claimed, cause, clock)
+            .instrument(dispatch)
+            .await
     }
 
     /// Commit the one neutral terminal outcome for an exact retry-exhaustion
@@ -1200,15 +1475,33 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn terminalize_retry_exhausted(
         &self,
         claimed: &Claimed,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let dispatch = Self::claimed_dispatch_span(claimed);
+        self.prepare_and_end_claimed_before_execution(
+            claimed,
+            awaken_agent_contract::agent::run::EndCause::Indeterminate,
+            clock,
+        )
+        .instrument(dispatch)
+        .await
+    }
+
+    /// Install the claim-fenced recovery projection once before either public
+    /// pre-execution terminal cause enters the shared commit/observer/settle
+    /// owner. Keeping this preparation here prevents resolution failure and
+    /// retry exhaustion from growing parallel terminal protocols.
+    async fn prepare_and_end_claimed_before_execution(
+        &self,
+        claimed: &Claimed,
+        cause: awaken_agent_contract::agent::run::EndCause,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let claim = RunClaim::from(&claimed.lease);
         self.install_claimed_recovery_projection(&claim, claimed.request.thread_id())
             .await?;
-        self.end_claimed_before_execution(
-            claimed,
-            awaken_agent_contract::agent::run::EndCause::Indeterminate,
-        )
-        .await
+        self.end_claimed_before_execution(claimed, cause, clock)
+            .await
     }
 
     /// Claim and terminalize at most one exhausted dispatch for the per-Session
@@ -1218,8 +1511,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn resolve_one_retry_exhausted(
         &self,
         max_attempts: u64,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<bool, Error> {
+        let now_ms = clock.now_ms();
         let Some(claimed) = self
             .store
             .claim_retry_exhausted(&self.owner, self.lease_ms, now_ms, max_attempts)
@@ -1228,8 +1522,8 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             return Ok(false);
         };
         let claim = RunClaim::from(&claimed.lease);
-        let _renewal = self.renew_claim_while_driving(&claim);
-        let _ = self.terminalize_retry_exhausted(&claimed).await?;
+        let _renewal = self.renew_claim_while_driving(&claim, clock.clone());
+        let _ = self.terminalize_retry_exhausted(&claimed, clock).await?;
         Ok(true)
     }
 
@@ -1241,12 +1535,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         &self,
         claimed: &Claimed,
         cause: awaken_agent_contract::agent::run::EndCause,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         use awaken_agent_contract::thread::commit::{RunDisposition, commit_run};
 
         let run_id = claimed.lease.run_id.clone();
         let thread_id = claimed.request.thread_id().clone();
-        let epoch = claimed.lease.epoch;
         let consumed = claimed
             .pending
             .iter()
@@ -1259,6 +1553,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             claimed.request.execution_scope.as_ref(),
             &None,
             &[],
+            clock.clone(),
         );
         let coordinator = context.commit.ok_or_else(|| {
             Error::Execution(awaken_runtime_contract::execution::Error::Execution(
@@ -1276,19 +1571,25 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         {
             return self
                 .settle_if_terminal_or_raise(
-                    &run_id,
-                    &thread_id,
-                    epoch,
+                    claimed,
                     &consumed,
                     Error::Execution(awaken_runtime_contract::execution::Error::Execution(
                         error.to_string(),
                     )),
+                    &clock,
                 )
                 .await;
         }
-        self.redeliver_terminal_observers(&run_id, &thread_id).await;
+        self.redeliver_terminal_observers(&run_id, &thread_id)
+            .await?;
         Ok(self
-            .settle(&run_id, epoch, DispatchOutcome::Done, &consumed)
+            .settle(
+                claimed,
+                Some(&state),
+                DispatchOutcome::Done,
+                &consumed,
+                &clock,
+            )
             .await?
             .applied()
             .then_some((run_id, state)))
@@ -1303,8 +1604,9 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn reconcile_committed_terminal(
         &self,
         run_id: &RunId,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
+        let now_ms = clock.now_ms();
         // A local active-active worker's process projection may predate the peer
         // that committed the terminal fact. Refresh the exact thread snapshot
         // before making the claim/no-claim authority decision.
@@ -1329,7 +1631,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         else {
             return Ok(None);
         };
-        self.settle_claimed_terminal(claimed).await
+        self.settle_claimed_terminal(claimed, clock).await
     }
 
     /// Bounded scan used by both the per-Session daemon and process pool host
@@ -1337,7 +1639,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     /// state, so one implementation owns selection and settlement semantics.
     pub async fn reconcile_committed_terminals(
         &self,
-        now_ms: u64,
+        clock: Arc<dyn Clock>,
         limit: usize,
     ) -> Result<Vec<(RunId, RunState)>, Error> {
         let rows = self.store.list_dispatches().await?;
@@ -1350,7 +1652,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 break;
             }
             if let Some(terminal) = self
-                .reconcile_committed_terminal(&row.run_id, now_ms)
+                .reconcile_committed_terminal(&row.run_id, clock.clone())
                 .await?
             {
                 processed.push(terminal);
@@ -1365,9 +1667,20 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
     pub async fn settle_claimed_terminal(
         &self,
         claimed: Claimed,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Option<(RunId, RunState)>, Error> {
+        let dispatch = Self::claimed_dispatch_span(&claimed);
+        self.settle_claimed_terminal_inner(claimed, clock)
+            .instrument(dispatch)
+            .await
+    }
+
+    async fn settle_claimed_terminal_inner(
+        &self,
+        claimed: Claimed,
+        clock: Arc<dyn Clock>,
     ) -> Result<Option<(RunId, RunState)>, Error> {
         let run_id = claimed.lease.run_id.clone();
-        let epoch = claimed.lease.epoch;
         // Decision table invariant: every terminal-recovery caller must check
         // the authoritative snapshot bound to this exact claim, never a stale
         // process projection. Keeping the refresh here makes claim + verify +
@@ -1377,45 +1690,68 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
             .await?;
         let Some(state @ RunState::Ended(_)) = self.reader.run_state(&run_id) else {
             let _ = self
-                .settle(&run_id, epoch, DispatchOutcome::Awaiting, &[])
+                .settle(&claimed, None, DispatchOutcome::Awaiting, &[], &clock)
                 .await?;
             return Ok(None);
         };
         let thread_id = claimed.request.thread_id().clone();
-        self.redeliver_terminal_observers(&run_id, &thread_id).await;
+        self.redeliver_terminal_observers(&run_id, &thread_id)
+            .await?;
         Ok(self
-            .settle(&run_id, epoch, DispatchOutcome::Done, &[])
+            .settle(&claimed, Some(&state), DispatchOutcome::Done, &[], &clock)
             .await?
             .applied()
             .then_some((run_id, state)))
     }
 
-    async fn redeliver_terminal_observers(&self, run_id: &RunId, thread_id: &ThreadId) {
+    async fn redeliver_terminal_observers(
+        &self,
+        run_id: &RunId,
+        thread_id: &ThreadId,
+    ) -> Result<(), Error> {
         let context = self.execution_context();
-        if let Some(failures) = redeliver_committed_terminal(
+        let Some(failures) = redeliver_committed_terminal(
             self.reader.as_ref(),
             &context.terminal_observers,
             run_id,
             thread_id,
         )
         .await
-        {
-            for failure in failures {
-                tracing::warn!(
-                    observer.id = %failure.observer_id,
-                    awaken.run.id = %run_id.0,
-                    error = %failure.error,
-                    "recovered terminal observer failed; recovery may redeliver"
-                );
-            }
+        else {
+            return Ok(());
+        };
+        if failures.is_empty() {
+            return Ok(());
         }
+
+        for failure in &failures {
+            tracing::warn!(
+                observer.id = %failure.observer_id,
+                awaken.run.id = %run_id.0,
+                error = %failure.error,
+                "terminal observer failed; dispatch settlement withheld for recovery"
+            );
+        }
+        let failures = failures
+            .into_iter()
+            .map(|failure| format!("{}: {}", failure.observer_id, failure.error))
+            .collect::<Vec<_>>()
+            .join("; ");
+        Err(Error::Execution(
+            awaken_runtime_contract::execution::Error::Execution(format!(
+                "committed-terminal observer delivery failed; dispatch settlement withheld for recovery: {failures}"
+            )),
+        ))
     }
 
     /// Drain the queue until no dispatch is runnable, returning every processed
     /// run and its state. A settled run becomes non-runnable, so this terminates.
-    pub async fn run_until_idle(&self, now_ms: u64) -> Result<Vec<(RunId, RunState)>, Error> {
+    pub async fn run_until_idle(
+        &self,
+        clock: Arc<dyn Clock>,
+    ) -> Result<Vec<(RunId, RunState)>, Error> {
         let mut processed = Vec::new();
-        while let Some(result) = self.tick(now_ms).await? {
+        while let Some(result) = self.tick(clock.clone()).await? {
             processed.push(result);
         }
         Ok(processed)
@@ -1447,6 +1783,48 @@ impl Drop for DriveTimer<'_> {
     }
 }
 
+/// Decide whether a reclaimed lease will actually execute and preserve the
+/// Run's current committed disposition in its reschedule receipt.
+///
+/// A crash after an Awaiting/Ended commit but before queue settlement is a
+/// settlement-repair window, not automatically another execution attempt.
+/// Scheduled waits and an Awaiting ticket with its exact delivered reply do
+/// execute; an unmatched ticket is simply returned to Awaiting.
+fn recovered_attempt_disposition(
+    recovered: bool,
+    run_id: &RunId,
+    state: Option<&RunState>,
+    ticket: Option<awaken_agent_contract::agent::awaiting::ResumeTicket>,
+    pending: &[PendingInput],
+) -> Result<Option<RunDisposition>, Error> {
+    if !recovered || matches!(state, Some(RunState::Ended(_))) {
+        return Ok(None);
+    }
+    match (state, ticket) {
+        (Some(RunState::Awaiting), Some(ticket)) => {
+            let will_execute = ticket.reason() == AwaitReason::ScheduledAction
+                || pending
+                    .iter()
+                    .any(|input| input.correlation_id == ticket.correlation_id);
+            Ok(will_execute.then(|| RunDisposition::awaiting(ticket)))
+        }
+        (Some(RunState::Awaiting), None) => {
+            Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                "recovered Awaiting Run {} has no committed resume ticket",
+                run_id.0
+            ))))
+        }
+        (Some(RunState::Running) | None, None) => Ok(Some(RunDisposition::running(run_id.clone()))),
+        (Some(RunState::Running) | None, Some(_)) => {
+            Err(Error::Dispatch(crate::DispatchError::Rejected(format!(
+                "recovered non-Awaiting Run {} has a committed resume ticket",
+                run_id.0
+            ))))
+        }
+        (Some(RunState::Ended(_)), _) => unreachable!("terminal returned above"),
+    }
+}
+
 /// Map a settled executor state to the dispatch outcome the worker commits.
 ///
 /// `execute`/`resume` only ever return an awaiting or ended state; `Running` exists
@@ -1468,61 +1846,5 @@ fn settle_outcome(state: &RunState) -> Result<DispatchOutcome, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use super::{DispatchWorker, settle_outcome};
-    use awaken_agent_contract::agent::run::{EndCause, RunState};
-    use awaken_runtime::Runtime;
-    use awaken_store_inmem::MemoryCommitCoordinator;
-
-    use crate::Error;
-    use crate::MemoryDispatchStore;
-    use crate::RecoveryProjection;
-    use crate::dispatch::DispatchOutcome;
-
-    // Behavior 1: an illegal `Running` executor result fails loudly — the worker
-    // must NOT settle a live run to Done/Awaiting. `settle_outcome` is the decision
-    // point `drive_claimed` consults before it calls `store.settle`, so proving it
-    // errors on `Running` proves the worker never settles a mid-flight run.
-    #[test]
-    fn running_state_result_is_rejected_not_settled() {
-        let err = settle_outcome(&RunState::Running).expect_err("Running must fail loudly");
-        // It is an execution error, not a dispatch/storage error — a broken executor
-        // is not a queue fault.
-        assert!(
-            matches!(err, Error::Execution(_)),
-            "a non-settled Running result is an execution error, got {err:?}"
-        );
-    }
-
-    #[test]
-    fn ended_settles_done_and_awaiting_settles_awaiting() {
-        assert!(matches!(
-            settle_outcome(&RunState::Ended(EndCause::NaturalEnd)).unwrap(),
-            DispatchOutcome::Done
-        ));
-        assert!(matches!(
-            settle_outcome(&RunState::Awaiting).unwrap(),
-            DispatchOutcome::Awaiting
-        ));
-    }
-
-    #[test]
-    fn remote_projection_uses_the_dispatch_recovery_transport() {
-        // Cause/effect decision rule: a local worker has a colocated recovery
-        // source, while installing a remote projection denotes a database-less
-        // worker. The latter must drop the local source so a claimed drive loads
-        // its snapshot through the existing claim-fenced dispatch transport.
-        let worker = DispatchWorker::new(
-            Arc::new(Runtime::new()),
-            Arc::new(MemoryDispatchStore::new()),
-            Arc::new(MemoryCommitCoordinator::new()),
-            "worker",
-        );
-        assert!(worker.recovery_source.is_some());
-
-        let worker = worker.with_recovery_projection(Arc::new(RecoveryProjection::new()));
-
-        assert!(worker.recovery_source.is_none());
-    }
+    include!("worker/tests.rs");
 }

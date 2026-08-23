@@ -12,10 +12,10 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_session_contract::{RunApplication, RunApplicationError};
 
-/// The ACP stop reason a served turn ended on.
+/// The ACP stop reason a served prompt operation ended on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AcpStop {
-    /// The turn ended naturally (ACP `end_turn`).
+    /// The Run ended naturally (ACP `end_turn`).
     EndTurn,
     /// The run is awaiting on a tool result from the client (ACP `requires_action`).
     RequiresAction,
@@ -23,7 +23,7 @@ pub enum AcpStop {
     MaxTurns,
 }
 
-/// The result of one served ACP prompt turn: the assistant messages produced and
+/// The result of one served ACP prompt operation: the assistant messages produced and
 /// the stop reason.
 #[derive(Debug, Clone)]
 pub struct AcpTurn {
@@ -33,7 +33,7 @@ pub struct AcpTurn {
 
 /// Serves a [`RunApplication`] (e.g. `RunApplicationHost` over the shared host) as an ACP
 /// agent. One instance backs many ACP sessions, each keyed by a minted session id
-/// (a thread), so a turn served here is resumable/observable on the same thread
+/// (a Thread), so a Run served here is resumable/observable on the same Thread
 /// through any other protocol adapter bound to the same host.
 pub struct AcpServeHost {
     runtime: Arc<dyn RunApplication>,
@@ -52,10 +52,10 @@ impl AcpServeHost {
     }
 
     /// The served session's accumulated token usage `(input_tokens, output_tokens)`.
-    /// Serving as an ACP agent runs our *native* engine to answer prompts, so a turn
-    /// served over ACP records token usage exactly like a native turn — this is the
+    /// Serving as an ACP agent runs our *native* engine to answer prompts, so a Run
+    /// served over ACP records token usage exactly like a native Run — this is the
     /// one ACP direction where usage is real (driving an *external* ACP CLI cannot be,
-    /// since the ACP wire carries no token counts). Zero until a turn has run.
+    /// since the ACP wire carries no token counts). Zero until a Run has executed.
     pub async fn usage(&self, session: &str) -> Result<(u64, u64), RunApplicationError> {
         self.runtime.usage(session).await
     }
@@ -66,7 +66,7 @@ impl AcpServeHost {
         awaken_runtime::fresh_process_id("acp-serve")
     }
 
-    /// ACP `session/prompt`: run one turn of our brain on `session` with the prompt
+    /// ACP `session/prompt`: run one Runtime Run on `session` with the prompt
     /// text, and map the outcome onto an ACP stop reason.
     pub async fn prompt(
         &self,
@@ -92,7 +92,7 @@ fn map_stop(state: &RunState) -> AcpStop {
     match state {
         RunState::Awaiting => AcpStop::RequiresAction,
         RunState::Ended(EndCause::MaxSteps) => AcpStop::MaxTurns,
-        // A natural end or a terminal fault both close the ACP turn (ACP has no
+        // A natural end or a terminal fault both close the ACP prompt operation (ACP has no
         // distinct fault stop reason; the failure rides the committed record).
         RunState::Ended(_) => AcpStop::EndTurn,
         RunState::Running => unreachable!("a completed step cannot still be running"),
@@ -130,8 +130,17 @@ mod tests {
         }
     }
 
+    /// Cause/effect design: C1 ACP Serve wraps the real RunApplicationHost with a
+    /// model returning `served reply` and usage 13/9; C2 two Sessions are created;
+    /// C3 only the first is prompted. Effects: E1 ids are distinct and the model
+    /// identity is retained; E2 the prompted Session ends and surfaces the reply
+    /// with usage 13/9; E3 the untouched Session remains 0/0. Decision table:
+    /// S1=C1+C2+C3=>E1+E2; S2=C1+C2+!C3=>E3. Constraint/Invariant:
+    /// ACP Serve uses the real RunApplicationHost and one Session authority.
+    /// Decision rule: execute S1 and S2 to cover prompted and untouched Sessions.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn serves_a_real_turn_over_the_real_run_application_host() {
+    async fn serves_a_real_run_over_the_real_run_application_host() {
+        // Decision rule: S1 and S2 cover prompted and untouched Sessions.
         // The real production runtime: RunApplicationHost over a real SharedHost.
         let host = Arc::new(SharedHost::new(
             Arc::new(DeterministicModel),
@@ -144,27 +153,29 @@ mod tests {
         let s2 = serve.new_session();
         assert_ne!(s1, s2);
 
-        let turn = serve.prompt(&s1, None, "hi brain").await.unwrap();
-        assert_eq!(turn.stop, AcpStop::EndTurn);
+        let served_run = serve.prompt(&s1, None, "hi brain").await.unwrap();
+        assert_eq!(served_run.stop, AcpStop::EndTurn);
         assert!(
-            turn.messages
+            served_run
+                .messages
                 .iter()
                 .any(|m| m.text_content().contains("served reply")),
             "the real brain's reply is surfaced: {:?}",
-            turn.messages
+            served_run
+                .messages
                 .iter()
                 .map(Message::text_content)
                 .collect::<Vec<_>>()
         );
 
-        // Serving over ACP ran the native engine, so the turn's token usage was
-        // recorded on the served session exactly like a native turn.
+        // Serving over ACP ran the native engine, so the Run's token usage was
+        // recorded on the served Session exactly like a native Run.
         assert_eq!(
             serve.usage(&s1).await.expect("usage remains available"),
             (13, 9),
-            "a turn served over ACP records native-engine token usage"
+            "a Run served over ACP records native-engine token usage"
         );
-        // A session that never ran a turn has zero usage.
+        // A Session that never ran a Run has zero usage.
         assert_eq!(
             serve.usage(&s2).await.expect("usage remains available"),
             (0, 0)
@@ -175,8 +186,8 @@ mod tests {
     fn stop_reason_mapping_is_total() {
         use awaken_agent_contract::agent::run::Failure;
 
-        // Cause/effect decision table: awaiting -> requires action;
-        // MaxSteps -> max turns; every other committed end -> end turn.
+        // Cause/effect decision table: Awaiting -> ACP `requires_action`;
+        // MaxSteps -> ACP `max_turn_requests`; every other committed end -> ACP `end_turn`.
         assert_eq!(map_stop(&RunState::Awaiting), AcpStop::RequiresAction);
         assert_eq!(
             map_stop(&RunState::Ended(EndCause::MaxSteps)),
@@ -186,7 +197,7 @@ mod tests {
             map_stop(&RunState::Ended(EndCause::NaturalEnd)),
             AcpStop::EndTurn
         );
-        // A terminal fault closes the ACP turn (no distinct fault stop reason).
+        // A terminal fault closes the ACP prompt operation (no distinct fault stop reason).
         assert_eq!(
             map_stop(&RunState::Ended(EndCause::Error(Failure::Inference {
                 code: "test".into(),

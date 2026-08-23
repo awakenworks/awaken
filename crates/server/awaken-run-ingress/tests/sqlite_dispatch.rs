@@ -158,6 +158,12 @@ async fn append_is_idempotent() {
 
 #[tokio::test]
 async fn durable_loop_runs_entirely_on_sqlite() {
+    // Test design. Causes: C1 SQLite owns dispatch and commit stores; C2 the Run
+    // awaits; C3 stale then matching input arrives. Effects: E1 C2 persists
+    // Awaiting; E2 stale input does not resume; E3 matching input runs once and
+    // settles. Constraint/Invariant: no in-memory authority participates.
+    // Decision rule: cover Awaiting, stale-correlation, and exact-correlation
+    // partitions through the SQLite adapters.
     let (runtime, ran) = tool_runtime();
     let store = Arc::new(SqliteDispatchStore::open_in_memory().expect("dispatch"));
     let commit = Arc::new(SqliteCommitCoordinator::open_in_memory().expect("commit"));
@@ -173,7 +179,7 @@ async fn durable_loop_runs_entirely_on_sqlite() {
 
     // Stale input (wrong correlation) does not resume.
     let state = ingress
-        .deliver_resume(pending("stale", "old-ticket", true), 0)
+        .deliver_resume(pending("stale", "old-ticket", true), harness::clock(0))
         .await
         .expect("stale");
     assert_eq!(state, RunState::Awaiting);
@@ -181,7 +187,7 @@ async fn durable_loop_runs_entirely_on_sqlite() {
 
     // The correctly-correlated input resumes the run to completion.
     let state = ingress
-        .deliver_resume(pending("good", TICKET, true), 0)
+        .deliver_resume(pending("good", TICKET, true), harness::clock(0))
         .await
         .expect("resume");
     assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
@@ -300,6 +306,12 @@ async fn legacy_completion_without_dispatch_identity_fails_closed() {
 
 #[tokio::test]
 async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
+    // Test design. Causes: C1 SQLite persists cancellation intent; C2 the process
+    // drops and reopens both stores; C3 recovery drains the intent. Effects: E1
+    // C2 retains cancellation; E2 C3 commits Cancelled and removes the dispatch.
+    // Constraint/Invariant: restart cannot lose or execute past durable cancel.
+    // Decision rule: persist, reopen, recover, and assert terminal truth plus an
+    // empty operational queue.
     let base = std::env::temp_dir().join(format!(
         "awaken_sqlite_cancel_recovery_{}_{}",
         std::process::id(),
@@ -327,7 +339,10 @@ async fn cancellation_intent_survives_restart_and_reconciles_to_terminal() {
     let commit = Arc::new(SqliteCommitCoordinator::open(&commit_path).expect("commit store"));
     let ingress = DurableRunIngress::new(harness::text_runtime(), store.clone(), commit.clone());
     assert_eq!(
-        ingress.recover(0).await.expect("reconcile cancellation"),
+        ingress
+            .recover(harness::clock(0))
+            .await
+            .expect("reconcile cancellation"),
         vec![(run.clone(), RunState::Ended(EndCause::Cancelled))]
     );
     assert!(store.list_dispatches().await.unwrap().is_empty());

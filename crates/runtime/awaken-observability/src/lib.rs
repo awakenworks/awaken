@@ -29,7 +29,7 @@ pub use metrics::{
     OtelMetricsRecorder, add_live_hand, init_meters, record_hand_lifecycle, render_prometheus,
 };
 pub use otel::init_otlp_tracer;
-pub use propagation::{current_traceparent, dispatch_span};
+pub use propagation::{current_traceparent, dispatch_span, span_with_remote_parent};
 
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

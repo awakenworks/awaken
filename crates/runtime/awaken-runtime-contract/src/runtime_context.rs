@@ -174,19 +174,10 @@ pub struct RuntimeRunContext {
     /// decision (level + redactor) gating what prompt/completion/tool content the
     /// engine records, plus the subject + sink it is attributed to and written to.
     pub capture: CaptureContext,
-    /// A transient-retry counter the inference seam increments each time it
-    /// transparently retries a retryable failure during this attempt. The host
-    /// reads it after the run to surface `session.status_rescheduled` (auto-recovery
-    /// observability). Absent means retries are not counted — optional wiring, like
-    /// the stream sink; the retry behavior itself is unchanged either way.
-    pub reschedules: Option<Arc<std::sync::atomic::AtomicU32>>,
-    /// Completed logical model requests for this live attempt. This
-    /// process-local observability seam is inherited by in-process delegated
-    /// children so their requests are visible at the owning Session boundary.
-    pub model_requests: Option<Arc<std::sync::Mutex<Vec<crate::llm::ModelRequestObservation>>>>,
-    /// Stable Run ids that performed at least one transparent provider retry.
-    /// In-process delegated children inherit this shared set.
-    pub rescheduled_runs: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
+    /// Owning-application admission checked at Runtime's one logical model
+    /// request seam. In-process children inherit the same authority; a remote
+    /// dispatch attempt receives a claim-fenced adapter from its Host.
+    pub model_request_gate: Option<Arc<dyn crate::llm::ModelRequestGate>>,
     /// Claim-bound live authority for this execution attempt. Application
     /// decorators may recheck it immediately before an external side effect.
     /// Absence means the ingress topology has no dispatch ownership concept.
@@ -219,8 +210,8 @@ impl RuntimeRunContext {
     /// Derive the process-local wiring for a child Run initiated by this Run.
     ///
     /// A delegated child is an ordinary Agent Run, so it inherits the same
-    /// persistence, execution, observability, and capture capabilities. The two
-    /// exceptions are handles whose identity belongs to one live Run:
+    /// persistence, execution, observability, and capture capabilities. Handles
+    /// whose identity belongs to one live Run are narrowed explicitly:
     ///
     /// - cancellation uses a child token, giving parent → child propagation
     ///   without allowing a child cancellation to cancel its parent;
@@ -241,8 +232,10 @@ impl RuntimeRunContext {
         child.stream_sink = None;
         child.pause = None;
         child.live_inbox = None;
-        // A delegated child owns another Run/claim epoch and must receive its own
-        // bindings from ingress rather than inheriting the parent's authority.
+        // A synchronous child remains inside the parent's live attempt and must
+        // stop when that attempt loses ownership. Separately dispatched children
+        // replace this verifier with their own claim during ingress assembly.
+        // Candidate-specific credential/content bindings never cross Run identity.
         child.credential_realization = None;
         child.model_content_materializer = None;
         child
@@ -325,30 +318,11 @@ impl RuntimeRunContext {
         self
     }
 
-    /// Provide the transient-retry counter the inference seam increments on each
-    /// transparent retry, so the host can report `session.status_rescheduled`.
+    /// Bind the one live authority consulted before every logical model
+    /// request. The gate is intentionally not durable state or a cached budget.
     #[must_use]
-    pub fn with_reschedules(mut self, counter: Arc<std::sync::atomic::AtomicU32>) -> Self {
-        self.reschedules = Some(counter);
-        self
-    }
-
-    /// Collect completed logical model requests for protocol observability.
-    #[must_use]
-    pub fn with_model_requests(
-        mut self,
-        observations: Arc<std::sync::Mutex<Vec<crate::llm::ModelRequestObservation>>>,
-    ) -> Self {
-        self.model_requests = Some(observations);
-        self
-    }
-
-    #[must_use]
-    pub fn with_rescheduled_runs(
-        mut self,
-        runs: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
-    ) -> Self {
-        self.rescheduled_runs = Some(runs);
+    pub fn with_model_request_gate(mut self, gate: Arc<dyn crate::llm::ModelRequestGate>) -> Self {
+        self.model_request_gate = Some(gate);
         self
     }
 
@@ -450,6 +424,15 @@ impl RuntimeRunContext {
 mod child_run_tests {
     use super::*;
 
+    struct CurrentOwnership;
+
+    #[async_trait::async_trait]
+    impl AttemptOwnershipVerifier for CurrentOwnership {
+        async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
+            Ok(())
+        }
+    }
+
     #[test]
     fn child_run_inherits_capabilities_but_not_parent_live_input() {
         let pause = PauseSignal::new();
@@ -463,6 +446,30 @@ mod child_run_tests {
         assert!(child.pause.is_none());
         assert!(parent.live_inbox.is_some());
         assert!(child.live_inbox.is_none());
+    }
+
+    #[test]
+    fn synchronous_child_inherits_the_parent_attempt_authority() {
+        // Causes: C1=the parent has a claim-bound verifier; C2=the child runs
+        // synchronously inside that attempt. Effects: E1=both Contexts retain
+        // the same live authority; E2=child-specific credential material stays
+        // cleared. Decision rule O1: C1+C2 -> E1+E2. A separately dispatched
+        // child replaces E1 with its own claim during ingress assembly.
+        // Constraints/invariants: only synchronous children share the live
+        // attempt verifier; per-run credential material is never inherited.
+        let ownership: Arc<dyn AttemptOwnershipVerifier> = Arc::new(CurrentOwnership);
+        let parent = RuntimeRunContext::new().with_ownership(ownership.clone());
+        let child = parent.for_child_run();
+
+        assert!(
+            Arc::ptr_eq(parent.ownership.as_ref().expect("parent"), &ownership),
+            "O1/E1 parent"
+        );
+        assert!(
+            Arc::ptr_eq(child.ownership.as_ref().expect("child"), &ownership),
+            "O1/E1 child"
+        );
+        assert!(child.credential_realization.is_none(), "O1/E2");
     }
 
     #[test]

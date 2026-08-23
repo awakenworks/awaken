@@ -100,10 +100,53 @@ fn contains_id(list: &Value, key: &str, id: &str) -> bool {
         .is_some_and(|a| a.iter().any(|v| v == id))
 }
 
+fn baseline_with_unavailable_publication() -> awaken_session_contract::SessionBaseline {
+    let holder = awaken_runtime_contract::PlaintextHolder::new(
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        "test.worker",
+    );
+    awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: awaken_session_contract::EnvironmentSnapshot {
+                environment_id: "env".into(),
+                revision: awaken_session_contract::EnvironmentRevision(1),
+                self_hosted: false,
+                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
+                    "env-fingerprint".into(),
+                ),
+                sandbox: Default::default(),
+                sandbox_provisioning: Default::default(),
+                idle_retention: Default::default(),
+                packages: Default::default(),
+                prepared_image: None,
+                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
+                    inference_holder: holder.clone(),
+                    mcp_holder: holder.clone(),
+                    resource_holder: holder,
+                },
+            },
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+            mcp_authoring: Default::default(),
+            agent_id: "missing-monitor-agent".into(),
+            agent_revision: Some(7),
+            model_override: None,
+            model: "model".into(),
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        },
+    )
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // Cause/effect decision table: C1 durable queue configured, C2 run lease
-    // expired, C3 retry budget exhausted, C4 dead letter present, C5 newer turn
+    // expired, C3 retry budget exhausted, C4 dead letter present, C5 newer Run
     // submitted. R1 C1 -> list succeeds; R2 C2+C3 -> explicit quarantine creates dead letter;
     // R3 C4 -> purge removes it; R4 C5 -> stale run is superseded. The single
     // sequence also proves every Coordinator HTTP effect reaches the same queue.
@@ -244,11 +287,84 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
 }
 
 #[tokio::test]
+async fn monitoring_reads_committed_dispatches_without_materializing_a_session() {
+    /* Cause/effect decision table. Causes: C1 one durable Dispatch store is
+     * configured; C2 the Thread has a frozen Agent revision whose publication is
+     * unavailable; C3 queue rows belong to the requested or another Thread; C4
+     * requested rows are DeadLetter, Superseded, or Pending. Effects: E1 all
+     * three monitoring GETs read committed queue truth without SessionCtx; E2
+     * each response excludes the other Thread; E3 each specialized projection
+     * selects only its state. Constraints: monitoring is read-only and may not
+     * resolve publication, realize an Environment, or mutate the queue. Decision rules:
+     * R1 C1+C2+C3+C4 => dispatches 200 with only requested rows; R2 same causes
+     * => dead-letters 200 with only DeadLetter; R3 => superseded 200 with only
+     * Superseded. The non-durable C1=false => 400 rule remains below. */
+    let mem = Arc::new(MemoryDispatchStore::new());
+    let any = Arc::new(AnyDispatchStore::from_dispatch(
+        mem.clone() as Arc<dyn Dispatch>
+    ));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
+    let thread = "cold-monitor";
+    awaken_session_contract::SessionRuntime::install_session_baseline(
+        &awaken_runtime_host::ManagedHost::new(host.clone()),
+        thread,
+        &baseline_with_unavailable_publication(),
+    )
+    .expect("install frozen baseline without its publication");
+
+    mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
+        .await
+        .unwrap();
+    assert!(
+        mem.claim("worker", 1, 0, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(mem.quarantine_retry_exhausted(0, 1_000).await.unwrap(), 1);
+    mem.enqueue(RunDispatch::new(activation("run-old", thread)))
+        .await
+        .unwrap();
+    mem.enqueue_with(
+        RunDispatch::new(activation("run-new", thread)),
+        SubmitOptions {
+            supersede: true,
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    mem.enqueue(RunDispatch::new(activation("run-other", "other-thread")))
+        .await
+        .unwrap();
+
+    let router = durable_ops_router(host);
+    let base = format!("/v1/durable/threads/{thread}");
+    let (status, body) = call(&router, "GET", &format!("{base}/dispatches")).await;
+    assert_eq!(status, StatusCode::OK, "R1: {body}");
+    let rows = body["dispatches"].as_array().expect("R1 dispatch rows");
+    assert_eq!(rows.len(), 3, "R1: {body}");
+    assert!(
+        rows.iter().all(|row| row["run_id"] != "run-other"),
+        "R1: {body}"
+    );
+
+    let (status, body) = call(&router, "GET", &format!("{base}/dead-letters")).await;
+    assert_eq!(status, StatusCode::OK, "R2: {body}");
+    assert_eq!(body, json!({ "dead_letters": ["run-dead"] }), "R2");
+
+    let (status, body) = call(&router, "GET", &format!("{base}/superseded")).await;
+    assert_eq!(status, StatusCode::OK, "R3: {body}");
+    assert_eq!(body, json!({ "superseded": ["run-old"] }), "R3");
+}
+
+#[tokio::test]
 async fn every_dispatch_read_and_repair_verb_requires_the_one_durable_capability() {
     /* Cause/effect decision table. Causes: C1 typed durable ingress installed;
      * C2 operation is read-only (dispatches/superseded/dead-letters) or repair
-     * (requeue). Effects: E1 route through the per-Thread durable ingress; E2
-     * reject 400 before reading the process dispatch store. D1 C1=T,C2=*=>E1
+     * (requeue). Effects: E1 read-only operations query the one process Dispatch
+     * store while repair uses durable ingress; E2 reject 400 before either path.
+     * D1 C1=T,C2=*=>E1
      * is covered by the lifecycle test above. D2 C1=F,C2=read=>E2; D3
      * C1=F,C2=repair=>E2. This prevents monitoring from becoming a parallel
      * authority/capability path. */

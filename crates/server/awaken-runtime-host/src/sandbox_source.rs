@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use awaken_provisioning_contract as pc;
-use awaken_run_executor_acp::{AcpCli, AgentChannelSource, AgentSession, OpenError};
+use awaken_run_executor_acp::{AgentChannelSource, AgentSession, OpenError};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_sandbox_local::NamespaceProvider;
 
@@ -154,40 +154,12 @@ impl AgentChannelSource for BoundLocalChannelSource {
                 .await
                 .map_err(|error| OpenError(format!("credential_provision_failed: {error}")))?;
         }
-        let injection = match cli {
+        let mcp_session_servers = match cli {
             Some(cli) => {
-                awaken_run_executor_acp::mcp_injection_from_session_servers(cli, &self.mcp_servers)?
+                awaken_run_executor_acp::admit_mcp_session_servers(cli, &self.mcp_servers)?
             }
-            None => awaken_run_executor_acp::McpInjection::default(),
+            None => Vec::new(),
         };
-        awaken_run_executor_acp::admit_mcp_injection(launch.identity, &injection)?;
-        let config_home = self.sandbox.config_home();
-        let config_home_logical = self.sandbox.config_home_logical();
-        if let Some(cli) = cli
-            && let Some((mount, (env_key, env_val))) = acp_config_mount(
-                cli,
-                injection.config_file.clone(),
-                &config_home_logical,
-                &config_home,
-                false,
-            )
-        {
-            let pc::MountSource::Inline { contents } = mount.source else {
-                return Err(OpenError(
-                    "ACP config projection did not produce an inline mount".to_string(),
-                ));
-            };
-            self.sandbox
-                .materialize_inline(&mount.mount_path, contents.as_bytes())
-                .await
-                .map_err(|error| OpenError(format!("materialize ACP config: {error}")))?;
-            launch.env.retain(|var| var.name != env_key);
-            launch.env.push(pc::EnvVar {
-                name: env_key,
-                value: pc::EnvValue::Inline { value: env_val },
-                visibility: pc::EnvVisibility::Process,
-            });
-        }
         let (process, channel) = self
             .sandbox
             .spawn_agent(launch_command(&launch))
@@ -201,7 +173,7 @@ impl AgentChannelSource for BoundLocalChannelSource {
             // for the CLI's own file tools. Point it at the same Session environment
             // that owns the staged File/Repository/MemoryStore projections.
             workspace_cwd: Some(self.sandbox.workspace_cwd()),
-            mcp_session_servers: injection.session_servers,
+            mcp_session_servers,
             session_model: launch.session_model,
             session_mode: launch.session_mode,
             session_config_options: launch.session_config_options,
@@ -217,38 +189,6 @@ fn launch_command(launch: &awaken_run_executor_acp::AcpLaunch) -> pc::Command {
         env: launch.env.clone(),
         stdio: pc::Stdio::Piped,
     }
-}
-
-/// The interior config mount + config-home env override for a config-file CLI's
-/// projected MCP config: an inline, per-run, never-harvested
-/// mount at the fixed interior config home, plus `(config_home_env, path)` to point the
-/// CLI there. `None` for a session-server CLI. `read_only` when the backend can enforce
-/// it (bwrap); the Workdir tier cannot, so it takes a read-write copy — the never-harvest
-/// property holds regardless (`Inline` is neither `Secret` nor `MemoryStore`). Pure, so
-/// it is testable without a live sandbox.
-fn acp_config_mount(
-    cli: &AcpCli,
-    config_file: Option<(String, String)>,
-    materialization_home: &str,
-    exposed_home: &str,
-    read_only: bool,
-) -> Option<(pc::MountRequirement, (String, String))> {
-    let (rel_path, contents) = config_file?;
-    Some((
-        pc::MountRequirement {
-            mount_id: "acp-config".to_string(),
-            source: pc::MountSource::Inline { contents },
-            mount_path: format!("{materialization_home}/{rel_path}"),
-            access: if read_only {
-                pc::MountAccess::ReadOnly
-            } else {
-                pc::MountAccess::ReadWrite
-            },
-            lifetime: pc::MountLifetime::PerRun,
-            required: true,
-        },
-        (cli.config_home_env?.to_string(), exposed_home.to_string()),
-    ))
 }
 
 /// Resolve the effective sandbox tier at startup, probing the OS-native launcher
@@ -892,6 +832,18 @@ mod tests {
 
     #[tokio::test]
     async fn bound_container_delivers_session_new_mcp_servers() {
+        // Cause/effect graph: C1 a container-owned SessionEnvironment is bound;
+        // C2 the selected Claude adapter admits typed `session/new` MCP servers;
+        // C3 the frozen Session projection supplies one exact staged HTTP route.
+        // Effects: E1 the ACP Session uses the bound workspace and config home;
+        // E2 the exact route reaches `AgentSession::mcp_session_servers`; E3 the
+        // selected CLI receives its sandbox-interior config-home environment.
+        // Constraint K1: route conversion and adapter admission remain owned by
+        // `awaken-run-executor-acp`; this Host seam may only deliver that admitted
+        // value and must not recreate a config-file or credential projection.
+        // Decision rule B1=C1+C2+C3=>E1+E2+E3. Coverage rationale: the executor's
+        // adjacent decision tables own empty, transport, and rejection states;
+        // this case covers the remaining positive handoff into the bound process.
         let sandbox = Arc::new(CapturingAgentSandbox::default());
         let mut source = bound_projecting_source(sandbox.clone(), "claude");
         let activation = acp_activation_with_plugin_config(
@@ -909,12 +861,7 @@ mod tests {
             activation.snapshot.resolved_spec.plugin_config.plugins(),
         )
         .mcp_servers;
-        source.mcp_servers = awaken_run_executor_acp::mcp_injection_from_servers(
-            awaken_run_executor_acp::acp_cli("claude").unwrap(),
-            &routes,
-        )
-        .unwrap()
-        .session_servers;
+        source.mcp_servers = awaken_run_executor_acp::mcp_session_servers_from_routes(&routes);
 
         let session = source
             .open(
@@ -974,47 +921,6 @@ mod tests {
         assert!(
             sandbox.command.lock().unwrap().is_none(),
             "a mismatched run must not spawn in the SessionEnvironment"
-        );
-    }
-
-    #[test]
-    fn config_file_projection_uses_the_bound_environment_paths() {
-        // Causes: config-file delivery present/absent; environment can/cannot
-        // enforce read-only. Effects: one inline per-run mount plus the exposed
-        // config-home override, or no projection.
-        //
-        // Decision table:
-        // C1 present + read-only capable -> ReadOnly at materialization path
-        // C2 present + not capable       -> ReadWrite copy at materialization path
-        // C3 absent + either             -> no mount and no environment override
-        let mut cli = *awaken_run_executor_acp::acp_cli("claude").unwrap();
-        cli.config_home_env = Some("TEST_CONFIG_HOME");
-
-        for (rule, read_only, expected_access) in [
-            ("C1", true, pc::MountAccess::ReadOnly),
-            ("C2", false, pc::MountAccess::ReadWrite),
-        ] {
-            let (mount, (key, exposed)) = acp_config_mount(
-                &cli,
-                Some(("config.toml".into(), "[mcp_servers.gh]\n".into())),
-                WORKDIR_CONFIG_HOME,
-                SANDBOX_CONFIG_HOME,
-                read_only,
-            )
-            .unwrap_or_else(|| panic!("{rule}"));
-            assert_eq!(mount.mount_path, ".acp-config/config.toml", "{rule}");
-            assert_eq!(mount.access, expected_access, "{rule}");
-            assert_eq!(mount.lifetime, pc::MountLifetime::PerRun, "{rule}");
-            assert!(
-                matches!(mount.source, pc::MountSource::Inline { .. }),
-                "{rule}"
-            );
-            assert_eq!(key, "TEST_CONFIG_HOME", "{rule}");
-            assert_eq!(exposed, SANDBOX_CONFIG_HOME, "{rule}");
-        }
-        assert!(
-            acp_config_mount(&cli, None, WORKDIR_CONFIG_HOME, SANDBOX_CONFIG_HOME, true,).is_none(),
-            "C3"
         );
     }
 

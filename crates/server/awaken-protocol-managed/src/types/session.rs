@@ -12,6 +12,14 @@
 //! [`Session`] record — lives in `state` and `project`, kept deliberately apart.
 
 mod content;
+pub(crate) use content::project_advisor_thread_message_content;
+mod agent_ref;
+pub use agent_ref::{AgentRef, AgentRefObject, ModelOverride};
+mod model_config;
+pub use model_config::{
+    ModelConfig, ModelConfigParams, ModelEffort, ModelEffortInput, ModelEffortLevel,
+    ModelInferenceGeo, ModelSpeed,
+};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use serde::{Deserialize, Serialize};
@@ -68,7 +76,7 @@ impl BudgetLimit {
 }
 use serde_json::Value;
 
-use awaken_session_contract::AgentTool;
+use awaken_session_contract::{AgentTool, validate_agent_tools};
 
 use super::agent::{AgentMcpServer, AgentSkill};
 use super::resource::{ResourceInput, SessionResource};
@@ -103,178 +111,6 @@ impl ErrorResponse {
             },
             request_id: None,
         }
-    }
-}
-
-/// The resolved `model` axis of an `agent_with_overrides` session reference.
-#[derive(Debug, Clone)]
-pub enum ModelOverride {
-    Absent,
-    Set(ModelConfig),
-}
-
-/// The two exact object forms accepted by the Managed SDK. The discriminator is
-/// mandatory and closed; plain references cannot accidentally carry overrides.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum AgentRefObject {
-    Agent {
-        id: String,
-        #[serde(default)]
-        version: Option<u64>,
-    },
-    AgentWithOverrides {
-        id: String,
-        #[serde(default)]
-        mcp_servers: Option<Vec<AgentMcpServer>>,
-        #[serde(default, deserialize_with = "super::presence::optional_non_null")]
-        model: Option<super::agent::ModelInput>,
-        #[serde(default)]
-        skills: Option<Vec<AgentSkill>>,
-        #[serde(default, deserialize_with = "super::presence::double_option")]
-        system: Option<Option<String>>,
-        #[serde(default)]
-        tools: Option<Vec<AgentTool>>,
-        #[serde(default)]
-        version: Option<u64>,
-    },
-}
-
-impl AgentRefObject {
-    fn id(&self) -> &str {
-        match self {
-            Self::Agent { id, .. } | Self::AgentWithOverrides { id, .. } => id,
-        }
-    }
-
-    fn version(&self) -> Option<u64> {
-        match self {
-            Self::Agent { version, .. } | Self::AgentWithOverrides { version, .. } => *version,
-        }
-    }
-}
-
-/// The standard serde double-`Option` reader: distinguishes an absent field (handled
-/// by `#[serde(default)]` → outer `None`) from a present `null` (`Some(None)`) from a
-/// present value (`Some(Some(_))`). Load-bearing for the model not-clearable rule.
-/// `agent` in a create-session request — the SDK's
-/// `string | {id, type:'agent', version?} | {id, type:'agent_with_overrides',
-/// version?, model?, system?, tools?, ...}` (`BetaManagedAgentsAgentParams`).
-/// Untagged: a JSON string is [`AgentRef::Id`]; a JSON object is [`AgentRef::Object`],
-/// whose `type` then selects plain-reference vs. overrides. Per-session runtime
-/// selection still travels in the session `metadata` bag (see [`SessionCreateParams`]);
-/// the model now rides the official override object.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(untagged)]
-pub enum AgentRef {
-    Id(String),
-    Object(Box<AgentRefObject>),
-}
-
-impl AgentRef {
-    pub fn id(&self) -> &str {
-        match self {
-            AgentRef::Id(id) => id,
-            AgentRef::Object(object) => object.id(),
-        }
-    }
-
-    /// The agent version the client pinned, if any (`None` = latest).
-    pub fn version(&self) -> Option<u64> {
-        match self {
-            AgentRef::Id(_) => None,
-            AgentRef::Object(object) => object.version(),
-        }
-    }
-
-    /// The single-session model override. Only an `agent_with_overrides` object carries
-    /// one; every other form reports [`ModelOverride::Absent`].
-    pub fn model_override(&self) -> ModelOverride {
-        match self {
-            AgentRef::Object(object) => match object.as_ref() {
-                AgentRefObject::AgentWithOverrides {
-                    model: Some(input), ..
-                } => ModelOverride::Set(input.clone().into_config().into_session_override()),
-                _ => ModelOverride::Absent,
-            },
-            _ => ModelOverride::Absent,
-        }
-    }
-
-    pub fn mcp_servers_override(&self) -> Option<&[AgentMcpServer]> {
-        match self {
-            AgentRef::Object(object) => match object.as_ref() {
-                AgentRefObject::AgentWithOverrides {
-                    mcp_servers: Some(servers),
-                    ..
-                } => Some(servers),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn skills_override(&self) -> Option<&[AgentSkill]> {
-        match self {
-            AgentRef::Object(object) => match object.as_ref() {
-                AgentRefObject::AgentWithOverrides {
-                    skills: Some(skills),
-                    ..
-                } => Some(skills),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn tools_override(&self) -> Option<&[AgentTool]> {
-        match self {
-            AgentRef::Object(object) => match object.as_ref() {
-                AgentRefObject::AgentWithOverrides {
-                    tools: Some(tools), ..
-                } => Some(tools),
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    pub fn system_override(&self) -> Option<Option<&str>> {
-        match self {
-            AgentRef::Object(object) => match object.as_ref() {
-                AgentRefObject::AgentWithOverrides { system, .. } => {
-                    system.as_ref().map(|value| value.as_deref())
-                }
-                _ => None,
-            },
-            _ => None,
-        }
-    }
-
-    fn validate_sdk_limits(&self) -> Result<(), String> {
-        if self.version() == Some(0) {
-            return Err("agent version must be greater than or equal to 1".into());
-        }
-        if self
-            .system_override()
-            .flatten()
-            .is_some_and(|system| system.chars().count() > 100_000)
-        {
-            return Err("agent system override supports at most 100000 characters".into());
-        }
-        if self
-            .mcp_servers_override()
-            .is_some_and(|items| items.len() > 20)
-        {
-            return Err("agent mcp_servers override supports at most 20 entries".into());
-        }
-        if self.skills_override().is_some_and(|items| items.len() > 20) {
-            return Err("agent skills override supports at most 20 entries".into());
-        }
-        if self.tools_override().is_some_and(|items| items.len() > 128) {
-            return Err("agent tools override supports at most 128 entries".into());
-        }
-        Ok(())
     }
 }
 
@@ -379,209 +215,18 @@ pub struct SessionUpdateParams {
     pub vault_ids: Option<Vec<String>>,
 }
 
+impl SessionUpdateParams {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if let Some(tools) = self.agent.as_ref().and_then(|agent| agent.tools.as_ref()) {
+            validate_agent_tools(tools)?;
+        }
+        Ok(())
+    }
+}
+
 /// Session requests reuse the exact Agent URL-MCP DTO; there is one Managed MCP
 /// vocabulary and one serializer/deserializer authority.
 pub type McpServer = super::agent::AgentMcpServer;
-
-/// The resolved `BetaManagedAgentsModelConfig` object. A session/agent's
-/// `model` is this object on the wire, never a bare string (the SDK reads
-/// `agent.model.id`). The single definition of the model-config shape — the agent
-/// registry and session/thread projections all reuse it rather than rebuild it.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ModelConfig {
-    pub id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub speed: Option<ModelSpeed>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<ModelEffort>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<ModelInferenceGeo>,
-}
-
-impl ModelConfig {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            speed: None,
-            effort: None,
-            inference_geo: None,
-        }
-    }
-
-    /// Canonical neutral-to-Managed inference projection. Agent reads and
-    /// Session inheritance share this owner so a new immutable control cannot
-    /// drift between the two wire paths.
-    pub fn from_inference(
-        id: impl Into<String>,
-        inference: awaken_runtime_contract::agent_bindings::InferenceOptions,
-    ) -> Self {
-        use awaken_runtime_contract::agent_bindings::{
-            InferenceGeography, InferenceSpeed, ReasoningEffort,
-        };
-
-        Self {
-            id: id.into(),
-            speed: inference.speed.map(|value| match value {
-                InferenceSpeed::Standard => ModelSpeed::Standard,
-                InferenceSpeed::Fast => ModelSpeed::Fast,
-            }),
-            effort: inference.effort.map(|value| match value {
-                ReasoningEffort::Low => ModelEffort::Low,
-                ReasoningEffort::Medium => ModelEffort::Medium,
-                ReasoningEffort::High => ModelEffort::High,
-                ReasoningEffort::Xhigh => ModelEffort::Xhigh,
-                ReasoningEffort::Max => ModelEffort::Max,
-            }),
-            inference_geo: (inference.inference_geo == Some(InferenceGeography::Us))
-                .then_some(ModelInferenceGeo::Us),
-        }
-    }
-
-    /// Lower official Managed inference controls into the one neutral runtime
-    /// contract. `global` is the absence of an extra geography restriction.
-    #[must_use]
-    pub fn inference_options(&self) -> awaken_runtime_contract::agent_bindings::InferenceOptions {
-        use awaken_runtime_contract::agent_bindings::{
-            InferenceGeography, InferenceOptions, InferenceSpeed, ReasoningEffort,
-        };
-
-        let inference_geo = match self.inference_geo {
-            None | Some(ModelInferenceGeo::Global) => None,
-            Some(ModelInferenceGeo::Us) => Some(InferenceGeography::Us),
-        };
-        InferenceOptions {
-            speed: self.speed.map(|speed| match speed {
-                ModelSpeed::Standard => InferenceSpeed::Standard,
-                ModelSpeed::Fast => InferenceSpeed::Fast,
-            }),
-            effort: self.effort.map(|effort| match effort {
-                ModelEffort::Low => ReasoningEffort::Low,
-                ModelEffort::Medium => ReasoningEffort::Medium,
-                ModelEffort::High => ReasoningEffort::High,
-                ModelEffort::Xhigh => ReasoningEffort::Xhigh,
-                ModelEffort::Max => ReasoningEffort::Max,
-            }),
-            inference_geo,
-        }
-    }
-}
-
-/// The SDK's closed inference-geography vocabulary. Unsupported geography
-/// strings fail at the serde boundary instead of surviving as partially
-/// validated configuration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelInferenceGeo {
-    Global,
-    Us,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelSpeed {
-    Standard,
-    Fast,
-}
-
-/// Responses use the SDK's tagged effort union (`{type: ...}`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ModelEffort {
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-/// Create/update accepts either a bare effort level or the tagged response form.
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(untagged)]
-pub enum ModelEffortInput {
-    Level(ModelEffortLevel),
-    Tagged(ModelEffort),
-}
-
-#[derive(Debug, Clone, Copy, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelEffortLevel {
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-impl ModelEffortInput {
-    #[must_use]
-    pub fn resolved(self) -> ModelEffort {
-        match self {
-            Self::Level(ModelEffortLevel::Low) | Self::Tagged(ModelEffort::Low) => ModelEffort::Low,
-            Self::Level(ModelEffortLevel::Medium) | Self::Tagged(ModelEffort::Medium) => {
-                ModelEffort::Medium
-            }
-            Self::Level(ModelEffortLevel::High) | Self::Tagged(ModelEffort::High) => {
-                ModelEffort::High
-            }
-            Self::Level(ModelEffortLevel::Xhigh) | Self::Tagged(ModelEffort::Xhigh) => {
-                ModelEffort::Xhigh
-            }
-            Self::Level(ModelEffortLevel::Max) | Self::Tagged(ModelEffort::Max) => ModelEffort::Max,
-        }
-    }
-}
-
-/// Input-only model configuration; nullable option values normalize to absence.
-#[derive(Debug, Clone, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModelConfigParams {
-    pub id: String,
-    #[serde(default)]
-    pub speed: Option<ModelSpeed>,
-    #[serde(default)]
-    pub effort: Option<ModelEffortInput>,
-    #[serde(default)]
-    pub inference_geo: Option<ModelInferenceGeo>,
-}
-
-impl ModelConfigParams {
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            speed: None,
-            effort: None,
-            inference_geo: None,
-        }
-    }
-
-    #[must_use]
-    pub fn into_resolved(self) -> ModelConfig {
-        ModelConfig {
-            id: self.id,
-            speed: self.speed,
-            effort: self.effort.map(ModelEffortInput::resolved),
-            inference_geo: self.inference_geo,
-        }
-    }
-
-    /// Resolve a per-Session model override.
-    ///
-    /// Managed Agents treats the override as a complete model replacement, but
-    /// deliberately does not apply an `effort` value carried by that override:
-    /// the selected model runs at its default effort.  Keep accepting the field
-    /// at the wire boundary for old and forward SDK compatibility while making
-    /// the execution projection match the service contract. Agent authoring
-    /// continues to use [`Self::into_resolved`], where effort is meaningful.
-    #[must_use]
-    pub fn into_session_override(self) -> ModelConfig {
-        ModelConfig {
-            id: self.id,
-            speed: self.speed,
-            effort: None,
-            inference_geo: self.inference_geo,
-        }
-    }
-}
 
 /// The agent object echoed inside a session response
 /// (`BetaManagedAgentsSessionAgent`).
@@ -621,12 +266,19 @@ pub enum SessionMultiagentRosterEntry {
 }
 
 impl SessionMultiagentRosterEntry {
-    /// Returns an executable child Agent. An advisor is deliberately not a
-    /// thread target and therefore cannot be lowered to `SessionThreadAgent`.
+    /// Returns an executable ordinary child Agent. Advisor execution is a real
+    /// Thread too, but retains its distinct two-field wire identity.
     pub(crate) const fn as_agent(&self) -> Option<&SessionThreadAgent> {
         match self {
             Self::Agent(agent) => Some(agent),
             Self::Advisor(_) => None,
+        }
+    }
+
+    pub(crate) const fn as_advisor(&self) -> Option<&super::agent::AdvisorRosterEntry> {
+        match self {
+            Self::Agent(_) => None,
+            Self::Advisor(advisor) => Some(advisor),
         }
     }
 }
@@ -666,6 +318,54 @@ impl From<&SessionAgent> for SessionThreadAgent {
     }
 }
 
+/// Official `session_thread.agent` union. Ordinary Agent Threads retain the
+/// complete frozen execution snapshot; advisor consultations use only the
+/// two-field advisor identity and must never be padded with fabricated Agent
+/// fields.
+#[derive(Debug, Clone, Serialize)]
+#[serde(untagged)]
+pub enum SessionThreadAgentValue {
+    Agent(SessionThreadAgent),
+    Advisor(super::agent::AdvisorRosterEntry),
+}
+
+impl SessionThreadAgentValue {
+    #[must_use]
+    pub const fn as_agent(&self) -> Option<&SessionThreadAgent> {
+        match self {
+            Self::Agent(agent) => Some(agent),
+            Self::Advisor(_) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn is_advisor(&self) -> bool {
+        matches!(self, Self::Advisor(_))
+    }
+
+    #[must_use]
+    pub fn display_name(&self) -> &str {
+        match self {
+            Self::Agent(agent) => &agent.name,
+            // Managed reserves this lifecycle/cross-post name independently of
+            // the advisor model carried by the two-field Thread agent object.
+            Self::Advisor(_) => "anthropic.advisor",
+        }
+    }
+}
+
+impl From<SessionThreadAgent> for SessionThreadAgentValue {
+    fn from(agent: SessionThreadAgent) -> Self {
+        Self::Agent(agent)
+    }
+}
+
+impl From<super::agent::AdvisorRosterEntry> for SessionThreadAgentValue {
+    fn from(advisor: super::agent::AdvisorRosterEntry) -> Self {
+        Self::Advisor(advisor)
+    }
+}
+
 /// `BetaManagedAgentsSessionThreadStatus`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -689,8 +389,8 @@ pub struct SessionThreadStats {
 }
 
 /// `BetaManagedAgentsSessionThreadUsage`. The thread view stays `null` until
-/// per-thread accounting is available; this type prevents an ad-hoc JSON shape
-/// becoming a second usage vocabulary when it is populated.
+/// committed per-thread accounting exists; its optional list cost is derived
+/// from the Session's one frozen pricing snapshot when present.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct SessionThreadUsage {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -722,7 +422,7 @@ pub struct SessionThreadCacheCreationUsage {
 #[derive(Debug, Clone, Serialize)]
 pub struct SessionThread {
     pub id: String,
-    pub agent: SessionThreadAgent,
+    pub agent: SessionThreadAgentValue,
     pub archived_at: Option<String>,
     pub created_at: String,
     pub parent_thread_id: Option<String>,
@@ -899,8 +599,10 @@ pub enum InboundEvent {
     },
     /// The generic client-provided result for an awaiting tool, keyed by the
     /// `agent.tool_use` id from a `requires_action` `event_ids` — the SDK's
-    /// `user.tool_result`. Handled like `user.custom_tool_result` (delivers a
-    /// client tool's result), keyed by `tool_use_id` rather than `custom_tool_use_id`.
+    /// `user.tool_result`. It is deliberately distinct from
+    /// `user.custom_tool_result`: the latter may answer only a projected
+    /// `agent.custom_tool_use`, while this family may answer only a projected
+    /// self-hosted `agent.tool_use`.
     #[serde(rename = "user.tool_result")]
     UserToolResult {
         tool_use_id: String,
@@ -944,11 +646,18 @@ impl super::initial_event::InitialEventSpec for InboundEvent {
         match self {
             InboundEvent::UserMessage { .. } => InitialEventClass::UserMessage,
             InboundEvent::SystemMessage { .. } => InitialEventClass::SystemMessage,
-            InboundEvent::UserDefineOutcome { max_iterations, .. } => {
-                InitialEventClass::UserDefineOutcome {
-                    max_iterations: *max_iterations,
-                }
-            }
+            InboundEvent::UserDefineOutcome {
+                description,
+                rubric,
+                max_iterations,
+            } => InitialEventClass::UserDefineOutcome {
+                max_iterations: *max_iterations,
+                description_nonempty: !description.trim().is_empty(),
+                rubric_nonempty: match rubric {
+                    OutcomeRubric::Text { content } => !content.trim().is_empty(),
+                    OutcomeRubric::File { file_id } => !file_id.trim().is_empty(),
+                },
+            },
             other => InitialEventClass::Other(other.type_str()),
         }
     }
@@ -962,6 +671,7 @@ impl SessionCreateParams {
                 min_count: 0,
                 max_count: 50,
                 allow_system_message: false,
+                require_final_system_after_user: false,
                 max_outcomes: Some(1),
                 outcome_iterations: Some(1..=20),
             },
@@ -991,19 +701,13 @@ pub struct SendEventsRequest {
     pub events: Vec<InboundEvent>,
 }
 
-/// One receipt in the `POST .../events` response `data` array.
-#[derive(Debug, Clone, Serialize)]
-pub struct EventReceipt {
-    pub id: String,
-    #[serde(rename = "type")]
-    pub kind: &'static str,
-    pub processed_at: Option<String>,
-}
-
 /// `POST .../events` response.
 #[derive(Debug, Clone, Serialize)]
 pub struct SendEventsResponse {
-    pub data: Vec<EventReceipt>,
+    /// The exact accepted inbound Events. This intentionally reuses the same
+    /// public Event DTO returned by list/stream so receipt and history fields
+    /// cannot drift into two wire implementations.
+    pub data: Vec<Event>,
 }
 
 /// Why a session went idle — a tagged object, never a string.
@@ -1051,7 +755,7 @@ impl SessionError {
     /// (`rate_limited` / `context_overflow` / `unauthorized` / …); it picks the error
     /// `type` and the `retry_status`. An unknown code (or a plain internal fault) is
     /// the catch-all `unknown_error` / `exhausted` — the session stays usable, so we
-    /// don't force-terminate on one failed turn.
+    /// don't force-terminate on one failed Run.
     pub fn classify(code: &str, message: impl Into<String>) -> Self {
         let message = message.into();
         let mcp_server_name = code_message_server_name(code, &message);
@@ -1103,6 +807,8 @@ pub enum OutboundKind {
         result: ConfirmResult,
         #[serde(skip_serializing_if = "Option::is_none")]
         deny_message: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
     },
     #[serde(rename = "user.custom_tool_result")]
     UserCustomToolResult {
@@ -1110,6 +816,8 @@ pub enum OutboundKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<ContentBlock>>,
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
     },
     #[serde(rename = "user.tool_result")]
     UserToolResult {
@@ -1117,13 +825,15 @@ pub enum OutboundKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         content: Option<Vec<ContentBlock>>,
         is_error: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
     },
     #[serde(rename = "user.define_outcome")]
     UserDefineOutcome {
         description: String,
         rubric: OutcomeRubric,
-        #[serde(skip_serializing_if = "Option::is_none")]
         max_iterations: Option<u32>,
+        outcome_id: String,
     },
     #[serde(rename = "user.interrupt")]
     UserInterrupt {
@@ -1145,6 +855,8 @@ pub enum OutboundKind {
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         evaluated_permission: Option<EvaluatedPermission>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
     },
     #[serde(rename = "agent.tool_result")]
     AgentToolResult {
@@ -1154,7 +866,12 @@ pub enum OutboundKind {
         is_error: Option<bool>,
     },
     #[serde(rename = "agent.custom_tool_use")]
-    AgentCustomToolUse { name: String, input: Value },
+    AgentCustomToolUse {
+        name: String,
+        input: Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
+    },
     /// An MCP tool call (`agent.mcp_tool_use`): a host-executed tool from an MCP
     /// server, distinguished from a built-in `agent.tool_use` by the `mcp__` name.
     #[serde(rename = "agent.mcp_tool_use")]
@@ -1164,6 +881,8 @@ pub enum OutboundKind {
         input: Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         evaluated_permission: Option<EvaluatedPermission>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        session_thread_id: Option<String>,
     },
     /// The result of an MCP tool call (`agent.mcp_tool_result`), keyed by
     /// `mcp_tool_use_id`.
@@ -1202,7 +921,7 @@ pub enum OutboundKind {
     /// The session reached its irreversible terminal state (emitted when the
     /// session is archived — this server models archive as termination, stamping
     /// `archived_at` and `status: "terminated"`). A client streaming or listing
-    /// the session sees this as the last event; no further turns are accepted.
+    /// the session sees this as the last event; no further Runs are accepted.
     #[serde(rename = "session.status_terminated")]
     SessionStatusTerminated {},
     /// The session was deleted (`session.deleted`) — a terminal stream frame
@@ -1212,21 +931,21 @@ pub enum OutboundKind {
     /// subsequent `events.list`/`retrieve` is a 404, not a replay.
     #[serde(rename = "session.deleted")]
     SessionDeleted {},
-    /// A subagent (multiagent delegate) thread was spawned within the session —
-    /// the SDK's `session.thread_created`. `agent_name` is the callable delegate
-    /// the child thread runs.
+    /// A Session Thread was created within the Session — the SDK's
+    /// `session.thread_created`. `agent_name` identifies the Agent that the
+    /// Thread runs.
     #[serde(rename = "session.thread_created")]
     SessionThreadCreated {
         session_thread_id: String,
         agent_name: String,
     },
-    /// A subagent child thread started running (`session.thread_status_running`).
+    /// A Session Thread started running (`session.thread_status_running`).
     #[serde(rename = "session.thread_status_running")]
     SessionThreadStatusRunning {
         session_thread_id: String,
         agent_name: String,
     },
-    /// A subagent child thread went idle (`session.thread_status_idle`), carrying
+    /// A Session Thread went idle (`session.thread_status_idle`), carrying
     /// the same `stop_reason` shape as the session's own idle.
     #[serde(rename = "session.thread_status_idle")]
     SessionThreadStatusIdle {
@@ -1234,7 +953,7 @@ pub enum OutboundKind {
         agent_name: String,
         stop_reason: StopReason,
     },
-    /// A subagent child thread hit a transient error and is retrying
+    /// A Session Thread hit a transient error and is retrying
     /// (`session.thread_status_rescheduled`) — same identity shape as the other
     /// thread-status events.
     #[serde(rename = "session.thread_status_rescheduled")]
@@ -1255,7 +974,7 @@ pub enum OutboundKind {
         #[serde(skip_serializing_if = "Option::is_none")]
         budget: Option<Option<BudgetLimit>>,
     },
-    /// A subagent child thread terminated (`session.thread_status_terminated`),
+    /// A Session Thread terminated (`session.thread_status_terminated`),
     /// e.g. when archived.
     #[serde(rename = "session.thread_status_terminated")]
     SessionThreadStatusTerminated {
@@ -1279,7 +998,7 @@ pub enum OutboundKind {
         content: Vec<ContentBlock>,
     },
     /// The conversation history was summarized to fit context (the compact plugin
-    /// folded older turns). A pure marker: its shape matches the installed SDK's
+    /// folded older Steps). A pure marker: its shape matches the installed SDK's
     /// `BetaManagedAgentsAgentThreadContextCompactedEvent` — `{id, type,
     /// processed_at}`, no payload (aligned to `@anthropic-ai/sdk`, not guessed).
     #[serde(rename = "agent.thread_context_compacted")]
@@ -1378,7 +1097,7 @@ impl Event {
 }
 
 /// A stream-only *live preview* frame (`event_start` / `event_delta`), emitted on
-/// the SSE stream **only** while a turn is in flight and **never** persisted in
+/// the SSE stream **only** while a Run is in flight and **never** persisted in
 /// the event log — the buffered `agent.message` stays the authoritative record.
 /// Mirrors the official Managed Agents live-preview wire: an `event_start`
 /// announces the upcoming buffered event's `type` + `id`, then `event_delta`
@@ -1429,8 +1148,7 @@ pub enum PreviewDelta {
 }
 
 /// The incremental content on a `content_delta`. Text only — awaken's live stream
-/// carries text deltas; tool use and thinking are never previewed (matching the
-/// official wire: "tool use, tool results … are never previewed").
+/// carries text deltas; tool use, tool results, and thinking are never previewed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type")]
 pub enum PreviewContent {
@@ -1438,14 +1156,14 @@ pub enum PreviewContent {
     Text { text: String },
 }
 
-/// A frame on the live SSE stream: either a committed [`Event`] (also in the
-/// persisted log) or a stream-only [`PreviewFrame`]. The per-session broadcast
-/// carries both; each SSE connection forwards previews only if it opted in via
-/// `event_deltas[]`.
+/// An SSE serialization envelope: either a committed [`Event`] from the Session
+/// broadcast or a connection-local [`PreviewFrame`] from the Runtime-owned Thread
+/// subscription. Preview frames never re-enter the committed broadcast and are
+/// forwarded only when the connection opted in via `event_deltas[]`.
 #[derive(Debug, Clone)]
 #[allow(
     clippy::large_enum_variant,
-    reason = "committed and preview frames intentionally share one broadcast wire; the size difference is bounded and boxing would only add allocation"
+    reason = "committed and preview frames intentionally share one SSE envelope; the size difference is bounded and boxing would only add allocation"
 )]
 pub enum StreamFrame {
     Committed(Event),
@@ -1718,6 +1436,56 @@ mod tests {
     }
 
     #[test]
+    fn session_tool_overrides_reject_unknown_members_before_projection() {
+        // Cause/effect graph: C1 create/update omits tool overrides; C2 it uses a
+        // closed Agent-tool member; C3 it names an unknown member. Effects:
+        // E1 inherit/unchanged, E2 canonical normalization, E3 admission error
+        // before Session mutation. Decision rows: absent=>E1; known=>E2;
+        // unknown on create or update=>E3.
+        // Constraint: both Session ingress paths reuse `validate_agent_tools`;
+        // neither may silently drop or retain a parallel Agent-tool member.
+        let create: SessionCreateParams = serde_json::from_value(serde_json::json!({
+            "agent": {
+                "id": "assistant",
+                "type": "agent_with_overrides",
+                "tools": [{
+                    "type": "agent_toolset_20260401",
+                    "configs": [{"name": "parallel_web_search"}]
+                }]
+            },
+            "environment_id": "env"
+        }))
+        .expect("typed request retains the value until semantic validation");
+        assert_eq!(
+            create.validate_common().unwrap_err(),
+            "unknown agent tool `parallel_web_search`",
+            "C3/create=>E3"
+        );
+
+        let update: SessionUpdateParams = serde_json::from_value(serde_json::json!({
+            "agent": {
+                "tools": [{
+                    "type": "agent_toolset_20260401",
+                    "configs": [{"name": "parallel_web_search"}]
+                }]
+            }
+        }))
+        .expect("typed update retains the value until semantic validation");
+        assert_eq!(
+            update.validate().unwrap_err(),
+            "unknown agent tool `parallel_web_search`",
+            "C3/update=>E3"
+        );
+        assert!(
+            serde_json::from_value::<SessionUpdateParams>(serde_json::json!({}))
+                .expect("absent override")
+                .validate()
+                .is_ok(),
+            "C1=>E1"
+        );
+    }
+
+    #[test]
     fn session_create_requires_environment_and_rejects_non_sdk_mcp_field() {
         // Cause/effect decision table:
         // | environment_id | top-level mcp_servers | result |
@@ -1812,6 +1580,62 @@ mod tests {
             r#"{"type":"user.message","content":[{"type":"text","text":"hi"}],"session_thread_id":"thread_1"}"#,
         ] {
             assert!(serde_json::from_str::<InboundEvent>(invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn tool_replies_reject_non_sdk_thread_selectors() {
+        // Causes: the fixtures below establish `tool replies reject non sdk thread selectors` with
+        // the concrete inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `all output, state, side-effect, error, and terminal
+        // assertions below hold together` and every asserted state transition or side effect must
+        // hold.
+        // Constraints/invariants: the Managed edge owns wire validation/projection only;
+        // Session/Run stores and committed facts remain the single behavior authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 an inbound Event is one of the three tool-reply
+        // variants; C2 it has the SDK field set only or also carries the obsolete
+        // `session_thread_id` selector. E1 C1+SDK-only decodes so the qualified
+        // public Event id remains the sole routing authority; E2 C1+selector is
+        // rejected by the closed schema before admission. Decision table:
+        // W1=C1+SDK-only=>E1; W2=C1+selector=>E2.
+        for wire in [
+            serde_json::json!({
+                "type":"user.tool_confirmation", "tool_use_id":"call-1",
+                "result":"allow"
+            }),
+            serde_json::json!({
+                "type":"user.custom_tool_result", "custom_tool_use_id":"call-2",
+                "content":[{"type":"text","text":"done"}], "is_error":false
+            }),
+            serde_json::json!({
+                "type":"user.tool_result", "tool_use_id":"call-3",
+                "content":[{"type":"text","text":"done"}], "is_error":false
+            }),
+        ] {
+            serde_json::from_value::<InboundEvent>(wire).expect("W1/E1");
+        }
+        for wire in [
+            serde_json::json!({
+                "type":"user.tool_confirmation", "tool_use_id":"call-1",
+                "result":"allow", "session_thread_id":"sthr_1"
+            }),
+            serde_json::json!({
+                "type":"user.custom_tool_result", "custom_tool_use_id":"call-2",
+                "content":[{"type":"text","text":"done"}], "is_error":false,
+                "session_thread_id":"sthr_1"
+            }),
+            serde_json::json!({
+                "type":"user.tool_result", "tool_use_id":"call-3",
+                "content":[{"type":"text","text":"done"}], "is_error":false,
+                "session_thread_id":"sthr_1"
+            }),
+        ] {
+            assert!(
+                serde_json::from_value::<InboundEvent>(wire).is_err(),
+                "W2/E2"
+            );
         }
     }
 
@@ -1973,5 +1797,60 @@ mod tests {
             projected.get("multiagent").is_none(),
             "the thread contract has no duplicate roster field"
         );
+    }
+
+    #[test]
+    fn session_thread_agent_union_uses_the_closed_official_shapes() {
+        // Causes: the fixtures below establish `session thread agent union` with the concrete
+        // inputs, state, dependencies, and failure triggers used by this case.
+        // Effects: the observable result `uses the closed official shapes` and every asserted state
+        // transition or side effect must hold.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
+        // Cause/effect graph: C1 the coordinated target is an ordinary Agent;
+        // C2 it is an advisor invocation. E1 C1 serializes the complete frozen
+        // Agent snapshot; E2 C2 serializes exactly `{type,model}` and never pads
+        // an advisor with fabricated id/version/tools. Constraint: C1 xor C2.
+        // Decision table:
+        // | Rule | C1 | C2 | Effect |
+        // | U1 | T | F | E1 |
+        // | U2 | F | T | E2 |
+        let agent = SessionThreadAgentValue::Agent(SessionThreadAgent {
+            id: "researcher".into(),
+            kind: "agent",
+            version: 3,
+            model: ModelConfig::new("model-agent"),
+            name: "Researcher".into(),
+            description: None,
+            system: None,
+            tools: Vec::new(),
+            mcp_servers: Vec::new(),
+            skills: Vec::new(),
+        });
+        let agent_json = serde_json::to_value(agent).unwrap();
+        assert_eq!(agent_json["type"], "agent", "U1/E1");
+        assert_eq!(agent_json["id"], "researcher", "U1/E1");
+        assert_eq!(agent_json["version"], 3, "U1/E1");
+        assert!(agent_json.get("tools").is_some(), "U1/E1");
+
+        let advisor = SessionThreadAgentValue::Advisor(crate::types::agent::AdvisorRosterEntry {
+            model: "model-advisor".into(),
+            kind: crate::types::agent::AdvisorRosterEntryKind::Advisor,
+        });
+        let advisor_json = serde_json::to_value(advisor).unwrap();
+        assert_eq!(
+            advisor_json
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            ["model".to_string(), "type".to_string()]
+                .into_iter()
+                .collect(),
+            "U2/E2"
+        );
+        assert_eq!(advisor_json["type"], "advisor", "U2/E2");
+        assert_eq!(advisor_json["model"], "model-advisor", "U2/E2");
     }
 }

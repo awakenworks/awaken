@@ -1,6 +1,6 @@
 //! `awaken-ext-compact` — within-session context compaction as a bounded context.
 //!
-//! Compaction summarizes the older part of a long conversation so future turns
+//! Compaction summarizes the older part of a long conversation so future Runs
 //! carry a short summary instead of the full history. This crate owns the
 //! compactor [`agent`]'s config and prompts and the pure [`fold`] policy (which
 //! prefix to summarize); the host wires them onto its aux-agent substrate and
@@ -22,6 +22,4 @@ pub use agent::{
 pub use backend::{CompactArtifact, CompactBackend, CompactRequest};
 pub use config::CompactConfig;
 pub use fold::fold_point;
-pub use plugin::{
-    COMPACT_PLUGIN_ID, CompactPlugin, compaction_count, config_schema as compact_config_schema,
-};
+pub use plugin::{COMPACT_PLUGIN_ID, CompactPlugin, config_schema as compact_config_schema};

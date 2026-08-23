@@ -10,8 +10,8 @@
 //   2. CREATE a session that ASSOCIATES them: agent id + environment_id + vault_ids
 //      + mcp_servers + one exact create-time resource snapshot (file, memory_store,
 //      github_repository).
-//   3. RUN it: an MCP-tool turn ("add 2 3" -> mcp__calc__add -> "result: 5") and a
-//      plain echo turn.
+//   3. RUN it: an MCP-tool Run ("add 2 3" -> mcp__calc__add -> "result: 5") and a
+//      plain echo Run.
 //   4. CHECK existing resources (env / agent / memory / file / attached resources)
 //      and PRODUCED effects (tool_use + tool_result events, and the vault-materialized
 //      bearer the MCP fixture saw on the wire).
@@ -20,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { pass, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -50,19 +50,46 @@ async function listEvents(client, sid) {
 }
 
 async function send(client, sid, text) {
-  await client.beta.sessions.events.send(sid, {
+  return client.beta.sessions.events.send(sid, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+}
+
+async function committedRunEvents(client, sid, receipt, terminalEffect, description) {
+  const acceptedId = receipt.data[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'full-lifecycle Run returns its exact receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sid,
+    acceptedId,
+    BETAS,
+    ({ delta }) => terminalEffect(delta)
+      && delta.some((event) => event.type === 'session.status_idle'),
+    description,
+  );
+  return events;
 }
 
 const agentMessages = (events) =>
   events.filter((e) => e.type === 'agent.message').flatMap((e) => (e.content ?? []).map((c) => c.text ?? ''));
 
 async function main() {
+  // Cause/effect graph: C1=Control resources and typed Agent policy are valid;
+  // C2=Local receives read-only mounts it cannot enforce after durable admission;
+  // C3=an unmounted Session
+  // binds the same Agent/vault; C4=the model requests MCP calc.add; C5=a later
+  // plain User message reuses the Session. Effects: E1=resources freeze/read back;
+  // E2=the exact receipt remains retained/unprocessed with no execution effect;
+  // E3=the MCP result and vault bearer commit;
+  // E4=the later Run echoes. Decision rules: R1 C1 => E1; R2 C1 && C2 => E2;
+  // R3 C1 && C3 && C4 => E3; R4 R3 && C5 => E4.
+  // Constraints/invariants: accepted Session/Event roots remain the only
+  // durable authorities; a capability failure retains the exact command for
+  // retry without fabricating model, tool, terminal, or deletion effects.
   const fixture = await startCalcFixture(CALC_TOKEN);
   try {
-    await withScenarioServer('management', 'mcp', PORT, async (baseUrl) => {
+    await withScenarioServer('management', 'mcp', PORT, async (baseUrl, upstream) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
       // ── 1. CREATE RESOURCES ────────────────────────────────────────────────
@@ -187,11 +214,43 @@ async function main() {
       // Local is explicitly selected by the generic deterministic harness and
       // cannot enforce a read-only File mount. Execution must fail closed rather
       // than silently weakening the resource contract.
-      await assert.rejects(
-        () => send(client, resourceSession.id, 'must fail closed'),
-        (error) => error.status === 500 && error.message.includes('does not enforce read-only'),
+      const modelRequestsBeforeMount = upstream.requests.length;
+      const toolCallsBeforeMount = fixture.calls.filter((call) => call.method === 'tools/call').length;
+      const mountReceipt = await send(client, resourceSession.id, 'must fail closed');
+      const acceptedMount = mountReceipt.data[0];
+      assert.equal(acceptedMount?.type, 'user.message', 'R2 exact User Event receipt family');
+      assert.equal(acceptedMount?.processed_at, null, 'R2 effect failure is not falsely processed');
+      // The request/CAS is already durable, so a later capability repair retries
+      // this same command. Observe one bounded reconciliation window: it may expose
+      // nonterminal lifecycle state, but must not invent model/tool/terminal effects
+      // or compensate by deleting the retained command.
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      const pendingMount = await listEvents(client, resourceSession.id);
+      const retainedMount = pendingMount.find((event) => event.id === acceptedMount.id);
+      assert.equal(retainedMount?.processed_at, null, 'R2 retained history preserves retryability');
+      assert.ok(
+        !pendingMount.some((event) => [
+          'agent.message',
+          'agent.mcp_tool_use',
+          'agent.mcp_tool_result',
+          'agent.tool_use',
+          'agent.tool_result',
+          'session.error',
+          'session.status_idle',
+          'session.thread_status_idle',
+          'session.usage',
+          'span.model_request_start',
+          'span.model_request_end',
+        ].includes(event.type)),
+        `R2 no model/tool/terminal effect is fabricated: ${pendingMount.map((event) => event.type)}`,
       );
-      pass('local execution rejects the read-only resource session fail-closed');
+      assert.equal(upstream.requests.length, modelRequestsBeforeMount, 'R2 no Provider request');
+      assert.equal(
+        fixture.calls.filter((call) => call.method === 'tools/call').length,
+        toolCallsBeforeMount,
+        'R2 no MCP tool execution',
+      );
+      pass('local read-only capability failure retains one retryable command without effects');
 
       // The execution half of this broad API lifecycle has no mount requirement;
       // dedicated sandbox provisioning tests exercise actual resource mounts on
@@ -211,10 +270,16 @@ async function main() {
 
       // ── 3. RUN ─────────────────────────────────────────────────────────────
 
-      // MCP tool turn: the deterministic model calls the calc MCP tool with the
+      // MCP tool Run: the deterministic model calls the calc MCP tool with the
       // vault-materialized bearer, and reports the sum.
-      await send(client, session.id, 'add 2 3');
-      let events = await listEvents(client, session.id);
+      const mcpReceipt = await send(client, session.id, 'add 2 3');
+      let events = await committedRunEvents(
+        client,
+        session.id,
+        mcpReceipt,
+        (delta) => delta.some((event) => event.type === 'agent.mcp_tool_result'),
+        'the MCP Run to commit its result and terminal Session status',
+      );
       // An MCP tool (`mcp__server__tool`) projects as the DISTINCT `agent.mcp_tool_use`
       // / `agent.mcp_tool_result` events, not the built-in `agent.tool_use` — the wire
       // distinguishes a host-executed MCP call from a built-in one by the `mcp__` name.
@@ -225,13 +290,19 @@ async function main() {
       assert.ok(toolResult, `an agent.mcp_tool_result event: ${JSON.stringify(events)}`);
       assert.equal(toolResult.content[0].text, '5');
       assert.ok(agentMessages(events).some((m) => m.includes('result: 5')), 'final message reports result: 5');
-      pass('run turn 1: add 2 3 -> mcp__calc__add -> tool_result 5 -> "result: 5"');
+      pass('Run 1: add 2 3 -> mcp__calc__add -> tool_result 5 -> "result: 5"');
 
-      // plain echo turn on the same session
-      await send(client, session.id, 'ping');
-      events = await listEvents(client, session.id);
+      // plain echo Run on the same Session
+      const echoReceipt = await send(client, session.id, 'ping');
+      events = await committedRunEvents(
+        client,
+        session.id,
+        echoReceipt,
+        (delta) => delta.some((event) => event.type === 'agent.message'),
+        'the echo Run to commit its reply and terminal Session status',
+      );
       assert.ok(agentMessages(events).includes('Echo: ping'), 'plain message echoes');
-      pass('run turn 2: plain message -> Echo reply');
+      pass('Run 2: plain message -> Echo reply');
 
       // ── 4. CHECK EXISTING + PRODUCED RESOURCES ─────────────────────────────
 

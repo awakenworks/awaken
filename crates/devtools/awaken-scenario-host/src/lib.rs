@@ -15,10 +15,11 @@ mod model_publication;
 mod model_routing;
 mod models;
 mod scenario_platform;
+mod web;
 mod worker;
 pub use crate::models::*;
 pub use acp_gateway::build_acp_gateway_router;
-use acp_scenarios::FAKE_ACP_CLI;
+use acp_scenarios::fake_acp_cli;
 pub use acp_scenarios::{
     build_acp_container_router, build_acp_control_router, build_acp_jsonrpc_router,
     build_acp_managed_mcp_router, build_acp_permission_router, build_acp_real_mcp_router,
@@ -32,6 +33,7 @@ pub use distributed_control::serve_distributed_control;
 pub use dream::{build_dream_router, build_dream_router_and_host, build_dream_runtime_router};
 pub use model_routing::{build_model_route_router, scenario_model};
 pub use scenario_platform::build_unscoped_resource_router;
+pub use web::build_management_web_router;
 pub use worker::run_echo_worker;
 
 mod scenario_shell;
@@ -40,9 +42,9 @@ use deployment::{
     scenario_storage_dir,
 };
 use scenario_platform::{
-    fixed_host_backend_publication, fixed_host_backend_publication_with_acp_mcp,
-    fixed_host_backend_publication_with_mcp, mount, mount_with_agent_source,
-    mount_with_environments, mount_with_environments_and_agent_source,
+    fixed_agent_publication, fixed_host_backend_publication,
+    fixed_host_backend_publication_with_acp_mcp, fixed_host_backend_publication_with_mcp, mount,
+    mount_with_agent_source, mount_with_environments, mount_with_environments_and_agent_source,
     mount_with_host_backend_publication, mount_with_memory_publication,
 };
 use scenario_shell::{scenario_argv, scenario_host_acp_cli, scenario_shell_argv};
@@ -54,7 +56,6 @@ use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::Role;
 use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAgentRegistrar};
 use awaken_provider_genai::GenaiExecutor;
-use awaken_runtime_contract::StaticPublishedAgentSnapshots;
 use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
@@ -77,7 +78,7 @@ pub use awaken_runtime_host::{
 pub use awaken_sandbox_local::content_fingerprint;
 
 /// A minimal ACP agent (shell): read the prompt line, emit a message + turn_end —
-/// stands in for `claude --acp` so the ACP-runtime path runs without a real CLI.
+/// stands in for an external adapter so the ACP-runtime path runs without a real CLI.
 const FAKE_ACP_SCRIPT: &str = "read _p; \
     case \"$_p\" in \
       *acp-refuse*) printf '%s\\n' '{\"type\":\"turn_end\",\"reason\":\"refusal\"}';; \
@@ -142,7 +143,7 @@ pub fn build_outcome_matrix_router() -> Router {
 }
 
 /// A router with out-of-band memory extraction + bounded recall (the memory
-/// e2e): after each turn the extractor sub-run saves a memory, and later
+/// e2e): after each Run the extractor sub-run saves a memory, and later
 /// sessions see it injected request-only by the recall plugin.
 /// `AWAKEN_MODEL_MODE=memory`; the caller must create and attach a governed
 /// MemoryStore resource to each participating Session.
@@ -196,10 +197,10 @@ pub fn build_full_chain_router() -> Router {
 }
 
 /// A router with context compaction (the compaction e2e): a low threshold folds
-/// the older transcript into a summary after a few turns. The deterministic
+/// the older transcript into a summary after a few Runs. The deterministic
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
 /// reports the compaction context it received, so an e2e can observe the folded
-/// summary being injected on a later turn. `AWAKEN_MODEL_MODE=compaction`.
+/// summary being injected on a later Run. `AWAKEN_MODEL_MODE=compaction`.
 pub fn build_compaction_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::CompactionModel), "compaction");
     // Compaction changes run behavior, not deployment ownership. Reuse the
@@ -232,9 +233,9 @@ pub fn build_compaction_router() -> Router {
     mount(host)
 }
 
-/// A router whose model fails a turn on the `BOOM` trigger (the session-error
-/// e2e): the failed turn surfaces an internal `RunError` (HTTP `api_error`) and
-/// commits a `session.error` event, while other turns echo — proving the session
+/// A router whose model fails a Run on the `BOOM` trigger (the session-error
+/// e2e): the failed Run surfaces an internal `RunError` (HTTP `api_error`) and
+/// commits a `session.error` event, while other Runs echo — proving the Session
 /// stays usable after a failure. `AWAKEN_MODEL_MODE=error`.
 pub fn build_error_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::ErrorModel), "error");
@@ -266,34 +267,74 @@ pub fn build_environment_matrix_router() -> Router {
     mount_with_environments(resource_host(model, model_ref))
 }
 
-/// A fake ACP agent speaking the OFFICIAL JSON-RPC 2.0 wire (shell builtins only,
-/// so it survives `env_clear`): answer `initialize` (id 1) and `session/new`
-/// (id 2), then on `session/prompt` (id 3) stream a tool call, its completed
-/// result, and one agent-message chunk as `session/update`s, and reply with
-/// `stopReason:"end_turn"`. Stands in for a real `claude --acp` to exercise the
-/// [`awaken_run_executor_acp::Codec::Acp`] driver, including the tool-call/result
-/// projection (a `tool_call` + a terminal `tool_call_update` with content).
-const FAKE_ACP_JSONRPC_SCRIPT: &str = "while IFS= read -r line; do \
+/// The one deterministic ACP JSON-RPC fixture. It exercises the canonical codec
+/// for every catalog route without copying a fake per CLI. `AWAKEN_MATRIX_RUNTIME`
+/// is scenario-only observability injected by the catalog projection; delegated
+/// static launches recover the same id from their frozen instructions. The
+/// optional readiness directory proves that an interrupt target reached its
+/// blocking prompt branch without adding a second fake or a timing guess.
+const FAKE_ACP_JSONRPC_SCRIPT: &str = "runtime=${AWAKEN_MATRIX_RUNTIME:-unknown}; \
+    opened=new; \
+    request_permission() { \
+      printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":42,\"method\":\"session/request_permission\",\"params\":{\"sessionId\":\"s1\",\"toolCall\":{\"toolCallId\":\"matrix-permission-call\",\"title\":\"write\",\"rawInput\":{\"path\":\"matrix.txt\"}},\"options\":[{\"optionId\":\"ok\",\"name\":\"Allow\",\"kind\":\"allow_once\"},{\"optionId\":\"no\",\"name\":\"Reject\",\"kind\":\"reject_once\"}]}}'; \
+    }; \
+    while IFS= read -r line; do \
       case \"$line\" in \
-        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{}}}';; \
-        *'\"id\":2'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\"}}';; \
-        *'\"id\":3'*) \
-          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"a.txt\"}}}}'; \
-          payload=$(/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x); \
-          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body ' \"$payload\" '\"}}]}}}'; \
-          spill=''; attempts=0; \
-          while [ \"$attempts\" -lt 100 ] && [ -z \"$spill\" ]; do \
-            for candidate in \"$AWAKEN_PROJECT_DIR\"/.awaken/tool-results/*.txt; do \
-              if [ -f \"$candidate\" ]; then spill=\"$candidate\"; break; fi; \
-            done; \
-            attempts=$((attempts + 1)); \
-            if [ -z \"$spill\" ]; then /usr/bin/sleep 0.01; fi; \
-          done; \
-          bytes=''; if [ -n \"$spill\" ]; then bytes=$(/usr/bin/wc -c < \"$spill\"); fi; \
-          printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-spill-readable=' \"$bytes\" '\"}}}}'; \
-          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-jsonrpc reply\"}}}}'; \
-          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; \
+        *'matrix-runtime=claude'*) runtime=claude;; \
+        *'matrix-runtime=codex'*) runtime=codex;; \
+        *'matrix-runtime=gemini'*) runtime=gemini;; \
+        *'matrix-runtime=opencode'*) runtime=opencode;; \
+        *'matrix-runtime=hermes'*) runtime=hermes;; \
+      esac; \
+      case \"$line\" in \
+        *'\"id\":1'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":1,\"agentCapabilities\":{\"loadSession\":true}}}';; \
+        *'\"id\":2'*) \
+          case \"$line\" in *'session/load'*) opened=load;; *) opened=new;; esac; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"sessionId\":\"s1\",\"models\":{\"currentModelId\":\"default\",\"availableModels\":[]}}}';; \
+        *'\"id\":6'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":6,\"result\":{}}';; \
+        *'\"id\":42'*'ok'*) \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"matrix-%s-hitl-allowed\"}}}}\\n' \"$runtime\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"totalTokens\":18,\"inputTokens\":11,\"outputTokens\":7,\"cachedReadTokens\":3,\"cachedWriteTokens\":2}}}'; \
           exit 0;; \
+        *'\"id\":42'*) \
+          printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"matrix-%s-hitl-denied\"}}}}\\n' \"$runtime\"; \
+          printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"totalTokens\":18,\"inputTokens\":11,\"outputTokens\":7,\"cachedReadTokens\":3,\"cachedWriteTokens\":2}}}'; \
+          exit 0;; \
+        *'\"id\":3'*) \
+          case \"$line\" in \
+            *matrix-hitl*) \
+              request_permission;; \
+            *matrix-error*) printf '%s\\n' 'not-json: deterministic ACP adapter failure'; exit 0;; \
+            *matrix-interrupt*) \
+              if [ -n \"${AWAKEN_MATRIX_INTERRUPT_READY_DIR:-}\" ]; then \
+                : > \"$AWAKEN_MATRIX_INTERRUPT_READY_DIR/$runtime\"; \
+              fi; \
+              while :; do :; done; \
+              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"matrix-%s-uncancelled\"}}}}\\n' \"$runtime\"; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\"}}'; exit 0;; \
+            *matrix-basic*) \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"matrix-c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"matrix.txt\"}}}}'; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"matrix-c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"matrix tool result\"}}]}}}'; \
+              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-runtime reply; matrix-%s-reply open=%s\"}}}}\\n' \"$runtime\" \"$opened\"; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"totalTokens\":18,\"inputTokens\":11,\"outputTokens\":7,\"cachedReadTokens\":3,\"cachedWriteTokens\":2}}}'; exit 0;; \
+            *matrix-suite=true*) request_permission;; \
+            *) \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call\",\"toolCallId\":\"c1\",\"title\":\"read\",\"rawInput\":{\"path\":\"a.txt\"}}}}'; \
+              payload=$(/usr/bin/head -c 100001 /dev/zero | /usr/bin/tr '\\000' x); \
+              printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"tool_call_update\",\"toolCallId\":\"c1\",\"status\":\"completed\",\"content\":[{\"type\":\"content\",\"content\":{\"type\":\"text\",\"text\":\"file body ' \"$payload\" '\"}}]}}}'; \
+              spill=''; attempts=0; \
+              while [ \"$attempts\" -lt 100 ] && [ -z \"$spill\" ]; do \
+                for candidate in \"$AWAKEN_PROJECT_DIR\"/.awaken/tool-results/*.txt; do \
+                  if [ -f \"$candidate\" ]; then spill=\"$candidate\"; break; fi; \
+                done; \
+                attempts=$((attempts + 1)); \
+                if [ -z \"$spill\" ]; then /usr/bin/sleep 0.01; fi; \
+              done; \
+              bytes=''; if [ -n \"$spill\" ]; then bytes=$(/usr/bin/wc -c < \"$spill\"); fi; \
+              printf '%s%s%s\\n' '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-spill-readable=' \"$bytes\" '\"}}}}'; \
+              printf '{\"jsonrpc\":\"2.0\",\"method\":\"session/update\",\"params\":{\"sessionId\":\"s1\",\"update\":{\"sessionUpdate\":\"agent_message_chunk\",\"content\":{\"type\":\"text\",\"text\":\"acp-runtime reply; acp-jsonrpc reply runtime=%s\"}}}}\\n' \"$runtime\"; \
+              printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"stopReason\":\"end_turn\",\"usage\":{\"totalTokens\":18,\"inputTokens\":11,\"outputTokens\":7,\"cachedReadTokens\":3,\"cachedWriteTokens\":2}}}'; exit 0;; \
+          esac;; \
       esac; \
     done";
 
@@ -409,7 +450,7 @@ fn anthropic_messages_executor(base_url: &str, api_key: String) -> Arc<dyn LlmEx
 /// environment: `ANTHROPIC_API_KEY` (or `KIMI_API_KEY`), `ANTHROPIC_BASE_URL` (or
 /// `KIMI_BASE_URL`), `ANTHROPIC_MODEL` (or `KIMI_MODEL`). This is the same
 /// dialect-aware executor factory used by worker materialization, exposed as a server mode
-/// so the TypeScript e2e can drive a real turn through the managed / ai-sdk / a2a
+/// so the TypeScript e2e can drive a real Run through the Managed / AI SDK / A2A
 /// adapters. Panics if no API key is set, so a misconfigured run fails loudly.
 pub async fn build_real_router() -> Router {
     let key = std::env::var("ANTHROPIC_API_KEY")
@@ -431,7 +472,7 @@ pub async fn build_real_router() -> Router {
 /// `gcloud auth print-access-token` (which holds the long-lived Google grant).
 /// Config from the environment: `GEMINI_PROJECT` (required), `GEMINI_LOCATION`
 /// (default `global`), `GEMINI_MODEL` (default `gemini-2.5-flash`). Exposed as a
-/// server mode so the TypeScript e2e can drive a real Gemini turn — proving the
+/// server mode so the TypeScript e2e can drive a real Gemini Run — proving the
 /// OAuth + Gemini path through the managed / ai-sdk adapters.
 pub async fn build_real_gemini_router() -> Router {
     use awaken_credential_vault::{CommandTokenSource, TokenSource};
@@ -933,10 +974,10 @@ pub fn build_schedule_router() -> Router {
     mount(host)
 }
 
-/// A router that routes `agent_run` for `researcher` to a REMOTE A2A agent at
-/// `AWAKEN_REMOTE_AGENT_URL` (instead of a local sub-run). Exercises the remote
-/// delegation path — `message:send` → poll `get_task` → result — across a real A2A
-/// hop to a peer server. The peer echoes, so the delegate result round-trips back.
+/// A router that routes a fixed Managed `send_to_agent` command for `researcher`
+/// to a REMOTE A2A Agent at `AWAKEN_REMOTE_AGENT_URL`. The ordinary child Run
+/// crosses `message:send` → poll `get_task`, then projects its reply on the child
+/// Thread independently from the parent's admission receipt.
 pub fn build_remote_delegation_router() -> Router {
     let url = std::env::var("AWAKEN_REMOTE_AGENT_URL")
         .expect("AWAKEN_REMOTE_AGENT_URL must be set for delegate-remote mode");
@@ -951,10 +992,17 @@ pub fn build_remote_delegation_router() -> Router {
     let assistant = ExecutableAgentSnapshot::builder("assistant")
         .model(ModelBinding::new("default", &model_ref, "default"))
         .tools(tools)
+        .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
+            source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
+                agent_id: AgentId("assistant".into()),
+                revision: 1,
+            },
+            ..Default::default()
+        })
         .agent_bindings(AgentBindings {
             delegates: vec![AgentDelegateBinding {
                 agent_id: AgentId("researcher".into()),
-                source_revision: None,
+                source_revision: Some(1),
                 recursive_self: false,
             }],
             ..Default::default()
@@ -970,17 +1018,23 @@ pub fn build_remote_delegation_router() -> Router {
             )
             .expect("environment supplied a coherent remote candidate"),
         )
+        .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
+            source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
+                agent_id: AgentId("researcher".into()),
+                revision: 1,
+            },
+            ..Default::default()
+        })
         .build();
-    let publications = StaticPublishedAgentSnapshots::try_new([assistant, researcher])
-        .expect("valid remote delegation publication");
+    let publication = fixed_agent_publication([assistant, researcher]);
     let host = resource_host(model, model_ref).map_host(|host| {
-        host.with_agent_publications(Arc::new(publications))
+        host.with_agent_publications(publication.clone())
             .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
     });
-    mount(host)
+    mount_with_agent_source(host, publication)
 }
 
-/// A deterministic model for the skills e2e (ADR-0036). On the user turn it calls
+/// A deterministic model for the skills e2e (ADR-0036). On the User Run it calls
 /// `list_skills` to discover the offered skills; given the catalog it activates the
 /// `greet` skill via the `Skill` tool; given the activation instructions it replies
 /// with them — so an e2e can assert discover → activate → use end to end. Stateless.
@@ -1163,7 +1217,7 @@ pub async fn build_config_router() -> Router {
         )),
         // A fresh in-memory environment registry satisfies the author port for the
         // scenario host (no durable env state in scope).
-        scenario_platform::test_environment_components()
+        awaken_protocol_managed::test_support::environment_components()
             .0
             .application(),
         Arc::new(awaken_admin_assistant::TracingAuditSink),
@@ -1206,19 +1260,6 @@ pub async fn build_config_router() -> Router {
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
-}
-
-struct AllowAllGate;
-
-#[async_trait::async_trait]
-impl awaken_runtime_contract::permission::ToolGateHook for AllowAllGate {
-    async fn gate(
-        &self,
-        _ctx: &awaken_runtime_contract::permission::ToolCall,
-        _state: &awaken_agent_contract::agent::state::Store,
-    ) -> awaken_runtime_contract::permission::GateOutcome {
-        awaken_runtime_contract::permission::GateOutcome::Allow
-    }
 }
 
 #[cfg(test)]

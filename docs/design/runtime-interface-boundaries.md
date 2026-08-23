@@ -540,7 +540,7 @@ concept.
 | State key | `register_key` | typed key and merge policy | plugin cannot mutate state without `StateCommand` or activation seed |
 | Profile key | `register_profile_key` | typed profile access | profile storage remains behind its store contract |
 | Phase hook | `register_phase_hook` | observe/mutate phase via `StateCommand` | no hook at `ToolGate`; gate uses the gate seam |
-| Tool gate/policy | `register_tool_gate_hook` / `register_tool_policy_hook` | block, suspend, set result, or allow | policy is authorization; visibility is not |
+| Tool gate | `Contributions::register_gate` | `GateOutcome::{Allow, Block, SetResult, RequireConfirmation, Schedule}` | plugin gates may further restrict; `ToolPermissionPolicy` remains the authorization owner and visibility is not authorization |
 | Continuation guard | `register_continuation_guard` | structured continuation decision | no product outcome semantics in runtime |
 | Plugin tool | `register_tool` | tool enters the resolved tool set | still passes catalog visibility and permission gate |
 | Request transform | `register_request_transform` | pre-inference request mutation | transform is runtime behavior, not protocol mapping |
@@ -570,7 +570,8 @@ registered tool catalog
   -> descriptor visibility (`ToolVisibilityPolicy`)
   -> model-visible descriptor list
   -> tool call arguments
-  -> `ToolGateHook` / permission policy
+  -> `ToolPermissionPolicy::evaluate(&ToolCall)`
+  -> `ToolGateHook::gate(&ToolCall, &Store)`
   -> tool execution
   -> `ToolOutput` / `StateCommand`
   -> runtime commit

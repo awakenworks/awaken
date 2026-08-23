@@ -56,9 +56,6 @@ impl SessionRuntime for CapturingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
-    }
     async fn define_outcome(
         &self,
         _t: &str,

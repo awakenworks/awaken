@@ -7,10 +7,12 @@ use std::sync::{Arc, Mutex};
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::event::{AgentEvent, Delta};
+use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_run_ingress::{
-    DispatchQueue, MemoryDispatchStore, RegisteredWorker, RegistryError, RegistryMutation,
-    RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity, WorkerManifest,
-    WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
+    ClaimedStreamPublisher as _, DispatchQueue, MemoryDispatchStore, RegisteredWorker,
+    RegistryError, RegistryMutation, RunDispatch, WorkerDirectory, WorkerHeartbeat, WorkerIdentity,
+    WorkerManifest, WorkerObservationSource, WorkerRegistration, WorkerSnapshot, WorkerState,
 };
 use awaken_run_ingress_http::{
     WorkerDispatchService, dispatch_transport_router_with_service,
@@ -21,6 +23,7 @@ use awaken_runtime_contract::resolved::{CatalogFingerprint, ModelBinding, Resolv
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
+use awaken_store_inmem::MemoryStreamSink;
 use awaken_worker_runtime::WorkerControlClient;
 use awaken_worker_transport_security::{
     FixedWorkerLeasePolicy, ManualWorkerClock, SignedWorkerAuthenticator,
@@ -36,6 +39,12 @@ struct RecordingSessionControl {
     failures: Mutex<usize>,
     begins: Mutex<Vec<awaken_session_contract::BeginSessionRealization>>,
     begin_failure: Mutex<Option<awaken_session_contract::SessionRealizationControlFailure>>,
+    agent_lists: AtomicUsize,
+    agent_messages: Mutex<Vec<awaken_session_contract::SessionAgentMessageCommand>>,
+    agent_boundaries: Mutex<Vec<awaken_session_contract::SessionAgentBoundaryCommand>>,
+    cleanup_claims: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
+    cleanup_commands: Mutex<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
+    cleanup_completions: Mutex<Vec<awaken_session_contract::SessionCleanupCompletion>>,
 }
 
 #[derive(Default)]
@@ -270,6 +279,112 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         *self.failures.lock().unwrap() += 1;
         Ok(())
     }
+
+    async fn claim_next_terminal_cleanup(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.cleanup_claims.lock().unwrap().push(target.clone());
+        let projection = self
+            .projection
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or(awaken_session_contract::SessionRealizationControlFailure::NotReady)?;
+        Ok(Some(
+            awaken_session_contract::SessionTerminalCleanupAssignment {
+                session_id: "signed-terminal-recovery".into(),
+                projection,
+                lease: awaken_session_contract::SessionRealizationLease {
+                    owner: target.owner,
+                    runtime_incarnation: target.runtime_incarnation,
+                    epoch: 9,
+                    expires_at_unix_ms: target.lease_expires_at_unix_ms,
+                },
+            },
+        ))
+    }
+
+    async fn terminal_cleanup_commands(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Ok(self.cleanup_commands.lock().unwrap().clone())
+    }
+
+    async fn record_terminal_cleanup_completion(
+        &self,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.cleanup_completions.lock().unwrap().push(completion);
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionAgentCoordination for RecordingSessionControl {
+    async fn list_session_agents(
+        &self,
+        _session_id: &str,
+    ) -> Result<
+        Vec<awaken_session_contract::SessionAgentRosterEntry>,
+        awaken_session_contract::RunError,
+    > {
+        self.agent_lists.fetch_add(1, Ordering::SeqCst);
+        Ok(vec![awaken_session_contract::SessionAgentRosterEntry {
+            agent_id: "researcher".into(),
+            name: "Researcher".into(),
+            description: Some("remote test agent".into()),
+        }])
+    }
+
+    async fn send_session_agent_message(
+        &self,
+        command: awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<
+        awaken_session_contract::SessionAgentMessageReceipt,
+        awaken_session_contract::RunError,
+    > {
+        self.agent_messages.lock().unwrap().push(command);
+        Ok(awaken_session_contract::SessionAgentMessageReceipt {
+            thread_id: ThreadId("signed-child-thread".into()),
+        })
+    }
+
+    async fn settle_session_agent_boundary(
+        &self,
+        command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        self.agent_boundaries.lock().unwrap().push(command);
+        Ok(())
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        _session_id: &str,
+        _child_thread_id: &ThreadId,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::internal(
+            "signed Worker transport does not own public Thread interruption",
+        ))
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        Err(awaken_session_contract::RunError::internal(
+            "signed Worker transport does not own public Thread replies",
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -436,13 +551,14 @@ fn activation() -> RunActivation {
 /// configuration (S8 O3 D3, RPN72); F2 warmup route invents a second auth decision
 /// path (S8 O3 D4, RPN96). Both are mitigated by the existing signed middleware and
 /// current-directory identity verifier used by all Worker control routes.
-/// C1 valid route-bound signed bootstrap assertion -> registration only; C2 the
+/// Causes: C1 valid route-bound signed bootstrap assertion -> registration only; C2 the
 /// same bootstrap assertion used as an allocated incarnation -> reject before
 /// dispatch; C3 valid incarnation-bound assertion -> heartbeat and dispatch
 /// and warmup handlers receive one verified context; C4 invalid/replayed assertion
 /// -> HTTP 401 before a handler. Effects: E1 register only, E2 reject, E3 return
-/// current warmup projection. Decision table: A1 C1->E1; A2 C2->E2;
-/// A3 C3->E3; A4 C4->E2. The assertions below cover A1-A4 over real HTTP.
+/// current warmup projection. Constraint/Invariant: only a current allocated
+/// incarnation may cross heartbeat or dispatch authority. Decision rule:
+/// A1 C1->E1; A2 C2->E2; A3 C3->E3; A4 C4->E2 over real HTTP.
 #[tokio::test(flavor = "multi_thread")]
 async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let clock = Arc::new(ManualWorkerClock::new(10_000));
@@ -462,6 +578,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let session_control = Arc::new(RecordingSessionControl::default());
     *session_control.projection.lock().unwrap() = Some(frozen_projection());
     let session_work = Arc::new(RecordingSessionWorkAuthority::default());
+    let live_stream = Arc::new(MemoryStreamSink::new());
     let service = WorkerDispatchService::new(
         dispatch.clone(),
         authenticator.clone(),
@@ -470,7 +587,9 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     )
     .with_worker_directory(directory.clone(), 30_000)
     .with_session_control(session_control.clone())
-    .with_session_work_authority(session_work.clone());
+    .with_session_coordination(session_control.clone())
+    .with_session_work_authority(session_work.clone())
+    .with_stream_sink(live_stream.clone());
     let warmup = awaken_session_contract::EnvironmentSnapshot {
         environment_id: "signed-env".into(),
         revision: awaken_session_contract::EnvironmentRevision(3),
@@ -639,12 +758,41 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | T22 | child Run | parent Work exact | verify/resume | use parent Session affinity |
     // | T23 | child Run | borrowed parent Work | settle | retain Work for waiting parent |
     // | T24 | exact/live | retired Work is unowned | renewal | typed Retired; no Control call |
+    // | T25 | root Run | exact claim/Session | list+send | one coordination application port |
+    // | T26 | root Run | wrong Session/source | list+send | reject before application |
+    // | T26b | child Run | valid parent affinity + forged root source | list+send | reject before application |
+    // | T27 | async child | exact claim/epoch/Agent/cancel provenance | coordinate replay | deliver every retry to idempotent app |
+    // | T28 | async child | stale claim/wrong Session/epoch/Agent/cancel provenance | settle | reject before application |
+    // | T29 | exact signed claim | exact logical Thread | live delta | forward once |
+    // | T30 | exact signed claim | forged logical Thread | live delta | reject/no forward |
     //
     // FMECA T24: a settled self-hosted Run retires Work before its longer
     // realization lease expires. Classifying that expected absence as another
     // Worker's ownership produces a false critical alarm and obscures the true
     // lifecycle edge; the transport now preserves Retired so the Worker uses
     // its one quiet local-projection retirement path.
+    let live_event = |thread_id: &str| {
+        StreamObservation::assistant_delta(
+            claim.run_id.clone(),
+            ThreadId(thread_id.into()),
+            0,
+            0,
+            AgentEvent::Delta(Delta::TextDelta {
+                delta: "live".into(),
+            }),
+        )
+    };
+    queue
+        .publish_observation(&claim, live_event("signed-thread"))
+        .await
+        .expect("T29 live publication remains best effort");
+    assert_eq!(live_stream.events().len(), 1, "T29");
+    queue
+        .publish_observation(&claim, live_event("forged-thread"))
+        .await
+        .expect("T30 rejected transport remains best effort to the Worker");
+    assert_eq!(live_stream.events().len(), 1, "T30");
+
     let client = WorkerControlClient::new(upstream.clone());
     *session_work.owner.lock().unwrap() = Some("another-worker-incarnation".into());
     let unavailable = client
@@ -683,7 +831,188 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         "T2"
     );
     assert_eq!(session_control.begins.lock().unwrap().len(), 1, "T2/T13");
+
+    let agents = client
+        .list_session_agents(&registered.snapshot.identity, &claim, "signed-thread")
+        .await
+        .expect("T25 claimed roster");
+    assert_eq!(agents.len(), 1, "T25");
+    assert_eq!(session_control.agent_lists.load(Ordering::SeqCst), 1, "T25");
+    assert!(
+        client
+            .list_session_agents(&registered.snapshot.identity, &claim, "another-session")
+            .await
+            .is_err(),
+        "T26 wrong Session"
+    );
+    assert_eq!(session_control.agent_lists.load(Ordering::SeqCst), 1, "T26");
+
+    let message = awaken_session_contract::SessionAgentMessageCommand {
+        session_id: "signed-thread".into(),
+        source_thread_id: ThreadId("signed-thread".into()),
+        source_run_id: claim.run_id.clone(),
+        source_call_id: "call-send".into(),
+        operation_id: "operation-send".into(),
+        target: awaken_session_contract::SessionAgentTarget::Spawn {
+            agent_id: "researcher".into(),
+        },
+        message: "research this".into(),
+    };
+    let receipt = client
+        .send_session_agent_message(&registered.snapshot.identity, &claim, message.clone())
+        .await
+        .expect("T25 claimed send");
+    assert_eq!(
+        receipt.thread_id,
+        ThreadId("signed-child-thread".into()),
+        "T25"
+    );
+    let mut wrong_source = message;
+    wrong_source.source_run_id = RunId("wrong-source".into());
+    assert!(
+        client
+            .send_session_agent_message(&registered.snapshot.identity, &claim, wrong_source)
+            .await
+            .is_err(),
+        "T26 wrong source"
+    );
+    assert_eq!(
+        session_control.agent_messages.lock().unwrap().len(),
+        1,
+        "T25/T26"
+    );
+
     let realization_lease = resumed.lease.clone();
+    // Terminal-cleanup transport cause/effect table: C1 current authenticated
+    // registry incarnation requests a future, registry-bounded cold assignment;
+    // C2 identity/owner/incarnation is foreign or stale; C3 expiry exceeds the
+    // registry or flags request renewal/reassignment; C4 the exact assigned
+    // lease polls/completes one aggregate-owned command. Effects: K1 returns the
+    // typed projection+lease without a Run/Work claim; K2/C2-C3 reject before
+    // Control; K3/C4 returns the canonical command and records its completion.
+    // Dispatch rows have already quiesced before cleanup targets are frozen.
+    //
+    // | Rule | identity | target authority | Effect |
+    // | K1 | current | exact, bounded, fresh | typed assignment |
+    // | K2 | stale/foreign | any | reject before Control |
+    // | K3 | current | over-expiry or phase flags | reject before Control |
+    // | K4 | current | exact assigned lease | poll + exact completion |
+    let cleanup_target = awaken_session_contract::SessionRealizationTarget {
+        owner: registered.snapshot.identity.worker_id.clone(),
+        runtime_incarnation: registered.snapshot.identity.lease_owner(),
+        lease_expires_at_unix_ms: 30_000,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+    let assignment = client
+        .claim_next_terminal_cleanup(&registered.snapshot.identity, cleanup_target.clone())
+        .await
+        .expect("K1 cleanup recovery claim")
+        .expect("K1 typed assignment");
+    assert_eq!(assignment.session_id, "signed-terminal-recovery", "K1");
+    assert_eq!(assignment.lease.epoch, 9, "K1");
+    assert_eq!(
+        session_control.cleanup_claims.lock().unwrap().len(),
+        1,
+        "K1"
+    );
+
+    let mut stale_identity = registered.snapshot.identity.clone();
+    stale_identity.incarnation_id = "stale-boot".into();
+    let mut stale_target = cleanup_target.clone();
+    stale_target.runtime_incarnation = stale_identity.lease_owner();
+    assert!(
+        client
+            .claim_next_terminal_cleanup(&stale_identity, stale_target)
+            .await
+            .is_err(),
+        "K2 stale identity"
+    );
+    let mut foreign_target = cleanup_target.clone();
+    foreign_target.owner = "foreign-worker".into();
+    assert!(
+        client
+            .claim_next_terminal_cleanup(&registered.snapshot.identity, foreign_target)
+            .await
+            .is_err(),
+        "K2 foreign owner"
+    );
+    let mut flagged_target = cleanup_target.clone();
+    flagged_target.renew_existing_lease = true;
+    assert!(
+        client
+            .claim_next_terminal_cleanup(&registered.snapshot.identity, flagged_target)
+            .await
+            .is_err(),
+        "K3 renewal flag"
+    );
+    let mut over_expiry = cleanup_target;
+    over_expiry.lease_expires_at_unix_ms = 40_001;
+    assert!(
+        client
+            .claim_next_terminal_cleanup(&registered.snapshot.identity, over_expiry)
+            .await
+            .is_err(),
+        "K3 registry expiry"
+    );
+    assert_eq!(
+        session_control.cleanup_claims.lock().unwrap().len(),
+        1,
+        "K2-K3 reject before Control"
+    );
+
+    let mut cleanup_operation = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(cleanup_operation.request("signed-thread"), "K4 fence");
+    cleanup_operation
+        .freeze_targets("signed-thread", [], 0)
+        .expect("K4 root target");
+    let cleanup_command = cleanup_operation
+        .command_for("signed-thread", "signed-thread")
+        .expect("K4 canonical command");
+    *session_control.cleanup_commands.lock().unwrap() = Some(vec![cleanup_command.clone()]);
+    let cleanup = client
+        .terminal_cleanup_commands(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+        )
+        .await
+        .expect("K4 cleanup poll")
+        .expect("K4 terminal fence");
+    assert_eq!(cleanup, vec![cleanup_command.clone()], "K4");
+    let completion =
+        awaken_session_contract::SessionCleanupCompletion::new(&cleanup_command, Vec::new());
+    client
+        .record_terminal_cleanup_completion(
+            &registered.snapshot.identity,
+            &realization_lease,
+            completion.clone(),
+        )
+        .await
+        .expect("K4 completion");
+    assert_eq!(
+        session_control
+            .cleanup_completions
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[completion],
+        "K4"
+    );
+    let mut foreign_cleanup_lease = realization_lease.clone();
+    foreign_cleanup_lease.owner = "foreign-worker".into();
+    assert!(
+        client
+            .terminal_cleanup_commands(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &foreign_cleanup_lease,
+            )
+            .await
+            .is_err(),
+        "K2 foreign completion lease"
+    );
+
     let renewal = awaken_session_contract::BeginSessionRealization {
         session_id: "signed-thread".into(),
         target: awaken_session_contract::SessionRealizationTarget {
@@ -867,7 +1196,11 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     child_activation.run_id = RunId("signed-child-run".into());
     child_activation.thread_id = ThreadId("signed-child-thread".into());
     queue
-        .enqueue(RunDispatch::new(child_activation).for_session(ThreadId("signed-thread".into())))
+        .enqueue(
+            RunDispatch::new(child_activation)
+                .for_session(ThreadId("signed-thread".into()))
+                .with_session_activity_epoch(17),
+        )
         .await
         .expect("T22 child dispatch");
     let child = queue
@@ -889,6 +1222,45 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .expect("T22 child claim verification"),
         "T22"
     );
+    assert!(
+        client
+            .list_session_agents(&registered.snapshot.identity, &child_claim, "signed-thread",)
+            .await
+            .is_err(),
+        "T26b a child claim cannot list the primary roster"
+    );
+    let forged_primary_message = awaken_session_contract::SessionAgentMessageCommand {
+        session_id: "signed-thread".into(),
+        source_thread_id: ThreadId("signed-thread".into()),
+        source_run_id: child_claim.run_id.clone(),
+        source_call_id: "forged-child-call".into(),
+        operation_id: "forged-child-operation".into(),
+        target: awaken_session_contract::SessionAgentTarget::Spawn {
+            agent_id: "researcher".into(),
+        },
+        message: "orphan this work".into(),
+    };
+    assert!(
+        client
+            .send_session_agent_message(
+                &registered.snapshot.identity,
+                &child_claim,
+                forged_primary_message,
+            )
+            .await
+            .is_err(),
+        "T26b a child claim cannot impersonate the primary source Thread"
+    );
+    assert_eq!(
+        session_control.agent_lists.load(Ordering::SeqCst),
+        1,
+        "T26b"
+    );
+    assert_eq!(
+        session_control.agent_messages.lock().unwrap().len(),
+        1,
+        "T26b"
+    );
     client
         .resume_session(&registered.snapshot.identity, &child_claim, "signed-thread")
         .await
@@ -903,6 +1275,111 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .all(|session_id| session_id == "signed-thread"),
         "T22 every child Work check uses the parent Session"
     );
+
+    let awaiting_boundary = awaken_session_contract::SessionAgentBoundaryCommand {
+        session_id: "signed-thread".into(),
+        source_thread_id: ThreadId("signed-child-thread".into()),
+        source_run_id: child_claim.run_id.clone(),
+        source_agent_id: "signed-agent".into(),
+        session_activity_epoch: 17,
+        cancellation_requested: false,
+    };
+    client
+        .settle_session_agent_boundary(
+            &registered.snapshot.identity,
+            &child_claim,
+            awaiting_boundary.clone(),
+        )
+        .await
+        .expect("T27 boundary coordinate");
+    let ended_boundary = awaiting_boundary.clone();
+    for _ in 0..2 {
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                ended_boundary.clone(),
+            )
+            .await
+            .expect("T27 terminal exact retry reaches the idempotent application");
+    }
+    assert_eq!(
+        session_control.agent_boundaries.lock().unwrap().len(),
+        3,
+        "T27"
+    );
+
+    let mut wrong_epoch = ended_boundary.clone();
+    wrong_epoch.session_activity_epoch = 18;
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                wrong_epoch,
+            )
+            .await
+            .is_err(),
+        "T28 wrong activity epoch"
+    );
+    let mut forged_cancellation = ended_boundary.clone();
+    forged_cancellation.cancellation_requested = true;
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                forged_cancellation,
+            )
+            .await
+            .is_err(),
+        "T28 cancellation provenance must match the claim-fenced queue row"
+    );
+    let mut forged_agent = ended_boundary.clone();
+    forged_agent.source_agent_id = "another-agent".into();
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                forged_agent,
+            )
+            .await
+            .is_err(),
+        "T28 Agent provenance must match the claim-fenced queue snapshot"
+    );
+    let mut wrong_session = ended_boundary.clone();
+    wrong_session.session_id = "another-session".into();
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &child_claim,
+                wrong_session,
+            )
+            .await
+            .is_err(),
+        "T28 wrong parent Session"
+    );
+    let mut stale_child_claim = child_claim.clone();
+    stale_child_claim.epoch += 1;
+    assert!(
+        client
+            .settle_session_agent_boundary(
+                &registered.snapshot.identity,
+                &stale_child_claim,
+                ended_boundary,
+            )
+            .await
+            .is_err(),
+        "T28 stale child claim"
+    );
+    assert_eq!(
+        session_control.agent_boundaries.lock().unwrap().len(),
+        3,
+        "T28"
+    );
+
     let releases_before_child = session_work.releases.load(Ordering::SeqCst);
     queue
         .settle(
@@ -1064,4 +1541,55 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
         .await
         .expect("T21 exact deregistration");
     assert_eq!(session_work.releases.load(Ordering::SeqCst), 2, "T21");
+}
+
+/// Cause/effect design: C1 the cleanup claim route has authenticated Worker-id
+/// evidence but no Coordinator Worker Directory; C2 the request supplies a
+/// syntactically complete identity and target. Effect E1: fail closed before
+/// Session Control, because C1 cannot prove the current registry incarnation.
+/// Decision rule D1: C1+C2 => HTTP 500 and zero claim calls. A local header is
+/// deliberately insufficient incarnation authority; no compatibility bypass is
+/// permitted for this recovery-only claim. Constraint/Invariant: cleanup claims
+/// require the Coordinator's current registry incarnation, never header identity.
+#[tokio::test]
+async fn terminal_cleanup_claim_requires_current_registry_incarnation() {
+    let dispatch = Arc::new(MemoryDispatchStore::new());
+    let session_control = Arc::new(RecordingSessionControl::default());
+    *session_control.projection.lock().unwrap() = Some(frozen_projection());
+    let service =
+        WorkerDispatchService::local(dispatch).with_session_control(session_control.clone());
+    let router = dispatch_transport_router_with_service(Arc::new(service));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let identity = WorkerIdentity::new("local-worker", "local-incarnation", 1);
+    let response = reqwest::Client::new()
+        .post(format!(
+            "http://{address}/v1/worker/session/cleanup/claim-next"
+        ))
+        .header("x-awaken-worker-id", "local-worker")
+        .json(&serde_json::json!({
+            "identity": identity,
+            "target": awaken_session_contract::SessionRealizationTarget {
+                owner: "local-worker".into(),
+                runtime_incarnation: identity.lease_owner(),
+                lease_expires_at_unix_ms: u64::MAX,
+                renew_existing_lease: false,
+                reassign_existing_lease: false,
+            },
+        }))
+        .send()
+        .await
+        .expect("D1 request reaches the authenticated route");
+
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+        "D1/E1"
+    );
+    assert!(
+        session_control.cleanup_claims.lock().unwrap().is_empty(),
+        "D1/E1"
+    );
 }

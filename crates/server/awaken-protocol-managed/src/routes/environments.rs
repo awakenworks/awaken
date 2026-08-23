@@ -264,7 +264,7 @@ async fn update_env(
     });
     let patch = EnvUpdate {
         name: params.name,
-        description: params.description,
+        description: params.description.map(Option::unwrap_or_default),
         config,
         scope: params
             .scope

@@ -14,6 +14,8 @@ import { sqliteExec, sqliteRows, sqliteScalar } from './sqlite.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38440);
 const WORKSPACE = `reclamation-faults-${process.pid}`;
+const MANAGED_BETA = 'managed-agents-2026-04-01';
+const SKILLS_BETA = 'skills-2025-10-02';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function start(directory, { captureStderr = false } = {}) {
@@ -49,9 +51,20 @@ const scoped = (tail) =>
   `http://127.0.0.1:${PORT}/v1/workspaces/${WORKSPACE}/${tail}`;
 
 async function json(method, tail, body) {
+  // Protocol decision rules: H1 Session tail => Managed beta; H2 Skill tail =>
+  // Skill beta; H3 File tail => no unrelated beta. Missing H1/H2 is an outer
+  // protocol 400, not a ResourceReclaimer fault effect.
+  const beta = tail.startsWith('sessions')
+    ? MANAGED_BETA
+    : tail.startsWith('skills')
+      ? SKILLS_BETA
+      : undefined;
   const response = await fetch(scoped(tail), {
     method,
-    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    headers: {
+      ...(beta === undefined ? {} : { 'anthropic-beta': beta }),
+      ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+    },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const text = await response.text();
@@ -75,7 +88,11 @@ async function uploadSkill(content) {
   const form = new FormData();
   form.append('display_title', 'Reclamation Fault Skill');
   form.append('files[]', new Blob([content], { type: 'text/markdown' }), 'SKILL.md');
-  const response = await fetch(scoped('skills'), { method: 'POST', body: form });
+  const response = await fetch(scoped('skills'), {
+    method: 'POST',
+    headers: { 'anthropic-beta': SKILLS_BETA },
+    body: form,
+  });
   const text = await response.text();
   let body = null;
   if (text) {

@@ -37,12 +37,7 @@ impl RunApplication for AwaitingRuntime {
         _messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
         self.started.store(true, Ordering::SeqCst);
-        Ok(StepOutcome::awaiting(
-            Vec::new(),
-            Some(pending()),
-            false,
-            false,
-        ))
+        Ok(StepOutcome::awaiting(Vec::new(), Some(pending())))
     }
 
     async fn resume(
@@ -57,8 +52,6 @@ impl RunApplication for AwaitingRuntime {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 
@@ -266,8 +259,6 @@ impl RunApplication for ClientToolRuntime {
         Ok(StepOutcome::ended(
             Vec::new(),
             awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            false,
-            false,
         ))
     }
 

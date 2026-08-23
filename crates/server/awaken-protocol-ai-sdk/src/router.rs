@@ -460,6 +460,10 @@ mod tests {
      * integration suite owns E3. */
     #[tokio::test]
     async fn idle_turn_outlives_its_closed_detail_sink_without_closing_the_sse() {
+        // Constraints/invariants: this adapter owns only its public wire mapping; the shared
+        // neutral Runtime and committed facts remain the single execution authority.
+        // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+        // selects only its stated effect and preserves the authority constraint.
         struct DelayedSilent;
         #[async_trait::async_trait]
         impl RunApplication for DelayedSilent {
@@ -487,8 +491,6 @@ mod tests {
                         "done",
                     )],
                     awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-                    false,
-                    false,
                 ))
             }
 

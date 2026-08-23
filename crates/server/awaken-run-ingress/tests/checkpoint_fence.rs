@@ -17,6 +17,7 @@ fn checkpoint(text: &str) -> StreamCheckpoint {
         model: "model".to_string(),
         partial_text: text.to_string(),
         partial_tools: Vec::new(),
+        retry_count: 0,
     }
 }
 

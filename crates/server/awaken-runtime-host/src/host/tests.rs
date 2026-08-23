@@ -58,6 +58,87 @@ fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     environment
 }
 
+/// Test-only proof that a Managed Session was composed with its required
+/// SessionApplication port. Individual coordination adapters have their own
+/// behavioral fakes; this one admits the ordinary unlimited model-request path
+/// and rejects every coordination command, so an environment test cannot
+/// accidentally become a second coordination implementation.
+struct RejectingSessionAgentCoordination;
+
+fn reject_environment_test_coordination<T>() -> Result<T, awaken_session_contract::RunError> {
+    Err(awaken_session_contract::RunError::internal(
+        "environment test must not invoke Session coordination",
+    ))
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionAgentCoordination for RejectingSessionAgentCoordination {
+    async fn admit_session_model_request(
+        &self,
+        _session_id: &str,
+        _thread_id: &awaken_agent_contract::agent::thread::Id,
+        _run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<bool, awaken_session_contract::RunError> {
+        Ok(true)
+    }
+
+    async fn list_session_agents(
+        &self,
+        _session_id: &str,
+    ) -> Result<
+        Vec<awaken_session_contract::SessionAgentRosterEntry>,
+        awaken_session_contract::RunError,
+    > {
+        reject_environment_test_coordination()
+    }
+
+    async fn send_session_agent_message(
+        &self,
+        _command: awaken_session_contract::SessionAgentMessageCommand,
+    ) -> Result<
+        awaken_session_contract::SessionAgentMessageReceipt,
+        awaken_session_contract::RunError,
+    > {
+        reject_environment_test_coordination()
+    }
+
+    async fn settle_session_agent_boundary(
+        &self,
+        _command: awaken_session_contract::SessionAgentBoundaryCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        reject_environment_test_coordination()
+    }
+
+    async fn interrupt_session_thread(
+        &self,
+        _session_id: &str,
+        _child_thread_id: &awaken_agent_contract::agent::thread::Id,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        reject_environment_test_coordination()
+    }
+
+    async fn reply_session_thread_tool(
+        &self,
+        _command: awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        reject_environment_test_coordination()
+    }
+}
+
+/// Install the required Session application edge for tests whose subject is
+/// unrelated to coordination or budget admission. A process-static strong
+/// owner keeps the production-shaped weak edge alive without adding a second
+/// behavioral fake to each fixture.
+fn install_test_session_application(host: &Arc<SharedHost>) {
+    static APPLICATION: std::sync::OnceLock<
+        Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+    > = std::sync::OnceLock::new();
+    let application = APPLICATION.get_or_init(|| Arc::new(RejectingSessionAgentCoordination));
+    crate::ManagedHost::new(host.clone())
+        .install_agent_coordination_application(Arc::downgrade(application))
+        .expect("install one test Session application authority");
+}
+
 fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
@@ -273,7 +354,7 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
             thread,
             "default",
             handle,
-            Some(Arc::new(TestLiveResourceBindingVerifier)),
+            Some(test_resource_validator()),
             &config,
             writable,
         ))),
@@ -281,6 +362,11 @@ pub(crate) fn bind_test_memory(host: &SharedHost, thread: &str, store_id: &str, 
 }
 
 struct TestLiveResourceBindingVerifier;
+
+pub(crate) fn test_resource_validator()
+-> Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier> {
+    Arc::new(TestLiveResourceBindingVerifier)
+}
 
 impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceBindingVerifier {
     fn verify_memory_binding(
@@ -303,7 +389,8 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceB
 }
 
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
-    let validator = Arc::new(TestLiveResourceBindingVerifier);
+    let validator = test_resource_validator();
+    install_test_session_application(&host);
     crate::ManagedHost::new(host)
         .with_resource_validator(validator.clone())
         .with_repository_binding_verifier(Arc::new(
@@ -529,7 +616,7 @@ impl awaken_provisioning_contract::MemoryMounter for TestMemoryMounter {
     }
 }
 
-fn install_test_memory_mounter(host: &SharedHost) {
+pub(crate) fn install_test_memory_mounter(host: &SharedHost) {
     host.install_memory_mounter(Arc::new(TestMemoryMounter {
         fs: host.memory_repository(),
     }));
@@ -603,6 +690,47 @@ async fn interrupt_cancels_the_run_and_reports_interrupted() {
         report.iterations.last().expect("a round").result,
         "interrupted"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn interrupting_acknowledgment_replaces_the_budget_terminal() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 max_iterations=1 and a needs_revision Grade enter
+    // the stable acknowledgment Run; C2 that Run owns the active cancellation
+    // slot; C3 user.interrupt lands while its model request is blocked. Effects:
+    // E1 the existing Host cancellation path ends the Outcome as interrupted;
+    // E2 the one graded cycle remains iteration 0; E3 its public terminal is
+    // interrupted, with neither max_iterations_reached nor an invented cycle 1.
+    //
+    // | Rule | At cap | Ack active | Interrupt | Public terminal          |
+    // | R1   | yes    | yes        | yes       | iteration 0 interrupted  |
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let model = Arc::new(GatedModel {
+        gate: gate.clone(),
+        reached: reached.clone(),
+        calls: AtomicUsize::new(0),
+    });
+    let host = Arc::new(SharedHost::new(model, "scripted"));
+
+    let driver = host.clone();
+    let task = tokio::spawn(async move {
+        driver
+            .define_outcome("ack-interrupt", "finish", "FINAL", 1)
+            .await
+    });
+
+    reached.notified().await;
+    host.interrupt("ack-interrupt").await.expect("interrupt");
+    gate.notify_one();
+
+    let report = completed_outcome(task.await.expect("join").expect("define_outcome"));
+    assert_eq!(report.iterations.len(), 1, "R1/E2-E3");
+    assert_eq!(report.iterations[0].iteration, 0, "R1/E2");
+    assert_eq!(report.iterations[0].result, "interrupted", "R1/E1+E3");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1368,7 +1496,7 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
 }
 
 /// A model that blocks on its first inference until released, so a concurrent
-/// `interrupt` lands while a plain `run` turn is mid-flight.
+/// `interrupt` lands while a plain Run is in flight.
 struct BlockOnceModel {
     reached: Arc<tokio::sync::Notify>,
     gate: Arc<tokio::sync::Notify>,
@@ -1390,11 +1518,16 @@ impl LlmExecutor for BlockOnceModel {
     }
 }
 
-/// The real-turn interrupt the conformance matrix flagged as unasserted: a plain
-/// `run` (a managed session's normal turn), interrupted while its inference is in
+/// The real-Run interrupt the conformance matrix flagged as unasserted: a plain
+/// `run` (a Managed Session's normal Run), interrupted while its inference is in
 /// flight, ends `Cancelled` promptly instead of running to completion.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn interrupt_ends_an_in_flight_run_as_cancelled() {
+    // Test design. Causes: C1 a Managed Run is blocked in inference; C2 interrupt
+    // is accepted before inference returns. Effects: E1 C2 ends the exact Run as
+    // Cancelled rather than committing the late model reply. Constraint/Invariant:
+    // interruption targets the active Run generation only. Decision rule: block,
+    // interrupt, release inference, and require E1.
     let reached = Arc::new(tokio::sync::Notify::new());
     let gate = Arc::new(tokio::sync::Notify::new());
     let host = Arc::new(SharedHost::new(
@@ -1408,7 +1541,7 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     let driver = host.clone();
     let task = tokio::spawn(async move { driver.run(None, "t-int", user("go")).await });
 
-    // The turn is blocked mid-inference; interrupt it, then release the gate.
+    // The Run is blocked mid-inference; interrupt it, then release the gate.
     reached.notified().await;
     host.interrupt("t-int").await.expect("interrupt");
     gate.notify_one();
@@ -1416,9 +1549,478 @@ async fn interrupt_ends_an_in_flight_run_as_cancelled() {
     let result = task.await.expect("join").expect("run");
     assert!(
         matches!(result.state, RunState::Ended(EndCause::Cancelled)),
-        "an interrupted in-flight turn ends Cancelled, not run to completion: {:?}",
+        "an interrupted in-flight Run ends Cancelled, not run to completion: {:?}",
         result.state
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finishes() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect: C1 is a durable Run blocked inside Provider inference; C2 is
+    // an interrupt accepted by the Session control edge. E1 is that C2 returns
+    // while C1 remains blocked; E2 is the existing pool drainer committing one
+    // Cancelled terminal fact under the new claim epoch. Constraint: the caller
+    // may wake the pool but must never become a synchronous dispatch driver.
+    //
+    // | Rule | durable Run | Provider | interrupt | Effects |
+    // |---|---|---|---|---|
+    // | R1 | active | blocked | accepted | E1 + eventual E2 |
+    // | R2 | absent | n/a | replay/no-op | immediate success (sibling test) |
+    let reached = Arc::new(tokio::sync::Notify::new());
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+    );
+    let host = Arc::new(
+        SharedHost::new(
+            Arc::new(BlockOnceModel {
+                reached: reached.clone(),
+                gate: gate.clone(),
+            }),
+            "scripted",
+        )
+        .with_dispatch_store(dispatch),
+    );
+    host.ensure_dispatch_pool();
+
+    let driver = host.clone();
+    let run = tokio::spawn(async move { driver.run(None, "durable-interrupt", user("go")).await });
+    reached.notified().await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        host.interrupt("durable-interrupt"),
+    )
+    .await
+    .expect("R1/E1 interrupt admission must not await Provider completion")
+    .expect("R1 interrupt admission");
+
+    let result = tokio::time::timeout(std::time::Duration::from_secs(2), run)
+        .await
+        .expect("R1/E2 cancellation drainer")
+        .expect("R1 join")
+        .expect("R1 durable Run");
+    assert!(
+        matches!(result.state, RunState::Ended(EndCause::Cancelled)),
+        "R1/E2: {:?}",
+        result.state
+    );
+    gate.notify_waiters();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_intent() {
+    // Test design summary; the full L1 matrix is below. Causes: C1 an exact
+    // attempt is registered and C2 Managed interrupt selects its durable row.
+    // Effects: E1 durable cancel intent precedes E2 live signal and E3 settlement.
+    // Constraint/Invariant: live signaling accelerates but never replaces durable
+    // authority. Decision rule: L1 requires E1 -> E2 -> E3 in that order.
+    use awaken_run_ingress::{DispatchQueue as _, RunDispatch};
+    use awaken_runtime_contract::execution::{
+        Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
+    use awaken_runtime_contract::resume::ResumeCommand;
+
+    struct BlockingManagedAttempt {
+        dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
+        entered: tokio::sync::Notify,
+        live_cancel_observed: tokio::sync::Notify,
+        intent_preceded_signal: std::sync::atomic::AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl RunExecutor for BlockingManagedAttempt {
+        async fn execute(
+            &self,
+            activation: RunActivation,
+            context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            let cancellation = context.cancellation.ok_or_else(|| {
+                ExecutionError::Execution("Managed attempt has no cancellation token".into())
+            })?;
+            self.entered.notify_one();
+            cancellation.cancelled().await;
+            let persisted = self
+                .dispatch
+                .list_dispatches()
+                .await
+                .map_err(|error| ExecutionError::Execution(error.to_string()))?
+                .into_iter()
+                .find(|row| row.run_id == activation.run_id)
+                .is_some_and(|row| row.cancellation_requested);
+            self.intent_preceded_signal
+                .store(persisted, Ordering::SeqCst);
+            self.live_cancel_observed.notify_one();
+            Ok(RunState::Ended(EndCause::Cancelled))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for BlockingManagedAttempt {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            Err(ExecutionError::Execution(
+                "fresh Managed interruption test must not resume".into(),
+            ))
+        }
+    }
+
+    // Cause/effect graph: C1 a Session-affined Run is actively blocked inside
+    // an opaque attempt; C2 Worker RAII registered its exact cancellation token
+    // in the Session Runtime; C3 the Managed Event path has direct foreground
+    // delivery and no `active_run`/`cancel` hint, while its Run still executes
+    // from the process dispatch authority; C4 user.interrupt selects that row.
+    // Effects: E1 the dispatch authority records `cancel_requested` first; E2
+    // only then the same Runtime registry cancels the blocked attempt promptly;
+    // E3 the pool's ordinary replacement claim commits one Cancelled terminal
+    // and settles the row. Constraints: Runtime delivery is only an accelerator,
+    // the caller never drives a second claim, and no Host/ACP-private registry is
+    // introduced. The neighboring remote-cancel and ambiguous/idle tests own the
+    // no-local-registration, multiple-row, and absent-row rules.
+    //
+    // | Rule | active row | exact registration | foreground ingress/hint | interrupt | Effects |
+    // |---|---|---|---|---|---|
+    // | L1 | leased | yes | direct/absent | accepted | E1 + E2 + E3 |
+    let thread = "managed-live-cancel";
+    let run_id = RunId("managed-live-cancel-run".into());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+    );
+    let attempt = Arc::new(BlockingManagedAttempt {
+        dispatch: dispatch.clone(),
+        entered: tokio::sync::Notify::new(),
+        live_cancel_observed: tokio::sync::Notify::new(),
+        intent_preceded_signal: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_dispatch_store(dispatch.clone())
+        .with_remote_attempt_executor(RemoteAttemptInstallation {
+            executor: attempt.clone(),
+            credential_realization: Default::default(),
+        });
+    // Managed Session Events use the dispatch authority independently of the
+    // ordinary foreground-ingress choice. Mirror the scenario-host topology:
+    // direct foreground plus a co-located process pool.
+    host.deployment.durable = false;
+    let host = Arc::new(host);
+    host.ensure_dispatch_pool();
+
+    let mut activation =
+        crate::host::worker_resolver::test_support::test_activation(thread, &run_id.0);
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+            awaken_runtime_contract::resolved::ModelBinding::new(
+                "remote",
+                "",
+                "a2a:http://blocking.invalid",
+            ),
+            awaken_tenancy::ScopeId::from("default"),
+            None,
+            "sha256:blocking-remote",
+        )
+        .expect("coherent blocking remote candidate");
+    dispatch
+        .enqueue(RunDispatch::new(activation).for_session(ThreadId(thread.into())))
+        .await
+        .expect("L1 Managed Run admission");
+    host.dispatch_pool_or_err().expect("L1 pool").notify().await;
+
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        attempt.entered.notified(),
+    )
+    .await
+    .expect("L1/C1+C2 exact attempt entered");
+    let ctx = host
+        .ctx_for(thread, None)
+        .await
+        .expect("L1 resident Session");
+    assert!(
+        ctx.durable_ingress.is_none()
+            && ctx.active_run.lock().unwrap().is_none()
+            && ctx.cancel.lock().unwrap().is_none(),
+        "L1/C3 Managed Event execution has no foreground control hint"
+    );
+    let active = dispatch
+        .list_dispatches()
+        .await
+        .expect("L1 inspect active row");
+    assert_eq!(active.len(), 1, "L1/C1 one exact dispatch");
+    assert_eq!(
+        active[0].state,
+        awaken_run_ingress::DispatchState::Leased,
+        "L1/C1 cancellation must land after the attempt is executing"
+    );
+    assert!(!active[0].cancellation_requested, "L1/C1 precondition");
+
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        host.interrupt(thread),
+    )
+    .await
+    .expect("L1 interrupt admission is non-blocking")
+    .expect("L1 interrupt accepted");
+    tokio::time::timeout(
+        std::time::Duration::from_millis(250),
+        attempt.live_cancel_observed.notified(),
+    )
+    .await
+    .expect("L1/E2 registered attempt receives live cancellation");
+    assert!(
+        attempt.intent_preceded_signal.load(Ordering::SeqCst),
+        "L1/E1 durable intent must precede the live signal"
+    );
+
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if dispatch
+                .list_dispatches()
+                .await
+                .expect("L1 inspect settlement")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("L1/E3 cancellation settlement");
+    assert_eq!(
+        host.commit_for_read(thread)
+            .await
+            .expect("L1 committed truth")
+            .run_state(&run_id),
+        Some(RunState::Ended(EndCause::Cancelled)),
+        "L1/E3"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_run_hint() {
+    // Test design. Causes: C1 the primary Session has no local run/cancel hint;
+    // C2 exactly one executable durable dispatch is active; C3 a remote attempt
+    // owns it. Effects: E1 interrupt selects C2, persists cancellation, invokes
+    // remote cancel, and settles Cancelled. Constraint/Invariant: selection uses
+    // durable dispatch truth, never guessed process state. Decision rule: unique
+    // C2+C3 yields E1; ambiguity is owned by the fail-closed sibling test.
+    use awaken_run_ingress::{Clock as _, DispatchQueue as _, RunDispatch};
+    use awaken_runtime_contract::execution::{
+        Error as ExecutionError, Result as ExecutionResult, RunAttemptExecutor, RunExecutor,
+    };
+    use awaken_runtime_contract::resume::ResumeCommand;
+
+    struct RecordingRemoteAttempt {
+        cancelled: Mutex<Vec<RunId>>,
+        cancellation_seen: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl RunExecutor for RecordingRemoteAttempt {
+        async fn execute(
+            &self,
+            _activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            Err(ExecutionError::Execution(
+                "the replacement cancellation claim must not execute the remote Run".into(),
+            ))
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RunAttemptExecutor for RecordingRemoteAttempt {
+        async fn resume(
+            &self,
+            _activation: RunActivation,
+            _command: ResumeCommand,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<RunState> {
+            Err(ExecutionError::Execution(
+                "the replacement cancellation claim must not resume the remote Run".into(),
+            ))
+        }
+
+        async fn cancel(
+            &self,
+            activation: RunActivation,
+            _context: RuntimeRunContext,
+        ) -> ExecutionResult<()> {
+            self.cancelled.lock().unwrap().push(activation.run_id);
+            self.cancellation_seen.notify_one();
+            Ok(())
+        }
+    }
+
+    // Cause/effect graph: C1 a Managed primary Run is already leased from the
+    // one durable Dispatch store; C2 its immutable backend is remote; C3 the Run
+    // bypassed BoundRunExecutor, so SessionCtx has no `active_run`; C4 the same
+    // accepted user interrupt reaches SharedHost. Effects: E1 C4 resolves the
+    // unique executable Session-affined row instead of succeeding as a no-op;
+    // E2 the ordinary pool cancellation claim invokes the installed remote
+    // executor exactly once with that Run id; E3 the claim commits Cancelled and
+    // settles the row. Constraints: the interrupt caller records intent only;
+    // the old lease is fenced and may not perform remote cancellation; no second
+    // queue, live-control bus, Session cache, or synchronous driver is created.
+    //
+    // | Rule | leased row | backend | local hint | interrupt | Effects |
+    // |---|---|---|---|---|---|
+    // | M1 | unique + Session-affined | remote | absent | accepted | E1+E2+E3 |
+    // | M2 | absent | any | absent | accepted | no-op (existing idle test) |
+    // | M3 | multiple executable primary rows | any | absent | accepted | fail closed |
+    // | M4 | exact local hint | any | present | accepted | existing exact-id path |
+    let thread = "managed-active-remote-interrupt";
+    let run_id = RunId("managed-active-remote-run".into());
+    let mut activation =
+        crate::host::worker_resolver::test_support::test_activation(thread, &run_id.0);
+    activation.snapshot.resolved_spec.model_binding =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+            awaken_runtime_contract::resolved::ModelBinding::new(
+                "remote",
+                "",
+                "a2a:http://remote.invalid",
+            ),
+            awaken_tenancy::ScopeId::from("default"),
+            None,
+            "sha256:active-remote",
+        )
+        .expect("coherent active remote candidate");
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+    );
+    dispatch
+        .enqueue(RunDispatch::new(activation).for_session(ThreadId(thread.into())))
+        .await
+        .expect("M1 Managed Run admission");
+    let previous = dispatch
+        .claim(
+            "previous-worker",
+            DEFAULT_LEASE_MS,
+            awaken_run_ingress::SystemClock.now_ms(),
+            &Default::default(),
+        )
+        .await
+        .expect("M1 old Worker claim")
+        .expect("M1 active dispatch");
+    assert_eq!(previous.lease.run_id, run_id, "M1/C1");
+
+    let remote = Arc::new(RecordingRemoteAttempt {
+        cancelled: Mutex::new(Vec::new()),
+        cancellation_seen: tokio::sync::Notify::new(),
+    });
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_dispatch_store(dispatch.clone())
+            .with_remote_attempt_executor(RemoteAttemptInstallation {
+                executor: remote.clone(),
+                credential_realization: Default::default(),
+            }),
+    );
+    let ctx = host
+        .ctx_for(thread, None)
+        .await
+        .expect("M1 resident Session");
+    assert!(
+        ctx.active_run.lock().unwrap().is_none(),
+        "M1/C3 Managed admission has no foreground hint"
+    );
+    host.ensure_dispatch_pool();
+
+    host.interrupt(thread)
+        .await
+        .expect("M1/E1 interrupt intent");
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        remote.cancellation_seen.notified(),
+    )
+    .await
+    .expect("M1/E2 canonical cancellation claim");
+    assert_eq!(
+        *remote.cancelled.lock().unwrap(),
+        std::slice::from_ref(&run_id),
+        "M1/E2"
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if dispatch
+                .list_dispatches()
+                .await
+                .expect("M1 inspect settlement")
+                .is_empty()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("M1/E3 cancellation settlement");
+    assert_eq!(
+        host.commit_for_read(thread)
+            .await
+            .expect("M1 committed truth")
+            .run_state(&run_id),
+        Some(RunState::Ended(EndCause::Cancelled)),
+        "M1/E3"
+    );
+}
+
+#[tokio::test]
+async fn managed_primary_interrupt_fails_closed_on_ambiguous_dispatch_authority() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    use awaken_run_ingress::{DispatchQueue as _, RunDispatch};
+
+    // Cause/effect graph: C1 the process-local active Run hint is absent; C2 the
+    // authoritative store exposes two executable rows with the same primary
+    // Session affinity; C3 an interrupt is requested. Effects: E1 reject the
+    // inconsistent authority instead of choosing or mass-cancelling; E2 neither
+    // row receives cancellation intent. Constraint: a present exact local hint
+    // retains the established exact-id path and is covered by the neighboring
+    // durable interrupt test.
+    //
+    // | Rule | local hint | executable primary rows | interrupt | Effects |
+    // |---|---|---|---|---|
+    // | A1 | absent | two | requested | E1+E2 |
+    let thread = "ambiguous-managed-primary-interrupt";
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+    );
+    for run in ["ambiguous-primary-a", "ambiguous-primary-b"] {
+        dispatch
+            .enqueue(
+                RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                    thread, run,
+                ))
+                .for_session(ThreadId(thread.into())),
+            )
+            .await
+            .expect("A1 conflicting executable admission");
+    }
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+
+    let error = host
+        .interrupt(thread)
+        .await
+        .expect_err("A1/E1 ambiguous primary authority must fail closed");
+    assert!(
+        error
+            .message
+            .contains("multiple executable primary dispatches"),
+        "A1/E1: {error:?}"
+    );
+    let rows = dispatch
+        .list_dispatches()
+        .await
+        .expect("A1 inspect unchanged rows");
+    assert_eq!(rows.len(), 2, "A1/C2");
+    assert!(rows.iter().all(|row| !row.cancellation_requested), "A1/E2");
 }
 
 /// The main assistant answers plainly; the memory extractor (identified by its
@@ -1465,7 +2067,7 @@ impl LlmExecutor for MemoryHostModel {
 
 /// The compactor (identified by its instructions) replies with a fixed summary;
 /// the main assistant reports whether it saw a delivered summary in its system
-/// messages, proving the summary reached the next turn's model input.
+/// messages, proving the summary reached the next Run's model input.
 struct CompactHostModel;
 
 #[async_trait::async_trait]
@@ -1508,12 +2110,17 @@ impl LlmExecutor for CompactHostModel {
 }
 
 #[tokio::test]
-async fn compaction_summary_reaches_the_same_long_turn() {
+async fn compaction_summary_reaches_the_same_long_run() {
+    // Test design. Causes: C1 first turn is below compaction threshold; C2 the
+    // second turn crosses it on the same Thread. Effects: E1 C1 has no summary;
+    // E2 C2 injects the committed summary into that Run's inference. Constraint/
+    // Invariant: compaction changes context projection, not Thread identity or
+    // committed history. Decision rule: execute C1 then C2 and distinguish replies.
     let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(1, 1);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
-    // Turn 1: only the single user message → below threshold, no summary injected.
-    let r1 = host.run(None, "t-c", user("u1")).await.expect("turn 1");
+    // Run 1: only the single user message → below threshold, no summary injected.
+    let r1 = host.run(None, "t-c", user("u1")).await.expect("Run 1");
     assert!(matches!(r1.state, RunState::Ended(_)));
     let reply1 = r1
         .new_messages
@@ -1522,11 +2129,11 @@ async fn compaction_summary_reaches_the_same_long_turn() {
         .find(|m| m.role == Role::Assistant)
         .map(|m| block_text(&m.content))
         .unwrap_or_default();
-    assert_eq!(reply1, "no-summary-users=1", "short turn is not compacted");
+    assert_eq!(reply1, "no-summary-users=1", "short Run is not compacted");
 
-    // Turn 2: the conversation now exceeds the threshold, so the compact plugin's
+    // Run 2: the conversation now exceeds the threshold, so the compact plugin's
     // BeforeInference hook summarizes the older slice inline and the model sees it.
-    let r2 = host.run(None, "t-c", user("u2")).await.expect("turn 2");
+    let r2 = host.run(None, "t-c", user("u2")).await.expect("Run 2");
     let reply2 = r2
         .new_messages
         .iter()
@@ -1539,17 +2146,22 @@ async fn compaction_summary_reaches_the_same_long_turn() {
 
 #[tokio::test]
 async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
+    // Test design. Causes: C1 multiple turns remain below the configured summary
+    // threshold. Effects: E1 the model sees all user history and no KeepLast fold
+    // activates. Constraint/Invariant: window truncation requires committed prefix
+    // coverage from a summary. Decision rule: keep C1 false for summary activation
+    // and require both user messages remain visible.
     let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(10, 1);
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
     host.run(None, "t-before-fold", user("u1"))
         .await
-        .expect("turn 1");
-    let turn = host
+        .expect("Run 1");
+    let run = host
         .run(None, "t-before-fold", user("u2"))
         .await
-        .expect("turn 2");
-    let reply = turn
+        .expect("Run 2");
+    let reply = run
         .new_messages
         .iter()
         .rev()
@@ -1628,6 +2240,11 @@ impl LlmExecutor for MemLoopModel {
 
 #[tokio::test]
 async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
+    // Test design. Causes: C1 Thread A extracts a durable memory into a shared
+    // store; C2 fresh Thread B binds that store and runs. Effects: E1 C1 persists
+    // the preference; E2 C2 recalls and uses it. Constraint/Invariant: transfer is
+    // only through the Memory store, never copied Thread transcript. Decision rule:
+    // write on A, drain extraction, then require recall-derived output on B.
     let host = SharedHost::new(Arc::new(MemLoopModel), "stub");
     let store = test_memory_store_id();
     bind_test_memory(&host, "thread-1", &store, true);
@@ -1637,7 +2254,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     // Thread 1: the user states a preference; extraction saves it.
     host.run(None, "thread-1", user("I really enjoy tea in the morning"))
         .await
-        .expect("thread 1 turn");
+        .expect("Thread 1 Run");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
     assert!(
         host.memory_stores
@@ -1654,7 +2271,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     let r = host
         .run(None, "thread-2", user("What beverage do I prefer?"))
         .await
-        .expect("thread 2 turn");
+        .expect("Thread 2 Run");
     let reply = r
         .new_messages
         .iter()
@@ -1669,7 +2286,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
 }
 
 #[tokio::test]
-async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent() {
+async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox_intent() {
     use awaken_ext_memory::MemoryExtractionRepository as _;
 
     let stamp = std::time::SystemTime::now()
@@ -1680,11 +2297,13 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
     let thread = "memory-outbox-thread";
     let authority = Arc::new(crate::EphemeralRuntimeAuthority::new());
 
-    // Cause/effect recovery table: R1 terminal truth exists and extraction intent
-    // is absent -> reopening through the same injected commit authority creates
-    // and completes the intent; R2 the extraction repository is durable -> the
-    // completed receipt survives the Host replacement. The test intentionally
-    // injects authority because runtime-host no longer opens a commit Store.
+    // Cause/effect graph: C1 committed terminal truth exists; C2 its extraction
+    // intent is absent; C3 the replacement Host uses DirectRunIngress. Effects:
+    // E1 cold context construction redelivers the terminal exactly once; E2 the
+    // completed extraction survives Host replacement. Constraint K1: only Direct
+    // ingress owns this cold self-heal; durable ingress is covered at the guarded
+    // settlement boundary. Decision rule D1=C1+C2+C3 => E1+E2. The test injects
+    // authority because runtime-host no longer opens a commit Store.
     let first = SharedHost::new(Arc::new(MemoryHostModel), "stub")
         .with_store_dir(&dir)
         .with_runtime_authority(authority.clone());
@@ -1705,6 +2324,7 @@ async fn reopening_a_terminal_thread_recovers_a_missing_extraction_outbox_intent
         .ctx_for(thread, None)
         .await
         .expect("rehydrate thread");
+    assert!(!ctx.durable, "D1/C3 must use DirectRunIngress");
     let run = ctx
         .commit
         .latest_run(&ctx.thread_id)
@@ -2106,7 +2726,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
 }
 
 /// The main agent awaits on a `write` (Ask-gated) then finishes on resume; the
-/// extractor saves a memory. Proves resume-ended turns trigger the aux agents.
+/// extractor saves a memory. Proves resume-ended Runs trigger the aux agents.
 struct ResumeMemModel;
 
 #[async_trait::async_trait]
@@ -2118,7 +2738,7 @@ impl LlmExecutor for ResumeMemModel {
         use awaken_runtime_contract::llm::ToolCall;
         let saw_tool = request.messages.iter().any(|m| m.role == Role::Tool);
         // The extractor's own write_memory succeeded (its result text), distinct
-        // from the main turn's `write` result that is also in its seeded context.
+        // from the main Run's `write` result that is also in its seeded context.
         let saved_memory = request.messages.iter().any(|m| {
             m.role == Role::Tool
                 && m.content.iter().any(|b| match b {
@@ -2163,12 +2783,19 @@ impl LlmExecutor for ResumeMemModel {
 }
 
 #[tokio::test]
-async fn resume_ended_turn_triggers_memory_extraction() {
+async fn resume_ended_run_triggers_memory_extraction() {
+    // Decision rule: resume to Ended, drain background work, and require one
+    // extraction over only the new committed messages.
+    // Test design. Causes: C1 a resumed Run reaches Ended with new messages;
+    // C2 memory extraction is enabled. Effects: E1 terminal resume schedules one
+    // extraction over the new committed slice. Constraint/Invariant: extraction
+    // follows committed terminal truth, not the caller's resume return. Decision
+    // rule: resume to Ended, drain background work, and require one extraction.
     let host = SharedHost::new(Arc::new(ResumeMemModel), "stub");
     let store = test_memory_store_id();
     bind_test_memory(&host, "t-res", &store, true);
 
-    // Turn 1 awaits on the Ask-gated `write`.
+    // Run 1 awaits on the Ask-gated `write`.
     let r1 = host
         .run(
             None,
@@ -2176,14 +2803,14 @@ async fn resume_ended_turn_triggers_memory_extraction() {
             vec![Message::text(MessageId("u1".into()), Role::User, "hi")],
         )
         .await
-        .expect("turn 1");
+        .expect("Run 1");
     assert!(
         matches!(r1.state, RunState::Awaiting),
-        "turn should await on write"
+        "Run should await on write"
     );
     let pending = r1.pending.expect("a pending tool");
 
-    // RunResume approves the write; the turn now ends and extraction fires.
+    // RunResume approves the write; the Run now ends and extraction fires.
     let r2 = host
         .resume(
             "t-res",
@@ -2194,7 +2821,7 @@ async fn resume_ended_turn_triggers_memory_extraction() {
         .expect("resume");
     assert!(
         matches!(r2.state, RunState::Ended(_)),
-        "resume should end the turn"
+        "resume should end the Run"
     );
 
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
@@ -2262,21 +2889,27 @@ impl LlmExecutor for CursorModel {
     }
 }
 
+/// Cause/effect design: C1 Run 1 commits `alpha` and finishes memory extraction;
+/// C2 Run 2 then commits `beta` on the same Thread. Effect E1: the advanced
+/// extraction cursor supplies only `beta` to the second extraction, so `/seen.md`
+/// excludes already-processed `alpha`. Decision rule X1=C1+C2=>E1.
 #[tokio::test]
 async fn extraction_cursor_only_processes_new_messages() {
+    // Constraint/Invariant: the committed extraction cursor is the sole boundary;
+    // previously processed messages must never re-enter a later seed. Decision rule:
+    // advance the cursor once, append new messages, and require only the
+    // suffix effect documented below.
     let host = SharedHost::new(Arc::new(CursorModel), "stub");
     let store = test_memory_store_id();
     bind_test_memory(&host, "t-cur", &store, true);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
-    host.run(None, "t-cur", user("alpha"))
-        .await
-        .expect("turn 1");
+    host.run(None, "t-cur", user("alpha")).await.expect("Run 1");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
-    host.run(None, "t-cur", user("beta")).await.expect("turn 2");
+    host.run(None, "t-cur", user("beta")).await.expect("Run 2");
     assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
 
-    // The second extraction saw only "beta" — turn 1's "alpha" was past the cursor.
+    // The second extraction saw only "beta" — Run 1's "alpha" was past the cursor.
     let seen = host
         .memory_stores
         .fs()
@@ -2293,7 +2926,12 @@ async fn extraction_cursor_only_processes_new_messages() {
 }
 
 #[tokio::test]
-async fn turn_end_fires_background_memory_extraction() {
+async fn run_end_fires_background_memory_extraction() {
+    // Test design. Causes: C1 an ordinary Run reaches Ended; C2 memory extraction
+    // is configured. Effects: E1 terminal completion schedules extraction without
+    // blocking the Run response; E2 draining background work persists the result.
+    // Constraint/Invariant: committed Run end triggers exactly one background job.
+    // Decision rule: end one Run, observe prompt return, then drain and require E2.
     let host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
     let store = test_memory_store_id();
     bind_test_memory(&host, "t-mem", &store, true);
@@ -2303,11 +2941,8 @@ async fn turn_end_fires_background_memory_extraction() {
         Role::User,
         "I really like rust",
     )];
-    let result = host.run(None, "t-mem", input).await.expect("run turn");
-    assert!(
-        matches!(result.state, RunState::Ended(_)),
-        "turn should end"
-    );
+    let result = host.run(None, "t-mem", input).await.expect("Run");
+    assert!(matches!(result.state, RunState::Ended(_)), "Run should end");
 
     let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
     assert!(drained, "memory extraction should drain");
@@ -2324,7 +2959,7 @@ async fn turn_end_fires_background_memory_extraction() {
     assert_eq!(saved, "user likes rust");
 }
 
-/// A trivial model for resource-lifecycle turns.
+/// A trivial model for resource-lifecycle Runs.
 struct OkModel;
 #[async_trait::async_trait]
 impl LlmExecutor for OkModel {
@@ -2350,6 +2985,11 @@ impl LlmExecutor for OkModel {
 /// same Session-owned environment.
 #[tokio::test]
 async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_sandbox() {
+    // Causes: C1 an active Session's Resource inputs change to a new generation;
+    // C2 a cached sandbox/projection exists. Constraint/Invariant: active generation
+    // and installed sandbox projection advance as one authoritative pair. Decision rule:
+    // apply C1 with C2 and require the documented rebuild effect, never a
+    // mixed old/new projection.
     use awaken_session_contract::SessionRuntime;
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
     raw_host.session_provider =
@@ -2367,7 +3007,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     let managed = managed_with_resource_source(host.clone());
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
-    // A blob to mount, and a first turn that builds + caches the thread's sandbox.
+    // A blob to mount, and a first Run that builds + caches the Thread's sandbox.
     let file_id = host
         .file_application()
         .expect("test startup installs File application")
@@ -2382,7 +3022,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .id;
     host.run(None, "t-attach", user("hi"))
         .await
-        .expect("first turn");
+        .expect("first Run");
     let environment_before = host
         .session_environment("t-attach")
         .await
@@ -2392,7 +3032,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         host.session_slots
             .read("t-attach", |slot| slot.runtime.is_some())
             .unwrap_or(false),
-        "the first turn caches the thread's sandbox ctx"
+        "the first Run caches the Thread's sandbox ctx"
     );
     let before = host.sandbox_spec("t-attach").mounts.len();
 
@@ -2412,13 +3052,13 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         .await
         .expect("attach");
 
-    // The cached sandbox was evicted (so the next turn rebuilds) ...
+    // The cached sandbox was evicted (so the next Run rebuilds) ...
     assert!(
         !host
             .session_slots
             .read("t-attach", |slot| slot.runtime.is_some())
             .unwrap_or(false),
-        "attach evicts the cached ctx so the next turn rebuilds with the mount"
+        "attach evicts the cached ctx so the next Run rebuilds with the mount"
     );
     assert_eq!(
         host.session_environment_handle("t-attach").await,
@@ -2433,7 +3073,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
         vec![("data.txt".into(), b"hello-attached".to_vec())],
         "the live environment receives the file before attach returns"
     );
-    // ... and the spec the next turn will build now carries the mount + its bytes.
+    // ... and the spec the next Run will build now carries the mount + its bytes.
     let spec = host.sandbox_spec("t-attach");
     assert_eq!(spec.mounts.len(), before + 1, "one more mount staged");
     let dump = serde_json::to_string(&spec.mounts).expect("mounts serialize");
@@ -2609,6 +3249,8 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
 /// manifest, resident files, or cached context.
 #[tokio::test]
 async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_projection() {
+    // Decision rule: exercise the read-only collision branch and require both the
+    // explicit failure and unchanged live projection effects documented below.
     use awaken_session_contract::SessionRuntime;
 
     let mut deployment = crate::DeploymentConfig::ephemeral();
@@ -2625,7 +3267,7 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
         vec![Message::text(MessageId("initial".into()), Role::User, "hi")],
     )
     .await
-    .expect("first turn");
+    .expect("first Run");
     let environment = host
         .session_environment("t-local-attach")
         .await
@@ -2677,11 +3319,11 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 /// Committed-query cause/effect graph after execution provisioning fails:
 /// C1 a frozen read-only File is staged; C2 Workdir cannot enforce immutability;
 /// C3 no runtime/environment becomes resident; C4 a committed-state GET follows.
-/// C1+C2 cause E1 the turn to fail before inference. C3+C4 must cause E2 the
+/// C1+C2 cause E1 the Run to fail before inference. C3+C4 must cause E2 the
 /// query to open only committed truth, return the empty page, and leave the
 /// execution environment absent instead of retrying the failing provisioning.
 ///
-/// | Rule | C1 | C2 | C3 | C4 | E1 turn denied | E2 query succeeds/no env |
+/// | Rule | C1 | C2 | C3 | C4 | E1 Run denied | E2 query succeeds/no env |
 /// |---|---|---|---|---|---|---|
 /// | Q1 | T | T | T | T | T | T |
 #[tokio::test]
@@ -2852,9 +3494,14 @@ async fn frozen_environment_network_follows_the_decision_table() {
 /// remains authoritative even if a retained blob contains a conflicting legacy field.
 #[tokio::test]
 async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     use awaken_provisioning_contract::{IsolationClass, NetworkPolicy};
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
     let managed = crate::ManagedHost::new(host.clone());
 
     let init = SessionInit {
@@ -2947,12 +3594,18 @@ async fn prepare_session_overlays_the_environment_sandbox_onto_the_spec() {
     assert!(!host.sandbox_spec("t-bare").limits.is_set());
 }
 
-/// Eager Session creation freezes configuration first; its first context build
-/// joins the per-Session lifecycle mutex and waits until the environment is ready.
+/// Cause/effect design: C1 eager Session preparation freezes configuration; C2 no
+/// Run has requested a context; C3 the first Run requests one. Effects: E1 C1+C2
+/// leaves the physical environment absent; E2 C1+C3 materializes it and waits for
+/// readiness before execution. Decision table: L1=C1+C2=>E1; L2=C1+C3=>E2.
 #[tokio::test]
-async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
+async fn prepare_session_is_lazy_and_first_run_materializes_the_environment() {
+    // Constraint/Invariant: Session preparation records intent but only the first
+    // executable Run may create the Environment. Decision rule: observe zero live
+    // effects after prepare, then exactly one materialization on first Run.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
     let managed = crate::ManagedHost::new(host.clone());
     managed
         .prepare_session(
@@ -2989,7 +3642,7 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
         )],
     )
     .await
-    .expect("first turn waits for environment readiness");
+    .expect("first Run waits for environment readiness");
     assert!(host.session_environment("lazy-environment").await.is_some());
 }
 
@@ -3008,11 +3661,15 @@ async fn prepare_session_is_lazy_and_first_turn_materializes_the_environment() {
 /// | D3 | any | on_tool_use | no | inference only | absent |
 #[tokio::test]
 async fn coordinator_dispatch_context_never_materializes_an_eager_environment() {
+    // Constraint/Invariant: Coordinator-side dispatch composition is effect-free;
+    // only the claimed Worker may realize an Environment. Decision rule: build
+    // the dispatch context and require the zero-materialization effects below.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     use awaken_skill_store::{SkillBundleFile, SkillVersion, bundle_sha256};
     let mut host = SharedHost::new(Arc::new(OkModel), "stub");
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "coordinator-dispatch-only",
@@ -3164,9 +3821,14 @@ async fn coordinator_defers_backend_owned_environment_to_the_claimed_worker() {
 
 /// L1: `on_tool_use` means inference alone must not allocate a Sandbox.
 #[tokio::test]
-async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
+async fn on_tool_use_text_only_run_keeps_the_environment_absent() {
+    // Test design. Causes: C1 a text-only Run invokes no environment-requiring
+    // tool. Effects: E1 no Environment is created or persisted. Constraint/
+    // Invariant: tool demand, not Run existence, owns lazy materialization.
+    // Decision rule: complete the text-only partition and require E1.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "deferred-text",
@@ -3196,13 +3858,20 @@ async fn on_tool_use_text_only_turn_keeps_the_environment_absent() {
 }
 
 /// Delegation/provisioning cause-effect graph: C1=`on_tool_use`; C2=the exact
-/// publication contains a delegate; C3=this Host executes locally. Effects:
+/// publication contains a delegate; C3=this Host executes locally; C4 a Managed
+/// Session has its required coordination authority. Effects:
 /// E1=plain inference without C2 stays deferred; E2=C1+C2+C3 creates one
 /// Session Environment before the delegation service is exposed; E3=a
 /// Coordinator-only Host remains environment-free because the claimed Worker
-/// owns E2. Decision rows L1, L9, and D1 cover E1, E2, and E3 respectively.
+/// owns E2; E4=!C4 fails closed before any environment mutation; E5 a second
+/// local coordination binding is rejected instead of replacing the first.
+/// Decision rows L1, L9, and D1 cover E1, E2, and E3 respectively. L9 first
+/// exercises !C4=>E4, then C4=>E2, and C4+duplicate=>E5.
 #[tokio::test]
 async fn on_tool_use_published_delegate_forces_one_eager_environment() {
+    // Constraint/Invariant: the published delegate requirement is frozen before
+    // execution and may materialize exactly one Environment. Decision rule:
+    // execute the delegate-demand partition and require one eager realization.
     use awaken_runtime_contract::StaticPublishedAgentSnapshots;
     use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
     use awaken_runtime_contract::snapshot::AgentId;
@@ -3227,7 +3896,8 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
     );
-    crate::ManagedHost::new(host.clone())
+    let managed = crate::ManagedHost::new(host.clone());
+    managed
         .prepare_session(
             "deferred-delegate",
             SessionInit {
@@ -3245,6 +3915,34 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
         .await
         .expect("prepare exact publication");
 
+    let missing = match host.ctx_for("deferred-delegate", Some("parent")).await {
+        Err(error) => error,
+        Ok(_) => panic!("L9/E4 missing coordination authority must fail closed"),
+    };
+    assert!(
+        missing
+            .to_string()
+            .contains("no Session application authority"),
+        "L9/E4: {missing}"
+    );
+    assert!(
+        host.session_environment("deferred-delegate")
+            .await
+            .is_none(),
+        "L9/E4 no environment side effect"
+    );
+
+    let coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+        Arc::new(RejectingSessionAgentCoordination);
+    managed
+        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .expect("L9 one coordination application");
+    assert_eq!(
+        managed.install_agent_coordination_application(Arc::downgrade(&coordination)),
+        Err(crate::AgentCoordinationInstallError::AlreadyInstalled),
+        "L9/E5"
+    );
+
     let context = host
         .ctx_for("deferred-delegate", Some("parent"))
         .await
@@ -3255,6 +3953,108 @@ async fn on_tool_use_published_delegate_forces_one_eager_environment() {
             .await
             .is_some(),
         "L9/E2 single Session owner"
+    );
+}
+
+#[tokio::test]
+async fn model_request_gate_follows_the_session_dispatch_decision_table() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    // Cause/effect graph: C1 is the canonical `session_dispatch` projection;
+    // C2 is an installed Session application endpoint. E1 installs the one
+    // per-request gate; E2 omits it; E3 rejects construction before execution.
+    // Direct protocol Threads never gain C1 merely because the process also
+    // serves Managed Sessions. Managed primary and child Threads both carry C1.
+    //
+    // | Rule | C1 | C2 | Effect |
+    // | G1   | no | no | E2     |
+    // | G2   | no | yes| E2     |
+    // | G3   | yes| yes| E1     |
+    // | G4   | yes| no | E3     |
+    // | G5   | inherited child of G3 | yes | E1 with the same authority |
+    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let direct_context = direct.ctx_for("gate-direct-absent", None).await.unwrap();
+    assert!(
+        direct_context.attempt_context.model_request_gate.is_none(),
+        "G1"
+    );
+
+    let coordination: Arc<dyn awaken_session_contract::SessionAgentCoordination> =
+        Arc::new(RejectingSessionAgentCoordination);
+    let direct_with_endpoint = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    crate::ManagedHost::new(direct_with_endpoint.clone())
+        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .unwrap();
+    let direct_context = direct_with_endpoint
+        .ctx_for("gate-direct-present", None)
+        .await
+        .unwrap();
+    assert!(
+        direct_context.attempt_context.model_request_gate.is_none(),
+        "G2"
+    );
+
+    let session_init = || SessionInit {
+        workspace_id: "default".into(),
+        agent_id: "assistant".into(),
+        delegate_ids: Vec::new(),
+        tools: None,
+        resource_revision: 0,
+        resources: Default::default(),
+        model: None,
+        runtime: None,
+        environment: on_tool_use_environment(),
+    };
+    let managed = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let managed_runtime = crate::ManagedHost::new(managed.clone());
+    managed_runtime
+        .prepare_session("gate-managed-present", session_init())
+        .await
+        .unwrap();
+    managed_runtime
+        .install_agent_coordination_application(Arc::downgrade(&coordination))
+        .unwrap();
+    let managed_context = managed.ctx_for("gate-managed-present", None).await.unwrap();
+    assert!(
+        managed_context.attempt_context.model_request_gate.is_some(),
+        "G3"
+    );
+    let managed_gate = managed_context
+        .attempt_context
+        .model_request_gate
+        .as_ref()
+        .expect("G5 root gate")
+        .clone();
+    let managed_child = managed_context.attempt_context.for_child_run();
+    assert!(
+        Arc::ptr_eq(
+            managed_child
+                .model_request_gate
+                .as_ref()
+                .expect("G5 child gate"),
+            &managed_gate,
+        ),
+        "G5 a synchronous child inherits the exact Session request authority"
+    );
+
+    let missing = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    crate::ManagedHost::new(missing.clone())
+        .prepare_session("gate-managed-absent", session_init())
+        .await
+        .unwrap();
+    let error = match missing.ctx_for("gate-managed-absent", None).await {
+        Ok(_) => panic!("G4 must fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("no Session application authority"),
+        "G4: {error}"
     );
 }
 
@@ -3417,12 +4217,17 @@ impl LlmExecutor for HandReadModel {
 /// L2: instruction-only Skill tools execute in the Brain and do not awaken Hand.
 #[tokio::test]
 async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
+    // Test design. Causes: C1 a Brain-owned skill executes without Hand/filesystem
+    // placement demand. Effects: E1 the skill completes while Environment remains
+    // absent. Constraint/Invariant: Brain-local tools cannot trigger Hand
+    // realization. Decision rule: exercise C1 and require zero Environment effects.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(
         SharedHost::new(Arc::new(BrainSkillModel), "stub").with_skills(vec![
             awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
         ]),
     );
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "deferred-brain",
@@ -3452,11 +4257,16 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
 }
 
 /// L3: the Runtime's per-tool target routing sends a Sandbox tool through the
-/// deferred Hand; the invoking turn blocks until materialization completes.
+/// deferred Hand; the invoking Run blocks until materialization completes.
 #[tokio::test]
 async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
+    // Test design. Causes: C1 a Runtime Hand tool is selected on a lazy Session.
+    // Effects: E1 Environment materialization completes before the tool effect;
+    // E2 exactly one Environment is persisted. Constraint/Invariant: placement
+    // precedes Hand execution. Decision rule: exercise C1 and assert E1 ordering/E2.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(HandReadModel), "stub"));
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "deferred-runtime-hand",
@@ -3494,6 +4304,10 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
 /// broken `${SKILL_DIR}`.
 #[tokio::test]
 async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
+    // Test design. Causes: C1 a published skill requires filesystem projection.
+    // Effects: E1 the Environment is realized before skill execution. Constraint/
+    // Invariant: filesystem demand cannot run against an absent or partial sandbox.
+    // Decision rule: execute C1 and require one eager materialization.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let filesystem_skill = awaken_ext_skills::SkillSpec {
         environment: awaken_ext_skills::SkillEnvironment::Filesystem,
@@ -3502,6 +4316,7 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
     };
     let host =
         Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![filesystem_skill]));
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "deferred-filesystem-skill",
@@ -3750,25 +4565,47 @@ async fn new_environment_binding_commits_once_before_concurrent_contexts_can_use
     assert!(host.session_environment("binding-order").await.is_some());
 }
 
-#[test]
-fn dispatch_store_topology_keeps_one_physical_execution_owner() {
-    // FMECA/causal table: injecting the same durable queue is not enough to
-    // choose placement. A local executor must drain it; a Coordinator must only
-    // admit/observe it. If the latter accidentally enables a pool, Coordinator
-    // and registered Worker race for one Session and fence each other's Sandbox.
-    // | constructor | local drain | Coordinator may realize Environment |
-    // | local       | yes         | yes                               |
-    // | coordinator | no          | no                                |
+#[tokio::test]
+async fn dispatch_store_topology_keeps_one_physical_execution_owner() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the Runtime authority is ephemeral or durable; C2
+    // this process owns local execution or is coordinator-only. Effects: E1 one
+    // local pool drains accepted ordinary/background child Runs; E2 a
+    // coordinator-only process never starts a competing claimer. Durability is a
+    // persistence axis, not an execution-placement gate: otherwise an ephemeral
+    // Managed Session can persist a coordinated child in its authority queue with
+    // no Worker able to claim it.
+    //
+    // | Rule | Authority | Local owner | Effect |
+    // |---|---|---|---|
+    // | T1 | ephemeral | yes | E1 |
+    // | T2 | durable injected | yes | E1 |
+    // | T3 | durable injected | no | E2 |
+    let ephemeral = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    assert!(!ephemeral.deployment.durable, "T1 precondition");
+    ephemeral.ensure_dispatch_pool();
+    assert!(ephemeral.dispatch_pool.get().is_some(), "T1/E1");
+
     let local_store =
         Arc::new(awaken_run_ingress::AnyDispatchStore::open_sqlite(":memory:").unwrap());
-    let local = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(local_store);
+    let local =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(local_store));
     assert!(local.runs_local_dispatch_pool(), "local");
+    local.ensure_dispatch_pool();
+    assert!(local.dispatch_pool.get().is_some(), "T2/E1");
 
     let coordinator_store =
         Arc::new(awaken_run_ingress::AnyDispatchStore::open_sqlite(":memory:").unwrap());
-    let coordinator = SharedHost::new(Arc::new(OkModel), "stub")
-        .with_coordinator_dispatch_store(coordinator_store);
+    let coordinator = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_coordinator_dispatch_store(coordinator_store),
+    );
     assert!(!coordinator.runs_local_dispatch_pool(), "coordinator");
+    coordinator.ensure_dispatch_pool();
+    assert!(coordinator.dispatch_pool.get().is_none(), "T3/E2");
 }
 
 /// Restart synchronization cause/effect graph: C1 a recovered claim adopts the
@@ -3903,8 +4740,14 @@ async fn binding_commit_failure_disposes_and_never_publishes_the_environment() {
 /// environment after its durable binding has succeeded.
 #[tokio::test]
 async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() {
+    // Test design. Causes: C1 concurrent Hand calls race on one lazy Session.
+    // Effects: E1 one creation wins; E2 all calls reuse the same persisted
+    // Environment. Constraint/Invariant: Session realization has one CAS owner,
+    // never one sandbox per caller. Decision rule: release concurrent C1 and
+    // require creation cardinality one plus shared identity.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         calls: AtomicUsize::new(0),
@@ -3959,8 +4802,13 @@ async fn on_tool_use_concurrent_hand_calls_create_and_persist_one_environment() 
 /// L5: persistence failure fails closed; no deferred environment becomes visible.
 #[tokio::test]
 async fn on_tool_use_binding_failure_never_publishes_the_environment() {
+    // Test design. Causes: C1 Environment binding fails after realization starts.
+    // Effects: E1 tool execution fails; E2 no Environment is published as active.
+    // Constraint/Invariant: publication follows complete binding and cannot expose
+    // a partial sandbox. Decision rule: inject C1 and require E1/E2 fail-closed.
     use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    install_test_session_application(&host);
     let sink = Arc::new(BindingOrderSink {
         host: Arc::downgrade(&host),
         calls: AtomicUsize::new(0),
@@ -7314,6 +8162,63 @@ async fn outbound_a2a_never_materializes_or_owns_a_local_environment() {
     assert!(ctx.attempt_context.tool_executor.is_some(), "R3 Hand");
 }
 
+/// Session Event recovery selects durable trace provenance before constructing
+/// the existing dispatch envelope; it never consults the recovery span.
+#[test]
+fn session_event_dispatch_uses_the_explicit_persisted_trace_source() {
+    // Cause/effect graph: C1 dispatch decoration receives the ordinary ambient
+    // trace, a persisted Event trace, or an explicitly absent persisted trace;
+    // C2 the execution payload is otherwise identical. Effects: E1 each present
+    // source is copied exactly; E2 persisted None remains None and never falls
+    // back to the supervisor's ambient trace; E3 trace choice does not change
+    // canonical dispatch/replay identity.
+    //
+    // | Rule | Explicit source | Simulated ambient | Effect |
+    // | T1 | ambient parent | same parent | E1 |
+    // | T2 | persisted parent | different ambient | E1+E3 |
+    // | T3 | persisted None | present ambient | E2+E3 |
+    // Constraint/invariant: ordinary admission is the only caller that captures
+    // ambient context. Session Event reservation always calls this explicit seam,
+    // so recovery cannot manufacture a parent when root provenance stores None.
+    const AMBIENT: &str = "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01";
+    const PERSISTED: &str = "00-11111111111111111111111111111111-2222222222222222-01";
+    let host = SharedHost::new(Arc::new(OkModel), "host-default");
+    let activation = || {
+        awaken_runtime_contract::RunActivation::new(
+            awaken_agent_contract::agent::run::Id("run-explicit-trace-source".into()),
+            awaken_agent_contract::agent::thread::Id("thread-explicit-trace-source".into()),
+            awaken_runtime_contract::ExecutableAgentSnapshot::builder("agent-a")
+                .model(test_model_binding())
+                .fingerprint("sha256:explicit-trace-source")
+                .build(),
+            Vec::new(),
+        )
+    };
+
+    let ordinary = host
+        .resolved_dispatch_with_traceparent(activation(), Some(AMBIENT.into()))
+        .expect("T1 ordinary ambient source");
+    let recovered_present = host
+        .resolved_dispatch_with_traceparent(activation(), Some(PERSISTED.into()))
+        .expect("T2 persisted source");
+    let recovered_absent = host
+        .resolved_dispatch_with_traceparent(activation(), None)
+        .expect("T3 persisted absence");
+
+    assert_eq!(ordinary.traceparent.as_deref(), Some(AMBIENT), "T1/E1");
+    assert_eq!(
+        recovered_present.traceparent.as_deref(),
+        Some(PERSISTED),
+        "T2/E1"
+    );
+    assert_eq!(recovered_absent.traceparent, None, "T3/E2");
+    assert!(
+        ordinary.same_canonical_dispatch(&recovered_present)
+            && ordinary.same_canonical_dispatch(&recovered_absent),
+        "T2+T3/E3"
+    );
+}
+
 /// Dispatch projection rule: a registered manifest's Workspace, generation, and
 /// resolved values are one cause tuple; the envelope decode must reproduce that
 /// tuple exactly and select the Session-resource worker capability.
@@ -7453,15 +8358,21 @@ fn durable_dispatch_marks_only_a_prepared_root_session_for_worker_realization() 
 
 #[test]
 fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
-    // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
-    // C4=mixed boundaries; C5=publication freezes one common holder. The same
-    // decision feeds direct and dispatch paths.
-    // | Rule | C1 | C2 | C3 | C4 | C5 | result                    |
-    // | R1   | F  | -  | -  | F  | F  | no holder                 |
-    // | R2   | T  | T  | F  | F  | F  | Worker holder             |
-    // | R3   | T  | F  | T  | F  | F  | Workload holder           |
-    // | R4   | T  | T  | T  | T  | F  | reject                    |
-    // | R5   | T  | -  | -  | -  | T  | exact publication holder  |
+    // Causes: C1=credential-bearing candidate; C2=Native; C3=ACP; C4=closed
+    // Remote coordinate (exact A2A backend, empty local model reference);
+    // C5=mixed boundaries; C6=publication freezes one common holder.
+    // Effects: E1 no holder; E2 Worker holder; E3 Workload holder; E4 reject;
+    // E5 exact publication holder. The same decision feeds direct and dispatch paths.
+    // Constraints/invariants: Remote authentication uses the Worker boundary,
+    // and every candidate in one attempt set must admit one common holder.
+    // Decision table:
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | result |
+    // | R1 | F | - | - | - | F | F | E1 |
+    // | R2 | T | T | F | F | F | F | E2 |
+    // | R3 | T | F | T | F | F | F | E3 |
+    // | R4 | T | T | T | F | T | F | E4 |
+    // | R5 | T | - | - | - | - | T | E5 |
+    // | R6 | T | F | F | T | F | F | E2 |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
@@ -7559,6 +8470,36 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             .boundary,
         awaken_runtime_contract::PlaintextBoundary::Workload,
         "R3"
+    );
+    let remote = awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(
+        awaken_runtime_contract::resolved::ModelBinding::new(
+            "remote",
+            "",
+            "a2a:https://agent.example",
+        ),
+        awaken_tenancy::ScopeId::from("workspace-a"),
+        Some(awaken_runtime_contract::CredentialAccess::new(
+            awaken_runtime_contract::CredentialRef {
+                id: "credential-remote".into(),
+                revision: 1,
+            },
+            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_runtime_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        )),
+        "sha256:card",
+    )
+    .expect("coherent remote candidate");
+    assert_eq!(
+        super::self_hosted_inference_holder(&activation(remote, Vec::new()))
+            .unwrap()
+            .unwrap()
+            .boundary,
+        awaken_runtime_contract::PlaintextBoundary::Worker,
+        "R6"
     );
     assert!(
         host.inference_plaintext_holder(&activation(
@@ -7733,8 +8674,8 @@ async fn retained_session_accepts_only_an_adoption_of_its_exact_sandbox() {
 // run/resume fail-closed boundaries (ADR-0048 gap review)
 //
 // These guard the double-run / wrong-tool / forged-approval seams: a caller must
-// not be able to start a second turn on an awaiting thread, resume a run that never
-// awaiting, answer the wrong pending tool, or cross the built-in↔client-executed
+// not be able to start a second Run on an Awaiting Thread, resume a Run that was never
+// Awaiting, answer the wrong pending tool, or cross the built-in↔client-executed
 // binding when resuming. All of them must fail *closed* with a BadRequest and
 // leave the run untouched.
 // ---------------------------------------------------------------------------
@@ -7811,19 +8752,23 @@ fn user(text: &str) -> Vec<Message> {
     vec![Message::text(MessageId("u1".into()), Role::User, text)]
 }
 
-/// A thread awaiting on a tool decision must reject a fresh `run`: starting a second
-/// turn over an awaiting run would double-execute the awaiting turn's side effects. The
+/// A Thread awaiting on a tool decision must reject a fresh `run`: starting a second
+/// Run over an Awaiting Run would double-execute the Awaiting Run's side effects. The
 /// guard fails closed with BadRequest and does not touch the await.
 #[tokio::test]
 async fn run_on_an_awaiting_thread_fails_closed() {
+    // Causes: C1 committed Thread truth already contains an Awaiting Run.
+    // Constraint/Invariant: a new foreground Run cannot bypass the existing
+    // resume ticket or create a second active writer. Decision rule: submit under
+    // C1 and require the documented fail-closed effect with no new Run.
     let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let r1 = host
         .run(None, "t-awaiting", user("hi"))
         .await
-        .expect("turn 1");
+        .expect("Run 1");
     assert!(
         matches!(r1.state, RunState::Awaiting),
-        "turn awaits on write"
+        "Run awaits on write"
     );
 
     let err = host
@@ -7877,11 +8822,15 @@ async fn resume_with_no_awaiting_run_fails_closed() {
 /// the real await survives.
 #[tokio::test]
 async fn resume_with_a_wrong_tool_use_id_fails_closed() {
+    // Test design. Causes: C1 the committed ticket awaits tool-use id A; C2 resume
+    // supplies foreign id B. Effects: E1 C2 is rejected and the Run remains
+    // Awaiting. Constraint/Invariant: exact tool-use identity fences replies.
+    // Decision rule: exercise B != A and require E1 with no tool result commit.
     let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     let r1 = host
         .run(None, "t-wrongid", user("hi"))
         .await
-        .expect("turn 1");
+        .expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
@@ -7917,8 +8866,13 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
 /// forge an approval by delivering a fabricated result instead of a decision.
 #[tokio::test]
 async fn client_result_cannot_answer_a_builtin_tool() {
+    // Test design R7. Causes: C1 the pending ticket is a permission target; C2 a
+    // custom/generic client result targets it. Effects: E1 C2 is rejected; E2 no
+    // reply is committed and the exact ticket remains resumable. Constraint:
+    // client results answer only client-owned targets. Decision rule: exercise
+    // the mismatch, then resume the same ticket correctly to prove E1+E2.
     let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
-    let r1 = host.run(None, "t-bind1", user("hi")).await.expect("turn 1");
+    let r1 = host.run(None, "t-bind1", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
 
@@ -7940,15 +8894,29 @@ async fn client_result_cannot_answer_a_builtin_tool() {
         "message names the binding: {}",
         err.message
     );
+    let resumed = host
+        .resume(
+            "t-bind1",
+            &pending.tool_use_id,
+            HostResume::Permission(PermissionDecision::Allow { note: None }),
+        )
+        .await
+        .expect("R7 rejected mismatch leaves the exact permission await intact");
+    assert!(matches!(resumed.state, RunState::Ended(_)), "R7/E2");
 }
 
 /// The other direction of the binding: a confirmation may not answer a
 /// client-executed tool (which expects a result, not a permission decision).
 #[tokio::test]
 async fn confirm_cannot_answer_a_client_tool() {
+    // Test design R6. Causes: C1 the pending ticket belongs to a client-executed
+    // target; C2 a confirm/permission reply targets it. Effects: E1 C2 is
+    // rejected; E2 no reply is committed and the exact ticket remains resumable.
+    // Constraint: typed reply kind must match target ownership. Decision rule:
+    // exercise the inverse mismatch, then answer correctly to prove E1+E2.
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
-    let r1 = host.run(None, "t-bind2", user("hi")).await.expect("turn 1");
+    let r1 = host.run(None, "t-bind2", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
     assert!(pending.client_executed, "lookup is client-executed");
 
@@ -7967,15 +8935,29 @@ async fn confirm_cannot_answer_a_client_tool() {
         "message names the binding: {}",
         err.message
     );
+    let resumed = host
+        .resume(
+            "t-bind2",
+            &pending.tool_use_id,
+            HostResume::ClientResult {
+                content: vec![ContentBlock::text("sunny")],
+                is_error: false,
+            },
+        )
+        .await
+        .expect("R6 rejected mismatch leaves the exact client await intact");
+    assert!(matches!(resumed.state, RunState::Ended(_)), "R6/E2");
 }
 
 /// The happy path for the client-executed binding: a `ClientResult` delivers the
-/// caller-run tool's output, it reaches the model's next inference, and the turn
+/// caller-Run tool's output, it reaches the model's next inference, and the Run
 /// ends. This is the direct-ingress row of the resume-delivery decision table;
 /// `durable_client_result_settles_the_authoritative_dispatch` covers the durable
 /// row against the same model and protocol-neutral Host API.
 #[tokio::test]
-async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
+async fn client_result_delivers_a_client_tool_result_and_ends_the_run() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 direct ingress; C2 valid committed client-tool
     // ticket; C3 exact ClientResult. Effects: E1 resume executes inline once;
     // E2 result reaches the next inference; E3 Run ends. Constraint: no durable
@@ -7985,10 +8967,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
     // | R1 | direct | valid client tool | exact result | E1+E2+E3 |
     let host = SharedHost::new(Arc::new(ClientLookupModel), "stub")
         .with_client_tools(HashSet::from(["lookup".to_string()]));
-    let r1 = host
-        .run(None, "t-client", user("hi"))
-        .await
-        .expect("turn 1");
+    let r1 = host.run(None, "t-client", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the client tool");
 
     let r2 = host
@@ -8002,7 +8981,7 @@ async fn client_result_delivers_a_client_tool_result_and_ends_the_turn() {
         )
         .await
         .expect("client result resumes");
-    assert!(matches!(r2.state, RunState::Ended(_)), "the turn ends");
+    assert!(matches!(r2.state, RunState::Ended(_)), "the Run ends");
     let reply = r2
         .new_messages
         .iter()
@@ -8054,8 +9033,1098 @@ async fn durable_foreground_run_relays_live_progress_before_committed_completion
     assert!(!sink.events().is_empty(), "R1/E1");
 }
 
+#[tokio::test]
+async fn terminal_child_report_atomically_admits_one_deterministic_primary_run() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 child boundary is terminal; C2 report provenance
+    // matches the exact child Run; C3 exact delivery is retried; C4 the child
+    // activity epoch is still active. Effects: E1
+    // stage one input bound to its deterministic primary Run; E2 atomically enqueue one deterministic
+    // primary Run carrying C4; E3 retry is an exact no-op; E4 no Worker constructs
+    // a parent activation. Awaiting is intentionally absent: Managed projects its child
+    // lifecycle directly and SessionApplication never invokes this command.
+    //
+    // | Rule | State | Provenance | Replay | Epoch | Effect |
+    // | R1 | Ended | exact | no | active | E1+E2+E4 |
+    // | R2 | Ended | exact | yes | same | E3 |
+    // | R3 | Ended | wrong | any | any | reject before mutation |
+    // | R4 | Ended | exact | any | zero | reject before mutation |
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("in-memory dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone()),
+    );
+    let child_run = RunId("child-report-run".into());
+    let command = awaken_session_contract::SessionAgentReportContinuation {
+        session_id: "primary-report".into(),
+        source_thread_id: ThreadId("child-report-thread".into()),
+        source_run_id: child_run.clone(),
+        session_activity_epoch: 23,
+        message: Message::text(
+            MessageId::agent_thread_report(&child_run),
+            Role::User,
+            "Message from agent Researcher (thread child-report-thread):\nanswer",
+        ),
+    };
+
+    host.continue_session_agent_report(command.clone())
+        .await
+        .expect("R1 terminal continuation");
+    host.continue_session_agent_report(command)
+        .await
+        .expect("R2 exact replay");
+    let rows = dispatch.list_dispatches().await.expect("R1 dispatch");
+    assert_eq!(rows.len(), 1, "R1/R2 one deterministic root");
+    assert_eq!(rows[0].thread_id, ThreadId("primary-report".into()));
+    let inbox = dispatch
+        .list(&ThreadId("primary-report".into()))
+        .await
+        .expect("R1 primary Inbox");
+    assert_eq!(inbox.len(), 1, "R1/R2 one input");
+    assert_eq!(
+        inbox[0].input.message_id,
+        MessageId::agent_thread_report(&child_run).0,
+        "R1 typed provenance"
+    );
+    assert_eq!(
+        inbox[0].input.run_id, rows[0].run_id,
+        "R1/E1 the report cannot be drained by another primary Run"
+    );
+
+    let bad_run = RunId("other-child".into());
+    let rejected = host
+        .continue_session_agent_report(awaken_session_contract::SessionAgentReportContinuation {
+            session_id: "primary-report".into(),
+            source_thread_id: ThreadId("child-report-thread".into()),
+            source_run_id: bad_run,
+            session_activity_epoch: 23,
+            message: Message::text(
+                MessageId::agent_thread_report(&child_run),
+                Role::User,
+                "forged",
+            ),
+        })
+        .await;
+    assert!(rejected.is_err(), "R3");
+    assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R3");
+    let zero_epoch = host
+        .continue_session_agent_report(awaken_session_contract::SessionAgentReportContinuation {
+            session_id: "primary-report".into(),
+            source_thread_id: ThreadId("child-report-thread".into()),
+            source_run_id: child_run.clone(),
+            session_activity_epoch: 0,
+            message: Message::text(
+                MessageId::agent_thread_report(&child_run),
+                Role::User,
+                "missing activity",
+            ),
+        })
+        .await;
+    assert!(zero_epoch.is_err(), "R4");
+    assert_eq!(dispatch.list_dispatches().await.unwrap().len(), 1, "R4");
+    let claimed = dispatch
+        .claim("report-epoch-inspector", 30_000, 1, &Default::default())
+        .await
+        .expect("R1 claim")
+        .expect("R1 report root remains runnable");
+    assert_eq!(
+        claimed.request.session_activity_epoch,
+        Some(23),
+        "R1 activity handoff is owned by the canonical dispatch, not its operational summary"
+    );
+}
+
+#[tokio::test]
+async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_boundary() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 parent-partition committed ticket matches the
+    // child/tool; C2 dispatch is the exact unleased Awaiting child; C3 reply is
+    // fresh/exact/conflicting; C4 Session activity epoch is the new trusted
+    // coordinate; C5 the preflight Run/correlation fence is current/stale; C6
+    // an ordinary ExistingThread follow-up is already bound to a deterministic
+    // fresh Run; C7 that same operation is retried exactly or with changed
+    // content; C8 accompanying System is exact/changed.
+    // Effects: E1 one Outbox delivery is relayed; E2 dispatch epoch rotates
+    // before it becomes runnable; E3 exact retry creates no second input; E4 a
+    // conflicting reply is rejected and cannot rotate again; E5 a concurrent
+    // await change is rejected before any Outbox or dispatch mutation; E6 C6
+    // stays queued while the old Awaiting Run owns the Thread; E7 the typed reply
+    // wakes only that old Run, then its settlement releases the fresh follow-up;
+    // E8 exact operation retry keeps one Run/message and changed content fails
+    // without another effect; E9 a changed System payload conflicts just like a
+    // changed reply and cannot create another durable delivery.
+    //
+    // | Rule | Ticket/affinity | Dispatch | Reply | Effect |
+    // |---|---|---|---|---|
+    // | CR1 | exact | Awaiting | fresh | E1+E2 |
+    // | CR2 | exact | Running with exact evidence | exact | E3 |
+    // | CR3 | exact | Running with exact evidence | conflict | E4 |
+    // | CR4 | stale fence | Awaiting | fresh | E5 |
+    // | CR5 | exact + fresh follow-up | Awaiting | fresh/exact reply | E6+E7 |
+    // | CR6 | exact + fresh follow-up | Awaiting | exact/changed follow-up retry | E8 |
+    // | CR7 | exact + changed System | Running with evidence | fresh | E9 |
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_run_ingress::{
+        ContinuationAdmission, DispatchOutcome, Outbox as _, SessionChildAdmission,
+    };
+
+    let parent = ThreadId("coordinated-reply-parent".into());
+    let child = ThreadId("coordinated-reply-child".into());
+    let child_run = RunId("coordinated-reply-run".into());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("coordinated reply dispatch"),
+    );
+    let host =
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone());
+    let ctx = host
+        .ctx_for(&parent.0, None)
+        .await
+        .expect("parent Session context");
+    let commit = host
+        .commit_for_read(&parent.0)
+        .await
+        .expect("parent commit partition");
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::running(child_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("commit child Running");
+    let ticket = ResumeTicket::new(
+        "coordinated-reply-correlation",
+        child_run.clone(),
+        child.clone(),
+        "coordinated-reply-snapshot",
+        "coordinated-reply-catalog",
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id: "coordinated-reply-tool-use".into(),
+            tool: PendingTool {
+                tool_id: "write".into(),
+                arguments: serde_json::json!({"path": "answer.txt"}),
+            },
+        },
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("commit child Awaiting ticket");
+
+    let initial_epoch = 41;
+    let resumed_epoch = 42;
+    let request = RunDispatch::new(RunActivation::new(
+        child_run.clone(),
+        child.clone(),
+        ctx.config.clone(),
+        Vec::new(),
+    ))
+    .for_session(parent.clone())
+    .with_session_activity_epoch(initial_epoch);
+    dispatch
+        .enqueue(request)
+        .await
+        .expect("enqueue child dispatch");
+    let claimed = dispatch
+        .claim_run(
+            &child_run,
+            "coordinated-reply-owner",
+            DEFAULT_LEASE_MS,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect("claim child dispatch")
+        .expect("child dispatch is runnable");
+    assert_eq!(
+        dispatch
+            .settle(
+                &child_run,
+                claimed.lease.epoch,
+                DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("settle child Awaiting"),
+        awaken_run_ingress::SettleOutcome::Applied
+    );
+
+    let follow_up_run = RunId("coordinated-reply-follow-up".into());
+    let follow_up_request = RunDispatch::new(RunActivation::new(
+        follow_up_run.clone(),
+        child.clone(),
+        ctx.config.clone(),
+        Vec::new(),
+    ))
+    .for_session(parent.clone())
+    .with_session_activity_epoch(43);
+    let follow_up_input = awaken_run_ingress::PendingInput {
+        message_id: "coordinated-reply-follow-up-message".into(),
+        run_id: follow_up_run.clone(),
+        thread_id: child.clone(),
+        correlation_id: String::new(),
+        available_at_ms: None,
+        context_messages: Vec::new(),
+        result: awaken_runtime_contract::resume::ResumeResult::Input(
+            "continue after the pending tool".into(),
+        ),
+    };
+    let follow_up_admission =
+        || ContinuationAdmission::SessionChild(SessionChildAdmission::new(24, Vec::new()));
+    dispatch
+        .relay_and_enqueue(
+            follow_up_input.clone(),
+            follow_up_request.clone(),
+            follow_up_admission(),
+        )
+        .await
+        .expect("CR5 admit fresh ExistingThread follow-up");
+    dispatch
+        .relay_and_enqueue(
+            follow_up_input.clone(),
+            follow_up_request.clone(),
+            follow_up_admission(),
+        )
+        .await
+        .expect("CR6 exact follow-up retry");
+    let changed_follow_up = awaken_run_ingress::PendingInput {
+        context_messages: Vec::new(),
+        result: awaken_runtime_contract::resume::ResumeResult::Input("changed intent".into()),
+        ..follow_up_input.clone()
+    };
+    assert!(
+        dispatch
+            .relay_and_enqueue(
+                changed_follow_up,
+                follow_up_request.clone(),
+                follow_up_admission(),
+            )
+            .await
+            .is_err(),
+        "CR6/E8 one operation cannot change its message"
+    );
+    assert_eq!(
+        dispatch.list(&child).await.expect("CR6 child Inbox"),
+        vec![awaken_run_ingress::PendingRecord {
+            input: follow_up_input.clone(),
+            revision: 1,
+        }],
+        "CR6/E8 one fresh Run owns one follow-up message"
+    );
+    assert!(
+        dispatch
+            .claim_run(
+                &follow_up_run,
+                "coordinated-reply-owner",
+                DEFAULT_LEASE_MS,
+                1,
+                &Default::default(),
+            )
+            .await
+            .expect("CR5 inspect queued follow-up")
+            .is_none(),
+        "CR5/E6 the old Awaiting Run remains the open writer"
+    );
+
+    let command = awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: parent.0.clone(),
+        target: awaken_session_contract::SessionThreadTarget::Child(child.clone()),
+        expected_run_id: child_run.clone(),
+        expected_correlation_id: ticket.correlation_id.clone(),
+        tool_use_id: "coordinated-reply-tool-use".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Confirm(
+            PermissionDecision::Allow { note: None },
+        ),
+        accompanying_system: Some(awaken_session_contract::SessionUserRunSystemInput {
+            operation_id: "coordinated-reply-system".into(),
+            content: vec![ContentBlock::text("reply context")],
+        }),
+    };
+    let fence = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .expect("trusted Awaiting fence");
+    let mut stale_fence = fence.clone();
+    *stale_fence
+        .prior_session_activity_epoch
+        .as_mut()
+        .expect("this fixture starts from a coordinated activity") += 1;
+    assert!(
+        host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+            command: command.clone(),
+            fence: stale_fence,
+            session_activity_epoch: resumed_epoch,
+        })
+        .await
+        .is_err(),
+        "CR4/E5"
+    );
+    assert_eq!(
+        dispatch.relay().await.expect("CR4 no delivery"),
+        0,
+        "CR4/E5"
+    );
+    host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+        command: command.clone(),
+        fence: fence.clone(),
+        session_activity_epoch: resumed_epoch,
+    })
+    .await
+    .expect("CR1 stage coordinated reply");
+    let resumed = dispatch
+        .claim_run(
+            &child_run,
+            "coordinated-reply-owner",
+            DEFAULT_LEASE_MS,
+            1,
+            &Default::default(),
+        )
+        .await
+        .expect("CR1 claim resumed child")
+        .expect("CR1 relayed reply makes child runnable");
+    assert_eq!(
+        resumed.request.session_activity_epoch,
+        Some(resumed_epoch),
+        "CR1/E2"
+    );
+    assert_eq!(resumed.pending.len(), 1, "CR1/E1");
+    assert_eq!(
+        resumed.pending[0].correlation_id, ticket.correlation_id,
+        "CR1/E1"
+    );
+    assert_eq!(
+        resumed.pending[0].run_id, child_run,
+        "CR5/E7 the exact typed reply wakes the old Run, not the follow-up"
+    );
+    assert_eq!(
+        resumed.pending[0]
+            .context_messages
+            .iter()
+            .map(|message| (&message.role, message.text_content()))
+            .collect::<Vec<_>>(),
+        vec![(&Role::System, "reply context".to_string())],
+        "CR1/E1 the stable accompanying System is frozen in the same PendingInput"
+    );
+    assert!(
+        dispatch
+            .claim_run(
+                &follow_up_run,
+                "coordinated-reply-owner",
+                DEFAULT_LEASE_MS,
+                2,
+                &Default::default(),
+            )
+            .await
+            .expect("CR5 inspect follow-up while old Run is resumed")
+            .is_none(),
+        "CR5/E6 the resumed old Run still owns the Thread"
+    );
+
+    host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+        command: command.clone(),
+        fence: fence.clone(),
+        session_activity_epoch: resumed_epoch,
+    })
+    .await
+    .expect("CR2 exact reply replay");
+    let retried_inbox = dispatch.list(&child).await.expect("CR2 Inbox");
+    assert_eq!(
+        retried_inbox.len(),
+        2,
+        "CR2/E3 includes the queued follow-up"
+    );
+    assert_eq!(
+        retried_inbox
+            .iter()
+            .filter(|record| record.input.run_id == child_run)
+            .count(),
+        1,
+        "CR2/E3 the exact typed reply is not duplicated"
+    );
+    assert_eq!(
+        retried_inbox
+            .iter()
+            .filter(|record| record.input.run_id == follow_up_run)
+            .count(),
+        1,
+        "CR6/E8 the follow-up remains one message"
+    );
+
+    let mut conflicting_system = command.clone();
+    conflicting_system
+        .accompanying_system
+        .as_mut()
+        .expect("CR7 System")
+        .content = vec![ContentBlock::text("changed reply context")];
+    assert!(
+        host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+            command: conflicting_system,
+            fence: fence.clone(),
+            session_activity_epoch: resumed_epoch + 1,
+        })
+        .await
+        .is_err(),
+        "CR7/E9"
+    );
+    assert_eq!(
+        dispatch.relay().await.expect("CR7 no staged conflict"),
+        0,
+        "CR7/E9"
+    );
+
+    let mut conflicting = command;
+    conflicting.reply =
+        awaken_session_contract::SessionThreadToolReply::Confirm(PermissionDecision::Deny {
+            reason: Some("changed".into()),
+        });
+    assert!(
+        host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+            command: conflicting,
+            fence,
+            session_activity_epoch: resumed_epoch + 1,
+        },)
+            .await
+            .is_err(),
+        "CR3/E4"
+    );
+    assert_eq!(
+        dispatch.relay().await.expect("CR3 no staged conflict"),
+        0,
+        "CR3/E4"
+    );
+    assert_eq!(
+        dispatch
+            .settle(
+                &child_run,
+                resumed.lease.epoch,
+                DispatchOutcome::Done,
+                &[resumed.pending[0].message_id.clone()],
+            )
+            .await
+            .expect("CR5 settle the replied-to old Run"),
+        awaken_run_ingress::SettleOutcome::Applied,
+        "CR5/E7"
+    );
+    let follow_up = dispatch
+        .claim_run(
+            &follow_up_run,
+            "coordinated-reply-owner",
+            DEFAULT_LEASE_MS,
+            3,
+            &Default::default(),
+        )
+        .await
+        .expect("CR5 claim released follow-up")
+        .expect("CR5 old Run settlement releases the follow-up");
+    assert_eq!(follow_up.pending, vec![follow_up_input], "CR5/E7");
+}
+
+#[tokio::test]
+async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 target is Primary; C2 committed ticket is the exact
+    // ExternalEvent Run/correlation/tool; C3 the generic result is normal/error;
+    // C4 expected Run/correlation is exact/stale. Effects: E1 the existing root
+    // dispatch activity rotates and one client ToolOutput is staged; E2 normal
+    // content and is_error survive unchanged; E3 stale admission coordinates
+    // fail before Outbox mutation. Child confirmation coverage lives in the
+    // sibling decision table above; both targets use this same Host boundary.
+    //
+    // | Rule | Target | Ticket | Result | Effect |
+    // |---|---|---|---|---|
+    // | PR1 | Primary | exact | normal generic | E1+E2 |
+    // | PR2 | Primary | stale Run/correlation | normal generic | E3 |
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_run_ingress::{DispatchOutcome, Outbox as _, RunDispatch};
+
+    let parent = ThreadId("primary-reply-session".into());
+    let run_id = RunId("primary-reply-run".into());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("primary reply dispatch"),
+    );
+    let host =
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone());
+    let ctx = host
+        .ctx_for(&parent.0, None)
+        .await
+        .expect("primary Session context");
+    let commit = host
+        .commit_for_read(&parent.0)
+        .await
+        .expect("primary commit partition");
+    commit
+        .commit(ThreadCommit::assemble(
+            parent.clone(),
+            RunDisposition::running(run_id.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("commit primary Running");
+    let ticket = ResumeTicket::new(
+        "primary-reply-correlation",
+        run_id.clone(),
+        parent.clone(),
+        "primary-reply-snapshot",
+        "primary-reply-catalog",
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::ClientExecution,
+            call_id: "primary-reply-tool-use".into(),
+            tool: PendingTool {
+                tool_id: "client_lookup".into(),
+                arguments: serde_json::json!({"query": "answer"}),
+            },
+        },
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            parent.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("commit primary Awaiting ticket");
+
+    let initial_epoch = 51;
+    let resumed_epoch = 52;
+    dispatch
+        .enqueue(
+            RunDispatch::new(RunActivation::new(
+                run_id.clone(),
+                parent.clone(),
+                ctx.config.clone(),
+                Vec::new(),
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(initial_epoch),
+        )
+        .await
+        .expect("enqueue primary dispatch");
+    let claimed = dispatch
+        .claim_run(
+            &run_id,
+            "primary-reply-owner",
+            DEFAULT_LEASE_MS,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect("claim primary dispatch")
+        .expect("primary dispatch runnable");
+    assert_eq!(
+        dispatch
+            .settle(&run_id, claimed.lease.epoch, DispatchOutcome::Awaiting, &[],)
+            .await
+            .expect("settle primary Awaiting"),
+        awaken_run_ingress::SettleOutcome::Applied
+    );
+
+    let command = awaken_session_contract::SessionThreadToolReplyCommand {
+        session_id: parent.0.clone(),
+        target: awaken_session_contract::SessionThreadTarget::Primary,
+        expected_run_id: run_id.clone(),
+        expected_correlation_id: ticket.correlation_id.clone(),
+        tool_use_id: "primary-reply-tool-use".into(),
+        reply: awaken_session_contract::SessionThreadToolReply::Result {
+            content: vec![ContentBlock::text("client answer")],
+            is_error: false,
+        },
+        accompanying_system: None,
+    };
+    let mut stale = command.clone();
+    stale.expected_run_id = RunId("later-primary-run".into());
+    assert!(
+        host.session_thread_tool_reply_fence(&stale).await.is_err(),
+        "PR2/E3"
+    );
+    assert_eq!(
+        dispatch.relay().await.expect("PR2 no delivery"),
+        0,
+        "PR2/E3"
+    );
+
+    let fence = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .expect("PR1 exact primary fence");
+    host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+        command,
+        fence,
+        session_activity_epoch: resumed_epoch,
+    })
+    .await
+    .expect("PR1 stage primary result");
+    let resumed = dispatch
+        .claim_run(
+            &run_id,
+            "primary-reply-owner",
+            DEFAULT_LEASE_MS,
+            1,
+            &Default::default(),
+        )
+        .await
+        .expect("claim resumed primary")
+        .expect("primary result makes dispatch runnable");
+    assert_eq!(
+        resumed.request.session_activity_epoch,
+        Some(resumed_epoch),
+        "PR1/E1"
+    );
+    assert_eq!(resumed.pending.len(), 1, "PR1/E1");
+    match &resumed.pending[0].result {
+        awaken_runtime_contract::resume::ResumeResult::ToolResult(output) => {
+            assert_eq!(output.call_id, "primary-reply-tool-use", "PR1/E2");
+            assert_eq!(output.text(), "client answer", "PR1/E2");
+            assert!(!output.is_error, "PR1/E2");
+        }
+        other => panic!("PR1 expected ToolResult, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn budget_resume_reuses_the_exact_run_and_durable_dispatch_generation() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 committed BudgetReached truth belongs to a root or
+    // Session child Run; C2 a durable child row retains its prior activity; C3
+    // exact deliveries race/replay; C4 the same Run later reaches another budget
+    // pause; C5 a stale generation or ToolPermission ticket is presented.
+    // Effects: E1 root handoff creates one existing-Run Dispatch; E2 child resume
+    // atomically rotates its existing row; E3 exact replay has one pending input;
+    // E4 C4 has a larger commit-derived generation and a distinct input while
+    // retaining Run identity; E5 C5 is a no-op. Commit recovery and the existing
+    // Dispatch row remain the only pause/delivery authorities.
+    //
+    // | Rule | Owner | Ticket/generation | Delivery | Effect |
+    // |---|---|---|---|---|
+    // | B1 | root | BudgetReached/current | fresh | E1 |
+    // | B2 | child | BudgetReached/current | concurrent exact | E2+E3 |
+    // | B3 | same child Run | second BudgetReached/new generation | fresh | E4 |
+    // | B4 | child | old generation | stale | E5 |
+    // | B5 | child | ToolPermission | budget discovery | E5 |
+    use awaken_agent_contract::agent::awaiting::{
+        AwaitTarget, PauseReason, PendingTool, ResumeTicket, ToolAwaitReason,
+    };
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
+    use awaken_session_contract::{SessionBudgetResumeDelivery, SessionBudgetResumeDisposition};
+
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("budget resume dispatch"),
+    );
+    let host =
+        SharedHost::new(Arc::new(MemoryHostModel), "stub").with_dispatch_store(dispatch.clone());
+
+    let root = ThreadId("budget-resume-root".into());
+    let root_run = RunId("budget-resume-root-run".into());
+    let root_ctx = host.ctx_for(&root.0, None).await.expect("B1 root context");
+    let snapshot_id = root_ctx.config.id.0.clone();
+    let catalog_fingerprint = root_ctx.config.resolved_spec.catalog_fingerprint.0.clone();
+    let budget_ticket = |thread: &ThreadId, run: &RunId| {
+        ResumeTicket::new(
+            run.0.clone(),
+            run.clone(),
+            thread.clone(),
+            snapshot_id.clone(),
+            catalog_fingerprint.clone(),
+            AwaitTarget::Pause(PauseReason::BudgetReached),
+        )
+    };
+    let root_commit = host.commit_for_read(&root.0).await.expect("B1 root commit");
+    root_commit
+        .commit(ThreadCommit::assemble(
+            root.clone(),
+            RunDisposition::running(root_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B1 root Running");
+    root_commit
+        .commit(ThreadCommit::assemble(
+            root.clone(),
+            RunDisposition::awaiting(budget_ticket(&root, &root_run)),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B1 root budget pause");
+    let root_pause = host
+        .session_budget_resume_tickets(&root.0)
+        .await
+        .expect("B1 discover root pause")
+        .into_iter()
+        .next()
+        .expect("B1 root ticket");
+    assert_eq!(root_pause.ticket.run_id, root_run, "B1/E1");
+    assert_eq!(root_pause.prior_session_activity_epoch, None, "B1/E1");
+    let root_delivery = SessionBudgetResumeDelivery {
+        session_id: root.0.clone(),
+        thread_id: root.clone(),
+        run_id: root_run.clone(),
+        correlation_id: root_pause.ticket.correlation_id,
+        pause_generation: root_pause.pause_generation,
+        prior_session_activity_epoch: None,
+        session_activity_epoch: 31,
+    };
+    let mut root_stale = root_delivery.clone();
+    root_stale.pause_generation = root_stale.pause_generation.saturating_add(1);
+    assert_eq!(
+        host.resume_budget_reached(root_stale).await.unwrap(),
+        SessionBudgetResumeDisposition::Stale,
+        "B4/E5"
+    );
+    assert!(
+        dispatch.list_dispatches().await.unwrap().is_empty(),
+        "B4/E5"
+    );
+    assert_eq!(
+        host.resume_budget_reached(root_delivery.clone())
+            .await
+            .unwrap(),
+        SessionBudgetResumeDisposition::Dispatched,
+        "B1/E1"
+    );
+    assert_eq!(
+        host.resume_budget_reached(root_delivery).await.unwrap(),
+        SessionBudgetResumeDisposition::Dispatched,
+        "B1 exact replay remains successful"
+    );
+    let root_rows = dispatch.list_dispatches().await.unwrap();
+    assert_eq!(root_rows.len(), 1, "B1/E1 one handoff row");
+    assert_eq!(root_rows[0].run_id, root_run, "B1/E1 same Run");
+    assert_eq!(root_rows[0].session_activity_epoch, Some(31), "B1/E1");
+    let root_pending = dispatch.list(&root).await.unwrap();
+    assert_eq!(root_pending.len(), 1, "B1 exact replay has one input");
+    assert_eq!(root_pending[0].input.run_id, root_run, "B1/E1");
+
+    let parent = ThreadId("budget-resume-child-parent".into());
+    let child = ThreadId("budget-resume-child".into());
+    let child_run = RunId("budget-resume-child-run".into());
+    host.ctx_for(&parent.0, None)
+        .await
+        .expect("B2 parent context");
+    let child_commit = host
+        .commit_for_read(&parent.0)
+        .await
+        .expect("B2 parent commit partition");
+    child_commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::running(child_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B2 child Running");
+    child_commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::awaiting(budget_ticket(&child, &child_run)),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B2 child budget pause");
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &child.0,
+                &child_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(41),
+        )
+        .await
+        .expect("B2 child dispatch");
+    let initial_child_claim = dispatch
+        .claim_run(
+            &child_run,
+            "budget-resume-worker",
+            DEFAULT_LEASE_MS,
+            0,
+            &Default::default(),
+        )
+        .await
+        .expect("B2 initial claim")
+        .expect("B2 initial child work");
+    dispatch
+        .settle(
+            &child_run,
+            initial_child_claim.lease.epoch,
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .expect("B2 initial Awaiting settlement");
+    let first_pause = host
+        .session_budget_resume_tickets(&parent.0)
+        .await
+        .expect("B2 discover child pause")
+        .into_iter()
+        .find(|pause| pause.ticket.run_id == child_run)
+        .expect("B2 child ticket");
+    assert_eq!(first_pause.prior_session_activity_epoch, Some(41), "B2/E2");
+    let first_delivery = SessionBudgetResumeDelivery {
+        session_id: parent.0.clone(),
+        thread_id: child.clone(),
+        run_id: child_run.clone(),
+        correlation_id: first_pause.ticket.correlation_id.clone(),
+        pause_generation: first_pause.pause_generation,
+        prior_session_activity_epoch: Some(41),
+        session_activity_epoch: 42,
+    };
+    let (first, replay) = tokio::join!(
+        host.resume_budget_reached(first_delivery.clone()),
+        host.resume_budget_reached(first_delivery.clone()),
+    );
+    assert_eq!(
+        first.unwrap(),
+        SessionBudgetResumeDisposition::Dispatched,
+        "B2"
+    );
+    assert_eq!(
+        replay.unwrap(),
+        SessionBudgetResumeDisposition::Dispatched,
+        "B2 exact concurrent replay"
+    );
+    let resumed = dispatch
+        .claim_run(
+            &child_run,
+            "budget-resume-worker",
+            DEFAULT_LEASE_MS,
+            1,
+            &Default::default(),
+        )
+        .await
+        .expect("B2 resumed claim")
+        .expect("B2 resumed child");
+    assert_eq!(resumed.request.session_activity_epoch, Some(42), "B2/E2");
+    assert_eq!(resumed.pending.len(), 1, "B2/E3");
+    assert_eq!(resumed.pending[0].run_id, child_run, "B2/E2 same Run");
+    let first_message_id = resumed.pending[0].message_id.clone();
+
+    child_commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::running(child_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B3 same Run resumes");
+    child_commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::awaiting(budget_ticket(&child, &child_run)),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B3 same Run pauses again");
+    dispatch
+        .settle(
+            &child_run,
+            resumed.lease.epoch,
+            DispatchOutcome::Awaiting,
+            std::slice::from_ref(&first_message_id),
+        )
+        .await
+        .expect("B3 settle second pause");
+    let second_pause = host
+        .session_budget_resume_tickets(&parent.0)
+        .await
+        .expect("B3 discover second pause")
+        .into_iter()
+        .find(|pause| pause.ticket.run_id == child_run)
+        .expect("B3 second child ticket");
+    assert_eq!(second_pause.ticket.run_id, child_run, "B3/E4 same Run");
+    assert_ne!(
+        second_pause.pause_generation, first_pause.pause_generation,
+        "B3/E4 commit-derived generations differ"
+    );
+    assert_eq!(
+        host.resume_budget_reached(first_delivery).await.unwrap(),
+        SessionBudgetResumeDisposition::Stale,
+        "B4/E5 old generation"
+    );
+    let after_stale = dispatch
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == child_run)
+        .expect("B4 child row");
+    assert_eq!(after_stale.session_activity_epoch, Some(42), "B4/E5");
+    assert!(dispatch.list(&child).await.unwrap().is_empty(), "B4/E5");
+    let second_delivery = SessionBudgetResumeDelivery {
+        session_id: parent.0.clone(),
+        thread_id: child.clone(),
+        run_id: child_run.clone(),
+        correlation_id: second_pause.ticket.correlation_id,
+        pause_generation: second_pause.pause_generation,
+        prior_session_activity_epoch: Some(42),
+        session_activity_epoch: 43,
+    };
+    assert_eq!(
+        host.resume_budget_reached(second_delivery).await.unwrap(),
+        SessionBudgetResumeDisposition::Dispatched,
+        "B3/E4"
+    );
+    let resumed_again = dispatch
+        .claim_run(
+            &child_run,
+            "budget-resume-worker",
+            DEFAULT_LEASE_MS,
+            2,
+            &Default::default(),
+        )
+        .await
+        .expect("B3 second resumed claim")
+        .expect("B3 second resumed child");
+    assert_eq!(resumed_again.pending.len(), 1, "B3/E4");
+    assert_eq!(resumed_again.pending[0].run_id, child_run, "B3/E4");
+    assert_ne!(
+        resumed_again.pending[0].message_id, first_message_id,
+        "B3/E4"
+    );
+
+    let action_parent = ThreadId("budget-action-parent".into());
+    let action_child = ThreadId("budget-action-child".into());
+    let action_run = RunId("budget-action-run".into());
+    let action_commit = host
+        .commit_for_read(&action_parent.0)
+        .await
+        .expect("B5 parent partition");
+    action_commit
+        .commit(ThreadCommit::assemble(
+            action_child.clone(),
+            RunDisposition::running(action_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B5 Running");
+    let action_ticket = ResumeTicket::new(
+        action_run.0.clone(),
+        action_run.clone(),
+        action_child.clone(),
+        snapshot_id.clone(),
+        catalog_fingerprint.clone(),
+        AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id: "budget-action-call".into(),
+            tool: PendingTool {
+                tool_id: "write".into(),
+                arguments: serde_json::json!({"path":"requires-action.txt"}),
+            },
+        },
+    );
+    action_commit
+        .commit(ThreadCommit::assemble(
+            action_child.clone(),
+            RunDisposition::awaiting(action_ticket),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("B5 ToolPermission pause");
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &action_child.0,
+                &action_run.0,
+            ))
+            .for_session(action_parent.clone())
+            .with_session_activity_epoch(51),
+        )
+        .await
+        .expect("B5 action dispatch");
+    let action_claim = dispatch
+        .claim_run(
+            &action_run,
+            "budget-resume-worker",
+            DEFAULT_LEASE_MS,
+            3,
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("B5 action claim");
+    dispatch
+        .settle(
+            &action_run,
+            action_claim.lease.epoch,
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .expect("B5 action Awaiting settlement");
+    assert!(
+        host.session_budget_resume_tickets(&action_parent.0)
+            .await
+            .expect("B5 discovery")
+            .is_empty(),
+        "B5/E5 ToolPermission remains the higher-priority required action"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_client_result_settles_the_authoritative_dispatch() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 durable ingress; C2 a claimed Run settles Awaiting
     // on a client-tool ticket; C3 the exact ClientResult arrives; C4 resumed work
     // ends; C5 resumed work awaits on a new ticket. Effects: E1 input is appended
@@ -8084,7 +10153,7 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
     let first = host
         .run(None, "t-durable-client", user("hi"))
         .await
-        .expect("durable turn awaits");
+        .expect("durable Run awaits");
     assert!(matches!(first.state, RunState::Awaiting), "R2 precondition");
     let pending = first.pending.expect("client tool ticket");
     let awaiting = dispatch
@@ -8123,13 +10192,17 @@ async fn durable_client_result_settles_the_authoritative_dispatch() {
 
 #[tokio::test]
 async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1=the Runtime has atomically committed a client-tool
     // call and its Awaiting ticket; C2=the foreground protocol has not yet copied
     // that position into disposable SessionState; C3=a peer protocol queries the
-    // pending tool; C4=a fresh user turn races that wait; C5=the exact client
+    // pending tool; C4=a fresh user Run races that wait; C5=the exact client
     // result arrives. E1=the exact committed call is returned as client-executed;
     // E2=no pending tool is fabricated when committed truth has no open wait;
-    // E3=the fresh turn is rejected; E4=the original Run resumes and ends.
+    // E3=the fresh Run is rejected; E4=the original Run resumes and ends.
     // Decision table:
     // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
     // | R1   | T  | T  | T  | F  | F  | E1     |
@@ -8171,7 +10244,7 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
         )
         .await
     {
-        Ok(_) => panic!("committed wait must reject a competing user turn"),
+        Ok(_) => panic!("committed wait must reject a competing user Run"),
         Err(error) => error,
     };
     assert_eq!(error.kind, HostErrorKind::BadRequest);
@@ -8195,10 +10268,15 @@ async fn pending_client_tool_query_uses_committed_ticket_during_projection_gap()
 /// must fail closed rather than silently behave like a plain run.
 #[tokio::test]
 async fn supersede_run_without_durable_ingress_fails_closed() {
+    // Test design. Causes: C1 supersede is requested while no durable ingress
+    // authority is configured. Effects: E1 the command fails without cancelling
+    // or starting any Run. Constraint/Invariant: supersession is a durable queue
+    // mutation and has no in-memory fallback. Decision rule: execute C1 and
+    // require fail-closed zero side effects.
     let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
     // Await first so the supersede path is not short-circuited by the awaiting guard
     // (supersede is allowed on an awaiting thread; the durable check is what must fire).
-    let r1 = host.run(None, "t-sup", user("hi")).await.expect("turn 1");
+    let r1 = host.run(None, "t-sup", user("hi")).await.expect("Run 1");
     assert!(matches!(r1.state, RunState::Awaiting));
 
     let err = host
@@ -8214,33 +10292,37 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
     );
 }
 
-/// A terminal session end (managed session delete/archive) disposes the thread's
-/// sandbox — the ONLY place it is reaped. Proven end-to-end through the
-/// `SessionRuntime` port (`ManagedHost::end_session`): the cached ctx is evicted
+/// A terminal Session cleanup disposes the thread's sandbox — the ONLY place it
+/// is reaped. Proven end-to-end through the exact command-bearing
+/// `SessionRuntime::execute_terminal_cleanup` port: the cached ctx is evicted
 /// AND the live sandbox's workspace dir is actually reaped (its `status` flips
 /// `Ready` → `Terminated`), unlike the evict-to-rebuild edges (attach/detach/
-/// rebind) which keep the per-thread workspace so the next turn reuses it.
+/// rebind) which keep the per-Thread workspace so the next Run reuses it.
 #[tokio::test]
-async fn end_session_disposes_the_threads_sandbox() {
+async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     use awaken_provisioning_contract::SandboxStatus;
     use awaken_session_contract::SessionRuntime;
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let managed = crate::ManagedHost::new(host.clone());
 
-    // A first turn builds + caches the thread's sandbox.
+    // A first Run builds + caches the Thread's sandbox.
     host.run(
         None,
         "t-end",
         vec![Message::text(MessageId("hi".into()), Role::User, "hi")],
     )
     .await
-    .expect("first turn");
+    .expect("first Run");
     // Hold the live sandbox handle before teardown so we can observe its disposal
     // even after the ctx is evicted from the registry.
     let env = host
         .session_environment("t-end")
         .await
-        .expect("the first turn caches the thread's sandbox ctx");
+        .expect("the first Run caches the Thread's sandbox ctx");
     assert_eq!(
         env.status().await.expect("status"),
         SandboxStatus::Ready,
@@ -8263,11 +10345,25 @@ async fn end_session_disposes_the_threads_sandbox() {
     )
     .expect("freeze terminal-test Environment");
 
-    // Archive/delete and recovery may race on the same durable cleanup intent.
-    // Both callers must join the one lifecycle owner; neither may double-push,
-    // double-harvest, or observe a partially disposed projection.
-    let (archive, recovery) =
-        tokio::join!(managed.end_session("t-end"), managed.end_session("t-end"));
+    // Cause/effect graph: C1 the application-owned operation freezes one exact
+    // root command; C2 archive and recovery execute that same command
+    // concurrently; C3 the command targets an already-cleaned or unknown
+    // Session. Effects: E1 one lifecycle owner disposes all projections; E2 the
+    // exact replay is idempotent; E3 cleanup remains a physical no-op. Decision
+    // rules: T1=C1+C2=>E1+E2; T2=C1+C3=>E3. There is deliberately no unscoped
+    // `end_session(thread)` compatibility path beside the durable operation.
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(cleanup.request("t-end"), "T1 freezes the terminal fence");
+    cleanup
+        .freeze_targets("t-end", [], 0)
+        .expect("T1 freezes the root target");
+    let command = cleanup
+        .command_for("t-end", "t-end")
+        .expect("T1 exact root command");
+    let (archive, recovery) = tokio::join!(
+        managed.execute_terminal_cleanup(command.clone()),
+        managed.execute_terminal_cleanup(command)
+    );
     archive.expect("archive terminal cleanup");
     recovery.expect("recovery terminal cleanup replay");
 
@@ -8277,7 +10373,7 @@ async fn end_session_disposes_the_threads_sandbox() {
             .session_slots
             .read("t-end", |slot| slot.runtime.is_some())
             .unwrap_or(false),
-        "end_session evicts the cached ctx"
+        "terminal cleanup evicts the cached ctx"
     );
     assert!(
         host.session_environment("t-end").await.is_none(),
@@ -8288,7 +10384,7 @@ async fn end_session_disposes_the_threads_sandbox() {
     assert_eq!(
         env.status().await.expect("status"),
         SandboxStatus::Terminated,
-        "end_session disposes the sandbox (workspace reaped), unlike an evict-rebuild"
+        "terminal cleanup disposes the sandbox (workspace reaped), unlike an evict-rebuild"
     );
     assert!(host.registered_thread_workspace("t-end").is_none());
     assert!(!host.session_slots.contains("t-end"));
@@ -8299,14 +10395,24 @@ async fn end_session_disposes_the_threads_sandbox() {
     );
 
     // Idempotent: ending an already-ended or never-created session is a clean no-op.
+    let replay = cleanup
+        .command_for("t-end", "t-end")
+        .expect("T2 exact replay command");
     managed
-        .end_session("t-end")
+        .execute_terminal_cleanup(replay)
         .await
-        .expect("end_session is idempotent");
+        .expect("T2 cleanup replay is idempotent");
+    let mut missing = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(missing.request("never-existed"));
+    missing.freeze_targets("never-existed", [], 0).unwrap();
     managed
-        .end_session("never-existed")
+        .execute_terminal_cleanup(
+            missing
+                .command_for("never-existed", "never-existed")
+                .unwrap(),
+        )
         .await
-        .expect("end_session is a no-op for an unknown thread");
+        .expect("T2 cleanup is a no-op for an unknown thread");
 }
 
 #[tokio::test]
@@ -8328,6 +10434,893 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
             .unwrap_or(true),
         "terminal control may allocate a lock slot but not a Runtime or Environment projection"
     );
+}
+
+#[tokio::test]
+async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichment() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the Session has no resident Runtime or recoverable
+    // current publication; C2 an ephemeral runtime authority owns a parent-affined
+    // child row; C3 deployment.durable is false; C4 terminal quiescence starts.
+    // E1 the authority-backed queue cancellation fence is recorded; E2 the logical
+    // child Thread is frozen into cleanup; E3 no Environment is built. Decision
+    // table: R1(C1+C2+C3+C4)->E1+E2+E3. The durable store case is exercised by the
+    // terminal cleanup integration tests, while the sibling cold-empty test owns
+    // !C2. This rule prevents persistence mode from masquerading as dispatch
+    // authority ownership.
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    assert!(!host.deployment.durable, "R1/C3");
+    let dispatch = host
+        .dispatch_store()
+        .expect("R1 ephemeral dispatch authority");
+    let parent = ThreadId("cold-terminal-parent".into());
+    let child = ThreadId("cold-terminal-child".into());
+    let child_run = RunId("cold-terminal-child-run".into());
+    dispatch
+        .enqueue(
+            awaken_run_ingress::RunDispatch::new(
+                crate::host::worker_resolver::test_support::test_activation(&child.0, &child_run.0),
+            )
+            .for_session(parent.clone()),
+        )
+        .await
+        .expect("R1 durable child admission");
+    let snapshot = host
+        .quiesce_terminal_delegations(&parent.0)
+        .await
+        .expect("R1 terminal fence does not require a current publication");
+
+    assert_eq!(snapshot.coordinated_thread_ids, vec![child], "R1/E2");
+    let rows = dispatch.list_dispatches().await.expect("R1 inspect fence");
+    assert_eq!(rows.len(), 1);
+    assert!(rows[0].cancellation_requested, "R1/E1");
+    assert!(
+        host.session_slots
+            .read(&parent.0, |slot| slot.runtime.is_none()
+                && slot.environment.is_none())
+            .unwrap_or(true),
+        "R1/E3"
+    );
+}
+
+#[tokio::test]
+async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settlement() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 Coordinator owns the durable queue but no local
+    // pool; C2 root and parent-affined child are active; C3 cancellation intent
+    // is durable but the remote Worker has not settled it; C4 the remote Worker
+    // settles both exact epochs. Effects: E1 quiescence does not freeze early;
+    // E2 both rows are cancelled; E3 the child identity remains in the frozen
+    // snapshot after its queue row disappears; E4 no Environment is built.
+    //
+    // | Rule | topology | cancellation | settlement | Effect |
+    // | Q1 | coordinator-only | requested | pending | E1 + E2 |
+    // | Q2 | coordinator-only | requested | exact Done | E3 + E4 |
+    use awaken_run_ingress::{DispatchOutcome, DispatchQueue, RunDispatch};
+    use std::sync::atomic::AtomicBool;
+
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("remote quiescence dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_coordinator_dispatch_store(dispatch.clone()),
+    );
+    let parent = ThreadId("remote-quiescence-parent".into());
+    let child = ThreadId("remote-quiescence-child".into());
+    for (thread, run) in [
+        (&parent, RunId("remote-quiescence-root-run".into())),
+        (&child, RunId("remote-quiescence-child-run".into())),
+    ] {
+        dispatch
+            .enqueue(
+                RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                    &thread.0, &run.0,
+                ))
+                .for_session(parent.clone()),
+            )
+            .await
+            .expect("Q1 active dispatch");
+    }
+    let remotely_settled = Arc::new(AtomicBool::new(false));
+    let remote = {
+        let dispatch = dispatch.clone();
+        let remotely_settled = remotely_settled.clone();
+        tokio::spawn(async move {
+            loop {
+                let rows = dispatch.list_dispatches().await.unwrap();
+                if rows.len() == 2 && rows.iter().all(|row| row.cancellation_requested) {
+                    for row in rows {
+                        let claimed = dispatch
+                            .claim_run(&row.run_id, "remote-worker", 30_000, 1, &Default::default())
+                            .await
+                            .unwrap()
+                            .expect("Q2 remote cancellation claim");
+                        dispatch
+                            .settle(&row.run_id, claimed.lease.epoch, DispatchOutcome::Done, &[])
+                            .await
+                            .unwrap();
+                    }
+                    remotely_settled.store(true, Ordering::SeqCst);
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+    };
+
+    let snapshot = host
+        .quiesce_terminal_delegations(&parent.0)
+        .await
+        .expect("Q2 remote settlement proves quiescence");
+    remote.await.unwrap();
+    assert!(remotely_settled.load(Ordering::SeqCst), "Q1/E1");
+    assert_eq!(snapshot.coordinated_thread_ids, vec![child], "Q2/E3");
+    assert!(
+        dispatch.list_dispatches().await.unwrap().is_empty(),
+        "Q2/E2"
+    );
+    assert!(host.session_environment(&parent.0).await.is_none(), "Q2/E4");
+}
+
+#[derive(Default)]
+struct RemoteTerminalCleanupControl {
+    assignments: Mutex<
+        std::collections::VecDeque<awaken_session_contract::SessionTerminalCleanupAssignment>,
+    >,
+    commands: Mutex<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
+    completions: Mutex<Vec<awaken_session_contract::SessionCleanupCompletion>>,
+    poll_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
+    claim_targets: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanupControl {
+    async fn begin_session_realization(
+        &self,
+        _command: awaken_session_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+    }
+
+    async fn activate_session_realization(
+        &self,
+        _command: awaken_session_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        _command: awaken_session_contract::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(awaken_session_contract::SessionRealizationControlFailure::NotReady)
+    }
+
+    async fn claim_next_terminal_cleanup(
+        &self,
+        target: awaken_session_contract::SessionRealizationTarget,
+    ) -> Result<
+        Option<awaken_session_contract::SessionTerminalCleanupAssignment>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.claim_targets.lock().unwrap().push(target);
+        Ok(self.assignments.lock().unwrap().pop_front())
+    }
+
+    async fn terminal_cleanup_commands(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let barrier = self.poll_barrier.lock().unwrap().clone();
+        if let Some((started, proceed)) = barrier {
+            started.notify_one();
+            proceed.notified().await;
+        }
+        Ok(self.commands.lock().unwrap().clone())
+    }
+
+    async fn record_terminal_cleanup_completion(
+        &self,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        completion: awaken_session_contract::SessionCleanupCompletion,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.completions.lock().unwrap().push(completion);
+        Ok(())
+    }
+}
+
+fn remote_terminal_cleanup_projection() -> awaken_session_contract::FrozenSessionProjection {
+    let baseline = awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: session_environment(
+                awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                serde_json::json!({}),
+            ),
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
+            mcp_authoring: Default::default(),
+            agent_id: "terminal-agent".into(),
+            agent_revision: None,
+            model_override: None,
+            model: "terminal-model".into(),
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        },
+    );
+    awaken_session_contract::FrozenSessionProjection {
+        workspace_id: "terminal-workspace".into(),
+        revision: awaken_session_contract::SessionRevision(1),
+        baseline,
+        agent_publication: None,
+        environment: Default::default(),
+        resource_revision: 0,
+        resources: Default::default(),
+        mcp: Vec::new(),
+        tools: Default::default(),
+        request_context: Vec::new(),
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_run_ingress_contract::ClaimedSessionControl for RemoteTerminalCleanupControl {
+    async fn resume_frozen(
+        &self,
+        _claim: &awaken_run_ingress::RunClaim,
+        _session_id: &str,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRealizationDirective>,
+        awaken_run_ingress_contract::ClaimedSessionControlError,
+    > {
+        Ok(None)
+    }
+}
+
+#[tokio::test]
+async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 a Worker-local Session owns a live Sandbox and one
+    // realization lease; C2 Control projects the durable root cleanup command;
+    // C3 the lease is not yet due for ordinary renewal. Effects: E1 the existing
+    // heartbeat reconciliation still polls terminal truth; E2 the Worker-local
+    // ManagedHost publishes/harvests/disposes through its sole cleanup method;
+    // E3 the exact completion returns to Control; E4 no renewal/revoke path can
+    // substitute a nonterminal projection drop.
+    //
+    // | Rule | cleanup | renewal due | Effect |
+    // | R1 | command | no | E1 + E2 + E3 |
+    // | R2 | fenced empty | any | retain (covered by application table) |
+    use awaken_provisioning_contract::SandboxStatus;
+
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    host.run(
+        None,
+        "remote-terminal-worker",
+        vec![Message::text(
+            MessageId("remote-terminal-input".into()),
+            Role::User,
+            "run",
+        )],
+    )
+    .await
+    .expect("Worker-local Session exists");
+    let environment = host
+        .session_environment("remote-terminal-worker")
+        .await
+        .expect("Worker-local Environment");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:incarnation".into(),
+        epoch: 3,
+        expires_at_unix_ms: 50_000,
+    };
+    host.install_session_realization_lease("remote-terminal-worker", lease.clone());
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(
+        cleanup.request("remote-terminal-worker"),
+        "R1 terminal fence"
+    );
+    cleanup
+        .freeze_targets("remote-terminal-worker", [], 0)
+        .expect("R1 frozen root target");
+    let command = cleanup
+        .command_for("remote-terminal-worker", "remote-terminal-worker")
+        .expect("R1 canonical command");
+    *control.commands.lock().unwrap() = Some(vec![command.clone()]);
+
+    assert_eq!(
+        host.renew_due_session_realizations(10_000, 60_000)
+            .await
+            .expect("R1 terminal reconciliation"),
+        0,
+        "R1/C3"
+    );
+    assert_eq!(
+        environment.status().await.unwrap(),
+        SandboxStatus::Terminated,
+        "R1/E2"
+    );
+    assert!(
+        !host.session_slots.contains("remote-terminal-worker"),
+        "R1/E2/E4"
+    );
+    let completions = control.completions.lock().unwrap();
+    assert_eq!(completions.len(), 1, "R1/E3");
+    assert_eq!(completions[0].effect_id, command.effect_id, "R1/E3");
+    drop(managed);
+}
+
+#[tokio::test]
+async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path() {
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 a terminal Session has no process-local slot after
+    // Worker replacement; C2 Control returns a typed assignment containing only
+    // the frozen projection, an active Repository manifest, and a newly fenced
+    // lease but no Run claim; C3 the same Control port later projects the
+    // aggregate-owned root command; C4 claim-next is empty after that assignment.
+    // Effects: E1 the existing projection synchronizer installs the exact
+    // baseline and lease before command polling without re-materializing the
+    // Resource being destroyed; E2 the one ManagedHost cleanup executor applies
+    // the root effect; E3 the exact receipt returns through Control and removes
+    // the slot; E4 the bounded recovery scan stops without a Worker-local queue
+    // or duplicate cleanup path.
+    // Constraint: an assignment never carries commands, and cleanup cannot run
+    // before its lease/projection is locally installed.
+    //
+    // | Rule | local slot | assignment | command poll | Effect |
+    // |---|---|---|---|---|
+    // | C1 | absent | one typed/no Run claim | blocked | E1 before poll |
+    // | C2 | installed | consumed | root | E2 + E3 |
+    // | C3 | removed | none | not entered | E4 |
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let poll_started = Arc::new(tokio::sync::Notify::new());
+    let poll_proceed = Arc::new(tokio::sync::Notify::new());
+    *control.poll_barrier.lock().unwrap() = Some((poll_started.clone(), poll_proceed.clone()));
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone()));
+    let managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
+    let session_id = "cold-terminal-worker";
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "remote-worker".into(),
+        runtime_incarnation: "remote-worker:replacement".into(),
+        epoch: 4,
+        expires_at_unix_ms: 50_000,
+    };
+    let mut projection = remote_terminal_cleanup_projection();
+    projection.resource_revision = 1;
+    projection.resources = effective_repository(
+        "terminal-cleanup-resource",
+        "/must-not-be-cloned-during-terminal-cleanup",
+        "/workspace/cleanup",
+        None,
+    );
+    control.assignments.lock().unwrap().push_back(
+        awaken_session_contract::SessionTerminalCleanupAssignment {
+            session_id: session_id.into(),
+            projection,
+            lease: lease.clone(),
+        },
+    );
+    let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
+    assert!(cleanup.request(session_id), "C2 terminal fence");
+    cleanup
+        .freeze_targets(session_id, [], 0)
+        .expect("C3 frozen root target");
+    let command = cleanup
+        .command_for(session_id, session_id)
+        .expect("C3 canonical root command");
+    *control.commands.lock().unwrap() = Some(vec![command.clone()]);
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: lease.owner.clone(),
+        runtime_incarnation: lease.runtime_incarnation.clone(),
+        lease_expires_at_unix_ms: lease.expires_at_unix_ms,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+
+    let recovery = tokio::spawn({
+        let host = host.clone();
+        let target = target.clone();
+        async move { host.recover_terminal_cleanup_assignments(target).await }
+    });
+    poll_started.notified().await;
+    assert_eq!(
+        host.session_slots
+            .read(session_id, |slot| slot.baseline.clone())
+            .flatten()
+            .expect("C1/E1 frozen baseline")
+            .fingerprint,
+        remote_terminal_cleanup_projection().baseline.fingerprint,
+        "C1/E1"
+    );
+    assert!(
+        host.session_slots
+            .read(session_id, |slot| slot.resources.mounts.is_empty())
+            .unwrap_or(false),
+        "C1/E1 terminal installation must not materialize active Resources"
+    );
+    assert_eq!(
+        host.session_slots
+            .read(session_id, |slot| slot.realization_lease.clone())
+            .flatten(),
+        Some(lease.clone()),
+        "C1/E1"
+    );
+    poll_proceed.notify_one();
+    assert_eq!(
+        recovery.await.unwrap().expect("C2-C4 cold recovery"),
+        1,
+        "C2/E2"
+    );
+    assert!(!host.session_slots.contains(session_id), "C2/E2/E3");
+    let completions = control.completions.lock().unwrap();
+    assert_eq!(completions.len(), 1, "C2/E3");
+    assert_eq!(completions[0].effect_id, command.effect_id, "C2/E3");
+    assert_eq!(
+        control.claim_targets.lock().unwrap().as_slice(),
+        [target.clone(), target],
+        "C1-C4/E4"
+    );
+    drop(completions);
+    drop(managed);
+}
+
+#[tokio::test]
+async fn coordinated_thread_archive_uses_disposition_and_dispatch_as_one_recoverable_saga() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 child disposition is Active/Archived; C2 its queue
+    // state is absent, Pending, or Awaiting; C3 archive/admission ordering is
+    // ordinary or raced. Effects: E1 idle archive commits the one Thread
+    // disposition and exact retry is a no-op; E2 active Pending is rejected before
+    // disposition mutation; E3 one Awaiting-Thread archive call records ordinary
+    // cancellation, waits for the Worker-owned terminal settlement, then commits
+    // Archived; E4 an exact archive replay also waits for a stale raced admission
+    // to settle without another relationship/archive store or client retry loop.
+    //
+    // | Rule | Disposition | Dispatch | Ordering | Effect |
+    // |---|---|---|---|---|
+    // | A1 | Active | absent/idle | archive | E1 |
+    // | A2 | Active | Pending | archive | E2 |
+    // | A3 | Active | Awaiting | archive | E3 |
+    // | A4 | Archived | Pending | stale admission | E4 |
+    use awaken_agent_contract::agent::awaiting::{AwaitTarget, RemoteInputReason, ResumeTicket};
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_run_ingress::{DispatchOutcome, DispatchState, RunDispatch};
+
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("archive saga dispatch"),
+    );
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_coordinator_dispatch_store(dispatch.clone()),
+    );
+    let parent = ThreadId("archive-saga-parent".into());
+    let commit = host
+        .commit_for_read(&parent.0)
+        .await
+        .expect("parent partition");
+
+    let idle = ThreadId("archive-saga-idle".into());
+    let idle_run = RunId("archive-saga-idle-run".into());
+    commit
+        .commit(ThreadCommit::assemble(
+            idle.clone(),
+            RunDisposition::ended(idle_run.clone(), EndCause::NaturalEnd),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("A1 idle child truth");
+    host.archive_session_thread(&parent.0, &idle)
+        .await
+        .expect("A1 archive");
+    host.archive_session_thread(&parent.0, &idle)
+        .await
+        .expect("A1 exact retry");
+    assert_eq!(
+        host.session_thread_disposition(&parent.0, &idle)
+            .await
+            .expect("A1 disposition"),
+        awaken_agent_contract::ThreadDisposition::Archived,
+        "A1/E1"
+    );
+
+    let pending = ThreadId("archive-saga-pending".into());
+    let pending_run = RunId("archive-saga-pending-run".into());
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &pending.0,
+                &pending_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(11),
+        )
+        .await
+        .expect("A2 pending admission");
+    let rejected = host
+        .archive_session_thread(&parent.0, &pending)
+        .await
+        .expect_err("A2 running work cannot archive");
+    assert_eq!(rejected.kind, HostErrorKind::BadRequest, "A2/E2");
+    assert_eq!(
+        host.session_thread_disposition(&parent.0, &pending)
+            .await
+            .expect("A2 disposition"),
+        awaken_agent_contract::ThreadDisposition::Active,
+        "A2/E2"
+    );
+    dispatch
+        .cancel(&pending_run)
+        .await
+        .expect("A2 cleanup intent");
+    let pending_cancel = dispatch
+        .claim("archive-test", 100, 0, &Default::default())
+        .await
+        .expect("A2 cancellation claim")
+        .expect("A2 cancellation work");
+    dispatch
+        .settle(
+            &pending_run,
+            pending_cancel.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("A2 cleanup settle");
+
+    let awaiting = ThreadId("archive-saga-awaiting".into());
+    let awaiting_run = RunId("archive-saga-awaiting-run".into());
+    commit
+        .commit(ThreadCommit::assemble(
+            awaiting.clone(),
+            RunDisposition::running(awaiting_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("A3 running child truth");
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &awaiting.0,
+                &awaiting_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(12),
+        )
+        .await
+        .expect("A3 child admission");
+    let awaiting_claim = dispatch
+        .claim("archive-test", 100, 0, &Default::default())
+        .await
+        .expect("A3 claim")
+        .expect("A3 work");
+    dispatch
+        .settle(
+            &awaiting_run,
+            awaiting_claim.lease.epoch,
+            DispatchOutcome::Awaiting,
+            &[],
+        )
+        .await
+        .expect("A3 await");
+    let ticket = ResumeTicket::new(
+        "archive-saga-correlation",
+        awaiting_run.clone(),
+        awaiting.clone(),
+        "archive-saga-snapshot",
+        "archive-saga-catalog",
+        AwaitTarget::RemoteInput {
+            reason: RemoteInputReason::UserInput,
+            call_id: "archive-saga-call".into(),
+        },
+    );
+    commit
+        .commit(ThreadCommit::assemble(
+            awaiting.clone(),
+            RunDisposition::awaiting(ticket),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("A3 Awaiting child truth");
+    let archive_awaiting = {
+        let host = host.clone();
+        let parent = parent.clone();
+        let awaiting = awaiting.clone();
+        tokio::spawn(async move { host.archive_session_thread(&parent.0, &awaiting).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let rows = dispatch.list_dispatches().await.expect("A3 cancellation");
+            if rows.iter().any(|row| {
+                row.run_id == awaiting_run
+                    && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
+                    && row.cancellation_requested
+            }) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("A3 archive records ordinary cancellation before waiting");
+    let awaiting_cancel = dispatch
+        .claim("archive-test", 100, 0, &Default::default())
+        .await
+        .expect("A3 cancellation claim")
+        .expect("A3 cancellation work");
+    commit
+        .commit(ThreadCommit::assemble(
+            awaiting.clone(),
+            RunDisposition::ended(awaiting_run.clone(), EndCause::NaturalEnd),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("A3 terminal interruption truth");
+    dispatch
+        .settle(
+            &awaiting_run,
+            awaiting_cancel.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("A3 terminal settle");
+    archive_awaiting
+        .await
+        .expect("A3 archive task")
+        .expect("A3/E3 one call archives after terminal settle");
+    assert_eq!(
+        host.session_thread_disposition(&parent.0, &awaiting)
+            .await
+            .expect("A3 disposition"),
+        awaken_agent_contract::ThreadDisposition::Archived,
+        "A3/E3"
+    );
+
+    let raced_run = RunId("archive-saga-raced-run".into());
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &idle.0,
+                &raced_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(13),
+        )
+        .await
+        .expect("A4 stale admission after archive");
+    let archive_raced = {
+        let host = host.clone();
+        let parent = parent.clone();
+        let idle = idle.clone();
+        tokio::spawn(async move { host.archive_session_thread(&parent.0, &idle).await })
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let rows = dispatch.list_dispatches().await.expect("A4 cancellation");
+            if rows
+                .iter()
+                .any(|row| row.run_id == raced_run && row.cancellation_requested)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("A4 archived replay records cancellation before waiting");
+    let raced_cancel = dispatch
+        .claim("archive-test", 100, 0, &Default::default())
+        .await
+        .expect("A4 cancellation claim")
+        .expect("A4 cancellation work");
+    assert!(raced_cancel.cancellation_requested, "A4/E4");
+    dispatch
+        .settle(
+            &raced_run,
+            raced_cancel.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("A4 cancellation settle");
+    archive_raced
+        .await
+        .expect("A4 archive task")
+        .expect("A4/E4 one replay converges after raced work settles");
+}
+
+#[tokio::test]
+async fn failed_child_boundary_cancels_raced_follow_up_without_fencing_its_own_settlement() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    // Cause/effect graph: C1 the current coordinated child dispatch still owns
+    // its lease but its Run has committed Failed; C2 a later follow-up for the
+    // same logical Thread was admitted just before that failure became visible;
+    // C3 the failed boundary invokes the existing Thread interrupt path. Effects:
+    // E1 committed Run truth closes future admission; E2 C3 leaves the already
+    // terminal current claim untouched; E3 C3 durably marks the queued follow-up
+    // cancelled; E4 current settlement succeeds, then canonical cancellation
+    // settlement consumes the raced row. No Thread terminal flag is stored.
+    //
+    // | Rule | Current Run | Later row | Interrupt | Effects |
+    // |---|---|---|---|---|
+    // | R1 | Failed + Leased | Pending | no | E1 only |
+    // | R2 | Failed + Leased | Pending | yes | E1+E2+E3 |
+    // | R3 | R2 | cancel claim | settled | E4 |
+    use awaken_agent_contract::agent::run::Failure;
+    use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
+    use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
+    use awaken_run_ingress::{DispatchOutcome, RunDispatch};
+
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("failed follow-up race dispatch"),
+    );
+    let host = SharedHost::new(Arc::new(OkModel), "stub")
+        .with_coordinator_dispatch_store(dispatch.clone());
+    let parent = ThreadId("failed-race-parent".into());
+    let child = ThreadId("failed-race-child".into());
+    let failed_run = RunId("failed-race-current".into());
+    let follow_up_run = RunId("failed-race-follow-up".into());
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &child.0,
+                &failed_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(21),
+        )
+        .await
+        .expect("R1 current admission");
+    let current_claim = dispatch
+        .claim("failed-race-worker", 100, 0, &Default::default())
+        .await
+        .expect("R1 claim")
+        .expect("R1 current work");
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                &child.0,
+                &follow_up_run.0,
+            ))
+            .for_session(parent.clone())
+            .with_session_activity_epoch(22),
+        )
+        .await
+        .expect("R1 raced later admission");
+    let commit = host
+        .commit_for_read(&parent.0)
+        .await
+        .expect("parent partition");
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::running(failed_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("R1 Running truth");
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::ended(failed_run.clone(), EndCause::Error(Failure::StateConflict)),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("R1 Failed truth");
+    assert!(
+        host.coordinated_thread_has_failed_run(&parent.0, &child)
+            .await
+            .expect("R1 admission fence"),
+        "R1/E1"
+    );
+
+    host.interrupt_session_thread(&parent.0, &child)
+        .await
+        .expect("R2 boundary interruption");
+    let rows = dispatch.list_dispatches().await.expect("R2 inspect rows");
+    let current = rows
+        .iter()
+        .find(|row| row.run_id == failed_run)
+        .expect("R2 current row");
+    let raced = rows
+        .iter()
+        .find(|row| row.run_id == follow_up_run)
+        .expect("R2 raced row");
+    assert!(!current.cancellation_requested, "R2/E2");
+    assert!(raced.cancellation_requested, "R2/E3");
+
+    let settled = dispatch
+        .settle(
+            &failed_run,
+            current_claim.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("R3 current settlement");
+    assert!(settled.applied(), "R3/E4 current claim was not fenced");
+    let cancellation = dispatch
+        .claim("failed-race-worker", 100, 0, &Default::default())
+        .await
+        .expect("R3 cancellation claim")
+        .expect("R3 cancellation work");
+    assert_eq!(cancellation.request.run_id(), &follow_up_run, "R3/E4");
+    assert!(cancellation.cancellation_requested, "R3/E4");
+    dispatch
+        .settle(
+            &follow_up_run,
+            cancellation.lease.epoch,
+            DispatchOutcome::Done,
+            &[],
+        )
+        .await
+        .expect("R3 cancellation settlement");
 }
 
 #[tokio::test]
@@ -8492,6 +11485,10 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
 
 #[tokio::test]
 async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     use awaken_runtime_contract::agent_bindings::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -8524,13 +11521,13 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
             toolsets: vec![ToolsetPolicy {
                 source: ToolsetSource::Agent,
                 default: ToolExecutionPolicy::default(),
-                overrides: vec![ToolPolicyOverride {
-                    name: "write".into(),
-                    policy: ToolExecutionPolicy {
+                overrides: vec![ToolPolicyOverride::new(
+                    "write",
+                    ToolExecutionPolicy {
                         enabled: true,
                         permission: ToolPermissionRequirement::AlwaysAsk,
                     },
-                }],
+                )],
             }],
             client_tools: Vec::new(),
         });
@@ -8541,6 +11538,261 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .await
         .expect("build Session from immutable publication");
     assert_eq!(context.config, publication);
+}
+
+#[test]
+fn managed_tool_projection_has_one_role_and_session_override_decision_table() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
+    use super::session::{
+        ManagedCoordinationRole, SessionToolsetProjection, project_managed_coordination_surface,
+        project_session_tool_override,
+    };
+    use awaken_agent_contract::{
+        ClientToolDescriptor, ToolExecutionPolicy, ToolsetPolicy, ToolsetSource,
+    };
+    use awaken_runtime_contract::agent_bindings::{AgentAdvisorBinding, AgentDelegateBinding};
+    use awaken_runtime_contract::resolved::{
+        ADVISOR_TOOL_ID, ModelBinding, ResolvedModelCandidate, ToolDescriptor, ToolKind,
+    };
+
+    // Cause/effect graph: C1 root/child role selects the public coordination
+    // surface; C2 generated/inherited vs immutable publication selects whether
+    // Session toolsets enter the executable clone; C3 an explicit Session client
+    // descriptor replaces published client ownership. Effects: E1 only a primary
+    // exposes fixed list/send; E2 every child loses nested delegation/advisor;
+    // E3 generated/self-child embeds Session toolsets; E4 published/non-self
+    // retains its publication toolsets; E5 explicit client tools exact-replace.
+    //
+    // | Rule | role | snapshot owner | Session overlay | Effects |
+    // | M1 | primary | generated | project | E1,E3,E5 |
+    // | M2 | primary | published | preserve | E1,E4,E5 |
+    // | M3 | child | self/inherited | project | E2,E3,E5 |
+    // | M4 | child | other Agent | absent | E2,E4 |
+    let published_policy = ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: Vec::new(),
+    };
+    let session_policy = ToolsetPolicy {
+        source: ToolsetSource::Mcp {
+            server_name: "session-policy".into(),
+        },
+        default: ToolExecutionPolicy::default(),
+        overrides: Vec::new(),
+    };
+    let published_client = ClientToolDescriptor {
+        name: "published_client".into(),
+        description: "published".into(),
+        input_schema: serde_json::json!({"type": "object"}),
+    };
+    let session_client = ClientToolDescriptor {
+        name: "session_client".into(),
+        description: "session".into(),
+        input_schema: serde_json::json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+    };
+    let tools = awaken_session_contract::SessionToolConfiguration {
+        toolsets: vec![session_policy.clone()],
+        client_tools: vec![session_client.clone()],
+    };
+    let builtin = |id: &str| {
+        awaken_ext_builtin_tools::builtin_tools()
+            .into_iter()
+            .find(|tool| tool.descriptor().id == id)
+            .expect("canonical builtin descriptor")
+            .into_descriptor()
+    };
+    let mut base = awaken_runtime_contract::ExecutableAgentSnapshot::builder("coordinator")
+        .model(test_model_binding())
+        .build();
+    base.resolved_spec.tool_descriptors = vec![
+        ToolDescriptor::pinned(
+            "test",
+            "ordinary",
+            "ordinary",
+            serde_json::json!({"type": "object"}),
+        ),
+        crate::config::session_client_tool_descriptor(&published_client),
+        builtin(awaken_ext_builtin_tools::AGENT_RUN),
+        builtin(awaken_ext_builtin_tools::LIST_AGENTS),
+        builtin(awaken_ext_builtin_tools::SEND_TO_AGENT),
+        builtin(awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID),
+        ToolDescriptor::pinned(
+            "test",
+            ADVISOR_TOOL_ID,
+            "advisor",
+            serde_json::json!({"type": "object"}),
+        )
+        .with_kind(ToolKind::Advisor),
+    ];
+    base.resolved_spec.plugin_config.agent.delegates = vec![AgentDelegateBinding {
+        agent_id: awaken_runtime_contract::snapshot::AgentId("worker".into()),
+        source_revision: Some(1),
+        recursive_self: false,
+    }];
+    base.resolved_spec.plugin_config.agent.advisor = Some(AgentAdvisorBinding {
+        model: "advisor-model".into(),
+        candidate: ResolvedModelCandidate::host(ModelBinding::new(
+            "provider",
+            "advisor-model",
+            "backend",
+        )),
+    });
+    base.resolved_spec.plugin_config.agent.toolsets = vec![published_policy.clone()];
+
+    let descriptor_ids = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot| {
+        snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .map(|descriptor| descriptor.id.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+    };
+    let assert_primary = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+                          rule: &str| {
+        let ids = descriptor_ids(snapshot);
+        assert!(
+            ids.contains(awaken_ext_builtin_tools::LIST_AGENTS),
+            "{rule}/E1"
+        );
+        assert!(
+            ids.contains(awaken_ext_builtin_tools::SEND_TO_AGENT),
+            "{rule}/E1"
+        );
+        assert!(
+            !ids.contains(awaken_ext_builtin_tools::AGENT_RUN),
+            "{rule}/E1"
+        );
+        assert!(
+            !ids.contains(awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID),
+            "{rule}/E1"
+        );
+        assert!(
+            ids.contains(ADVISOR_TOOL_ID),
+            "{rule}/E1 advisor remains internal"
+        );
+    };
+    let assert_child = |snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot, rule: &str| {
+        let ids = descriptor_ids(snapshot);
+        for forbidden in [
+            awaken_ext_builtin_tools::AGENT_RUN,
+            awaken_ext_builtin_tools::LIST_AGENTS,
+            awaken_ext_builtin_tools::SEND_TO_AGENT,
+            awaken_ext_builtin_tools::SEND_MESSAGE_TOOL_ID,
+            ADVISOR_TOOL_ID,
+        ] {
+            assert!(!ids.contains(forbidden), "{rule}/E2 forbids {forbidden}");
+        }
+        assert!(
+            snapshot
+                .resolved_spec
+                .plugin_config
+                .agent
+                .delegates
+                .is_empty(),
+            "{rule}/E2"
+        );
+        assert!(
+            snapshot.resolved_spec.plugin_config.agent.advisor.is_none(),
+            "{rule}/E2"
+        );
+    };
+
+    let mut generated_primary = base.clone();
+    project_session_tool_override(
+        &mut generated_primary,
+        &tools,
+        SessionToolsetProjection::ProjectIntoSnapshot,
+    );
+    project_managed_coordination_surface(&mut generated_primary, ManagedCoordinationRole::Primary);
+    assert_primary(&generated_primary, "M1");
+    assert_eq!(
+        generated_primary
+            .resolved_spec
+            .plugin_config
+            .agent
+            .toolsets
+            .as_slice(),
+        std::slice::from_ref(&session_policy),
+        "M1/E3"
+    );
+
+    let mut published_primary = base.clone();
+    project_session_tool_override(
+        &mut published_primary,
+        &tools,
+        SessionToolsetProjection::PreservePublished,
+    );
+    project_managed_coordination_surface(&mut published_primary, ManagedCoordinationRole::Primary);
+    assert_primary(&published_primary, "M2");
+    assert_eq!(
+        published_primary
+            .resolved_spec
+            .plugin_config
+            .agent
+            .toolsets
+            .as_slice(),
+        std::slice::from_ref(&published_policy),
+        "M2/E4"
+    );
+
+    for (rule, snapshot) in [("M1", &generated_primary), ("M2", &published_primary)] {
+        let clients = snapshot
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
+            .collect::<Vec<_>>();
+        assert_eq!(clients.len(), 1, "{rule}/E5");
+        assert_eq!(clients[0].id, session_client.name, "{rule}/E5");
+    }
+
+    let mut inherited_child = base.clone();
+    project_session_tool_override(
+        &mut inherited_child,
+        &tools,
+        SessionToolsetProjection::ProjectIntoSnapshot,
+    );
+    project_managed_coordination_surface(&mut inherited_child, ManagedCoordinationRole::Child);
+    assert_child(&inherited_child, "M3");
+    assert_eq!(
+        inherited_child.resolved_spec.plugin_config.agent.toolsets,
+        [session_policy],
+        "M3/E3"
+    );
+    assert_eq!(
+        inherited_child
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
+            .map(|descriptor| descriptor.id.as_str())
+            .collect::<Vec<_>>(),
+        [session_client.name.as_str()],
+        "M3/E5"
+    );
+
+    let mut other_child = base;
+    project_managed_coordination_surface(&mut other_child, ManagedCoordinationRole::Child);
+    assert_child(&other_child, "M4");
+    assert_eq!(
+        other_child.resolved_spec.plugin_config.agent.toolsets,
+        [published_policy],
+        "M4/E4"
+    );
+    assert_eq!(
+        other_child
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .filter(|descriptor| descriptor.kind == ToolKind::ClientExecuted)
+            .map(|descriptor| descriptor.id.as_str())
+            .collect::<Vec<_>>(),
+        [published_client.name.as_str()],
+        "M4/E4"
+    );
 }
 
 #[tokio::test]
@@ -8653,6 +11905,10 @@ async fn session_client_tools_replace_the_published_surface_with_exact_ownership
 
 #[tokio::test]
 async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_reads() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Causes: C1 a cold Session has a frozen non-default Agent projection and an
     // internal history read carries no repeated Agent argument; C2 the caller
     // repeats the same Agent; C3 it asserts a different Agent. Effects: E1/E2
@@ -8678,6 +11934,7 @@ async fn cold_session_uses_its_frozen_agent_projection_for_internal_history_read
     let host = Arc::new(
         SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications)),
     );
+    install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
             "cold-agent",
@@ -8791,6 +12048,10 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
 
 #[tokio::test]
 async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
+    // Constraint/Invariant: the authoritative inputs and ownership boundaries
+    // documented here remain the only decision source; no parallel path is admitted.
+    // Decision rule: execute every reachable cause partition documented here and
+    // require its stated effects, including each fail-closed outcome.
     // Cause/effect graph: C1 a durable-thread operation may open a context before
     // the frozen projection is installed; C2 that context is inactive or active;
     // C3 the later projection selects the default or a published non-default
@@ -8809,7 +12070,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
     // here. P3 is covered by
     // `cold_session_uses_its_frozen_agent_projection_for_internal_history_reads`
     // and the idempotent projection tests above. P4 prevents an approval event
-    // racing the preceding turn's terminal cleanup from rebinding or rejecting
+    // racing the preceding Run's terminal cleanup from rebinding or rejecting
     // the already-frozen Runtime. FMECA: rejecting P4 loses the approved input;
     // rebuilding it risks changing Hand/MCP effects under an active run.
     let snapshot = crate::config::server_config(
@@ -8828,6 +12089,7 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
         SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
     host.deployment.disable_local_pool = true;
     let host = Arc::new(host);
+    install_test_session_application(&host);
 
     let stale = host
         .ctx_for("late-projection", None)
@@ -8932,17 +12194,74 @@ async fn frozen_projection_replaces_an_inactive_default_runtime_context() {
 
 #[tokio::test]
 async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() {
-    // FMECA cause/effect graph:
-    // C1 execution topology owns a local dispatch pool; C2 the Session context
-    // exists; C3 an attempt is active. E1 expose the exact process-local inbox;
-    // E2 report inactive so callers use durable Session events; E3 never accept
-    // a message into a Coordinator-only inbox that a remote Worker cannot read.
+    // FMECA cause/effect graph: C1 the resident Session uses direct foreground
+    // ingress; C2 a direct Runtime attempt or pool-owned Session Event attempt has
+    // registered its exact local inbox; C3 the direct lifecycle slot is open;
+    // C4 the exact registration has settled/been removed; C5 a durable local or
+    // Coordinator-only context exists. Effects: E1 C2 exposes the registry's
+    // process-local inbox regardless of C1/C5 topology; E2 no registration remains
+    // inactive even when C3 or a foreground Run id remains; E3 settled and remote
+    // attempts fail closed so callers use committed Session events.
+    // Constraint: Runtime's generation/ownership-fenced active-attempt registry is
+    // the sole discovery authority. The SessionCtx slot owns only direct lifecycle
+    // and carry-over; `active_attempt_registry_is_exact_generation_owned_and_thread_addressed`
+    // owns the deeper replacement/lost/unavailable matrix.
     //
-    // | Rule | local pool | context | active | effect |
+    // | Rule | ingress/topology | direct slot | registry | effect |
     // |---|---|---|---|---|
-    // | L1 | yes | yes | yes | E1 reachable inbox |
-    // | L2 | yes | yes | no | E2 inactive |
-    // | L3 | no | yes | yes | E2 + E3 fail closed |
+    // | L1 | direct foreground | closed | absent | E2 inactive |
+    // | L2 | direct Runtime | open | current | E1 exact inbox |
+    // | L3 | direct settled | still open | removed | E2+E3 inactive |
+    // | L4 | direct + pool-owned Event | closed | current | E1 exact inbox |
+    // | L5 | Event settled | closed | removed | E3 inactive |
+    // | L6 | durable local Worker | n/a | current | E1 exact inbox |
+    // | L7 | Coordinator-only | n/a | absent | E3 inactive |
+    // Decision rule: execute L1-L7; only a current registry entry may produce E1.
+    let direct = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let direct_ctx = direct
+        .ctx_for("direct-live", None)
+        .await
+        .expect("L1 direct context");
+    assert!(!direct_ctx.durable, "L1 direct foreground precondition");
+    assert!(direct.live_inbox("direct-live").await.is_none(), "L1/E2");
+
+    let direct_inbox = direct_ctx.open_live_inbox();
+    let direct_registration = direct_ctx.runtime.register_attempt_controls(
+        &RunId("run-direct".into()),
+        &direct_ctx.thread_id,
+        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(direct_inbox.clone()),
+    );
+    assert!(direct.live_inbox("direct-live").await.is_some(), "L2/E1");
+    direct_ctx
+        .runtime
+        .deregister_attempt_controls(&direct_registration);
+    assert!(
+        direct.live_inbox("direct-live").await.is_none(),
+        "L3/E2+E3 an open lifecycle slot is not a fallback authority"
+    );
+    direct_ctx.close_live_inbox();
+
+    let event_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
+    let event_registration = direct_ctx.runtime.register_attempt_controls(
+        &RunId("run-session-event".into()),
+        &direct_ctx.thread_id,
+        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(event_inbox.clone()),
+    );
+    let discovered = direct
+        .live_inbox("direct-live")
+        .await
+        .expect("L4/E1 pool-owned Session Event inbox");
+    let _ = discovered.offer(Message::text(
+        MessageId("event-live-message".into()),
+        Role::User,
+        "event",
+    ));
+    assert_eq!(event_inbox.list().len(), 1, "L4/E1 exact Event inbox");
+    direct_ctx
+        .runtime
+        .deregister_attempt_controls(&event_registration);
+    assert!(direct.live_inbox("direct-live").await.is_none(), "L5/E3");
+
     let mut local_deployment = crate::DeploymentConfig::ephemeral();
     local_deployment.durable = true;
     let local = Arc::new(SharedHost::new_with_deployment(
@@ -8950,10 +12269,26 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         "stub",
         local_deployment,
     ));
-    let local_ctx = local.ctx_for("local-live", None).await.expect("L1 context");
-    assert!(local.live_inbox("local-live").await.is_none(), "L2");
+    let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
     *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
-    assert!(local.live_inbox("local-live").await.is_some(), "L1");
+    let registration = local_ctx.runtime.register_attempt_controls(
+        &RunId("run-local".into()),
+        &local_ctx.thread_id,
+        &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(
+            local_ctx
+                .durable_ingress
+                .as_ref()
+                .expect("durable ingress")
+                .live_inbox()
+                .clone(),
+        ),
+    );
+    assert!(local.live_inbox("local-live").await.is_some(), "L6/E1");
+    local_ctx.runtime.deregister_attempt_controls(&registration);
+    assert!(
+        local.live_inbox("local-live").await.is_none(),
+        "L6/E3 settled"
+    );
 
     let mut remote_deployment = crate::DeploymentConfig::ephemeral();
     remote_deployment.durable = true;
@@ -8966,9 +12301,9 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     let remote_ctx = remote
         .ctx_for("remote-live", None)
         .await
-        .expect("L3 context");
+        .expect("L7 context");
     *remote_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-remote".into()));
-    assert!(remote.live_inbox("remote-live").await.is_none(), "L3");
+    assert!(remote.live_inbox("remote-live").await.is_none(), "L7/E3");
 }
 
 /// FMECA: FM1 explicit warmup and Session creation use separate preparation

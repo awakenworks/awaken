@@ -182,12 +182,6 @@
       "evidence": ["crates/runtime/awaken-mcp-wire/src/types.rs"]
     },
     {
-      "path": "crates/runtime/awaken-observability/src/http.rs",
-      "boundary": "observability_adapter",
-      "reason": "Best-effort OpenTelemetry HTTP span projection; it records request metadata but neither admits product operations nor mutates product authority.",
-      "evidence": ["crates/runtime/awaken-observability/src/http.rs"]
-    },
-    {
       "path": "crates/runtime/awaken-observability/src/metrics.rs",
       "boundary": "observability_adapter",
       "reason": "Projects already-observed structure-only facts into OpenTelemetry/Prometheus instruments; counters and exporter shutdown have no authority over product state.",
@@ -366,6 +360,78 @@
       "boundary": "topology_dto",
       "reason": "Serializable connection-topology value object with field-preserving convenience constructors; transport authentication and admission are intentionally absent.",
       "evidence": ["docs/adr/0045-connection-plan-and-network-topology.md"]
+    },
+    {
+      "path": "crates/bin/awaken-cli/src/managed_platform.rs",
+      "boundary": "composition_adapter",
+      "reason": "Static owner: hosted composition seam carrying already-selected provider ports. Dynamic path: startup injects those ports into canonical IAM, Vault, Session, and protocol owners; this file neither evaluates entitlement nor adopts credential material. Evidence: crates/control/awaken-credential-vault/src/repo.rs and the canonical downstream owners.",
+      "evidence": ["crates/control/awaken-credential-vault/src/repo.rs"]
+    },
+    {
+      "path": "crates/contract/awaken-agent-contract/src/audit/model_request.rs",
+      "boundary": "projection_dto",
+      "reason": "Static owner: serializable model-request audit projection and retry counter. Dynamic path: already-decided request facts are lowered into audit events without admitting a model request or mutating Run state; the scanner's StateChanged term occurs only below cfg(test). Evidence: crates/contract/awaken-agent-contract/src/audit/run_event.rs.",
+      "evidence": ["crates/contract/awaken-agent-contract/src/audit/run_event.rs"]
+    },
+    {
+      "path": "crates/server/awaken-coordinator/src/managed_lifecycle.rs",
+      "boundary": "composition_wiring",
+      "reason": "Static owner: Coordinator assembly of existing lifecycle delivery ports. Dynamic path: committed lifecycle facts flow through CompositeLifecycleFactDelivery to the existing WebhookOutboxNotifier; no lifecycle transition, retry, or durable-outbox decision is reimplemented here. Evidence: crates/contract/awaken-session-contract/src/lifecycle.rs and crates/server/awaken-webhook-managed/src/lib.rs.",
+      "evidence": ["crates/contract/awaken-session-contract/src/lifecycle.rs", "crates/server/awaken-webhook-managed/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-protocol-managed/src/test_support.rs",
+      "boundary": "test_only",
+      "reason": "Static owner: Managed protocol fixtures and scenario helpers. Dynamic path: the module is reachable only through the exact cfg(any(test, feature = test-support)) declaration and never enters the default product graph. Evidence: crates/server/awaken-protocol-managed/src/lib.rs.",
+      "evidence": ["crates/server/awaken-protocol-managed/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/dispatch_admission.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: dispatch-admission conformance cases. Dynamic path: the tooling-only testkit includes this exact file into its test fixture library; no product crate owns or invokes it. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/fixtures.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: reusable ingress fakes and fixture constructors. Dynamic path: the tooling-only testkit includes this exact file for conformance execution; it is absent from the product runtime graph. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/operations_claims.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: operation-claim conformance cases. Dynamic path: the tooling-only testkit includes this exact file to drive implementations under test; production dispatch never calls it. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/recovery_credentials.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: recovery-credential conformance cases. Dynamic path: the tooling-only testkit includes this exact file to exercise claimed recovery; it does not resolve credentials in production. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/reservations.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: dispatch-reservation conformance cases. Dynamic path: the tooling-only testkit includes this exact file to assert store behavior; it does not reserve product work itself. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-run-ingress-testkit/src/conformance/session_messages.rs",
+      "boundary": "test_support_crate",
+      "reason": "Static owner: pending Session-message conformance cases. Dynamic path: the tooling-only testkit includes this exact file to drive store implementations under test; it is not a production message port. Evidence: crates/server/awaken-run-ingress-testkit/src/lib.rs.",
+      "evidence": ["crates/server/awaken-run-ingress-testkit/src/lib.rs"]
+    },
+    {
+      "path": "crates/server/awaken-runtime-host/src/managed_outcome.rs",
+      "boundary": "application_adapter",
+      "reason": "Static owner: field-preserving adapter between Session outcome ports and the Host outcome controller. Dynamic path: define, resume, and committed projection calls delegate to SharedHost and project the existing controller result without choosing outcome transitions. Evidence: crates/server/awaken-runtime-host/src/outcome_controller.rs.",
+      "evidence": ["crates/server/awaken-runtime-host/src/outcome_controller.rs"]
+    },
+    {
+      "path": "crates/server/awaken-worker-runtime/src/session_control.rs",
+      "boundary": "transport_adapter",
+      "reason": "Static owner: Worker-side implementation of neutral Session-control ports. Dynamic path: each method forwards the exact Worker identity, claim, and command to WorkerControlClient; authentication and state decisions remain server-side. Evidence: crates/server/awaken-worker-runtime/src/worker_control_client.rs.",
+      "evidence": ["crates/server/awaken-worker-runtime/src/worker_control_client.rs"]
     }
   ]
 }

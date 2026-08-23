@@ -32,6 +32,10 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     // T2 retry at exact expiry => strict lease fence returns no claim; T3 retry
     // after expiry, even though the special claim raised attempts above max =>
     // reclaim, commit Indeterminate, settle Done, publish one tombstone.
+    // Causes: retry exhaustion, exact lease time, post-expiry time, and injected
+    // commit failure select T1-T3. Effects: T1 retains evidence, T2 fences, T3
+    // completes once. Constraint/Invariant: failed terminal commit cannot consume
+    // or quarantine the claim. Decision rule: execute T1, T2, then T3 in order.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let inner = Arc::new(MemoryCommitCoordinator::new());
@@ -54,7 +58,10 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
     let worker = DispatchWorker::new(runtime, store.clone(), commit.clone(), "resolver")
         .with_lease_ms(LEASE);
     assert!(
-        worker.resolve_one_retry_exhausted(1, 400).await.is_err(),
+        worker
+            .resolve_one_retry_exhausted(1, harness::clock(400))
+            .await
+            .is_err(),
         "T1"
     );
     assert!(inner.committed().latest_run.is_none(), "T1");
@@ -70,11 +77,17 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
 
     commit.set_failing(false);
     assert!(
-        !worker.resolve_one_retry_exhausted(1, 1_400).await.unwrap(),
+        !worker
+            .resolve_one_retry_exhausted(1, harness::clock(1_400))
+            .await
+            .unwrap(),
         "T2"
     );
     assert!(
-        worker.resolve_one_retry_exhausted(1, 1_401).await.unwrap(),
+        worker
+            .resolve_one_retry_exhausted(1, harness::clock(1_401))
+            .await
+            .unwrap(),
         "T3"
     );
     assert_eq!(
@@ -94,6 +107,12 @@ async fn failed_retry_exhaustion_commit_is_reclaimable_after_its_exact_lease() {
 
 #[tokio::test]
 async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled() {
+    // Test design. Causes: C1 a fresh Run hits an injected commit fault; C2 no
+    // terminal committed truth exists. Effects: E1 the Worker returns the error;
+    // E2 the dispatch remains leased/reclaimable; E3 it is not misclassified Done.
+    // Constraint/Invariant: only terminal committed truth may convert a drive
+    // error into benign settlement. Decision rule: force C1+C2, then prove a
+    // later post-expiry claim exists.
     // A fresh run whose runtime cannot commit (an injected storage fault) fails to
     // drive. Because committed truth shows the run is NOT terminal, the worker must
     // re-raise the error — never mistake it for the benign lost-race "already done"
@@ -110,7 +129,7 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
 
     let err = worker
-        .tick(0)
+        .tick(harness::clock(0))
         .await
         .expect_err("a genuine commit fault must propagate, not settle as done");
     assert!(
@@ -148,6 +167,11 @@ async fn a_genuine_drive_failure_is_reraised_and_the_dispatch_is_left_unsettled(
 
 #[tokio::test]
 async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
+    // Test design. Causes: C1 a committed ScheduledAction awaits; C2 performing
+    // it hits an injected commit fault; C3 committed Run remains nonterminal.
+    // Effects: E1 the error is reraised; E2 the dispatch remains reclaimable.
+    // Constraint/Invariant: scheduled action, execute, and resume share the same
+    // terminal-or-raise decision. Decision rule: force C1+C2+C3 and require E1/E2.
     // A run awaiting on a committed ScheduledAction is driven by a worker whose commit
     // fails: performing the deferred action errors. The run is still non-terminal, so
     // the worker re-raises and leaves the dispatch un-settled — the scheduled path
@@ -175,7 +199,7 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "live").with_lease_ms(LEASE);
 
     let err = worker
-        .tick(100)
+        .tick(harness::clock(100))
         .await
         .expect_err("a failing perform_scheduled must propagate");
     assert!(
@@ -202,6 +226,12 @@ async fn a_failing_scheduled_action_is_reraised_and_left_unsettled() {
 
 #[tokio::test]
 async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() {
+    // Test design. Causes: C1 a Run commits two consecutive ScheduledActions;
+    // C2 one Worker drive owns the claim. Effects: E1 both actions perform in
+    // order; E2 the Run ends and settles without intermediate Awaiting settlement.
+    // Constraint/Invariant: the current claim remains authority across the
+    // in-process schedule chain. Decision rule: schedule exactly two actions and
+    // require two effects plus one terminal drive result.
     // A run that commits two consecutive ScheduledActions (schedule → perform →
     // schedule → perform → end) must be driven to an end within a SINGLE
     // drive_claimed: the worker's `while state == Awaiting` loop keeps performing the
@@ -217,7 +247,7 @@ async fn a_chain_of_scheduled_actions_is_performed_to_completion_in_one_drive() 
         .unwrap();
     let worker = DispatchWorker::new(runtime, store.clone(), commit, "solo").with_lease_ms(LEASE);
 
-    let processed = worker.tick(0).await.unwrap();
+    let processed = worker.tick(harness::clock(0)).await.unwrap();
     assert_eq!(
         processed,
         Some((

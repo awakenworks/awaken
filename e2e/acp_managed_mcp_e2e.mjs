@@ -7,18 +7,39 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withServer, pass } from './harness.mjs';
+import { withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const CALC_TOKEN = 'calc-bearer-token-e2e'; // awaken-allow: secret
 
-async function agentTexts(client, sessionId) {
-  const texts = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    if (ev.type === 'agent.message') texts.push((ev.content ?? []).map((c) => c.text ?? '').join(''));
-  }
-  return texts;
+function agentTexts(events) {
+  return events
+    .filter((event) => event.type === 'agent.message')
+    .map((event) => (event.content ?? []).map((content) => content.text ?? '').join(''));
+}
+
+async function runAcpTurn(client, sessionId, text, rule) {
+  // C1=exact ACP User receipt; C2=active MCP-generation reply+terminal.
+  // E1=C2 after C1 proves the selected generation. K: each update replaces the
+  // Session root; no prior reply is eligible. Decision A1 C1&&!C2=>retry;
+  // A2 C1+C2=>return receipt-scoped history.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
+    events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
+    betas: BETAS,
+  });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', `${rule} exact ACP MCP User Event receipt`);
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `${rule} ACP MCP Run to commit`,
+  );
+  return agentTexts(events);
 }
 
 async function main() {
@@ -69,11 +90,12 @@ async function main() {
         vault_ids: [vault.id],
         betas: BETAS,
       });
-      await client.beta.sessions.events.send(authenticated.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'use calc privately' }] }],
-        betas: BETAS,
-      });
-      const authenticatedTexts = await agentTexts(client, authenticated.id);
+      const authenticatedTexts = await runAcpTurn(
+        client,
+        authenticated.id,
+        'use calc privately',
+        'A1',
+      );
       assert.ok(
         authenticatedTexts.includes('mcp saw-calc process-auth'),
         `A1: declared adapter receives process-private auth: ${JSON.stringify(authenticatedTexts)}`,
@@ -88,12 +110,7 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await client.beta.sessions.events.send(anonymous.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'hello' }] }],
-        betas: BETAS,
-      });
-
-      const texts = await agentTexts(client, anonymous.id);
+      const texts = await runAcpTurn(client, anonymous.id, 'hello', 'A2');
       const reply = texts.join(' ');
       assert.ok(
         texts.includes('mcp saw-calc noref'),
@@ -106,11 +123,7 @@ async function main() {
         betas: BETAS,
       });
       assert.deepEqual(replaced.agent.mcp_servers, [search], 'A3 projects only replacement');
-      await client.beta.sessions.events.send(anonymous.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'after replace' }] }],
-        betas: BETAS,
-      });
-      const afterReplace = await agentTexts(client, anonymous.id);
+      const afterReplace = await runAcpTurn(client, anonymous.id, 'after replace', 'A3');
       assert.equal(afterReplace.at(-1), 'mcp saw-search noref', `A3: ${JSON.stringify(afterReplace)}`);
       assert.ok(!afterReplace.at(-1).includes('saw-calc'), 'A3 old generation is absent');
 
@@ -119,38 +132,18 @@ async function main() {
         betas: BETAS,
       });
       assert.deepEqual(removed.agent.mcp_servers, [], 'A4 projects the drained set');
-      await client.beta.sessions.events.send(anonymous.id, {
-        events: [{ type: 'user.message', content: [{ type: 'text', text: 'after remove' }] }],
-        betas: BETAS,
-      });
-      const afterRemove = await agentTexts(client, anonymous.id);
+      const afterRemove = await runAcpTurn(client, anonymous.id, 'after remove', 'A4');
       assert.equal(afterRemove.at(-1), 'mcp noname noref', `A4: ${JSON.stringify(afterRemove)}`);
       pass('A1-A4 ACP MCP create, replace, and remove consume only the active generation');
     });
 
-    // Compose the real-CLI twin through the same external API without launching the
-    // networked CLI. This keeps the real factory in the hermetic coverage gate and
-    // guards against reintroducing the obsolete trusted-inline override; the dynamic
-    // host-owned relay behavior itself is exercised above, while the live twin is exercised by
-    // acp_real_mcp_kimi_e2e.mjs when provider quota is available.
-    await withServer('acp-real-mcp', 38199, async (baseUrl) => {
-      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
-      const acpAgent = await client.beta.agents.create({
-        name: 'real ACP fixture',
-        model: process.env.ANTHROPIC_MODEL || 'acp-real-mcp',
-        betas: BETAS,
-      });
-      const session = await client.beta.sessions.create({
-        agent: acpAgent.id,
-        environment_id: 'env_local',
-        betas: BETAS,
-      });
-      assert.equal(session.status, 'idle');
-      assert.equal(session.agent.id, acpAgent.id);
-      pass('real ACP factory composes behind the managed API without a trusted-inline MCP path');
-    });
+    // Coverage ownership: this hermetic scenario owns only A1-A4. The live
+    // `acp_real_mcp_kimi_e2e` owns pinned-wrapper launch plus real model/MCP
+    // effects, while the executor's retained-inline test owns legacy credential
+    // rejection. A second idle-Session composition has no distinct effect and
+    // must not turn this deterministic gate into an npm/network acquisition test.
 
-    console.log('E2E PASS: managed ACP × MCP credential boundary and real-CLI factory wiring.');
+    console.log('E2E PASS: managed ACP × MCP credential boundary.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

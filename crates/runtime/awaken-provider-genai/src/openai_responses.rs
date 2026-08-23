@@ -441,7 +441,7 @@ fn response_from_wire(wire: ResponsesResponse) -> Result<ChatResponse, Error> {
             _ => None,
         }
     } else {
-        Some(StopReason::EndTurn)
+        Some(StopReason::NaturalEnd)
     };
     Ok(ChatResponse {
         output: AssistantOutput::from_blocks(blocks),
@@ -478,6 +478,9 @@ mod tests {
         // document/image tool output loses semantics (high, closed DTO list);
         // fabricating OpenAI search result wire is protocol-invalid (high, E3).
         // Decision rule O1=C1+C2+C3; O2=C4 is covered by the next test.
+        // Constraints/invariants: the publication-pinned model and `store=false`
+        // are unconditional; function arguments/schemas cross only as JSON and
+        // Chat Completions is never selected by this projection.
         let mut request = request(vec![
             ChatMessage {
                 role: Role::User,
@@ -550,6 +553,11 @@ mod tests {
 
     #[test]
     fn request_rejects_unmaterialized_awaken_file_ids() {
+        // Test design — Cause: a neutral Document still carries an Awaken File
+        // id rather than provider-ready bytes/URL. Effect: request construction
+        // fails before HTTP. Constraints: local logical ids never masquerade as
+        // OpenAI file ids across authorities. Decision rule O2=unmaterialized
+        // File=>provider error with zero request side effect.
         let error = request_body(&request(vec![ChatMessage {
             role: Role::User,
             content: vec![ContentBlock::document_file("file-awaken")],
@@ -561,12 +569,14 @@ mod tests {
         );
     }
 
-    /// Response decision table and FMECA: R1=completed text -> EndTurn; R2=valid
+    /// Response decision table and FMECA: R1=completed text -> NaturalEnd; R2=valid
     /// function call -> typed ToolUse; R3=incomplete max tokens -> MaxTokens;
     /// R4=content filter -> ContentFilter; R5=missing required output or invalid
     /// function JSON -> provider error. Silent success on R5 is critical; typed
     /// deserialization and fail-closed argument parsing mitigate it. This test
     /// owns R1-R3; the following two tests own R4-R5.
+    /// Constraints/invariants: output order and typed tool arguments are
+    /// preserved; malformed required data never degrades to successful text.
     #[test]
     fn response_folds_text_tools_usage_and_incomplete_reason() {
         let response = response_from_value(json!({
@@ -590,12 +600,17 @@ mod tests {
 
     #[test]
     fn response_stop_reasons_cover_completed_and_content_filter() {
+        // Test design — Causes: Responses reports completed or incomplete with
+        // content_filter. Effects: neutral stop reason is NaturalEnd or
+        // ContentFilter respectively. Constraints/invariants: the two statuses
+        // remain distinct and neither falls back to unknown. Decision rule S1:
+        // completed=>NaturalEnd; S2: incomplete/content_filter=>ContentFilter.
         let completed = response_from_value(json!({
             "status":"completed",
             "output":[{"type":"message","content":[{"type":"output_text","text":"done"}]}]
         }))
         .unwrap();
-        assert_eq!(completed.stop_reason, Some(StopReason::EndTurn));
+        assert_eq!(completed.stop_reason, Some(StopReason::NaturalEnd));
 
         let filtered = response_from_value(json!({
             "status":"incomplete", "incomplete_details":{"reason":"content_filter"},
@@ -607,6 +622,11 @@ mod tests {
 
     #[test]
     fn malformed_response_payloads_fail_closed() {
+        // Test design — Causes: C1 required output is absent; C2 a function call
+        // carries invalid JSON arguments. Effects: both return provider_error and
+        // no partial assistant output. Constraints: untyped provider data crosses
+        // only through complete typed parsing. Decision rules R5a=C1=>error;
+        // R5b=C2=>error cover structural and semantic malformed partitions.
         let missing_output = response_from_value(json!({"status":"completed"})).unwrap_err();
         assert_eq!(missing_output.code(), "provider_error");
 
@@ -620,6 +640,13 @@ mod tests {
 
     #[tokio::test]
     async fn executor_posts_the_responses_path_with_bearer_auth() {
+        // Test design — Causes: text input plus a publication-pinned model/base
+        // and credential reach a successful localhost Responses server. Effects:
+        // one POST targets `/v1/responses` with Bearer auth, exact model and
+        // `store=false`; returned text/usage fold into the neutral response.
+        // Constraints: this executor never calls Chat Completions or delegates
+        // model selection/provider persistence. Decision rule H1=200=>exact
+        // captured request and committed response semantics.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
@@ -685,6 +712,10 @@ mod tests {
 
     #[tokio::test]
     async fn executor_classifies_non_success_status() {
+        // Test design — Cause: the real HTTP seam returns 401 with provider error
+        // JSON. Effect: inference returns neutral `unauthorized` and no assistant
+        // response. Constraints: non-success status is classified before payload
+        // success folding. Decision rule H2=401=>unauthorized fail-closed result.
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {

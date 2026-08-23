@@ -31,11 +31,15 @@ REQUIRED_DETERMINISTIC_SUITES = (
     "test:runtime-stages",
     "test:coverage-gaps",
     "test:delegation-restart",
+    "test:compatibility",
 )
 DETERMINISTIC_RUNNER = "node deterministic_runner.mjs"
 SECONDARY_RUNNERS = (
     "scripts/ci/e2e-coverage.sh",
     "scripts/ci/combined-coverage.sh",
+)
+PARALLEL_COVERAGE_MARKER = re.compile(
+    r"(?:\bcargo\s+llvm-cov\b|\bllvm-cov\s+show-env\b|\*_e2e)"
 )
 REQUIRED_RELEASE_COMMANDS = (
     "check_test_orchestration.py",
@@ -48,6 +52,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
     "npm --prefix e2e run test:deterministic",
+    "npm --prefix e2e run test:sdk-latest-canary",
     "sandbox_capability_suite.sh --require-substrates",
 )
 REQUIRED_RELEASE_GROUPS = (
@@ -81,6 +86,20 @@ def e2e_files(root: Path) -> set[str]:
         and "e2e" in path.stem
         and path.suffix in {".js", ".mjs", ".ts"}
     }
+
+
+def coverage_runner_texts(root: Path) -> dict[str, str]:
+    """Load the canonical runners plus any competing E2E-local coverage shell."""
+
+    runners = {
+        relative: (root / relative).read_text(encoding="utf-8")
+        for relative in SECONDARY_RUNNERS
+    }
+    for path in (root / "e2e").rglob("*.sh"):
+        text = path.read_text(encoding="utf-8")
+        if PARALLEL_COVERAGE_MARKER.search(text):
+            runners[path.relative_to(root).as_posix()] = text
+    return runners
 
 
 def orchestration_errors(
@@ -183,8 +202,20 @@ def orchestration_errors(
         errors.append("unclassified E2E files: " + ", ".join(unclassified))
 
     for relative, text in runner_texts.items():
+        if relative not in SECONDARY_RUNNERS:
+            errors.append(
+                f"{relative} is a parallel E2E coverage runner; "
+                "use the canonical scripts/ci runners"
+            )
+            continue
         if "run test:deterministic" not in text:
             errors.append(f"{relative} does not delegate to test:deterministic")
+        if not re.search(
+            r"^source scripts/ci/_provider_environment\.sh$", text, re.MULTILINE
+        ) or not re.search(r"^awaken_unset_ambient_api_keys$", text, re.MULTILINE):
+            errors.append(
+                f"{relative} does not use the canonical provider environment sanitizer"
+            )
         if re.search(r"\|\|\s*true", text):
             errors.append(f"{relative} suppresses command failure with `|| true`")
         if "*_e2e" in text:
@@ -252,10 +283,7 @@ def validate(root: Path) -> list[str]:
         deterministic_suites,
         stage_text,
         e2e_files(root),
-        {
-            relative: (root / relative).read_text(encoding="utf-8")
-            for relative in SECONDARY_RUNNERS
-        },
+        coverage_runner_texts(root),
     )
     errors.extend(
         release_gate_errors(
@@ -285,6 +313,9 @@ def self_test() -> None:
     # release gate requires every external/API/dependency suite without exclusions;
     # C7 every shared conformance testkit is executed by every production backend;
     # C8 deterministic leaf commands are unique; C9 stage scenarios have one owner.
+    # `test:compatibility` is part of C1, while the network-backed latest-SDK
+    # canary is part of C6 so it runs once at the release boundary rather than
+    # contaminating the hermetic deterministic runner.
     #
     # | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | C8 | C9 | Effect |
     # | R1   | T  | T  | T  | T  | T  | T  | T  | T  | T  | accept |
@@ -302,10 +333,7 @@ def self_test() -> None:
     deterministic_suites: list[str] = package["awakenTest"]["deterministicSuites"]
     stage_text = STAGE_GRAPH.read_text(encoding="utf-8")
     files = e2e_files(ROOT)
-    runners = {
-        relative: (ROOT / relative).read_text(encoding="utf-8")
-        for relative in SECONDARY_RUNNERS
-    }
+    runners = coverage_runner_texts(ROOT)
     errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, runners)
     if errors:
         raise AssertionError("R1 repository fixture must be valid: " + "; ".join(errors))
@@ -315,6 +343,15 @@ def self_test() -> None:
         "does not invoke test:protocols" in error
         for error in orchestration_errors(scripts, missing_suite, stage_text, files, runners)
     ), "R2"
+    missing_compatibility = [
+        suite for suite in deterministic_suites if suite != "test:compatibility"
+    ]
+    assert any(
+        "does not invoke test:compatibility" in error
+        for error in orchestration_errors(
+            scripts, missing_compatibility, stage_text, files, runners
+        )
+    ), "R2 compatibility"
 
     unclassified = set(files)
     unclassified.add("unclassified_e2e.mjs")
@@ -328,6 +365,50 @@ def self_test() -> None:
     parallel_errors = orchestration_errors(scripts, deterministic_suites, stage_text, files, parallel)
     assert any("does not delegate" in error for error in parallel_errors), "R4 delegate"
     assert any("parallel E2E" in error for error in parallel_errors), "R4 list"
+
+    # Coverage-runner cause/effect design: C10=an E2E-local shell runs llvm-cov
+    # or owns a scenario glob; C11=a canonical coverage runner omits the shared
+    # provider-key sanitizer. Effects: E10=reject a second suite authority;
+    # E11=reject ambient-secret-dependent deterministic execution. Constraint:
+    # only the two SECONDARY_RUNNERS may orchestrate coverage, both delegate to
+    # test:deterministic, and both source/call the single canonical sanitizer.
+    #
+    # | Rule | C10 | C11 | Effect |
+    # | R11  | T   | -   | E10: reject the competing runner |
+    # | R12  | F   | T   | E11: reject the unsanitized canonical runner |
+    # | R1   | F   | F   | apply the existing C1-C9 acceptance rules |
+    reintroduced_runner = dict(runners)
+    reintroduced_runner["e2e/coverage.sh"] = (
+        "eval \"$(cargo llvm-cov show-env --sh)\"\n"
+        "for f in *_e2e.mjs; do node \"$f\"; done\n"
+    )
+    assert any(
+        "e2e/coverage.sh is a parallel E2E coverage runner" in error
+        for error in orchestration_errors(
+            scripts,
+            deterministic_suites,
+            stage_text,
+            files,
+            reintroduced_runner,
+        )
+    ), "R11 parallel coverage runner"
+
+    unsanitized = dict(runners)
+    unsanitized[SECONDARY_RUNNERS[0]] = unsanitized[SECONDARY_RUNNERS[0]].replace(
+        "source scripts/ci/_provider_environment.sh\nawaken_unset_ambient_api_keys\n",
+        "",
+        1,
+    )
+    assert any(
+        "does not use the canonical provider environment sanitizer" in error
+        for error in orchestration_errors(
+            scripts,
+            deterministic_suites,
+            stage_text,
+            files,
+            unsanitized,
+        )
+    ), "R12 canonical provider sanitizer"
 
     swallowed = dict(runners)
     swallowed[SECONDARY_RUNNERS[1]] += "\nnpm run test:deterministic || true\n"
@@ -372,14 +453,23 @@ def self_test() -> None:
         public_api,
     ), "R7 required infrastructure"
     assert release_gate_errors(
+        check_all.replace("npm --prefix e2e run test:sdk-latest-canary", ""),
+        public_api,
+    ), "R7 latest SDK compatibility"
+    assert release_gate_errors(
         check_all.replace("scripts/e2e/k8s_container_e2e.sh", ""),
         public_api,
     ), "R7 required Kubernetes infrastructure"
     assert release_gate_errors(check_all, public_api + '\nexcluded="awaken-cli"\n'), (
         "R7 public API exclusion"
     )
+    without_e2e_group = check_all.replace(
+        'run e2e "deterministic-e2e"', 'run static "deterministic-e2e"'
+    ).replace(
+        'run e2e "latest-managed-sdk"', 'run static "latest-managed-sdk"'
+    )
     assert release_gate_errors(
-        check_all.replace('run e2e "deterministic-e2e"', 'run static "deterministic-e2e"'),
+        without_e2e_group,
         public_api,
     ), "R7 independently sharded release group"
     assert release_gate_errors(

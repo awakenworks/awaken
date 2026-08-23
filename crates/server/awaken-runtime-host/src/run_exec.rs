@@ -547,7 +547,7 @@ impl SharedHost {
             self.submit_durable_foreground(ctx, activation, false, options.sink)
                 .await
         } else {
-            // Native direct turn: the only path whose engine drains a live
+            // Native direct Run: the only path whose engine drains a live
             // inbox in-process, so it is the only path that opens one. The
             // inbox closes when the attempt returns — success or error — and
             // unconsumed messages carry over to the thread's next attempt.
@@ -872,6 +872,7 @@ mod tests {
                 .catalog_fingerprint
                 .clone(),
             result: ResumeResult::Input("continue".into()),
+            context_messages: Vec::new(),
             now_ms: 1,
         }
     }

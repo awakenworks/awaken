@@ -123,10 +123,11 @@ pub(crate) fn apply_context_policy(
 }
 
 /// Keep the model request structurally valid after truncation. Pairing is local
-/// to one assistant occurrence and its immediately-following Tool messages, so a
-/// reused provider call id in a later round cannot borrow an earlier result.
-/// Incomplete calls/results are removed from the request view only; committed
-/// transcript truth remains untouched (G13).
+/// to one assistant occurrence and its following Tool messages; intervening
+/// System context is transparent to the pair and remains in the request. A
+/// reused provider call id in a later conversational round therefore cannot
+/// borrow an earlier result. Incomplete calls/results are removed from the
+/// request view only; committed transcript truth remains untouched (G13).
 fn retain_complete_tool_rounds(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
     use std::collections::BTreeSet;
 
@@ -162,12 +163,14 @@ fn retain_complete_tool_rounds(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 
         let mut end = index + 1;
         let mut result_ids = BTreeSet::new();
-        while end < messages.len() && messages[end].role == Role::Tool {
-            for block in &messages[end].content {
-                if let ContentBlock::ToolResult { tool_use_id, .. } = block
-                    && call_ids.contains(tool_use_id)
-                {
-                    result_ids.insert(tool_use_id.clone());
+        while end < messages.len() && matches!(messages[end].role, Role::System | Role::Tool) {
+            if messages[end].role == Role::Tool {
+                for block in &messages[end].content {
+                    if let ContentBlock::ToolResult { tool_use_id, .. } = block
+                        && call_ids.contains(tool_use_id)
+                    {
+                        result_ids.insert(tool_use_id.clone());
+                    }
                 }
             }
             end += 1;
@@ -183,6 +186,10 @@ fn retain_complete_tool_rounds(messages: Vec<ChatMessage>) -> Vec<ChatMessage> {
 
         let mut emitted = BTreeSet::new();
         for result_message in &messages[index + 1..end] {
+            if result_message.role == Role::System {
+                output.push(result_message.clone());
+                continue;
+            }
             let mut result_message = result_message.clone();
             result_message.content.retain(|block| match block {
                 ContentBlock::ToolResult { tool_use_id, .. } => {

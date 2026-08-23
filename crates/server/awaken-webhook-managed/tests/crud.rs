@@ -27,6 +27,7 @@ use awaken_webhook_managed::WebhookOutboxNotifier;
 use awaken_webhook_managed::{
     ConfigPlaneLifecycleDelivery, ConfigPlaneSubscriptionSource, config_plane_lifecycle_delivery,
     reconcile_webhook_inventory, recover_webhook_mutations, webhook_config_router,
+    webhook_config_router_loopback,
 };
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -1690,11 +1691,8 @@ async fn an_ssrf_shaped_url_is_rejected_on_the_update_path_too() {
     }
 }
 
-// --- assemble / assemble_loopback: the composition fns (the guarded-sender +
-//     strict-policy pairing vs. the loopback pairing) ---
-
-/// Drive one request through an arbitrary already-built router (the `assemble*`
-/// fns hand back their own `Router`, so the shared `call` helper does not apply).
+/// Drive one request through an arbitrary already-built router so the production
+/// and loopback-only admission policies can be compared over the same command.
 async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -> StatusCode {
     let mut req = Request::builder()
         .method(method)
@@ -1706,116 +1704,71 @@ async fn drive(router: Router, method: &str, uri: &str, ws: &str, body: Value) -
     router.oneshot(req).await.unwrap().status()
 }
 
-/// `assemble_with_session_repo` is the production composition: it pairs `ReqwestSender::guarded()`
-/// with `strict_endpoint_url_policy()`. The guarded-sender + strict-policy pairing
-/// is only covered downstream, so drive the CRUD router `assemble` returns and prove
-/// the STRICT policy is wired — a loopback endpoint is rejected at admission (400).
-/// Also confirm the returned notifier wakes the exact repository supplied to
-/// assembly; no payload or parallel fact-production path is involved.
 #[tokio::test]
-async fn assemble_wires_the_strict_ssrf_policy_and_returns_a_working_notifier() {
-    // Cause/effect rule: C1 production assembly receives one service lifecycle
-    // and C2 a loopback endpoint is authored -> E1 strict admission rejects it;
-    // C3 a committed ownerless fact is followed by a notifier wake -> E2 the
-    // same outbox is drained without network fan-out; C4 cancellation -> E3 the
-    // exact outbox loop assembled here joins.
-    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let store = Arc::new(MemStore::default());
-    let secrets = Arc::new(MemSecrets::ok());
-    let outbox = Arc::new(SessionOutbox::default());
-    let (notifier, router) = awaken_webhook_managed::assemble_with_session_repo(
-        store.clone() as Arc<dyn WebhookStore>,
-        secrets as Arc<dyn SecretStore>,
-        Some("org_root".into()),
-        outbox.clone() as Arc<dyn ManagedSessionRepository>,
-        &service_lifecycle,
+async fn loopback_router_seam_changes_only_endpoint_admission() {
+    // Causes: the fixtures below establish `loopback router seam` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Constraints/invariants: subscription scope, durable registration, and the signed delivery
+    // contract remain separate authorities and must not be inferred from one another.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
+    // Cause/effect graph: C1 the production router receives a loopback URL; C2
+    // the test-support router receives the same URL; C3 both commands carry the
+    // same tenant and authoring fields. Effects: E1 production rejects without a
+    // row; E2 test support admits one tenant-owned row.
+    //
+    // | Rule | C1 strict | C2 loopback | C3 same command | Effects |
+    // |---|---|---|---|---|
+    // | P1 | yes | no | yes | E1 |
+    // | P2 | no | yes | yes | E2 |
+    let strict_store = Arc::new(MemStore::default());
+    let strict_router = webhook_config_router(
+        strict_store.clone() as Arc<dyn WebhookStore>,
+        Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
     );
+    let loopback_store = Arc::new(MemStore::default());
+    let loopback_router = webhook_config_router_loopback(
+        loopback_store.clone() as Arc<dyn WebhookStore>,
+        Arc::new(MemSecrets::ok()) as Arc<dyn SecretStore>,
+    );
+    let command = json!({
+        "url": "https://127.0.0.1:9999/hook",
+        "event_types": ["run.completed"]
+    });
 
-    // Strict policy wired: a loopback endpoint is rejected, and no row is stored.
-    let status = drive(
-        router,
-        "PUT",
-        "/v1/config/webhook-subscriptions/wh1",
-        "ws_a",
-        json!({ "url": "https://127.0.0.1/admin", "event_types": ["run.completed"] }),
-    )
-    .await;
     assert_eq!(
-        status,
+        drive(
+            strict_router,
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh_policy",
+            "ws_a",
+            command.clone(),
+        )
+        .await,
         StatusCode::BAD_REQUEST,
-        "assemble must wire the strict SSRF policy"
+        "P1/E1 strict production admission rejects loopback"
     );
-    assert!(
-        store.get("wh1").is_none(),
-        "a rejected create stores no row"
-    );
+    assert!(strict_store.get("wh_policy").is_none(), "P1/E1");
 
-    outbox
-        .append_lifecycle(ManagedLifecycleFact {
-            id: "session:sesn_1:created".into(),
-            object_id: "sesn_1".into(),
-            workspace_id: None,
-            event_type: "session.created".into(),
-            timestamp: 1_768_780_800,
-            runtime_interval: None,
-        })
-        .await
-        .expect("commit lifecycle fact");
-    notifier.notify();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        while !outbox
-            .pending_lifecycle()
-            .await
-            .expect("pending lifecycle")
-            .is_empty()
-        {
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("assembly notifier wakes its repository");
-    shutdown_lifecycle(&service_lifecycle).await;
-}
-
-/// `assemble_loopback` is the e2e composition: `ReqwestSender::default()` paired
-/// with an admit-everything policy. Prove the PERMISSIVE policy is wired — the same
-/// `127.0.0.1` endpoint `assemble` rejects is ADMITTED here (201 Created), the exact
-/// behavioural difference between the two composition fns. This also transitively
-/// drives the private `assemble_with` both delegate to.
-#[tokio::test]
-async fn assemble_loopback_admits_a_loopback_endpoint_the_strict_path_rejects() {
-    // Cause/effect rule: C1 test assembly receives one service lifecycle and C2
-    // a loopback endpoint is authored -> E1 permissive admission stores it; C3
-    // cancellation -> E2 the same explicitly-owned outbox loop joins.
-    let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
-    let store = Arc::new(MemStore::default());
-    let secrets = Arc::new(MemSecrets::ok());
-    let (_sink, router) = awaken_webhook_managed::assemble_loopback(
-        store.clone() as Arc<dyn WebhookStore>,
-        secrets as Arc<dyn SecretStore>,
-        None,
-        Arc::new(SessionOutbox::default()) as Arc<dyn ManagedSessionRepository>,
-        &service_lifecycle,
-    );
-
-    let status = drive(
-        router,
-        "PUT",
-        "/v1/config/webhook-subscriptions/wh_lb",
-        "ws_a",
-        json!({ "url": "https://127.0.0.1:9999/hook", "event_types": ["run.completed"] }),
-    )
-    .await;
     assert_eq!(
-        status,
+        drive(
+            loopback_router,
+            "PUT",
+            "/v1/config/webhook-subscriptions/wh_policy",
+            "ws_a",
+            command,
+        )
+        .await,
         StatusCode::CREATED,
-        "the loopback composition admits its own 127.0.0.1 receiver"
+        "P2/E2 loopback-only admission accepts the fixture receiver"
     );
     assert_eq!(
-        store.get("wh_lb").expect("the row is stored").workspace_id,
+        loopback_store
+            .get("wh_policy")
+            .expect("P2/E2 row is stored")
+            .workspace_id,
         "ws_a"
     );
-    shutdown_lifecycle(&service_lifecycle).await;
 }
 
 #[tokio::test]

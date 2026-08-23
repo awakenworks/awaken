@@ -118,7 +118,16 @@ pub struct SessionApplication {
     resource_files: Option<Arc<dyn awaken_resource_contract::FileCatalog>>,
     managed_list_prices: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
     sessions_repo: Arc<dyn ManagedSessionRepository>,
-    lifecycle_notifier: Option<Arc<dyn LifecycleFactNotifier>>,
+    /// One process-owned high-water reconciler for the rebuildable Agent and
+    /// Environment projections. It is late-bound by split-process composition;
+    /// AllInOne has no cross-replica projection and leaves it absent.
+    executable_projection_refresh:
+        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+    /// One process-owned wake channel for the durable lifecycle outbox.  This is
+    /// late-bound because scenario composition shares an already-`Arc`'d
+    /// application, and write-once so a second outbox consumer cannot replace
+    /// the canonical supervisor after traffic starts.
+    lifecycle_notifier: OnceLock<Arc<dyn LifecycleFactNotifier>>,
     local_realization_owner: String,
     runtime_incarnation: String,
     lifecycle_supervisor_started: AtomicBool,
@@ -183,7 +192,8 @@ impl SessionApplication {
             resource_files: None,
             managed_list_prices: None,
             sessions_repo,
-            lifecycle_notifier: None,
+            executable_projection_refresh: None,
+            lifecycle_notifier: OnceLock::new(),
             local_realization_owner,
             runtime_incarnation: format!(
                 "session:{}:{started_at}:{}",
@@ -408,8 +418,38 @@ impl SessionApplication {
         self.managed_list_prices = Some(provider);
     }
 
-    pub fn set_lifecycle_notifier(&mut self, notifier: Arc<dyn LifecycleFactNotifier>) {
-        self.lifecycle_notifier = Some(notifier);
+    /// Bind the one lifecycle-outbox wake channel. Duplicate composition is an
+    /// error instead of silently replacing (or running alongside) its owner.
+    pub fn set_lifecycle_notifier(
+        &self,
+        notifier: Arc<dyn LifecycleFactNotifier>,
+    ) -> Result<(), &'static str> {
+        self.lifecycle_notifier
+            .set(notifier)
+            .map_err(|_| "Session lifecycle notifier is already installed")
+    }
+
+    /// Bind the one executable-projection reconciliation operation used by
+    /// request and autonomous Session boundaries. Duplicate installation is an
+    /// error instead of allowing two freshness authorities to overlap.
+    pub fn set_executable_projection_refresh(
+        &mut self,
+        refresh: Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>,
+    ) -> Result<(), &'static str> {
+        if self.executable_projection_refresh.is_some() {
+            return Err("executable projection refresh is already installed");
+        }
+        self.executable_projection_refresh = Some(refresh);
+        Ok(())
+    }
+
+    /// Advance the injected executable projections, or no-op in an AllInOne
+    /// composition where the authoritative catalogs are process-local.
+    pub async fn refresh_executable_projections(&self) -> Result<(), String> {
+        match self.executable_projection_refresh.as_ref() {
+            Some(refresh) => refresh.refresh().await,
+            None => Ok(()),
+        }
     }
 
     pub fn set_resource_purge_scheduler(
@@ -499,61 +539,142 @@ impl SessionApplication {
         })
     }
 
-    /// Resolve the complete published multi-agent model roster before a
-    /// budgeted Session is committed. The executable catalog remains the only
-    /// Agent authority; this method merely projects its already-published
-    /// profiles into the price-snapshot request.
+    /// Compile the complete published model roster for a budgeted Session and
+    /// reject execution backends that cannot cross the per-request admission
+    /// boundary. The caller supplies the already-frozen root profile and model
+    /// publication; ordinary roster members are reopened only by the exact
+    /// revisions carried on that profile, and the Advisor's complete candidate
+    /// comes from that same executable snapshot. Primary and fallback candidates
+    /// cross this one walk. It owns both backend compatibility and the complete
+    /// price-snapshot model request.
     pub fn managed_session_model_refs(
         &self,
         workspace_id: &str,
         root_agent_id: &str,
+        root_profile: Option<&awaken_executable_agent_contract::ExecutableAgentSessionProfile>,
         root_execution_model_ref: &str,
+        root_backend_ref: Option<&str>,
+        root_model_publication: Option<&awaken_session_contract::SessionModelPublication>,
     ) -> Result<Vec<String>, RunError> {
-        let mut models = std::collections::BTreeSet::from([root_execution_model_ref.to_owned()]);
-        let Some(source) = &self.config_source else {
+        fn add_candidate(
+            models: &mut std::collections::BTreeSet<String>,
+            agent_id: &str,
+            candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+        ) -> Result<(), RunError> {
+            let backend_ref = &candidate.binding().backend_ref;
+            if !is_native_session_runtime(Some(backend_ref)) {
+                return Err(RunError::bad_request(format!(
+                    "budget_backend_unsupported: Agent `{agent_id}` uses external backend `{backend_ref}`"
+                )));
+            }
+            if candidate.binding().model_ref.trim().is_empty() {
+                return Err(RunError::bad_request(format!(
+                    "budget_price_roster_unavailable: Agent `{agent_id}` has no model"
+                )));
+            }
+            models.insert(candidate.binding().model_ref.clone());
+            Ok(())
+        }
+
+        let mut models = std::collections::BTreeSet::new();
+        let source = self.config_source.as_ref();
+        let root_snapshot = root_profile
+            .filter(|profile| profile.source_revision > 0)
+            .map(|profile| {
+                source
+                    .and_then(|source| {
+                        source.executable_snapshot_at_revision_in(
+                            workspace_id,
+                            root_agent_id,
+                            profile.source_revision,
+                        )
+                    })
+                    .ok_or_else(|| {
+                        RunError::bad_request(format!(
+                            "budget_price_roster_unavailable: Agent `{root_agent_id}` revision {} has no executable publication",
+                            profile.source_revision
+                        ))
+                    })
+            })
+            .transpose()?;
+        if let Some(snapshot) = &root_snapshot
+            && snapshot.root_agent_id.0 != root_agent_id
+        {
+            return Err(RunError::internal(format!(
+                "Agent `{root_agent_id}` executable identity does not match its profile"
+            )));
+        }
+        if let Some(publication) = root_model_publication {
+            for candidate in
+                std::iter::once(&publication.primary).chain(publication.candidates.iter())
+            {
+                add_candidate(&mut models, root_agent_id, candidate)?;
+            }
+        } else if let Some(snapshot) = &root_snapshot {
+            for candidate in std::iter::once(&snapshot.resolved_spec.model_binding)
+                .chain(snapshot.resolved_spec.model_candidates.iter())
+            {
+                add_candidate(&mut models, root_agent_id, candidate)?;
+            }
+        } else {
+            if !is_native_session_runtime(root_backend_ref) {
+                let backend_ref = root_backend_ref.unwrap_or_default();
+                return Err(RunError::bad_request(format!(
+                    "budget_backend_unsupported: Agent `{root_agent_id}` uses external backend `{backend_ref}`"
+                )));
+            }
+            if root_execution_model_ref.trim().is_empty() {
+                return Err(RunError::bad_request(format!(
+                    "budget_price_roster_unavailable: Agent `{root_agent_id}` has no model"
+                )));
+            }
+            models.insert(root_execution_model_ref.to_owned());
+        }
+        if let Some(advisor) = root_snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.resolved_spec.plugin_config.agent.advisor.as_ref())
+        {
+            add_candidate(&mut models, root_agent_id, &advisor.candidate)?;
+        } else if root_profile.is_some_and(|profile| profile.advisor_model.is_some()) {
+            return Err(RunError::bad_request(format!(
+                "budget_price_roster_unavailable: Agent `{root_agent_id}` Advisor has no exact executable publication"
+            )));
+        }
+
+        let Some(root_profile) = root_profile else {
             return Ok(models.into_iter().collect());
         };
-        let mut pending = source
-            .session_profile_in(workspace_id, root_agent_id)
-            .map(|profile| {
-                if let Some(advisor) = profile.advisor_model {
-                    models.insert(advisor);
-                }
-                profile.delegates
-            })
-            .unwrap_or_default();
-        let mut visited = std::collections::BTreeSet::new();
-        while let Some(delegate) = pending.pop() {
-            let agent_id = delegate.agent_id;
-            if !visited.insert(agent_id.clone()) {
-                continue;
+        if root_profile.delegates.is_empty() {
+            return Ok(models.into_iter().collect());
+        }
+        let source = source.ok_or_else(|| {
+            RunError::bad_request(
+                "budget_price_roster_unavailable: Agent publication source is unavailable",
+            )
+        })?;
+        for delegate in &root_profile.delegates {
+            let agent_id = &delegate.agent_id;
+            let revision = delegate.source_revision.ok_or_else(|| {
+                RunError::bad_request(format!(
+                    "budget_price_roster_unavailable: Agent `{agent_id}` has no exact publication revision"
+                ))
+            })?;
+            let snapshot = source
+                .executable_snapshot_at_revision_in(workspace_id, agent_id, revision)
+                .ok_or_else(|| {
+                    RunError::bad_request(format!(
+                        "budget_price_roster_unavailable: Agent `{agent_id}` revision {revision} has no executable publication"
+                    ))
+                })?;
+            if snapshot.root_agent_id.0 != *agent_id {
+                return Err(RunError::internal(format!(
+                    "Agent `{agent_id}` executable identity does not match its profile"
+                )));
             }
-            let profile = delegate
-                .source_revision
-                .and_then(|revision| {
-                    source.session_profile_at_revision_in(workspace_id, &agent_id, revision)
-                })
-                .or_else(|| source.session_profile_in(workspace_id, &agent_id))
-                .ok_or_else(|| {
-                    RunError::bad_request(format!(
-                        "budget_price_roster_unavailable: agent `{agent_id}` has no executable profile"
-                    ))
-                })?;
-            let model = profile
-                .execution_model_ref
-                .or(profile.model)
-                .filter(|model| !model.trim().is_empty())
-                .ok_or_else(|| {
-                    RunError::bad_request(format!(
-                        "budget_price_roster_unavailable: agent `{agent_id}` has no model"
-                    ))
-                })?;
-            models.insert(model);
-            pending.extend(profile.delegates);
-            if visited.len() > 25 {
-                return Err(RunError::bad_request(
-                    "budget_price_roster_unavailable: multi-agent roster exceeds 25 agents",
-                ));
+            for candidate in std::iter::once(&snapshot.resolved_spec.model_binding)
+                .chain(snapshot.resolved_spec.model_candidates.iter())
+            {
+                add_candidate(&mut models, agent_id, candidate)?;
             }
         }
         Ok(models.into_iter().collect())
@@ -567,17 +688,20 @@ impl SessionApplication {
     }
 }
 
-fn validate_sandbox_provisioning_runtime(
-    provisioning: SandboxProvisioning,
-    runtime: Option<&str>,
-) -> Result<(), RunError> {
-    let native = runtime.is_none_or(|backend_ref| {
+fn is_native_session_runtime(runtime: Option<&str>) -> bool {
+    runtime.is_none_or(|backend_ref| {
         matches!(
             awaken_runtime_contract::resolved::Backend::from_ref(backend_ref),
             awaken_runtime_contract::resolved::Backend::Native
         )
-    });
-    if provisioning == SandboxProvisioning::OnToolUse && !native {
+    })
+}
+
+fn validate_sandbox_provisioning_runtime(
+    provisioning: SandboxProvisioning,
+    runtime: Option<&str>,
+) -> Result<(), RunError> {
+    if provisioning == SandboxProvisioning::OnToolUse && !is_native_session_runtime(runtime) {
         return Err(RunError::bad_request(format!(
             "sandbox_provisioning_unsupported: `on_tool_use` requires a native backend, got `{}`",
             runtime.unwrap_or_default()

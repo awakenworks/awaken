@@ -78,6 +78,9 @@ CREDENTIAL_SQLITE_SOURCE = "crates/stores/awaken-credential-store/src/sqlite.rs"
 CREDENTIAL_SEALED_SOURCE = "crates/stores/awaken-credential-store/src/sealed.rs"
 WEBHOOK_DISPATCH_SOURCE = "crates/server/awaken-webhook/src/dispatch.rs"
 WEBHOOK_MANAGED_SOURCE = "crates/server/awaken-webhook-managed/src/lib.rs"
+WEBHOOK_CONTROL_PLANE_SOURCE = (
+    "crates/server/awaken-webhook-managed/src/control_plane.rs"
+)
 EXECUTABLE_AGENT_CONTRACT_SOURCE = (
     "crates/server/awaken-executable-agent-contract/src/lib.rs"
 )
@@ -153,7 +156,6 @@ VOLATILE_RUNTIME_HOST_APIS = (
     "with_deployment_config",
     "new_with_resources",
     "with_resource_reclamation",
-    "with_upstream",
     "with_skill_store",
     "with_skill_store_backend",
     "with_store_dir",
@@ -440,9 +442,15 @@ NON_PRODUCT_APIS = (
         TEST_SUPPORT_GATE,
     ),
     (
-        "webhook assemble_loopback",
-        WEBHOOK_MANAGED_SOURCE,
-        r"\bpub\s+fn\s+assemble_loopback\b",
+        "webhook loopback_lifecycle_delivery",
+        WEBHOOK_CONTROL_PLANE_SOURCE,
+        r"\bpub\s+fn\s+loopback_lifecycle_delivery\b",
+        FEATURE_TEST_SUPPORT_GATE,
+    ),
+    (
+        "webhook webhook_config_router_loopback",
+        WEBHOOK_CONTROL_PLANE_SOURCE,
+        r"\bpub\s+fn\s+webhook_config_router_loopback\b",
         FEATURE_TEST_SUPPORT_GATE,
     ),
     (
@@ -828,11 +836,16 @@ def worker_listener_partition_violations(
     for required in (
         "application_router: application",
         ".merge(worker_transport)",
-        ".merge(environment_warmups)",
     ):
-        owner = component_source
-        if required not in owner:
+        if required not in component_source:
             errors.append(f"private Worker surface is missing `{required}`")
+    warmup_merge = ".merge(environment_warmups)"
+    if coordinator_source.count(warmup_merge) != 1:
+        errors.append(
+            "Coordinator Worker transport must merge environment warmups exactly once"
+        )
+    if warmup_merge in component_source:
+        errors.append("private Worker component duplicates the environment warmup merge")
     if 'Some("127.0.0.1:0".to_owned())' not in boundary_source:
         errors.append("AllInOne lacks a loopback-only private Worker listener default")
     return errors
@@ -1336,20 +1349,19 @@ def selftest() -> None:
     assert resource_registry_authority_violations(
         "LegacyMemoryStoreDefinition migrate_legacy_memory_stores admin_memory_store"
     )  # O11e R2
-    # Worker listener causes/effects: R1 Worker router absent from public,
-    # returned separately, merged with warmups into private, and AllInOne has a
-    # loopback private default -> accept. R2 any missing partition fact or a
-    # public merge -> reject accidental exposure or an unusable local Worker.
+    # Worker listener causes/effects: R1 Coordinator merges warmups exactly once
+    # into the returned Worker transport, the component merges that transport
+    # only into private, and AllInOne has a loopback default -> accept. R2 any
+    # missing/duplicate merge or public merge -> reject accidental exposure or
+    # two composition owners.
     worker_partition = (
         "let managed = managed.merge(resource_management_router).merge(models); "
         "let application = ai_sdk.merge(ag_ui); "
+        "let worker_transport = worker_transport.merge(environment_warmups); "
         "let router = a2a.merge(durable_ops); "
         "Ok((managed, router, application, worker_transport, dream_application))"
     )
-    private_partition = (
-        "application_router: application "
-        ".merge(worker_transport).merge(environment_warmups)"
-    )
+    private_partition = "application_router: application .merge(worker_transport)"
     assert worker_listener_partition_violations(
         worker_partition,
         private_partition,
@@ -1360,6 +1372,11 @@ def selftest() -> None:
         "",
         "",
     )  # O11d R2
+    assert worker_listener_partition_violations(
+        worker_partition,
+        private_partition + ".merge(environment_warmups)",
+        'Some("127.0.0.1:0".to_owned())',
+    )  # O11d R2 duplicate composition owner
     process_stores = (
         "struct ProcessStores { control: Option<ControlStores>, "
         "coordinator: Option<CoordinatorStores>\n}\n"
@@ -1486,7 +1503,12 @@ def selftest() -> None:
         + "impl Default for ReqwestSender {}\n"
         + any_gate
         + "pub fn with_timeout() {}",
-        WEBHOOK_MANAGED_SOURCE: feature_gate + "pub fn assemble_loopback() {}",
+        WEBHOOK_CONTROL_PLANE_SOURCE: (
+            feature_gate
+            + "pub fn loopback_lifecycle_delivery() {}\n"
+            + feature_gate
+            + "pub fn webhook_config_router_loopback() {}"
+        ),
     }
     assert non_product_surface_violations(volatile_surfaces) == []  # O17
     for label, path, declaration, gate in NON_PRODUCT_APIS:

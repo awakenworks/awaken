@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, withServer, pass } from './harness.mjs';
+import { withRealServer, withServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -24,10 +24,24 @@ const PER_TURN_INPUT =
   FAKE_USAGE.input_tokens + FAKE_USAGE.cache_read_input_tokens + FAKE_USAGE.cache_creation_input_tokens;
 
 async function turn(client, id, text) {
-  await client.beta.sessions.events.send(id, {
+  // C1=exact User receipt; C2=usage event committed after inference. E1=C2
+  // makes Session usage readable for this Run. K: retrieve is a projection, not
+  // a driver. Decision U1 C1&&!C2=>retry; U2 C1+C2=>read accumulated usage.
+  const receipt = await client.beta.sessions.events.send(id, {
     betas: BETAS,
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'U1 exact usage Run User Event receipt');
+  await waitForSessionEventReceipt(
+    client,
+    id,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'session.usage'),
+    `U1 usage Run for ${JSON.stringify(text)} to commit accounting`,
+    { timeoutMs: 300_000 },
+  );
 }
 const usageOf = async (client, id) => (await client.beta.sessions.retrieve(id, { betas: BETAS })).usage ?? {};
 

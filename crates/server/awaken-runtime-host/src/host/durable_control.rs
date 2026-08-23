@@ -1,37 +1,71 @@
 //! Neutral durable-control operations exposed to Coordinator interfaces.
 
+use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_runtime::Runtime;
+use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
 use awaken_runtime_contract::resume::ResumeResult;
 
 use super::{HostError, SharedHost};
 
 impl SharedHost {
-    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
-    /// follow-up): tries the runtime live channel first (in-flight runs), then the
-    /// dispatch store for a queued or awaiting run, committing a terminal `Cancelled`
-    /// fact. Fail-closed: an unknown run id errors rather than silently succeeding.
-    pub async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
-        use awaken_runtime_contract::control::{LiveCommand, LiveRunControl};
+    /// Persist one exact cancellation through the dispatch authority, then nudge
+    /// the already-registered local attempt, if this Host owns it.
+    ///
+    /// The durable bit is the authority and must cross its atomic boundary first.
+    /// Runtime delivery is only a process-local accelerator for the old, now-fenced
+    /// claim; `NotActive` therefore cannot undo an accepted cancellation. Keeping
+    /// this composition in one Host seam prevents the Managed Event, durable-op,
+    /// and terminal-quiescence callers from drifting into different orderings.
+    pub(crate) async fn persist_dispatch_cancellation(
+        &self,
+        run_id: &RunId,
+        live_runtime: Option<&Runtime>,
+    ) -> Result<bool, HostError> {
+        use awaken_run_ingress::DispatchQueue as _;
 
-        let run_id = awaken_agent_contract::agent::run::Id(run_id.to_owned());
-        // Signal only an already-resident runtime. Cancellation must never open a
-        // Session, resolve current config, or touch its sandbox merely to stop the
-        // exact durable attempt.
-        if let Some(ctx) = self
-            .session_slots
-            .read(thread, |slot| slot.runtime.clone())
-            .flatten()
-        {
-            let _ = ctx.runtime.deliver(LiveCommand::Cancel {
+        let accepted = if let Some(pool) = self.dispatch_pool.get() {
+            pool.cancel(run_id)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+        } else {
+            self.dispatch_store()?
+                .cancel(run_id)
+                .await
+                .map_err(|error| HostError::internal(error.to_string()))?
+                .is_some()
+        };
+        if accepted && let Some(runtime) = live_runtime {
+            let _ = runtime.deliver(LiveCommand::Cancel {
                 run_id: run_id.clone(),
             });
         }
+        Ok(accepted)
+    }
 
+    /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
+    /// follow-up): records the durable intent first, then nudges an in-flight local
+    /// attempt while the pool commits the terminal `Cancelled` fact. Fail-closed:
+    /// an unknown run id errors rather than silently succeeding.
+    pub async fn cancel_durable(&self, thread: &str, run_id: &str) -> Result<(), HostError> {
+        let run_id = RunId(run_id.to_owned());
+        // Resolve only an already-resident runtime. Cancellation must never open
+        // a Session, resolve current config, or touch its sandbox merely to stop
+        // the exact durable attempt.
+        let resident = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten();
+
+        // This operational surface retains its existing local-pool requirement;
+        // the shared helper below owns only ordering, not topology expansion.
+        self.dispatch_pool_or_err()?;
         let cancelled = self
-            .dispatch_pool_or_err()?
-            .cancel(&run_id)
-            .await
-            .map_err(|error| HostError::bad_request(error.to_string()))?;
+            .persist_dispatch_cancellation(
+                &run_id,
+                resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
+            )
+            .await?;
         if !cancelled {
             return Err(HostError::bad_request(format!(
                 "run not found: {}",
@@ -48,6 +82,7 @@ impl SharedHost {
             .await?
             .live_control()
             .wake(run_id)
+            .await
             .map_err(|e| HostError::bad_request(e.to_string()))
     }
 
@@ -59,19 +94,24 @@ impl SharedHost {
         requested_run_id: Option<&str>,
     ) -> Result<String, HostError> {
         let ctx = self.ctx_for(thread, None).await?;
-        let run_id = requested_run_id.map(str::to_string).or_else(|| {
-            ctx.active_run
-                .lock()
-                .expect("active run mutex poisoned")
-                .as_ref()
-                .map(|run_id| run_id.0.clone())
-        });
-        let run_id = run_id.ok_or_else(|| HostError::bad_request("thread has no active run"))?;
+        // An omitted Run id addresses the one exact claim this Runtime currently
+        // owns. Foreground request lifetime is not execution ownership: queued,
+        // remote, idle and stale attempts therefore all fail closed here.
+        let run_id = match requested_run_id {
+            Some(run_id) => run_id.to_string(),
+            None => ctx
+                .runtime
+                .active_attempt_run_id(&ctx.thread_id)
+                .await
+                .map(|run_id| run_id.0)
+                .ok_or_else(|| HostError::bad_request("thread has no locally owned active run"))?,
+        };
         ctx.durable_ingress
             .as_ref()
             .ok_or_else(|| HostError::bad_request("pause requires durable ingress"))?
             .live_control()
             .pause(&run_id)
+            .await
             .map_err(|e| HostError::bad_request(e.to_string()))?;
         Ok(run_id)
     }
@@ -100,6 +140,7 @@ impl SharedHost {
             thread_id,
             correlation_id: ticket.correlation_id,
             available_at_ms: None,
+            context_messages: Vec::new(),
             result: if allow {
                 ResumeResult::allow()
             } else {
@@ -140,6 +181,7 @@ impl SharedHost {
             thread_id,
             correlation_id: ticket.correlation_id,
             available_at_ms: None,
+            context_messages: Vec::new(),
             result: ResumeResult::Input(text),
         })
         .await

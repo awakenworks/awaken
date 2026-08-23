@@ -9,6 +9,7 @@
 //   C1 opaque reference is authorized  -> E1 worker materializes without a raw key
 //   C2 epoch/owner are current          -> E2 one committed provider result
 //   C3 stdin reaches EOF in E2E mode    -> E3 graceful drain + coverage flush
+//   C4 seed claim commits exact Ended   -> E4 durable receipt precedes Done removal
 //
 // Decision table:
 //   Rule  C0  C1  C2  C3  Expected
@@ -16,6 +17,7 @@
 //   T2    Y   Y   Y   Y   E0 + E1 + E2 + E3
 //   T3    Y   N   -   Y   fail closed; E3
 //   T4    N   any any any claimed Session control is mandatory and fail-closed
+//   T5    seed current owner/epoch commits Ended before Done -> E4
 
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
@@ -25,6 +27,11 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnServer, stopServer, waitForPort } from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
+import { nativeProviderCandidateFixture } from './fixtures/provider_candidate_fixture.mjs';
+import {
+  claimedCommitRequestFixture,
+  terminalThreadCommitFixture,
+} from './fixtures/thread_commit_fixture.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38813);
@@ -185,13 +192,18 @@ async function main(): Promise<void> {
     // session_thread_id is a claimed Session-control contract, not a history
     // grouping alias; activation.thread_id already owns committed history.
     request.session_thread_id = null;
-    request.activation.snapshot.resolved_spec.model_binding = {
-      ...structuredClone(request.activation.snapshot.resolved_spec.model_binding),
-      provisioning: {
-        type: 'provider',
-        provider_ref: 'fixture-provider@1',
-        route_ref: 'fixture-worker-local@1',
-        scope_id: 'fixture-workspace',
+    // Raw Provider prerequisite: C-1 all required route coordinates, including
+    // the opaque fixture dialect, are explicit -> E-1 typed ingress admits this
+    // ordinary Run. Constraint/K: the shared fixture supplies no defaults or
+    // validation; the Rust candidate deserializer remains the sole authority.
+    // Decision rule R0=C-1=>E-1; malformed-coordinate rejection is owned once by
+    // worker_transport plus the runtime-contract invariant test.
+    request.activation.snapshot.resolved_spec.model_binding =
+      nativeProviderCandidateFixture({
+        binding: request.activation.snapshot.resolved_spec.model_binding,
+        providerRef: 'fixture-provider@1',
+        routeRef: 'fixture-worker-local@1',
+        scopeId: 'fixture-workspace',
         credential: {
           credential: { id: GRANT, revision: GRANT_REVISION },
           material_source: 'worker_reference',
@@ -203,13 +215,11 @@ async function main(): Promise<void> {
             model_exposure: 'forbidden',
           },
         },
-        endpoint: {
-          adapter_kind: 'fixture',
-          base_url: 'https://worker-local.invalid',
-          upstream_model: request.activation.snapshot.resolved_spec.model_binding.model_ref,
-        },
-      },
-    };
+        adapterKind: 'fixture',
+        apiDialect: 'fixture',
+        baseUrl: 'https://worker-local.invalid',
+        upstreamModel: request.activation.snapshot.resolved_spec.model_binding.model_ref,
+      });
     request.activation.snapshot.resolved_spec.model_candidates = [];
     request.inference_plaintext_holder = {
       boundary: 'worker', trust_domain: 'awaken.worker',
@@ -217,6 +227,31 @@ async function main(): Promise<void> {
     request.placement.required_capabilities = ['worker-local-credentials/v1', 'native-runtime'];
     request.placement.required_credentials = [{ id: GRANT, revision: GRANT_REVISION }];
     await post('/v1/worker/dispatch/enqueue', { request }, 'seed-worker');
+
+    // T5/E4: enqueueing the cloned gateway Run is not committed truth for the
+    // seed Run. The exact claim must first publish one durable terminal receipt;
+    // missing/mismatched/nonterminal recovery is owned by the Rust settlement
+    // decision table rather than duplicated in this positive E2E.
+    const seedCommit = claimedCommitRequestFixture({
+      claimed: seed,
+      commit: terminalThreadCommitFixture({
+        runId: seed.lease.run_id,
+        threadId: seed.request.activation.thread_id,
+        messageId: `seed-terminal-${seed.lease.run_id}`,
+        text: 'seed ownership completed before gateway handoff',
+      }),
+      ordinal: 0,
+      expectedThreadVersion: 0,
+    });
+    const seedCommitted = await post(
+      '/v1/worker/commit-claimed',
+      { ...seedCommit, identity: seedIdentity },
+      'seed-worker',
+    );
+    assert.ok(
+      typeof seedCommitted.commit_sequence === 'number',
+      'T5/E4 durable seed receipt precedes Done settlement',
+    );
     const seedSettle = await post(
       '/v1/worker/dispatch/settle',
       {

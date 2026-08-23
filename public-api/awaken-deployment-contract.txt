@@ -1,14 +1,142 @@
 pub mod awaken_deployment_contract
+pub enum awaken_deployment_contract::DeploymentLaunchOutcome
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Created
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Created::session_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Failed
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Failed::error: awaken_deployment_contract::DeploymentRunFailure
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Unavailable
+pub awaken_deployment_contract::DeploymentLaunchOutcome::Unavailable::message: alloc::string::String
+pub enum awaken_deployment_contract::DeploymentOutcomeRubric
+pub awaken_deployment_contract::DeploymentOutcomeRubric::File
+pub awaken_deployment_contract::DeploymentOutcomeRubric::File::file_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentOutcomeRubric::Text
+pub awaken_deployment_contract::DeploymentOutcomeRubric::Text::content: alloc::string::String
+pub enum awaken_deployment_contract::DeploymentPauseError
+pub awaken_deployment_contract::DeploymentPauseError::AgentArchivedError
+pub awaken_deployment_contract::DeploymentPauseError::EnvironmentArchivedError
+pub awaken_deployment_contract::DeploymentPauseError::EnvironmentNotFoundError
+pub awaken_deployment_contract::DeploymentPauseError::FileNotFoundError
+pub awaken_deployment_contract::DeploymentPauseError::McpEgressBlockedError
+pub awaken_deployment_contract::DeploymentPauseError::MemoryStoreArchivedError
+pub awaken_deployment_contract::DeploymentPauseError::OrganizationDisabledError
+pub awaken_deployment_contract::DeploymentPauseError::SelfHostedResourcesUnsupportedError
+pub awaken_deployment_contract::DeploymentPauseError::SessionResourceNotFoundError
+pub awaken_deployment_contract::DeploymentPauseError::SkillNotFoundError
+pub awaken_deployment_contract::DeploymentPauseError::UnknownError
+pub awaken_deployment_contract::DeploymentPauseError::VaultArchivedError
+pub awaken_deployment_contract::DeploymentPauseError::VaultNotFoundError
+pub awaken_deployment_contract::DeploymentPauseError::WorkspaceArchivedError
+pub enum awaken_deployment_contract::DeploymentPauseReason
+pub awaken_deployment_contract::DeploymentPauseReason::Error
+pub awaken_deployment_contract::DeploymentPauseReason::Error::error: awaken_deployment_contract::DeploymentPauseError
+pub awaken_deployment_contract::DeploymentPauseReason::Manual
+pub enum awaken_deployment_contract::DeploymentRepositoryCheckout
+pub awaken_deployment_contract::DeploymentRepositoryCheckout::Branch
+pub awaken_deployment_contract::DeploymentRepositoryCheckout::Branch::name: alloc::string::String
+pub awaken_deployment_contract::DeploymentRepositoryCheckout::Commit
+pub awaken_deployment_contract::DeploymentRepositoryCheckout::Commit::sha: alloc::string::String
 pub enum awaken_deployment_contract::DeploymentRepositoryError
 pub awaken_deployment_contract::DeploymentRepositoryError::Storage(alloc::string::String)
+pub enum awaken_deployment_contract::DeploymentResource
+pub awaken_deployment_contract::DeploymentResource::File
+pub awaken_deployment_contract::DeploymentResource::File::file_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentResource::File::mount_path: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentResource::GithubRepository
+pub awaken_deployment_contract::DeploymentResource::GithubRepository::checkout: core::option::Option<awaken_deployment_contract::DeploymentRepositoryCheckout>
+pub awaken_deployment_contract::DeploymentResource::GithubRepository::mount_path: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentResource::GithubRepository::url: alloc::string::String
+pub awaken_deployment_contract::DeploymentResource::MemoryStore
+pub awaken_deployment_contract::DeploymentResource::MemoryStore::access: core::option::Option<awaken_resource_contract::input::ResourceAccess>
+pub awaken_deployment_contract::DeploymentResource::MemoryStore::instructions: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentResource::MemoryStore::memory_store_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentResource::MemoryStore::mount_path: core::option::Option<alloc::string::String>
+pub enum awaken_deployment_contract::DeploymentRunFailure
+pub awaken_deployment_contract::DeploymentRunFailure::AgentArchivedError
+pub awaken_deployment_contract::DeploymentRunFailure::AgentArchivedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::EnvironmentArchivedError
+pub awaken_deployment_contract::DeploymentRunFailure::EnvironmentArchivedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::EnvironmentNotFoundError
+pub awaken_deployment_contract::DeploymentRunFailure::EnvironmentNotFoundError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::FileNotFoundError
+pub awaken_deployment_contract::DeploymentRunFailure::FileNotFoundError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::McpEgressBlockedError
+pub awaken_deployment_contract::DeploymentRunFailure::McpEgressBlockedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::MemoryStoreArchivedError
+pub awaken_deployment_contract::DeploymentRunFailure::MemoryStoreArchivedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::OrganizationDisabledError
+pub awaken_deployment_contract::DeploymentRunFailure::OrganizationDisabledError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::SelfHostedResourcesUnsupportedError
+pub awaken_deployment_contract::DeploymentRunFailure::SelfHostedResourcesUnsupportedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::SessionCreationRejectedError
+pub awaken_deployment_contract::DeploymentRunFailure::SessionCreationRejectedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::SessionRateLimitedError
+pub awaken_deployment_contract::DeploymentRunFailure::SessionRateLimitedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::SessionResourceNotFoundError
+pub awaken_deployment_contract::DeploymentRunFailure::SessionResourceNotFoundError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::SkillNotFoundError
+pub awaken_deployment_contract::DeploymentRunFailure::SkillNotFoundError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::UnknownError
+pub awaken_deployment_contract::DeploymentRunFailure::UnknownError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::VaultArchivedError
+pub awaken_deployment_contract::DeploymentRunFailure::VaultArchivedError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::VaultNotFoundError
+pub awaken_deployment_contract::DeploymentRunFailure::VaultNotFoundError::message: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunFailure::WorkspaceArchivedError
+pub awaken_deployment_contract::DeploymentRunFailure::WorkspaceArchivedError::message: alloc::string::String
+impl awaken_deployment_contract::DeploymentRunFailure
+pub fn awaken_deployment_contract::DeploymentRunFailure::pause_error(&self) -> core::option::Option<awaken_deployment_contract::DeploymentPauseError>
+pub enum awaken_deployment_contract::DeploymentSchedule
+pub awaken_deployment_contract::DeploymentSchedule::Cron
+pub awaken_deployment_contract::DeploymentSchedule::Cron::expression: alloc::string::String
+pub awaken_deployment_contract::DeploymentSchedule::Cron::timezone: alloc::string::String
+impl awaken_deployment_contract::DeploymentSchedule
+pub fn awaken_deployment_contract::DeploymentSchedule::expression(&self) -> &str
+pub fn awaken_deployment_contract::DeploymentSchedule::timezone(&self) -> &str
+pub enum awaken_deployment_contract::DeploymentSeedEvent
+pub awaken_deployment_contract::DeploymentSeedEvent::DefineOutcome
+pub awaken_deployment_contract::DeploymentSeedEvent::DefineOutcome::description: alloc::string::String
+pub awaken_deployment_contract::DeploymentSeedEvent::DefineOutcome::max_iterations: core::option::Option<u32>
+pub awaken_deployment_contract::DeploymentSeedEvent::DefineOutcome::rubric: awaken_deployment_contract::DeploymentOutcomeRubric
+pub awaken_deployment_contract::DeploymentSeedEvent::SystemMessage
+pub awaken_deployment_contract::DeploymentSeedEvent::SystemMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_deployment_contract::DeploymentSeedEvent::UserMessage
+pub awaken_deployment_contract::DeploymentSeedEvent::UserMessage::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub enum awaken_deployment_contract::DeploymentStatus
+pub awaken_deployment_contract::DeploymentStatus::Active
+pub awaken_deployment_contract::DeploymentStatus::Paused
+pub enum awaken_deployment_contract::DeploymentTrigger
+pub awaken_deployment_contract::DeploymentTrigger::Manual
+pub awaken_deployment_contract::DeploymentTrigger::Schedule
+pub awaken_deployment_contract::DeploymentTrigger::Schedule::scheduled_at: alloc::string::String
 pub enum awaken_deployment_contract::DeploymentWriteOutcome
 pub awaken_deployment_contract::DeploymentWriteOutcome::Applied
 pub awaken_deployment_contract::DeploymentWriteOutcome::Conflict
 pub awaken_deployment_contract::DeploymentWriteOutcome::ScheduledCapacityReached
+pub enum awaken_deployment_contract::FieldUpdate<T>
+pub awaken_deployment_contract::FieldUpdate::Clear
+pub awaken_deployment_contract::FieldUpdate::Replace(T)
+pub enum awaken_deployment_contract::MetadataUpdate
+pub awaken_deployment_contract::MetadataUpdate::Clear
+pub awaken_deployment_contract::MetadataUpdate::Patch(alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>)
 pub enum awaken_deployment_contract::ScheduledRunClaimOutcome
 pub awaken_deployment_contract::ScheduledRunClaimOutcome::AlreadyClaimed
 pub awaken_deployment_contract::ScheduledRunClaimOutcome::Claimed
 pub awaken_deployment_contract::ScheduledRunClaimOutcome::StaleDeployment
+pub struct awaken_deployment_contract::AgentSelector
+pub awaken_deployment_contract::AgentSelector::id: alloc::string::String
+pub awaken_deployment_contract::AgentSelector::version: core::option::Option<u64>
+pub struct awaken_deployment_contract::CreateDeploymentCommand
+pub awaken_deployment_contract::CreateDeploymentCommand::agent: awaken_deployment_contract::AgentSelector
+pub awaken_deployment_contract::CreateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<u64>
+pub awaken_deployment_contract::CreateDeploymentCommand::description: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::CreateDeploymentCommand::environment_id: alloc::string::String
+pub awaken_deployment_contract::CreateDeploymentCommand::initial_events: alloc::vec::Vec<awaken_deployment_contract::DeploymentSeedEvent>
+pub awaken_deployment_contract::CreateDeploymentCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_deployment_contract::CreateDeploymentCommand::name: alloc::string::String
+pub awaken_deployment_contract::CreateDeploymentCommand::resources: alloc::vec::Vec<awaken_deployment_contract::DeploymentResource>
+pub awaken_deployment_contract::CreateDeploymentCommand::schedule: core::option::Option<awaken_deployment_contract::DeploymentSchedule>
+pub awaken_deployment_contract::CreateDeploymentCommand::vault_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_deployment_contract::CreateDeploymentCommand::workspace_id: alloc::string::String
 pub struct awaken_deployment_contract::Cron
 impl awaken_deployment_contract::Cron
 pub fn awaken_deployment_contract::Cron::matches(&self, u64) -> bool
@@ -16,6 +144,22 @@ pub fn awaken_deployment_contract::Cron::matches_in(&self, u64, chrono_tz::prebu
 pub fn awaken_deployment_contract::Cron::next_after(&self, u64) -> core::option::Option<u64>
 pub fn awaken_deployment_contract::Cron::next_after_in(&self, u64, chrono_tz::prebuilt::timezones::Tz) -> core::option::Option<u64>
 pub fn awaken_deployment_contract::Cron::parse(&str) -> core::result::Result<Self, alloc::string::String>
+pub struct awaken_deployment_contract::DeploymentAgent
+pub awaken_deployment_contract::DeploymentAgent::id: alloc::string::String
+pub awaken_deployment_contract::DeploymentAgent::version: u64
+impl awaken_deployment_contract::DeploymentAgent
+pub fn awaken_deployment_contract::DeploymentAgent::new(impl core::convert::Into<alloc::string::String>, u64) -> Self
+pub struct awaken_deployment_contract::DeploymentLaunch
+pub awaken_deployment_contract::DeploymentLaunch::agent: awaken_deployment_contract::DeploymentAgent
+pub awaken_deployment_contract::DeploymentLaunch::budget_max_list_cost_minor: core::option::Option<u64>
+pub awaken_deployment_contract::DeploymentLaunch::deployment_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentLaunch::deployment_run_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentLaunch::environment_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentLaunch::initial_events: alloc::vec::Vec<awaken_deployment_contract::DeploymentSeedEvent>
+pub awaken_deployment_contract::DeploymentLaunch::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_deployment_contract::DeploymentLaunch::resources: alloc::vec::Vec<awaken_deployment_contract::DeploymentResource>
+pub awaken_deployment_contract::DeploymentLaunch::vault_ids: alloc::vec::Vec<alloc::string::String>
+pub awaken_deployment_contract::DeploymentLaunch::workspace_id: alloc::string::String
 pub struct awaken_deployment_contract::DeploymentLifecycleFact
 pub awaken_deployment_contract::DeploymentLifecycleFact::event_type: alloc::string::String
 pub awaken_deployment_contract::DeploymentLifecycleFact::id: alloc::string::String
@@ -23,21 +167,56 @@ pub awaken_deployment_contract::DeploymentLifecycleFact::object_id: alloc::strin
 pub awaken_deployment_contract::DeploymentLifecycleFact::timestamp: i64
 pub awaken_deployment_contract::DeploymentLifecycleFact::workspace_id: core::option::Option<alloc::string::String>
 pub struct awaken_deployment_contract::DeploymentRecord
-pub awaken_deployment_contract::DeploymentRecord::data: alloc::string::String
-pub awaken_deployment_contract::DeploymentRecord::deployment_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentRecord::agent: awaken_deployment_contract::DeploymentAgent
+pub awaken_deployment_contract::DeploymentRecord::archived_at: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentRecord::budget_max_list_cost_minor: core::option::Option<u64>
+pub awaken_deployment_contract::DeploymentRecord::created_at: alloc::string::String
+pub awaken_deployment_contract::DeploymentRecord::description: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentRecord::environment_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentRecord::initial_events: alloc::vec::Vec<awaken_deployment_contract::DeploymentSeedEvent>
+pub awaken_deployment_contract::DeploymentRecord::last_run_at: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentRecord::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_deployment_contract::DeploymentRecord::name: alloc::string::String
+pub awaken_deployment_contract::DeploymentRecord::next_fire_ms: core::option::Option<u64>
+pub awaken_deployment_contract::DeploymentRecord::paused_reason: core::option::Option<awaken_deployment_contract::DeploymentPauseReason>
+pub awaken_deployment_contract::DeploymentRecord::resources: alloc::vec::Vec<awaken_deployment_contract::DeploymentResource>
 pub awaken_deployment_contract::DeploymentRecord::revision: u64
+pub awaken_deployment_contract::DeploymentRecord::schedule: core::option::Option<awaken_deployment_contract::DeploymentSchedule>
+pub awaken_deployment_contract::DeploymentRecord::status: awaken_deployment_contract::DeploymentStatus
+pub awaken_deployment_contract::DeploymentRecord::updated_at: alloc::string::String
+pub awaken_deployment_contract::DeploymentRecord::vault_ids: alloc::vec::Vec<alloc::string::String>
 pub awaken_deployment_contract::DeploymentRecord::workspace_id: alloc::string::String
 pub struct awaken_deployment_contract::DeploymentRunRecord
-pub awaken_deployment_contract::DeploymentRunRecord::data: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunRecord::agent: awaken_deployment_contract::DeploymentAgent
+pub awaken_deployment_contract::DeploymentRunRecord::created_at: alloc::string::String
 pub awaken_deployment_contract::DeploymentRunRecord::deployment_id: alloc::string::String
-pub awaken_deployment_contract::DeploymentRunRecord::run_id: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunRecord::error: core::option::Option<awaken_deployment_contract::DeploymentRunFailure>
+pub awaken_deployment_contract::DeploymentRunRecord::session_id: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::DeploymentRunRecord::trigger: awaken_deployment_contract::DeploymentTrigger
 pub awaken_deployment_contract::DeploymentRunRecord::workspace_id: alloc::string::String
+pub struct awaken_deployment_contract::DeploymentRunView
+pub awaken_deployment_contract::DeploymentRunView::id: alloc::string::String
+pub awaken_deployment_contract::DeploymentRunView::record: awaken_deployment_contract::DeploymentRunRecord
+pub struct awaken_deployment_contract::DeploymentView
+pub awaken_deployment_contract::DeploymentView::id: alloc::string::String
+pub awaken_deployment_contract::DeploymentView::record: awaken_deployment_contract::DeploymentRecord
+pub struct awaken_deployment_contract::UpdateDeploymentCommand
+pub awaken_deployment_contract::UpdateDeploymentCommand::agent: core::option::Option<awaken_deployment_contract::AgentSelector>
+pub awaken_deployment_contract::UpdateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<awaken_deployment_contract::FieldUpdate<u64>>
+pub awaken_deployment_contract::UpdateDeploymentCommand::description: core::option::Option<awaken_deployment_contract::FieldUpdate<alloc::string::String>>
+pub awaken_deployment_contract::UpdateDeploymentCommand::environment_id: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::UpdateDeploymentCommand::initial_events: core::option::Option<alloc::vec::Vec<awaken_deployment_contract::DeploymentSeedEvent>>
+pub awaken_deployment_contract::UpdateDeploymentCommand::metadata: core::option::Option<awaken_deployment_contract::MetadataUpdate>
+pub awaken_deployment_contract::UpdateDeploymentCommand::name: core::option::Option<alloc::string::String>
+pub awaken_deployment_contract::UpdateDeploymentCommand::resources: core::option::Option<awaken_deployment_contract::FieldUpdate<alloc::vec::Vec<awaken_deployment_contract::DeploymentResource>>>
+pub awaken_deployment_contract::UpdateDeploymentCommand::schedule: core::option::Option<awaken_deployment_contract::FieldUpdate<awaken_deployment_contract::DeploymentSchedule>>
+pub awaken_deployment_contract::UpdateDeploymentCommand::vault_ids: core::option::Option<awaken_deployment_contract::FieldUpdate<alloc::vec::Vec<alloc::string::String>>>
 pub const awaken_deployment_contract::MAX_DEPLOYMENT_REVISION: u64
 pub trait awaken_deployment_contract::AgentArchiveCascade: core::marker::Send + core::marker::Sync
 pub fn awaken_deployment_contract::AgentArchiveCascade::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_deployment_contract::DeploymentRepository: core::marker::Send + core::marker::Sync
-pub fn awaken_deployment_contract::DeploymentRepository::claim_scheduled_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_deployment_contract::DeploymentRecord, awaken_deployment_contract::DeploymentRunRecord, awaken_deployment_contract::DeploymentLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_deployment_contract::ScheduledRunClaimOutcome, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_deployment_contract::DeploymentRepository::deployment_runs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_deployment_contract::DeploymentRunRecord>, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_deployment_contract::DeploymentRepository::deployments<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_deployment_contract::DeploymentRecord>, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_deployment_contract::DeploymentRepository::upsert_deployment_run<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::DeploymentRunRecord, core::option::Option<awaken_deployment_contract::DeploymentLifecycleFact>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_deployment_contract::DeploymentRepository::write_deployment<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::DeploymentRecord, core::option::Option<u64>, usize, core::option::Option<awaken_deployment_contract::DeploymentLifecycleFact>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_deployment_contract::DeploymentWriteOutcome, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_deployment_contract::DeploymentRepository::claim_scheduled_run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64, awaken_deployment_contract::DeploymentView, awaken_deployment_contract::DeploymentRunView, awaken_deployment_contract::DeploymentLifecycleFact) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_deployment_contract::ScheduledRunClaimOutcome, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_deployment_contract::DeploymentRepository::deployment_runs<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_deployment_contract::DeploymentRunView>, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_deployment_contract::DeploymentRepository::deployments<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_deployment_contract::DeploymentView>, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_deployment_contract::DeploymentRepository::upsert_deployment_run<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::DeploymentRunView, core::option::Option<awaken_deployment_contract::DeploymentLifecycleFact>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_deployment_contract::DeploymentRepository::write_deployment<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::DeploymentView, core::option::Option<u64>, usize, core::option::Option<awaken_deployment_contract::DeploymentLifecycleFact>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_deployment_contract::DeploymentWriteOutcome, awaken_deployment_contract::DeploymentRepositoryError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

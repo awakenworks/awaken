@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpTools } from './fixtures/managed_mcp_session.ts';
 
@@ -51,17 +51,22 @@ async function req(base, method, uri, body) {
   return { status: res.status, json };
 }
 
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
-async function sendMessage(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+async function sendMessage(client, sessionId, text, predicate, description) {
+  // Managed-MCP turn rule M0: C1=one exact User receipt and C2=the caller's
+  // add/permission effect; E1=return full history plus the post-C1 delta.
+  // Constraint: older turns cannot satisfy C2. C1&&!C2=>observe; C1+C2=>E1.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receipt.data[0]?.id,
+    BETAS,
+    predicate,
+    description,
+  );
 }
 
 const agentMessages = (events) =>
@@ -146,14 +151,24 @@ async function main() {
       assert.equal(session.type, 'session');
       assert.equal(session.agent.id, 'calc-agent');
 
-      await sendMessage(client, session.id, 'add 7 8');
-      let events = await listEvents(client, session.id);
-      assertAddTurn(events, 15);
+      let observed = await sendMessage(
+        client,
+        session.id,
+        'add 7 8',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 15')),
+        'management MCP turn 1 commits result 15',
+      );
+      assertAddTurn(observed.delta, 15);
       pass('turn 1: add 7 8 -> mcp__calc__add via the admin-authored config, result 15');
 
-      await sendMessage(client, session.id, 'add 1 2');
-      events = await listEvents(client, session.id);
-      assertAddTurn(events, 3);
+      observed = await sendMessage(
+        client,
+        session.id,
+        'add 1 2',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 3')),
+        'management MCP turn 2 commits result 3',
+      );
+      assertAddTurn(observed.delta, 3);
       pass('turn 2 (same session): add 1 2 -> result 3');
 
       // --- the fixture saw the admin-authored secret as the bearer ---
@@ -204,23 +219,48 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await sendMessage(client, gated.id, 'add 9 4');
-      let gatedEvents = await listEvents(client, gated.id);
+      let gatedObservation = await sendMessage(
+        client,
+        gated.id,
+        'add 9 4',
+        ({ delta }) => delta.some((event) => event.type === 'agent.mcp_tool_use')
+          && delta.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'requires_action'),
+        'O1 exact receipt reaches MCP requires_action',
+      );
+      let gatedEvents = gatedObservation.delta;
       const gatedUse = gatedEvents.find((event) => event.type === 'agent.mcp_tool_use');
       assert.ok(gatedUse, `MCP tool call should be parked: ${gatedEvents.map((event) => event.type)}`);
       const gatedIdle = [...gatedEvents].reverse().find((event) => event.type === 'session.status_idle');
       assert.equal(gatedIdle.stop_reason.type, 'requires_action');
-      await client.beta.sessions.events.send(gated.id, {
+      const allowReceipt = await client.beta.sessions.events.send(gated.id, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: gatedUse.id, result: 'allow' }],
         betas: BETAS,
       });
-      gatedEvents = await listEvents(client, gated.id);
+      gatedObservation = await waitForSessionEventReceipt(
+        client,
+        gated.id,
+        allowReceipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.mcp_tool_result')
+          && delta.some((event) => event.type === 'agent.message'),
+        'O2 exact allow receipt reaches MCP result and terminal message',
+      );
+      gatedEvents = gatedObservation.delta;
       assert.ok(gatedEvents.some((event) => event.type === 'agent.mcp_tool_result'), JSON.stringify(gatedEvents));
       pass('O1/O2: MCP always_ask -> requires_action -> allow -> one tools/call');
 
       const callsBeforeDeny = fixture.calls.filter((call) => call.method === 'tools/call').length;
-      await sendMessage(client, gated.id, 'add 6 5');
-      gatedEvents = await listEvents(client, gated.id);
+      gatedObservation = await sendMessage(
+        client,
+        gated.id,
+        'add 6 5',
+        ({ delta }) => delta.some((event) => event.type === 'agent.mcp_tool_use')
+          && delta.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'requires_action'),
+        'O3 exact receipt reaches MCP requires_action',
+      );
+      gatedEvents = gatedObservation.delta;
       const deniedUse = gatedEvents
         .filter((event) => event.type === 'agent.mcp_tool_use')
         .at(-1);
@@ -230,7 +270,7 @@ async function main() {
         .find((event) => event.type === 'session.status_idle');
       assert.equal(deniedIdle.stop_reason.type, 'requires_action');
       assert.ok(deniedIdle.stop_reason.event_ids.includes(deniedUse.id));
-      await client.beta.sessions.events.send(gated.id, {
+      const denyReceipt = await client.beta.sessions.events.send(gated.id, {
         events: [{
           type: 'user.tool_confirmation',
           tool_use_id: deniedUse.id,
@@ -239,7 +279,18 @@ async function main() {
         }],
         betas: BETAS,
       });
-      gatedEvents = await listEvents(client, gated.id);
+      gatedObservation = await waitForSessionEventReceipt(
+        client,
+        gated.id,
+        denyReceipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.mcp_tool_result'
+          && event.mcp_tool_use_id === deniedUse.id)
+          && agentMessages(delta).some((message) =>
+            message.includes('blocked: operator denied MCP access')),
+        'O3 exact deny receipt reaches blocked MCP result and terminal message',
+      );
+      gatedEvents = gatedObservation.delta;
       const callsAfterDeny = fixture.calls.filter((call) => call.method === 'tools/call').length;
       assert.equal(callsAfterDeny, callsBeforeDeny, 'O3 deny must not reach MCP transport');
       const deniedResult = gatedEvents.find(

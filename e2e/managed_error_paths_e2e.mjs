@@ -5,6 +5,7 @@
 //   - events to an unknown session            -> 404 not_found
 //   - retrieve an unknown session             -> 404 not_found
 //   - tool_confirmation with a WRONG tool_use_id on an awaiting run -> fail closed (4xx)
+//   - unrelated user.message while a tool ticket is pending -> atomic 400; ticket retained
 //   - tool_confirmation when nothing is awaiting -> fail closed (4xx)
 //   - custom_tool_result with no matching ticket -> fail closed (4xx)
 //
@@ -12,7 +13,15 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+  startUpstream,
+  realServerEnv,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38222);
@@ -30,12 +39,6 @@ async function statusOf(promise, what) {
 }
 
 const isClientError = (s) => s >= 400 && s < 500;
-
-async function listEvents(client, id) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(id, { betas: BETAS })) events.push(ev);
-  return events;
-}
 
 async function main() {
   const upstream = await startUpstream('probe');
@@ -76,11 +79,25 @@ async function main() {
         environment_id: 'env_local',
         betas: BETAS,
       });
-      await client.beta.sessions.events.send(session.id, {
+      // Awaiting-boundary rule A1: C1=the exact User receipt commits and C2=its
+      // tool_use plus requires_action idle follow it; E1=use that tool id for the
+      // wrong-id rejection oracle. Constraint: older tool history is ineligible.
+      // Decision: C1&&!C2=>observe again; C1+C2=>E1; wrong id=>synchronous 4xx.
+      const receipt = await client.beta.sessions.events.send(session.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-ME' }] }],
         betas: BETAS,
       });
-      const awaiting = (await listEvents(client, session.id)).find((e) => e.type === 'agent.tool_use');
+      const { events: pendingEvents, delta } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        receipt.data[0]?.id,
+        BETAS,
+        ({ delta: current }) => current.some((event) => event.type === 'agent.tool_use')
+          && current.some((event) => event.type === 'session.status_idle'
+            && event.stop_reason?.type === 'requires_action'),
+        'A1 exact User receipt reaches requires_action',
+      );
+      const awaiting = delta.find((event) => event.type === 'agent.tool_use');
       assert.ok(awaiting, 'the run awaiting on a tool_use');
       const status = await statusOf(
         client.beta.sessions.events.send(session.id, {
@@ -93,6 +110,103 @@ async function main() {
       );
       assert.ok(isClientError(status), `wrong tool_use_id fails closed (got ${status})`);
       pass(`tool_confirmation with a wrong tool_use_id -> fail closed (${status})`);
+
+      // Pending-ticket admission rule P1-P2. Causes: C1=the exact committed
+      // tool-use Event remains unresolved after the wrong-id rejection;
+      // C2=an unrelated User message does not resolve C1; C3=a later exact
+      // allow names C1. Effects: E1=C1+C2 returns 400 without a receipt;
+      // E2=history and Provider requests remain byte-for-byte/count stable;
+      // E3=C1+C3 consumes the original ticket exactly once and the same Run
+      // reaches its tool result, reply, and end_turn. Constraint/authority:
+      // committed Event ids plus the ResumeTicket own pending custody; no cache
+      // or timing observation may replace them. Decision table: P1(C1+C2)
+      // ->E1+E2; P2(P1+C3)->E3.
+      const eventIdsBeforeUnrelated = pendingEvents.map((event) => event.id);
+      const providerRequestsBeforeUnrelated = upstream.requests.length;
+      await assert.rejects(
+        client.beta.sessions.events.send(session.id, {
+          events: [{
+            type: 'user.message',
+            content: [{ type: 'text', text: 'UNRELATED-WHILE-PENDING' }],
+          }],
+          betas: BETAS,
+        }),
+        (error) => {
+          assert.equal(error?.status, 400, 'P1/E1 unrelated User is rejected');
+          assert.equal(error?.error?.type, 'error', 'P1/E1 uses the Anthropic error envelope');
+          assert.equal(
+            error?.error?.error?.type,
+            'invalid_request_error',
+            'P1/E1 is an admission error',
+          );
+          assert.equal(
+            error?.error?.error?.message,
+            'pending tool events must be resolved before user.message',
+            'P1/E1 selects the unresolved-ticket branch',
+          );
+          return true;
+        },
+      );
+      const eventIdsAfterUnrelated = [];
+      for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
+        eventIdsAfterUnrelated.push(event.id);
+      }
+      assert.deepEqual(
+        eventIdsAfterUnrelated,
+        eventIdsBeforeUnrelated,
+        'P1/E2 rejected User appends no receipt or lifecycle Event',
+      );
+      assert.equal(
+        upstream.requests.length,
+        providerRequestsBeforeUnrelated,
+        'P1/E2 rejected User performs no Provider request',
+      );
+
+      const allowReceipt = await client.beta.sessions.events.send(session.id, {
+        events: [{
+          type: 'user.tool_confirmation',
+          tool_use_id: awaiting.id,
+          result: 'allow',
+        }],
+        betas: BETAS,
+      });
+      const allowReceiptId = allowReceipt.data[0]?.id;
+      assert.equal(typeof allowReceiptId, 'string', 'P2/C3 exact allow receipt');
+      const { events: completed, delta: completedDelta } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        allowReceiptId,
+        BETAS,
+        ({ delta: current }) => current.some((event) =>
+          event.type === 'agent.tool_result' && event.tool_use_id === awaiting.id)
+          && current.some((event) => event.type === 'agent.message')
+          && [...current].reverse().find((event) =>
+            event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+        'P2 original pending ticket to resolve and finish once',
+      );
+      assert.equal(
+        completed.filter((event) =>
+          event.type === 'user.tool_confirmation' && event.tool_use_id === awaiting.id).length,
+        1,
+        'P2/E3 original ticket has one exact confirmation',
+      );
+      assert.equal(
+        completed.filter((event) =>
+          event.type === 'agent.tool_result' && event.tool_use_id === awaiting.id).length,
+        1,
+        'P2/E3 confirmed occurrence has one exact tool result',
+      );
+      assert.equal(
+        completedDelta.filter((event) => event.type === 'agent.message').length,
+        1,
+        'P2/E3 continuation commits one terminal reply',
+      );
+      assert.ok(
+        !completed.some((event) => event.type === 'user.message'
+          && event.content?.some((block) => block.text === 'UNRELATED-WHILE-PENDING')),
+        'P2/E3 rejected unrelated User never enters history',
+      );
+      pass('pending-ticket rejection is atomic and the original ticket still resolves once');
     }
 
     // 4. tool_confirmation when NOTHING is awaiting (fresh session, no turn).

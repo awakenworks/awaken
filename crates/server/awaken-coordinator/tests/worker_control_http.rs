@@ -229,6 +229,15 @@ fn dispatch_with_capability(run: &str, capability: &str) -> RunDispatch {
 
 #[tokio::test]
 async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owner() {
+    // Causes: the fixtures below establish `registered http claim skips incompatible work and` with
+    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Effects: the observable result `uses incarnation owner` and every asserted state transition
+    // or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Coverage rationale: `registered http claim skips incompatible work and` is one independent
+    // branch selecting `uses incarnation owner`; a multi-row decision table is not applicable, and
+    // sibling tests own alternate causes.
     let clock = Arc::new(ManualWorkerClock::new(100));
     let directory = Arc::new(MemoryWorkerDirectory::new());
     let dispatch = Arc::new(MemoryDispatchStore::new());
@@ -306,6 +315,7 @@ async fn registered_http_claim_skips_incompatible_work_and_uses_incarnation_owne
         model: "model".to_string(),
         partial_text: "partial".to_string(),
         partial_tools: Vec::new(),
+        retry_count: 0,
     };
     assert!(
         client

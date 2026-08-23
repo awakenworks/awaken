@@ -42,10 +42,10 @@ struct TwoToolsThenText {
 #[async_trait::async_trait]
 impl LlmExecutor for TwoToolsThenText {
     async fn infer(&self, _r: ChatRequest) -> awaken_runtime_contract::llm::Result<ChatResponse> {
-        let turn = self.calls.fetch_add(1, Ordering::SeqCst);
-        let output = match turn {
+        let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+        let output = match call_index {
             0 | 1 => AssistantOutput::from_tool_calls(vec![ToolCall {
-                call_id: format!("call-{}", turn + 1),
+                call_id: format!("call-{}", call_index + 1),
                 tool_id: "echo".to_string(),
                 arguments: serde_json::json!({"text": "ping"}),
             }]),
@@ -484,6 +484,11 @@ async fn an_uncommitted_scheduled_action_is_not_wakeable() {
 
 #[tokio::test]
 async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() {
+    // Test design — Causes: Resume targets an exact ScheduledAction ticket but
+    // supplies a different catalog fingerprint. Effects: validation rejects,
+    // action count stays zero, and the ticket remains. Constraints/invariants:
+    // immutable publication identity is a mandatory resume fence. Decision rule
+    // S1: wrong fingerprint=>no execution and no committed-ticket mutation.
     // RS-SCH-002: a resume targeting a committed ScheduledAction but carrying the
     // wrong catalog fingerprint is rejected without running the action or mutating
     // the committed ticket.
@@ -505,6 +510,7 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
             "wrong-fingerprint".to_string(),
         ),
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms: 0,
     };
     let err = runtime

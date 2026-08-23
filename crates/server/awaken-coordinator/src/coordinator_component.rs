@@ -64,12 +64,16 @@ pub struct CoordinatorDependencies {
     pub deployment_session_launcher:
         Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>,
     pub executable_agents: Arc<dyn ExecutableAgentRegistrationSource>,
+    /// One stateless process-composed refresh prerequisite shared by every
+    /// application consumer of rebuildable executable projections.
+    pub executable_projection_refresh:
+        Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
     pub environments: Arc<EnvironmentExecutionApplication>,
     pub sessions: Arc<dyn ManagedSessionRepository>,
     pub default_workspace: String,
     /// Authenticated executable Agent and Environment registration routes.
-    /// Process startup installs projection refresh around the final
-    /// Runtime-admitting surface, not around these transport-only routes.
+    /// Application consumers refresh through the injected neutral port; these
+    /// transport-only routes do not classify request paths.
     pub private_router: Router,
     /// Service-token verifier shared by private Control→Coordinator commands.
     /// AllInOne uses an in-process rollout target and leaves this absent.
@@ -152,6 +156,7 @@ pub async fn build_coordinator_component(
         deployment_application,
         deployment_session_launcher,
         executable_agents,
+        executable_projection_refresh,
         environments,
         sessions,
         default_workspace,
@@ -160,6 +165,9 @@ pub async fn build_coordinator_component(
     } = dependencies;
 
     deployment_application.bind_executable_agents(executable_agents);
+    if let Some(refresh) = executable_projection_refresh.clone() {
+        deployment_application.bind_executable_projection_refresh(refresh);
+    }
 
     // The canonical supervisor owns durable resource, MCP, and WorkQueue
     // recovery as background work. Component construction must expose readiness
@@ -167,11 +175,6 @@ pub async fn build_coordinator_component(
     register_session_lifecycle(&service_lifecycle, session_application.clone());
     deployment_application.bind_launcher(deployment_session_launcher);
 
-    let environment_warmups = awaken_run_ingress_http::worker_environment_warmup_router(
-        environments.clone(),
-        worker_directory.clone(),
-        worker_authenticator.clone(),
-    );
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
@@ -182,6 +185,7 @@ pub async fn build_coordinator_component(
                 application_access: Some(application_access.clone()),
                 model_inventory: Some(model_inventory),
                 dream_process_store,
+                executable_projection_refresh,
             },
             crate::ManagedRoutingExtensions {
                 resource_management_router,
@@ -203,9 +207,7 @@ pub async fn build_coordinator_component(
         ),
         None => private_router,
     };
-    let private_router = private_router
-        .merge(worker_transport)
-        .merge(environment_warmups);
+    let private_router = private_router.merge(worker_transport);
     let management_router =
         awaken_protocol_managed::deployments_router(deployment_application.clone())
             .merge(awaken_protocol_awaken::dream_policy_router(

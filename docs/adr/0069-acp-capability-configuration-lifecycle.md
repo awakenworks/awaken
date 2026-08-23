@@ -126,7 +126,7 @@ AcpAdapterDescriptor
   launch
   discovery
   model_delivery
-  mcp_delivery
+  mcp_client_credential_injection
   session_persistence
   config_home
   option_annotations[native_option_id]
@@ -134,7 +134,7 @@ AcpAdapterDescriptor
 
 The descriptor owns protocol-external facts that ACP negotiation cannot reveal:
 wrapper acquisition, executable argv, login-status command, config-home layout,
-session storage and legacy flag/config-file delivery.
+session storage and the verified process-private MCP credential channel.
 
 Live ACP negotiation owns the installed adapter's current protocol facts:
 advertised modes, config options, value schemas, choices, reported defaults and

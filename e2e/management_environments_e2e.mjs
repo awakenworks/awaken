@@ -20,6 +20,18 @@ async function drain(pagePromise) {
 }
 
 async function main() {
+  // Test design (Environment/work matrix). Causes: C1=create/update fields are
+  // omitted, valid, null, or invalid; C2=config/policy unions are canonical or
+  // private/unknown; C3=Work is queued, leased, reclaimed, stopped; C4=the
+  // Environment is archived. Effects: E1=valid CRUD round-trips one DTO;
+  // E2=invalid input is 400 with no resource/work side effect; E3=C3 follows one
+  // lease lifecycle; E4=C4 makes update/policy/Work/delete terminally unavailable.
+  // Constraints/invariant: one Environment aggregate owns config, policy, and
+  // Work availability. Nullable descriptions exist only at ingress: create
+  // omission/null normalize to `''`; update omission preserves, update null
+  // clears to `''`; every Environment response exposes a string.
+  // Decision rules: E1=C1(valid)+C2(valid); E2=C1/C2(invalid);
+  // E3=E1+C3; E4=E1+C4.
   try {
     await withScenarioServer('management', 'mcp', 38148, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
@@ -43,6 +55,7 @@ async function main() {
         name: 'scoped', scope: 'organization', betas: BETAS,
       });
       assert.equal(scoped.scope, 'organization');
+      assert.equal(scoped.description, '', 'omitted description projects as the canonical string');
       const scopedUpdate = await client.beta.environments.update(scoped.id, {
         scope: 'account', betas: BETAS,
       });
@@ -226,14 +239,45 @@ async function main() {
 
       const gotEnv = await client.beta.environments.retrieve(env.id, { betas: BETAS });
       assert.equal(gotEnv.id, env.id);
+      // Description cause/effect graph: C1=create omits or supplies null;
+      // C2=update omits description; C3=update supplies a string or null.
+      // E1=C1 authors `''`; E2=C2 preserves the current string; E3=C3 replaces
+      // with the exact string or clears to `''`. K: nullable presence belongs
+      // only to Managed ingress; the Environment aggregate, store, history,
+      // and official BetaEnvironment output share one non-null string authority.
+      //
+      // Decision table:
+      // | Rule | operation | description | durable/projected effect |
+      // | D0 | create | omitted/null | canonical empty string |
+      // | D1 | update | omitted | preserve prior value |
+      // | D2 | update | string | replace with exact string |
+      // | D3 | update | null | clear to canonical empty string |
+      // | D4 | update | empty string | retain canonical empty string |
       const upEnv = await client.beta.environments.update(env.id, {
         description: 'updated',
         betas: BETAS,
       });
       assert.equal(upEnv.description, 'updated');
+      const preservedDescription = await client.beta.environments.update(env.id, {
+        name: 'prod-renamed', betas: BETAS,
+      });
+      assert.equal(preservedDescription.description, 'updated', 'D1');
+      const clearedDescription = await client.beta.environments.update(env.id, {
+        description: null, betas: BETAS,
+      });
+      assert.equal(clearedDescription.description, '', 'D3');
+      const emptyDescription = await client.beta.environments.update(env.id, {
+        description: '', betas: BETAS,
+      });
+      assert.equal(emptyDescription.description, '', 'D4');
+      assert.equal(
+        (await client.beta.environments.retrieve(env.id, { betas: BETAS })).description,
+        '',
+        'D2-D4 retrieve uses the persisted nullable value',
+      );
       const envIds = (await drain(client.beta.environments.list({ betas: BETAS }))).map((e) => e.id);
       assert.ok(envIds.includes(env.id));
-      pass('beta.environments.retrieve / update / list');
+      pass('beta.environments.retrieve / update / list + canonical description decision table');
 
       // -- Work queue --------------------------------------------------------
       const seeded = await drain(client.beta.environments.work.list(env.id, { betas: BETAS }));

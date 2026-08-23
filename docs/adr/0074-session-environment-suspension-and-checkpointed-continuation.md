@@ -121,7 +121,7 @@ full-Environment suspension.
 
 ADR-0073's Hand inactivity policy remains Worker-local and based on actual Hand
 use rather than Session status. It can stop a rebuildable process during a long
-model turn while the Environment remains resident, so it is not an alternative
+model request while the Environment remains resident, so it is not an alternative
 Environment lifecycle. Full suspension invokes the same Hand stop/reap
 primitive during quiescence and still owns the only durable Environment state.
 

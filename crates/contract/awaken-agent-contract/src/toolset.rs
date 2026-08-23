@@ -78,6 +78,32 @@ pub const fn select_tool_policy(
 pub struct ToolPolicyOverride {
     pub name: String,
     pub policy: ToolExecutionPolicy,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub configuration: Option<serde_json::Value>,
+}
+
+impl ToolPolicyOverride {
+    /// Construct the canonical policy-only override used by tools without
+    /// execution-specific settings.
+    #[must_use]
+    pub fn new(name: impl Into<String>, policy: ToolExecutionPolicy) -> Self {
+        Self::with_optional_configuration(name, policy, None)
+    }
+
+    /// Construct from a projection that has already resolved whether a
+    /// tool-specific configuration exists.
+    #[must_use]
+    pub fn with_optional_configuration(
+        name: impl Into<String>,
+        policy: ToolExecutionPolicy,
+        configuration: Option<serde_json::Value>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            policy,
+            configuration,
+        }
+    }
 }
 
 impl ToolsetPolicy {
@@ -88,6 +114,14 @@ impl ToolsetPolicy {
             .find(|entry| entry.name == name)
             .map(|entry| entry.policy)
             .unwrap_or(self.default)
+    }
+
+    #[must_use]
+    pub fn configuration_for(&self, name: &str) -> Option<&serde_json::Value> {
+        self.overrides
+            .iter()
+            .find(|entry| entry.name == name)
+            .and_then(|entry| entry.configuration.as_ref())
     }
 
     /// Select a policy for a call only after the executable registry supplies

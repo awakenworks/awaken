@@ -14,6 +14,7 @@ use crate::agent::message::Message;
 use crate::agent::run::{Id as RunId, Record as RunRecord};
 use crate::agent::state::Command as StateCommand;
 use crate::agent::thread::Id as ThreadId;
+use crate::audit::record::Record as EventRecord;
 
 /// One active resume ticket paired with the Run whose disposition owns it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +38,11 @@ pub struct RunRecoverySnapshot {
     pub latest_run_id: Option<RunId>,
     pub messages: Vec<Message>,
     pub state: Vec<StateCommand>,
+    /// Committed audit facts for this Thread, ordered by their durable event
+    /// sequence and read under the same consistency boundary as messages,
+    /// state, tickets, and `store_cursor`.
+    #[serde(default)]
+    pub events: Vec<EventRecord>,
     pub resume_tickets: Vec<RunResumeTicket>,
     pub thread_version: u64,
     pub store_cursor: u64,
@@ -61,4 +67,48 @@ pub trait RunRecoverySource: Send + Sync {
         thread_id: &ThreadId,
         claimed_run_id: &RunId,
     ) -> Result<RunRecoverySnapshot, RecoveryError>;
+
+    /// Recover one logical Thread from the physical Session partition selected by
+    /// the guarded dispatch. Partition-bound sources may keep the default; a
+    /// process-level source must override it instead of deriving physical
+    /// ownership from the logical child id.
+    async fn recovery_snapshot_in_session(
+        &self,
+        _session_thread_id: &ThreadId,
+        thread_id: &ThreadId,
+        claimed_run_id: &RunId,
+    ) -> Result<RunRecoverySnapshot, RecoveryError> {
+        self.recovery_snapshot(thread_id, claimed_run_id).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_snapshot_without_events_remains_readable() {
+        // Causes: C1 an older Worker payload omits the newly projected audit
+        // prefix. Effect E1: decode succeeds with an empty event list. Decision
+        // rule R1=C1=>E1; writers still emit the field for new peers.
+        // Constraints/invariants: compatibility defaults only the absent audit
+        // prefix and preserves every existing recovery coordinate verbatim.
+        let snapshot = RunRecoverySnapshot {
+            thread_id: ThreadId("thread".into()),
+            claimed_run_id: RunId("run".into()),
+            runs: Vec::new(),
+            latest_run_id: None,
+            messages: Vec::new(),
+            state: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 0,
+            store_cursor: 0,
+            next_commit_ordinal: 0,
+        };
+        let mut legacy = serde_json::to_value(snapshot).unwrap();
+        legacy.as_object_mut().unwrap().remove("events");
+        let decoded: RunRecoverySnapshot = serde_json::from_value(legacy).expect("R1/E1");
+        assert!(decoded.events.is_empty(), "R1/E1");
+    }
 }

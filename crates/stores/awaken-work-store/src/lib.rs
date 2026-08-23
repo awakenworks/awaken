@@ -1391,10 +1391,8 @@ impl WorkQueue for PostgresWorkQueue {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "loom")))]
 mod tests {
-    #![cfg(not(feature = "loom"))]
-
     use super::LEASE_TTL_MS;
     use super::*;
     use awaken_session_contract::work_queue::{WorkPayload, WorkState};

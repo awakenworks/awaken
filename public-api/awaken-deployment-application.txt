@@ -1,4 +1,26 @@
 pub mod awaken_deployment_application
+pub use awaken_deployment_application::AgentSelector
+pub use awaken_deployment_application::CreateDeploymentCommand
+pub use awaken_deployment_application::DeploymentAgent
+pub use awaken_deployment_application::DeploymentLaunch
+pub use awaken_deployment_application::DeploymentLaunchOutcome
+pub use awaken_deployment_application::DeploymentOutcomeRubric
+pub use awaken_deployment_application::DeploymentPauseError
+pub use awaken_deployment_application::DeploymentPauseReason
+pub use awaken_deployment_application::DeploymentRecord
+pub use awaken_deployment_application::DeploymentRepositoryCheckout
+pub use awaken_deployment_application::DeploymentResource
+pub use awaken_deployment_application::DeploymentRunFailure
+pub use awaken_deployment_application::DeploymentRunRecord
+pub use awaken_deployment_application::DeploymentRunView
+pub use awaken_deployment_application::DeploymentSchedule
+pub use awaken_deployment_application::DeploymentSeedEvent
+pub use awaken_deployment_application::DeploymentStatus
+pub use awaken_deployment_application::DeploymentTrigger
+pub use awaken_deployment_application::DeploymentView
+pub use awaken_deployment_application::FieldUpdate
+pub use awaken_deployment_application::MetadataUpdate
+pub use awaken_deployment_application::UpdateDeploymentCommand
 pub enum awaken_deployment_application::DeploymentApplicationError
 pub awaken_deployment_application::DeploymentApplicationError::Conflict(alloc::string::String)
 pub awaken_deployment_application::DeploymentApplicationError::Invalid(alloc::string::String)
@@ -7,178 +29,25 @@ pub awaken_deployment_application::DeploymentApplicationError::Terminal
 pub awaken_deployment_application::DeploymentApplicationError::Unavailable(alloc::string::String)
 impl core::convert::From<awaken_deployment_contract::DeploymentRepositoryError> for awaken_deployment_application::DeploymentApplicationError
 pub fn awaken_deployment_application::DeploymentApplicationError::from(awaken_deployment_contract::DeploymentRepositoryError) -> Self
-pub enum awaken_deployment_application::DeploymentLaunchOutcome
-pub awaken_deployment_application::DeploymentLaunchOutcome::Created
-pub awaken_deployment_application::DeploymentLaunchOutcome::Created::session_id: alloc::string::String
-pub awaken_deployment_application::DeploymentLaunchOutcome::Failed
-pub awaken_deployment_application::DeploymentLaunchOutcome::Failed::error: awaken_deployment_application::DeploymentRunFailure
-pub awaken_deployment_application::DeploymentLaunchOutcome::Unavailable
-pub awaken_deployment_application::DeploymentLaunchOutcome::Unavailable::message: alloc::string::String
-pub enum awaken_deployment_application::DeploymentPauseError
-pub awaken_deployment_application::DeploymentPauseError::AgentArchivedError
-pub awaken_deployment_application::DeploymentPauseError::EnvironmentArchivedError
-pub awaken_deployment_application::DeploymentPauseError::EnvironmentNotFoundError
-pub awaken_deployment_application::DeploymentPauseError::FileNotFoundError
-pub awaken_deployment_application::DeploymentPauseError::McpEgressBlockedError
-pub awaken_deployment_application::DeploymentPauseError::MemoryStoreArchivedError
-pub awaken_deployment_application::DeploymentPauseError::OrganizationDisabledError
-pub awaken_deployment_application::DeploymentPauseError::SelfHostedResourcesUnsupportedError
-pub awaken_deployment_application::DeploymentPauseError::SessionResourceNotFoundError
-pub awaken_deployment_application::DeploymentPauseError::SkillNotFoundError
-pub awaken_deployment_application::DeploymentPauseError::UnknownError
-pub awaken_deployment_application::DeploymentPauseError::VaultArchivedError
-pub awaken_deployment_application::DeploymentPauseError::VaultNotFoundError
-pub awaken_deployment_application::DeploymentPauseError::WorkspaceArchivedError
-pub enum awaken_deployment_application::DeploymentPauseReason
-pub awaken_deployment_application::DeploymentPauseReason::Error
-pub awaken_deployment_application::DeploymentPauseReason::Error::error: awaken_deployment_application::DeploymentPauseError
-pub awaken_deployment_application::DeploymentPauseReason::Manual
-pub enum awaken_deployment_application::DeploymentRunFailure
-pub awaken_deployment_application::DeploymentRunFailure::AgentArchivedError
-pub awaken_deployment_application::DeploymentRunFailure::AgentArchivedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::EnvironmentArchivedError
-pub awaken_deployment_application::DeploymentRunFailure::EnvironmentArchivedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::EnvironmentNotFoundError
-pub awaken_deployment_application::DeploymentRunFailure::EnvironmentNotFoundError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::FileNotFoundError
-pub awaken_deployment_application::DeploymentRunFailure::FileNotFoundError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::McpEgressBlockedError
-pub awaken_deployment_application::DeploymentRunFailure::McpEgressBlockedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::MemoryStoreArchivedError
-pub awaken_deployment_application::DeploymentRunFailure::MemoryStoreArchivedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::OrganizationDisabledError
-pub awaken_deployment_application::DeploymentRunFailure::OrganizationDisabledError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::SelfHostedResourcesUnsupportedError
-pub awaken_deployment_application::DeploymentRunFailure::SelfHostedResourcesUnsupportedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::SessionCreationRejectedError
-pub awaken_deployment_application::DeploymentRunFailure::SessionCreationRejectedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::SessionRateLimitedError
-pub awaken_deployment_application::DeploymentRunFailure::SessionRateLimitedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::SessionResourceNotFoundError
-pub awaken_deployment_application::DeploymentRunFailure::SessionResourceNotFoundError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::SkillNotFoundError
-pub awaken_deployment_application::DeploymentRunFailure::SkillNotFoundError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::UnknownError
-pub awaken_deployment_application::DeploymentRunFailure::UnknownError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::VaultArchivedError
-pub awaken_deployment_application::DeploymentRunFailure::VaultArchivedError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::VaultNotFoundError
-pub awaken_deployment_application::DeploymentRunFailure::VaultNotFoundError::message: alloc::string::String
-pub awaken_deployment_application::DeploymentRunFailure::WorkspaceArchivedError
-pub awaken_deployment_application::DeploymentRunFailure::WorkspaceArchivedError::message: alloc::string::String
-impl awaken_deployment_application::DeploymentRunFailure
-pub fn awaken_deployment_application::DeploymentRunFailure::pause_error(&self) -> core::option::Option<awaken_deployment_application::DeploymentPauseError>
-pub enum awaken_deployment_application::DeploymentSchedule
-pub awaken_deployment_application::DeploymentSchedule::Cron
-pub awaken_deployment_application::DeploymentSchedule::Cron::expression: alloc::string::String
-pub awaken_deployment_application::DeploymentSchedule::Cron::last_run_at: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::DeploymentSchedule::Cron::timezone: alloc::string::String
-pub awaken_deployment_application::DeploymentSchedule::Cron::upcoming_runs_at: alloc::vec::Vec<alloc::string::String>
-impl awaken_deployment_application::DeploymentSchedule
-pub fn awaken_deployment_application::DeploymentSchedule::expression(&self) -> &str
-pub fn awaken_deployment_application::DeploymentSchedule::timezone(&self) -> &str
-pub fn awaken_deployment_application::DeploymentSchedule::with_runtime(&self, core::option::Option<alloc::string::String>, alloc::vec::Vec<alloc::string::String>) -> Self
-pub enum awaken_deployment_application::DeploymentStatus
-pub awaken_deployment_application::DeploymentStatus::Active
-pub awaken_deployment_application::DeploymentStatus::Paused
-pub enum awaken_deployment_application::DeploymentTrigger
-pub awaken_deployment_application::DeploymentTrigger::Manual
-pub awaken_deployment_application::DeploymentTrigger::Schedule
-pub awaken_deployment_application::DeploymentTrigger::Schedule::scheduled_at: alloc::string::String
-pub struct awaken_deployment_application::AgentSelector
-pub awaken_deployment_application::AgentSelector::id: alloc::string::String
-pub awaken_deployment_application::AgentSelector::version: core::option::Option<u64>
-pub struct awaken_deployment_application::CreateDeploymentCommand
-pub awaken_deployment_application::CreateDeploymentCommand::agent: awaken_deployment_application::AgentSelector
-pub awaken_deployment_application::CreateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<u64>
-pub awaken_deployment_application::CreateDeploymentCommand::description: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::CreateDeploymentCommand::environment_id: alloc::string::String
-pub awaken_deployment_application::CreateDeploymentCommand::initial_events: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::CreateDeploymentCommand::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_deployment_application::CreateDeploymentCommand::name: alloc::string::String
-pub awaken_deployment_application::CreateDeploymentCommand::resources: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::CreateDeploymentCommand::schedule: core::option::Option<awaken_deployment_application::DeploymentSchedule>
-pub awaken_deployment_application::CreateDeploymentCommand::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_deployment_application::CreateDeploymentCommand::workspace_id: alloc::string::String
-pub struct awaken_deployment_application::DeploymentAgent
-pub awaken_deployment_application::DeploymentAgent::id: alloc::string::String
-pub awaken_deployment_application::DeploymentAgent::version: u64
-impl awaken_deployment_application::DeploymentAgent
-pub fn awaken_deployment_application::DeploymentAgent::new(impl core::convert::Into<alloc::string::String>, u64) -> Self
 pub struct awaken_deployment_application::DeploymentApplication
 impl awaken_deployment_application::DeploymentApplication
-pub async fn awaken_deployment_application::DeploymentApplication::archive(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::archive(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::archive_for_agent(&self, &str, &str) -> core::result::Result<usize, awaken_deployment_application::DeploymentApplicationError>
 pub fn awaken_deployment_application::DeploymentApplication::bind_executable_agents(&self, alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>)
+pub fn awaken_deployment_application::DeploymentApplication::bind_executable_projection_refresh(&self, alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>)
 pub fn awaken_deployment_application::DeploymentApplication::bind_launcher(&self, alloc::sync::Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>)
-pub async fn awaken_deployment_application::DeploymentApplication::create(&self, awaken_deployment_application::CreateDeploymentCommand) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::create(&self, awaken_deployment_contract::model::CreateDeploymentCommand) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::from_repository(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<Self, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::get(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::get_run(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentRunView, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::list(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_deployment_application::DeploymentView>, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::list_runs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_deployment_application::DeploymentRunView>, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::pause(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::run(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentRunView, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::tick_and_launch(&self, u64) -> core::result::Result<alloc::vec::Vec<awaken_deployment_application::DeploymentRunView>, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::unpause(&self, &str, &str) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
-pub async fn awaken_deployment_application::DeploymentApplication::update(&self, &str, &str, awaken_deployment_application::UpdateDeploymentCommand) -> core::result::Result<awaken_deployment_application::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::get(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::get_run(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentRunView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::list(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_deployment_contract::model::DeploymentView>, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::list_runs(&self, &str) -> core::result::Result<alloc::vec::Vec<awaken_deployment_contract::model::DeploymentRunView>, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::pause(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::run(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentRunView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::tick_and_launch(&self, u64) -> core::result::Result<alloc::vec::Vec<awaken_deployment_contract::model::DeploymentRunView>, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::unpause(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
+pub async fn awaken_deployment_application::DeploymentApplication::update(&self, &str, &str, awaken_deployment_contract::model::UpdateDeploymentCommand) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 impl awaken_deployment_contract::AgentArchiveCascade for awaken_deployment_application::DeploymentApplication
 pub fn awaken_deployment_application::DeploymentApplication::archive_agent_dependents<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), alloc::string::String>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub struct awaken_deployment_application::DeploymentLaunch
-pub awaken_deployment_application::DeploymentLaunch::agent: awaken_deployment_application::DeploymentAgent
-pub awaken_deployment_application::DeploymentLaunch::budget_max_list_cost_minor: core::option::Option<u64>
-pub awaken_deployment_application::DeploymentLaunch::deployment_id: alloc::string::String
-pub awaken_deployment_application::DeploymentLaunch::deployment_run_id: alloc::string::String
-pub awaken_deployment_application::DeploymentLaunch::environment_id: alloc::string::String
-pub awaken_deployment_application::DeploymentLaunch::initial_events: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::DeploymentLaunch::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_deployment_application::DeploymentLaunch::resources: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::DeploymentLaunch::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_deployment_application::DeploymentLaunch::workspace_id: alloc::string::String
-pub struct awaken_deployment_application::DeploymentRecord
-pub awaken_deployment_application::DeploymentRecord::agent: awaken_deployment_application::DeploymentAgent
-pub awaken_deployment_application::DeploymentRecord::archived_at: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::DeploymentRecord::budget_max_list_cost_minor: core::option::Option<u64>
-pub awaken_deployment_application::DeploymentRecord::created_at: alloc::string::String
-pub awaken_deployment_application::DeploymentRecord::description: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::DeploymentRecord::environment_id: alloc::string::String
-pub awaken_deployment_application::DeploymentRecord::initial_events: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::DeploymentRecord::last_run_at: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::DeploymentRecord::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
-pub awaken_deployment_application::DeploymentRecord::name: alloc::string::String
-pub awaken_deployment_application::DeploymentRecord::next_fire_ms: core::option::Option<u64>
-pub awaken_deployment_application::DeploymentRecord::paused_reason: core::option::Option<awaken_deployment_application::DeploymentPauseReason>
-pub awaken_deployment_application::DeploymentRecord::resources: alloc::vec::Vec<serde_json::value::Value>
-pub awaken_deployment_application::DeploymentRecord::revision: u64
-pub awaken_deployment_application::DeploymentRecord::schedule: core::option::Option<awaken_deployment_application::DeploymentSchedule>
-pub awaken_deployment_application::DeploymentRecord::status: awaken_deployment_application::DeploymentStatus
-pub awaken_deployment_application::DeploymentRecord::updated_at: alloc::string::String
-pub awaken_deployment_application::DeploymentRecord::vault_ids: alloc::vec::Vec<alloc::string::String>
-pub awaken_deployment_application::DeploymentRecord::workspace_id: alloc::string::String
-pub struct awaken_deployment_application::DeploymentRunRecord
-pub awaken_deployment_application::DeploymentRunRecord::agent: awaken_deployment_application::DeploymentAgent
-pub awaken_deployment_application::DeploymentRunRecord::created_at: alloc::string::String
-pub awaken_deployment_application::DeploymentRunRecord::deployment_id: alloc::string::String
-pub awaken_deployment_application::DeploymentRunRecord::error: core::option::Option<awaken_deployment_application::DeploymentRunFailure>
-pub awaken_deployment_application::DeploymentRunRecord::session_id: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::DeploymentRunRecord::trigger: awaken_deployment_application::DeploymentTrigger
-pub awaken_deployment_application::DeploymentRunRecord::workspace_id: alloc::string::String
-pub struct awaken_deployment_application::DeploymentRunView
-pub awaken_deployment_application::DeploymentRunView::id: alloc::string::String
-pub awaken_deployment_application::DeploymentRunView::record: awaken_deployment_application::DeploymentRunRecord
-pub struct awaken_deployment_application::DeploymentView
-pub awaken_deployment_application::DeploymentView::id: alloc::string::String
-pub awaken_deployment_application::DeploymentView::record: awaken_deployment_application::DeploymentRecord
-pub struct awaken_deployment_application::UpdateDeploymentCommand
-pub awaken_deployment_application::UpdateDeploymentCommand::agent: core::option::Option<awaken_deployment_application::AgentSelector>
-pub awaken_deployment_application::UpdateDeploymentCommand::budget_max_list_cost_minor: core::option::Option<core::option::Option<u64>>
-pub awaken_deployment_application::UpdateDeploymentCommand::description: core::option::Option<core::option::Option<alloc::string::String>>
-pub awaken_deployment_application::UpdateDeploymentCommand::environment_id: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::UpdateDeploymentCommand::initial_events: core::option::Option<alloc::vec::Vec<serde_json::value::Value>>
-pub awaken_deployment_application::UpdateDeploymentCommand::metadata: core::option::Option<core::option::Option<alloc::collections::btree::map::BTreeMap<alloc::string::String, core::option::Option<alloc::string::String>>>>
-pub awaken_deployment_application::UpdateDeploymentCommand::name: core::option::Option<alloc::string::String>
-pub awaken_deployment_application::UpdateDeploymentCommand::resources: core::option::Option<core::option::Option<alloc::vec::Vec<serde_json::value::Value>>>
-pub awaken_deployment_application::UpdateDeploymentCommand::schedule: core::option::Option<core::option::Option<awaken_deployment_application::DeploymentSchedule>>
-pub awaken_deployment_application::UpdateDeploymentCommand::vault_ids: core::option::Option<core::option::Option<alloc::vec::Vec<alloc::string::String>>>
 pub trait awaken_deployment_application::DeploymentSessionLauncher: core::marker::Send + core::marker::Sync
-pub fn awaken_deployment_application::DeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_application::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_application::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_deployment_application::DeploymentSessionLauncher::launch<'life0, 'async_trait>(&'life0 self, awaken_deployment_contract::model::DeploymentLaunch) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = awaken_deployment_contract::model::DeploymentLaunchOutcome> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

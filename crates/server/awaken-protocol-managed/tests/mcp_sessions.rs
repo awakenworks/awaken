@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Message;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot;
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
 use awaken_protocol_managed::{ManagedState, VaultState, router, vault_router};
@@ -135,11 +136,17 @@ impl SessionRuntime for PreparingFake {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _agent: &str, _t: &str, _x: &str) -> Result<(), RunError> {
-        Ok(())
-    }
     async fn committed_messages(&self, _thread: &str) -> Result<Vec<Message>, RunError> {
         Ok(Vec::new())
+    }
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<RunRecoverySnapshot>, RunError> {
+        // This fixture never commits a Run. Explicit absence keeps it honest
+        // without weakening the production default for unsupported recovery.
+        Ok(None)
     }
     async fn define_outcome(
         &self,
@@ -255,8 +262,14 @@ impl SessionRuntime for HotRuntime {
     ) -> Result<StepOutcome, RunError> {
         Err(RunError::internal("unused"))
     }
-    async fn add_system(&self, _agent: &str, _thread: &str, _text: &str) -> Result<(), RunError> {
-        Ok(())
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<RunRecoverySnapshot>, RunError> {
+        // Hot MCP replacement mutates only the Session aggregate; no fixture
+        // Run exists from which an atomic Thread prefix could be recovered.
+        Ok(None)
     }
     async fn replace_session_tools(
         &self,
@@ -690,6 +703,10 @@ async fn create_binds_mcp_server_to_vault_credential_and_echoes_the_wire_shape()
 
 #[tokio::test]
 async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
+    // Decision S1: C1 a static-bearer credential and Session MCP URL normalize
+    // to the same target -> E1 stage carries that credential's exact source and
+    // revision. Constraint: URL normalization selects identity only; plaintext
+    // remains under Vault custody and never enters the Session aggregate.
     let h = harness(None);
     let (status, vault) = call(
         &h.app,
@@ -738,6 +755,10 @@ async fn session_binding_supports_static_bearer_and_normalized_mcp_urls() {
 
 #[tokio::test]
 async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() {
+    // Causes/effects: C1 two Vaults match in caller order -> E1 the first named
+    // Vault wins; C2 no credential matches the normalized target -> E2 optional
+    // MCP auth remains absent. Decision V1=C1=>E1, V2=C2=>E2. Constraint: order
+    // is explicit request policy and a miss never fabricates credential access.
     let h = harness(None);
     let mut vaults = Vec::new();
     let mut sources = Vec::new();
@@ -808,6 +829,9 @@ async fn session_binding_honors_vault_order_and_leaves_a_miss_unauthenticated() 
 
 #[tokio::test]
 async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
+    // Decision A1: C1 the only referenced Vault is archived -> E1 create returns
+    // 404 and E2 no Runtime preparation occurs. Constraint: lifecycle denial is
+    // checked before credential selection or any Session/Runtime side effect.
     let h = harness(None);
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
     let (status, _) = call(
@@ -836,6 +860,10 @@ async fn an_archived_vault_cannot_be_attached_to_a_new_session() {
 
 #[tokio::test]
 async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
+    // Decision F1: C1 matching OAuth access includes a refresh configuration ->
+    // E1 stage receives exact endpoint/client/scope plus an opaque sealed-token
+    // reference. Constraint: neither access nor refresh plaintext crosses the
+    // Vault boundary; the reference remains bound to source revision one.
     let h = harness(None);
     let (s, vault) = call(
         &h.app,
@@ -911,6 +939,10 @@ async fn create_carries_the_refresh_binding_of_a_refreshable_credential() {
 
 #[tokio::test]
 async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
+    // Decision A3: C1 create supplies no MCP declaration -> E1 wire MCP list and
+    // durable attachment aggregate are empty, E2 baseline preparation runs once,
+    // and E3 no MCP stage effect occurs. Constraint: absence is represented by
+    // empty canonical state, not a second optional attachment authority.
     let h = harness(None);
     let (s, session) = call(
         &h.app,
@@ -921,10 +953,15 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
     .await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(session["agent"]["mcp_servers"], json!([]));
-    let captured = h.captured.lock().unwrap();
-    assert_eq!(captured.len(), 1);
-    assert_eq!(captured[0].agent_id, "coder");
+    {
+        let captured = h.captured.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert_eq!(captured[0].agent_id, "coder");
+    }
     assert!(h.staged.lock().unwrap().is_empty());
+    let session_id = session["id"].as_str().expect("A3 Session id");
+    let durable = h.repo.get(session_id).await.expect("A3 aggregate");
+    assert!(durable.mcp.attachments.is_empty(), "A3/E1");
 }
 
 /// Fail closed at create: a `vault_ids` entry naming no vault 404s with the
@@ -932,6 +969,9 @@ async fn session_without_mcp_servers_echoes_empty_and_prepares_an_empty_init() {
 /// and the runtime is never asked to provision anything.
 #[tokio::test]
 async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
+    // Decision U1: C1 the sole referenced Vault is unknown -> E1 standard 404
+    // naming that id, E2 no Session row, and E3 no preparation. Constraint: the
+    // complete Vault set is admitted before identity minting or Runtime I/O.
     let h = harness(None);
     let (s, body) = call(
         &h.app,
@@ -964,6 +1004,10 @@ async fn unknown_vault_id_fails_the_create_with_404_and_provisions_nothing() {
 /// named vault must exist, not just some.
 #[tokio::test]
 async fn known_plus_unknown_vault_id_still_fails_the_create() {
+    // Decision U2: C1 one known plus one unknown Vault appears in the same
+    // request -> E1 reject the entire create and E2 perform no preparation.
+    // Constraint: Vault admission is all-or-nothing; a valid member cannot mask
+    // an invalid member or authorize a partial MCP binding.
     let h = harness(None);
     let (vault_id, _) = vault_with_mcp_oauth(&h).await;
     let (s, body) = call(
@@ -997,6 +1041,9 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     // classifying every outage as permanent loses recovery; exposing a permanent
     // failure as live admits Runs without a Runtime. The error kind and persisted
     // budget distinguish those outcomes at the same realization boundary.
+    // Constraint K0: this preparation-only fixture commits no Run, so its one
+    // atomic Thread recovery query returns None; unsupported production runtimes
+    // remain fail-closed rather than falling back to split transcript reads.
     for (kind, status, error_type) in [
         (
             RunErrorKind::Internal,
@@ -1072,23 +1119,6 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     }
 }
 
-#[tokio::test]
-async fn create_without_mcp_has_no_attachment_effect() {
-    let h = harness(None);
-    let (status, body) = call(
-        &h.app,
-        "POST",
-        "/v1/sessions",
-        Some(json!({"agent": "plain-agent"})),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK, "A3");
-    assert_eq!(body["agent"]["mcp_servers"], json!([]), "A3");
-    let session_id = body["id"].as_str().expect("A3 Session id");
-    let durable = h.repo.get(session_id).await.expect("A3 aggregate");
-    assert!(durable.mcp.attachments.is_empty(), "A3");
-}
-
 /// Causal graph for the public full-replacement command:
 ///
 /// ```text
@@ -1113,6 +1143,9 @@ async fn create_without_mcp_has_no_attachment_effect() {
 /// | H6 | retry same | Failed gen2 + Active gen1 | success | exact | gen3 Active |
 /// | H7 | add | absent | success | stale | Failed; hidden; compensating drain |
 /// | H8 | malformed | any | - | - | 400; no Runtime effect |
+///
+/// Constraint K0: this MCP-only fixture commits no Run, so every consistent
+/// Thread recovery read is `None`; no rule may assemble a prefix from split reads.
 #[tokio::test]
 async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
     let h = hot_harness();
@@ -1370,8 +1403,23 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
 /// | R4 | Removed | - | not selected; no Runtime effect |
 /// | R5 | Requested on idle Session | stage failure | terminal Failed; Session remains idle |
 /// | R6 | prior R5 Failed | same desired command | generation N+1 becomes Active |
+///
+/// Constraint K0: MCP realization recovery does not create a Run; the atomic
+/// Thread recovery authority therefore reports `None` throughout R1-R6.
 #[tokio::test]
 async fn mcp_recovery_tests_are_generated_from_decision_table() {
+    // Test-execution graph: C1 rules R1-R6 compose one integration future; C2
+    // bare `tokio::test` uses the default current-thread runtime; C3 every rule
+    // calls the canonical Managed-to-Session recovery path. E1 all durable and
+    // Runtime-effect assertions complete on the default stack. K1 the test-only
+    // scheduler boundary owns no domain state: no second production recovery
+    // owner and no stack-size override. Decision D1: C1+C2+C3 -> E1.
+    tokio::spawn(mcp_recovery_decision_table_case())
+        .await
+        .expect("MCP recovery decision table task");
+}
+
+async fn mcp_recovery_decision_table_case() {
     let h = hot_harness();
     let (status, created) = call(
         &h.app,
@@ -1553,6 +1601,9 @@ async fn mcp_recovery_tests_are_generated_from_decision_table() {
 /// | P2 | Active/unacknowledged | prior publish | same desired | same gen published+acknowledged |
 /// | P3 | Draining | drain | none | error; cleanup remains durable |
 /// | P4 | Draining | prior drain | same desired | exact drain replay + Removed |
+///
+/// Constraint K0: publication/drain effects commit no Run, so Managed observes
+/// no atomic Thread snapshot and never consults split transcript/ticket reads.
 #[tokio::test]
 async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
     let h = hot_harness();
@@ -1652,6 +1703,9 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// | I4 | absent | - | stale | 409 before Runtime effect |
 /// | I5 | absent | - | malformed | 400 before Runtime effect |
 /// | I6 | absent | - | exact | mutable tools persist in root aggregate |
+///
+/// Constraint K0: update commands mutate only Session policy/MCP state; the
+/// no-Run fixture returns `None` from the sole atomic recovery boundary.
 #[tokio::test]
 async fn update_precondition_and_idempotency_tests_are_generated_from_decision_table() {
     let h = hot_harness();
@@ -1805,13 +1859,15 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     let current_etag = later_headers["etag"].to_str().unwrap();
     // Cause graph: complete Session tool update -> durable exact projection ->
     // runtime policy/typed-client replacement -> disposable runtime rebuild on
-    // the next turn.
+    // the next Run.
     //
     // Decision table:
     // | update field | durable revision | runtime replacement |
     // | omitted      | unchanged        | none                |
-    // | exact value  | incremented      | full config once    |
+    // | exact value with optional type omitted | incremented; canonical type emitted | full config once |
     // | replay       | original receipt | none duplicated     |
+    // Constraint: optional discriminants are an input compatibility boundary;
+    // durable and response projections use the one typed canonical value.
     let tools = json!([
         {
             "type": "agent_toolset_20260401",
@@ -1836,6 +1892,8 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
             }
         }
     ]);
+    let mut expected_tools = tools.clone();
+    expected_tools[0]["configs"][0]["type"] = json!("write");
     let (status, _, updated) = call_with_headers(
         &h.app,
         "POST",
@@ -1845,10 +1903,10 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
     )
     .await;
     assert_eq!(status, StatusCode::OK, "I6");
-    assert_eq!(updated["agent"]["tools"], tools, "I6");
+    assert_eq!(updated["agent"]["tools"], expected_tools, "I6");
     assert_eq!(
         awaken_protocol_managed::project::managed_tools(&h.repo.get(id).await.unwrap().tools),
-        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(tools).unwrap(),
+        serde_json::from_value::<Vec<awaken_session_contract::AgentTool>>(expected_tools).unwrap(),
         "I6"
     );
     let state = h.state.lock().unwrap();
@@ -1874,6 +1932,9 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
 /// | T1 | yes | fails | none | original | E1 + retryable error |
 /// | T2 | already | succeeds | same key | same | E2 + success |
 /// | T3 | already | n/a | same key | different | E3 |
+///
+/// Constraint K0: neither the durable policy mutation nor its disposable
+/// projection creates a Run; the atomic Thread snapshot remains absent.
 #[tokio::test]
 async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     let h = hot_harness();
@@ -1959,6 +2020,9 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
 /// | C2 | conflict | exact at request start | return 409; do not weaken caller fence |
 /// | C3 | publication-ack CAS conflict | absent | recover same generation; no duplicate |
 /// | C4 | activation CAS conflict | exact at request start | drain staged generation + 409 |
+///
+/// Constraint K0: every CAS rule is Session/MCP-only and commits no Run, so the
+/// authoritative Thread recovery query returns `None` without a split fallback.
 #[tokio::test]
 async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let inner = Arc::new(
@@ -2074,6 +2138,15 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
 /// explicit id stays the only reattach path).
 #[tokio::test]
 async fn minting_namespace_cannot_alias_committed_truth() {
+    // Causes: the fixtures below establish `minting namespace` with the concrete inputs, state,
+    // dependencies, and failure triggers used by this case.
+    // Effects: the observable result `cannot alias committed truth` and every asserted state
+    // transition or side effect must hold.
+    // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
+    // stores and committed facts remain the single behavior authority.
+    // Coverage rationale: `minting namespace` is one independent branch selecting `cannot alias
+    // committed truth`; a multi-row decision table is not applicable, and sibling tests own
+    // alternate causes.
     use awaken_agent_contract::agent::content::ContentBlock;
 
     struct HauntedRuntime;
@@ -2085,7 +2158,7 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             _thread: &str,
             _content: Vec<ContentBlock>,
         ) -> Result<StepOutcome, RunError> {
-            unreachable!("no turn in this test")
+            unreachable!("no Run in this test")
         }
         async fn resume(
             &self,
@@ -2108,13 +2181,14 @@ async fn minting_namespace_cannot_alias_committed_truth() {
             // A previous process persisted threads sesn_0 and sesn_1.
             Ok(thread == "sesn_0" || thread == "sesn_1")
         }
-        async fn add_system(
+        async fn session_thread_recovery_snapshot(
             &self,
-            _agent: &str,
-            _thread: &str,
-            _text: &str,
-        ) -> Result<(), RunError> {
-            Ok(())
+            _session_id: &str,
+            _thread_id: &str,
+        ) -> Result<Option<RunRecoverySnapshot>, RunError> {
+            // `owns_thread` is the only durable evidence in this minting case;
+            // it deliberately exposes no committed Run prefix.
+            Ok(None)
         }
         async fn define_outcome(
             &self,
@@ -2196,6 +2270,8 @@ async fn archive_session_commits_the_terminated_fact_once() {
     // Decision rules: L2 C1 first archive -> E1 one terminated fact and one
     // wake; L3 C2 repeat archive of the terminated aggregate -> E2 no second
     // fact and no second wake. Create's idled fact remains independently stable.
+    // Constraint K0: this lifecycle/outbox fixture has no Run, so archive sees
+    // no atomic Thread recovery snapshot and cannot invent split recovery truth.
     let (state, repository, notifier) = lifecycle_test_state();
 
     let session = state
@@ -2248,6 +2324,8 @@ async fn delete_session_commits_the_deleted_fact_with_the_owner() {
     // Decision rule L4: C1 an owned active Session is deleted -> E1 its stable
     // deleted fact remains in the transactionally durable outbox after the row
     // becomes unavailable and E2 one post-commit wake is added to create's wake.
+    // Constraint: repository transaction owns the fact and deletion; notifier
+    // remains a payload-free post-commit hint and cannot recreate the aggregate.
     let (state, repository, notifier) = lifecycle_test_state();
 
     let session = state

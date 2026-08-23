@@ -195,7 +195,12 @@ const WARN_ON_UNREAD: &str = r#"{"machines":[{
         "on_violation":{"action":"warn","reason":"writing unread {file_path}"}}]}]}"#;
 
 #[tokio::test]
-async fn warn_message_reaches_the_next_model_turn() {
+async fn warn_message_reaches_the_next_model_step() {
+    // Test design — Causes: Write violates a warn-only transition guard.
+    // Effects: the tool still executes, one warning is committed for the next
+    // model Step, and warned metrics increment. Constraints/invariants: warn is
+    // guidance, not denial, and transcript/state share one committed outcome.
+    // Decision rule W1: warn violation=>allow tool+one warning+warned count one.
     let llm = ScriptedLlm::new(vec![AssistantOutput::from_tool_calls(vec![tool_call(
         "c1", "Write", "a.rs",
     )])]);
@@ -647,6 +652,7 @@ fn await_resume_command() -> ResumeCommand {
         snapshot_id: awaken_runtime_contract::ExecutableAgentSnapshotId("snapshot-1".to_string()),
         catalog_fingerprint: CatalogFingerprint("catalog-a".to_string()),
         result: ResumeResult::allow(),
+        context_messages: Vec::new(),
         now_ms: 0,
     }
 }

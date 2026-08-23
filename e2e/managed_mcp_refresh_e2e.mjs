@@ -22,7 +22,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
 
@@ -51,17 +51,23 @@ const POST_EXPIRED_TOKEN = 'post-expired-e2e'; // awaken-allow: secret
 const POST_REFRESH_TOKEN = 'rt-post-e2e'; // awaken-allow: secret
 const POST_NEW_TOKEN = 'post-new-token'; // awaken-allow: secret
 
-async function listEvents(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
-async function sendMessage(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+async function sendMessage(client, sessionId, text, predicate, description) {
+  // Refresh-turn rule R0: C1=one exact User receipt and C2=the caller's MCP
+  // result/message effect; E1=return only committed events after C1. Constraint:
+  // prior turns and connection probes cannot satisfy C2. C1&&!C2=>observe;
+  // C1+C2=>E1; refresh/auth assertions remain scenario-owned below.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receipt.data[0]?.id,
+    BETAS,
+    predicate,
+    description,
+  );
 }
 
 const agentMessages = (events) =>
@@ -162,8 +168,14 @@ async function main() {
         vault_ids: [vault.id],
         betas: BETAS,
       });
-      await sendMessage(client, session1.id, 'add 2 3');
-      assertAddTurn(await listEvents(client, session1.id), 5);
+      let observed = await sendMessage(
+        client,
+        session1.id,
+        'add 2 3',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 5')),
+        'refresh turn 1 commits result 5 after its exact receipt',
+      );
+      assertAddTurn(observed.delta, 5);
       pass('turn 1: add 2 3 -> result 5 despite the expired initial token');
 
       // Exactly one grant, carrying the documented form-encoded wire.
@@ -192,8 +204,14 @@ async function main() {
       pass('expired bearer seen exactly once; tools/call carried `Bearer new-token`');
 
       // --- (b) turn 2 on the SAME session: zero additional grants ---
-      await sendMessage(client, session1.id, 'add 40 2');
-      assertAddTurn(await listEvents(client, session1.id), 42);
+      observed = await sendMessage(
+        client,
+        session1.id,
+        'add 40 2',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 42')),
+        'refresh turn 2 commits result 42 after its exact receipt',
+      );
+      assertAddTurn(observed.delta, 42);
       assert.equal(fixtureA.grants.length, 1, 'no new grant for the second turn');
       pass('turn 2 (same session): add 40 2 -> result 42 with ZERO additional grants');
 
@@ -205,8 +223,14 @@ async function main() {
         vault_ids: [vault.id],
         betas: BETAS,
       });
-      await sendMessage(client, session2.id, 'add 1 2');
-      assertAddTurn(await listEvents(client, session2.id), 3);
+      observed = await sendMessage(
+        client,
+        session2.id,
+        'add 1 2',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 3')),
+        'resealed-token Session commits result 3 after its exact receipt',
+      );
+      assertAddTurn(observed.delta, 3);
       assert.equal(fixtureA.grants.length, 1, 'the resealed token connects the second session with no new grant');
       assert.equal(
         fixtureA.tokenRequests[EXPIRED_TOKEN], 1,
@@ -310,8 +334,14 @@ async function main() {
         vault_ids: [vault3.id],
         betas: BETAS,
       });
-      await sendMessage(client, session4.id, 'add 19 23');
-      assertAddTurn(await listEvents(client, session4.id), 42);
+      observed = await sendMessage(
+        client,
+        session4.id,
+        'add 19 23',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 42')),
+        'confidential refresh commits result 42 after its exact receipt',
+      );
+      assertAddTurn(observed.delta, 42);
       pass('confidential arm: add 19 23 -> result 42 despite the expired initial token');
 
       // Exactly one grant, carrying the EXACT §2.3.1 Basic wire — and the
@@ -381,8 +411,14 @@ async function main() {
         vault_ids: [vault4.id],
         betas: BETAS,
       });
-      await sendMessage(client, postSession.id, 'add 20 22');
-      assertAddTurn(await listEvents(client, postSession.id), 42);
+      observed = await sendMessage(
+        client,
+        postSession.id,
+        'add 20 22',
+        ({ delta }) => agentMessages(delta).some((message) => message.includes('result: 42')),
+        'client_secret_post refresh commits result 42 after its exact receipt',
+      );
+      assertAddTurn(observed.delta, 42);
       assert.equal(fixtureD.grants.length, 1, 'post authentication performs one exact refresh');
       const postGrant = fixtureD.grants[0];
       assert.equal(postGrant.authorization, null, 'client_secret_post emits no Authorization header');

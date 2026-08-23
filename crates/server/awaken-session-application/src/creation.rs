@@ -21,6 +21,9 @@ pub struct CreateSessionCommand {
     pub metadata: std::collections::BTreeMap<String, String>,
     pub tools: SessionToolConfiguration,
     pub budget: SessionBudgetState,
+    /// Optional complete create-time Event plan. It is compiled by the protocol
+    /// boundary before this command and installed in the original Session root.
+    pub initial_events: Option<awaken_session_contract::SessionInitialEventPlan>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -104,6 +107,7 @@ impl SessionApplication {
             metadata,
             tools,
             budget,
+            initial_events,
         } = command;
         // Compile the complete intent before insert so invalid input can never
         // strand a durable Session waiting for a second authoring path.
@@ -118,6 +122,13 @@ impl SessionApplication {
             budget,
             compiled,
         )?;
+        if let Some(initial_events) = initial_events {
+            persisted
+                .install_initial_event_plan(initial_events)
+                .map_err(|error| {
+                    SessionCreationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
+        }
         let payload = SessionMutationPayload::Replace(persisted.clone());
         let payload_hash = payload.stable_hash();
         persisted = self
@@ -138,7 +149,7 @@ impl SessionApplication {
                 .await
                 .map(|()| persisted.clone())
         } else {
-            self.realize_session(&session_id).await
+            self.realize_session_after_refresh(&session_id).await
         };
         persisted = match realized {
             Ok(session) => session,
@@ -164,6 +175,9 @@ impl SessionApplication {
                 error = ?error,
                 "Session WorkQueue dispatch remains pending after create"
             );
+        }
+        if persisted.needs_event_reconciliation() {
+            self.wake_lifecycle_supervisor();
         }
         Ok(persisted)
     }

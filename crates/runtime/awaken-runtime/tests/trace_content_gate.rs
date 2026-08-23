@@ -72,7 +72,7 @@ impl LlmExecutor for OkLlm {
         Ok(ChatResponse {
             output: AssistantOutput::text("done secret-token".to_string()),
             usage: None,
-            stop_reason: Some(StopReason::EndTurn),
+            stop_reason: Some(StopReason::NaturalEnd),
         })
     }
 }

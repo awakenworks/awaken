@@ -19,10 +19,10 @@
 A bound memory store is made available to an agent today by **snapshot copy**: at
 session prep the host reads the whole blob (`SharedHost.memory_get(id)`), inlines
 it into a legacy `Mount::Resource`, and the provider `fs::write`s it to
-`.mnt/<logical>`; after each turn the host scans `.mnt/` and `put`s the bytes back
+`.mnt/<logical>`; after each Run the host scans `.mnt/` and `put`s the bytes back
 (`harvest_thread_memory`). This is **last-writer-wins with no CAS**: two sessions
 bound to the same store silently lose each other's updates, the agent sees a stale
-whole-file copy for a whole turn, and there is no per-file granularity.
+whole-file copy for a whole Run, and there is no per-file granularity.
 
 The Anthropic memory model — which `awaken-next` implements — is instead a
 **directory of path-addressed memory files the LLM edits with native filesystem
@@ -274,7 +274,7 @@ is to make them realize it, and to fill the currently-stubbed `Sandbox::attach`
 | **P1** | `awaken-sandbox-memoryd`: port `fuse.rs` over `MemoryRepository`; conformance floor; real timestamps in `attr` | Ported unit tests: dirty-budget fail-closed, rename-keeps-open-fd, stale-fd-no-clobber |
 | **P2** | `MountCoordinator` (refcounted shared mount per `store_id`) + mount handle drain | Unit: refcount acquire/release, open-fd drain |
 | **P2.5** | Concurrency tests | (1) mount A writes → mount B reads fresh; (2) concurrent write same file → one wins, one `EAGAIN`, no lost update; (3) create-create race → one wins; (4) two sandboxes share store, release one, other still R/W, unmount only at 0 |
-| **P3** | Contract provider wiring: `LocalProvider` realizes `MemoryStore` → `Realization::Fuse` via the injected `MemoryMounter`; route the host memory-store family through the contract provider (retire copy-in/harvest for it) | Kernel-VFS integration test (gated on `/dev/fuse`) + TS e2e: agent writes memory files, readable across turns and after restart |
+| **P3** | Contract provider wiring: `LocalProvider` realizes `MemoryStore` → `Realization::Fuse` via the injected `MemoryMounter`; route the host memory-store family through the contract provider (retire copy-in/harvest for it) | Kernel-VFS integration test (gated on `/dev/fuse`) + TS e2e: agent writes memory files, readable across Runs and after restart |
 | **P4** | sqlite/pg backends + repoint `memory_store_api.rs` at the new store | Existing managed-memory e2e green + durability e2e |
 | **P5** | Bwrap namespace splice (mount propagation + `--bind`) | Bwrap integration test (gated); failure does not affect P3 |
 | **(later)** | Distributed model: `Invalidator` (NATS/pg-notify) + version-validated cache | Two-host coherence test |

@@ -1,10 +1,18 @@
 // Executable cause/effect coverage gate for the runtime-seam stages.
 //
-// Coverage unit follows docs/testing/e2e-cause-effect-graph-test-design.md: one
-// externally observable functional obligation (F), not a Rust source line. An
-// obligation counts only after its real-process TS/JS scenario exits successfully.
+// This executable test owns its coverage unit: one externally observable
+// functional obligation, not a Rust source line. An obligation counts only after
+// its real-process TS/JS scenario exits successfully.
 // Internal testkit structure, compile checks, and formal harness lines are reported
 // by the release gate and are deliberately not mislabelled as E2E functionality.
+// Causes: C1=each unique obligation maps to one declared scenario; C2=that
+// scenario passes, skips for an explicit infrastructure gap, or fails. Effects:
+// E1=C1+pass marks only its mapped obligations covered; E2=skip records the gap;
+// E3=duplicates, unknown mappings, failure, or uncovered obligations fail the gate.
+// Constraints/invariant: executable scenario results in this file are the sole
+// functional-coverage owner; source lines and separate design documents are not.
+// Decision rules: G1=C1+pass=>E1; G2=C1+explicit-skip=>E2;
+// G3=!C1|failure|uncovered=>E3.
 
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -44,7 +52,7 @@ const scenarios: Scenario[] = [
   { id: 'dispatch_fenced_metrics', file: 'e2e/dispatch_fenced_metrics_e2e.ts' },
   { id: 'sandbox', file: 'e2e/sandbox_provisioning_e2e.mjs' },
   { id: 'memory_mounter_copy', file: 'e2e/memory_mounter_copy_lifecycle_e2e.mjs' },
-  { id: 'managed_session_legacy_upgrade', file: 'e2e/managed_session_legacy_upgrade_e2e.mjs' },
+  { id: 'managed_session_aggregate_quarantine', file: 'e2e/managed_session_aggregate_quarantine_e2e.mjs' },
   { id: 'resource_reclamation', file: 'e2e/resource_reclamation_e2e.mjs' },
   { id: 'resource_activation_recovery', file: 'e2e/resource_activation_recovery_e2e.mjs' },
   { id: 'resource_catalog_corruption', file: 'e2e/resource_catalog_corruption_e2e.mjs' },
@@ -174,8 +182,8 @@ const obligations: Obligation[] = [
   { id: 'D7-06', stage: '7 resource persistence', behavior: 'copy realization survives Repository and Mounter replacement over one durable SQLite store', scenario: 'memory_mounter_copy' },
   { id: 'D7-07', stage: '7 resource persistence', behavior: 'non-UTF-8 projected files never become mutable Memory content', scenario: 'memory_mounter_copy' },
   { id: 'D7-11', stage: '7 resource persistence', behavior: 'authorized logical delete remains physically deferred by a live Session reference without IAM coupling', scenario: 'resource_reclamation' },
-  { id: 'D7-12a', stage: '7 resource persistence', behavior: 'a retained Session row is normalized on read and the first root mutation establishes aggregate_json as its sole authority', scenario: 'managed_session_legacy_upgrade' },
-  { id: 'D7-12b', stage: '7 resource persistence', behavior: 'a replacement process ignores stale retained Session columns once the canonical aggregate exists', scenario: 'managed_session_legacy_upgrade' },
+  { id: 'D7-12a', stage: '7 resource persistence', behavior: 'a missing Session aggregate is durably quarantined without blocking a healthy canonical sibling or fabricating truth from indexed columns', scenario: 'managed_session_aggregate_quarantine' },
+  { id: 'D7-12b', stage: '7 resource persistence', behavior: 'a replacement process ignores poisoned indexed Session columns once the canonical aggregate exists', scenario: 'managed_session_aggregate_quarantine' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
   { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres retains one Resources Memory authority and exposes no retired Control Memory fallback', scenario: 'resource_plane_postgres' },
   { id: 'D7-14', stage: '7 resource persistence', behavior: 'local no-login mode composes isolated embedded File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
@@ -207,7 +215,7 @@ const obligations: Obligation[] = [
   { id: 'D7-A08a', stage: '7 remote A2A attempt', behavior: 'active root polling cancellation aborts its pinned remote task', scenario: 'remote_attempt' },
   { id: 'D7-A08b', stage: '7 remote A2A attempt', behavior: 'remote poll and resume transport failures remain fail-closed errors', scenario: 'remote_attempt' },
   { id: 'D7-A08c', stage: '7 remote A2A attempt', behavior: 'cancellation does not re-cancel an already-terminal remote task', scenario: 'remote_attempt' },
-  { id: 'D7-A09', stage: '7 remote A2A attempt', behavior: 'remote child input-required resumes through the parent agent_run ticket', scenario: 'remote_child_lifecycle' },
+  { id: 'D7-A09', stage: '7 remote A2A attempt', behavior: 'remote coordinated child input-required resumes through its exact pending ticket', scenario: 'remote_child_lifecycle' },
   { id: 'D7-A10', stage: '7 remote A2A attempt', behavior: 'remote child working state is polled to a terminal result', scenario: 'remote_child_lifecycle' },
   { id: 'D7-A11', stage: '7 remote A2A attempt', behavior: 'parent interrupt cancels the pinned remote child task exactly once', scenario: 'remote_child_lifecycle' },
   { id: 'D7-A12', stage: '7 remote A2A attempt', behavior: 'remote child 5xx fails closed without a fabricated result', scenario: 'remote_child_lifecycle' },
@@ -218,7 +226,7 @@ const obligations: Obligation[] = [
   { id: 'D7-ACP-04', stage: '7 governed ACP attempt', behavior: 'live control pauses an ACP attempt at a safe boundary and commits a ManualPause ticket', scenario: 'acp_control' },
   { id: 'D7-ACP-05', stage: '7 governed ACP attempt', behavior: 'durable text resume validates and resumes exactly the paused ACP Run', scenario: 'acp_control' },
   { id: 'D7-ACP-06', stage: '7 governed ACP attempt', behavior: 'a continuation relaunch failure is committed instead of losing queued input', scenario: 'acp_control' },
-  { id: 'D7-ACP-07', stage: '7 governed ACP attempt', behavior: 'restart rejects a permission ticket missing its call identity or pending tool', scenario: 'acp_ticket_corruption' },
+  { id: 'D7-ACP-07', stage: '7 governed ACP attempt', behavior: 'restart rejects a malformed closed permission target without consuming or executing it', scenario: 'acp_ticket_corruption' },
 
   { id: 'D8-01', stage: '8 neutral MCP server core', behavior: 'newest and older protocol versions negotiate', scenario: 'mcp_stdio' },
   { id: 'D8-02', stage: '8 neutral MCP server core', behavior: 'unsupported version returns invalid params', scenario: 'mcp_stdio' },
@@ -248,7 +256,7 @@ const obligations: Obligation[] = [
   // | G42-P01..P06 | yes | yes | n/a | freeze/realize/recover one generation |
   // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
   // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
-  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'legacy Session rows establish one canonical root and ignore stale retained columns after restart', scenario: 'managed_session_legacy_upgrade' },
+  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'canonical Session aggregate corruption is isolated across restart while indexed projections remain non-authoritative', scenario: 'managed_session_aggregate_quarantine' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
   { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O', scenario: 'credential_materialization_worker' },

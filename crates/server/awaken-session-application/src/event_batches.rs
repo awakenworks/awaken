@@ -1,0 +1,796 @@
+//! Admission and reconciliation of the Session root's durable Event batches.
+//!
+//! This module coordinates existing owners only. It does not persist an Event
+//! log, execute a Run, or retain a completion registry.
+
+use awaken_agent_contract::agent::message::{Id as MessageId, Role};
+use awaken_agent_contract::agent::run::RunState;
+use awaken_session_contract::{
+    OUTCOME_BUSY_CODE, PersistedSession, RunError, SessionAgentCoordination, SessionEventBatch,
+    SessionEventCommand, SessionEventInput, SessionRevision, SessionThreadTarget,
+    SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
+    SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput,
+    session_event_batch_id, session_run_activity_operation_id,
+};
+
+use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
+
+/// Maximum number of durable Event commands advanced in one supervisor slice.
+/// This is a recovery scheduling bound, independent of create-time admission.
+const EVENT_BATCH_RECONCILIATION_STEPS: usize = 50;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EventBatchReconciliation {
+    pub settled: usize,
+    pub pending: usize,
+    pub failures: Vec<(String, String)>,
+    pub quarantined: usize,
+}
+
+enum EventBatchProgress {
+    Advanced,
+    Pending,
+}
+
+#[derive(Clone)]
+struct SelectedSessionEvent {
+    batch_id: String,
+    event: SessionEventCommand,
+    traceparent: Option<String>,
+}
+
+impl SessionApplication {
+    /// Recover the canonical disposable projection, reserve one stable User
+    /// Run, then commit/recover its exact Session activity receipt without
+    /// making the reservation executable.
+    ///
+    /// This is the first half of the durable User Run boundary shared by
+    /// create-time reconciliation and internal foreground commands. Activation
+    /// and optional committed-state observation remain a distinct second stage.
+    pub fn admit_session_user_run(
+        &self,
+        command: SessionUserRunCommand,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<Output = Result<SessionUserRunAdmission, RunError>> + Send + '_,
+        >,
+    > {
+        Box::pin(async move {
+            let session_id = command.session_id.clone();
+            let agent_id = command.agent_id.clone();
+            let run_id = command.run_id.clone();
+            let operation = session_run_activity_operation_id(&session_id, &run_id);
+            // An exact activity receipt is response-loss truth and must outrank
+            // fresh terminal/budget policy. Without one, however, recover the
+            // aggregate-derived projection before Runtime freezes its immutable
+            // dispatch. Otherwise an unattempted Resource amendment can leave
+            // the Host and aggregate naming different manifests at the same
+            // revision, which the claimed Worker must reject.
+            let existing_activity_epoch = self
+                .recover_activity_for_operation(&session_id, &operation)
+                .await
+                .map_err(crate::SessionActivityError::run_error)?
+                .map(|(_, epoch)| epoch);
+            if existing_activity_epoch.is_none() {
+                let owner_scope = self.owner(&session_id).await.map_err(mutation_run_error)?;
+                self.admit_run_session(&owner_scope, &session_id, &agent_id)
+                    .await?;
+            }
+            let reservation = self.runtime().reserve_session_user_run(command).await?;
+            let delivery = |session_activity_epoch| SessionUserRunDelivery {
+                session_id: session_id.clone(),
+                run_id: run_id.clone(),
+                session_activity_epoch,
+            };
+
+            match reservation {
+                SessionUserRunReservation::Reserved
+                | SessionUserRunReservation::AlreadyReserved => {
+                    let session_activity_epoch = match existing_activity_epoch {
+                        Some(epoch) => epoch,
+                        None => {
+                            self.begin_activity_for_operation(&session_id, &operation)
+                                .await
+                                .map_err(crate::SessionActivityError::run_error)?
+                                .1
+                        }
+                    };
+                    Ok(match reservation {
+                        SessionUserRunReservation::Reserved => {
+                            SessionUserRunAdmission::Reserved(delivery(session_activity_epoch))
+                        }
+                        SessionUserRunReservation::AlreadyReserved => {
+                            SessionUserRunAdmission::AlreadyReserved(delivery(
+                                session_activity_epoch,
+                            ))
+                        }
+                        _ => unreachable!("matched reserved outcomes"),
+                    })
+                }
+                SessionUserRunReservation::AlreadyActivated {
+                    session_activity_epoch,
+                } => {
+                    if session_activity_epoch == 0 {
+                        return Err(RunError::internal(
+                            "activated Session User Run has no activity epoch",
+                        ));
+                    }
+                    Ok(SessionUserRunAdmission::AlreadyActivated(delivery(
+                        session_activity_epoch,
+                    )))
+                }
+                SessionUserRunReservation::RecoveryClaimed => {
+                    Ok(SessionUserRunAdmission::RecoveryClaimed { session_id, run_id })
+                }
+                SessionUserRunReservation::Completed => {
+                    Ok(SessionUserRunAdmission::Completed { session_id, run_id })
+                }
+            }
+        })
+    }
+
+    /// Observe one admitted User Run through the Runtime Host's existing
+    /// completion registry. Delivery-bearing plans are activated only after the
+    /// observer is installed; recovery-only plans wait on committed Thread truth.
+    /// Public queued Event acceptance does not use this foreground boundary.
+    pub fn activate_and_observe_session_user_run(
+        &self,
+        admission: SessionUserRunAdmission,
+        sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RunState, RunError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            self.runtime()
+                .activate_and_observe_session_user_run(admission, sink)
+                .await
+        })
+    }
+
+    /// Atomically accept one complete ordinary Event batch in the Session root.
+    /// Its prospective committed revision is the stable linearization identity.
+    /// Acceptance opens no activity: queued work may wait while the Thread is
+    /// idle or Awaiting without fabricating a Running Session.
+    pub async fn append_session_event_batch(
+        &self,
+        session_id: &str,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+    ) -> Result<SessionEventBatch, RunError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_failure)
+                .map_err(mutation_run_error)?;
+            if session.is_terminal() {
+                return Err(RunError::bad_request(
+                    "Session no longer accepts Event batches",
+                ));
+            }
+            let committed_revision = SessionRevision(
+                session
+                    .revision
+                    .0
+                    .checked_add(1)
+                    .ok_or_else(|| RunError::internal("Session revision is exhausted"))?,
+            );
+            let batch_id = session_event_batch_id(session_id, committed_revision)
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
+            let batch = SessionEventBatch::compile_attributed(
+                session_id,
+                batch_id,
+                inputs.clone(),
+                data_subject_id.clone(),
+                traceparent.clone(),
+            )
+            .map_err(|error| RunError::bad_request(error.to_string()))?;
+            session.event_batches.push(batch.clone());
+            match self
+                .commit_session_snapshot(&owner, session, "append-event-batch", Vec::new())
+                .await
+            {
+                Ok(_) => {
+                    self.wake_lifecycle_supervisor();
+                    return Ok(batch);
+                }
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(error) => return Err(mutation_run_error(error)),
+            }
+        }
+        Err(RunError::unavailable(
+            "Session Event batch admission changed concurrently",
+        ))
+    }
+
+    /// Revisit every unfinished root-owned Event batch through the one Session
+    /// recovery scan. One Session is advanced until it reaches an external Run
+    /// boundary; no process-local task owns later progress.
+    pub(crate) async fn reconcile_event_batches(&self) -> EventBatchReconciliation {
+        let mut report = EventBatchReconciliation::default();
+        let scan = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => scan,
+            Err(error) => {
+                report
+                    .failures
+                    .push(("<repository>".into(), error.to_string()));
+                return report;
+            }
+        };
+        report.quarantined = scan.quarantined.len();
+        for scoped in scan.sessions {
+            if !scoped.session.needs_event_reconciliation() {
+                continue;
+            }
+            report.pending += 1;
+            let session_id = scoped.session.session_id.clone();
+            match self
+                .reconcile_session_event_batches(&session_id, None)
+                .await
+            {
+                Ok(true) => report.settled += 1,
+                Ok(false) => {}
+                Err(error) => report.failures.push((session_id, error.to_string())),
+            }
+        }
+        report
+    }
+
+    /// Opportunistically drive receipt commands from one just-admitted batch.
+    /// `None` is reserved for recovery/tests that intentionally exercise the
+    /// lifecycle selector over all retained batches. A concrete batch never
+    /// re-drives an older Outcome command and therefore cannot wait behind that
+    /// Outcome's Worker/Judge execution before delivering its own interrupt.
+    pub async fn drive_session_event_batches(
+        &self,
+        session_id: &str,
+        preferred_batch_id: Option<&str>,
+    ) -> Result<(), RunError> {
+        let _ = self
+            .reconcile_session_event_batches(session_id, preferred_batch_id)
+            .await?;
+        Ok(())
+    }
+
+    async fn reconcile_session_event_batches(
+        &self,
+        session_id: &str,
+        preferred_batch_id: Option<&str>,
+    ) -> Result<bool, RunError> {
+        // Bound one supervisor slice. Retained history may contain many batches,
+        // but each Advanced result persists one entry and a later scan resumes.
+        for _ in 0..EVENT_BATCH_RECONCILIATION_STEPS {
+            let session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_failure)
+                .map_err(mutation_run_error)?;
+            if session.is_terminal() {
+                return Ok(false);
+            }
+            let selected = match preferred_batch_id {
+                Some(batch_id) => select_preferred_batch_receipt(&session, batch_id),
+                None => select_session_event(&session),
+            };
+            let Some(selected) = selected else {
+                return Ok(true);
+            };
+            match self.reconcile_one_session_event(&session, selected).await? {
+                EventBatchProgress::Advanced => {}
+                EventBatchProgress::Pending => return Ok(false),
+            }
+        }
+        Ok(false)
+    }
+
+    fn reconcile_one_session_event<'a>(
+        &'a self,
+        session: &'a PersistedSession,
+        selected: SelectedSessionEvent,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<EventBatchProgress, RunError>> + Send + 'a>,
+    > {
+        // This reconciliation is polled by the lifecycle supervisor, whose
+        // recovery future is already deep. Keep the per-Event state machine at
+        // the same boxed application seam used by ordinary Run admission; an
+        // unboxed User/System/Outcome union exceeds a default Tokio worker stack
+        // in debug builds and risks doing the same under a large production
+        // recovery prefix. Boxing changes placement only, not ownership.
+        Box::pin(async move {
+            let SelectedSessionEvent {
+                batch_id,
+                event,
+                traceparent,
+            } = selected;
+            match event {
+                SessionEventCommand::UserMessage {
+                    operation_id,
+                    run_id,
+                    content,
+                    data_subject_id,
+                } => {
+                    match self
+                        .runtime()
+                        .session_user_run_state(&session.session_id, &run_id)
+                        .await?
+                    {
+                        Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
+                            self.settle_event_batch_wake(session, &batch_id).await?;
+                            self.mark_session_event_processed(
+                                &session.session_id,
+                                &batch_id,
+                                &operation_id,
+                            )
+                            .await?;
+                            return Ok(EventBatchProgress::Advanced);
+                        }
+                        Some(RunState::Running) => {
+                            self.settle_event_batch_wake(session, &batch_id).await?;
+                            return Ok(EventBatchProgress::Pending);
+                        }
+                        None => {}
+                    }
+                    if self
+                        .another_root_run_blocks_user(&session.session_id, &run_id)
+                        .await?
+                    {
+                        return Ok(EventBatchProgress::Pending);
+                    }
+
+                    let accompanying_system =
+                        adjacent_system_input(session, &batch_id, &operation_id);
+                    let admission = self
+                        .admit_session_user_run(SessionUserRunCommand {
+                            session_id: session.session_id.clone(),
+                            agent_id: session
+                                .agent_id()
+                                .ok_or_else(|| RunError::internal("Session Agent is not frozen"))?
+                                .to_string(),
+                            operation_id: operation_id.clone(),
+                            run_id: run_id.clone(),
+                            content,
+                            accompanying_system,
+                            data_subject_id,
+                            traceparent,
+                        })
+                        .await?;
+                    self.settle_event_batch_wake(session, &batch_id).await?;
+
+                    let delivery = match admission {
+                        SessionUserRunAdmission::Reserved(delivery)
+                        | SessionUserRunAdmission::AlreadyReserved(delivery)
+                        | SessionUserRunAdmission::AlreadyActivated(delivery) => delivery,
+                        SessionUserRunAdmission::RecoveryClaimed { .. } => {
+                            return Ok(EventBatchProgress::Pending);
+                        }
+                        SessionUserRunAdmission::Completed { .. } => {
+                            if matches!(
+                                self.runtime()
+                                    .session_user_run_state(&session.session_id, &run_id)
+                                    .await?,
+                                Some(RunState::Awaiting) | Some(RunState::Ended(_))
+                            ) {
+                                self.mark_session_event_processed(
+                                    &session.session_id,
+                                    &batch_id,
+                                    &operation_id,
+                                )
+                                .await?;
+                                return Ok(EventBatchProgress::Advanced);
+                            }
+                            return Ok(EventBatchProgress::Pending);
+                        }
+                    };
+                    match self.runtime().activate_session_user_run(delivery).await? {
+                        SessionUserRunActivation::Activated
+                        | SessionUserRunActivation::AlreadyActivated {
+                            session_activity_epoch: _,
+                        }
+                        | SessionUserRunActivation::RecoveryClaimed => {
+                            Ok(EventBatchProgress::Pending)
+                        }
+                        SessionUserRunActivation::Completed => {
+                            if matches!(
+                                self.runtime()
+                                    .session_user_run_state(&session.session_id, &run_id)
+                                    .await?,
+                                Some(RunState::Awaiting) | Some(RunState::Ended(_))
+                            ) {
+                                self.mark_session_event_processed(
+                                    &session.session_id,
+                                    &batch_id,
+                                    &operation_id,
+                                )
+                                .await?;
+                                Ok(EventBatchProgress::Advanced)
+                            } else {
+                                Ok(EventBatchProgress::Pending)
+                            }
+                        }
+                    }
+                }
+                SessionEventCommand::SystemMessage {
+                    operation_id,
+                    content,
+                } => {
+                    let message_id = MessageId::session_system(&session.session_id, &operation_id);
+                    let committed = self
+                        .runtime()
+                        .committed_messages(&session.session_id)
+                        .await?;
+                    let Some(message) = committed.iter().find(|message| message.id == message_id)
+                    else {
+                        return Ok(EventBatchProgress::Pending);
+                    };
+                    if message.role != Role::System || message.content != content {
+                        return Err(RunError::internal(
+                            "committed Session System input conflicts with root command intent",
+                        ));
+                    }
+                    self.settle_event_batch_wake(session, &batch_id).await?;
+                    self.mark_session_event_processed(
+                        &session.session_id,
+                        &batch_id,
+                        &operation_id,
+                    )
+                    .await?;
+                    Ok(EventBatchProgress::Advanced)
+                }
+                SessionEventCommand::DefineOutcome {
+                    operation_id,
+                    outcome_id,
+                    description,
+                    rubric,
+                    max_iterations,
+                } => {
+                    match self
+                        .prepare_outcome(
+                            &session.session_id,
+                            &outcome_id,
+                            &description,
+                            rubric.execution_reference(),
+                            max_iterations.unwrap_or(3),
+                        )
+                        .await
+                    {
+                        Ok(()) => {}
+                        Err(error) if error.code == OUTCOME_BUSY_CODE => {
+                            return Ok(EventBatchProgress::Pending);
+                        }
+                        Err(error) => return Err(error),
+                    }
+                    self.settle_event_batch_wake(session, &batch_id).await?;
+                    self.mark_session_event_processed(
+                        &session.session_id,
+                        &batch_id,
+                        &operation_id,
+                    )
+                    .await?;
+                    Ok(EventBatchProgress::Advanced)
+                }
+                SessionEventCommand::ToolReply {
+                    operation_id,
+                    reply,
+                } => {
+                    let accompanying_system =
+                        adjacent_system_input(session, &batch_id, &operation_id);
+                    SessionAgentCoordination::reply_session_thread_tool(
+                        self,
+                        reply.delivery_command(&session.session_id, accompanying_system),
+                    )
+                    .await?;
+                    self.settle_event_batch_wake(session, &batch_id).await?;
+                    self.mark_session_event_processed(
+                        &session.session_id,
+                        &batch_id,
+                        &operation_id,
+                    )
+                    .await?;
+                    Ok(EventBatchProgress::Advanced)
+                }
+                SessionEventCommand::Interrupt {
+                    operation_id,
+                    interrupt,
+                } => {
+                    let mut first_error = None;
+                    for target in interrupt.targets {
+                        let result = match target {
+                            SessionThreadTarget::Primary => {
+                                self.interrupt(&session.session_id).await
+                            }
+                            SessionThreadTarget::Child(child_thread_id) => {
+                                SessionAgentCoordination::interrupt_session_thread(
+                                    self,
+                                    &session.session_id,
+                                    &child_thread_id,
+                                )
+                                .await
+                            }
+                        };
+                        if let Err(error) = result
+                            && first_error.is_none()
+                        {
+                            first_error = Some(error);
+                        }
+                    }
+                    if let Some(error) = first_error {
+                        return Err(error);
+                    }
+                    self.settle_event_batch_wake(session, &batch_id).await?;
+                    self.mark_session_event_processed(
+                        &session.session_id,
+                        &batch_id,
+                        &operation_id,
+                    )
+                    .await?;
+                    Ok(EventBatchProgress::Advanced)
+                }
+            }
+        })
+    }
+
+    async fn mark_session_event_processed(
+        &self,
+        session_id: &str,
+        batch_id: &str,
+        operation_id: &str,
+    ) -> Result<PersistedSession, RunError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_failure)
+                .map_err(mutation_run_error)?;
+            let batch = session
+                .event_batches
+                .iter_mut()
+                .find(|batch| batch.batch_id == batch_id)
+                .ok_or_else(|| RunError::internal("Session Event batch disappeared"))?;
+            if batch
+                .events
+                .iter()
+                .any(|entry| entry.event.operation_id() == operation_id && entry.processed)
+            {
+                return Ok(session);
+            }
+            batch
+                .mark_processed(operation_id)
+                .map_err(|error| RunError::internal(error.to_string()))?;
+            match self
+                .commit_session_snapshot(&owner, session, "mark-event-processed", Vec::new())
+                .await
+            {
+                Ok(session) => return Ok(session),
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(error) => return Err(mutation_run_error(error)),
+            }
+        }
+        Err(RunError::unavailable(
+            "Session Event progress changed concurrently",
+        ))
+    }
+
+    async fn settle_event_batch_wake(
+        &self,
+        session: &PersistedSession,
+        batch_id: &str,
+    ) -> Result<(), RunError> {
+        let wake = session
+            .event_batches
+            .iter()
+            .find(|batch| batch.batch_id == batch_id)
+            .and_then(|batch| batch.wake_activity_epoch);
+        if let Some(epoch) = wake
+            && session.active_activity_epochs.contains(&epoch)
+        {
+            self.settle_activity(&session.session_id, epoch)
+                .await
+                .map_err(crate::SessionActivityError::run_error)?;
+        }
+        Ok(())
+    }
+
+    async fn another_root_run_blocks_user(
+        &self,
+        session_id: &str,
+        target_run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<bool, RunError> {
+        let Some(snapshot) = self
+            .runtime()
+            .session_thread_recovery_snapshot(session_id, session_id)
+            .await?
+        else {
+            return Ok(false);
+        };
+        let Some(latest_run_id) = snapshot.latest_run_id.as_ref() else {
+            return Ok(false);
+        };
+        if latest_run_id == target_run_id {
+            return Ok(false);
+        }
+        let latest = snapshot
+            .runs
+            .iter()
+            .find(|run| &run.id == latest_run_id)
+            .ok_or_else(|| {
+                RunError::internal("root Thread recovery omitted its latest Run state")
+            })?;
+        Ok(matches!(
+            latest.state,
+            RunState::Running | RunState::Awaiting
+        ))
+    }
+}
+
+fn adjacent_system_input(
+    session: &PersistedSession,
+    batch_id: &str,
+    operation_id: &str,
+) -> Option<SessionUserRunSystemInput> {
+    session
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == batch_id)
+        .and_then(|batch| {
+            batch
+                .events
+                .iter()
+                .position(|entry| entry.event.operation_id() == operation_id)
+                .and_then(|ordinal| batch.events.get(ordinal + 1))
+        })
+        .and_then(|entry| match &entry.event {
+            SessionEventCommand::SystemMessage {
+                operation_id,
+                content,
+            } => Some(SessionUserRunSystemInput {
+                operation_id: operation_id.clone(),
+                content: content.clone(),
+            }),
+            _ => None,
+        })
+}
+
+/// Eligibility selector over retained provenance. ToolReply, DefineOutcome, and
+/// Interrupt are receipt commands and may cross queued User entries in their
+/// original relative order. A System immediately following an already-processed
+/// ToolReply is then eligible only as a side-effect-free observation of its
+/// exact committed Message; this narrow case prevents an older queued User from
+/// hiding completion of the resumed Run. User-associated System and every other
+/// command remain FIFO.
+fn select_preferred_batch_receipt(
+    session: &PersistedSession,
+    batch_id: &str,
+) -> Option<SelectedSessionEvent> {
+    let batch = session
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == batch_id)?;
+    batch.events.iter().find_map(|entry| {
+        (!entry.processed
+            && matches!(
+                &entry.event,
+                SessionEventCommand::ToolReply { .. } | SessionEventCommand::Interrupt { .. }
+            ))
+        .then(|| SelectedSessionEvent {
+            batch_id: batch.batch_id.clone(),
+            event: entry.event.clone(),
+            traceparent: batch.traceparent.clone(),
+        })
+    })
+}
+
+fn select_session_event(session: &PersistedSession) -> Option<SelectedSessionEvent> {
+    let select = |predicate: fn(&SessionEventCommand) -> bool| {
+        session.event_batches.iter().find_map(|batch| {
+            batch.events.iter().find_map(|entry| {
+                (!entry.processed && predicate(&entry.event)).then(|| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: entry.event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                })
+            })
+        })
+    };
+    select(|event| {
+        matches!(
+            event,
+            SessionEventCommand::ToolReply { .. }
+                | SessionEventCommand::DefineOutcome { .. }
+                | SessionEventCommand::Interrupt { .. }
+        )
+    })
+    .or_else(|| {
+        session.event_batches.iter().find_map(|batch| {
+            batch
+                .events
+                .windows(2)
+                .find(|pair| {
+                    pair[0].processed
+                        && matches!(&pair[0].event, SessionEventCommand::ToolReply { .. })
+                        && !pair[1].processed
+                        && matches!(&pair[1].event, SessionEventCommand::SystemMessage { .. })
+                })
+                .map(|pair| SelectedSessionEvent {
+                    batch_id: batch.batch_id.clone(),
+                    event: pair[1].event.clone(),
+                    traceparent: batch.traceparent.clone(),
+                })
+        })
+    })
+    .or_else(|| {
+        select(|event| {
+            !matches!(
+                event,
+                SessionEventCommand::ToolReply { .. }
+                    | SessionEventCommand::DefineOutcome { .. }
+                    | SessionEventCommand::Interrupt { .. }
+            )
+        })
+    })
+}
+
+fn mutation_run_error(error: SessionMutationError) -> RunError {
+    match error {
+        SessionMutationError::NotFound => RunError::bad_request("Session was not found"),
+        SessionMutationError::Conflict => {
+            RunError::unavailable("Session Event state changed concurrently")
+        }
+        SessionMutationError::IdempotencyMismatch => {
+            RunError::internal("Session Event mutation identity changed payload")
+        }
+        SessionMutationError::Unavailable(message) => RunError::unavailable(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn persisted_batch_effect_ownership_is_nonoverlapping() {
+        // Cause/effect inventory and selector decision table. Causes: C1 batch
+        // is create/ordinary; C2 target User absent/Running/Awaiting/Ended; C3
+        // another latest Run is Running/Awaiting; C4 accompanying System is
+        // absent/committed and follows User/processed ToolReply; C5 ToolReply,
+        // DefineOutcome, or Interrupt is unprocessed anywhere in retained
+        // batches; C6 crash before/after effect admission or processed CAS.
+        // Effects: E1 ordinary acceptance opens no activity; E2 create wake
+        // settles once the first effect has its own durable owner; E3 User is
+        // processed on Awaiting/Ended; E4 later User remains queued under C3;
+        // E5 System completes only from its stable committed Message; E6 all
+        // receipt commands cross queued User in order; E7 a System crosses User
+        // only as the stable observation paired with a processed ToolReply; E8
+        // retained entries remain provenance and exact replay skips them.
+        //
+        // | Rule | Durable observation | Effect |
+        // | R1 | ordinary append | E1 |
+        // | R2 | User admitted/observed | E2; Running waits, Awaiting/Ended E3 |
+        // | R3 | different latest Running/Awaiting | E4, no new Run activity |
+        // | R4 | User-paired System missing/committed | FIFO wait/E5 |
+        // | R5 | reply/outcome/interrupt behind User | E6 in retained order |
+        // | R6 | processed ToolReply + exact System missing/committed | wait/E7 |
+        // | R7 | crash at any CAS boundary | existing owner dedup + E8 |
+        // Constraints/invariants: every effect family has exactly one durable
+        // owner; retained batch entries are provenance only, and replay cannot
+        // admit a second effect or reorder a later command across its owner.
+        let variants = [
+            SessionEventProgressOwner::UserDispatchAndThread,
+            SessionEventProgressOwner::AccompanyingRunDispatchAndThread,
+            SessionEventProgressOwner::ThreadOutcomeState,
+            SessionEventProgressOwner::SessionThreadReplyCoordination,
+            SessionEventProgressOwner::RuntimeThreadInterruption,
+        ];
+        assert_eq!(variants.len(), 5, "R1-R7 one owner per effect family");
+    }
+
+    enum SessionEventProgressOwner {
+        UserDispatchAndThread,
+        AccompanyingRunDispatchAndThread,
+        ThreadOutcomeState,
+        SessionThreadReplyCoordination,
+        RuntimeThreadInterruption,
+    }
+}

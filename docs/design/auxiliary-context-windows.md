@@ -41,6 +41,16 @@ projection retain their existing owners.
 | Runtime Host | concrete Run/store/provider wiring | neutral ports above | no Memory/Compact/Outcome lifecycle ownership |
 | ACP/A2A adapters | external execution/projection | prepared input and ordinary Run facts | no extension vocabulary or independent memory truth |
 
+For Memory extraction, the durable intent's `session_id` is the physical
+Session/commit partition that owns auxiliary execution, while the immutable
+`TranscriptSnapshotRef.thread_id` is the logical Thread whose evidence,
+idempotency identity, and cursor are being extracted. They are equal for a root
+Run and intentionally differ for a delegated child. Parent Session rehydration
+therefore attaches its commit authority to every writable frozen Memory binding
+and can resume a child's pending extraction even when the parent Agent does not
+select the Memory plugin. It reuses the existing bound Memory driver without
+creating a child Session slot or commit partition.
+
 An auxiliary Thread needs no business-valued type field. Its stable Thread and
 Run ids encode correlation, while its pinned Agent snapshot defines capability.
 The store may attach operational metadata for observability, but correctness
@@ -120,11 +130,12 @@ may advance the Outcome.
 ### External runtimes and failure boundaries
 
 Native, ACP, and A2A are execution axes, not storage axes. The service prepares
-the same extension context and all terminal facts return through the same
-commit boundary. A database-less distributed worker's `HostCommit::Remote`
-remains intentionally write-only; multi-turn history on such a worker requires
-a separate authenticated asynchronous read contract and is not silently
-emulated from partial activation input.
+the same extension context. Local terminal reactions run after the local commit;
+for a database-less distributed Worker, the authenticated dispatch-settlement
+observer owns remote Memory observation after Coordinator commit and before
+settlement. `HostCommit::Remote` remains intentionally write-only; multi-Step
+history on such a Worker requires a separate authenticated asynchronous read
+contract and is not silently emulated from partial activation input.
 
 Provider prompt caching is opportunistic. Reusing an identical model, system
 prefix, tools, and prior messages can reduce cost, but cache hits never replace

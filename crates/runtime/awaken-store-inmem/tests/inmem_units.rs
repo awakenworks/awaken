@@ -24,6 +24,9 @@ use awaken_agent_contract::thread::commit::coordinator::{Coordinator, Error};
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::checkpoint::{CheckpointReader, EventScope};
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::lifecycle::{
+    RunLifecycleCursor, checkpoint_lifecycle_events_after,
+};
 use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_store_inmem::{
     MemoryCommitCoordinator, MemoryStreamCheckpointStore, MemoryStreamSink, replay_latest_state,
@@ -321,6 +324,19 @@ fn ticket_is_only_legal_on_the_awaiting_state() {
 
 #[tokio::test]
 async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
+    // Cause/effect graph: C1 commit #1 carries offsets 0/1; C2 commit #2 carries
+    // offset 0; C3 the checkpoint lifecycle feed decodes those persisted IDs.
+    // Effects: E1 IDs retain the historical 1000-stride encoding; E2 ordering
+    // is strict; E3 both events from commit #1 report source=1 and commit #2
+    // reports source=2.
+    //
+    // | Rule | C1 | C2 | C3 | Effects |
+    // |---|---|---|---|---|
+    // | M1 | T | F | F | E1 IDs 1000,1001 |
+    // | M2 | T | T | F | E1/E2 adds 2000 |
+    // | M3 | T | T | T | E1/E2/E3 |
+    // Constraints/invariants: each commit owns one 1000-slot partition, offsets
+    // are dense, and persisted source cursors remain strictly commit ordered.
     let store = MemoryCommitCoordinator::new();
     // Two events in commit #1 → sequences 1*1000+0, 1*1000+1 (dense by offset).
     store
@@ -332,11 +348,11 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
             vec![
                 Draft {
                     kind: EventKind::RunStateChanged,
-                    payload: serde_json::Value::Null,
+                    payload: serde_json::json!({"state": RunState::Running}),
                 },
                 Draft {
                     kind: EventKind::RunStateChanged,
-                    payload: serde_json::Value::Null,
+                    payload: serde_json::json!({"state": RunState::Running}),
                 },
             ],
             vec![],
@@ -351,7 +367,12 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
             "r",
             "c2",
             RunState::Ended(EndCause::NaturalEnd),
-            one_event(EventKind::RunStateChanged),
+            vec![Draft {
+                kind: EventKind::RunStateChanged,
+                payload: serde_json::json!({
+                    "state": RunState::Ended(EndCause::NaturalEnd)
+                }),
+            }],
             vec![],
             None,
         ))
@@ -366,6 +387,19 @@ async fn event_ids_are_dense_within_a_commit_and_ascending_across_commits() {
         "dense offsets, commit-partitioned"
     );
     assert!(seqs.windows(2).all(|w| w[0] < w[1]), "strictly ascending");
+
+    let lifecycle =
+        checkpoint_lifecycle_events_after(&store, RunLifecycleCursor::default(), usize::MAX)
+            .expect("M3 checkpoint lifecycle feed");
+    assert_eq!(
+        lifecycle
+            .events
+            .iter()
+            .map(|event| event.source_commit_cursor)
+            .collect::<Vec<_>>(),
+        vec![1, 1, 2],
+        "M3/E3"
+    );
 }
 
 // ---- list_events: empty store, scope filtering, limit ---------------------
@@ -591,6 +625,7 @@ fn checkpoint(run: &str, text: &str) -> StreamCheckpoint {
             tool_id: "tool".to_string(),
             raw_arguments: "{".to_string(),
         }],
+        retry_count: 0,
     }
 }
 

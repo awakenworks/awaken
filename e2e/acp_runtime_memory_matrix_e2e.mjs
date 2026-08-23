@@ -19,7 +19,12 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { cleanupFixtureTree, pass, withServer } from './harness.mjs';
+import {
+  cleanupFixtureTree,
+  pass,
+  waitForSessionEventReceipt,
+  withServer,
+} from './harness.mjs';
 import { loadKimiConfig } from './kimi_config.mjs';
 import {
   aggregateUsage,
@@ -55,7 +60,7 @@ function assistantText(events) {
     .join(' ');
 }
 
-async function approveGated(client, sessionId, events, approved) {
+async function approveGated(client, sessionId, events, approved, confirmationReceiptIds) {
   for (const event of events) {
     if (
       event.type === 'agent.tool_use'
@@ -63,16 +68,17 @@ async function approveGated(client, sessionId, events, approved) {
       && !approved.has(event.id)
     ) {
       approved.add(event.id);
-      await client.beta.sessions.events.send(sessionId, {
+      const response = await client.beta.sessions.events.send(sessionId, {
         events: [{ type: 'user.tool_confirmation', tool_use_id: event.id, result: 'allow' }],
         betas: BETAS,
       });
+      confirmationReceiptIds.push(response.data[0].id);
     }
   }
 }
 
 async function send(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  return client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
@@ -80,28 +86,76 @@ async function send(client, sessionId, text) {
 
 async function driveUntil(client, sessionId, text, check) {
   const approved = new Set();
+  const confirmationReceiptIds = [];
+  const waitForConfirmations = async (description) => {
+    for (const receiptId of confirmationReceiptIds) {
+      await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        receiptId,
+        BETAS,
+        () => true,
+        description,
+        { timeoutMs: 120_000, pollMs: 500 },
+      );
+    }
+  };
   // A turn that reaches an `ask` permission remains open until the confirmation
   // arrives. Poll concurrently with the original send; awaiting send first would
   // deadlock exactly on the write/edit operations this matrix must exercise.
   let sendError = null;
   let sendDone = false;
-  const sending = send(client, sessionId, text).catch((error) => {
-    sendError = error;
-  }).finally(() => {
-    sendDone = true;
-  });
+  let sendResponse;
+  // Driver decision D1: C1 exact prompt receipt, C2 zero-or-more intermediate
+  // permission gates, C3 scenario check succeeds. Effects: E1 gates are driven;
+  // E2 the exact receipt is processed with C3 still true. K1 polling may observe
+  // intermediate state, but older history cannot complete this turn.
+  // D1=C1+C3=>E2; D2=C1+C2+C3=>E1+E2.
+  const sending = send(client, sessionId, text)
+    .then((response) => {
+      sendResponse = response;
+    })
+    .catch((error) => {
+      sendError = error;
+    })
+    .finally(() => {
+      sendDone = true;
+    });
   for (let round = 0; round < 240; round += 1) {
     await sleep(500);
     const events = await listEvents(client, sessionId);
-    await approveGated(client, sessionId, events, approved);
+    await approveGated(client, sessionId, events, approved, confirmationReceiptIds);
     if (sendError) throw sendError;
     if (await check(events)) {
       await sending;
       if (sendError) throw sendError;
-      return { events: await listEvents(client, sessionId), approved };
+      const receipt = sendResponse?.data?.[0];
+      const observation = await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        receipt?.id,
+        BETAS,
+        ({ events: committed }) => check(committed),
+        `ACP runtime Memory turn ${JSON.stringify(text)}`,
+        { timeoutMs: 120_000, pollMs: 500 },
+      );
+      await waitForConfirmations('ACP runtime Memory permission receipt to process');
+      return { events: observation.events, approved };
     }
     if (sendDone && events.some((event) => event.type === 'session.status_idle')) {
-      return { events, approved };
+      if (sendError) throw sendError;
+      const receipt = sendResponse?.data?.[0];
+      const observation = await waitForSessionEventReceipt(
+        client,
+        sessionId,
+        receipt?.id,
+        BETAS,
+        () => true,
+        `ACP runtime Memory turn ${JSON.stringify(text)} to settle`,
+        { timeoutMs: 120_000, pollMs: 500 },
+      );
+      await waitForConfirmations('settled ACP runtime Memory permission receipt');
+      return { events: observation.events, approved };
     }
   }
   return { events: await listEvents(client, sessionId), approved };

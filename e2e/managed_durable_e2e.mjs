@@ -1,15 +1,15 @@
 // Durable run-ingress end-to-end (slice D), via the official Anthropic TS SDK.
 //
-// With SESSION_DEPLOYMENT_INGRESS=durable the host delivers each turn through a
+// With SESSION_DEPLOYMENT_INGRESS=durable the host delivers each Run through a
 // `DurableRunIngress`: the accepted run is persisted to a per-thread SQLite
 // dispatch queue, then driven by the dispatch worker (`submit_background`) — the
 // same runtime and commit boundary a direct ingress uses (G6), only the delivery
-// guarantee differs. So a normal echo turn here exercises the whole run-ingress
+// guarantee differs. So a normal echo Run here exercises the whole run-ingress
 // path: enqueue → claim → lease → worker execute → commit relay.
 //
 // We then KILL the process and start a fresh one over the same storage directory.
 // The rebuilt session rehydrates from committed truth and the durable ingress runs
-// startup recovery against the surviving dispatch store, then a follow-up turn
+// startup recovery against the surviving dispatch store, then a follow-up Run
 // completes — proving the dispatch queue is durable and the ingress reconnects to
 // it across a real restart.
 //
@@ -18,7 +18,15 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38170);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -50,15 +58,38 @@ const dispatchDbs = (dir) =>
     .map((e) => e.name)
     .sort();
 
-async function turn(sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+async function sendRun(sessionId, text) {
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
-  return listEvents(sessionId);
+  const acceptedId = receipt.data[0]?.id;
+  assert.equal(typeof acceptedId, 'string', 'durable Run returns its exact User Event receipt');
+  const { events } = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    acceptedId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `durable Run ${text} to commit its reply and terminal Session status`,
+    { timeoutMs: 30_000 },
+  );
+  return events;
 }
 
 async function main() {
+  // Cause/effect graph: C1=durable ingress returns an initially unprocessed User
+  // Event receipt; C2=the dispatch
+  // worker claims and commits it; C3=a fresh process opens the same storage;
+  // C4=a follow-up Run targets the same Session. Effects: E1=one on-disk queue
+  // owns delivery; E2=the first reply settles terminal; E3=the queue survives;
+  // E4=rehydration preserves prior history and commits the follow-up. Decision
+  // rules: R1 C1 && C2 => E1-E2; R2 R1 && C3 => E3; R3 R2 && C4 => E4.
+  // Decision rule summary: admission+claim proves delivery; restart+follow-up
+  // proves durable rehydration through the same queue and Session identity.
+  // Constraints/invariant: one persisted dispatch queue owns delivery and the
+  // replacement process reuses, rather than recreates, Session/Run truth.
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
@@ -66,7 +97,7 @@ async function main() {
   const upstream = await startUpstream('echo');
   const realEnv = { ...DURABLE_ENV, ...realServerEnv('echo', upstream) };
 
-  // ---- server A: a turn delivered through the durable dispatch queue ----
+  // ---- server A: a Run delivered through the durable dispatch queue ----
   const a = spawnServer('real', PORT, realEnv);
   // An instrumented all-suite build can spend several minutes in loader and
   // migration work before accepting connections. Tie readiness to the child so
@@ -79,11 +110,11 @@ async function main() {
     environment_id: 'env_local',
     betas: BETAS,
   });
-  const first = await turn(session.id, 'DURABLE-ONE');
-  assert.ok(assistantText(first).includes('DURABLE-ONE'), 'turn ran through the durable ingress and echoed');
+  const first = await sendRun(session.id, 'DURABLE-ONE');
+  assert.ok(assistantText(first).includes('DURABLE-ONE'), 'Run passed through the durable ingress and echoed');
   const idle = [...first].reverse().find((e) => e.type === 'session.status_idle');
-  assert.equal(idle.stop_reason.type, 'end_turn', 'durable turn drove to a terminal phase');
-  pass('turn delivered through submit_background → dispatch worker → commit');
+  assert.equal(idle.stop_reason.type, 'end_turn', 'durable Run reached a terminal phase');
+  pass('Run delivered through submit_background → dispatch worker → commit');
 
   const dbsBefore = dispatchDbs(STORE_DIR);
   assert.ok(dbsBefore.length >= 1, 'the accepted run persisted to a durable dispatch queue on disk');
@@ -99,14 +130,14 @@ async function main() {
   pass('dispatch queue persisted on disk across a real process restart');
 
   try {
-    // A follow-up turn on the SAME session: the rebuilt process has no in-memory
+    // A follow-up Run on the SAME session: the rebuilt process has no in-memory
     // session state, so it rehydrates from committed truth and the durable ingress
     // runs startup recovery against the surviving dispatch store before driving the
     // new run. Prior history is present, proving cross-restart continuity.
-    const second = await turn(session.id, 'DURABLE-TWO');
+    const second = await sendRun(session.id, 'DURABLE-TWO');
     const replies = assistantText(second);
-    assert.ok(replies.includes('DURABLE-TWO'), 'follow-up turn ran through the durable ingress on the fresh process');
-    assert.ok(replies.includes('DURABLE-ONE'), 'pre-restart turn survived in committed truth (multi-turn continuity)');
+    assert.ok(replies.includes('DURABLE-TWO'), 'follow-up Run passed through the durable ingress on the fresh process');
+    assert.ok(replies.includes('DURABLE-ONE'), 'pre-restart Run survived in committed truth (multi-Run continuity)');
     pass('durable ingress reconnected to the persisted queue and continued the thread after restart');
 
     console.log('E2E PASS: durable run-ingress dispatch + cross-restart recovery via TS SDK.');

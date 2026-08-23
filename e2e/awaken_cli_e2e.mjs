@@ -25,6 +25,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
+import { waitForSessionEventReceipt, waitForValue } from './harness.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
@@ -213,10 +214,17 @@ async function main() {
     assert.equal(r.status, 422, `negative resource revision rejected at authoring: ${JSON.stringify(r.json)}`);
     assert.equal(r.json.code, 'invalid_revision');
 
-    // Upgrade boundary: old `resources/version` rows are accepted once and
-    // normalized into the canonical typed input language. File access narrows to
-    // read-only; mutable Memory/Repository bindings retain authored access. Removed
-    // output/Skill axes fail closed instead of entering the input union.
+    // Agent-input grammar decision table: C1=a PUT uses the removed root
+    // `resources/version` grammar; C2=a later PUT uses canonical `inputs/revision`.
+    // E1=C1 is rejected with exact 422 before any repository write; E2=a GET of
+    // that Agent remains 404; E3=C2 is accepted and remains the positive publish
+    // proof below. K1=AgentInputConfig is the sole strict wire/persistence shape;
+    // K2=no compatibility decoder may reinterpret a legacy body.
+    //
+    // | Rule | Legacy grammar | Canonical grammar | Effect |
+    // |---|---|---|---|
+    // | AI1 | yes | no | E1,E2 |
+    // | AI2 | no | yes | E3 |
     const legacyAgent = 'legacy-input-agent';
     r = await req(base, 'PUT', `/v1/config/agents/${legacyAgent}/resources`, {
       agent_id: 'forged-path-id',
@@ -236,29 +244,9 @@ async function main() {
         },
       ],
     });
-    assert.equal(r.status, 200, JSON.stringify(r.json));
-    assert.equal(r.json.agent_id, legacyAgent, 'path Agent id is authoritative');
-    assert.equal(r.json.revision, 1);
-    assert.deepEqual(
-      r.json.inputs.map((input) => input.target.kind),
-      ['file', 'memory_store', 'repository'],
-    );
-    assert.equal(r.json.inputs[0].access, 'read_only');
-    assert.equal(r.json.inputs[1].access, 'read_write');
-    assert.equal(r.json.inputs[2].access, 'read_only');
-    for (const removedKind of ['outputs', 'skill']) {
-      r = await req(base, 'PUT', `/v1/config/agents/${legacyAgent}/resources`, {
-        agent_id: legacyAgent,
-        version: 2,
-        resources: [{
-          kind: removedKind,
-          resource_id: 'removed-axis',
-          mount_path: '/workspace/removed',
-          access: 'read_only',
-        }],
-      });
-      assert.equal(r.status, 422, `${removedKind} legacy binding fails closed: ${JSON.stringify(r.json)}`);
-    }
+    assert.equal(r.status, 422, `AI1 legacy Agent-input grammar: ${JSON.stringify(r.json)}`);
+    r = await req(base, 'GET', `/v1/config/agents/${legacyAgent}/resources`);
+    assert.equal(r.status, 404, `AI1 legacy body must not persist: ${JSON.stringify(r.json)}`);
     r = await req(base, 'PUT', `/v1/config/agents/${AGENT}/resources`, resources(1));
     assert.equal(r.status, 200, `valid resource revision staged: ${JSON.stringify(r.json)}`);
     r = await req(base, 'POST', `/v1/config/agents/${AGENT}/publish`, undefined);
@@ -327,12 +315,26 @@ async function main() {
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });
     assert.ok(session.id.startsWith('sesn_'), `session id: ${session.id}`);
-    await client.beta.sessions.events.send(session.id, {
+    // Managed execution receipt rules: C1=exact User receipt; C2=scenario
+    // reply/error terminal. E1=C2 is eligible only after C1. K: Control and
+    // Resource projections remain separate read authorities. Decision L1
+    // C1&&!C2=>retry; L2 C1+C2=>assert the scenario-owned effect.
+    const sessionReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'resolve me' }] }],
       betas: BETAS,
     });
-    const events = [];
-    for await (const ev of client.beta.sessions.events.list(session.id, { betas: BETAS })) events.push(ev);
+    const sessionReceiptId = sessionReceipt.data[0]?.id;
+    assert.equal(typeof sessionReceiptId, 'string', 'L1 exact configured-model User Event receipt');
+    const { delta: events } = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      sessionReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'L1 configured-model Run to commit',
+      { timeoutMs: 30_000 },
+    );
     const msg = events.find((e) => e.type === 'agent.message');
     assert.ok(msg, `expected an agent.message in ${JSON.stringify(events)}`);
     const text = (msg.content ?? []).map((c) => c.text ?? '').join('');
@@ -403,12 +405,22 @@ async function main() {
     const warm = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });
-    await client.beta.sessions.events.send(warm.id, {
+    const warmReceipt = await client.beta.sessions.events.send(warm.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'warm install' }] }],
       betas: BETAS,
     });
-    const warmEvents = [];
-    for await (const ev of client.beta.sessions.events.list(warm.id, { betas: BETAS })) warmEvents.push(ev);
+    const warmReceiptId = warmReceipt.data[0]?.id;
+    assert.equal(typeof warmReceiptId, 'string', 'L2 exact warm-install User Event receipt');
+    const { delta: warmEvents } = await waitForSessionEventReceipt(
+      client,
+      warm.id,
+      warmReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'L2 warm-installed publication Run to commit',
+      { timeoutMs: 30_000 },
+    );
     assert.ok(warmEvents.some((event) => event.type === 'agent.message'), 'warm-installed snapshot executes');
     console.log('ok: durable publication warm-installed after restart without re-resolution');
 
@@ -416,25 +428,32 @@ async function main() {
     // connection-write reconciler republishes the reserved Admin Assistant
     // against that endpoint. It is an ordinary Agent with no hidden policy
     // overlay, so this composition must drive its complete management tool chain.
-    const adminDeadline = Date.now() + 10_000;
-    let projectedAdmin;
-    do {
-      projectedAdmin = await req(base, 'GET', '/v1/agents/__admin_assistant');
-      if (projectedAdmin.status === 200) break;
-      await sleep(100);
-    } while (Date.now() < adminDeadline);
+    const projectedAdmin = await waitForValue(
+      () => req(base, 'GET', '/v1/agents/__admin_assistant'),
+      (projection) => projection.status === 200,
+      'Admin Assistant projection to become readable',
+      { timeoutMs: 10_000 },
+    );
     assert.equal(projectedAdmin.status, 200, `admin assistant projection: ${JSON.stringify(projectedAdmin.json)}`);
     const adminSession = await client.beta.sessions.create({
       agent: '__admin_assistant', environment_id: 'env_local', betas: BETAS,
     });
-    await client.beta.sessions.events.send(adminSession.id, {
+    const adminReceipt = await client.beta.sessions.events.send(adminSession.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'author an agent and environment' }] }],
       betas: BETAS,
     });
-    const adminEvents = [];
-    for await (const event of client.beta.sessions.events.list(adminSession.id, { betas: BETAS })) {
-      adminEvents.push(event);
-    }
+    const adminReceiptId = adminReceipt.data[0]?.id;
+    assert.equal(typeof adminReceiptId, 'string', 'L3 exact Admin Assistant User Event receipt');
+    const { delta: adminEvents } = await waitForSessionEventReceipt(
+      client,
+      adminSession.id,
+      adminReceiptId,
+      BETAS,
+      ({ delta }) => JSON.stringify(delta).includes('ADMIN-RUN-DONE')
+        && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'end_turn',
+      'L3 production Admin Assistant Run to commit',
+      { timeoutMs: 30_000 },
+    );
     const adminTranscript = JSON.stringify(adminEvents);
     for (const tool of [
       'admin_get_platform_capabilities',
@@ -479,22 +498,33 @@ async function main() {
       }],
       betas: BETAS,
     });
-    await client.beta.sessions.events.send(repositorySession.id, {
+    const repositoryReceipt = await client.beta.sessions.events.send(repositorySession.id, {
       events: [{
         type: 'user.message',
         content: [{ type: 'text', text: 'activate the repository projection' }],
       }],
       betas: BETAS,
     });
-    const repositoryDeadline = Date.now() + 30_000;
-    let repositoryResource;
-    do {
-      const projection = await client.beta.sessions.retrieve(repositorySession.id, { betas: BETAS });
-      repositoryResource = projection.resources.find((resource) =>
-        resource.type === 'github_repository');
-      if (repositoryResource) break;
-      await sleep(100);
-    } while (Date.now() < repositoryDeadline);
+    const repositoryReceiptId = repositoryReceipt.data[0]?.id;
+    assert.equal(typeof repositoryReceiptId, 'string', 'RC1 exact repository activation receipt');
+    await waitForSessionEventReceipt(
+      client,
+      repositorySession.id,
+      repositoryReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+      'RC1 repository activation Run to commit',
+      { timeoutMs: 30_000 },
+    );
+    const repositoryResource = await waitForValue(
+      async () => {
+        const projection = await client.beta.sessions.retrieve(repositorySession.id, { betas: BETAS });
+        return projection.resources.find((resource) => resource.type === 'github_repository');
+      },
+      Boolean,
+      'RC1 repository resource to project on the Session',
+      { timeoutMs: 30_000 },
+    );
     assert.ok(repositoryResource?.id);
     const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
       session_id: repositorySession.id,
@@ -509,12 +539,21 @@ async function main() {
     const rejected = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,
     });
-    await client.beta.sessions.events.send(rejected.id, {
+    const rejectedReceipt = await client.beta.sessions.events.send(rejected.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'must fail closed' }] }],
       betas: BETAS,
     });
-    const rejectedEvents = [];
-    for await (const ev of client.beta.sessions.events.list(rejected.id, { betas: BETAS })) rejectedEvents.push(ev);
+    const rejectedReceiptId = rejectedReceipt.data[0]?.id;
+    assert.equal(typeof rejectedReceiptId, 'string', 'L4 exact revoked-pin User Event receipt');
+    const { delta: rejectedEvents } = await waitForSessionEventReceipt(
+      client,
+      rejected.id,
+      rejectedReceiptId,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.error'),
+      'L4 revoked-pin Run to commit its fail-closed error',
+      { timeoutMs: 30_000 },
+    );
     assert.ok(rejectedEvents.some((event) => event.type === 'session.error'), 'revoked pin produces session.error');
     assert.ok(!rejectedEvents.some((event) => event.type === 'agent.message'), 'revoked pin produces no model reply');
     assert.equal(upstream.requests.length, callsBeforeRevocation, 'revoked pin never reaches any endpoint');

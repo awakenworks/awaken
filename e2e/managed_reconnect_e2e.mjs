@@ -13,7 +13,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withRealServer, pass } from './harness.mjs';
+import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38140);
@@ -25,10 +25,24 @@ async function listAll(client, sessionId) {
 }
 
 async function sendMessage(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact User receipt; C2=reply+idle. E1=authoritative history after C2.
+  // K: reconnect consolidation uses stable ids, never terminal counts. Decision
+  // R1 C1&&!C2=>retry; R2 C1+C2=>return full committed history.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'R1 exact reconnect User Event receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `R1 reconnect Run for ${JSON.stringify(text)} to commit`,
+  );
 }
 
 function assertUniqueIds(events, label) {
@@ -56,8 +70,7 @@ async function main() {
 
       // --- A. ids are stable + unique; list() is the authoritative history ---
       await sendMessage(client, session.id, 'one');
-      await sendMessage(client, session.id, 'two');
-      const afterTwo = await listAll(client, session.id);
+      const afterTwo = (await sendMessage(client, session.id, 'two')).events;
       const idsAfterTwo = assertUniqueIds(afterTwo, 'after two turns');
       assert.ok(
         afterTwo.some((e) => e.type === 'agent.message' && e.content?.[0]?.text === 'Echo: one'),

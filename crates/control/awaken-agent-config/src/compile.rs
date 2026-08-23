@@ -5,11 +5,14 @@ use awaken_runtime_contract::resolved::ResolvedModelCandidate;
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolKind, ToolPresentation};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
-use sha2::{Digest, Sha256};
+use awaken_tool_pattern::tool_id_match;
 
 use crate::config::{AgentConfig, AgentKind, MultiagentTarget};
 
+mod fingerprint;
 mod processing_geography;
+
+use fingerprint::fingerprint_of;
 
 /// A compilation failure, before anything is published (the design's Failure
 /// Rules: reject, never partially publish).
@@ -177,7 +180,7 @@ fn compile_with_models(
         if config
             .tool_patterns
             .iter()
-            .any(|pattern| glob_match(pattern, &descriptor.id))
+            .any(|pattern| tool_id_match(pattern, &descriptor.id))
         {
             descriptors.push(descriptor.clone());
             seen.insert(descriptor.id.clone());
@@ -241,7 +244,11 @@ fn compile_with_models(
                 "Consult the configured advisor model for a second opinion before continuing.",
                 serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
             )
-            .with_kind(ToolKind::Advisor),
+            .with_kind(ToolKind::Advisor)
+            // The host materializes an advisor consultation as an ordinary
+            // durable child request. ToolBatch recovery reconnects to that
+            // request; it never samples a second inline advisor executor.
+            .with_recovery(awaken_runtime_contract::tool::ToolRecoveryPolicy::durable_request()),
         );
     }
 
@@ -618,69 +625,6 @@ fn resolve_toolsets(
     Ok(resolved)
 }
 
-/// Match a tool id against a glob `pattern` whose only metacharacter is `*` (each
-/// `*` matches any run of characters, including empty). Anchored at both ends, so
-/// `fs_*` matches `fs_read` but not `net_fs`. Byte-wise ASCII matching — tool ids
-/// are ASCII identifiers.
-fn glob_match(pattern: &str, id: &str) -> bool {
-    fn go(p: &[u8], s: &[u8]) -> bool {
-        match p.first() {
-            None => s.is_empty(),
-            Some(b'*') => go(&p[1..], s) || (!s.is_empty() && go(p, &s[1..])),
-            Some(&c) => !s.is_empty() && s[0] == c && go(&p[1..], &s[1..]),
-        }
-    }
-    go(pattern.as_bytes(), id.as_bytes())
-}
-
-/// The canonical fingerprint: sha256 of the **behavioral** config serialization,
-/// tool descriptors, and resolved publication metadata. Session resources are not
-/// Agent publication inputs; they are composed later by `SessionInputResolver`.
-///
-/// Managed-Agent wire-identity metadata (`name` / `description` / `metadata`) is
-/// **excluded**: none is executable
-/// snapshot behavior. Otherwise editing presentation or moving an unchanged Agent
-/// would mint a new fingerprint for byte-identical execution — polluting the
-/// "same fingerprint ⇒ same behavior" contract. Configs that never set these fields
-/// hash byte-identically to before (they `skip_serializing_if`-empty).
-fn fingerprint_of(
-    config: &AgentConfig,
-    tools: &[ToolDescriptor],
-    metadata: &AgentSnapshotMetadata,
-    primary: &ResolvedModelCandidate,
-    candidates: &[ResolvedModelCandidate],
-    advisor: Option<&ResolvedModelCandidate>,
-) -> Result<String, CompileError> {
-    let mut behavioral = config.clone();
-    behavioral.name = None;
-    behavioral.description = None;
-    behavioral.metadata.clear();
-    let mut bytes =
-        serde_json::to_vec(&behavioral).map_err(|err| CompileError::Serialize(err.to_string()))?;
-    if !metadata.is_legacy_default() {
-        bytes.extend_from_slice(
-            &serde_json::to_vec(tools).map_err(|err| CompileError::Serialize(err.to_string()))?,
-        );
-        bytes.extend_from_slice(
-            &serde_json::to_vec(metadata)
-                .map_err(|err| CompileError::Serialize(err.to_string()))?,
-        );
-        bytes.extend_from_slice(
-            &serde_json::to_vec(&(primary, candidates))
-                .map_err(|err| CompileError::Serialize(err.to_string()))?,
-        );
-    }
-    // Advisor is a new managed publication capability and therefore has no
-    // legacy fingerprint to preserve. Its exact provider route and credential
-    // revision are behavioral even when the public advisor model id is equal.
-    if let Some(advisor) = advisor {
-        bytes.extend_from_slice(
-            &serde_json::to_vec(advisor).map_err(|err| CompileError::Serialize(err.to_string()))?,
-        );
-    }
-    Ok(format!("{:x}", Sha256::digest(&bytes)))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -815,6 +759,11 @@ mod tests {
         // | read present   | true             | read                | enabled         |
         // | write present  | false            | absent              | disabled        |
         // | bash absent    | true/default     | absent              | disabled        |
+        // Effects: the compiled descriptor surface and immutable fingerprint
+        // reflect one normalized policy. Constraints/invariants: no synthetic
+        // toolset executable or unpublished catalog member can enter the snapshot.
+        // Decision rule T1: apply each table row once, then change one policy bit
+        // and require a different fingerprint.
         use awaken_runtime_contract::agent_bindings::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
@@ -824,17 +773,14 @@ mod tests {
             source: ToolsetSource::Agent,
             default: ToolExecutionPolicy::default(),
             overrides: vec![
-                ToolPolicyOverride {
-                    name: "read".into(),
-                    policy: ToolExecutionPolicy::default(),
-                },
-                ToolPolicyOverride {
-                    name: "write".into(),
-                    policy: ToolExecutionPolicy {
+                ToolPolicyOverride::new("read", ToolExecutionPolicy::default()),
+                ToolPolicyOverride::new(
+                    "write",
+                    ToolExecutionPolicy {
                         enabled: false,
                         permission: ToolPermissionRequirement::AlwaysAsk,
                     },
-                },
+                ),
             ],
         }];
         let snapshot = compile(&cfg, &[tool("read"), tool("write")]).unwrap();
@@ -1714,17 +1660,20 @@ mod tests {
     fn advisor_is_distinct_from_delegation_and_requires_one_exact_candidate() {
         // Cause/effect graph: advisor authoring selects the reserved service
         // capability and its publication candidate; ordinary targets alone
-        // select agent_run. Cardinality counts the advisor separately from the
-        // official maximum of 20 ordinary roster Agents.
+        // select agent_run. The official 20-entry roster limit counts every
+        // target, including the advisor.
         //
         // Decision table:
         // | Rule | ordinary | advisor | candidate | effect                     |
-        // | V1   | 0        | 1       | exact     | advisor only, no agent_run |
-        // | V2   | 20       | 1       | exact     | both capabilities         |
-        // | V3   | 0        | 1       | absent    | reject publication        |
-        // | V4   | 0        | 2       | exact     | reject roster             |
-        // | V5   | 0        | 1       | route B   | different fingerprint     |
-        // | V6   | collision| 1       | ambiguous | reject publication        |
+        // | V1   | 0        | 1       | exact     | advisor only, replay-safe  |
+        // | V2   | 19       | 1       | exact     | both; 20 total accepted   |
+        // | V3   | 20       | 1       | exact     | reject 21-entry roster    |
+        // | V4   | 0        | 1       | absent    | reject publication        |
+        // | V5   | 0        | 2       | exact     | reject roster             |
+        // | V6   | 0        | 1       | route B   | different fingerprint     |
+        // | V7   | collision| 1       | ambiguous | reject publication        |
+        // Constraints/invariants: at most one Advisor occupies one roster slot,
+        // owns a pinned candidate, and never aliases ordinary agent delegation.
         use crate::config::{MultiagentConfig, MultiagentTarget};
 
         let delegation = tool("agent_run")
@@ -1793,6 +1742,18 @@ mod tests {
                 .iter()
                 .any(|descriptor| descriptor.kind == ToolKind::Advisor)
         );
+        assert_eq!(
+            advisor_only
+                .resolved_spec
+                .tool_descriptors
+                .iter()
+                .find(|descriptor| descriptor.kind == ToolKind::Advisor)
+                .unwrap()
+                .recovery_policy
+                .mode(),
+            awaken_runtime_contract::tool::ToolRecoveryMode::DurableRequest,
+            "V1"
+        );
         assert!(
             !advisor_only
                 .resolved_spec
@@ -1812,8 +1773,8 @@ mod tests {
             vec![],
             Some(alternate_advisor),
         )
-        .expect("V5");
-        assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V5");
+        .expect("V6");
+        assert_ne!(alternate.fingerprint, advisor_only_fingerprint, "V6");
 
         let ambiguous_advisor = provider_candidate("route-b@1");
         assert!(
@@ -1828,11 +1789,11 @@ mod tests {
                 ),
                 Err(CompileError::InvalidResolvedModels { .. })
             ),
-            "V6"
+            "V7"
         );
 
         cfg.multiagent = Some(MultiagentConfig {
-            agents: (0..20)
+            agents: (0..19)
                 .map(|index| MultiagentTarget::Agent {
                     id: format!("worker-{index}"),
                     version: Some(1),
@@ -1851,13 +1812,48 @@ mod tests {
             Some(advisor_candidate.clone()),
         )
         .expect("V2");
-        assert_eq!(both.resolved_spec.plugin_config.agent.delegates.len(), 20);
+        assert_eq!(both.resolved_spec.plugin_config.agent.delegates.len(), 19);
         assert!(
             both.resolved_spec
                 .tool_descriptors
                 .iter()
                 .any(|descriptor| descriptor.kind == ToolKind::AgentDelegation)
         );
+
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: (0..20)
+                .map(|index| MultiagentTarget::Agent {
+                    id: format!("worker-{index}"),
+                    version: Some(1),
+                })
+                .chain(std::iter::once(MultiagentTarget::Advisor {
+                    model: "claude-opus-5".into(),
+                }))
+                .collect(),
+        });
+        assert!(
+            matches!(
+                compile_published(
+                    &cfg,
+                    std::slice::from_ref(&delegation),
+                    AgentSnapshotMetadata::default(),
+                    primary.clone(),
+                    vec![],
+                    Some(advisor_candidate.clone()),
+                ),
+                Err(CompileError::InvalidBinding {
+                    axis: "multiagent",
+                    ..
+                })
+            ),
+            "V3"
+        );
+
+        cfg.multiagent = Some(MultiagentConfig {
+            agents: vec![MultiagentTarget::Advisor {
+                model: "claude-opus-5".into(),
+            }],
+        });
 
         assert!(
             matches!(
@@ -1874,7 +1870,7 @@ mod tests {
                     ..
                 })
             ),
-            "V3"
+            "V4"
         );
 
         cfg.multiagent = Some(MultiagentConfig {
@@ -1902,29 +1898,34 @@ mod tests {
                     ..
                 })
             ),
-            "V4"
+            "V5"
         );
     }
 
-    // --- CEG 03 / B2 (glob_match) --------------------------------------------
+    // --- CEG 03 / B2 (tool-id pattern authority) -----------------------------
 
     #[test]
-    fn glob_match_covers_prefix_middle_exact_and_empty() {
-        // (a) trailing star matches a longer id sharing the prefix.
-        assert!(glob_match("fs_*", "fs_read"));
-        // (b) anchored at both ends: `fs_*` does not match a mid-string occurrence.
-        assert!(!glob_match("fs_*", "net_fs"));
-        // (c) the empty pattern matches only the empty string.
-        assert!(glob_match("", ""));
-        assert!(!glob_match("", "x"));
-        // (d) a middle star spans any run (including empty).
-        assert!(glob_match("a*c", "abc"));
-        assert!(glob_match("a*c", "ac"));
-        assert!(glob_match("a*c", "abbbc"));
-        assert!(!glob_match("a*c", "abd"));
-        // (e) a pattern with no star is an exact match.
-        assert!(glob_match("fs_read", "fs_read"));
-        assert!(!glob_match("fs_read", "fs_reads"));
+    fn tool_id_patterns_cover_prefix_middle_exact_empty_and_escape() {
+        // Causes: C1 a trailing/middle `*`; C2 an exact/empty pattern; C3 an
+        // escaped `*`; C4 a candidate that violates the anchored literal parts.
+        // Effects: E1 matching catalog ids are selected; E2 C4/nonmatching ids
+        // are rejected; E3 escaped metacharacters remain literal.
+        // Constraint/invariant: Agent publication delegates to the shared
+        // `awaken-tool-pattern` grammar; it must not maintain a second matcher.
+        // Decision rules: P1 C1+aligned=>E1; P2 C1+C4=>E2; P3 C2 exact=>E1;
+        // P4 C2 mismatch=>E2; P5 C3 literal star=>E3; P6 C3 wildcard=>E2.
+        assert!(tool_id_match("fs_*", "fs_read"), "P1");
+        assert!(!tool_id_match("fs_*", "net_fs"), "P2");
+        assert!(tool_id_match("", ""), "P3");
+        assert!(!tool_id_match("", "x"), "P4");
+        assert!(tool_id_match("a*c", "abc"), "P1");
+        assert!(tool_id_match("a*c", "ac"), "P1");
+        assert!(tool_id_match("a*c", "abbbc"), "P1");
+        assert!(!tool_id_match("a*c", "abd"), "P2");
+        assert!(tool_id_match("fs_read", "fs_read"), "P3");
+        assert!(!tool_id_match("fs_read", "fs_reads"), "P4");
+        assert!(tool_id_match(r"literal\*tool", "literal*tool"), "P5");
+        assert!(!tool_id_match(r"literal\*tool", "literalXtool"), "P6");
     }
 
     // --- CEG 03 / B5 (ModelSelection) ----------------------------------------

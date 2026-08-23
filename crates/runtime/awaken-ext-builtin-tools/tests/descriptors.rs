@@ -44,6 +44,15 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
 
 #[test]
 fn hand_tool_execution_targets_follow_the_placement_decision_table() {
+    // Cause/effect graph: C1 the eight filesystem/shell implementations enter
+    // through `executable_hand_tools`; C2 dependency-expanded `WebFetchTool`
+    // enters through `web_hand_tools`. E1 every member targets Sandbox and is
+    // therefore dispatched only by the SessionEnvironment-owned executor.
+    // Constraint K1: `all_hand_tools` is the closed canonical union; configured
+    // `web_search` retains its separate plugin owner and is not a second member.
+    // Decision rules: P1=C1=>E1; P2=C2=>E1. Coverage rationale: iterating the
+    // closed registry covers all nine placements, including WebFetch, while the
+    // preceding membership test guards the exact dependency-expanded domain.
     for tool in all_hand_tools() {
         assert_eq!(
             tool.execution_target(),
@@ -78,13 +87,17 @@ fn grep_descriptor_exposes_every_executor_input() {
 
 #[test]
 fn catalog_pairs_each_execution_family_with_its_only_legal_descriptor_kind() {
-    // Decision table: C1 Hand => Regular; C2 Task => Regular;
-    // C3 Delegation => AgentDelegation. `BuiltinTool` has no public constructor,
-    // mutable fields, or serde input, so these are the complete constructible
-    // states rather than validation of an open tuple.
+    // Cause/effect graph: C1 Hand, C2 Task, and C3 Coordination are ordinary
+    // executable families; C4 Delegation enters the kernel-owned resolver path.
+    // Effects: E1 C1/C2/C3 => Regular; E2 C4 => AgentDelegation.
+    // Constraints: `BuiltinTool` has no public constructor, mutable fields, or
+    // serde input, so the decision table enumerates every constructible pairing.
+    // Decision rules: R1=C1|C2|C3=>E1; R2=C4=>E2.
     for tool in builtin_tools() {
         let expected = match tool.toolset() {
-            Toolset::Hand | Toolset::Task => awaken_runtime_contract::resolved::ToolKind::Regular,
+            Toolset::Hand | Toolset::Task | Toolset::Coordination => {
+                awaken_runtime_contract::resolved::ToolKind::Regular
+            }
             Toolset::Delegation => awaken_runtime_contract::resolved::ToolKind::AgentDelegation,
         };
         assert_eq!(tool.descriptor().kind, expected);

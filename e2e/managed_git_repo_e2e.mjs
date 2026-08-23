@@ -27,7 +27,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv, hasEndTurn } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+  startUpstream,
+  realServerEnv,
+  hasEndTurn,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
 const BETAS = ['managed-agents-2026-04-01'];
@@ -38,7 +47,6 @@ const FEATURE_LATEST = 'FEATURE_BRANCH_LATEST_9981';
 const MARKER = 'AGENT_REPO_MARKER_3390'; // must match GitRepoModel
 
 let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const git = (args, cwd) => execFileSync('git', args, { cwd, encoding: 'utf8' });
 
 // A bare repo (the "remote") seeded with one commit, returned as a filesystem path
@@ -67,24 +75,6 @@ function seedRemote() {
   return { bare, pinnedCommit };
 }
 
-const listEvents = async (sid) => {
-  const evs = [];
-  for await (const ev of client.beta.sessions.events.list(sid, { betas: BETAS })) evs.push(ev);
-  return evs;
-};
-
-async function approveGated(sid, evs, approved) {
-  for (const e of evs) {
-    if (e.type === 'agent.tool_use' && e.evaluated_permission === 'ask' && !approved.has(e.id)) {
-      approved.add(e.id);
-      await client.beta.sessions.events.send(sid, {
-        events: [{ type: 'user.tool_confirmation', tool_use_id: e.id, result: 'allow' }],
-        betas: BETAS,
-      });
-    }
-  }
-}
-
 // Files GET is deliberately read-only; it must not publish Repository changes.
 async function listArtifacts(sid) {
   try {
@@ -110,18 +100,56 @@ async function driveRepoSession(bare, checkout) {
   const projected = session.resources.find((resource) => resource.type === 'github_repository');
   assert.ok(projected?.id, 'Repository projection is addressable');
   assert.deepEqual(projected.checkout ?? null, checkout ?? null, 'wire projection preserves checkout');
-  await client.beta.sessions.events.send(session.id, {
+  // G0 lifecycle rule: C1=exact task receipt; C2=requires_action with qualified
+  // pending ids; C3=exact allow batch; C4=end_turn. Effects: E1=each state edge
+  // is receipt-scoped; E2=terminal repository work. Constraint: only the test
+  // sends approvals; the observer never drives. Rules C1+C2=>approve once;
+  // C1+C2+C3&&!C4=>next boundary; C1+C2+C3+C4=>E1+E2.
+  const taskReceipt = await client.beta.sessions.events.send(session.id, {
     events: [{ type: 'user.message', content: [{ type: 'text', text: 'work on the repo' }] }],
     betas: BETAS,
   });
-  const approved = new Set();
-  let evs = [];
-  for (let i = 0; i < 40; i += 1) {
-    await sleep(400);
-    evs = await listEvents(session.id);
-    await approveGated(session.id, evs, approved);
-    if (hasEndTurn(evs)) break;
+  let observation = await waitForSessionEventReceipt(
+    client,
+    session.id,
+    taskReceipt.data[0]?.id,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+    'G0 task reaches its first committed boundary',
+    { timeoutMs: 30_000 },
+  );
+  let evs = observation.events;
+  for (let boundary = 0; boundary < 10 && !hasEndTurn(evs); boundary += 1) {
+    const idle = [...observation.delta]
+      .reverse()
+      .find((event) => event.type === 'session.status_idle');
+    assert.equal(idle?.stop_reason?.type, 'requires_action', 'G0 nonterminal boundary requires approval');
+    const pendingIds = idle.stop_reason.event_ids;
+    assert.ok(pendingIds.length > 0, 'G0 requires_action names exact pending Event ids');
+    const decisions = pendingIds.map((id) => {
+      const toolUse = evs.find((event) => event.id === id && event.type === 'agent.tool_use');
+      assert.equal(toolUse?.evaluated_permission, 'ask', `G0 ${id} is a gated tool call`);
+      return { type: 'user.tool_confirmation', tool_use_id: id, result: 'allow' };
+    });
+    const approval = await client.beta.sessions.events.send(session.id, {
+      events: decisions,
+      betas: BETAS,
+    });
+    const receiptIds = approval.data.map((event) => event.id);
+    observation = await waitForSessionEventReceipt(
+      client,
+      session.id,
+      receiptIds.at(-1),
+      BETAS,
+      ({ events, delta }) => receiptIds.every((id) => events.some(
+        (event) => event.id === id && event.processed_at,
+      )) && delta.some((event) => event.type === 'session.status_idle'),
+      'G0 approval batch reaches its next committed boundary',
+      { timeoutMs: 30_000 },
+    );
+    evs = observation.events;
   }
+  assert.ok(hasEndTurn(evs), 'G0 repository Run reaches end_turn within ten approval boundaries');
   await listArtifacts(session.id);
   assert.equal(
     git(['rev-parse', branch], bare).trim(),

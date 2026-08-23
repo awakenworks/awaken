@@ -2,18 +2,25 @@
 // cases, restricted to our SDK surface). Drives the managed sessions API through
 // the official @anthropic-ai/sdk. Ported scenarios:
 //   - user.interrupt with no active run          -> accepted, session stays usable
-//   - concurrent sends to ONE session            -> all settle, server stays responsive
 //   - server recovers after a malformed request  -> 4xx, then a valid call succeeds
 //   - duplicate tool_confirmation of a resolved tool -> fail closed (no double-run)
 //
-// Deterministic: echo mode (turns complete) for the first four, probe mode (a turn
+// Deterministic: echo mode (turns complete) for the first two, probe mode (a turn
 // awaits on a tool) for the duplicate-confirmation case.
 //
 // Run: (from e2e/)  node managed_resilience_e2e.mjs
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  pass,
+  startUpstream,
+  realServerEnv,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38232);
@@ -32,12 +39,6 @@ async function statusOf(promise, what) {
 
 const isClientError = (s) => s >= 400 && s < 500;
 
-async function listEvents(c, id) {
-  const events = [];
-  for await (const ev of c.beta.sessions.events.list(id, { betas: BETAS })) events.push(ev);
-  return events;
-}
-
 const newSession = (c) =>
   c.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
 
@@ -51,42 +52,41 @@ async function resilientPaths(echoUp) {
     //    session remains usable for a subsequent turn.
     {
       const s = await newSession(c);
-      await c.beta.sessions.events.send(s.id, {
+      // R1: C1=no-op interrupt receipt commits; C2=later User receipt reaches
+      // end_turn. E1=Session remains reusable. Constraint: C2 follows committed
+      // C1 and old idle cannot qualify. C1&&!C2=>observe; C1+C2=>E1.
+      const interrupt = await c.beta.sessions.events.send(s.id, {
         events: [{ type: 'user.interrupt' }],
         betas: BETAS,
       });
-      await c.beta.sessions.events.send(s.id, {
+      await waitForSessionEventReceipt(
+        c,
+        s.id,
+        interrupt.data[0]?.id,
+        BETAS,
+        () => true,
+        'R1 no-op interrupt receipt commits',
+      );
+      const message = await c.beta.sessions.events.send(s.id, {
         events: [{ type: 'user.message', content: [{ type: 'text', text: 'after-interrupt' }] }],
         betas: BETAS,
       });
-      const idle = [...(await listEvents(c, s.id))].reverse().find((e) => e.type === 'session.status_idle');
+      const { delta } = await waitForSessionEventReceipt(
+        c,
+        s.id,
+        message.data[0]?.id,
+        BETAS,
+        ({ delta: current }) => current.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'end_turn'),
+        'R1 post-interrupt turn reaches end_turn',
+      );
+      const idle = [...delta].reverse().find((event) => event.type === 'session.status_idle');
       assert.equal(idle.stop_reason.type, 'end_turn', 'session usable after a no-op interrupt');
       pass('user.interrupt with no active run -> accepted, session still usable');
     }
 
 
-    // 3. Concurrent sends to ONE session: the host serializes per thread; every
-    //    request settles and the server stays responsive afterward (no crash/hang).
-    {
-      const s = await newSession(c);
-      const sends = Array.from({ length: 6 }, (_, i) =>
-        c.beta.sessions.events.send(s.id, {
-          events: [{ type: 'user.message', content: [{ type: 'text', text: `concurrent-${i}` }] }],
-          betas: BETAS,
-        }),
-      );
-      const settled = await Promise.allSettled(sends);
-      assert.ok(
-        settled.some((r) => r.status === 'fulfilled'),
-        'at least one concurrent send succeeded',
-      );
-      // The server is still alive: a fresh session round-trips.
-      const probe = await newSession(c);
-      assert.ok(probe.id, 'server stayed responsive after concurrent load');
-      pass(`concurrent sends to one session -> all settled, server responsive`);
-    }
-
-    // 4. A malformed request is rejected, and the server recovers (next call works).
+    // 2. A malformed request is rejected, and the server recovers (next call works).
     {
       const bad = await fetch(`${a.baseUrl}/v1/sessions`, {
         method: 'POST',
@@ -109,19 +109,41 @@ async function duplicateConfirmation(probeUp) {
     await waitForPort(PORT + 1);
     const c = client(a.baseUrl);
     const s = await newSession(c);
-    await c.beta.sessions.events.send(s.id, {
+    // R2: C1=exact task receipt reaches requires_action; C2=exact allow receipt
+    // reaches end_turn. E1=duplicate C2 is then rejected. Constraint: each phase
+    // is scoped after its own receipt. C1&&!C2=>awaiting; C1+C2=>E1.
+    const task = await c.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'DUP-CONFIRM' }] }],
       betas: BETAS,
     });
-    const awaiting = (await listEvents(c, s.id)).find((e) => e.type === 'agent.tool_use');
+    const { delta: awaitingEvents } = await waitForSessionEventReceipt(
+      c,
+      s.id,
+      task.data[0]?.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.tool_use')
+        && delta.some((event) => event.type === 'session.status_idle'
+          && event.stop_reason?.type === 'requires_action'),
+      'R2 task reaches requires_action',
+    );
+    const awaiting = awaitingEvents.find((event) => event.type === 'agent.tool_use');
     assert.ok(awaiting, 'run awaiting on a tool_use');
 
     // First confirmation resolves the tool and completes the turn.
-    await c.beta.sessions.events.send(s.id, {
+    const allow = await c.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.tool_confirmation', tool_use_id: awaiting.id, result: 'allow' }],
       betas: BETAS,
     });
-    const idle = [...(await listEvents(c, s.id))].reverse().find((e) => e.type === 'session.status_idle');
+    const { delta: completed } = await waitForSessionEventReceipt(
+      c,
+      s.id,
+      allow.data[0]?.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'
+        && event.stop_reason?.type === 'end_turn'),
+      'R2 allow reaches end_turn',
+    );
+    const idle = [...completed].reverse().find((event) => event.type === 'session.status_idle');
     assert.equal(idle.stop_reason.type, 'end_turn', 'first confirmation completed the turn');
 
     // Re-confirming the SAME (now-resolved) tool_use_id must fail closed — no

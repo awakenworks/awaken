@@ -20,11 +20,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::event::{AgentEvent, Delta, Fact};
-use awaken_agent_contract::stream::event::Event as StreamEvent;
+use awaken_agent_contract::stream::event::Observation as StreamObservation;
 use awaken_run_ingress::{
     ClaimedStreamPublisher, DispatchError, DispatchOutcome, DispatchQueue, Inbox,
     MemoryDispatchStore, Outbox, PendingInput, RunClaim, RunDispatch, SettleOutcome,
-    StreamEventRequest, SubmitOptions, WorkerIdentity,
+    StreamObservationRequest, SubmitOptions, WorkerIdentity,
 };
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::resolved::{
@@ -303,10 +303,18 @@ async fn settle(
 async fn stream_event(
     State(state): State<Arc<TransportState>>,
     headers: HeaderMap,
-    Json(request): Json<StreamEventRequest>,
+    Json(request): Json<StreamObservationRequest>,
 ) -> Json<Value> {
-    assert_eq!(worker_id(&headers), request.identity.worker_id);
-    assert_eq!(request.claim.run_id, request.event.run_id);
+    assert_eq!(worker_id(&headers), request.request.identity.worker_id);
+    assert_eq!(request.request.claim.run_id, request.request.event.run_id);
+    assert_eq!(
+        request
+            .assistant_response
+            .as_ref()
+            .map(|coordinate| coordinate.thread_id.0.as_str()),
+        Some("thread-live"),
+        "S1 exact coordinate crosses the existing endpoint"
+    );
     state.stream_calls.fetch_add(1, Ordering::SeqCst);
     Json(json!({ "accepted": true }))
 }
@@ -584,14 +592,18 @@ async fn recovery_snapshot_retries_only_ambiguous_transport_outcomes() {
 // ── 1. The db-less remote-worker seam: enqueue → claim → fence → settle ──────────
 
 /// Live-publication cause/effect graph: C1 the canonical event classifier marks
-/// an event live; C2 it marks a complete content/lifecycle Fact non-live. E1 sends
-/// exactly one authenticated HTTP observation; E2 performs no HTTP request and
-/// leaves durable commit/settlement as the sole Fact path.
+/// an event live; C2 it marks a complete content/lifecycle Fact non-live; C3 the
+/// live event has an exact assistant-response coordinate. E1 sends exactly one
+/// authenticated HTTP observation; E2 performs no HTTP request and leaves
+/// durable commit/settlement as the sole Fact path; E3 preserves C3 on that same
+/// endpoint. Constraint/Invariant: live publication is observational and cannot
+/// become a second committed Fact path. Decision rule: S1 and S2 cover the
+/// canonical live and non-live classifier partitions.
 ///
-/// | Rule | event | classify.live | HTTP calls | effect |
-/// |---|---|---|---|---|
-/// | S1 | TextDelta | true | 1 | best-effort observation |
-/// | S2 | RunFinished | false | unchanged | durable path only |
+/// | Rule | event | classify.live | coordinate | HTTP calls | effect |
+/// |---|---|---|---|---|---|
+/// | S1 | TextDelta | true | exact | 1 | best-effort observation + E3 |
+/// | S2 | RunFinished | false | exact | unchanged | durable path only |
 #[tokio::test]
 async fn worker_stream_transport_posts_only_canonically_live_events() {
     let (base, _, _, stream_calls) = spawn_transport_server().await;
@@ -601,13 +613,18 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
         owner: "worker-A:1:boot-A".into(),
         epoch: 1,
     };
-    let event = |kind| StreamEvent {
-        run_id: claim.run_id.clone(),
-        kind,
+    let event = |kind| {
+        StreamObservation::assistant_delta(
+            claim.run_id.clone(),
+            awaken_agent_contract::agent::thread::Id("thread-live".into()),
+            0,
+            0,
+            kind,
+        )
     };
 
     queue
-        .publish(
+        .publish_observation(
             &claim,
             event(AgentEvent::Delta(Delta::TextDelta { delta: "x".into() })),
         )
@@ -616,7 +633,7 @@ async fn worker_stream_transport_posts_only_canonically_live_events() {
     assert_eq!(stream_calls.load(Ordering::SeqCst), 1, "S1");
 
     queue
-        .publish(
+        .publish_observation(
             &claim,
             event(AgentEvent::Fact(Fact::RunFinished { exhausted: false })),
         )
@@ -813,6 +830,7 @@ fn an_input() -> PendingInput {
         thread_id: ThreadId("thread-1".into()),
         correlation_id: "corr-1".into(),
         available_at_ms: None,
+        context_messages: Vec::new(),
         result: ResumeResult::allow(),
     }
 }

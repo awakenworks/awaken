@@ -10,7 +10,16 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass, startUpstream, realServerEnv } from './harness.mjs';
+import {
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
+  pass,
+  startUpstream,
+  realServerEnv,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38224);
@@ -74,15 +83,44 @@ async function main() {
     {
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
       let emptyStatus = 200;
+      let emptyReceipt;
       try {
-        await client.beta.sessions.events.send(session.id, { events: [{ type: 'user.message', content: [] }], betas: BETAS });
+        emptyReceipt = await client.beta.sessions.events.send(session.id, {
+          events: [{ type: 'user.message', content: [] }],
+          betas: BETAS,
+        });
       } catch (err) {
         emptyStatus = err?.status ?? 500;
       }
       assert.ok(emptyStatus < 500, `empty content is not a server error (got ${emptyStatus})`);
+      if (emptyReceipt) {
+        await waitForSessionEventReceipt(
+          client,
+          session.id,
+          emptyReceipt.data[0]?.id,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'session.status_idle')
+            || delta.some((event) => event.type === 'session.error'),
+          'R3 accepted empty input reaches an explicit terminal public effect',
+        );
+      }
       const huge = 'x'.repeat(200_000);
-      await client.beta.sessions.events.send(session.id, { events: [{ type: 'user.message', content: [{ type: 'text', text: huge }] }], betas: BETAS });
-      const evs = await listEvents(client, session.id);
+      // R3: C1=huge input is accepted; C2=its exact receipt and reply commit.
+      // E1=history contains the accepted Run. Constraint: the optional empty
+      // input remains a synchronous accept/reject oracle. C1&&!C2=>observe;
+      // C1+C2=>E1.
+      const hugeReceipt = await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: huge }] }],
+        betas: BETAS,
+      });
+      const { events: evs } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        hugeReceipt.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message'),
+        'R3 huge message receipt reaches a committed reply',
+      );
       assert.ok(evs.length > 0, 'a huge message is accepted and produces events');
       pass('empty content handled gracefully; huge message accepted');
     }
@@ -99,7 +137,27 @@ async function main() {
       const results = await Promise.all(sends);
       assert.ok(results.every((r) => !r || r.err === undefined || typeof r.err === 'number'),
         'concurrent sends resolve without a server crash');
-      const idle = [...(await listEvents(client, session.id))].reverse().find((e) => e.type === 'session.status_idle');
+      // R4: C1=zero or more concurrent sends are admitted; C2=every admitted
+      // exact receipt reaches a later idle. E1=the shared Session settles.
+      // Constraint: clean per-send 4xx results stay allowed. Each C1+C2=>E1;
+      // no admitted receipt is a test failure because it would prove no work.
+      const acceptedIds = results.flatMap((result) => result?.data ?? [])
+        .map((event) => event.id)
+        .filter((id) => typeof id === 'string');
+      assert.ok(acceptedIds.length > 0, 'at least one concurrent send is admitted');
+      const observations = await Promise.all(acceptedIds.map((receiptId) => (
+        waitForSessionEventReceipt(
+          client,
+          session.id,
+          receiptId,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+          `R4 concurrent receipt ${receiptId} reaches idle`,
+        )
+      )));
+      const idle = [...observations.at(-1).events]
+        .reverse()
+        .find((event) => event.type === 'session.status_idle');
       assert.ok(idle, 'the session reaches idle after concurrent sends');
       pass('concurrent sends to one session are serialized and end cleanly');
     }
@@ -119,17 +177,44 @@ async function main() {
     //    session continues the conversation (post-run thread reuse).
     {
       const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-      await client.beta.sessions.events.send(session.id, { events: [{ type: 'user.message', content: [{ type: 'text', text: 'first' }] }], betas: BETAS });
-      await client.beta.sessions.events.send(session.id, { events: [{ type: 'user.message', content: [{ type: 'text', text: 'second' }] }], betas: BETAS });
-      const msgs = (await listEvents(client, session.id)).filter((e) => e.type === 'agent.message');
+      // R6: C1=first exact receipt settles; C2=a second receipt then settles.
+      // E1=two committed replies share one Session. Constraint: C2 is admitted
+      // only after C1 terminal, so a Busy race cannot masquerade as reuse.
+      // C1&&!C2=>one reply; C1+C2=>E1.
+      const first = await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'first' }] }],
+        betas: BETAS,
+      });
+      await waitForSessionEventReceipt(
+        client,
+        session.id,
+        first.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'R6 first receipt settles',
+      );
+      const second = await client.beta.sessions.events.send(session.id, {
+        events: [{ type: 'user.message', content: [{ type: 'text', text: 'second' }] }],
+        betas: BETAS,
+      });
+      const { events } = await waitForSessionEventReceipt(
+        client,
+        session.id,
+        second.data[0]?.id,
+        BETAS,
+        ({ delta }) => delta.some((event) => event.type === 'agent.message')
+          && delta.some((event) => event.type === 'session.status_idle'),
+        'R6 second receipt settles',
+      );
+      const msgs = events.filter((event) => event.type === 'agent.message');
       assert.ok(msgs.length >= 2, 'a second turn runs on the same thread after the first');
       pass('thread operations work across successive runs');
     }
 
-    // 7. A retryable upstream fault is observable as the neutral
-    // `session.status_rescheduled` marker before the successful answer. This is
-    // deliberately driven through the real provider adapter and socket fixture,
-    // not by injecting a protocol event.
+    // 7. A retryable upstream fault is recovered transparently inside the same
+    // claimed attempt. `session.status_rescheduled` belongs only to durable
+    // dispatch/claim replacement, so this provider retry must not fabricate it.
     {
       const retryUpstream = await startUpstream('echo', { failuresBeforeSuccess: 1, faultStatus: 503 });
       const retryServer = spawnServer('real', PORT + 1, { ...realServerEnv('echo', retryUpstream) });
@@ -137,15 +222,31 @@ async function main() {
         await waitForPort(PORT + 1);
         const retryClient = new Anthropic({ apiKey: 'e2e-dummy', baseURL: retryServer.baseUrl });
         const session = await retryClient.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-        await retryClient.beta.sessions.events.send(session.id, {
+        // R7: C1=exact input receipt; C2=the upstream records exactly one 503
+        // plus one successful attempt; C3=reply and final idle commit. Effects:
+        // E1=C2 proves a real provider retry; E2=C3 proves terminal recovery;
+        // E3=no dispatch-owned reschedule marker is fabricated. Constraint:
+        // both provider attempts retain one Run claim. Decision rules:
+        // C1+C2&&!C3=>observe; C1+C2+C3=>E1+E2+E3.
+        const receipt = await retryClient.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'retry-me' }] }],
           betas: BETAS,
         });
-        const events = await listEvents(retryClient, session.id);
+        const { events } = await waitForSessionEventReceipt(
+          retryClient,
+          session.id,
+          receipt.data[0]?.id,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'agent.message')
+            && delta.some((event) => event.type === 'session.status_idle'),
+          'R7 transparent provider retry reaches reply and final idle',
+        );
         const types = events.map((event) => event.type);
-        assert.ok(types.includes('session.status_rescheduled'), `retry marker missing: ${types}`);
+        assert.equal(retryUpstream.attempts, 2, 'one retryable 503 causes exactly two provider attempts');
+        assert.ok(!types.includes('session.status_rescheduled'), `provider retry fabricated dispatch reschedule: ${types}`);
         assert.ok(types.includes('agent.message'), `retry did not complete: ${types}`);
-        pass('retryable upstream fault -> session.status_rescheduled -> successful turn');
+        assert.equal(types.at(-1), 'session.status_idle', `retry did not reach final idle: ${types}`);
+        pass('same-attempt provider retry -> successful turn without dispatch reschedule');
       } finally {
         await stopServer(retryServer.server);
         retryUpstream.close();
@@ -165,19 +266,55 @@ async function main() {
         const active = steerClient.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'long-running original' }] }],
           betas: BETAS,
-        }).catch(() => undefined);
-        await new Promise((resolve) => setTimeout(resolve, 120));
-        await steerClient.beta.sessions.events.send(session.id, {
+        });
+        // R8: C1=the original Run reaches running and its exact User receipt is
+        // retained; C2=an exact interrupt receipt reaches idle; C3=a replacement
+        // receipt reaches its reply. Effects: E1=no timing guess and both C1/C2
+        // receipts process; E2=same-Session replacement completes. Constraint:
+        // committed running is the readiness authority, while exact receipts are
+        // fenced only after the interrupt terminal edge. C1+C2+C3=>E1+E2.
+        await waitForValue(
+          () => listEvents(steerClient, session.id),
+          (events) => events.some((event) => event.type === 'session.status_running'),
+          'R8 original Run reaches committed running before interrupt',
+          { timeoutMs: 10_000, pollMs: 10 },
+        );
+        const interruptReceipt = await steerClient.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.interrupt' }],
           betas: BETAS,
         });
-        await active;
-        await steerClient.beta.sessions.events.send(session.id, {
+        await waitForSessionEventReceipt(
+          steerClient,
+          session.id,
+          interruptReceipt.data[0]?.id,
+          BETAS,
+          ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
+          'R8 interrupt receipt reaches idle',
+        );
+        const activeReceipt = (await active).data[0];
+        assert.equal(activeReceipt?.type, 'user.message', 'R8 exact original User receipt');
+        await waitForSessionEventReceipt(
+          steerClient,
+          session.id,
+          activeReceipt.id,
+          BETAS,
+          () => true,
+          'R8 original User receipt to process after interrupt idle',
+        );
+        const replacementReceipt = await steerClient.beta.sessions.events.send(session.id, {
           events: [{ type: 'user.message', content: [{ type: 'text', text: 'steered replacement' }] }],
           betas: BETAS,
         });
-        const events = await listEvents(steerClient, session.id);
-        const texts = events.filter((event) => event.type === 'agent.message')
+        const { delta } = await waitForSessionEventReceipt(
+          steerClient,
+          session.id,
+          replacementReceipt.data[0]?.id,
+          BETAS,
+          ({ delta: current }) => current.some((event) => event.type === 'agent.message')
+            && current.some((event) => event.type === 'session.status_idle'),
+          'R8 replacement receipt reaches its terminal reply',
+        );
+        const texts = delta.filter((event) => event.type === 'agent.message')
           .flatMap((event) => event.content ?? []).map((part) => part.text ?? '').join(' ');
         assert.ok(texts.includes('steered replacement'), `steered answer missing: ${texts}`);
         pass('active interrupt followed by a replacement user.message completes on the same session');

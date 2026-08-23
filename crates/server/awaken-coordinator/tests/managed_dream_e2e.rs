@@ -1,5 +1,7 @@
 //! Cross-module Managed Agents overview -> Dream E2E.
 
+mod support;
+
 use awaken_scenario_host::build_dream_router;
 use axum::Router;
 use axum::body::Body;
@@ -7,6 +9,8 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use tower::ServiceExt;
+
+use support::wait_for_session_events;
 
 async fn call(app: &Router, method: &str, uri: &str, body: Option<Value>) -> (StatusCode, Value) {
     let mut builder = Request::builder().method(method).uri(uri).header(
@@ -51,12 +55,24 @@ async fn terminal_dream(app: &Router, id: &str) -> Value {
     panic!("Dream remained non-terminal")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_plane() {
+    // Causes: the fixtures below establish `agent session events files memory and dream share one
+    // runtime and data plane` with the concrete inputs, state, dependencies, and failure triggers
+    // used by this case.
+    // Effects: the observable result `all output, state, side-effect, error, and terminal
+    // assertions below hold together` and every asserted state transition or side effect must hold.
+    // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
+    // delivery is best-effort and cannot replace committed replay truth.
+    // Decision rule: evaluate every labeled cause partition in this test; each matching rule
+    // selects only its stated effect and preserves the authority constraint.
     // Managed-overview cause/effect graph:
     // C0 scope-less local scenario request -> E0 the startup edge stamps the
     // Host's default Workspace before every data and policy handler;
     // C1 Agent-referenced Session + user event -> E1 durable full event history;
+    // the HTTP receipt is acceptance, so E1 is observed only after the one
+    // lifecycle supervisor reaches committed aggregate Idle (bounded yields,
+    // never a request-local executor or timing sleep);
     // C2 ordinary MemoryStore + selected Session -> E2 asynchronous Dream;
     // C3 frozen transcript export -> E3 transient JSONL Files are mounted and
     // removed after execution; C4 consolidation execution -> E4 ordinary archived
@@ -66,9 +82,12 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     // C6 explicit `view=full` -> E6 list projections include Dream contents (the
     // official default `basic` projection intentionally omits them); C7 the Runtime
     // terminal lifecycle cursor is consumed after the Session archive CAS -> E7 the
-    // delayed event projection cannot reverse `terminated` to `idle`. Decision rule
-    // R1 covers the successful end-to-end combination of all eight causes, including
-    // the late-feed ordering selected by the shared ephemeral Runtime authority.
+    // delayed event projection cannot reverse `terminated` to `idle`; C8 the sole
+    // lifecycle supervisor composes its complete recovery cycle on a default Tokio
+    // worker -> E8 the cycle reaches terminal state without exhausting worker stack.
+    // Decision rule R1 covers the successful end-to-end combination of all nine
+    // causes, including the late-feed ordering selected by the shared ephemeral
+    // Runtime authority.
     // Route/unit suites own invalid, default-basic, and nonterminal alternatives.
     let app = build_dream_router();
 
@@ -83,7 +102,7 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
     )
     .await;
     let session_id = session["id"].as_str().unwrap();
-    ok(
+    let receipt = ok(
         &app,
         "POST",
         &format!("/v1/sessions/{session_id}/events"),
@@ -95,14 +114,37 @@ async fn agent_session_events_files_memory_and_dream_share_one_runtime_and_data_
         })),
     )
     .await;
-    let events = ok(
+    let events = wait_for_session_events(
         &app,
-        "GET",
-        &format!("/v1/sessions/{session_id}/events"),
-        None,
+        session_id,
+        Some(&receipt),
+        "the Session's aggregate idle boundary",
+        |events| {
+            events
+                .iter()
+                .any(|event| event["type"] == "session.status_idle")
+        },
     )
     .await;
-    assert!(events["data"].as_array().unwrap().len() >= 4);
+    let event_types = events["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event["type"].as_str())
+        .collect::<Vec<_>>();
+    for expected in [
+        "user.message",
+        "session.status_running",
+        "session.thread_status_running",
+        "agent.message",
+        "session.thread_status_idle",
+        "session.status_idle",
+    ] {
+        assert!(
+            event_types.contains(&expected),
+            "C1/E1 missing {expected}: {events}"
+        );
+    }
 
     let store = ok(
         &app,

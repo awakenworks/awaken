@@ -167,8 +167,10 @@ impl<'de> Deserialize<'de> for ResolvedSessionResources {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionResourceManifest {
     pub workspace_id: String,
-    /// Durable Session resource generation. Zero is the legacy/create-time
-    /// generation; live replacements carry `SessionResourceState::revision`.
+    /// Durable selected Session resource generation, paired with `resources`.
+    /// Zero is the legacy/create-time generation. A live manifest carries the
+    /// selected active or pending generation; after rollback this can be lower
+    /// than `SessionResourceState::revision`, the attempted-generation watermark.
     #[serde(default)]
     pub revision: u64,
     pub resources: ResolvedSessionResources,

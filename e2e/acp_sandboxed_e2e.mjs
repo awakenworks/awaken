@@ -13,7 +13,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
-import { spawnServer, stopServer, waitForPort, pass } from './harness.mjs';
+import { spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38171;
@@ -25,21 +25,31 @@ function bwrapAvailable() {
   return r.status === 0;
 }
 
-async function agentTexts(client, sessionId) {
-  const events = [];
-  for await (const ev of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    events.push(ev);
-  }
+function agentTexts(events) {
   return events
     .filter((e) => e.type === 'agent.message')
     .map((m) => (m.content ?? []).map((c) => c.text ?? '').join('').trim());
 }
 
 async function send(client, sessionId, text) {
-  await client.beta.sessions.events.send(sessionId, {
+  // C1=exact ACP/native User receipt; C2=network-probe reply+terminal. E1=C2
+  // after C1. K: OS network policy remains the authority. Decision S1 C1&&!C2
+  // =>retry; S2 C1+C2=>return the scoped proof.
+  const receipt = await client.beta.sessions.events.send(sessionId, {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'S1 exact sandboxed ACP/native User receipt');
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.message')
+      && delta.some((event) => event.type === 'session.status_idle'),
+    `S1 sandboxed Run for ${JSON.stringify(text)} to commit`,
+  );
 }
 
 async function acpReply(client, environmentId, prompt) {
@@ -48,8 +58,7 @@ async function acpReply(client, environmentId, prompt) {
     environment_id: environmentId,
     betas: BETAS,
   });
-  await send(client, session.id, prompt);
-  return agentTexts(client, session.id);
+  return agentTexts((await send(client, session.id, prompt)).delta);
 }
 
 async function main() {
@@ -115,8 +124,7 @@ async function main() {
       environment_id: 'env_local',
       betas: BETAS,
     });
-    await send(client, native.id, 'hello');
-    texts = await agentTexts(client, native.id);
+    texts = agentTexts((await send(client, native.id, 'hello')).delta);
     assert.ok(
       texts.some((t) => t.startsWith('Echo:')),
       `native session ran the built-in model, got ${JSON.stringify(texts)}`,
