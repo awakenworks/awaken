@@ -18,7 +18,7 @@ static TOKEN_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 const DEFAULT_TTL_SECONDS: u64 = 300;
 const MAX_TTL_SECONDS: u64 = 900;
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateApplicationToken {
     pub authority_id: String,
     pub application_scope: String,
@@ -31,17 +31,17 @@ pub struct CreateApplicationToken {
     pub expires_in_seconds: u64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct CreateApplicationThreadBinding {
     pub external_thread_id: String,
     pub managed_session_id: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct IssuedApplicationToken {
     pub id: String,
-    pub object: &'static str,
-    pub token_type: &'static str,
+    pub object: String,
+    pub token_type: String,
     pub access_token: String,
     pub expires_at: String,
     pub application_scope: String,
@@ -162,8 +162,8 @@ async fn create(
             StatusCode::CREATED,
             Json(IssuedApplicationToken {
                 id,
-                object: "application_access_token",
-                token_type: "Bearer",
+                object: "application_access_token".into(),
+                token_type: "Bearer".into(),
                 access_token,
                 expires_at,
                 application_scope: request.application_scope,
@@ -468,6 +468,60 @@ mod tests {
                 .map(|(id, owner, session)| (id.to_string(), (owner.to_string(), session)))
                 .collect(),
         })
+    }
+
+    /// Cause-effect serialization rules: R1 a complete canonical issuance
+    /// request (C1) serializes every authorization input and deserializes back
+    /// into that same Open-owned request shape (E1); R2 a complete canonical
+    /// issued credential (C2) deserializes as an owned response after its input
+    /// buffer is released (E2). Together they prevent clients from needing a
+    /// parallel JSON DTO while keeping token issuance and validation here.
+    #[test]
+    fn canonical_application_access_wire_round_trips() {
+        let request = CreateApplicationToken {
+            authority_id: "shop-backend".into(),
+            application_scope: "project-42".into(),
+            actor_key: Some("opaque-user".into()),
+            protocols: vec!["ai-sdk".into()],
+            operations: vec!["thread.run".into(), "thread.messages.read".into()],
+            thread_bindings: vec![CreateApplicationThreadBinding {
+                external_thread_id: "customer-thread".into(),
+                managed_session_id: "sesn_1".into(),
+            }],
+            expires_in_seconds: 900,
+        };
+        let request_wire = serde_json::to_vec(&request).unwrap();
+        let decoded_request: CreateApplicationToken =
+            serde_json::from_slice(&request_wire).unwrap();
+        assert_eq!(decoded_request.authority_id, request.authority_id, "R1");
+        assert_eq!(
+            decoded_request.thread_bindings[0].managed_session_id,
+            request.thread_bindings[0].managed_session_id,
+            "R1"
+        );
+        assert_eq!(decoded_request.expires_in_seconds, 900, "R1");
+
+        let issued = IssuedApplicationToken {
+            id: "aat_1".into(),
+            object: "application_access_token".into(),
+            token_type: "Bearer".into(),
+            access_token: "opaque-application-token".into(), // awaken-allow: secret
+            expires_at: "2026-08-18T12:00:00Z".into(),
+            application_scope: "project-42".into(),
+            protocols: vec!["ai-sdk".into()],
+            operations: vec!["thread.run".into(), "thread.messages.read".into()],
+        };
+        let issued_wire = serde_json::to_vec(&issued).unwrap();
+        let decoded_issued = decode_owned::<IssuedApplicationToken>(&issued_wire);
+        drop(issued_wire);
+        assert_eq!(decoded_issued.object, "application_access_token", "R2");
+        assert_eq!(decoded_issued.token_type, "Bearer", "R2");
+        assert_eq!(decoded_issued.access_token, issued.access_token, "R2");
+        assert_eq!(decoded_issued.expires_at, issued.expires_at, "R2");
+    }
+
+    fn decode_owned<T: serde::de::DeserializeOwned>(wire: &[u8]) -> T {
+        serde_json::from_slice(wire).unwrap()
     }
 
     fn issue_body(session_id: &str, operations: Value) -> Value {
