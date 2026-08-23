@@ -879,10 +879,13 @@ pub struct WebSearchPlugin {
     execution_configuration: Option<WebSearchExecutionConfiguration>,
 }
 
-enum ConfiguredSearchRoute {
-    Host(Vec<(RegisteredWebSearchProvider, WebProviderTarget)>),
+enum ConfiguredWebRoute<T> {
+    Host(Vec<T>),
     ProviderServer(Box<WebServerToolProviderDescriptor>, Value),
 }
+
+type ConfiguredSearchRoute = ConfiguredWebRoute<(RegisteredWebSearchProvider, WebProviderTarget)>;
+type ConfiguredFetchRoute = ConfiguredWebRoute<(RegisteredWebFetchProvider, WebProviderTarget)>;
 
 impl WebSearchPlugin {
     pub fn new(
@@ -927,7 +930,7 @@ impl WebSearchPlugin {
             }
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredSearchRoute::ProviderServer(
+            return Ok(ConfiguredWebRoute::ProviderServer(
                 Box::new(provider.clone()),
                 config.options,
             ));
@@ -949,7 +952,7 @@ impl WebSearchPlugin {
             )?;
             targets.push((provider, target));
         }
-        Ok(ConfiguredSearchRoute::Host(targets))
+        Ok(ConfiguredWebRoute::Host(targets))
     }
 
     /// Semantic validation used by both publication and runtime resolution.
@@ -965,7 +968,7 @@ impl WebSearchPlugin {
     ) -> Result<(ToolDescriptor, Arc<dyn RawTool>), PluginConfigError> {
         let route = self.configured_provider(config)?;
         let (descriptor, tool) = match route {
-            ConfiguredSearchRoute::Host(targets) => {
+            ConfiguredWebRoute::Host(targets) => {
                 if targets.iter().any(|(provider, _)| {
                     matches!(
                         provider.descriptor.credential,
@@ -990,17 +993,14 @@ impl WebSearchPlugin {
                     ),
                 )
             }
-            ConfiguredSearchRoute::ProviderServer(provider, options) => {
-                let provider = *provider;
-                (
-                    web_search_descriptor().with_provider_server_tool(
-                        provider.provider_kind,
-                        provider.tool_type,
-                        options,
-                    ),
-                    erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
-                )
-            }
+            ConfiguredWebRoute::ProviderServer(provider, options) => (
+                web_search_descriptor().with_provider_server_tool(
+                    provider.provider_kind,
+                    provider.tool_type,
+                    options,
+                ),
+                erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
+            ),
         };
         Ok((descriptor, tool))
     }
@@ -1097,11 +1097,6 @@ pub struct WebFetchPlugin {
     execution_configuration: Option<WebFetchExecutionConfiguration>,
 }
 
-enum ConfiguredFetchRoute {
-    Host(Vec<(RegisteredWebFetchProvider, WebProviderTarget)>),
-    ProviderServer(Box<WebServerToolProviderDescriptor>, Value),
-}
-
 impl WebFetchPlugin {
     pub fn new(
         registry: WebSearchProviderRegistry,
@@ -1147,7 +1142,7 @@ impl WebFetchPlugin {
             }
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredFetchRoute::ProviderServer(
+            return Ok(ConfiguredWebRoute::ProviderServer(
                 Box::new(provider.clone()),
                 config.options,
             ));
@@ -1172,7 +1167,7 @@ impl WebFetchPlugin {
             )?;
             targets.push((provider, target));
         }
-        Ok(ConfiguredFetchRoute::Host(targets))
+        Ok(ConfiguredWebRoute::Host(targets))
     }
 
     pub fn validate_config(&self, config: Option<&Value>) -> Result<(), PluginConfigError> {
@@ -1184,7 +1179,7 @@ impl WebFetchPlugin {
         config: Option<&Value>,
     ) -> Result<(ToolDescriptor, Arc<dyn RawTool>), PluginConfigError> {
         match self.configured_route(config)? {
-            ConfiguredFetchRoute::Host(targets) => {
+            ConfiguredWebRoute::Host(targets) => {
                 if targets.iter().any(|(provider, _)| {
                     matches!(
                         provider.descriptor.credential,
@@ -1217,17 +1212,14 @@ impl WebFetchPlugin {
                     ),
                 ))
             }
-            ConfiguredFetchRoute::ProviderServer(provider, options) => {
-                let provider = *provider;
-                Ok((
-                    web_fetch_descriptor().with_provider_server_tool(
-                        provider.provider_kind,
-                        provider.tool_type,
-                        options,
-                    ),
-                    erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
-                ))
-            }
+            ConfiguredWebRoute::ProviderServer(provider, options) => Ok((
+                web_fetch_descriptor().with_provider_server_tool(
+                    provider.provider_kind,
+                    provider.tool_type,
+                    options,
+                ),
+                erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
+            )),
         }
     }
 }
@@ -1724,6 +1716,15 @@ mod tests {
             registry.config_schema()["oneOf"].as_array().unwrap().len(),
             2
         );
+    }
+
+    /// Representation cause/effect table: R1 search and R2 fetch both combine a
+    /// small host target vector with the same large provider descriptor; boxing
+    /// that shared variant keeps either enum bounded without a parallel route.
+    #[test]
+    fn configured_web_routes_have_one_bounded_representation() {
+        assert!(std::mem::size_of::<ConfiguredSearchRoute>() <= 64, "R1");
+        assert!(std::mem::size_of::<ConfiguredFetchRoute>() <= 64, "R2");
     }
 
     /// Web configuration cause/effect graph: one normalized ToolPolicyOverride
