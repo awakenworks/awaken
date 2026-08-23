@@ -10,7 +10,7 @@
 //! the tool descriptors so a changing skill set never perturbs a pinned surface
 //! (ADR-0036 D2/D7).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -19,7 +19,11 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::state::Store;
 use awaken_runtime_contract::permission::{GateOutcome, ToolGateHook};
 use awaken_runtime_contract::resolved::ToolDescriptor;
-use awaken_runtime_contract::tool::{RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool};
+use awaken_runtime_contract::tool::{
+    RawTool, ToolCall, ToolError, ToolOutput, invoke_raw_tool, parse_tool_args_or_error_output,
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::registry::SkillRegistry;
 use crate::spec::{SkillContext, SkillSpec, truncate_chars};
@@ -223,54 +227,45 @@ const SKILL_TOOL_SUMMARY: &str = "Activate a skill: inject its instructions into
 
 const LIST_TOOL_SUMMARY: &str = "List the skills available to activate (id, description, when-to-use). Returns metadata only — call `Skill { skill }` to load a skill's full instructions. Use the optional `query` to filter by substring.";
 
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ListSkillsArgs {
+    /// Optional case-insensitive substring filter over id, name, and description.
+    #[serde(default)]
+    query: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+enum SkillArgument {
+    String(String),
+    Number(f64),
+    Boolean(bool),
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct SkillArgs {
+    /// The id of the Skill to activate, as returned by list_skills.
+    skill: String,
+    /// Optional free-text argument for a Skill with one prompt argument.
+    #[serde(default)]
+    args: Option<String>,
+    /// Optional named arguments for a parameterized Skill such as an MCP prompt.
+    #[serde(default)]
+    arguments: Option<BTreeMap<String, SkillArgument>>,
+}
+
 /// The stable descriptor for the `Skill` activation tool. It carries no catalog
 /// (that is served by `list_skills`), so its hash does not move when the skill set
 /// changes (ADR-0036 D2/D7).
 pub fn skill_tool_descriptor() -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "skills",
-        SKILL_TOOL_ID,
-        SKILL_TOOL_SUMMARY,
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "skill": {
-                    "type": "string",
-                    "description": "The id of the skill to activate (from `list_skills`)."
-                },
-                "args": {
-                    "type": "string",
-                    "description": "Optional free-text argument. For an MCP skill with exactly one prompt argument."
-                },
-                "arguments": {
-                    "type": "object",
-                    "description": "Optional named arguments for parameterized skills such as MCP prompts.",
-                    "additionalProperties": {
-                        "type": ["string", "number", "boolean"]
-                    }
-                }
-            },
-            "required": ["skill"]
-        }),
-    )
+    ToolDescriptor::for_args::<SkillArgs>("skills", SKILL_TOOL_ID, SKILL_TOOL_SUMMARY)
 }
 
 /// The stable descriptor for the `list_skills` discovery tool.
 pub fn list_skills_tool_descriptor() -> ToolDescriptor {
-    ToolDescriptor::pinned(
-        "skills",
-        SKILL_LIST_TOOL_ID,
-        LIST_TOOL_SUMMARY,
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "Optional case-insensitive substring filter over id/name/description."
-                }
-            }
-        }),
-    )
+    ToolDescriptor::for_args::<ListSkillsArgs>("skills", SKILL_LIST_TOOL_ID, LIST_TOOL_SUMMARY)
 }
 
 /// One catalog entry as data: model-facing identity plus provenance. Never the
@@ -426,10 +421,16 @@ impl RawTool for ListSkillsTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let query = call
-            .arguments
-            .get("query")
-            .and_then(|v| v.as_str())
+        let args = match parse_tool_args_or_error_output::<ListSkillsArgs>(
+            &call.call_id,
+            call.arguments,
+        ) {
+            Ok(args) => args,
+            Err(output) => return Ok(output),
+        };
+        let query = args
+            .query
+            .as_deref()
             .map(|q| q.trim().to_lowercase())
             .filter(|q| !q.is_empty());
         let entries: Vec<serde_json::Value> = self
@@ -509,51 +510,48 @@ impl RawTool for SkillTool {
     }
 
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
-        let name = call
-            .arguments
-            .get("skill")
-            .and_then(|v| v.as_str())
-            .map(str::trim)
-            .filter(|s| !s.is_empty());
-        let Some(name) = name else {
+        let call_id = call.call_id;
+        let args = match parse_tool_args_or_error_output::<SkillArgs>(&call_id, call.arguments) {
+            Ok(args) => args,
+            Err(output) => return Ok(output),
+        };
+        let name = args.skill.trim();
+        if name.is_empty() {
             return Ok(ToolOutput::error(
-                call.call_id,
+                call_id,
                 "the `skill` argument is required",
             ));
-        };
+        }
         // A leading slash is a user-invocation affordance; accept it here too.
         let key = name.trim_start_matches('/');
         let Some(metadata) = self.registry.get(key) else {
-            return Ok(ToolOutput::error(
-                call.call_id,
-                format!("unknown skill: {name}"),
-            ));
+            return Ok(ToolOutput::error(call_id, format!("unknown skill: {name}")));
         };
         if !metadata.model_invocable {
             return Ok(ToolOutput::error(
-                call.call_id,
+                call_id,
                 format!("skill `{key}` cannot be activated by the model"),
             ));
         }
-        let raw_arguments = call
+        let free_arguments = args.args;
+        let raw_arguments = args
             .arguments
-            .get("arguments")
-            .cloned()
-            .or_else(|| call.arguments.get("args").cloned());
-        let args = call
-            .arguments
-            .get("args")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+            .map(|arguments| {
+                serde_json::to_value(arguments)
+                    .expect("typed Skill arguments always serialize to JSON")
+            })
+            .or_else(|| {
+                free_arguments
+                    .as_ref()
+                    .map(|args| serde_json::Value::String(args.clone()))
+            });
+        let args = free_arguments.as_deref().unwrap_or("");
         let skill = match self.registry.resolve(key, raw_arguments).await {
             Ok(Some(skill)) => skill,
             Ok(None) => {
-                return Ok(ToolOutput::error(
-                    call.call_id,
-                    format!("unknown skill: {name}"),
-                ));
+                return Ok(ToolOutput::error(call_id, format!("unknown skill: {name}")));
             }
-            Err(error) => return Ok(ToolOutput::error(call.call_id, error)),
+            Err(error) => return Ok(ToolOutput::error(call_id, error)),
         };
         let session = self.session_id.as_deref();
         if let Some(active_tools) = &self.active_tools {
@@ -584,15 +582,13 @@ impl RawTool for SkillTool {
             )
             .await;
             return Ok(match result {
-                Ok(output) if !output.is_error => {
-                    ToolOutput::ok_blocks(call.call_id, output.content)
-                }
-                Ok(output) => ToolOutput::error_blocks(call.call_id, output.content),
-                Err(err) => ToolOutput::error(call.call_id, format!("skill fork failed: {err}")),
+                Ok(output) if !output.is_error => ToolOutput::ok_blocks(call_id, output.content),
+                Ok(output) => ToolOutput::error_blocks(call_id, output.content),
+                Err(err) => ToolOutput::error(call_id, format!("skill fork failed: {err}")),
             });
         }
         Ok(ToolOutput::ok(
-            call.call_id,
+            call_id,
             render_activation(&skill, args, session),
         ))
     }
@@ -630,14 +626,61 @@ mod tests {
 
     #[test]
     fn skill_descriptor_is_stable_and_catalog_free() {
-        // The activation descriptor never carries the catalog, so a changing skill
-        // set cannot perturb its hashed surface (ADR-0036 D2/D7).
+        // Schema decision rules: S1 typed SkillArgs -> one generated activation
+        // descriptor; S2 typed ListSkillsArgs -> one generated discovery
+        // descriptor; S3 changing registry data -> neither descriptor changes.
+        // Effects: no handwritten schema or catalog/body becomes a second truth.
         let a = skill_tool_descriptor();
         assert_eq!(a.id, SKILL_TOOL_ID);
         assert!(!a.description.contains("commit"));
         assert!(a.description.contains("list_skills"));
+        assert_eq!(
+            a,
+            ToolDescriptor::for_args::<SkillArgs>("skills", SKILL_TOOL_ID, SKILL_TOOL_SUMMARY)
+        );
+        assert_eq!(
+            list_skills_tool_descriptor(),
+            ToolDescriptor::for_args::<ListSkillsArgs>(
+                "skills",
+                SKILL_LIST_TOOL_ID,
+                LIST_TOOL_SUMMARY
+            )
+        );
         // Identical regardless of any registry state.
         assert_eq!(a.content_hash(), skill_tool_descriptor().content_hash());
+    }
+
+    #[tokio::test]
+    async fn typed_skill_arguments_reject_schema_invalid_calls_before_resolution() {
+        // Cause/effect table: T1 wrong `query` type and T2 unknown activation
+        // field both fail at the shared typed parse boundary; T3 valid empty list
+        // arguments proceed. Effects: invalid input is a model-visible error and
+        // cannot reach Skill resolution, while valid input retains normal output.
+        let registry = registry();
+        let listed = ListSkillsTool::new(registry.clone())
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({"query": 7})))
+            .await
+            .unwrap();
+        assert!(
+            listed.is_error && listed.text().contains("invalid arguments"),
+            "T1"
+        );
+        let activated = SkillTool::new(registry)
+            .invoke(call(
+                SKILL_TOOL_ID,
+                serde_json::json!({"skill": "commit", "parallel": true}),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            activated.is_error && activated.text().contains("unknown field"),
+            "T2"
+        );
+        let valid = ListSkillsTool::new(Arc::new(FixedSkillRegistry::from_specs([])))
+            .invoke(call(SKILL_LIST_TOOL_ID, serde_json::json!({})))
+            .await
+            .unwrap();
+        assert!(!valid.is_error, "T3");
     }
 
     #[tokio::test]
