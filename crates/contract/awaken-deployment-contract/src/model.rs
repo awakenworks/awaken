@@ -162,14 +162,16 @@ pub enum DeploymentTrigger {
 /// It deliberately contains only the closed subset admitted for repeatable
 /// launches; interactive Session events remain outside this aggregate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum DeploymentSeedEvent {
-    UserMessage {
-        content: Vec<ContentBlock>,
-    },
-    SystemMessage {
-        content: Vec<ContentBlock>,
-    },
+    // Before this enum became typed, Deployment records stored accepted
+    // Managed API JSON verbatim. Dotted aliases read those historical rows;
+    // canonical writes remain protocol-independent snake_case domain data.
+    #[serde(rename = "user_message", alias = "user.message")]
+    UserMessage { content: Vec<ContentBlock> },
+    #[serde(rename = "system_message", alias = "system.message")]
+    SystemMessage { content: Vec<ContentBlock> },
+    #[serde(rename = "define_outcome", alias = "user.define_outcome")]
     DefineOutcome {
         description: String,
         rubric: DeploymentOutcomeRubric,
@@ -333,4 +335,75 @@ pub enum DeploymentLaunchOutcome {
     Created { session_id: String },
     Failed { error: DeploymentRunFailure },
     Unavailable { message: String },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DeploymentSeedEvent;
+    use serde_json::{Value, json};
+
+    #[test]
+    fn deployment_seed_events_read_managed_names_and_serialize_as_domain_data() {
+        // Historical rows contain the Managed API's `{domain}.{action}` names.
+        // They must remain readable without making that public vocabulary the
+        // canonical encoding of the protocol-independent domain type.
+        let cases = [
+            (
+                json!({"type":"user.message","content":[{"type":"text","text":"go"}]}),
+                "user_message",
+            ),
+            (
+                json!({"type":"system.message","content":[{"type":"text","text":"policy"}]}),
+                "system_message",
+            ),
+            (
+                json!({
+                    "type":"user.define_outcome",
+                    "description":"produce the report",
+                    "rubric":{"type":"text","content":"complete and sourced"},
+                    "max_iterations":3
+                }),
+                "define_outcome",
+            ),
+        ];
+
+        for (input, expected_type) in cases {
+            let event: DeploymentSeedEvent =
+                serde_json::from_value(input).expect("historical Managed event must decode");
+            let stored = serde_json::to_value(event).expect("Deployment event must encode");
+            assert_eq!(stored["type"], Value::String(expected_type.into()));
+        }
+    }
+
+    #[test]
+    fn deployment_seed_events_round_trip_canonical_snake_case() {
+        // Cause/effect migration table:
+        // official dotted record -> migration restore; canonical snake_case
+        // record -> exact restore; every new write -> canonical snake_case.
+        let cases = [
+            (
+                json!({"type":"user_message","content":[{"type":"text","text":"go"}]}),
+                "user_message",
+            ),
+            (
+                json!({"type":"system_message","content":[{"type":"text","text":"policy"}]}),
+                "system_message",
+            ),
+            (
+                json!({
+                    "type":"define_outcome",
+                    "description":"produce the report",
+                    "rubric":{"type":"text","content":"complete and sourced"}
+                }),
+                "define_outcome",
+            ),
+        ];
+
+        for (input, expected_type) in cases {
+            let event: DeploymentSeedEvent =
+                serde_json::from_value(input).expect("transitional record must remain restorable");
+            let rewritten = serde_json::to_value(event).expect("Deployment event must encode");
+            assert_eq!(rewritten["type"], Value::String(expected_type.into()));
+        }
+    }
 }

@@ -31,7 +31,7 @@ mod dream;
 mod extraction;
 mod row_codec;
 mod schema;
-use row_codec::{EncodedSessionRow, decode};
+use row_codec::{EncodedSessionRow, decode, encode};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use schema::session_bundle;
 use sqlx::Row;
@@ -44,7 +44,7 @@ const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
 const RECOVERY_BATCH_SIZE: i64 = 256;
 
 fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepositoryError> {
-    serde_json::to_string(session).map_err(corrupt)
+    encode(session).map_err(corrupt)
 }
 
 fn referenced_vault_ids(session: &PersistedSession) -> BTreeSet<String> {

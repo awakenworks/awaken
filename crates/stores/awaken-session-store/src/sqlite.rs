@@ -406,34 +406,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let conn = self.conn.lock().map_err(storage)?;
         (|| -> Result<SessionRecoveryScan, SessionRepositoryError> {
             let mut scan = SessionRecoveryScan::default();
-            {
-                let mut quarantined = conn
-                    .prepare(
-                        "SELECT session_id, reason FROM managed_session_quarantine \
-                         ORDER BY session_id LIMIT ?1",
-                    )
-                    .map_err(storage)?;
-                let rows = quarantined
-                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
-                        Ok(SessionRecoveryQuarantine {
-                            session_id: row.get(0)?,
-                            reason: row.get(1)?,
-                        })
-                    })
-                    .map_err(storage)?;
-                scan.quarantined = rows
-                    .collect::<Result<Vec<_>, rusqlite::Error>>()
-                    .map_err(storage)?;
-            }
             let mut statement = conn
                 .prepare(
                     "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                             session.revision, work.observed_revision \
                      FROM managed_session_reconciliation_work work \
                      JOIN managed_session session ON session.session_id = work.session_id \
-                     LEFT JOIN managed_session_quarantine quarantine \
-                            ON quarantine.session_id = session.session_id \
-                     WHERE quarantine.session_id IS NULL \
                      ORDER BY session.session_id LIMIT ?1",
                 )
                 .map_err(storage)?;
@@ -459,13 +437,19 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 }
                 let stored_revision = row.revision;
                 match decode(row) {
-                    Ok(session) if session.needs_reconciliation() => {
-                        scan.sessions.push(ScopedPersistedSession {
-                            workspace_id,
-                            session,
-                        });
+                    Ok(session) => {
+                        conn.execute(
+                            "DELETE FROM managed_session_quarantine WHERE session_id = ?1",
+                            params![session_id],
+                        )
+                        .map_err(storage)?;
+                        if session.needs_reconciliation() {
+                            scan.sessions.push(ScopedPersistedSession {
+                                workspace_id,
+                                session,
+                            });
+                        }
                     }
-                    Ok(_) => {}
                     Err(error) => {
                         let reason = error.to_string();
                         conn.execute(
@@ -479,10 +463,27 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                             params![session_id, reason, stored_revision],
                         )
                         .map_err(storage)?;
-                        scan.quarantined
-                            .push(SessionRecoveryQuarantine { session_id, reason });
                     }
                 }
+            }
+            {
+                let mut quarantined = conn
+                    .prepare(
+                        "SELECT session_id, reason FROM managed_session_quarantine \
+                         ORDER BY session_id LIMIT ?1",
+                    )
+                    .map_err(storage)?;
+                let rows = quarantined
+                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
+                        Ok(SessionRecoveryQuarantine {
+                            session_id: row.get(0)?,
+                            reason: row.get(1)?,
+                        })
+                    })
+                    .map_err(storage)?;
+                scan.quarantined = rows
+                    .collect::<Result<Vec<_>, rusqlite::Error>>()
+                    .map_err(storage)?;
             }
             Ok(scan)
         })()

@@ -410,28 +410,11 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let mut scan = SessionRecoveryScan::default();
-        for row in sqlx::query(
-            "SELECT session_id, reason FROM managed_session_quarantine \
-             ORDER BY session_id LIMIT $1",
-        )
-        .bind(RECOVERY_BATCH_SIZE)
-        .fetch_all(&mut *tx)
-        .await
-        .map_err(storage)?
-        {
-            scan.quarantined.push(SessionRecoveryQuarantine {
-                session_id: row.try_get("session_id").map_err(storage)?,
-                reason: row.try_get("reason").map_err(storage)?,
-            });
-        }
         let rows = sqlx::query(
             "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                     session.revision, work.observed_revision \
              FROM managed_session_reconciliation_work work \
              JOIN managed_session session ON session.session_id = work.session_id \
-             LEFT JOIN managed_session_quarantine quarantine \
-                    ON quarantine.session_id = session.session_id \
-             WHERE quarantine.session_id IS NULL \
              ORDER BY session.session_id LIMIT $1",
         )
         .bind(RECOVERY_BATCH_SIZE)
@@ -452,13 +435,19 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 )));
             }
             match decode(encoded) {
-                Ok(session) if session.needs_reconciliation() => {
-                    scan.sessions.push(ScopedPersistedSession {
-                        workspace_id: row.try_get("scope_id").map_err(storage)?,
-                        session,
-                    });
+                Ok(session) => {
+                    sqlx::query("DELETE FROM managed_session_quarantine WHERE session_id = $1")
+                        .bind(&session_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(storage)?;
+                    if session.needs_reconciliation() {
+                        scan.sessions.push(ScopedPersistedSession {
+                            workspace_id: row.try_get("scope_id").map_err(storage)?,
+                            session,
+                        });
+                    }
                 }
-                Ok(_) => {}
                 Err(error) => {
                     let reason = error.to_string();
                     sqlx::query(
@@ -476,10 +465,22 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                     .execute(&mut *tx)
                     .await
                     .map_err(storage)?;
-                    scan.quarantined
-                        .push(SessionRecoveryQuarantine { session_id, reason });
                 }
             }
+        }
+        for row in sqlx::query(
+            "SELECT session_id, reason FROM managed_session_quarantine \
+             ORDER BY session_id LIMIT $1",
+        )
+        .bind(RECOVERY_BATCH_SIZE)
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?
+        {
+            scan.quarantined.push(SessionRecoveryQuarantine {
+                session_id: row.try_get("session_id").map_err(storage)?,
+                reason: row.try_get("reason").map_err(storage)?,
+            });
         }
         tx.commit().await.map_err(storage)?;
         Ok(scan)

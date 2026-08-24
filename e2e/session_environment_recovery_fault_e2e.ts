@@ -75,7 +75,8 @@ function binding(storage: string, sessionId: string): Binding {
     path.join(storage, 'sessions.db'),
     `SELECT aggregate_json FROM managed_session WHERE session_id = '${escaped}'`,
   )));
-  const environment = aggregate.environment;
+  assert.equal(aggregate.format, 'awaken.session.v1');
+  const environment = aggregate.aggregate.environment;
   assert.equal(environment?.phase, 'resident', `Session ${sessionId} is durably resident`);
   assert.ok(environment.binding, `Session ${sessionId} has a durable environment binding`);
   return JSON.parse(environment.binding);
@@ -85,7 +86,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   const database = path.join(storage, 'sessions.db');
   const preservedAggregate = sqliteScalar(
     database,
-    `SELECT json_remove(aggregate_json, '$.environment.binding')
+    `SELECT json_remove(aggregate_json, '$.aggregate.environment.binding')
        FROM managed_session WHERE session_id = ?`,
     sessionId,
   );
@@ -93,7 +94,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   assert.equal(
     sqliteScalar(
       database,
-      `SELECT json_extract(aggregate_json, '$.environment.phase')
+      `SELECT json_extract(aggregate_json, '$.aggregate.environment.phase')
          FROM managed_session WHERE session_id = ?`,
       sessionId,
     ),
@@ -117,7 +118,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
     Number(sqliteRun(
       database,
       `UPDATE managed_session
-         SET aggregate_json = json_set(aggregate_json, '$.environment.binding', ?)
+         SET aggregate_json = json_set(aggregate_json, '$.aggregate.environment.binding', ?)
          WHERE session_id = ?`,
       encoded,
       sessionId,
@@ -127,7 +128,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   assert.equal(
     sqliteScalar(
       database,
-      `SELECT json_extract(aggregate_json, '$.environment.binding')
+      `SELECT json_extract(aggregate_json, '$.aggregate.environment.binding')
          FROM managed_session WHERE session_id = ?`,
       sessionId,
     ),
@@ -137,7 +138,7 @@ function rewriteBinding(storage: string, sessionId: string, encoded: string): vo
   assert.equal(
     sqliteScalar(
       database,
-      `SELECT json_remove(aggregate_json, '$.environment.binding')
+      `SELECT json_remove(aggregate_json, '$.aggregate.environment.binding')
          FROM managed_session WHERE session_id = ?`,
       sessionId,
     ),
