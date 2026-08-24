@@ -146,14 +146,17 @@ test("recording guidance separates Provider authentication from ACP credentials"
 });
 
 test("recording guidance starts the canonical product launcher", () => {
-  // Cause/effect decision table: C1=reader follows the recording guide;
-  // C2=the CLI accepts only the canonical launcher name. R1 C1+C2 requires
-  // `all-in-one` and reaches startup; R2 C1+deprecated `serve` is rejected
-  // before recording. The guide must therefore contain one valid launcher and
-  // no retired alias.
+  // Cause/effect decision table: C1=reader follows the recording guide or an
+  // error prompt; C2=the CLI accepts only the canonical launcher name. R1
+  // C1+C2+`all-in-one` reaches startup; R2 C1+deprecated `serve` is rejected
+  // before recording. Every reader-facing path must therefore name the same
+  // launcher and no retired alias.
   const readme = readFileSync(resolve(here, "README.md"), "utf8");
+  const harness = readFileSync(resolve(here, "harness.mjs"), "utf8");
   assert.match(readme, /-- all-in-one --config \.recording-awaken\/config\.toml/);
-  assert.doesNotMatch(readme, /-- serve(?:\s|$)/);
+  assert.match(readme, /printed by\s+`awaken all-in-one`/);
+  assert.match(harness, /printed by `awaken all-in-one`/);
+  assert.doesNotMatch(`${readme}\n${harness}`, /`awaken serve`|-- serve(?:\s|$)/);
 });
 
 test("the complete series covers every release-ready platform capability", () => {

@@ -44,7 +44,8 @@ pnpm record 06-ai-state-machine
 
 The explicit data root persists the recording Workspace id; the console and backend
 therefore use the same authoritative Workspace without an environment override.
-For a fresh local data root, pass the one-time setup token printed by `awaken serve`.
+For a fresh local data root, pass the one-time setup token printed by
+`awaken all-in-one`.
 The harness exchanges it for the normal HttpOnly browser session; it never copies the
 long-lived management service credential into browser storage.
 

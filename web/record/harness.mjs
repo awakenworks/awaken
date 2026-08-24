@@ -80,7 +80,7 @@ async function authenticateBrowser() {
     const setupToken = process.env.AWAKEN_RECORD_SETUP_TOKEN?.trim();
     if (!setupToken) {
       throw new Error(
-        "backend requires local browser setup; set AWAKEN_RECORD_SETUP_TOKEN to the one-time token printed by `awaken serve`",
+        "backend requires local browser setup; set AWAKEN_RECORD_SETUP_TOKEN to the one-time token printed by `awaken all-in-one`",
       );
     }
     const exchange = await ctx.request.post(`${BACKEND}/v1/auth/local/exchange`, {
