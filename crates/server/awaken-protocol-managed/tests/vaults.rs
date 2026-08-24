@@ -14,7 +14,8 @@ use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::TokenEndpointAuth;
 use awaken_credential_vault::catalog::{ManagedVaultDeletionPhase, ManagedVaultRepo};
 use awaken_credential_vault::repo::{
-    InMemoryCredentialRepo, ManagedCredentialRepository, reconcile_managed_vault_deletions,
+    InMemoryCredentialRepo, ManagedCredentialAdoptionProgress, ManagedCredentialRepository,
+    reconcile_managed_vault_deletions,
 };
 use awaken_credential_vault::{
     CredentialBinding, CredentialSource, InMemorySecretStore, SecretStore,
@@ -316,30 +317,40 @@ async fn every_vault_and_credential_route_hides_another_workspaces_ids() {
 
 /// Session-selection decision rules after Control admission: C1 the requested
 /// Workspace owns the stable Vault and normalized target; C2 another Workspace
-/// presents those opaque ids. Effects: E1 the owner selects and pins the exact
-/// revision, E2 the other Workspace observes neither Vault nor source.
+/// presents those opaque ids; C3 a positive generation creates, exactly
+/// replays, or monotonically rotates while no rollout target is installed.
+/// Effects: E1 the owner selects and pins the exact revision, E2 the other
+/// Workspace observes neither Vault nor source, E3 create/replay have no
+/// predecessor and are converged, E4 a newer generation advances once and
+/// remains pending. Rules: V1 C1+C3 generation 1 create/exact replay -> E1+E3;
+/// V2 C1+C3 generation 2 -> E1+E4; V3 C2 -> E2. The Control HTTP matrix covers
+/// zero/stale/conflicting generations, subsequent target states, and exact
+/// acknowledgement.
 #[tokio::test]
 async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() {
     let h = harness();
-    let (vault_id, source_id, revision) = h
+    let (vault_id, source_id, revision, adoption) = h
         .state
         .enter_application_mcp_bearer(
             "workspace-a",
             "awaken-flow",
             "HTTPS://FLOW.EXAMPLE.TEST:443/mcp/",
             "flow-bearer-1",
+            1,
             RedactedString::new("token-1"),
         )
         .await
         .unwrap();
     assert_eq!(revision, 1);
-    let (replayed_vault, replayed_source, replayed_revision) = h
+    assert_eq!(adoption, ManagedCredentialAdoptionProgress::Converged, "V1");
+    let (replayed_vault, replayed_source, replayed_revision, replayed_adoption) = h
         .state
         .enter_application_mcp_bearer(
             "workspace-a",
             "awaken-flow",
             "https://flow.example.test/mcp",
             "flow-bearer-1",
+            1,
             RedactedString::new("token-1"),
         )
         .await
@@ -348,19 +359,30 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
         (replayed_vault, replayed_source, replayed_revision),
         (vault_id.clone(), source_id.clone(), 1)
     );
-    let (_, rotated_source, rotated_revision) = h
+    assert_eq!(
+        replayed_adoption,
+        ManagedCredentialAdoptionProgress::Converged,
+        "V1"
+    );
+    let (_, rotated_source, rotated_revision, rotated_adoption) = h
         .state
         .enter_application_mcp_bearer(
             "workspace-a",
             "awaken-flow",
             "https://flow.example.test/mcp",
             "flow-bearer-2",
+            2,
             RedactedString::new("token-2"),
         )
         .await
         .unwrap();
     assert_eq!(rotated_source, source_id);
     assert_eq!(rotated_revision, 2);
+    assert_eq!(
+        rotated_adoption,
+        ManagedCredentialAdoptionProgress::Pending,
+        "V2"
+    );
 
     assert!(
         SessionCredentialSource::has_vault(h.state.as_ref(), "workspace-a", &vault_id)

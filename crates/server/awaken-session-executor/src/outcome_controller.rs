@@ -26,7 +26,7 @@ enum OutcomeCommand<'a> {
 }
 
 enum OutcomeCommandResult {
-    Prepared,
+    Prepared(u64),
     Driven(Option<HostOutcomeDrive>),
     Projected(Option<CommittedOutcome>),
 }
@@ -69,7 +69,7 @@ impl SharedHost {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<(), HostError> {
+    ) -> Result<u64, HostError> {
         match self
             .execute_outcome_command(
                 thread,
@@ -82,7 +82,7 @@ impl SharedHost {
             )
             .await?
         {
-            OutcomeCommandResult::Prepared => Ok(()),
+            OutcomeCommandResult::Prepared(cursor) => Ok(cursor),
             OutcomeCommandResult::Driven(_) | OutcomeCommandResult::Projected(_) => {
                 unreachable!("prepare command result")
             }
@@ -99,7 +99,7 @@ impl SharedHost {
             .await?
         {
             OutcomeCommandResult::Driven(progress) => Ok(progress),
-            OutcomeCommandResult::Prepared | OutcomeCommandResult::Projected(_) => {
+            OutcomeCommandResult::Prepared(_) | OutcomeCommandResult::Projected(_) => {
                 unreachable!("resume command result")
             }
         }
@@ -118,7 +118,7 @@ impl SharedHost {
             .await?
         {
             OutcomeCommandResult::Projected(report) => Ok(report),
-            OutcomeCommandResult::Prepared | OutcomeCommandResult::Driven(_) => {
+            OutcomeCommandResult::Prepared(_) | OutcomeCommandResult::Driven(_) => {
                 unreachable!("read command result")
             }
         }
@@ -168,7 +168,7 @@ impl SharedHost {
                         binding,
                     )
                     .await
-                    .map(|()| OutcomeCommandResult::Prepared)
+                    .map(OutcomeCommandResult::Prepared)
                     .map_err(controller_error)
             }
             OutcomeCommand::Resume => {

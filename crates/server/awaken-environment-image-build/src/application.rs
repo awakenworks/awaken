@@ -99,7 +99,7 @@ impl EnvironmentImageBuildCoordinator {
             return Ok(false);
         };
         let failure = match self.builder.build(&claim.demand).await {
-            Ok(image) => match self.builder.available(&image).await {
+            Ok(image) => match self.builder.available(&claim.demand, &image).await {
                 Ok(true) => {
                     self.store
                         .complete(&claim, &image, crate::now_unix_ms())
@@ -164,7 +164,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
             if let Some(record) = self.store.get(&demand.build_key).await?
                 && let EnvironmentImageBuildState::Ready { image, .. } = record.state
             {
-                if self.builder.available(&image).await? {
+                if self.builder.available(&demand, &image).await? {
                     return Ok(Some(image));
                 }
                 self.store
@@ -198,7 +198,7 @@ impl EnvironmentImageReadiness for EnvironmentImageBuildCoordinator {
         let EnvironmentImageBuildState::Ready { image, .. } = record.state else {
             return Ok(None);
         };
-        if self.builder.available(&image).await? {
+        if self.builder.available(&demand, &image).await? {
             Ok(Some(image))
         } else {
             self.store
@@ -264,7 +264,10 @@ fn retry_delay_ms(policy: &EnvironmentImageBuildPolicy, attempt: u64) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Mutex;
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    };
 
     use awaken_environment_contract::{
         CreateEnvironmentCommand, EnvItem, EnvRegistry, EnvironmentConfig, EnvironmentPackages,
@@ -304,6 +307,8 @@ mod tests {
 
     struct FakeBuilder {
         builds: Mutex<usize>,
+        available: AtomicBool,
+        availability_checks: Mutex<Vec<(EnvironmentImageBuildDemand, String)>>,
     }
 
     #[derive(Clone, Copy)]
@@ -338,7 +343,11 @@ mod tests {
             }
         }
 
-        async fn available(&self, _image: &str) -> Result<bool, EnvironmentImageBuildError> {
+        async fn available(
+            &self,
+            _demand: &EnvironmentImageBuildDemand,
+            _image: &str,
+        ) -> Result<bool, EnvironmentImageBuildError> {
             match self.0 {
                 FailureMode::Build => unreachable!("a failed build has no image to inspect"),
                 FailureMode::UnavailableImage => Ok(false),
@@ -366,8 +375,16 @@ mod tests {
             Ok(format!("{}@sha256:ready", demand.base_image))
         }
 
-        async fn available(&self, image: &str) -> Result<bool, EnvironmentImageBuildError> {
-            Ok(image.ends_with("@sha256:ready"))
+        async fn available(
+            &self,
+            demand: &EnvironmentImageBuildDemand,
+            image: &str,
+        ) -> Result<bool, EnvironmentImageBuildError> {
+            self.availability_checks
+                .lock()
+                .unwrap()
+                .push((demand.clone(), image.to_owned()));
+            Ok(self.available.load(Ordering::SeqCst) && image.ends_with("@sha256:ready"))
         }
     }
 
@@ -466,12 +483,18 @@ mod tests {
         // claim invokes the injected builder and records its immutable image; R5
         // Session readiness reuses that Ready result without a second build;
         // R6 an exact Session policy with a different base image creates and
-        // reuses a distinct demand rather than aliasing the default build; R7 a
-        // cancelled service token exits the worker without a detached loop.
+        // reuses a distinct demand rather than aliasing the default build; R7
+        // the claimed build, blocking readiness, and periodic non-blocking
+        // readiness pass the same exact demand plus stored image into the one
+        // availability port; a missing image invalidates Ready but cannot build
+        // outside the claim/lease worker. R8 a cancelled service token exits
+        // the worker without a detached loop.
         let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
         let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
         let builder = Arc::new(FakeBuilder {
             builds: Mutex::new(0),
+            available: AtomicBool::new(true),
+            availability_checks: Mutex::new(Vec::new()),
         });
         let coordinator = Arc::new(
             EnvironmentImageBuildCoordinator::new(
@@ -536,6 +559,11 @@ mod tests {
             Some("registry/awaken:base@sha256:resolved@sha256:ready".into()),
             "R5"
         );
+        assert_eq!(
+            coordinator.ready_image_now(&packaged, None).await.unwrap(),
+            Some("registry/awaken:base@sha256:resolved@sha256:ready".into()),
+            "R7 periodic readiness"
+        );
         assert_eq!(*builder.builds.lock().unwrap(), 1, "R5");
         let policy_demand = EnvironmentImageBuildDemand::from_registration(
             &packaged,
@@ -543,7 +571,7 @@ mod tests {
         )
         .unwrap();
         store
-            .ensure(policy_demand, crate::now_unix_ms())
+            .ensure(policy_demand.clone(), crate::now_unix_ms())
             .await
             .unwrap();
         assert!(coordinator.run_once("builder-a").await.unwrap(), "R6");
@@ -556,6 +584,45 @@ mod tests {
             "R6"
         );
         assert_eq!(*builder.builds.lock().unwrap(), 2, "R6");
+        let default_image = "registry/awaken:base@sha256:resolved@sha256:ready";
+        let policy_image = "registry/policy-base@sha256:exact@sha256:resolved@sha256:ready";
+        assert_eq!(
+            builder.availability_checks.lock().unwrap().as_slice(),
+            [
+                (demand.clone(), default_image.into()),
+                (demand.clone(), default_image.into()),
+                (demand.clone(), default_image.into()),
+                (policy_demand.clone(), policy_image.into()),
+                (policy_demand.clone(), policy_image.into()),
+            ],
+            "R7 every availability path receives its exact demand and stored image"
+        );
+        builder.available.store(false, Ordering::SeqCst);
+        assert_eq!(
+            coordinator
+                .ready_image_now(&packaged, Some("registry/policy-base@sha256:exact"))
+                .await
+                .unwrap(),
+            None,
+            "R7 a missing or drifted image invalidates readiness"
+        );
+        assert!(
+            matches!(
+                store
+                    .get(&policy_demand.build_key)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                EnvironmentImageBuildState::Pending { .. }
+            ),
+            "R7 invalidation returns work to the canonical claim queue"
+        );
+        assert_eq!(
+            *builder.builds.lock().unwrap(),
+            2,
+            "R7 readiness never invokes the builder outside a claim"
+        );
         assert!(
             catalog
                 .current_registration("env-browser")
@@ -568,8 +635,8 @@ mod tests {
         coordinator
             .run_worker("builder-a", cancellation)
             .await
-            .expect("R7 cancelled worker exits");
-        assert_eq!(*builder.builds.lock().unwrap(), 2, "R7 performs no work");
+            .expect("R8 cancelled worker exits");
+        assert_eq!(*builder.builds.lock().unwrap(), 2, "R8 performs no work");
     }
 
     #[tokio::test]
@@ -597,6 +664,8 @@ mod tests {
         let store = Arc::new(InMemoryEnvironmentImageBuildStore::new());
         let builder = Arc::new(FakeBuilder {
             builds: Mutex::new(0),
+            available: AtomicBool::new(true),
+            availability_checks: Mutex::new(Vec::new()),
         });
         let builds = Arc::new(
             EnvironmentImageBuildCoordinator::new(

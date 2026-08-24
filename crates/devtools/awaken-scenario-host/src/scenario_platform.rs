@@ -83,6 +83,18 @@ pub(super) fn mount_with_agent_source(
     platform: ScenarioPlatform,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Router {
+    mount_with_agent_source_on_lifecycle(
+        platform,
+        agent_source,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+}
+
+pub(super) fn mount_with_agent_source_on_lifecycle(
+    platform: ScenarioPlatform,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
     let catalog = resources.authorities().resource_registry();
@@ -91,7 +103,10 @@ pub(super) fn mount_with_agent_source(
         catalog.clone(),
         agent_source,
     );
-    awaken_coordinator::mount_with_managed_and_resource_registry(host, managed, catalog)
+    awaken_coordinator::mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+        host, managed, catalog, lifecycle,
+    )
+    .0
 }
 
 /// Scenario platform with the Environment API and the same Resource Registry,
@@ -240,6 +255,20 @@ pub(super) fn mount_with_memory_publication(
     model_ref: &str,
     skills: Vec<awaken_agent_contract::AgentSkillBinding>,
 ) -> Router {
+    mount_with_memory_publication_on_lifecycle(
+        platform,
+        model_ref,
+        skills,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+}
+
+pub(super) fn mount_with_memory_publication_on_lifecycle(
+    platform: ScenarioPlatform,
+    model_ref: &str,
+    skills: Vec<awaken_agent_contract::AgentSkillBinding>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let snapshot = ExecutableAgentSnapshot::builder("assistant")
         .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
             "scenario", model_ref, "default",
@@ -268,7 +297,7 @@ pub(super) fn mount_with_memory_publication(
         }],
     });
     let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
-    mount_with_agent_source(platform, publication)
+    mount_with_agent_source_on_lifecycle(platform, publication, lifecycle)
 }
 
 pub(super) fn fixed_host_backend_publication_with_mcp(

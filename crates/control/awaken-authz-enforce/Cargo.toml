@@ -22,6 +22,8 @@ awaken-iam-preset.workspace = true
 awaken-tenancy.workspace = true
 # The guard is an axum middleware over the session/protocol router.
 axum = "0.8"
+async-trait.workspace = true
+serde.workspace = true
 serde_json = { workspace = true }
 
 [dev-dependencies]

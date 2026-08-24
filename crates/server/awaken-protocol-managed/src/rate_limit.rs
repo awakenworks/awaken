@@ -438,6 +438,7 @@ fn managed_family(segments: &[&str]) -> Option<&'static str> {
         "dreams" => Some("dreams"),
         "files" => Some("files"),
         "models" => Some("models"),
+        "application-access-tokens" => Some("application_access_tokens"),
         "tunnels" => Some("tunnels"),
         "organizations" if segments.get(2) == Some(&"tunnels") => Some("tunnels"),
         _ => None,
@@ -462,6 +463,7 @@ fn is_create_endpoint(segments: &[&str]) -> bool {
             | ["v1", "skills", _, "versions"]
             | ["v1", "user_profiles", _, "enrollment_url"]
             | ["v1", "files"]
+            | ["v1", "application-access-tokens"]
             | ["v1", "tunnels"]
             | ["v1", "tunnels", _, "certificates"]
             | ["v1", "organizations", "tunnels"]
@@ -476,7 +478,7 @@ mod tests {
     use axum::Router;
     use axum::body::Body;
     use axum::http::Request;
-    use axum::routing::post;
+    use axum::routing::{delete, post};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -511,6 +513,7 @@ mod tests {
             "/v1/skills/sk_1/versions",
             "/v1/user_profiles/usr_1/enrollment_url",
             "/v1/files",
+            "/v1/application-access-tokens",
             "/v1/tunnels",
             "/v1/tunnels/tnl_1/certificates",
         ] {
@@ -518,7 +521,11 @@ mod tests {
                 classify(&Method::POST, path),
                 Some((
                     ManagedOperation::Create,
-                    path.trim_start_matches("/v1/").split('/').next().unwrap()
+                    if path == "/v1/application-access-tokens" {
+                        "application_access_tokens"
+                    } else {
+                        path.trim_start_matches("/v1/").split('/').next().unwrap()
+                    }
                 )),
                 "C2 {path}"
             );
@@ -552,6 +559,7 @@ mod tests {
             "/v1/sessions/s_1/events",
             "/v1/deployments/d_1/run",
             "/v1/vaults/v_1",
+            "/v1/application-access-tokens/aat_1",
         ] {
             assert_eq!(classify(&Method::POST, path), None, "C3 {path}");
         }
@@ -699,5 +707,66 @@ mod tests {
             .unwrap();
         assert_eq!(read.status(), StatusCode::OK, "independent read bucket");
         assert_eq!(read.headers()["anthropic-ratelimit-requests-limit"], "1");
+    }
+
+    /// Application-token admission table: M1 a POST to the exact collection
+    /// consumes the existing organization Create bucket; M2 another Managed
+    /// Create then returns 429 before its handler; M3 management DELETE is not
+    /// a mint and passes through. The application surface introduces no second
+    /// limiter, bucket, or bypass classification.
+    #[tokio::test]
+    async fn application_access_mint_uses_the_existing_create_bucket() {
+        let limiter: Arc<dyn ManagedRequestLimiter> = Arc::new(ManagedRateLimiter::with_limits(
+            "org_application",
+            ManagedRateLimits {
+                create_per_minute: 1,
+                read_per_minute: 1,
+            },
+        ));
+        let app = Router::new()
+            .route(
+                "/v1/application-access-tokens",
+                post(|| async { StatusCode::CREATED }),
+            )
+            .route(
+                "/v1/application-access-tokens/{id}",
+                delete(|| async { StatusCode::NO_CONTENT }),
+            )
+            .route("/v1/sessions", post(|| async { StatusCode::CREATED }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                enforce_managed_rate_limit,
+            ))
+            .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+                "workspace_application".into(),
+            )));
+
+        let mint = app
+            .clone()
+            .oneshot(
+                Request::post("/v1/application-access-tokens")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(mint.status(), StatusCode::CREATED, "M1");
+
+        let another_create = app
+            .clone()
+            .oneshot(Request::post("/v1/sessions").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(another_create.status(), StatusCode::TOO_MANY_REQUESTS, "M2");
+
+        let revoke = app
+            .oneshot(
+                Request::delete("/v1/application-access-tokens/aat_1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(revoke.status(), StatusCode::NO_CONTENT, "M3");
     }
 }

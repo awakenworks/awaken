@@ -105,16 +105,17 @@ pub use environment::{
 pub use event_batches::{
     MAX_SESSION_INITIAL_EVENTS, OUTCOME_BUSY_CODE, SessionEventBatch, SessionEventBatchError,
     SessionEventBatchOperation, SessionEventCommand, SessionEventEntry, SessionEventInput,
-    SessionEventInterrupt, SessionEventToolReply, SessionEventToolReplyKind,
-    SessionInitialEventPlan, SessionOutcomeRubric, SessionUserRunActivation,
-    SessionUserRunAdmission, SessionUserRunCommand, SessionUserRunDelivery,
-    SessionUserRunReservation, SessionUserRunSystemInput, decode_session_event_batch_operation,
-    session_event_batch_id, session_event_batch_operation, session_event_outcome_id,
-    session_event_user_run_id, session_outcome_convenience_id,
+    SessionEventInterrupt, SessionEventProjectionAnchor, SessionEventToolReply,
+    SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
+    SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
+    SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput,
+    decode_session_event_batch_operation, session_event_batch_id, session_event_batch_operation,
+    session_event_outcome_id, session_event_user_run_id, session_outcome_convenience_id,
 };
 pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
-    ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalStart,
+    ManagedLifecycleFact, SessionRuntimeInterval, SessionRuntimeIntervalObservation,
+    SessionRuntimeIntervalStart,
 };
 pub use mcp_attachment::{
     McpAttachmentDraft, McpAttachmentError, McpAttachmentId, McpAttachmentOrigin,

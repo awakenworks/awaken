@@ -16,6 +16,7 @@ pub trait PluginPublicationResolver: Send + Sync {
     async fn resolve(
         &self,
         workspace: &awaken_tenancy::ScopeId,
+        toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
         config: Option<&serde_json::Value>,
     ) -> Result<serde_json::Value, String>;
 }
@@ -37,7 +38,11 @@ pub(crate) async fn resolve_plugin_configuration(
                 });
             }
             let resolved = resolver
-                .resolve(workspace, config.plugin_config.get(&plugin_id))
+                .resolve(
+                    workspace,
+                    &config.toolsets,
+                    config.plugin_config.get(&plugin_id),
+                )
                 .await
                 .map_err(|message| crate::publication::ValidationIssue {
                     path: format!("plugin_config.{plugin_id}"),
@@ -53,7 +58,12 @@ pub(crate) async fn resolve_plugin_configuration(
 mod tests {
     use super::*;
 
-    struct Catalog;
+    #[derive(Default)]
+    struct Catalog {
+        seen_toolsets: std::sync::Arc<
+            std::sync::Mutex<Vec<Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>>>,
+        >,
+    }
 
     #[async_trait::async_trait]
     impl PluginPublicationResolver for Catalog {
@@ -64,8 +74,10 @@ mod tests {
         async fn resolve(
             &self,
             workspace: &awaken_tenancy::ScopeId,
+            toolsets: &[awaken_runtime_contract::agent_bindings::ToolsetPolicy],
             config: Option<&serde_json::Value>,
         ) -> Result<serde_json::Value, String> {
+            self.seen_toolsets.lock().unwrap().push(toolsets.to_vec());
             let authored = config.ok_or_else(|| "owned config is invalid".to_string())?;
             if authored.get("valid").and_then(serde_json::Value::as_bool) != Some(true) {
                 return Err("owned config is invalid".to_string());
@@ -79,13 +91,40 @@ mod tests {
 
     #[tokio::test]
     async fn active_owned_plugin_uses_one_resolution_semantics() {
-        // Cause/effect graph and decision table:
-        // R1 active+owned+valid -> canonical Workspace-bound value;
-        // R2 active+owned+bad -> exact plugin path error;
-        // R3 inactive or active+unowned -> unchanged. This proves validation and
-        // publication transformation share one resolver rather than two catalogs.
+        // Cause/effect graph: C1 plugin active; C2 exactly one resolver owns it;
+        // C3 authored config is valid; C4 the authored toolset policy is exact
+        // and non-empty. Effects: E1 canonical Workspace-bound value and the
+        // exact C4 slice reaches the resolver, E2 exact plugin-path error, E3
+        // config remains unchanged.
+        //
+        // | Rule | active | owner | valid | toolsets | Effect |
+        // | R1 | yes | one | yes | exact non-empty | E1 |
+        // | R2 | yes | one | no | exact non-empty | E2 |
+        // | R3a | yes | none | any | any | E3 |
+        // | R3b | no | any | any | any | E3 |
+        //
+        // The production resolver call is the single publication semantic
+        // path; this probe captures its input instead of recreating resolution.
+        use awaken_runtime_contract::agent_bindings::{
+            ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+            ToolsetSource,
+        };
+
+        let exact_toolsets = vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: true,
+                permission: ToolPermissionRequirement::AlwaysAsk,
+            },
+            overrides: vec![ToolPolicyOverride::new(
+                "web_fetch",
+                ToolExecutionPolicy::default(),
+            )],
+        }];
+        let catalog = Catalog::default();
+        let seen_toolsets = catalog.seen_toolsets.clone();
         let resolvers: Vec<std::sync::Arc<dyn PluginPublicationResolver>> =
-            vec![std::sync::Arc::new(Catalog)];
+            vec![std::sync::Arc::new(catalog)];
         let mut config = AgentConfig {
             plugin_ids: vec!["owned".into(), "external".into()],
             plugin_config: [
@@ -95,6 +134,7 @@ mod tests {
             ]
             .into_iter()
             .collect(),
+            toolsets: exact_toolsets.clone(),
             ..Default::default()
         };
         resolve_plugin_configuration(
@@ -116,19 +156,26 @@ mod tests {
             config.plugin_config["inactive"],
             serde_json::json!({ "valid": false })
         );
+        assert_eq!(
+            seen_toolsets.lock().unwrap().as_slice(),
+            std::slice::from_ref(&exact_toolsets),
+            "R1 forwards the exact authored non-empty toolset slice"
+        );
         config
             .plugin_config
             .insert("owned".into(), serde_json::json!({ "valid": false }));
+        let issue = resolve_plugin_configuration(
+            &resolvers,
+            &awaken_tenancy::ScopeId::from("workspace-a"),
+            &mut config,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(issue.path, "plugin_config.owned");
         assert_eq!(
-            resolve_plugin_configuration(
-                &resolvers,
-                &awaken_tenancy::ScopeId::from("workspace-a"),
-                &mut config,
-            )
-            .await
-            .unwrap_err()
-            .path,
-            "plugin_config.owned"
+            seen_toolsets.lock().unwrap().as_slice(),
+            &[exact_toolsets.clone(), exact_toolsets],
+            "R2 forwards the same exact authored toolsets before semantic rejection"
         );
     }
 }

@@ -38,6 +38,14 @@ pub trait LocalCommit:
 {
     async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String>;
 
+    /// Read the latest Run for one logical Thread from the authority selected by
+    /// this adapter. Shared stores must not answer from a process-local
+    /// compatibility projection.
+    async fn authoritative_latest_run(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String>;
+
     async fn authoritative_committed_messages(
         &self,
         thread_id: &ThreadId,
@@ -58,6 +66,12 @@ pub trait LocalCommitQueries<S>: Send + Sync {
         &self,
         store: &S,
         run_id: &RunId,
+    ) -> Result<Option<RunRecord>, String>;
+
+    async fn authoritative_latest_run(
+        &self,
+        store: &S,
+        thread_id: &ThreadId,
     ) -> Result<Option<RunRecord>, String>;
 
     async fn authoritative_committed_messages(
@@ -119,6 +133,14 @@ where
         Ok(store.run(run_id))
     }
 
+    async fn authoritative_latest_run(
+        &self,
+        store: &S,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        Ok(store.latest_run(thread_id))
+    }
+
     async fn authoritative_committed_messages(
         &self,
         store: &S,
@@ -160,6 +182,15 @@ where
     async fn authoritative_run(&self, run_id: &RunId) -> Result<Option<RunRecord>, String> {
         self.queries
             .authoritative_run(self.store.as_ref(), run_id)
+            .await
+    }
+
+    async fn authoritative_latest_run(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        self.queries
+            .authoritative_latest_run(self.store.as_ref(), thread_id)
             .await
     }
 

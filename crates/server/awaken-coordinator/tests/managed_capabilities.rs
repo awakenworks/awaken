@@ -39,13 +39,13 @@ async fn create_session(app: &Router) -> serde_json::Value {
 
 /// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
 /// registered tools stay (read/glob/grep auto-allowed → toolset default;
-/// bash/write/edit gated → `always_ask`), while the configurable WebFetch and
-/// WebSearch routes are disabled when no connector is published. Offered skills
-/// appear on `agent.skills`.
+/// bash/write/edit gated → `always_ask`), while configurable `web_fetch` and
+/// `web_search` are disabled when no routed Web plugin is selected. Offered
+/// skills appear on `agent.skills`.
 ///
 /// Cause/effect graph and decision table:
 /// C1=the host registers a static tool, C2=the effective policy requires approval,
-/// C3=a configurable connector is absent, C4=an override names a closed Agent
+/// C3=a configurable Web plugin is absent, C4=an override names a closed Agent
 /// toolset member; E1=the tool remains enabled, E2=its wire policy is
 /// `always_ask`, E3=the tool is disabled, E4=the config's `type` repeats the
 /// closed member discriminator.

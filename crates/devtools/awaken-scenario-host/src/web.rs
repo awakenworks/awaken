@@ -80,6 +80,11 @@ impl WebSearchProvider for ScenarioWebSearchProvider {
 /// Build the one AllInOne Web scenario. The registry enters `ProcessStartup`
 /// before router assembly, so Control validation and Host dispatch share it.
 pub async fn build_management_web_router() -> Router {
+    // The scenario extends the production provider catalog instead of replacing
+    // it: configured WebFetch must resolve the canonical direct provider, while
+    // WebSearch selects the deterministic paid fixture below. The end-to-end
+    // F1-F3/S1 decision table in managed_web_tools_e2e.mjs verifies both routes
+    // share this one catalog and that policy rejection precedes provider I/O.
     let mut registry = WebSearchProviderRegistry::builtins();
     registry
         .register(Arc::new(ScenarioWebSearchProvider))

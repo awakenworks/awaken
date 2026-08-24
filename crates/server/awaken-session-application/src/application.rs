@@ -132,6 +132,7 @@ pub struct SessionApplication {
     runtime_incarnation: String,
     lifecycle_supervisor_started: AtomicBool,
     lifecycle_wakeup: tokio::sync::Notify,
+    event_batch_cutover_validation: Arc<SessionEventBatchCutoverValidationSource>,
 }
 
 static APPLICATION_INCARNATION_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -202,6 +203,9 @@ impl SessionApplication {
             ),
             lifecycle_supervisor_started: AtomicBool::new(false),
             lifecycle_wakeup: tokio::sync::Notify::new(),
+            event_batch_cutover_validation: Arc::new(
+                SessionEventBatchCutoverValidationSource::new(),
+            ),
         }
     }
 

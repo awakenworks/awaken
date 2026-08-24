@@ -32,6 +32,53 @@ fn coordinated_session(id: &str) -> PersistedSession {
     session
 }
 
+fn session_with_unsettled_event(id: &str) -> PersistedSession {
+    let mut session = persisted(id, false, "idle");
+    session.event_batches.push(
+        awaken_session_contract::SessionEventBatch::compile(
+            id,
+            format!("batch:{id}"),
+            vec![awaken_session_contract::SessionEventInput::UserMessage {
+                content: vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "accepted before terminal",
+                )],
+            }],
+        )
+        .expect("valid retained Event batch"),
+    );
+    session
+}
+
+async fn anchor_unsettled_event(
+    app: &SessionApplication,
+    repository: &dyn ManagedSessionRepository,
+    session_id: &str,
+) {
+    let mut session = repository.get(session_id).await.expect("retained Session");
+    let operation_id = session.event_batches[0].events[0]
+        .event
+        .operation_id()
+        .to_string();
+    assert!(
+        session.event_batches[0]
+            .mark_processed(
+                &operation_id,
+                awaken_session_contract::SessionEventProjectionAnchor {
+                    source_commit_cursor: 17,
+                },
+            )
+            .expect("anchor exact accepted effect")
+    );
+    app.commit_session_snapshot(
+        "workspace",
+        session,
+        &format!("test-anchor-event:{session_id}"),
+        Vec::new(),
+    )
+    .await
+    .expect("commit effect anchor");
+}
+
 fn coordination_spawn_command(
     session_id: &str,
 ) -> awaken_session_contract::SessionAgentMessageCommand {
@@ -595,6 +642,119 @@ async fn terminal_transition_decision_table_is_durable_and_idempotent() {
         failed_delete.session.execution,
         SessionExecutionState::ActivationFailed,
         "L9 execution failure remains audit truth"
+    );
+}
+
+#[tokio::test]
+async fn terminal_edges_wait_for_every_accepted_event_effect_anchor() {
+    // Cause/effect graph: C1 terminal edge is public archive, internal force,
+    // or Delete; C2 an accepted Event is queued or its external effect exists
+    // while the root processed+anchor CAS is still pending; C3 that exact CAS
+    // later commits. E1 every edge returns retryable unavailable and preserves
+    // the nonterminal aggregate; E2 the existing supervisor remains the owner;
+    // E3 retry after C3 commits exactly one terminal transition.
+    //
+    // | Rule | edge | incomplete root entry | anchor committed | Effect |
+    // | B1 | archive | yes | no | E1+E2 |
+    // | B2 | force | yes | no | E1+E2 |
+    // | B3 | delete | yes | no | E1+E2 |
+    // | B4 | each | no | yes | E3 |
+    //
+    // `processed=false` intentionally covers both a merely queued command and
+    // crash-after-effect/before-root-CAS: the effect owner may make replay a
+    // no-op, but terminal admission cannot infer that fact or drop provenance.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+    for session_id in [
+        "batch-before-archive",
+        "batch-before-force",
+        "batch-before-delete",
+    ] {
+        create(
+            repository.as_ref(),
+            session_with_unsettled_event(session_id),
+        )
+        .await;
+    }
+    let app = application(
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let fact = |session_id: &str| awaken_session_contract::ManagedLifecycleFact {
+        id: format!("{session_id}:terminated"),
+        object_id: session_id.into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.status_terminated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+
+    let archive = app
+        .terminate_session(
+            "batch-before-archive",
+            "2026-08-24T00:00:00Z",
+            fact("batch-before-archive"),
+        )
+        .await;
+    let force = app
+        .force_terminate_session(
+            "batch-before-force",
+            "2026-08-24T00:00:00Z",
+            fact("batch-before-force"),
+        )
+        .await;
+    let delete = app
+        .commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
+        .await;
+    for (rule, result) in [("B1", archive), ("B2", force), ("B3", delete)] {
+        assert!(
+            matches!(
+                result,
+                Err(SessionPreparationError::Rejected(ref error))
+                    if error.kind == awaken_session_contract::RunErrorKind::Unavailable
+                        && error.code == "session_event_batch_pending"
+            ),
+            "{rule}: {result:?}"
+        );
+    }
+    for session_id in [
+        "batch-before-archive",
+        "batch-before-force",
+        "batch-before-delete",
+    ] {
+        let durable = repository.get(session_id).await.expect("B1-B3 durable");
+        assert!(!durable.is_terminal(), "B1-B3 preserve {session_id}");
+        assert!(durable.needs_event_reconciliation(), "B1-B3 retain owner");
+        anchor_unsettled_event(&app, repository.as_ref(), session_id).await;
+    }
+
+    assert!(
+        app.terminate_session(
+            "batch-before-archive",
+            "2026-08-24T00:00:00Z",
+            fact("batch-before-archive"),
+        )
+        .await
+        .expect("B4 archive retry")
+        .transitioned
+    );
+    assert!(
+        app.force_terminate_session(
+            "batch-before-force",
+            "2026-08-24T00:00:00Z",
+            fact("batch-before-force"),
+        )
+        .await
+        .expect("B4 force retry")
+        .transitioned
+    );
+    assert!(
+        app.commit_delete_intent(SessionDeleteCommand::new("batch-before-delete"))
+            .await
+            .expect("B4 delete retry")
+            .transitioned
     );
 }
 
@@ -2306,6 +2466,155 @@ async fn child_boundary_settlement_separates_activity_from_terminal_continuation
 }
 
 #[tokio::test]
+async fn boundary_redelivery_accepts_an_older_exact_run_without_settling_its_successor() {
+    // Crash-window cause/effect graph: C0 the receiving replica's generic
+    // latest-Run projection is warm/cold while durable exact-Run recovery is
+    // available; C1 the frozen dispatch identifies a
+    // source Run that is present/absent from the recovered Thread; C2 that Run
+    // is latest/older than a committed successor; C3 its activity epoch is
+    // active/already settled while the successor epoch is active; C4 the source
+    // is a committed boundary/Running. Effects: E1 an exact committed source
+    // is accepted idempotently; E2 an already-settled source cannot remove or
+    // idle the successor; E3 an absent source or non-boundary is rejected before
+    // Session mutation. Constraint: the current dispatch claim is the sole
+    // source identity authority; recovery only proves that exact Run committed.
+    //
+    // | Rule | Generic projection | Source | Position | Epochs | State | Effect |
+    // | R1 | warm | present | latest | source active | boundary | E1 (B1/B4) |
+    // | R2 | cold | present | older | source settled + successor active | boundary | E1+E2 |
+    // | R3 | cold | absent | successor latest | successor active | n/a | E3 |
+    // | R4 | warm | present | latest | source active | Running | E3 (B3) |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("redelivery repository"),
+    );
+    let session_id = "boundary-redelivery";
+    create(repo.as_ref(), persisted(session_id, false, "idle")).await;
+    let runtime = Arc::new(RecordingAgentAdmissionRuntime::new([]));
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let (_, source_epoch) = app
+        .begin_activity_for_operation(session_id, "source-operation")
+        .await
+        .expect("R2 source activity");
+    app.settle_activity(session_id, source_epoch)
+        .await
+        .expect("R2 observer effect committed before queue settlement");
+    let (_, successor_epoch) = app
+        .begin_activity_for_operation(session_id, "successor-operation")
+        .await
+        .expect("R2 successor activity");
+
+    let thread_id = ThreadId("boundary-redelivery-child".into());
+    let source_run_id = RunId("boundary-redelivery-source".into());
+    let successor_run_id = RunId("boundary-redelivery-successor".into());
+    runtime.set_recovery_snapshot(
+        session_id,
+        &thread_id,
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: thread_id.clone(),
+            claimed_run_id: successor_run_id.clone(),
+            runs: vec![
+                awaken_agent_contract::agent::run::Record {
+                    id: source_run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state: RunState::Ended(EndCause::NaturalEnd),
+                },
+                awaken_agent_contract::agent::run::Record {
+                    id: successor_run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state: RunState::Running,
+                },
+            ],
+            latest_run_id: Some(successor_run_id),
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            state: Vec::new(),
+            state_commit_cursors: Vec::new(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 2,
+            store_cursor: 2,
+            next_commit_ordinal: 1,
+        },
+    );
+    runtime.set_generic_recovery_available(false);
+    assert!(
+        awaken_session_contract::SessionRuntime::session_thread_recovery_snapshot(
+            runtime.as_ref(),
+            session_id,
+            &thread_id.0,
+        )
+        .await
+        .expect("R2 cold generic recovery")
+        .is_none(),
+        "R2 process-local latest projection is intentionally cold"
+    );
+    let before_replay = repo
+        .get(session_id)
+        .await
+        .expect("R2 Session before replay");
+    assert_eq!(
+        before_replay.active_activity_epochs,
+        [successor_epoch].into_iter().collect(),
+        "R2 precondition"
+    );
+    assert_eq!(
+        before_replay.execution,
+        SessionExecutionState::Running,
+        "R2 precondition"
+    );
+
+    awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: session_id.into(),
+            source_thread_id: thread_id.clone(),
+            source_run_id,
+            source_agent_id: "unused-redelivery-agent".into(),
+            session_activity_epoch: source_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await
+    .expect("R2 older exact source redelivery");
+    let after_replay = repo.get(session_id).await.expect("R2 Session");
+    assert_eq!(after_replay, before_replay, "R2/E1+E2");
+
+    let missing = awaken_session_contract::SessionAgentCoordination::settle_session_agent_boundary(
+        &app,
+        awaken_session_contract::SessionAgentBoundaryCommand {
+            session_id: session_id.into(),
+            source_thread_id: thread_id,
+            source_run_id: RunId("boundary-redelivery-missing".into()),
+            source_agent_id: "unused-redelivery-agent".into(),
+            session_activity_epoch: source_epoch,
+            cancellation_requested: false,
+        },
+    )
+    .await;
+    assert!(
+        matches!(
+            missing,
+            Err(RunError {
+                kind: awaken_session_contract::RunErrorKind::BadRequest,
+                ..
+            })
+        ),
+        "R3/E3"
+    );
+    assert_eq!(
+        repo.get(session_id).await.expect("R3 Session"),
+        after_replay,
+        "R3/E3"
+    );
+}
+
+#[tokio::test]
 async fn completed_child_without_a_committed_reply_settles_without_a_report_run() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
     // documented here remain the only decision source; no parallel ledger is admitted.
@@ -3020,6 +3329,93 @@ async fn session_message_execution_always_settles_its_activity() {
         terminal_before,
         "M3"
     );
+}
+
+#[tokio::test]
+async fn committed_message_boundary_failures_preserve_the_open_interval_for_exact_retry() {
+    // Cause/effect graph: C1 the Runtime Step has one exact terminal Run id;
+    // C2 cumulative usage is available/unavailable; C3 the matching lifecycle
+    // boundary is visible/missing. Effects: E1 a C2 failure returns unavailable
+    // before observing or settling; E2 C2-ok+C3-missing does the same; E3 after
+    // the missing owner fact appears, the same epoch closes exactly once with
+    // one observation and one historical interval. Constraint: neither failure
+    // may manufacture a partial close or a second usage/event authority.
+    //
+    // | Rule | Usage | Boundary | Effect |
+    // |---|---|---|---|
+    // | F1 | unavailable | visible | E1 |
+    // | F2 | available | missing | E2 |
+    // | F3 | available | visible on retry | E3 |
+    for (rule, session_id, usage_unavailable, publish_boundary) in [
+        ("F1", "message-usage-unavailable", true, true),
+        ("F2", "message-boundary-unavailable", false, false),
+    ] {
+        let repo = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("boundary failure repository"),
+        );
+        create(repo.as_ref(), persisted(session_id, false, "idle")).await;
+        let runtime = Arc::new(ScriptedMessageBoundaryRuntime::new(
+            usage_unavailable,
+            publish_boundary,
+        ));
+        let app = application_with_runtime(
+            runtime.clone(),
+            repo.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+
+        let failed = app
+            .run_session_message(
+                "agent",
+                session_id,
+                vec![awaken_agent_contract::agent::content::ContentBlock::text(
+                    "go",
+                )],
+                None,
+                Arc::new(DiscardProgress),
+            )
+            .await;
+        assert!(failed.is_err(), "{rule} must remain retryable");
+        let open = repo.get(session_id).await.expect("open Session");
+        assert_eq!(open.execution, SessionExecutionState::Running, "{rule}");
+        assert_eq!(open.active_activity_epochs, BTreeSet::from([1]), "{rule}");
+        assert!(open.running_interval.is_some(), "{rule}");
+        assert!(open.closed_runtime_intervals.is_empty(), "{rule}");
+
+        runtime.set_usage_unavailable(false);
+        runtime.commit_root_boundary(session_id);
+        let run_id = RunId(format!("{session_id}-run"));
+        let state = RunState::Ended(EndCause::NaturalEnd);
+        let observation = app
+            .runtime_interval_observation(
+                session_id,
+                1,
+                &ThreadId(session_id.into()),
+                &run_id,
+                &state,
+                None,
+            )
+            .await
+            .expect("F3 lifecycle read")
+            .expect("F3 exact boundary");
+        let usage = app.session_usage(session_id).await.expect("F3 usage read");
+        app.reconcile_managed_budget_usage(session_id, usage)
+            .await
+            .expect("F3 usage reconciliation");
+        app.settle_activity_observed(session_id, 1, Some(observation))
+            .await
+            .expect("F3 exact retry settlement");
+        let closed = repo.get(session_id).await.expect("closed Session");
+        assert_eq!(closed.execution, SessionExecutionState::Idle, "F3/E3");
+        assert!(closed.running_interval.is_none(), "F3/E3");
+        assert_eq!(closed.closed_runtime_intervals.len(), 1, "F3/E3");
+        assert_eq!(
+            closed.closed_runtime_intervals[0].observations.len(),
+            1,
+            "F3/E3"
+        );
+    }
 }
 
 /// Update-admission authority graph. C1 durable status is idle; C2 durable

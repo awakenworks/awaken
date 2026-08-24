@@ -175,6 +175,7 @@ impl CommittedEvidence {
             awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
                 state: RunState::Running,
                 await_reason: None,
+                await_target: None,
             },
         )];
         if matches!(self, Self::Reschedule) {
@@ -191,6 +192,7 @@ impl CommittedEvidence {
             awaken_agent_contract::audit::run_event::RunEvent::RunStateChanged {
                 state: terminal_state.clone(),
                 await_reason: None,
+                await_target: None,
             },
         ));
         events
@@ -237,7 +239,13 @@ impl CommittedEvidence {
             }],
             latest_run_id: Some(run_id),
             messages,
+            message_commit_cursors: Vec::new(),
             state,
+            state_commit_cursors: if matches!(self, Self::Compaction) {
+                vec![3, 3]
+            } else {
+                Vec::new()
+            },
             events,
             resume_tickets: Vec::new(),
             thread_version: 3,

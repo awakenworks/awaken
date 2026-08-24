@@ -511,6 +511,102 @@ mod postgres {
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
     }
 
+    /// Exact rollout lookup cause/effect table. C1 a non-create mutation commits
+    /// its rollout through the production pair transaction; C2 the queried
+    /// primary id is present or absent; C3 the durable JSON is decodable or
+    /// malformed. Effects are E1 the exact event, E2 `None`, and E3 a storage
+    /// error while the poison row remains repairable.
+    ///
+    /// | Rule | C1 | C2 | C3 | Effect |
+    /// |---|---|---|---|---|
+    /// | MR-PG1 | committed | present | valid | E1 exact event |
+    /// | MR-PG2 | committed | absent | n/a | E2 `None` |
+    /// | MR-PG3 | independent row | present | malformed | E3 error, retain row |
+    #[tokio::test]
+    async fn postgres_managed_rollout_exact_lookup_conforms() {
+        use awaken_credential_vault::InMemorySecretStore;
+        use awaken_credential_vault::repo::{CredentialMaterialPatch, update_managed_credential};
+
+        const SCHEMA: &str = "t_cred_managed_rollout_lookup";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let vault = managed_vault("vault-rollout", "ws");
+        repo.insert_vault("ws", vault.clone()).await.unwrap();
+        let before_source = managed_source("cred:rollout", "ws");
+        let before_child =
+            managed_child("child-rollout", &vault.id, "ws", before_source.id.clone());
+        let ready = ready_create(&repo, before_source.clone(), before_child.clone()).await;
+        let reclaiming = repo.commit_managed_mutation(&ready).await.unwrap();
+        repo.complete_managed_mutation(&reclaiming).await.unwrap();
+
+        let mut after_child = before_child.clone();
+        after_child.display_name = Some("updated".into());
+        let after_child = update_managed_credential(
+            before_child,
+            after_child,
+            CredentialMaterialPatch::default(),
+            true,
+            &InMemorySecretStore::new(),
+            &repo,
+        )
+        .await
+        .unwrap();
+        let events = repo.pending_managed_rollouts().await.unwrap();
+        assert_eq!(events.len(), 1, "MR-PG1");
+        let event = events
+            .into_iter()
+            .next()
+            .expect("MR-PG1 production commit publishes rollout");
+        assert_eq!(event.source_version, 2, "MR-PG1");
+        assert_eq!(event.credential_revision, after_child.revision, "MR-PG1");
+        let event_id = event.id.clone();
+        assert_eq!(
+            repo.managed_rollout(&event_id).await.unwrap(),
+            Some(event),
+            "MR-PG1"
+        );
+        assert_eq!(
+            repo.managed_rollout("managed-update:missing")
+                .await
+                .unwrap(),
+            None,
+            "MR-PG2"
+        );
+
+        const POISON_ID: &str = "managed-update:malformed";
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_rollout (event_id, data) \
+             VALUES ($1, $2::jsonb)",
+        )
+        .bind(POISON_ID)
+        .bind(r#"{"format_version":2}"#)
+        .execute(&pool)
+        .await
+        .unwrap();
+        assert!(
+            matches!(
+                repo.managed_rollout(POISON_ID).await,
+                Err(CredentialError::Storage(_))
+            ),
+            "MR-PG3"
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM credential_managed_credential_rollout WHERE event_id = $1",
+            )
+            .bind(POISON_ID)
+            .fetch_one(&pool)
+            .await
+            .unwrap(),
+            1,
+            "MR-PG3 poison remains available for repair"
+        );
+    }
+
     #[tokio::test]
     async fn postgres_managed_absent_child_cas_has_one_atomic_winner() {
         const SCHEMA: &str = "t_cred_managed_absent_cas";

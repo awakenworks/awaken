@@ -14,6 +14,18 @@ use std::sync::Arc;
 
 use awaken_credential_materializer::PinnedCredentialMaterializer;
 
+fn ensure_acp_host_executed_web_tool(
+    descriptor: &awaken_runtime_contract::resolved::ToolDescriptor,
+    display_name: &str,
+) -> Result<(), crate::HostError> {
+    if descriptor.provider_server_tool.is_some() {
+        return Err(crate::HostError::bad_request(format!(
+            "ACP {display_name} cannot export a provider-server Web tool as a Host tool"
+        )));
+    }
+    Ok(())
+}
+
 impl crate::host::SharedHost {
     /// Build the one configured WebSearch plugin used by both root and delegated
     /// Native runtimes. Provider selection stays in the immutable publication;
@@ -80,6 +92,7 @@ impl crate::host::SharedHost {
         let Some((descriptor, tool)) = configured else {
             return Ok(None);
         };
+        ensure_acp_host_executed_web_tool(&descriptor, display_name)?;
         let export = self
             .acp_tool_exporter
             .as_ref()
@@ -168,6 +181,36 @@ mod tests {
     use super::*;
 
     use awaken_runtime_contract::tool::{ToolCall, ToolError};
+
+    #[test]
+    fn acp_exports_only_host_executed_web_tools() {
+        // Cause/effect table: E1 a HostExecuted descriptor may cross the
+        // existing ACP exporter; E2 a ProviderServer descriptor is rejected
+        // before a placeholder RawTool or lease is created. The provider-server
+        // model adapter remains the sole owner of that execution target.
+        //
+        // | Rule | provider_server_tool | Effect |
+        // | A1 | absent | E1 |
+        // | A2 | present | E2/fail closed |
+        let host = awaken_ext_builtin_tools::web_fetch_descriptor();
+        assert!(
+            ensure_acp_host_executed_web_tool(&host, "WebFetch").is_ok(),
+            "A1/E1"
+        );
+        let provider = awaken_ext_builtin_tools::web_fetch_descriptor().with_provider_server_tool(
+            "openrouter",
+            "web",
+            serde_json::json!({}),
+        );
+        let error = match ensure_acp_host_executed_web_tool(&provider, "WebFetch") {
+            Ok(()) => panic!("A2 provider-server placeholder must not be exported"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("provider-server"),
+            "A2/E2: {error}"
+        );
+    }
 
     struct PaidProbe;
 

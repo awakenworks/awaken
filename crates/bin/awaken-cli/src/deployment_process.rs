@@ -184,6 +184,7 @@ pub(super) async fn prepare_runtime_process_with_coordinator_services(
         local_setup: identity.local_setup,
         registration_supervisor: prepared.registration_supervisor,
         service_lifecycle: prepared.service_lifecycle,
+        event_batch_cutover_validation: prepared.event_batch_cutover_validation,
         coordinator_authorities,
         admin_tools: prepared.admin_tools,
     })

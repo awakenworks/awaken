@@ -86,7 +86,21 @@ The same builtin must never be sent as both a function tool and a provider serve
 tool in one model request. `AlwaysAsk` requires `HostExecuted`; publication fails
 closed when only a provider-side realization exists. Provider-side execution
 also carries an explicit maximum-use budget because its internal calls do not
-cross the local per-call permission hook.
+cross the local per-call permission hook. Agent Web execution policy is
+realization-independent: when a provider-server projection cannot enforce an
+exact domain, content, or location restriction, configuration fails closed and
+the publication must select a host realization instead of silently dropping the
+policy at the provider boundary.
+
+A host-executed WebFetch selected under an exact domain policy must preserve that
+policy across redirects. The configured plugin validates the initial URL with
+the shared domain matcher; the selected provider must then apply that same rule
+before every redirected request or reject redirects before opening the next
+connection. Provider support is explicit and defaults to unsupported. The
+direct HTTP adapter rejects redirects while domain policy is active. A managed
+Gateway route remains ineligible for that policy until its route contract can
+prove target-redirect enforcement, because the open adapter can observe only its
+Gateway hop and must not invent a parallel policy inside Cloud.
 
 ## Task Tools
 

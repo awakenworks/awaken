@@ -39,6 +39,7 @@ awaken-protocol-awaken = { workspace = true }
 awaken-protocol-ai-sdk = { workspace = true }
 awaken-protocol-ag-ui = { workspace = true }
 awaken-protocol-a2a = { workspace = true }
+awaken-service-lifecycle.workspace = true
 # The ordinary A2A Run-attempt adapter used by the remote delegation scenario.
 awaken-run-executor-a2a = { workspace = true }
 awaken-agent-config.workspace = true

@@ -289,12 +289,37 @@ Managed creation boundary; it is not another Vault implementation.
 
 Control derives a stable Vault id and credential-source id from the trusted
 Workspace, opaque application authority id, and canonical `McpTarget` identity.
-`Idempotency-Key` identifies one material command. Exact replay returns the
-same ids and revision, while a new key rotates the existing source through the
-ordinary credential WAL/CAS. The response is secret-free. Session creation then
-uses the returned Vault id and the existing MCP normalizer pins that source's
-exact revision. Hosted clients never persist a local Vault/source mirror and
-never fall back to an embedded credential when this command fails.
+`Idempotency-Key` identifies one material command and the required positive
+`credential_generation` orders those commands. The existing deterministic
+material reference carries `(command fingerprint, generation)` before its
+existing writer-attempt fence; legacy references without that component decode
+as generation zero. Exact current generation/key/material replay returns the
+same ids and revision. A strictly newer generation rotates through the ordinary
+credential WAL/CAS. An equal generation with another key or material, and any
+delayed older generation, fail before a material or aggregate write, so an old
+retry cannot restore superseded bearer material. The generation is caller-owned
+monotonic input, not a second Awaken receipt or counter.
+
+The response is secret-free and carries the existing
+`ManagedCredentialAdoptionProgress` as `adoption: converged | pending`.
+Creation has no rollout event and is converged. A rotation immediately attempts
+its exact durable event through the configured rollout target; only target
+convergence plus exact repository acknowledgement is converged. Missing,
+unavailable, or busy targets leave that same event pending for the existing
+supervisor. The request path reads that event by its existing primary event id;
+only the supervisor enumerates the outbox, so request cost does not grow with
+unrelated tenant backlog. Session creation then uses the returned Vault id and
+the existing MCP normalizer pins that source's exact revision. A caller
+waits/retries while adoption is pending; it never starts a Run with a
+not-yet-adopted revision. Hosted clients never persist a local Vault/source
+mirror and never fall back to an embedded credential when this command fails.
+
+When the application must bind the bearer before Session create, it predicts
+the opaque address through the Managed adapter's one exported pure Session-ID
+helper. The public create path reuses that helper, while the Session repository
+remains the only payload-match/replay authority. Direct retrieval and ordinary
+idempotent create replace list scans or metadata-carried identity; no Session
+mapping table or second receipt is introduced.
 
 ### Hosted governance Credential Resources
 

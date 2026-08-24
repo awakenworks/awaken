@@ -10974,7 +10974,7 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(cleanup.request("t-end"), "T1 freezes the terminal fence");
     cleanup
-        .freeze_targets("t-end", [], 0)
+        .freeze_targets("t-end", [], 0, 0)
         .expect("T1 freezes the root target");
     let command = cleanup
         .command_for("t-end", "t-end")
@@ -11023,7 +11023,7 @@ async fn exact_terminal_cleanup_disposes_the_threads_sandbox() {
         .expect("T2 cleanup replay is idempotent");
     let mut missing = awaken_session_contract::SessionCleanupOperation::default();
     assert!(missing.request("never-existed"));
-    missing.freeze_targets("never-existed", [], 0).unwrap();
+    missing.freeze_targets("never-existed", [], 0, 0).unwrap();
     managed
         .execute_terminal_cleanup(
             missing
@@ -11377,7 +11377,7 @@ async fn remote_worker_executes_the_canonical_terminal_cleanup_command_locally()
         "R1 terminal fence"
     );
     cleanup
-        .freeze_targets("remote-terminal-worker", [], 0)
+        .freeze_targets("remote-terminal-worker", [], 0, 0)
         .expect("R1 frozen root target");
     let command = cleanup
         .command_for("remote-terminal-worker", "remote-terminal-worker")
@@ -11461,7 +11461,7 @@ async fn cold_terminal_assignment_installs_then_uses_the_canonical_cleanup_path(
     let mut cleanup = awaken_session_contract::SessionCleanupOperation::default();
     assert!(cleanup.request(session_id), "C2 terminal fence");
     cleanup
-        .freeze_targets(session_id, [], 0)
+        .freeze_targets(session_id, [], 0, 0)
         .expect("C3 frozen root target");
     let command = cleanup
         .command_for(session_id, session_id)
@@ -12157,6 +12157,99 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .await
         .expect("build Session from immutable publication");
     assert_eq!(context.config, publication);
+}
+
+#[tokio::test]
+async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inference() {
+    // Cause/effect graph: C1 an immutable root publication selects the
+    // provider-server WebFetch realization; C2 the final Session tool overlay
+    // adds one content restriction. E1 root Session composition passes C2 to the
+    // same configured WebFetch plugin; E2 that plugin rejects C1+C2 before the
+    // first model request, so a provider-internal fetch is also impossible.
+    // The extension-level matrix owns the individual Web policy fields; this
+    // composition rule owns only the Session overlay wiring.
+    //
+    // | Rule | realization | final Session policy | Effect |
+    // | S1 | provider-server | max_content_tokens | capability-bound terminal; inference=0 |
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+
+    struct SessionInferenceProbe(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl LlmExecutor for SessionInferenceProbe {
+        async fn infer(
+            &self,
+            _request: ChatRequest,
+        ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ChatResponse {
+                output: AssistantOutput::text("unexpected inference"),
+                usage: None,
+                stop_reason: None,
+            })
+        }
+    }
+
+    let mut publication = crate::config::server_config(
+        "assistant",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string()],
+        &BTreeMap::from([(
+            awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string(),
+            serde_json::json!({"provider_id": "openrouter", "options": {}}),
+        )]),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    publication
+        .recompute_fingerprint()
+        .expect("provider-server root publication remains coherent");
+    let publications =
+        awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([publication])
+            .expect("valid provider-server publication");
+    let inferences = Arc::new(AtomicUsize::new(0));
+    let host = SharedHost::new(Arc::new(SessionInferenceProbe(inferences.clone())), "stub")
+        .with_agent_publications(Arc::new(publications));
+    host.session_slots.update("provider-server-policy", |slot| {
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::with_optional_configuration(
+                    awaken_ext_builtin_tools::WEB_FETCH_TOOL_ID,
+                    ToolExecutionPolicy::default(),
+                    Some(serde_json::json!({
+                        "type": "web_fetch",
+                        "max_content_tokens": 512
+                    })),
+                )],
+            }],
+            client_tools: Vec::new(),
+        });
+    });
+
+    let receipt = host
+        .run(
+            Some("assistant"),
+            "provider-server-policy",
+            user("fetch docs"),
+        )
+        .await
+        .expect("S1 capability violations are committed as terminal Run truth");
+    assert!(
+        matches!(
+            receipt.state,
+            RunState::Ended(EndCause::Error(
+                awaken_agent_contract::agent::run::Failure::CapabilityBound
+            ))
+        ),
+        "S1/E1"
+    );
+    assert_eq!(inferences.load(Ordering::SeqCst), 0, "S1/E2");
 }
 
 #[test]

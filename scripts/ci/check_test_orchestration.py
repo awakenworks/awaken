@@ -33,7 +33,9 @@ REQUIRED_DETERMINISTIC_SUITES = (
     "test:delegation-restart",
     "test:compatibility",
 )
-DETERMINISTIC_RUNNER = "node deterministic_runner.mjs"
+DETERMINISTIC_RUNNER = (
+    "../scripts/ci/_provider_environment.sh --exec node deterministic_runner.mjs"
+)
 SECONDARY_RUNNERS = (
     "scripts/ci/e2e-coverage.sh",
     "scripts/ci/combined-coverage.sh",
@@ -111,7 +113,10 @@ def orchestration_errors(
 ) -> list[str]:
     errors: list[str] = []
     if scripts.get("test:deterministic") != DETERMINISTIC_RUNNER:
-        errors.append("test:deterministic does not delegate to deterministic_runner.mjs")
+        errors.append(
+            "test:deterministic does not enter the canonical provider environment "
+            "sanitizer before deterministic_runner.mjs"
+        )
     if len(deterministic_suites) != len(set(deterministic_suites)):
         errors.append("deterministic suite order contains duplicates")
 
@@ -338,6 +343,24 @@ def self_test() -> None:
     if errors:
         raise AssertionError("R1 repository fixture must be valid: " + "; ".join(errors))
 
+    # Deterministic-environment rule: C10=the package entry crosses the one
+    # provider-environment sanitizer before Node starts; E10=every expanded leaf
+    # receives one already-sanitized environment snapshot. R11 C10=>E10;
+    # !C10 rejects a raw runner entry that would force JavaScript callers to own
+    # another provider-key predicate.
+    raw_deterministic_entry = dict(scripts)
+    raw_deterministic_entry["test:deterministic"] = "node deterministic_runner.mjs"
+    assert any(
+        "does not enter the canonical provider environment sanitizer" in error
+        for error in orchestration_errors(
+            raw_deterministic_entry,
+            deterministic_suites,
+            stage_text,
+            files,
+            runners,
+        )
+    ), "R11 canonical deterministic environment"
+
     missing_suite = [suite for suite in deterministic_suites if suite != "test:protocols"]
     assert any(
         "does not invoke test:protocols" in error
@@ -366,17 +389,17 @@ def self_test() -> None:
     assert any("does not delegate" in error for error in parallel_errors), "R4 delegate"
     assert any("parallel E2E" in error for error in parallel_errors), "R4 list"
 
-    # Coverage-runner cause/effect design: C10=an E2E-local shell runs llvm-cov
-    # or owns a scenario glob; C11=a canonical coverage runner omits the shared
-    # provider-key sanitizer. Effects: E10=reject a second suite authority;
-    # E11=reject ambient-secret-dependent deterministic execution. Constraint:
+    # Coverage-runner cause/effect design: C11=an E2E-local shell runs llvm-cov
+    # or owns a scenario glob; C12=a canonical coverage runner omits the shared
+    # provider-key sanitizer. Effects: E11=reject a second suite authority;
+    # E12=reject ambient-secret-dependent deterministic execution. Constraint:
     # only the two SECONDARY_RUNNERS may orchestrate coverage, both delegate to
     # test:deterministic, and both source/call the single canonical sanitizer.
     #
-    # | Rule | C10 | C11 | Effect |
-    # | R11  | T   | -   | E10: reject the competing runner |
-    # | R12  | F   | T   | E11: reject the unsanitized canonical runner |
-    # | R1   | F   | F   | apply the existing C1-C9 acceptance rules |
+    # | Rule | C11 | C12 | Effect |
+    # | R12  | T   | -   | E11: reject the competing runner |
+    # | R13  | F   | T   | E12: reject the unsanitized canonical runner |
+    # | R1   | F   | F   | apply the existing C1-C10 acceptance rules |
     reintroduced_runner = dict(runners)
     reintroduced_runner["e2e/coverage.sh"] = (
         "eval \"$(cargo llvm-cov show-env --sh)\"\n"
@@ -391,7 +414,7 @@ def self_test() -> None:
             files,
             reintroduced_runner,
         )
-    ), "R11 parallel coverage runner"
+    ), "R12 parallel coverage runner"
 
     unsanitized = dict(runners)
     unsanitized[SECONDARY_RUNNERS[0]] = unsanitized[SECONDARY_RUNNERS[0]].replace(
@@ -408,7 +431,7 @@ def self_test() -> None:
             files,
             unsanitized,
         )
-    ), "R12 canonical provider sanitizer"
+    ), "R13 canonical provider sanitizer"
 
     swallowed = dict(runners)
     swallowed[SECONDARY_RUNNERS[1]] += "\nnpm run test:deterministic || true\n"

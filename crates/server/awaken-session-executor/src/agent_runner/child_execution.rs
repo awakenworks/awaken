@@ -212,13 +212,63 @@ pub(super) async fn await_committed_child_boundary(
         })?
 }
 
+/// Install the selected configured Web plugins into a child Native Runtime.
+/// Direct and recovered children call this same owner so replacement dispatch
+/// cannot silently lose the immutable publication's tool selection or policy.
+pub(crate) fn configure_child_native_runtime(
+    mut runtime: awaken_runtime::Runtime,
+    snapshot: &awaken_runtime_contract::ExecutableAgentSnapshot,
+    adapters: &ChildExecutionAdapters,
+) -> Result<awaken_runtime::Runtime, AgentRunError> {
+    let selected = |plugin_id: &str| {
+        snapshot
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == plugin_id)
+    };
+    if selected(awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID) {
+        let plugin = adapters.web_search.as_ref().ok_or_else(|| {
+            AgentRunError::Configuration(
+                "a child publication selects WebSearch but the Host has no WebSearch adapter"
+                    .to_string(),
+            )
+        })?;
+        runtime = runtime.with_plugin(Arc::new(
+            (**plugin).clone().with_execution_configuration(
+                awaken_ext_builtin_tools::web_search_execution_configuration(
+                    &snapshot.resolved_spec.plugin_config.agent.toolsets,
+                )
+                .map_err(AgentRunError::Configuration)?,
+            ),
+        ));
+    }
+    if selected(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID) {
+        let plugin = adapters.web_fetch.as_ref().ok_or_else(|| {
+            AgentRunError::Configuration(
+                "a child publication selects WebFetch but the Host has no WebFetch adapter"
+                    .to_string(),
+            )
+        })?;
+        runtime = runtime.with_plugin(Arc::new(
+            (**plugin).clone().with_execution_configuration(
+                awaken_ext_builtin_tools::web_fetch_execution_configuration(
+                    &snapshot.resolved_spec.plugin_config.agent.toolsets,
+                )
+                .map_err(AgentRunError::Configuration)?,
+            ),
+        ));
+    }
+    Ok(runtime)
+}
+
 /// Drive a configured Agent to exactly one settled Run boundary.
 ///
 /// This is the substrate used by parent-mediated child Runs. Starting and
 /// resuming both rebuild the same Agent configuration and ordinary Runtime. A
 /// restart therefore needs no live child handle: the executable snapshot and
 /// `ResumeTicket` are recovered from committed truth. Unlike the auxiliary
-/// [`super::run_configured_agent`] helper, this function never auto-approves a child's
+/// [`super::root_execution::run_configured_agent`] helper, this function never auto-approves a child's
 /// HITL request.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_configured_agent_until_boundary(
@@ -267,49 +317,8 @@ pub(crate) async fn run_configured_agent_until_boundary(
         &[],
         &config.resolved_spec.plugin_config.agent.toolsets,
     );
-    let mut runtime = build_runtime_with_authorization(llm, env, &authorization);
-    if config
-        .resolved_spec
-        .plugin_ids
-        .iter()
-        .any(|id| id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID)
-    {
-        let plugin = adapters.web_search.clone().ok_or_else(|| {
-            AgentRunError::Configuration(
-                "a child publication selects WebSearch but the Host has no WebSearch adapter"
-                    .to_string(),
-            )
-        })?;
-        runtime = runtime.with_plugin(Arc::new(
-            (*plugin).clone().with_execution_configuration(
-                awaken_ext_builtin_tools::web_search_execution_configuration(
-                    &config.resolved_spec.plugin_config.agent.toolsets,
-                )
-                .map_err(AgentRunError::Configuration)?,
-            ),
-        ));
-    }
-    if config
-        .resolved_spec
-        .plugin_ids
-        .iter()
-        .any(|id| id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID)
-    {
-        let plugin = adapters.web_fetch.clone().ok_or_else(|| {
-            AgentRunError::Configuration(
-                "a child publication selects WebFetch but the Host has no WebFetch adapter"
-                    .to_string(),
-            )
-        })?;
-        runtime = runtime.with_plugin(Arc::new(
-            (*plugin).clone().with_execution_configuration(
-                awaken_ext_builtin_tools::web_fetch_execution_configuration(
-                    &config.resolved_spec.plugin_config.agent.toolsets,
-                )
-                .map_err(AgentRunError::Configuration)?,
-            ),
-        ));
-    }
+    let runtime = build_runtime_with_authorization(llm, env, &authorization);
+    let mut runtime = configure_child_native_runtime(runtime, &config, &adapters)?;
     if let Some(service) = run_delegation {
         runtime = runtime.with_run_delegation(service);
     }
@@ -601,6 +610,15 @@ pub(crate) fn child_attempt_executor(
         .find(|backend| matches!(backend, Backend::Acp(_)))
         .cloned()
         .map(|backend| {
+            if snapshot.resolved_spec.plugin_ids.iter().any(|id| {
+                id == awaken_ext_builtin_tools::WEB_SEARCH_PLUGIN_ID
+                    || id == awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID
+            }) {
+                return Err(AgentRunError::Configuration(
+                    "an ACP child publication selects a Web plugin, but child ACP tool export is unavailable"
+                        .to_string(),
+                ));
+            }
             adapters.acp.as_ref().ok_or_else(|| {
                 AgentRunError::Configuration(format!(
                     "delegate publication requires unavailable ACP backend {backend:?}"

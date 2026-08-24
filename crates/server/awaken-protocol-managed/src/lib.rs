@@ -87,6 +87,6 @@ pub use routes::{
     replace_resource_manifest, router, tunnels_router,
 };
 pub use routes::{DREAMING_BETA, dreams_router};
-pub use state::{ManagedState, StateError};
+pub use state::{ManagedState, StateError, managed_session_id_from_idempotency};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

@@ -266,8 +266,6 @@ async function main(): Promise<void> {
     assert.equal(seedSettle.settled, true, 'seed dispatch settled before the gateway worker starts');
 
     const env = { ...process.env } as Record<string, string>;
-    delete env.ANTHROPIC_API_KEY;
-    delete env.OPENAI_API_KEY;
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: BASE,
       SESSION_DEPLOYMENT_INGRESS: 'durable',

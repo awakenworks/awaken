@@ -2,16 +2,17 @@
 //! "judgment" half of access control.
 //!
 //! It does four things and nothing else: (1) authenticate a presented bearer
-//! credential against an in-memory [`ApiTokenDirectory`], (2) derive the
+//! credential through an injected authority, (2) derive the
 //! request's authorization scope — every request anchors at its
 //! [`ScopeRef::Workspace`] (tenancy is strictly Org → Workspace), (3) map the
 //! route to an [`ActionKey`], and (4) authorize via the same default-deny
-//! [`PolicySet`] engine every Awaken product shares. It is in-memory and seeded,
-//! so the single-machine standalone needs no durable IAM store — that (minting
-//! HTTP surface, `awaken-iam-server` persistence, multi-tenant provisioning) is
-//! the authoring half and lives elsewhere.
+//! [`PolicySet`] engine every Awaken product shares. The generic service-token
+//! [`EnforceEngine`] remains in-memory and seeded for single-machine use. The
+//! application PEP instead consumes [`ApplicationAccessAuthenticator`]; mint,
+//! durable persistence, and revocation live in Coordinator and never fall back
+//! to this crate.
 //!
-//! Scope fencing is free: a token whose `RoleBinding` sits at
+//! Scope fencing in the generic engine is free: a token whose `RoleBinding` sits at
 //! `Workspace{ws_local}` cannot reach `Workspace{ws_other}`, because the scope
 //! graph resolves that up through `Global`, never to `ws_local`. So an
 //! out-of-tenant request is denied even for an `admin` token.
@@ -20,6 +21,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use async_trait::async_trait;
 use awaken_iam_contract::{
     ActionKey, AuthorizationDecision, AuthorizationRequest, PrincipalRef, ScopeRef, Timestamp,
     WorkspaceId,
@@ -65,14 +67,12 @@ pub struct EnforceEngine {
 
 /// The deliberately small authority Awaken accepts from a customer application.
 ///
-/// `application_scope` and `actor_key` are opaque strings chosen by the
-/// embedding application. Awaken does not interpret them as users, roles, or
-/// projects. Runtime identity comes only from explicit Managed Session bindings.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Customer users, projects, and correlation identifiers remain in the caller's
+/// authority and never enter this type. The PEP consumes only protocol,
+/// operation, and explicit Managed Session binding authority.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplicationGrant {
-    pub authority_id: String,
-    pub application_scope: String,
-    pub actor_key: Option<String>,
     pub protocols: HashSet<String>,
     pub operations: HashSet<String>,
     pub thread_bindings: HashMap<String, ApplicationThreadBinding>,
@@ -82,13 +82,59 @@ pub struct ApplicationGrant {
 ///
 /// The Managed Session remains the resource authority. This value is only the
 /// short-lived authorization projection carried by an application grant.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ApplicationThreadBinding {
     pub managed_session_id: String,
     pub agent_id: String,
 }
 
 impl ApplicationGrant {
+    /// Validate the complete application authority before it is persisted or
+    /// accepted from durable storage.
+    ///
+    /// The grant itself owns these invariants because both Coordinator minting
+    /// and the application PEP consume this exact value. Transport DTOs and
+    /// persistence adapters must not grow parallel interpretations.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.protocols.is_empty()
+            || self
+                .protocols
+                .iter()
+                .any(|protocol| !matches!(protocol.as_str(), "ai-sdk" | "ag-ui"))
+        {
+            return Err("protocols may contain only ai-sdk and ag-ui");
+        }
+        if self.operations.is_empty()
+            || self.operations.iter().any(|operation| {
+                !matches!(operation.as_str(), "thread.run" | "thread.messages.read")
+            })
+        {
+            return Err("operations may contain only thread.run and thread.messages.read");
+        }
+        if self.thread_bindings.is_empty() || self.thread_bindings.len() > 32 {
+            return Err("thread_bindings must contain between 1 and 32 bindings");
+        }
+
+        let mut managed_session_ids = HashSet::with_capacity(self.thread_bindings.len());
+        for (external_thread_id, binding) in &self.thread_bindings {
+            if external_thread_id.trim().is_empty()
+                || binding.managed_session_id.trim().is_empty()
+                || external_thread_id.len() > 255
+                || binding.managed_session_id.len() > 255
+            {
+                return Err("thread binding ids must contain between 1 and 255 bytes");
+            }
+            if binding.agent_id.trim().is_empty() {
+                return Err("thread binding agent id is empty");
+            }
+            if !managed_session_ids.insert(binding.managed_session_id.as_str()) {
+                return Err("thread_bindings must be one-to-one and unique");
+            }
+        }
+        Ok(())
+    }
+
     /// Resolve only an alias explicitly authorized by this short-lived grant.
     #[must_use]
     pub fn binding(&self, external_thread_id: &str) -> Option<&ApplicationThreadBinding> {
@@ -104,80 +150,29 @@ pub struct ApplicationIdentity {
     pub grant: ApplicationGrant,
 }
 
-/// Process-local short-lived application credentials.
+/// Authentication outcome exposed to the application-protocol PEP.
 ///
-/// Restarting the binary invalidates these credentials, which is a safe default
-/// for phase one. Continuing a conversation after rotation requires the issuer
-/// to project the same explicit Managed Session binding into the replacement.
-pub struct ApplicationAccessStore {
-    engine: EnforceEngine,
-    grants: Mutex<HashMap<String, ApplicationGrant>>,
+/// Credential mismatches deliberately collapse to [`Self::Invalid`]. Durable
+/// authority failures remain distinguishable so the PEP returns 503 instead of
+/// turning an unavailable database into a misleading 401.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplicationAuthenticationError {
+    Invalid,
+    Unavailable,
+    Corrupt,
 }
 
-impl Default for ApplicationAccessStore {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ApplicationAccessStore {
-    #[must_use]
-    pub fn new() -> Self {
-        Self {
-            engine: EnforceEngine::seeded(),
-            grants: Mutex::new(HashMap::new()),
-        }
-    }
-
-    /// Mint one short-lived credential and attach its narrow application grant.
-    pub fn mint(
+/// Narrow authentication port consumed by the application-protocol PEP.
+///
+/// Coordinator owns minting, revocation, and persistence. This judgment crate
+/// neither holds a credential cache nor creates a service principal or role
+/// binding for an application capability.
+#[async_trait]
+pub trait ApplicationAccessAuthenticator: Send + Sync {
+    async fn authenticate(
         &self,
-        token_id: String,
-        workspace_id: String,
-        expires_at: Option<String>,
-        grant: ApplicationGrant,
-    ) -> Result<String, IamError> {
-        let service_id = format!("application:{token_id}");
-        let secret = self.engine.mint(TokenSpec {
-            token_id,
-            service_id: service_id.clone(),
-            workspace_id,
-            role: "admin".to_string(),
-            expires_at,
-        })?;
-        self.grants
-            .lock()
-            .expect("application grant store poisoned")
-            .insert(service_id, grant);
-        Ok(secret)
-    }
-
-    /// Authenticate only credentials minted by this application store.
-    pub fn authenticate(&self, presented: &str) -> Option<ApplicationIdentity> {
-        let (principal, workspace) = self.engine.authenticate(presented).ok()?;
-        let PrincipalRef::Service { service_id } = principal else {
-            return None;
-        };
-        let grant = self
-            .grants
-            .lock()
-            .expect("application grant store poisoned")
-            .get(&service_id)
-            .cloned()?;
-        Some(ApplicationIdentity {
-            workspace_id: workspace.0,
-            grant,
-        })
-    }
-
-    pub fn revoke(&self, token_id: &str) -> Result<(), IamError> {
-        self.engine.revoke(token_id)?;
-        self.grants
-            .lock()
-            .expect("application grant store poisoned")
-            .remove(&format!("application:{token_id}"));
-        Ok(())
-    }
+        presented: &str,
+    ) -> Result<ApplicationIdentity, ApplicationAuthenticationError>;
 }
 
 const MAX_APPLICATION_BODY: usize = 2 * 1024 * 1024;
@@ -206,15 +201,26 @@ impl ApplicationRejection {
 /// request. Unknown routes and unbound ids fail closed; this guard never creates
 /// or derives a second runtime identity.
 pub async fn application_guard(
-    State(store): State<Arc<ApplicationAccessStore>>,
+    State(authenticator): State<Arc<dyn ApplicationAccessAuthenticator>>,
     mut request: Request,
     next: Next,
 ) -> Response {
     let Some(presented) = presented_bearer(request.headers()) else {
         return reject(StatusCode::UNAUTHORIZED, "missing application access token");
     };
-    let Some(identity) = store.authenticate(&presented) else {
-        return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
+    let identity = match authenticator.authenticate(&presented).await {
+        Ok(identity) => identity,
+        Err(ApplicationAuthenticationError::Invalid) => {
+            return reject(StatusCode::UNAUTHORIZED, "invalid application access token");
+        }
+        Err(
+            ApplicationAuthenticationError::Unavailable | ApplicationAuthenticationError::Corrupt,
+        ) => {
+            return reject(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "application access authority unavailable",
+            );
+        }
     };
     if let Some(tenancy) = request.extensions().get::<RequestTenancy>()
         && tenancy.workspace_id != identity.workspace_id

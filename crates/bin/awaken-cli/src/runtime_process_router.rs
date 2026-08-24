@@ -333,6 +333,7 @@ pub(super) async fn prepare_runtime_routers(
     let CoordinatorStores {
         resources: _,
         sessions,
+        application_access,
         deployments: _,
         dream_process_store,
         memory_extractions,
@@ -425,13 +426,10 @@ pub(super) async fn prepare_runtime_routers(
     };
 
     // Only Coordinator and AllInOne can reach this point. Their one execution
-    // store group owns Session, Deployment/Run, Dream, extraction work and the
-    // lifecycle outbox; Control has no fallback implementation of that group.
-    // Application credentials and the protocol guards that consume them must
-    // live in the same Coordinator process. The issuer validates bindings
-    // against this Coordinator's sole Managed Session repository; split Control
-    // neither mirrors that repository nor owns a second token directory.
-    let application_access = Arc::new(awaken_authz_enforce::ApplicationAccessStore::new());
+    // store group owns Session, application capabilities, Deployment/Run,
+    // Dream, extraction work and the lifecycle outbox. The application issuer
+    // and PEP share the exact durable store opened above; split Control neither
+    // mirrors it nor owns a fallback token directory.
     let webhook_delivery: Arc<dyn awaken_session_contract::LifecycleFactDelivery> =
         match local_webhook_stores {
             Some((webhook_store, secrets)) => {
@@ -644,6 +642,8 @@ pub(super) async fn prepare_runtime_routers(
         session_application.set_managed_list_price_provider(provider);
     }
     let session_application = Arc::new(session_application);
+    let event_batch_cutover_validation =
+        session_application.session_event_batch_cutover_validation_source();
     awaken_coordinator::install_managed_agent_coordination(&managed_host, &session_application)
         .expect("Managed Session coordination application binds before dispatch starts");
     let mut managed_state =
@@ -700,7 +700,7 @@ pub(super) async fn prepare_runtime_routers(
         awaken_coordinator::CoordinatorDependencies {
             service_lifecycle: process.service_lifecycle.clone(),
             host,
-            session_application,
+            session_application: session_application.clone(),
             managed_state,
             resource_registry,
             resource_management_router,
@@ -775,6 +775,7 @@ pub(super) async fn prepare_runtime_routers(
         coordinator.private_router,
         registration_supervisor,
         process.service_lifecycle,
+        Some(event_batch_cutover_validation),
         admin_execs,
     ))
 }

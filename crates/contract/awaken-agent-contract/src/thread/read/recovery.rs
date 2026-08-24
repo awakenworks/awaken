@@ -37,7 +37,20 @@ pub struct RunRecoverySnapshot {
     pub runs: Vec<RunRecord>,
     pub latest_run_id: Option<RunId>,
     pub messages: Vec<Message>,
+    /// Backend commit coordinate for each message at the same index. Existing
+    /// stores already persist this column; exposing it prevents a cold projector
+    /// from moving every historical message behind every lifecycle transition.
+    /// A legacy/remote snapshot may omit the vector, in which case consumers must
+    /// not claim exact warm/cold total ordering for that prefix.
+    #[serde(default)]
+    pub message_commit_cursors: Vec<u64>,
     pub state: Vec<StateCommand>,
+    /// Backend commit coordinate for each state command at the same index.
+    /// State-backed public facts (for example context compaction and Outcome
+    /// evaluation) use this existing durable coordinate instead of moving to a
+    /// Run's earlier lifecycle cursor when discovered by a later projector.
+    #[serde(default)]
+    pub state_commit_cursors: Vec<u64>,
     /// Committed audit facts for this Thread, ordered by their durable event
     /// sequence and read under the same consistency boundary as messages,
     /// state, tickets, and `store_cursor`.
@@ -99,7 +112,9 @@ mod tests {
             runs: Vec::new(),
             latest_run_id: None,
             messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
             state: Vec::new(),
+            state_commit_cursors: Vec::new(),
             events: Vec::new(),
             resume_tickets: Vec::new(),
             thread_version: 0,

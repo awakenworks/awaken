@@ -632,11 +632,12 @@ mod tests {
         assert_eq!(count("web_fetch"), 1, "R1/E1");
         assert_eq!(count("web_search"), 1, "R1/E1");
 
-        let static_ids = awaken_ext_builtin_tools::web_hand_tools()
+        let static_ids = awaken_ext_builtin_tools::all_hand_tools()
             .into_iter()
             .map(|tool| tool.id().to_string())
             .collect::<Vec<_>>();
-        assert!(static_ids.is_empty(), "R1/E2");
+        assert!(!static_ids.iter().any(|id| id == "web_fetch"), "R1/E2");
+        assert!(!static_ids.iter().any(|id| id == "web_search"), "R1/E2");
     }
 
     #[test]

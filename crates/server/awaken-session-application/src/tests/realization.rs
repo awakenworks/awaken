@@ -768,6 +768,7 @@ async fn remote_terminal_cleanup_uses_durable_commands_and_cold_receipt_replay()
             "remote-cleanup-child".into(),
         )],
         watermark: 31,
+        runtime_commit_cursor: 41,
     };
     let application = SessionApplication::new_with_configuration(
         runtime.clone(),
@@ -883,7 +884,7 @@ async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assig
         assert!(session.terminal_cleanup.request(id));
         session
             .terminal_cleanup
-            .freeze_targets(id, [], 0)
+            .freeze_targets(id, [], 0, 0)
             .expect("freeze root cleanup target");
         session.realization = current;
         session
@@ -1377,6 +1378,7 @@ async fn terminal_fence_quiesces_before_freezing_concurrent_child() {
             "coordinated-after-fence".into(),
         )],
         watermark: 23,
+        runtime_commit_cursor: 29,
     };
     runtime.quiesce_release.notify_one();
 
@@ -1456,6 +1458,7 @@ async fn terminal_cleanup_restart_soak_preserves_authority_and_effect_identity()
                     coordinated_id.clone(),
                 )],
                 watermark: iteration + 1,
+                runtime_commit_cursor: iteration + 11,
             };
         let application = SessionApplication::new_with_configuration(
             runtime.clone(),
@@ -1807,6 +1810,8 @@ async fn realization_preserves_or_closes_the_activity_interval_by_terminal_outco
         interval_id: format!("interval:{id}"),
         activity_epoch: 1,
         started_at_unix_ms: 1,
+        opened_revision: Default::default(),
+        observations: Vec::new(),
     };
 
     let mut recovering = persisted("running-realization", false, "running");

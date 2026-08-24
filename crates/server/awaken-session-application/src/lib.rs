@@ -24,6 +24,10 @@ pub use session_services::{
     RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialSource,
     SessionEnvironmentSource,
 };
+mod event_batch_cutover_validation;
+pub use event_batch_cutover_validation::{
+    SessionEventBatchCutoverValidationSnapshot, SessionEventBatchCutoverValidationSource,
+};
 include!("application.rs");
 mod activity;
 mod budget;

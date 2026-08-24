@@ -1,5 +1,105 @@
 # Wiki Update Log
 
+## 2026-08-24 — Bind beta cutover proof to the sole Session supervisor
+
+- Extended the accepted Session-runtime-interval amendment with the exact
+  post-repair Event-batch cutover seam: one final canonical repository scan
+  publishes a process-local generation and three secret-free aggregate counts.
+- Reused the existing Coordinator admin listener for per-candidate reads. A
+  final-scan failure retains the preceding generation, and deployment remains
+  closed until every candidate advances beyond its post-old-writer baseline
+  with all three counts zero.
+- Added no Cloud database scan, readiness inference, log-time heuristic,
+  scheduler, migration store, or Session-id projection.
+
+## 2026-08-24 — Publish the canonical Sandbox image from Open
+
+- Kept `deploy/images/sandbox/build.sh`, its generated ACP contract, production
+  Dockerfile, and runtime acceptance as the only image-build path.
+- Added one protected semantic-tag workflow that pushes the fixed GHCR
+  repository, then signs and attests only the resolved immutable digest through
+  GitHub Actions OIDC.
+- Made the Open-owned strict predicate and validator the only provenance schema;
+  composing platforms verify it and retain its canonical digest but cannot
+  build, republish, or add a parallel parser.
+- Added static causal gates that reject a second workflow or local publisher,
+  mutable actions, mutable image coordinates, alternate triggers, private keys,
+  and weakened identity or issuer checks.
+
+## 2026-08-24 — Correlate the existing Kubernetes package release path
+
+- Added secret-free recipe fingerprint and destination annotations to the
+  existing BuildKit Job and Pod template and reused them only on the existing
+  package-destination image-check Job/Pod. A crash retry can therefore correlate
+  the kubelet digest after the Build Job is gone; base and general probes do not
+  claim package provenance. Coordinator build rows and the termination digest
+  remain the only lifecycle and result authorities.
+- Added the original neutral Sandbox scope and exact resolved image to the
+  existing Pod creation seam. A bounded deployment observer may join it to the
+  mission Session only when warm capacity is disabled and the scope equals the
+  exact Session id, then compare the BuildKit digest, Pod image, and kubelet
+  imageID without a Session map.
+- Kept that optional evidence under a small additive size budget; an arbitrary
+  overlong generic Sandbox scope remains runnable and yields no proof rather
+  than leaking an adapter hash as Session identity.
+- Kept proxy values, registry authentication, image-pull Secret names, recipe
+  bodies, and the adapter-local Kubernetes runtime id outside the evidence; no
+  store, route, scheduler, build queue, or Cloud-side runtime identity was added.
+- Made the existing Ready-image checks consume the exact durable build demand
+  plus stored digest. Kubernetes now re-derives the annotated package
+  destination for every claimed, blocking, and periodic readiness check; a
+  missing or different kubelet digest invalidates Ready and returns convergence
+  to the sole claim/lease worker without running BuildKit from the check path.
+
+## 2026-08-24 — Retain canonical Managed Session runtime intervals
+
+- Kept the Session root CAS as the sole aggregate owner and retained closed
+  Running intervals plus exact Event-batch admission revisions there; the
+  delivery outbox remains delete-after-delivery and no Managed event store was
+  added.
+- Rebuilt Managed warm/cold history from retained inbound commands, Runtime
+  lifecycle/message/state commit facts, exact processed-entry anchors, interval
+  usage, and historical Awaiting audit targets. Stable interval identities
+  replace the disposable latest-terminal aggregate bracket; terminal events wait
+  for the existing cleanup quiescence seam's persisted Runtime high-water.
+- Required a beta maintenance cutover that stops all old Coordinator writers
+  before the new aggregate fields are written. New-reader defaults support old
+  rows but do not make mixed old/new binaries safe; complete history begins with
+  newly created post-cutover Sessions.
+
+## 2026-08-24 — Reuse canonical hosted Session identity and credential adoption
+
+- Exported the existing Managed Session create-idempotency address derivation
+  and made the server itself consume it; durable Session replay remains the
+  authority.
+- Extended the existing application MCP credential receipt with the existing
+  rollout adoption state and synchronous exact-event delivery; pending work
+  remains on the sole supervised outbox path, and HTTP replay uses bounded
+  primary-id lookup instead of enumerating that outbox.
+- Fenced delayed application-MCP retries with a required caller-monotonic
+  generation encoded in the existing material identity; legacy generation-zero
+  rows upgrade through the same WAL/CAS, with no receipt table or counter.
+- Added no metadata identity, Session mapping, credential store, route,
+  scheduler, lease, or compatibility fallback.
+- Bumped the existing hosted runtime-surface profile to schema v2 and projected
+  Coordinator's canonical application-access maximum TTL through the CLI
+  composition root, preserving the legacy incumbent ceiling during durable
+  cutover; no second command, DTO, constant, or Control dependency was added.
+- Extracted the existing application-capability issuance policy from its HTTP
+  handler into one transport-neutral Coordinator use case, so product relation
+  adapters reuse the same Session validation and durable mint without exposing
+  the store primitive or adding a second issuer.
+- Consolidated `web_fetch` and `web_search` on their configured-plugin owner:
+  publication, root Session, and child realization now reuse the same execution
+  policy validator; provider-server routes fail closed when they cannot enforce
+  domain, content, or location policy. Removed the obsolete static Web executor,
+  constructor, descriptor implementation, and empty hand-tool compatibility
+  surfaces instead of retaining aliases.
+- Closed the host WebFetch redirect gap at that same policy edge: direct fetch
+  rejects redirects before a second request while domain policy is active, and
+  Gateway-routed providers fail configuration until their target redirect
+  enforcement is provable; no Cloud-side policy copy was added.
+
 ## 2026-08-23
 
 - Recorded the shared multi-provider catalog and exclusive host/provider-server

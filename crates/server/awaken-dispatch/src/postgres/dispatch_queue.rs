@@ -1222,7 +1222,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, lease_owner = NULL, \
-             lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter'"
+             lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter' \
+             AND cancel_requested = 0"
         ))
         .bind(&run_id.0)
         .execute(&self.pool)
@@ -1237,7 +1238,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let current = sqlx::query(&format!(
             "SELECT thread_id, status, lease_owner, lease_epoch FROM {p}_dispatch \
              WHERE run_id = $1 AND status IN \
-             ('reserved', 'reservation_running', 'pending', 'awaiting', 'running') \
+             ('reserved', 'reservation_running', 'pending', 'awaiting', 'running', 'dead_letter') \
              FOR UPDATE"
         ))
         .bind(&run_id.0)

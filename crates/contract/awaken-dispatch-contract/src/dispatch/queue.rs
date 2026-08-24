@@ -490,11 +490,14 @@ pub trait DispatchQueue: Send + Sync {
     /// The run ids currently dead-lettered, for operations.
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError>;
 
-    /// Return a dead-lettered run to the queue at a fresh budget. Returns `true`
-    /// if a dead-lettered run with that id was requeued.
+    /// Return an unfenced dead-lettered run to the queue at a fresh budget.
+    /// Returns `true` if a dead-lettered run with that id was requeued. A
+    /// terminal Session fence reuses the durable cancellation bit to make the
+    /// retained dead letter permanently non-runnable.
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError>;
 
-    /// Durably request cancellation of a pending, awaiting, or running dispatch.
+    /// Durably request cancellation of a pending, awaiting, running, or
+    /// dead-lettered dispatch.
     /// This operation records intent but never removes the row or pending input;
     /// for a running row it also advances the epoch and releases the old lease so
     /// that owner's later commit is fenced. The worker claims it and commits the

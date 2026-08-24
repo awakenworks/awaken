@@ -1909,7 +1909,7 @@ pub struct awaken_protocol_managed::VaultState
 impl awaken_protocol_managed::VaultState
 pub async fn awaken_protocol_managed::VaultState::credential_access_for_source(&self, &awaken_credential_contract::CredentialSourceId, &str, awaken_credential_contract::CredentialUsage, awaken_credential_contract::CredentialExecutionPolicy, &awaken_credential_contract::PlaintextHolder, &awaken_credential_contract::CredentialMaterialBinding) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::credential_source_id(&self, &str, &str) -> core::option::Option<awaken_credential_contract::CredentialSourceId>
-pub async fn awaken_protocol_managed::VaultState::enter_application_mcp_bearer(&self, &str, &str, &str, &str, awaken_agent_contract::secret::RedactedString) -> core::result::Result<(alloc::string::String, awaken_credential_contract::CredentialSourceId, u64), awaken_credential_vault::CredentialError>
+pub async fn awaken_protocol_managed::VaultState::enter_application_mcp_bearer(&self, &str, &str, &str, &str, u64, awaken_agent_contract::secret::RedactedString) -> core::result::Result<(alloc::string::String, awaken_credential_contract::CredentialSourceId, u64, awaken_credential_vault::repo::ManagedCredentialAdoptionProgress), awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::enter_session_bearer(&self, &str, alloc::string::String) -> core::result::Result<awaken_credential_contract::CredentialSourceId, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::has_vault(&self, &str, &str) -> core::result::Result<bool, awaken_credential_vault::CredentialError>
 pub async fn awaken_protocol_managed::VaultState::mcp_access_for_source(&self, &awaken_credential_contract::CredentialSourceId) -> core::result::Result<awaken_credential_contract::CredentialAccess, awaken_credential_vault::CredentialError>
@@ -1971,6 +1971,7 @@ pub fn awaken_protocol_managed::environment_authoring_router(alloc::sync::Arc<aw
 pub fn awaken_protocol_managed::environment_work_router(alloc::sync::Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>) -> axum::routing::Router
 pub fn awaken_protocol_managed::files_router(alloc::sync::Arc<dyn awaken_resource_contract::FileApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::inference_geo_name(core::option::Option<awaken_protocol_managed::types::ModelInferenceGeo>) -> &'static str
+pub fn awaken_protocol_managed::managed_session_id_from_idempotency(&str, &str) -> alloc::string::String
 pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken_resource_contract::MemoryRepository>, alloc::sync::Arc<dyn awaken_resource_contract::memory_application::MemoryStoreApplicationService>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router_with_inventory(alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>) -> axum::routing::Router

@@ -6,6 +6,7 @@
 //! | --- | --- | --- |
 //! | `control iam profile` | unavailable | deterministic Workspace profile JSON |
 //! | `control iam profile runtime` | unavailable | deterministic Hosted lifecycle profile JSON |
+//! | `control surface profile runtime` | unavailable | deterministic schema-v2 routes plus canonical application-access TTL |
 //! | same invocation twice | unavailable | byte-identical JSON |
 //! | `profile resources` or extra argument | unavailable | usage failure, no profile |
 
@@ -112,6 +113,56 @@ fn hosted_runtime_profile_is_a_side_effect_free_release_projection() {
         grant["subject"]["role_id"] == "awaken.runtime:agent_executor"
             && grant["action_pattern"] == "awaken.runtime::run.*"
     }));
+}
+
+#[test]
+fn hosted_runtime_surface_profile_projects_the_canonical_application_access_limit() {
+    // Cause/effect graph: C1 the surface profile command runs without runtime
+    // config/storage/network -> E1 emit deterministic JSON; C2 Coordinator's
+    // canonical application-access maximum is positive and remains the legacy
+    // v1 incumbent ceiling during the one-time durable cutover -> E2 emit that
+    // exact constant as the required schema-v2 field, never a copied candidate;
+    // C3 Control's route authority is populated -> E3 preserve its route
+    // projection in the same artifact.
+    //
+    // Decision table:
+    // | rule | command | canonical TTL | routes | outcome |
+    // | S1 | surface profile runtime | positive canonical incumbent ceiling | populated | schema v2 with exact TTL and routes |
+    // | S2 | same command twice | positive | populated | byte-identical JSON |
+    let binary = env!("CARGO_BIN_EXE_awaken");
+    let project = || {
+        Command::new(binary)
+            .args(["control", "surface", "profile", "runtime"])
+            .env("AWAKEN_CONFIG", "/does/not/exist")
+            .output()
+            .expect("run Hosted Runtime surface profile projection")
+    };
+    let first = project();
+    let second = project();
+    assert!(first.status.success(), "{:?}", first.stderr);
+    assert!(second.status.success(), "{:?}", second.stderr);
+    assert_eq!(first.stdout, second.stdout);
+
+    let profile: serde_json::Value =
+        serde_json::from_slice(&first.stdout).expect("Runtime surface profile is JSON");
+    assert_eq!(profile["schema_version"], serde_json::json!(2));
+    assert_eq!(
+        profile["application_access_max_ttl_seconds"],
+        serde_json::json!(
+            awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS
+        )
+    );
+    assert!(
+        profile["application_access_max_ttl_seconds"]
+            .as_u64()
+            .is_some_and(|seconds| seconds > 0)
+    );
+    assert!(
+        !profile["routes"]
+            .as_array()
+            .expect("Runtime surface routes")
+            .is_empty()
+    );
 }
 
 #[test]

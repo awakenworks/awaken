@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::RedactedString;
+use awaken_credential_vault::repo::ManagedCredentialAdoptionProgress;
 use awaken_protocol_managed::{VaultState, parse_idempotency_key_header};
 use awaken_tenancy::WorkspaceScope;
 use axum::extract::{Extension, State};
@@ -16,6 +17,8 @@ use serde::{Deserialize, Serialize};
 struct ApplicationMcpCredentialCommand {
     application_authority_id: String,
     mcp_server_url: String,
+    /// Caller-owned monotonic order for this stable application/target tuple.
+    credential_generation: u64,
     /// Write-only. The response and durable credential row never contain it.
     token: String,
 }
@@ -27,6 +30,7 @@ struct ApplicationMcpCredentialReceipt {
     vault_id: String,
     credential_source_id: String,
     revision: u64,
+    adoption: ManagedCredentialAdoptionProgress,
 }
 
 type CommandError = (
@@ -64,6 +68,13 @@ async fn enter_application_mcp_credential(
             "token must contain 1 to 16384 characters",
         ));
     }
+    if command.credential_generation == 0 {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            "invalid_request_error",
+            "credential_generation must be positive",
+        ));
+    }
     let idempotency_key = parse_idempotency_key_header(&headers)
         .map_err(|message| error(StatusCode::BAD_REQUEST, "invalid_request_error", message))?
         .ok_or_else(|| {
@@ -73,12 +84,13 @@ async fn enter_application_mcp_credential(
                 "Idempotency-Key is required",
             )
         })?;
-    let (vault_id, source_id, revision) = state
+    let (vault_id, source_id, revision, adoption) = state
         .enter_application_mcp_bearer(
             &workspace.0,
             authority_id,
             &command.mcp_server_url,
             &idempotency_key,
+            command.credential_generation,
             RedactedString::from(command.token),
         )
         .await
@@ -101,6 +113,7 @@ async fn enter_application_mcp_credential(
         vault_id,
         credential_source_id: source_id.0,
         revision,
+        adoption,
     }))
 }
 

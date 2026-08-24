@@ -53,7 +53,9 @@ fn snapshot() -> RunRecoverySnapshot {
             Role::User,
             "before",
         )],
+        message_commit_cursors: Vec::new(),
         state: Vec::new(),
+        state_commit_cursors: Vec::new(),
         events: Vec::new(),
         resume_tickets: vec![RunResumeTicket {
             run_id,

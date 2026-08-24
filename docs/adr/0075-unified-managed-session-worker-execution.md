@@ -397,3 +397,73 @@ backend projection; Control remains the publication authority. A Worker retains
 the delivered snapshot for lease renewal, and an overlapping claimed Run must
 carry the same snapshot or fail closed before any effect. Historical baselines
 without an exact revision retain their existing compatibility behavior.
+
+## Amendment (2026-08-24): Session root retains canonical runtime intervals
+
+Managed event history is a projection of the existing Session, Thread, Run,
+message, and audit facts. The Managed protocol cache and lifecycle outbox are
+not event stores: the outbox remains delete-after-delivery, while the Session
+root CAS retains every closed customer-visible Running interval for the Session
+lifetime.
+
+Each interval freezes its opening/closing root revisions, exact Runtime
+lifecycle observations, cumulative neutral usage, and historical budget limit.
+The existing Event-entry processed CAS freezes the exact Runtime commit anchor
+that made that command's effect listable; `state_command.commit_sequence` does
+the same for compaction, Outcome, and disposition facts. Admission revisions
+remain root ordering provenance but are never compared with Runtime commit
+coordinates. One interval therefore projects exactly one aggregate
+Running/Usage/Idle bracket, including child-only continuations and multiple
+resumes of the same Run.
+
+The projector consumes only recovery snapshots fenced at those committed
+boundaries. New entries without an immutable anchor are withheld, and a final
+Session revision reread discards a mixed root/Runtime snapshot. Budget-reached
+events first become listable at the first closed interval whose cumulative
+usage covers that exact transition. Parent terminal events first become
+listable only after the existing terminal-cleanup quiescence seam persists the
+Runtime commit high-water in the Session root. A later refresh may append a
+higher coordinate but cannot insert a new durable fact before a previously
+listable durable cursor. Process-local `session.updated` is held behind its
+accepted durable predecessor and remains outside the cross-replica guarantee;
+the live deletion notification retains its existing best-effort semantics.
+
+This aggregate JSON expansion is not mixed-writer compatible:
+`PersistedSession` rejects unknown fields, so an old Coordinator cannot decode a
+row after a new writer stores interval history. Beta uses a maintenance cutover:
+close Flow/public admission, drain and fully stop all old Coordinator writers,
+then let the existing Open lifecycle supervisor reconcile retained rows. A
+legacy terminal aggregate with an incomplete Event batch executes no new
+Runtime work: the same root-CAS batch owner resolves it at the terminal cleanup
+cursor, or at the explicitly isolated pre-anchor legacy prefix when that old
+row has no cursor. This is a narrow, non-destructive compatibility repair, not
+a second scheduler or event store. Deploy the new revision only after that
+reconciliation is clean, create new Sessions for the complete-history guarantee,
+then reopen admission.
+
+Event-batch cutover validation is a read-only projection of that same
+supervisor, not a general Session-health claim or Cloud-side scan. After
+Resource, continuation, realization, Event-batch, and Outcome repair, the
+supervisor performs one final authoritative
+`reconcilable_sessions()` scan. Each successful final scan atomically publishes
+a process-local generation plus only three aggregate counts: terminal Sessions
+with incomplete Event batches, Event-batch failures observed by that recovery
+cycle, and quarantined rows returned by the same scan. A failed final scan does
+not advance or replace the preceding generation and remains a retryable recovery
+failure. The projection contains no Session ids, quarantine reasons, clocks,
+credentials, or database details.
+
+The existing Coordinator admin listener exposes this snapshot at
+`GET /admin/session-event-batch-cutover-validation`; it returns `503` until the
+first successful final scan. After every old writer is stopped, deployment automation
+records each exact candidate Pod's baseline generation, then requires a strictly
+newer generation with all three counts zero from every candidate before reopening
+admission. A missing Pod, stale generation, failed scan, or nonzero count is
+diagnostic no-proof and keeps the forward-only cutover closed. No readiness
+probe, log timestamp, second scheduler, migration store, or Cloud database read
+substitutes for this per-process proof.
+
+`serde(default)` lets the new reader consume an old row; it does not make an
+ordinary rolling deployment safe or reconstruct facts an old writer never
+retained. A later two-stage reader-first rollout and an online legacy-history
+migration are explicitly deferred.

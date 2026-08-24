@@ -938,33 +938,37 @@ async fn verified_idempotent_entry_rejects_different_material() {
 }
 
 /// Cause/effect graph for the hosted application bearer aggregate:
-/// C1 source absent; C2 tuple matches the durable source; C3 command key
-/// matches; C4 payload/material matches; C5 a new command key is supplied.
-/// Effects are E1 create one source/revision, E2 exact replay/no write, E3
-/// reject an idempotency or tuple conflict, and E4 rotate only material while
-/// retaining source identity. Constraints: C3 excludes C5; C4 is relevant
-/// only with C3.
+/// C1 source is absent/present; C2 tuple matches; C3 generation is
+/// zero/equal/newer/older; C4 key and payload match the current material.
+/// Effects are E0 reject without source/secret, E1 create one source/revision,
+/// E2 exact replay/no write, E3 reject without mutation, and E4 rotate only
+/// material while retaining source identity. Constraints: generation zero is
+/// never durable; only equal generation plus exact key/payload replays; every
+/// other equal/older command rejects before the WAL or SecretStore.
 ///
-/// | rule | C1 | C2 | C3 | C4 | C5 | effect |
-/// |---|---|---|---|---|---|---|
-/// | A1 | yes | - | - | - | - | E1/revision 1 |
-/// | A2 | no | yes | yes | yes | no | E2/same ids and revision |
-/// | A3 | no | yes | yes | no | no | E3/conflict |
-/// | A4 | no | yes | no | - | yes | E4/same id, revision + 1 |
-/// | A5 | no | no | - | - | - | E3/conflict |
+/// | rule | source | tuple | generation | key/payload | effect |
+/// |---|---|---|---|---|---|
+/// | A0 | absent | yes | zero | any | E0 |
+/// | A1 | absent | yes | positive | any | E1/revision 1 |
+/// | A2 | present | yes | equal | exact | E2/same source and revision |
+/// | A3 | present | yes | equal | different | E3/conflict |
+/// | A4 | present | yes | newer | any | E4/same id, revision + 1 |
+/// | A5 | present | yes | older | prior exact | E3/conflict/no rollback |
+/// | A6 | present | no | newer | any | E3/conflict |
 #[tokio::test]
 async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggregate() {
     let store = InMemorySecretStore::new();
     let repo = InMemoryCredentialRepo::new();
     let source_id = CredentialSourceId("cred:app-mcp:test".into());
     macro_rules! command {
-        ($workspace:expr, $target:expr, $key:expr, $token:expr) => {
+        ($workspace:expr, $target:expr, $generation:expr, $key:expr, $token:expr) => {
             enter_or_rotate_application_mcp_bearer(
                 ApplicationMcpBearerCommand {
                     source_id: source_id.clone(),
                     workspace_id: $workspace.into(),
                     target_fingerprint: $target.into(),
                     command_key_fingerprint: $key.into(),
+                    credential_generation: $generation,
                     bearer: RedactedString::new($token),
                 },
                 &store,
@@ -973,18 +977,29 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
         };
     }
 
-    let first = command!("ws", "target-a", "key-1", "token-1")
+    assert!(matches!(
+        command!("ws", "target-a", 0, "key-zero", "token-zero").await,
+        Err(CredentialError::InvalidSource(_))
+    ));
+    assert!(repo.list("ws").await.unwrap().is_empty(), "A0");
+    assert!(store.inventory().await.unwrap().is_empty(), "A0");
+
+    let first = command!("ws", "target-a", 1, "key-1", "token-1")
         .await
         .unwrap();
-    let replay = command!("ws", "target-a", "key-1", "token-1")
+    let replay = command!("ws", "target-a", 1, "key-1", "token-1")
         .await
         .unwrap();
-    let mismatched_replay = command!("ws", "target-a", "key-1", "token-other").await;
-    let rotated = command!("ws", "target-a", "key-2", "token-2")
+    let mismatched_replay = command!("ws", "target-a", 1, "key-1", "token-other").await;
+    let same_generation_conflict = command!("ws", "target-a", 1, "key-other", "token-other").await;
+    let rotated = command!("ws", "target-a", 2, "key-2", "token-2")
         .await
         .unwrap();
-    let workspace_conflict = command!("other", "target-a", "key-3", "token-3").await;
-    let target_conflict = command!("ws", "target-b", "key-3", "token-3").await;
+    let delayed_older_replay = command!("ws", "target-a", 1, "key-1", "token-1").await;
+    let current_generation_conflict =
+        command!("ws", "target-a", 2, "key-other", "token-other").await;
+    let workspace_conflict = command!("other", "target-a", 3, "key-3", "token-3").await;
+    let target_conflict = command!("ws", "target-b", 3, "key-3", "token-3").await;
 
     assert_eq!(first.version, 1);
     assert_eq!(first.id, replay.id);
@@ -993,8 +1008,20 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
         mismatched_replay,
         Err(CredentialError::MutationConflict(_))
     ));
+    assert!(matches!(
+        same_generation_conflict,
+        Err(CredentialError::MutationConflict(_))
+    ));
     assert_eq!(rotated.id, first.id);
     assert_eq!(rotated.version, first.version + 1);
+    assert!(
+        rotated
+            .material_ref
+            .as_ref()
+            .unwrap()
+            .0
+            .contains(":generation:2")
+    );
     assert_eq!(
         store
             .get(rotated.material_ref.as_ref().unwrap())
@@ -1004,6 +1031,14 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
         "token-2"
     );
     assert!(matches!(
+        delayed_older_replay,
+        Err(CredentialError::MutationConflict(_))
+    ));
+    assert!(matches!(
+        current_generation_conflict,
+        Err(CredentialError::MutationConflict(_))
+    ));
+    assert!(matches!(
         workspace_conflict,
         Err(CredentialError::MutationConflict(_))
     ));
@@ -1011,13 +1046,94 @@ async fn application_mcp_bearer_create_replay_rotate_and_conflict_are_one_aggreg
         target_conflict,
         Err(CredentialError::MutationConflict(_))
     ));
+    assert_eq!(repo.get(&source_id).await.unwrap(), rotated, "A3/A5/A6");
+    assert_eq!(store.inventory().await.unwrap().len(), 1, "A3/A5/A6");
+}
+
+/// Legacy-upgrade cause/effect graph: C1 an existing application-MCP material
+/// ref has no generation but retains its valid Managed attempt fence -> E1
+/// parse it as generation zero; C2 a positive generation arrives -> E2 rotate
+/// through the existing WAL/CAS and reclaim the legacy material; C3 the exact
+/// upgraded tuple replays -> E3 no additional source, secret, or mutation.
+///
+/// | rule | current encoding | incoming generation | effect |
+/// |---|---|---|---|
+/// | L1 | legacy/0 | 1 | one revision advance; one generation-1 material |
+/// | L2 | generation 1 | exact 1 | replay; no extra state |
+#[tokio::test]
+async fn application_mcp_legacy_material_identity_upgrades_once() {
+    let store = InMemorySecretStore::new();
+    let repo = InMemoryCredentialRepo::new();
+    let source_id = CredentialSourceId("cred:app-mcp:legacy".into());
+    let command_key_fingerprint = "legacy-key";
+    let legacy_ref = crate::SecretRef(format!(
+        "sec:{}:application-mcp:{}:{command_key_fingerprint}:attempt:legacyattempt",
+        source_id.0,
+        command_key_fingerprint.len(),
+    ));
+    store
+        .put(&legacy_ref, RedactedString::new("legacy-token"))
+        .await
+        .unwrap();
+    repo.put(CredentialSource {
+        id: source_id.clone(),
+        workspace_id: "ws".into(),
+        kind: CredentialKind::Vault,
+        provider_id: Some(APPLICATION_MCP_PROVIDER_ID.into()),
+        protocol_endpoint_id: Some("target".into()),
+        env_key: None,
+        material_ref: Some(legacy_ref.clone()),
+        auxiliary_material_refs: BTreeMap::new(),
+        oauth_command: None,
+        worker_local_binding: None,
+        status: CredentialStatus::Active,
+        version: 1,
+    })
+    .await
+    .unwrap();
+
+    let command = || ApplicationMcpBearerCommand {
+        source_id: source_id.clone(),
+        workspace_id: "ws".into(),
+        target_fingerprint: "target".into(),
+        command_key_fingerprint: command_key_fingerprint.into(),
+        credential_generation: 1,
+        bearer: RedactedString::new("legacy-token"),
+    };
+    let upgraded = enter_or_rotate_application_mcp_bearer(command(), &store, &repo)
+        .await
+        .unwrap();
+    assert_eq!(upgraded.version, 2, "L1");
+    assert!(
+        upgraded
+            .material_ref
+            .as_ref()
+            .unwrap()
+            .0
+            .contains(":generation:1"),
+        "L1"
+    );
+    assert!(
+        matches!(
+            store.get(&legacy_ref).await,
+            Err(CredentialError::SecretNotFound(_))
+        ),
+        "L1 reclaims legacy material"
+    );
+    let replay = enter_or_rotate_application_mcp_bearer(command(), &store, &repo)
+        .await
+        .unwrap();
+    assert_eq!(replay, upgraded, "L2");
+    assert_eq!(store.inventory().await.unwrap().len(), 1, "L1/L2");
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "L1/L2");
 }
 
 /// Concurrent-rotation decision rule: C1 two valid commands read the same
-/// revision and C2 their command identities differ. The one source-keyed WAL
-/// accepts exactly one intent (E1), the other returns MutationConflict (E2),
-/// and the durable source advances exactly once (E3). Equal command+payload
-/// is constrained to the replay rule above and may safely share one intent.
+/// revision and C2 both carry the same next generation with different command
+/// fingerprints. The one source-keyed WAL accepts exactly one intent (E1), the
+/// other returns MutationConflict (E2), and the durable source/generation
+/// advances exactly once (E3). Equal generation+command+payload is constrained
+/// to the replay rule above and may safely share one intent.
 #[tokio::test]
 async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
     let store = InMemorySecretStore::new();
@@ -1029,6 +1145,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
             workspace_id: "ws".into(),
             target_fingerprint: "target".into(),
             command_key_fingerprint: "initial-key".into(),
+            credential_generation: 1,
             bearer: RedactedString::new("initial-token"),
         },
         &store,
@@ -1044,6 +1161,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
             workspace_id: "ws".into(),
             target_fingerprint: "target".into(),
             command_key_fingerprint: "left-key".into(),
+            credential_generation: 2,
             bearer: RedactedString::new("left-token"),
         },
         &store,
@@ -1055,6 +1173,7 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
             workspace_id: "ws".into(),
             target_fingerprint: "target".into(),
             command_key_fingerprint: "right-key".into(),
+            credential_generation: 2,
             bearer: RedactedString::new("right-token"),
         },
         &store,
@@ -1069,7 +1188,17 @@ async fn application_mcp_bearer_concurrent_rotation_has_one_winner() {
             + usize::from(matches!(right, Err(CredentialError::MutationConflict(_)))),
         1
     );
-    assert_eq!(repo.get(&source_id).await.unwrap().version, 2);
+    let durable = repo.get(&source_id).await.unwrap();
+    assert_eq!(durable.version, 2);
+    assert!(
+        durable
+            .material_ref
+            .as_ref()
+            .unwrap()
+            .0
+            .contains(":generation:2")
+    );
+    assert_eq!(store.inventory().await.unwrap().len(), 1);
     assert!(repo.pending_mutations().await.unwrap().is_empty());
 }
 

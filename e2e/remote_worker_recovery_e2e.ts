@@ -314,29 +314,12 @@ function spawnCredentialIsolatedWorker(
   workerId: string,
   upstream: string,
 ): ReturnType<typeof spawnServer>['server'] {
-  // Test-process credential-isolation decision table. The production startup
-  // guard remains fail-closed; this fixture changes only the exact Worker child
-  // environment at spawn time and restores the Node owner's environment before
-  // returning.
-  //
-  // | Rule | inherited name | child effect | parent effect |
-  // | W1   | API_KEY/*_API_KEY | omit       | restore exact value |
-  // | W2   | any other name    | inherit    | unchanged           |
-  const ambientApiKeys = Object.entries(process.env).filter(([name, value]) => {
-    const normalized = name.toUpperCase();
-    return value !== undefined && (normalized === 'API_KEY' || normalized.endsWith('_API_KEY'));
-  }) as Array<[string, string]>;
-  for (const [name] of ambientApiKeys) delete process.env[name];
-  try {
-    return spawnServer('echo', 0, {
-      SESSION_DEPLOYMENT_INGRESS: 'durable',
-      AWAKEN_UPSTREAM_URL: upstream,
-      AWAKEN_SCENARIO_ROLE: 'worker',
-      AWAKEN_WORKER_ID: workerId,
-    }).server;
-  } finally {
-    for (const [name, value] of ambientApiKeys) process.env[name] = value;
-  }
+  return spawnServer('echo', 0, {
+    SESSION_DEPLOYMENT_INGRESS: 'durable',
+    AWAKEN_UPSTREAM_URL: upstream,
+    AWAKEN_SCENARIO_ROLE: 'worker',
+    AWAKEN_WORKER_ID: workerId,
+  }).server;
 }
 
 async function api(method: string, route: string, body?: unknown): Promise<{ status: number; body: any }> {

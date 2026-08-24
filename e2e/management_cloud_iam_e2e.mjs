@@ -4,7 +4,7 @@
 // PEP enforcement, and remote authorization over HTTP.
 //
 // Brokered model cause graph / decision table:
-// C1 valid configured Cloud access token, C2 Cloud readiness, C3 native model projection,
+// C1 valid process-configured Cloud identity, C2 Cloud readiness, C3 native model projection,
 // C4 explicit brokered Profile binding, C5 current attempt ownership, C6 Cloud
 // grant, C7 native Gateway function call + tool result + final response,
 // C8 later model removal, C9 transient
@@ -25,7 +25,7 @@
 // blocks; incomplete and unknown output variants remain valid terminal responses.
 // T9 malformed/unsupported Cloud projections fail atomically; duplicate public
 // model observations merge only the conservative known attribute minimum.
-// T10 fixed-token Cloud identity + Cloud models off -> identity remains
+// T10 configured Cloud identity + Cloud models off -> identity remains
 // authenticated, interactive login remains disabled, and Catalog refresh fails
 // locally with zero Cloud inference requests.
 
@@ -329,7 +329,7 @@ async function main() {
     );
     await stopServer(server);
     server = null;
-    pass('fixed-token Cloud identity and model supply are independent; disabled supply has zero Cloud traffic');
+    pass('configured Cloud identity and Cloud model supply are independent; disabled supply has zero Cloud traffic');
 
     const env = deploymentEnv(directory, {
       identityMode: 'awaken-cloud',
@@ -348,7 +348,7 @@ async function main() {
     const base = `http://127.0.0.1:${PORT}`;
     const localWorkspace = fs.readFileSync(path.join(directory, 'platform-workspace-id'), 'utf8').trim();
 
-    // No request credential means "use the cloud login cached by this local
+    // No request credential means "use the Cloud credential configured for this
     // process". The platform workspace is resolved at the composition edge.
     let result = await req(base, 'GET', '/v1/files');
     assert.equal(result.status, 200, JSON.stringify(result.body));
@@ -357,9 +357,9 @@ async function main() {
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: localWorkspace });
     assert.equal(call.authorization, `Bearer ${SERVICE_TOKEN}`);
     assert.equal(call.audience, AUDIENCE);
-    pass('cached cloud login -> resource PEP -> remote PDP with platform workspace');
+    pass('configured Cloud identity -> resource PEP -> remote PDP with platform workspace');
 
-    // An explicit Bearer or x-api-key overrides the cached login. Workspace path
+    // An explicit Bearer or x-api-key overrides the configured identity. Workspace path
     // selection is trusted only after the edge rewrite and reaches the PDP as the
     // target; the inner resource service sees only the stamped WorkspaceScope.
     const selectedWorkspace = 'workspace-cloud-selected';
@@ -390,27 +390,35 @@ async function main() {
     assert.deepEqual(call.body.scope, { kind: 'workspace', workspace_id: selectedWorkspace });
     pass('model-supply PEP uses its dedicated read action and trusted workspace');
 
-    // T1 startup owns the first reconciliation; the explicit ConfigService
-    // command reuses that same catalog/discovery path and is idempotent.
-    result = await req(base, 'GET', '/v1/config/catalog');
-    assert.equal(result.status, 200, JSON.stringify(result.body));
-    let brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
-    assert.ok(brokered, JSON.stringify(result.body));
-
+    // Startup/refresh cause-effect rule: C1 enabled Cloud supply plus one
+    // authenticated brokered client reconciles the authoritative Catalog once
+    // before listen (E1). Replaying the existing ConfigService refresh performs
+    // the same two reads (E2) but activates no second offering (E3). This is one
+    // application operation, not two synchronization owners.
+    assert.deepEqual(
+      iam.cloudCalls.map((entry) => entry.path),
+      ['/v1/inference/readiness', '/v1/inference/models'],
+      'C1/E1 startup reconciliation',
+    );
     result = await req(base, 'POST', '/v1/config/brokered-models/refresh');
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    assert.equal(result.body.activated, 0, 'T1 explicit refresh replays the startup projection');
+    assert.equal(result.body.discovered, 1, 'E2 complete replay observation');
+    assert.equal(result.body.activated, 0, 'E3 no duplicate activation');
+    assert.equal(result.body.marked_unavailable, 0, 'E3 current offering remains available');
     assert.deepEqual(
       iam.cloudCalls.map((entry) => entry.path),
       [
-        '/v1/inference/readiness', '/v1/inference/models',
-        '/v1/inference/readiness', '/v1/inference/models',
+        '/v1/inference/readiness',
+        '/v1/inference/models',
+        '/v1/inference/readiness',
+        '/v1/inference/models',
       ],
+      'C1/E2 explicit refresh reuses the startup reconciliation owner',
     );
     assert.ok(iam.cloudCalls.every((entry) => entry.authorization === `Bearer ${cachedToken}`));
     result = await req(base, 'GET', '/v1/config/catalog');
     assert.equal(result.status, 200, JSON.stringify(result.body));
-    brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
+    const brokered = result.body.offerings.find((offering) => offering.source === 'brokered');
     assert.ok(brokered, JSON.stringify(result.body));
     assert.equal(brokered.model_id, 'gpt-5-e2e');
     assert.equal(result.body.model_attributes['gpt-5-e2e'].context_window, 400000);
@@ -1061,7 +1069,7 @@ async function main() {
     assert.equal(approvalCatalog.status, 403, JSON.stringify(approvalCatalog.body));
     pass('remote deny and approval obligations remain fail-closed at both PEPs');
 
-    console.log('E2E PASS: Awaken Cloud login and remote authorization stay outside resource services.');
+    console.log('E2E PASS: Awaken Cloud identity and remote authorization stay outside resource services.');
   } finally {
     if (server) await stopServer(server);
     await iam.close();

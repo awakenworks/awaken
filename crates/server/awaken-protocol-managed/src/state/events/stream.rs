@@ -51,6 +51,27 @@ impl ManagedState {
             }
         }
     }
+
+    /// Broadcast only identities that were absent before a canonical rebuild.
+    /// Reordering the disposable vector cannot make an older event look newly
+    /// committed, and a newly completed interval is delivered in its canonical
+    /// order even when rebuilding it inserted facts before a transient overlay.
+    pub(in crate::state) fn broadcast_new_event_ids(
+        &self,
+        session_id: &str,
+        record: &SessionRecord,
+        previous_ids: &std::collections::HashSet<String>,
+    ) {
+        if let Some(tx) = self.live.lock().unwrap().get(session_id) {
+            for event in record
+                .events
+                .iter()
+                .filter(|event| !previous_ids.contains(&event.id))
+            {
+                let _ = tx.send(event.clone());
+            }
+        }
+    }
     /// `GET /v1/sessions/{id}/events` — the session's events in the requested
     /// chronological direction, paged by cursor via the kernel's shared
     /// [`paginate_by_id`]. `cursor` is the id of the last event on the previous

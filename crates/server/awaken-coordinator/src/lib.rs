@@ -23,6 +23,7 @@
 
 pub mod admin;
 pub mod application_access;
+pub mod application_access_store;
 mod artifact_publication;
 pub mod console;
 pub mod control_service_boundary;
@@ -50,7 +51,8 @@ pub mod workspace_path;
 pub use artifact_publication::ClaimFencedArtifactPublisher;
 pub use coordinator_component::{
     CoordinatorBuildError, CoordinatorComponent, CoordinatorDependencies,
-    build_coordinator_component, restore_deployment_application,
+    build_coordinator_component, register_application_access_retention,
+    restore_deployment_application,
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use coordinator_persistence::init_scenario_runtime;
@@ -467,7 +469,14 @@ fn local_managed_state_over(
 /// 3); every other mode goes through [`mount`], whose state is the plain host.
 #[cfg(feature = "test-support")]
 pub fn mount_with_managed(host: Arc<SharedHost>, managed_state: Arc<ManagedState>) -> Router {
-    mount_with_managed_over(host, managed_state, ephemeral_resource_registry(), None).0
+    mount_with_managed_over(
+        host,
+        managed_state,
+        ephemeral_resource_registry(),
+        ApplicationAccessMount::ExplicitlyUnguardedTest,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+    .0
 }
 
 #[cfg(feature = "test-support")]
@@ -497,12 +506,17 @@ fn scenario_dream_process_store(
 }
 
 #[cfg(feature = "test-support")]
-fn with_scenario_session_lifecycle(router: Router, managed_state: Arc<ManagedState>) -> Router {
-    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+fn with_scenario_session_lifecycle(
+    router: Router,
+    managed_state: Arc<ManagedState>,
+    host: Arc<SharedHost>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     install_managed_lifecycle_delivery(&managed_state, None, &lifecycle)
         .expect("scenario Managed lifecycle delivery binds before traffic");
     let session_application = managed_state.session_application();
     coordinator_component::register_session_lifecycle(&lifecycle, session_application);
+    coordinator_component::register_runtime_background_drain(&lifecycle, host);
     // The Router owns the same process-lifecycle handle as the Scenario surface.
     // Dropping the test server drops the composition; the Tokio runtime then
     // tears down its registered tasks just as process shutdown does.
@@ -555,8 +569,32 @@ pub fn mount_with_managed_and_resource_registry_and_dreams(
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+        host,
+        managed_state,
+        resource_registry,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    )
+}
+
+/// Scenario composition with an outer-owned lifecycle. Process-level scenario
+/// hosts use this entry point so graceful HTTP shutdown can join the exact
+/// Session supervisors and Runtime background work mounted in the Router.
+#[cfg(feature = "test-support")]
+pub fn mount_with_managed_and_resource_registry_and_dreams_on_lifecycle(
+    host: Arc<SharedHost>,
+    managed_state: Arc<ManagedState>,
+    resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
     let local_workspace = host.local_workspace().to_string();
-    let (data, dreams) = mount_with_managed_over(host, managed_state, resource_registry, None);
+    let (data, dreams) = mount_with_managed_over(
+        host,
+        managed_state,
+        resource_registry,
+        ApplicationAccessMount::ExplicitlyUnguardedTest,
+        lifecycle,
+    );
     // The bare scenario/test mount has no separate management edge. Keep the
     // Awaken policy authoring projection reachable here so deterministic SDK and
     // Console E2E can exercise it. Production startup mounts this exact
@@ -572,13 +610,14 @@ pub fn mount_with_managed_and_application_access(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
+    application_access: Arc<application_access_store::ApplicationAccessStore>,
 ) -> Router {
     mount_with_managed_over(
         host,
         managed_state,
         resource_registry,
-        Some(application_access),
+        ApplicationAccessMount::Guarded(application_access),
+        awaken_service_lifecycle::ServiceLifecycle::new(),
     )
     .0
 }
@@ -589,9 +628,11 @@ pub fn mount_with_managed_and_application_access_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    application_access: Arc<awaken_authz_enforce::ApplicationAccessStore>,
+    application_access: Arc<application_access_store::ApplicationAccessStore>,
     model_inventory: Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>,
 ) -> Router {
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
     let dream_process_store = scenario_dream_process_store(host.as_ref());
     let (resources, memory_stores) =
@@ -607,10 +648,10 @@ pub fn mount_with_managed_and_application_access_and_models(
     let (managed, data, application, worker_private, _) = mount_with_managed_over_and_models(
         host,
         managed_state,
+        ApplicationAccessMount::Guarded(application_access),
         ManagedApplicationServices {
             session_application,
             resource_registry,
-            application_access: Some(application_access),
             model_inventory: Some(model_inventory),
             dream_process_store,
             executable_projection_refresh: None,
@@ -634,7 +675,7 @@ pub fn mount_with_managed_and_application_access_and_models(
         worker_private,
         remote_worker_required,
     );
-    with_scenario_session_lifecycle(public, supervised_state)
+    with_scenario_session_lifecycle(public, supervised_state, lifecycle_host, lifecycle)
 }
 
 /// Router-owned services that must move together into the managed data plane.
@@ -657,12 +698,17 @@ pub struct ManagedRoutingExtensions {
 pub struct ManagedApplicationServices {
     pub session_application: Arc<awaken_session_application::SessionApplication>,
     pub resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    pub application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
     pub model_inventory:
         Option<Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>,
     pub dream_process_store: Arc<dyn awaken_session_contract::DreamProcessStore>,
     pub executable_projection_refresh:
         Option<Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>,
+}
+
+enum ApplicationAccessMount {
+    Guarded(Arc<application_access_store::ApplicationAccessStore>),
+    #[cfg(feature = "test-support")]
+    ExplicitlyUnguardedTest,
 }
 
 struct RefreshingExecutableAgentInventory {
@@ -922,6 +968,7 @@ mod worker_checkpoint_authority_tests {
 pub fn mount_with_managed_application_access_models_and_dreams(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
+    application_access: Arc<application_access_store::ApplicationAccessStore>,
     applications: ManagedApplicationServices,
     routing: ManagedRoutingExtensions,
 ) -> Result<
@@ -934,7 +981,13 @@ pub fn mount_with_managed_application_access_models_and_dreams(
     ),
     WorkerTransportBuildError,
 > {
-    mount_with_managed_over_and_models(host, managed_state, applications, routing)
+    mount_with_managed_over_and_models(
+        host,
+        managed_state,
+        ApplicationAccessMount::Guarded(application_access),
+        applications,
+        routing,
+    )
 }
 
 #[cfg(feature = "test-support")]
@@ -942,8 +995,10 @@ fn mount_with_managed_over(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
     resource_registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
-    application_access: Option<Arc<awaken_authz_enforce::ApplicationAccessStore>>,
+    application_access: ApplicationAccessMount,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
 ) -> (Router, Arc<awaken_dream_application::DreamApplication>) {
+    let lifecycle_host = host.clone();
     let remote_worker_required = !host.runs_local_dispatch_pool();
     // A scenario that opts into the same durable storage root as production
     // must not silently retain an in-memory Dream authority. Sessions and
@@ -964,10 +1019,10 @@ fn mount_with_managed_over(
         mount_with_managed_over_and_models(
             host,
             managed_state,
+            application_access,
             ManagedApplicationServices {
                 session_application,
                 resource_registry,
-                application_access,
                 model_inventory: None,
                 dream_process_store,
                 executable_projection_refresh: None,
@@ -992,7 +1047,7 @@ fn mount_with_managed_over(
         remote_worker_required,
     );
     (
-        with_scenario_session_lifecycle(public, supervised_state),
+        with_scenario_session_lifecycle(public, supervised_state, lifecycle_host, lifecycle),
         dreams,
     )
 }
@@ -1000,6 +1055,7 @@ fn mount_with_managed_over(
 fn mount_with_managed_over_and_models(
     host: Arc<SharedHost>,
     managed_state: Arc<ManagedState>,
+    application_access: ApplicationAccessMount,
     applications: ManagedApplicationServices,
     routing: ManagedRoutingExtensions,
 ) -> Result<
@@ -1015,7 +1071,6 @@ fn mount_with_managed_over_and_models(
     let ManagedApplicationServices {
         session_application,
         resource_registry,
-        application_access,
         model_inventory,
         dream_process_store,
         executable_projection_refresh,
@@ -1155,18 +1210,27 @@ fn mount_with_managed_over_and_models(
             move |thread| workspace_host.thread_workspace(thread),
             move |thread| agent_host.thread_agent_projection(thread),
         ));
-    let mut ai_sdk = awaken_protocol_ai_sdk::router(admitted_runs.clone());
-    let mut ag_ui = awaken_protocol_ag_ui::router(admitted_runs.clone());
-    if let Some(application_access) = application_access {
-        ai_sdk = ai_sdk.layer(axum::middleware::from_fn_with_state(
-            application_access.clone(),
-            awaken_authz_enforce::application_guard,
-        ));
-        ag_ui = ag_ui.layer(axum::middleware::from_fn_with_state(
-            application_access,
-            awaken_authz_enforce::application_guard,
-        ));
-    }
+    let ai_sdk = awaken_protocol_ai_sdk::router(admitted_runs.clone());
+    let ag_ui = awaken_protocol_ag_ui::router(admitted_runs.clone());
+    let (ai_sdk, ag_ui) = match application_access {
+        ApplicationAccessMount::Guarded(application_access) => {
+            let application_authenticator: Arc<
+                dyn awaken_authz_enforce::ApplicationAccessAuthenticator,
+            > = application_access;
+            (
+                ai_sdk.layer(axum::middleware::from_fn_with_state(
+                    application_authenticator.clone(),
+                    awaken_authz_enforce::application_guard,
+                )),
+                ag_ui.layer(axum::middleware::from_fn_with_state(
+                    application_authenticator,
+                    awaken_authz_enforce::application_guard,
+                )),
+            )
+        }
+        #[cfg(feature = "test-support")]
+        ApplicationAccessMount::ExplicitlyUnguardedTest => (ai_sdk, ag_ui),
+    };
     let application = ai_sdk.merge(ag_ui);
     let a2a = awaken_protocol_a2a::router_with_storage_root(admitted_runs, host.storage_dir());
     // A coordinator-only Host owns both dispatch and committed Thread truth but
