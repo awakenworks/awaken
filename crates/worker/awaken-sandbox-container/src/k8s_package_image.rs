@@ -14,7 +14,7 @@ use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
 use kube::api::{DeleteParams, ListParams, PostParams};
 use kube::{Api, Client};
 
-use crate::k8s::{api_conflict, backend, install_rustls_crypto_provider};
+use crate::k8s::{api_conflict, backend, install_rustls_crypto_provider, sandbox_network_labels};
 use crate::{ForwardProxy, PackageImageProvisioner, RuntimeError};
 
 pub const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
@@ -409,10 +409,11 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             volume_mounts: Some(volume_mounts),
             ..Default::default()
         };
-        let labels = BTreeMap::from([(
+        let mut labels = sandbox_network_labels(Some("open"));
+        labels.insert(
             "app.kubernetes.io/managed-by".into(),
             "awaken-environment-builder".into(),
-        )]);
+        );
         // These values are already the deterministic, non-secret inputs of the
         // one BuildKit realization. They let a bounded cluster observer join the
         // Job/Pod to its termination digest without copying the Coordinator's
@@ -528,10 +529,12 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         let fingerprint = blake3::hash(image.as_bytes()).to_hex().to_string();
         let name = format!("awaken-image-check-{}", &fingerprint[..20]);
         let release_annotations = release_annotations.cloned();
+        let labels = sandbox_network_labels(None);
         let job = Job {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
+                labels: Some(labels.clone()),
                 annotations: release_annotations.clone(),
                 ..Default::default()
             },
@@ -540,8 +543,9 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 backoff_limit: Some(0),
                 ttl_seconds_after_finished: Some(60),
                 template: PodTemplateSpec {
-                    metadata: release_annotations.map(|annotations| ObjectMeta {
-                        annotations: Some(annotations),
+                    metadata: Some(ObjectMeta {
+                        labels: Some(labels),
+                        annotations: release_annotations,
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -717,6 +721,8 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{
         IMAGE_CHECK_TIMEOUT_SECS, ImageCheckDisposition, ImageCheckObservation,
         K8sPackageImageProvisioner, PACKAGE_IMAGE_DESTINATION_ANNOTATION,
@@ -757,9 +763,12 @@ mod tests {
         /* Release-correlation cause/effect table — R1:
          * C1 one deterministic recipe is pushed to one generated destination;
          * C2 the same Job carries private recipe, proxy, Registry auth, and base
-         * image inputs. Effects: E1 Job and Pod template expose the exact recipe
-         * fingerprint and destination; E2 no C2 material enters annotations.
-         * Rule R1=C1+C2=>E1+E2. The termination message remains the immutable
+         * image inputs; C3 package realization has already admitted only an
+         * unrestricted build. Effects: E1 Job and Pod template expose the exact
+         * recipe fingerprint and destination; E2 no C2 material enters
+         * annotations; E3 both objects select the canonical sandbox default-deny
+         * plus open-egress policies. Rule R1=C1+C2+C3=>E1+E2+E3. The termination
+         * message remains the immutable
          * build result; these two fields are correlation only, not another build
          * record or completion authority.
          */
@@ -779,6 +788,25 @@ mod tests {
             .and_then(|spec| spec.template.metadata.as_ref())
             .and_then(|metadata| metadata.annotations.as_ref())
             .unwrap();
+        let expected_labels = BTreeMap::from([
+            ("app".to_owned(), "awaken-sandbox".to_owned()),
+            ("awaken-egress".to_owned(), "open".to_owned()),
+            (
+                "app.kubernetes.io/managed-by".to_owned(),
+                "awaken-environment-builder".to_owned(),
+            ),
+        ]);
+        let pod_labels = job
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.metadata.as_ref())
+            .and_then(|metadata| metadata.labels.as_ref());
+        assert_eq!(
+            job.metadata.labels.as_ref(),
+            Some(&expected_labels),
+            "R1/E3 Job"
+        );
+        assert_eq!(pod_labels, Some(&expected_labels), "R1/E3 Pod");
 
         for annotations in [job_annotations, pod_annotations] {
             assert_eq!(
@@ -814,11 +842,14 @@ mod tests {
          * C1 the destination is missing, so the existing BuildKit Job runs;
          * C2 BuildKit pushed it but the process crashed before its durable
          * receipt, so the retry reaches the existing destination image-check;
-         * C3 a base/general image is checked outside package realization.
+         * C3 a base/general image is checked outside package realization; C4 a
+         * pulled image can execute untrusted entrypoint code during verification.
          * Effects: E1 the Build Job/Pod owns the recipe+destination pair; E2 the
          * check Job/Pod reuses that exact pair and kubelet imageID recovers the
-         * immutable digest; E3 a generic check carries no package provenance.
-         * Rules: R2=C1=>E1; R3=C2=>E2; R4=C3=>E3.
+         * immutable digest; E3 a generic check carries no package provenance;
+         * E4 every check Job/Pod selects the canonical default-deny policy and
+         * no open-egress policy. Rules: R2=C1=>E1; R3=C2+C4=>E2+E4;
+         * R4=C3+C4=>E3+E4.
          */
         let builder = test_builder();
         let packages = package_requirements();
@@ -844,6 +875,21 @@ mod tests {
         assert_eq!(retry_annotations, build_annotations, "R3/E2 Job join");
         assert_eq!(retry_pod_annotations, build_annotations, "R3/E2 Pod join");
         assert_eq!(retry_image, Some(destination.as_str()), "R3/E2 target");
+        let deny_labels = BTreeMap::from([("app".to_owned(), "awaken-sandbox".to_owned())]);
+        assert_eq!(
+            retry_check.metadata.labels.as_ref(),
+            Some(&deny_labels),
+            "R3/E4 Job"
+        );
+        assert_eq!(
+            retry_check
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.template.metadata.as_ref())
+                .and_then(|metadata| metadata.labels.as_ref()),
+            Some(&deny_labels),
+            "R3/E4 Pod"
+        );
 
         let digest = "a".repeat(64);
         let immutable = format!("registry.local:5000/environments/awaken-packages@sha256:{digest}");
@@ -869,13 +915,21 @@ mod tests {
 
         let (_, generic_check) = builder.image_check_job("registry.local/base:mutable", None);
         assert!(generic_check.metadata.annotations.is_none(), "R4/E3 Job");
-        assert!(
-            generic_check
-                .spec
-                .as_ref()
-                .and_then(|spec| spec.template.metadata.as_ref())
-                .is_none(),
-            "R4/E3 Pod"
+        assert_eq!(
+            generic_check.metadata.labels.as_ref(),
+            Some(&deny_labels),
+            "R4/E4 Job"
+        );
+        let generic_pod_metadata = generic_check
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.metadata.as_ref())
+            .expect("R4 image-check Pod metadata");
+        assert!(generic_pod_metadata.annotations.is_none(), "R4/E3 Pod");
+        assert_eq!(
+            generic_pod_metadata.labels.as_ref(),
+            Some(&deny_labels),
+            "R4/E4 Pod"
         );
     }
 
