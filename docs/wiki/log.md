@@ -1,5 +1,15 @@
 # Wiki Update Log
 
+## 2026-08-25 — Reuse the Session activity fence for every public Run protocol
+
+- Consolidated AI SDK, AG-UI, and A2A Run/resume execution into the existing
+  SessionApplication-owned durable Running/Idle activity boundary.
+- Kept Hosted Worker MCP on its private service endpoint and retained the
+  running-Run authorization rule; no public callback, protocol lifecycle store,
+  or permissive fallback was added.
+- Added a minimal regression that pauses Runtime execution and proves durable
+  Running is visible until the exact call settles, including failure cleanup.
+
 ## 2026-08-24 — Bind beta cutover proof to the sole Session supervisor
 
 - Extended the accepted Session-runtime-interval amendment with the exact
