@@ -158,22 +158,14 @@ fn has_exact_namespace(selector: Option<&LabelSelector>) -> bool {
 }
 
 fn attests_contract(policies: &[NetworkPolicy]) -> bool {
-    let restricted = BTreeMap::from([
-        ("app".to_owned(), "awaken-sandbox".to_owned()),
-        ("awaken-egress".to_owned(), "restricted".to_owned()),
-    ]);
-    let open = BTreeMap::from([
-        ("app".to_owned(), "awaken-sandbox".to_owned()),
-        ("awaken-egress".to_owned(), "open".to_owned()),
-    ]);
+    let restricted = super::sandbox_network_labels(Some("restricted"));
+    let open = super::sandbox_network_labels(Some("open"));
 
     let deny = policies.iter().find(|policy| {
         policy.metadata.name.as_deref() == Some(SANDBOX_DENY_POLICY)
             && policy.spec.as_ref().is_some_and(|spec| {
-                has_exact_labels(
-                    &spec.pod_selector,
-                    &BTreeMap::from([("app".to_owned(), "awaken-sandbox".to_owned())]),
-                ) && controls(policy, "Ingress")
+                has_exact_labels(&spec.pod_selector, &super::sandbox_network_labels(None))
+                    && controls(policy, "Ingress")
                     && controls(policy, "Egress")
                     && spec.ingress.as_ref().is_none_or(Vec::is_empty)
                     && spec.egress.as_ref().is_none_or(Vec::is_empty)
@@ -199,10 +191,7 @@ fn attests_contract(policies: &[NetworkPolicy]) -> bool {
 }
 
 fn attests_allowlist_contract(policies: &[NetworkPolicy]) -> bool {
-    let allowlist = BTreeMap::from([
-        ("app".to_owned(), "awaken-sandbox".to_owned()),
-        ("awaken-egress".to_owned(), "allowlist".to_owned()),
-    ]);
+    let allowlist = super::sandbox_network_labels(Some("allowlist"));
     let exact = policies.iter().find(|policy| {
         policy.metadata.name.as_deref() == Some(SANDBOX_ALLOWLIST_POLICY)
             && policy.spec.as_ref().is_some_and(|spec| {
