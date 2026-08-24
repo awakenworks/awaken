@@ -289,10 +289,10 @@ pub(crate) fn spawn_heartbeat(
             sequence = sequence.saturating_add(1);
             match mutation {
                 Ok(Ok(RegistryMutation::Applied)) => {
-                    // Session projection leases are shorter than Worker
-                    // authority and renew through the canonical realization
-                    // protocol. The Control endpoint caps the requested expiry
-                    // by the freshly-heartbeated registry lease.
+                    // Cold terminal cleanup recovery remains coupled to the
+                    // registry heartbeat: claiming an orphaned assignment is a
+                    // Worker-authority operation and does not need a hot-path
+                    // polling cadence.
                     let now = wall_clock_ms();
                     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
                         owner: lifecycle.identity.worker_id.clone(),
@@ -317,23 +317,6 @@ pub(crate) fn spawn_heartbeat(
                             "cold Session terminal cleanup recovery exceeded 8s; durable assignments remain retryable and Worker heartbeat continues"
                         ),
                     }
-                    match tokio::time::timeout(
-                        std::time::Duration::from_secs(3),
-                        lifecycle.host.renew_due_session_realizations(
-                            now.saturating_add(15_000),
-                            now.saturating_add(20_000),
-                        ),
-                    )
-                    .await
-                    {
-                        Ok(Ok(_)) => {}
-                        Ok(Err(error)) => eprintln!(
-                            "Session realization renewal failed closed; Worker heartbeat continues: {error}"
-                        ),
-                        Err(_) => eprintln!(
-                            "Session realization renewal exceeded 3s; projections retain their existing deadlines and Worker heartbeat continues"
-                        ),
-                    }
                 }
                 Ok(Ok(other)) => {
                     eprintln!("worker heartbeat lost authority: {other:?}; draining locally");
@@ -354,6 +337,43 @@ pub(crate) fn spawn_heartbeat(
                     revoke_worker_session_authority(&lifecycle).await;
                     break;
                 }
+            }
+        }
+    })
+}
+
+/// Reconcile resident Session realization leases independently from the Worker
+/// registry heartbeat. Terminal cleanup is a latency-sensitive edge: coupling
+/// it to the ten-second liveness cadence makes a completed Run unnecessarily
+/// block its caller and every dependent Workflow transition. The Host performs
+/// a local empty check before consulting Control, so an idle Worker creates no
+/// high-frequency remote scan load. Cold/orphan recovery remains heartbeat-
+/// paced in [`spawn_heartbeat`].
+pub(crate) fn spawn_session_realization_reconciliation(
+    lifecycle: Arc<WorkerSupervisor>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(1));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let now = wall_clock_ms();
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                lifecycle.host.renew_due_session_realizations(
+                    now.saturating_add(15_000),
+                    now.saturating_add(20_000),
+                ),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {}
+                Ok(Err(error)) => eprintln!(
+                    "Session realization reconciliation failed closed; projections retain their existing deadlines: {error}"
+                ),
+                Err(_) => eprintln!(
+                    "Session realization reconciliation exceeded 3s; projections retain their existing deadlines"
+                ),
             }
         }
     })
