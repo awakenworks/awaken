@@ -212,12 +212,13 @@ Cause/effect and decision rules live in comments beside their tests.
 | bounded state-space proof of CAS, capacity, absorbing archive, claim/run atomicity | `formal/tla/DeploymentCAS.tla` via `scripts/ci/check_formal.sh` |
 | Agent latest/pinned resolution and invalid lifecycle | `deployment_resolves_and_freezes_the_authoritative_agent_version` |
 | missing/archived primary Agent | `missing_or_archived_primary_agent_archives_without_a_run` |
-| schedule syntax/timezone and bounded stable jitter | `validate_schedule_rejects_a_malformed_cron`, `execution_jitter_is_stable_and_obeys_all_interval_bounds` |
-| capacity, pause/unpause, terminal archive, manual while paused, failure auto-pause | Deployment route decision-table unit tests |
-| official cross-module HTTP -> ordinary Session/Event behavior | `managed_deployment_e2e` |
-| official TypeScript SDK CRUD, manual run, filters, pause/unpause and archive | `management_deployments_e2e.mjs` |
-| official TypeScript SDK cron scheduling and persisted cursor behavior | `management_deployment_schedule_e2e.mjs` |
-| durable lifecycle retry and webhook projection | `awaken-webhook-managed` CRUD/outbox tests |
+| schedule syntax/timezone, spring gap, fall repeat, and bounded stable jitter | `dst_gap_is_skipped_and_repeated_wall_clock_fires_twice`, `validate_schedule_rejects_a_malformed_cron`, `execution_jitter_is_stable_and_obeys_all_interval_bounds` |
+| repeated fall occurrence plus durable claim/restart | `fall_back_occurrences_receive_distinct_durable_claims` |
+| capacity, pause/unpause, terminal archive, paused manual run, rate-limit persistence, archived-subagent auto-pause | Deployment route/application decision-table tests |
+| official cross-module HTTP -> ordinary Session/Event behavior and future-only budget copy/update/null | `deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_events` |
+| official TypeScript SDK CRUD, paused manual run, sole `user.define_outcome`, per-run budget/budget_reached, rate-limit run, filters and archive | `management_deployments_e2e.mjs` |
+| official TypeScript SDK cron scheduling, persisted cursor, primary/subagent archive behavior | `management_deployment_schedule_e2e.mjs` |
+| durable lifecycle retry, real Deployment/run lifecycle projection, signatures, and official SDK decoding | `webhook_plane_e2e.rs`, `managed_webhooks_official_sdk_e2e.mjs`, and `awaken-webhook-managed` outbox tests |
 
 ## References
 

@@ -360,6 +360,11 @@ Transient JSONL Files have already been purged at the terminal cleanup boundary.
 Public execution error types are `timeout`, `internal_error`,
 `memory_store_org_limit_exceeded`, `input_memory_store_too_large`,
 `input_memory_store_unavailable`, and `input_session_unavailable`.
+Awaken enforces a private 10 MiB aggregate input-Memory ceiling and a private
+six-hour execution budget so those two documented terminal kinds have concrete,
+finite self-hosted causes. Anthropic does not publish its hosted byte threshold
+or runtime budget, so those numeric values are deployment policy rather than a
+claim of hosted equality.
 
 ## Test design and coverage
 
@@ -373,8 +378,13 @@ oracle.
 | API-2 | invalid input cardinality/count/uniqueness/instructions/model/resource | 400 and no valid job; `validation_and_terminal_mutation_decision_table` |
 | API-2b | input archived/deleted after create | typed failure before terminal publication; `input_deleted_after_create_fails_before_terminal_publication` |
 | API-3 | running job cancel/repeat/late completion | immediate idempotent canceled, output retained, no overwrite; `cancellation_is_immediate_idempotent_and_retains_prepared_output` |
+| API-3b | canceled job whose ordinary Session usage advances while in-flight work winds down | status remains canceled while later retrieval projects the newer usage; `canceled_dream_keeps_projecting_trailing_session_usage` |
 | API-4 | neither/one/both beta capabilities | only both reach Dream route; `dream_routes_require_managed_and_dreaming_betas` |
 | API-5 | limit/cursor/repeated status/date bounds | SDK-compatible newest-first pages or 400; `list_supports_official_repeated_status_filters_and_cursor_pages` |
+| API-6 | Running before/after durable preparation | `outputs[]` and `session_id` transition from empty/null to the prepared references without leaving Running; `running_output_projection_transitions_from_empty_to_prepared` |
+| ERR-1 | preparation or execution exceeds the one application runtime budget | exact failed `timeout`, retained prepared output when present, and one cleanup owner; `runtime_budget_fails_prepare_or_execution_with_one_cleanup_owner` |
+| ERR-2 | aggregate input Memory bytes at/over the private pipeline ceiling | boundary accepted or `input_memory_store_too_large` before output/Session writes; `dream_input_memory_limit_maps_the_exact_pipeline_error` |
+| ERR-3 | output-store organization cap, timeout, or oversized input reaches the HTTP adapter | exact failed Dream error union with no invented output/session; `documented_pipeline_failures_round_trip_through_http` |
 | REC-1 | terminal SQLite process and ordinary Session facts after restart | same status/output plus Session-derived usage; `sqlite_repository_restores_terminal_dreams_after_restart` |
 | REC-2 | process loss during Running | CAS reset and canonical redispatch; `resume_incomplete_cas_resets_and_executes_a_durable_running_job` |
 | REC-3 | terminal decision plus cleanup failure | public Running until cleanup-only restart succeeds; `restart_retries_terminal_cleanup_before_publishing_completion` |
@@ -416,6 +426,12 @@ Deferred product behavior is automatic replacement of an Agent's bound MemorySto
 personal-to-team promotion, and multi-source Memory merge. Those features
 must submit or store the same `DreamProcess`; they may not add another executor or
 state machine.
+
+Anthropic-hosted synthesis quality over real minute-to-hour workloads, billed
+token totals, and service-side rate-limit enforcement are external acceptance
+evidence. Fake providers and self-hosted limits can prove deterministic protocol,
+state, and error semantics, but must not be cited as proof of Anthropic billing,
+quality, availability, or operator quotas.
 
 ## References
 

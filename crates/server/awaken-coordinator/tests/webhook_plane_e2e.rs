@@ -9,8 +9,12 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use awaken_config_resolver::InMemoryWebhookStore;
-use awaken_coordinator::{install_managed_lifecycle_delivery, webhooks};
+use awaken_coordinator::webhooks;
 use awaken_credential_vault::InMemorySecretStore;
+use awaken_deployment_application::{
+    AgentSelector, CreateDeploymentCommand, DeploymentApplication, DeploymentLaunch,
+    DeploymentLaunchOutcome, DeploymentSchedule, DeploymentSeedEvent, DeploymentSessionLauncher,
+};
 use awaken_protocol_managed::ManagedState;
 use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
 use awaken_session_store::SqliteManagedSessionRepository;
@@ -26,6 +30,17 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 type Inbox = Arc<Mutex<Vec<(String, HeaderMap)>>>;
+
+struct SuccessfulDeploymentLauncher;
+
+#[async_trait::async_trait]
+impl DeploymentSessionLauncher for SuccessfulDeploymentLauncher {
+    async fn launch(&self, request: DeploymentLaunch) -> DeploymentLaunchOutcome {
+        DeploymentLaunchOutcome::Created {
+            session_id: format!("session-for-{}", request.deployment_run_id),
+        }
+    }
+}
 
 async fn receive(State(inbox): State<Inbox>, headers: HeaderMap, body: String) -> &'static str {
     inbox.lock().unwrap().push((body, headers));
@@ -88,15 +103,18 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     // the canonical Coordinator lifecycle installer owns the Session notifier;
     // C3 Session creation commits and wakes its durable fact; C4 signing material
     // resolves; C5 the owner deletes the subscription; C6 service cancellation
-    // follows delivery. Effects: E1 one scoped, signed HTTP event; E2 secret never
-    // reappears in reads; E3 the endpoint row is absent; E4 the sole outbox loop
-    // joins.
+    // follows delivery; C7 the same repository commits Deployment creation and a
+    // scheduled run's started/succeeded facts. Effects: E1 scoped, signed HTTP
+    // events; E2 secret never reappears in reads; E3 the endpoint row is absent;
+    // E4 the sole outbox loop joins; E5 C7 emits the exact official Deployment
+    // lifecycle union through that same outbox and transport.
     //
-    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Effects |
-    // |---|---|---|---|---|---|---|---|
-    // | W1 | yes | yes | yes | yes | no | no | E1,E2 |
-    // | W2 | yes | any | any | any | yes | no | E3 |
-    // | W3 | any | yes | any | any | any | yes | E4 |
+    // | Rule | C1 | C2 | C3 | C4 | C5 | C6 | C7 | Effects |
+    // |---|---|---|---|---|---|---|---|---|
+    // | W1 | yes | yes | yes | yes | no | no | no | E1,E2 |
+    // | W2 | yes | any | any | any | yes | no | any | E3 |
+    // | W3 | any | yes | any | any | any | yes | any | E4 |
+    // | W4 | yes | yes | no | yes | no | no | yes | E1,E5 |
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
     // 1. A real receiver on an ephemeral port.
     let inbox: Inbox = Arc::new(Mutex::new(Vec::new()));
@@ -113,13 +131,25 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
     let store = Arc::new(InMemoryWebhookStore::new());
     let secrets = Arc::new(InMemorySecretStore::new());
     let sessions = Arc::new(SqliteManagedSessionRepository::open_in_memory().unwrap());
-    let state =
-        Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions));
+    let state = Arc::new(
+        ManagedState::new(CoordinatedRuntimeFake::default()).with_session_repo(sessions.clone()),
+    );
+    let deployments = Arc::new(
+        DeploymentApplication::from_repository(sessions)
+            .await
+            .expect("W4 restore Deployment aggregate over the shared repository"),
+    );
+    deployments.bind_launcher(Arc::new(SuccessfulDeploymentLauncher));
     // Only the endpoint transport/admission policy differs in this loopback E2E;
     // lifecycle ownership remains the one Coordinator installation path.
     let delivery = webhooks::loopback_lifecycle_delivery(store.clone(), secrets.clone(), None);
-    install_managed_lifecycle_delivery(&state, Some(delivery), &service_lifecycle)
-        .expect("W1 bind the sole lifecycle notifier before traffic");
+    awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
+        &state,
+        Some(delivery),
+        deployments.as_ref(),
+        &service_lifecycle,
+    )
+    .expect("W1 bind the sole lifecycle notifier before traffic");
     let crud = webhooks::webhook_config_router_loopback(store, secrets);
     let crud = crud.layer(axum::middleware::from_fn(stamp_local));
 
@@ -128,9 +158,15 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         &crud,
         "PUT",
         "/v1/config/webhook-subscriptions/wh_1",
-        Some(
-            json!({ "url": format!("http://{addr}/hook"), "event_types": ["session.status_idled"] }),
-        ),
+        Some(json!({
+            "url": format!("http://{addr}/hook"),
+            "event_types": [
+                "session.status_idled",
+                "deployment.created",
+                "deployment_run.started",
+                "deployment_run.succeeded"
+            ]
+        })),
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{created}");
@@ -201,7 +237,98 @@ async fn crud_registers_a_subscription_and_a_live_session_delivers_signed() {
         "self-hosted omits org"
     );
 
-    // 6. DELETE removes it; the list is then empty (a later dispatch reaches nobody).
+    // 6. Deployment lifecycle facts use the same repository outbox, dispatcher,
+    // subscription, secret, and receiver. The application owns both the exact
+    // scheduled occurrence claim and its terminal run fact.
+    let deployment = deployments
+        .create(CreateDeploymentCommand {
+            workspace_id: "wrkspc_local".into(),
+            agent: AgentSelector {
+                id: "agent-webhook".into(),
+                version: Some(1),
+            },
+            environment_id: "env-webhook".into(),
+            name: "webhook-schedule".into(),
+            description: None,
+            metadata: std::collections::BTreeMap::new(),
+            initial_events: vec![DeploymentSeedEvent::UserMessage {
+                content: Vec::new(),
+            }],
+            resources: Vec::new(),
+            schedule: Some(DeploymentSchedule::Cron {
+                expression: "* * * * *".into(),
+                timezone: "UTC".into(),
+            }),
+            vault_ids: Vec::new(),
+            budget_max_list_cost_minor: None,
+        })
+        .await
+        .expect("W4 create Deployment and lifecycle fact");
+    let due = deployment
+        .record
+        .next_fire_ms
+        .expect("W4 next occurrence")
+        .saturating_add(10_000);
+    let runs = deployments
+        .tick_and_launch(due)
+        .await
+        .expect("W4 claim and finish the due run");
+    assert_eq!(runs.len(), 1, "W4 one due occurrence");
+
+    for _ in 0..150 {
+        if inbox.lock().unwrap().len() >= 4 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let all = inbox.lock().unwrap().clone();
+    assert_eq!(
+        all.len(),
+        4,
+        "W1+W4 exactly four subscribed lifecycle facts"
+    );
+    let mut event_types = Vec::new();
+    for (body, headers) in &all {
+        let header = |key: &str| {
+            headers
+                .get(key)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+        };
+        let timestamp = header("webhook-timestamp")
+            .parse()
+            .expect("W4 timestamp header");
+        assert!(
+            verify(
+                &secret,
+                header("webhook-id"),
+                timestamp,
+                body,
+                header("webhook-signature")
+            )
+            .unwrap(),
+            "W4 every Deployment lifecycle delivery is signed"
+        );
+        event_types.push(
+            serde_json::from_str::<Value>(body).unwrap()["data"]["type"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+    event_types.sort();
+    assert_eq!(
+        event_types,
+        [
+            "deployment.created",
+            "deployment_run.started",
+            "deployment_run.succeeded",
+            "session.status_idled"
+        ],
+        "W4/E5 exact lifecycle event union"
+    );
+
+    // 7. DELETE removes it; the list is then empty (a later dispatch reaches nobody).
     let id = created["id"].as_str().unwrap();
     let (status, _) = call(
         &crud,

@@ -77,6 +77,7 @@ pub struct DeploymentApplication {
     deployments: Mutex<BTreeMap<String, DeploymentRecord>>,
     runs: Mutex<BTreeMap<String, DeploymentRunRecord>>,
     launcher: Mutex<Option<Arc<dyn DeploymentSessionLauncher>>>,
+    lifecycle_notifier: Mutex<Option<Arc<dyn awaken_session_contract::LifecycleFactNotifier>>>,
     repository: Option<Arc<dyn DeploymentRepository>>,
     executable_agents: Mutex<Option<Arc<dyn ExecutableAgentRegistrationSource>>>,
     executable_projection_refresh:
@@ -101,6 +102,7 @@ impl DeploymentApplication {
             deployments: Mutex::new(BTreeMap::new()),
             runs: Mutex::new(BTreeMap::new()),
             launcher: Mutex::new(None),
+            lifecycle_notifier: Mutex::new(None),
             repository: None,
             executable_agents: Mutex::new(None),
             executable_projection_refresh: Mutex::new(None),
@@ -117,6 +119,7 @@ impl DeploymentApplication {
             deployments: Mutex::new(deployments),
             runs: Mutex::new(runs),
             launcher: Mutex::new(None),
+            lifecycle_notifier: Mutex::new(None),
             repository: Some(repository),
             executable_agents: Mutex::new(None),
             executable_projection_refresh: Mutex::new(None),
@@ -126,6 +129,30 @@ impl DeploymentApplication {
 
     pub fn bind_launcher(&self, launcher: Arc<dyn DeploymentSessionLauncher>) {
         *self.launcher.lock().expect("Deployment launcher lock") = Some(launcher);
+    }
+
+    /// Bind the same payload-free wake used by the Session lifecycle outbox.
+    /// Deployment facts remain repository truth; this only avoids waiting for
+    /// the periodic reconciliation interval after a successful transaction.
+    pub fn bind_lifecycle_notifier(
+        &self,
+        notifier: Arc<dyn awaken_session_contract::LifecycleFactNotifier>,
+    ) {
+        *self
+            .lifecycle_notifier
+            .lock()
+            .expect("Deployment lifecycle notifier lock") = Some(notifier);
+    }
+
+    pub(crate) fn notify_lifecycle(&self) {
+        if let Some(notifier) = self
+            .lifecycle_notifier
+            .lock()
+            .expect("Deployment lifecycle notifier lock")
+            .as_ref()
+        {
+            notifier.notify();
+        }
     }
 
     pub fn bind_executable_agents(&self, source: Arc<dyn ExecutableAgentRegistrationSource>) {
@@ -783,7 +810,7 @@ impl DeploymentApplication {
         let Some(repository) = &self.repository else {
             return Ok(DeploymentWriteOutcome::Applied);
         };
-        Ok(repository
+        let outcome = repository
             .write_deployment(
                 stored_deployment(id, record)?,
                 expected_revision,
@@ -795,7 +822,11 @@ impl DeploymentApplication {
                     event,
                 )),
             )
-            .await?)
+            .await?;
+        if outcome == DeploymentWriteOutcome::Applied {
+            self.notify_lifecycle();
+        }
+        Ok(outcome)
     }
 
     async fn persist_run(
@@ -807,9 +838,13 @@ impl DeploymentApplication {
         let Some(repository) = &self.repository else {
             return Ok(());
         };
+        let notify = lifecycle.is_some();
         repository
             .upsert_deployment_run(stored_run(id, record)?, lifecycle)
             .await?;
+        if notify {
+            self.notify_lifecycle();
+        }
         Ok(())
     }
 
@@ -938,6 +973,7 @@ fn lifecycle_fact(
         workspace_id: Some(workspace_id.to_string()),
         event_type: event_type.to_string(),
         timestamp: (now_ms() / 1_000) as i64,
+        runtime_interval: None,
     }
 }
 
@@ -1223,8 +1259,9 @@ mod tests {
     async fn scheduled_failure_pause_matrix_is_exact() {
         // Scheduled failure decision table:
         // P1 persistent Environment failure -> failed run + exact auto-pause;
-        // P2 rate limit -> failed run, schedule stays active;
-        // P3 manual persistent failure -> failed run, schedule stays active.
+        // P2 archived subagent -> failed run + exact Agent auto-pause;
+        // P3 rate limit -> failed run, schedule stays active;
+        // P4 manual persistent failure -> failed run, schedule stays active.
         async fn exercise(
             trigger: DeploymentTrigger,
             error: DeploymentRunFailure,
@@ -1275,6 +1312,26 @@ mod tests {
             "P1"
         );
 
+        let archived_agent = DeploymentRunFailure::AgentArchivedError {
+            message: "subagent archived".into(),
+        };
+        let (run, deployment) = exercise(
+            DeploymentTrigger::Schedule {
+                scheduled_at: timestamp(now_ms()),
+            },
+            archived_agent.clone(),
+        )
+        .await;
+        assert_eq!(run.error, Some(archived_agent), "P2");
+        assert_eq!(deployment.status, DeploymentStatus::Paused, "P2");
+        assert_eq!(
+            deployment.paused_reason,
+            Some(DeploymentPauseReason::Error {
+                error: DeploymentPauseError::AgentArchivedError
+            }),
+            "P2"
+        );
+
         let (_, deployment) = exercise(
             DeploymentTrigger::Schedule {
                 scheduled_at: timestamp(now_ms()),
@@ -1284,10 +1341,10 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(deployment.status, DeploymentStatus::Active, "P2");
+        assert_eq!(deployment.status, DeploymentStatus::Active, "P3");
 
         let (_, deployment) = exercise(DeploymentTrigger::Manual, persistent).await;
-        assert_eq!(deployment.status, DeploymentStatus::Active, "P3");
+        assert_eq!(deployment.status, DeploymentStatus::Active, "P4");
     }
 
     #[tokio::test]
