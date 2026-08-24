@@ -628,6 +628,176 @@ async fn cancellation_is_immediate_idempotent_and_retains_prepared_output() {
 }
 
 #[tokio::test]
+async fn running_output_projection_transitions_from_empty_to_prepared() {
+    struct PhasedWorker {
+        prepare_started: Arc<Notify>,
+        release_prepare: Arc<Notify>,
+        execute_started: Arc<Notify>,
+        release_execute: Arc<Notify>,
+    }
+    #[async_trait::async_trait]
+    impl DreamExecutor for PhasedWorker {
+        async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            Ok(())
+        }
+        async fn prepare(&self, request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            self.prepare_started.notify_one();
+            self.release_prepare.notified().await;
+            Ok(DreamPreparation {
+                result_memory_store_id: format!("result-{}", request.job_id),
+                session_id: format!("session-{}", request.job_id),
+                transcript_file_ids: Vec::new(),
+            })
+        }
+        async fn execute(
+            &self,
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<(), DreamFailure> {
+            self.execute_started.notify_one();
+            self.release_execute.notified().await;
+            Ok(())
+        }
+    }
+
+    // Output-publication graph: C1 Dream has committed Running while prepare
+    // is blocked; C2 prepare commits result/session identities while execution
+    // remains active. Effects: E1 C1 exposes `outputs=[]`/`session_id=null`;
+    // E2 C2 keeps status Running but exposes one stable output and Session.
+    // Constraint K1 outputs derive only from the durable preparation commit,
+    // never from a timer or speculative ID. Rules O1=C1=>E1; O2=C1+C2=>E2.
+    let prepare_started = Arc::new(Notify::new());
+    let release_prepare = Arc::new(Notify::new());
+    let execute_started = Arc::new(Notify::new());
+    let release_execute = Arc::new(Notify::new());
+    let application = Arc::new(in_memory_application(Arc::new(PhasedWorker {
+        prepare_started: prepare_started.clone(),
+        release_prepare: release_prepare.clone(),
+        execute_started: execute_started.clone(),
+        release_execute: release_execute.clone(),
+    })));
+    let app = dreams_router(application);
+    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let id = created["id"].as_str().unwrap();
+    prepare_started.notified().await;
+    let (_, unprepared) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    assert_eq!(unprepared["status"], "running", "O1/E1");
+    assert_eq!(unprepared["outputs"], json!([]), "O1/E1");
+    assert!(unprepared["session_id"].is_null(), "O1/E1");
+
+    release_prepare.notify_one();
+    execute_started.notified().await;
+    let (_, prepared) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    assert_eq!(prepared["status"], "running", "O2/E2");
+    assert_eq!(prepared["outputs"].as_array().unwrap().len(), 1, "O2/E2");
+    assert!(prepared["session_id"].is_string(), "O2/E2");
+    let _ = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    release_execute.notify_one();
+}
+
+#[tokio::test]
+async fn documented_pipeline_failures_round_trip_through_http() {
+    struct PreparationFailure(&'static str);
+    #[async_trait::async_trait]
+    impl DreamExecutor for PreparationFailure {
+        async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+            Ok(())
+        }
+        async fn prepare(&self, _request: &DreamRequest) -> Result<DreamPreparation, DreamFailure> {
+            Err(DreamFailure::new(self.0, format!("planned {}", self.0)))
+        }
+        async fn execute(
+            &self,
+            _request: &DreamRequest,
+            _preparation: &DreamPreparation,
+            _cancellation: DreamCancellation,
+        ) -> Result<(), DreamFailure> {
+            unreachable!()
+        }
+    }
+
+    // Error-projection decision table: C1 preparation hits the organization
+    // MemoryStore cap; C2 the pipeline runtime budget expires; C3 input content
+    // exceeds its pipeline byte policy. Each cause commits E1 Failed, E2 the
+    // exact official `error.type`, E3 no fabricated output/session, while POST
+    // itself remains asynchronous. Constraint K1 production cause detection
+    // stays in the existing store/size/timer owners; this test owns only HTTP
+    // terminal projection. Rules F1=C1, F2=C2, F3=C3 => E1+E2+E3.
+    for (rule, kind) in [
+        ("F1", "memory_store_org_limit_exceeded"),
+        ("F2", "timeout"),
+        ("F3", "input_memory_store_too_large"),
+    ] {
+        let application = Arc::new(in_memory_application(Arc::new(PreparationFailure(kind))));
+        let app = dreams_router(application);
+        let (status, created) =
+            request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+        assert_eq!(status, StatusCode::OK, "{rule}");
+        assert_eq!(created["status"], "pending", "{rule}");
+        let failed = wait_for_status(&app, created["id"].as_str().unwrap(), "failed").await;
+        assert_eq!(failed["error"]["type"], kind, "{rule}/E2");
+        assert_eq!(failed["outputs"], json!([]), "{rule}/E3");
+        assert!(failed["session_id"].is_null(), "{rule}/E3");
+    }
+}
+
+#[tokio::test]
+async fn canceled_dream_keeps_projecting_trailing_session_usage() {
+    struct MutableUsage(Arc<std::sync::atomic::AtomicU64>);
+    #[async_trait::async_trait]
+    impl DreamSessionSource for MutableUsage {
+        async fn eligible_sessions(
+            &self,
+            _workspace_id: &str,
+            _updated_after_ms: u64,
+            _limit: usize,
+        ) -> Vec<String> {
+            Vec::new()
+        }
+        async fn session_usage(
+            &self,
+            _workspace_id: &str,
+            _session_id: &str,
+        ) -> Option<DreamUsage> {
+            Some(DreamUsage {
+                input_tokens: self.0.load(std::sync::atomic::Ordering::SeqCst),
+                ..Default::default()
+            })
+        }
+    }
+
+    // Cancellation/usage graph: C1 a prepared Running Dream has live Session
+    // usage U1; C2 cancel commits Canceled immediately; C3 in-flight Session
+    // accounting later advances to U2. Effects: E1 cancel returns Canceled/U1;
+    // E2 retrieve remains Canceled but reports U2. Constraint K1 Dream persists
+    // no usage copy: the ordinary Session remains the sole usage authority.
+    // Rules U1=C1+C2=>E1; U2=C1+C2+C3=>E2.
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let worker = Arc::new(Worker {
+        outcome: Outcome::Block,
+        started: started.clone(),
+        release: release.clone(),
+    });
+    let application = Arc::new(in_memory_application(worker));
+    let usage = Arc::new(std::sync::atomic::AtomicU64::new(10));
+    application.bind_session_source(Arc::new(MutableUsage(usage.clone())));
+    let app = dreams_router(application);
+    let (_, created) = request(&app, "POST", "/v1/dreams", Some(create_body("mem", &["s"]))).await;
+    let id = created["id"].as_str().unwrap();
+    started.notified().await;
+    let (_, canceled) = request(&app, "POST", &format!("/v1/dreams/{id}/cancel"), None).await;
+    assert_eq!(canceled["status"], "canceled", "U1/E1");
+    assert_eq!(canceled["usage"]["input_tokens"], 10, "U1/E1");
+    usage.store(14, std::sync::atomic::Ordering::SeqCst);
+    let (_, trailing) = request(&app, "GET", &format!("/v1/dreams/{id}"), None).await;
+    assert_eq!(trailing["status"], "canceled", "U2/E2");
+    assert_eq!(trailing["usage"]["input_tokens"], 14, "U2/E2");
+    release.notify_one();
+}
+
+#[tokio::test]
 async fn dream_routes_accept_the_sdk_default_dreaming_beta() {
     // Header causes/effects: absent or Managed-only -> 400; the Dream beta alone
     // (the generated SDK default) or combined with Managed -> route. Query

@@ -9,7 +9,7 @@
 
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
-import { withScenarioServer, pass } from './harness.mjs';
+import { withScenarioServer, pass, waitForValue } from './harness.mjs';
 
 /**
  * Causal graph
@@ -36,6 +36,10 @@ import { withScenarioServer, pass } from './harness.mjs';
  * | D8   | malformed query | absent        | absent          | 400; run store remains unchanged |
  * | D9   | boundary violation | any         | any             | 400; deployment aggregate unchanged |
  * | D10  | list filters | absent           | absent          | exact active/paused/archive/agent/time partition |
+ * | D11  | sole define_outcome | absent     | absent          | launch Session with the exact initial outcome event |
+ * | D12  | valid user | create/update/null budget | absent    | each new Session freezes only the current cap |
+ * | D13  | valid user | low budget          | absent          | linked Session reaches budget_reached |
+ * | D14  | valid user | create bucket exhausted | absent      | one typed rate-limit run; Deployment remains active |
  *
  * Causes: authoritative Agent/Environment state, create/update inputs,
  * lifecycle operation, trigger result, and list-filter values.
@@ -43,8 +47,11 @@ import { withScenarioServer, pass } from './harness.mjs';
  * version and one Workspace-owned Environment before mutation.
  * Effects: typed Deployment/Run projections, one ordinary Session on a valid
  * trigger, atomic rejection, terminal archive, and exact list partitions.
- * Decision rules: D1-D10 above cover the public CRUD, manual-trigger, failure,
- * boundary, and filter combinations owned by this official SDK suite.
+ * Decision rules: D1-D14 above cover the public CRUD, manual-trigger, initial
+ * outcome, budget, rate-limit, failure, boundary, and filter combinations owned
+ * by this official SDK suite. Hosted Anthropic quota, billing, and synthesis
+ * quality remain external acceptance evidence; this deterministic suite proves
+ * only Awaken's compatible wire and state-machine effects.
  *
  * Assertions below target lifecycle and mutation effects through the official SDK,
  * not only response decoding.
@@ -61,7 +68,7 @@ async function drain(pagePromise) {
 async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38140, async (baseUrl) => {
-      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
+      const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
       const environment = await client.beta.environments.create({
         name: 'deployment-e2e',
         config: { type: 'cloud' },
@@ -121,6 +128,13 @@ async function main() {
       const paused = await client.beta.deployments.pause(dep.id, { betas: BETAS });
       assert.equal(paused.status, 'paused');
       assert.equal(paused.paused_reason.type, 'manual');
+      const pausedRun = await client.beta.deployments.run(dep.id, { betas: BETAS });
+      assert.equal(pausedRun.error, null, 'D4 paused manual run still launches');
+      assert.ok(pausedRun.session_id, 'D4 paused manual run links a Session');
+      assert.equal(pausedRun.trigger_context.type, 'manual');
+      const remainsPaused = await client.beta.deployments.retrieve(dep.id, { betas: BETAS });
+      assert.equal(remainsPaused.status, 'paused', 'manual run does not unpause the schedule');
+      assert.equal(remainsPaused.paused_reason?.type, 'manual');
       const active = await client.beta.deployments.unpause(dep.id, { betas: BETAS });
       assert.equal(active.status, 'active');
       assert.equal(active.paused_reason, null);
@@ -299,6 +313,146 @@ async function main() {
       assert.equal(incompatibleFilters.status, 400, 'D10 incompatible filters reject');
       assert.equal((await fetch(`${baseUrl}/v1/deployments?limit=101`)).status, 400, 'D10 max page size');
       pass('beta.deployments.archive and typed list-filter decision table');
+
+      const budgetedDeployment = await client.beta.deployments.create({
+        agent: deploymentAgent.id,
+        environment_id: environment.id,
+        name: 'per-run-budget',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 2 3' }] }],
+        budget: { type: 'limit', max_list_cost: { amount: '2000', currency: 'USD' } },
+        betas: BETAS,
+      });
+      assert.equal(budgetedDeployment.budget?.max_list_cost.amount, '2000', 'D12 create projection');
+      const firstBudgetRun = await client.beta.deployments.run(budgetedDeployment.id, { betas: BETAS });
+      assert.equal(firstBudgetRun.error, null, 'D12 first run');
+      const firstBudgetSession = await client.beta.sessions.retrieve(firstBudgetRun.session_id, {
+        betas: BETAS,
+      });
+      assert.equal(firstBudgetSession.budget?.max_list_cost.amount, '2000', 'D12 first cap');
+
+      const updatedBudget = await client.beta.deployments.update(budgetedDeployment.id, {
+        budget: { type: 'limit', max_list_cost: { amount: '500', currency: 'USD' } },
+        betas: BETAS,
+      });
+      assert.equal(updatedBudget.budget?.max_list_cost.amount, '500', 'D12 update projection');
+      const secondBudgetRun = await client.beta.deployments.run(budgetedDeployment.id, { betas: BETAS });
+      const secondBudgetSession = await client.beta.sessions.retrieve(secondBudgetRun.session_id, {
+        betas: BETAS,
+      });
+      assert.equal(secondBudgetSession.budget?.max_list_cost.amount, '500', 'D12 future cap');
+      assert.equal(
+        (await client.beta.sessions.retrieve(firstBudgetRun.session_id, { betas: BETAS }))
+          .budget?.max_list_cost.amount,
+        '2000',
+        'D12 prior Session cap is unchanged',
+      );
+
+      const clearedBudget = await client.beta.deployments.update(budgetedDeployment.id, {
+        budget: null,
+        betas: BETAS,
+      });
+      assert.equal(clearedBudget.budget, null, 'D12 null clears Deployment cap');
+      const thirdBudgetRun = await client.beta.deployments.run(budgetedDeployment.id, { betas: BETAS });
+      const thirdBudgetSession = await client.beta.sessions.retrieve(thirdBudgetRun.session_id, {
+        betas: BETAS,
+      });
+      assert.equal(thirdBudgetSession.budget, null, 'D12 null applies to later Session only');
+      pass('Deployment budget create/update/null freezes independently onto each Session');
+
+      const lowBudgetDeployment = await client.beta.deployments.create({
+        agent: deploymentAgent.id,
+        environment_id: environment.id,
+        name: 'budget-reached',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'add 2 3' }] }],
+        budget: { type: 'limit', max_list_cost: { amount: '1', currency: 'USD' } },
+        betas: BETAS,
+      });
+      const lowBudgetRun = await client.beta.deployments.run(lowBudgetDeployment.id, { betas: BETAS });
+      const requiresAction = await waitForValue(
+        () => drain(client.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
+        (events) => events.some((event) =>
+          event.type === 'session.status_idle' && event.stop_reason.type === 'requires_action'),
+        'D13 Deployment Session reaches its client-tool boundary',
+      );
+      const toolUse = requiresAction.find((event) => event.type === 'agent.mcp_tool_use');
+      assert.ok(toolUse?.id, 'D13 public tool-use id');
+      await client.beta.sessions.events.send(lowBudgetRun.session_id, {
+        events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
+        betas: BETAS,
+      });
+      await waitForValue(
+        () => drain(client.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
+        (events) => events.some((event) =>
+          event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached'),
+        'D13 copied Deployment budget reaches the canonical Session gate',
+      );
+      pass('a Deployment-copied budget reaches the canonical budget_reached Session outcome');
+
+      // D11 is intentionally sequenced after the Runtime-dependent budget rule:
+      // a DefineOutcome may keep its ordinary grader Run live, while this rule
+      // owns only successful Deployment admission and exact initial-event commit.
+      const outcomeDeployment = await client.beta.deployments.create({
+        agent: deploymentAgent.id,
+        environment_id: environment.id,
+        name: 'outcome-only',
+        initial_events: [{
+          type: 'user.define_outcome',
+          description: 'Produce a verified report',
+          rubric: { type: 'text', content: 'The report contains VERIFIED.' },
+          max_iterations: 3,
+        }],
+        betas: BETAS,
+      });
+      const outcomeRun = await client.beta.deployments.run(outcomeDeployment.id, { betas: BETAS });
+      assert.equal(outcomeRun.error, null, 'D11 valid sole outcome launches');
+      assert.ok(outcomeRun.session_id, 'D11 linked Session');
+      const outcomeEvents = await drain(client.beta.sessions.events.list(outcomeRun.session_id, {
+        betas: BETAS,
+      }));
+      const defined = outcomeEvents.find((event) => event.type === 'user.define_outcome');
+      assert.equal(defined?.description, 'Produce a verified report', 'D11 exact initial event');
+      assert.equal(defined?.max_iterations, 3, 'D11 exact outcome bound');
+      pass('sole user.define_outcome initial event launches through the official SDK');
+
+      const rateLimitTarget = await client.beta.deployments.create({
+        agent: deploymentAgent.id,
+        environment_id: environment.id,
+        name: 'rate-limit-target',
+        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+        betas: BETAS,
+      });
+      let createRateLimited = false;
+      for (let index = 0; index < 450; index += 1) {
+        try {
+          await client.beta.deployments.create({
+            agent: deploymentAgent.id,
+            environment_id: environment.id,
+            name: `rate-drain-${index}`,
+            initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+            betas: BETAS,
+          });
+        } catch (error) {
+          assert.equal(error?.status, 429, `D14 official SDK surfaces HTTP rate limit: ${error}`);
+          createRateLimited = true;
+          break;
+        }
+      }
+      assert.ok(createRateLimited, 'D14 deterministic local create bucket is exhausted');
+      const rateLimitedRun = await client.beta.deployments.run(rateLimitTarget.id, { betas: BETAS });
+      assert.equal(rateLimitedRun.session_id, null, 'D14 failed launch creates no Session');
+      assert.equal(rateLimitedRun.error?.type, 'session_rate_limited_error', 'D14 typed SDK union');
+      assert.equal(rateLimitedRun.trigger_context.type, 'manual');
+      const rateLimitRuns = await drain(client.beta.deploymentRuns.list({
+        deployment_id: rateLimitTarget.id,
+        betas: BETAS,
+      }));
+      assert.deepEqual(rateLimitRuns.map((item) => item.id), [rateLimitedRun.id], 'D14 no retry row');
+      const rateLimitDeployment = await client.beta.deployments.retrieve(rateLimitTarget.id, {
+        betas: BETAS,
+      });
+      assert.equal(rateLimitDeployment.status, 'active', 'D14 transient rate limit does not pause');
+      assert.equal(rateLimitDeployment.paused_reason, null, 'D14');
+      pass('official SDK sees session_rate_limited_error without retry or auto-pause');
     });
 
     console.log('E2E PASS: the deployments + deployment-runs families round-trip through the official @anthropic-ai/sdk.');

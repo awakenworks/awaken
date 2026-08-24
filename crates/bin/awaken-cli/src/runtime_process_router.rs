@@ -652,9 +652,10 @@ pub(super) async fn prepare_runtime_routers(
         managed_state = managed_state.with_inference_geo_policy(policy);
     }
     let managed_state = Arc::new(managed_state);
-    awaken_coordinator::install_managed_lifecycle_delivery(
+    awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(
         &managed_state,
         Some(webhook_delivery),
+        deployment_application.as_ref(),
         &process.service_lifecycle,
     )
     .expect("Managed lifecycle delivery binds before Coordinator serves traffic");

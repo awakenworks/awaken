@@ -315,4 +315,38 @@ mod tests {
             Some(MON_0900 + 5 * 60 * 60_000)
         );
     }
+
+    #[test]
+    fn dst_gap_is_skipped_and_repeated_wall_clock_fires_twice() {
+        // DST cause/effect graph: C1 `02:30` does not exist on New York's
+        // 2026 spring-forward date; C2 `01:30` occurs once in EDT and once in
+        // EST on the fall-back date. Effects: E1 C1 produces no invented March
+        // 8 occurrence and advances to March 9; E2 C2 returns both distinct UTC
+        // instants in order. Constraint K1 matching iterates real UTC minutes;
+        // no local-time normalization or deduplication exists. Rules DST1=C1=>
+        // E1; DST2=C2=>E2.
+        let new_york: Tz = "America/New_York".parse().unwrap();
+        let millis = |value: &str| {
+            chrono::DateTime::parse_from_rfc3339(value)
+                .unwrap()
+                .timestamp_millis() as u64
+        };
+
+        let spring = Cron::parse("30 2 * * *").unwrap();
+        assert_eq!(
+            spring.next_after_in(millis("2026-03-08T05:00:00Z"), new_york),
+            Some(millis("2026-03-09T06:30:00Z")),
+            "DST1/E1"
+        );
+
+        let fall = Cron::parse("30 1 * * *").unwrap();
+        let first = fall
+            .next_after_in(millis("2026-11-01T04:00:00Z"), new_york)
+            .expect("DST2 first 01:30");
+        let second = fall
+            .next_after_in(first, new_york)
+            .expect("DST2 repeated 01:30");
+        assert_eq!(first, millis("2026-11-01T05:30:00Z"), "DST2/E2 EDT");
+        assert_eq!(second, millis("2026-11-01T06:30:00Z"), "DST2/E2 EST");
+    }
 }

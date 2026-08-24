@@ -9,14 +9,10 @@ use awaken_deployment_contract::{
 use rusqlite::{OptionalExtension, TransactionBehavior, params};
 use sqlx::Row;
 
-use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository};
+use crate::{PostgresManagedSessionRepository, SqliteManagedSessionRepository, lifecycle_str};
 
 fn storage(error: impl std::fmt::Display) -> DeploymentRepositoryError {
     DeploymentRepositoryError::Storage(error.to_string())
-}
-
-fn deployment_lifecycle_str(fact: &DeploymentLifecycleFact) -> String {
-    serde_json::to_string(fact).expect("Deployment lifecycle fact serializes")
 }
 
 struct StoredDeploymentRow {
@@ -238,7 +234,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         if let Some(fact) = lifecycle {
             tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, deployment_lifecycle_str(&fact)],
+                params![fact.id, lifecycle_str(&fact)],
             )
             .map_err(storage)?;
         }
@@ -269,7 +265,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         if let Some(fact) = lifecycle {
             tx.execute(
                 "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-                params![fact.id, deployment_lifecycle_str(&fact)],
+                params![fact.id, lifecycle_str(&fact)],
             )
             .map_err(storage)?;
         }
@@ -348,7 +344,7 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
         }
         tx.execute(
             "INSERT OR IGNORE INTO managed_lifecycle_outbox (fact_id, data) VALUES (?1, ?2)",
-            params![lifecycle.id, deployment_lifecycle_str(&lifecycle)],
+            params![lifecycle.id, lifecycle_str(&lifecycle)],
         )
         .map_err(storage)?;
         tx.commit().map_err(storage)?;
@@ -486,7 +482,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
                  ON CONFLICT(fact_id) DO NOTHING",
             )
             .bind(&fact.id)
-            .bind(deployment_lifecycle_str(&fact))
+            .bind(lifecycle_str(&fact))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -519,7 +515,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
                  ON CONFLICT(fact_id) DO NOTHING",
             )
             .bind(&fact.id)
-            .bind(deployment_lifecycle_str(&fact))
+            .bind(lifecycle_str(&fact))
             .execute(&mut *tx)
             .await
             .map_err(storage)?;
@@ -587,7 +583,7 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
              ON CONFLICT(fact_id) DO NOTHING",
         )
         .bind(&lifecycle.id)
-        .bind(deployment_lifecycle_str(&lifecycle))
+        .bind(lifecycle_str(&lifecycle))
         .execute(&mut *tx)
         .await
         .map_err(storage)?;

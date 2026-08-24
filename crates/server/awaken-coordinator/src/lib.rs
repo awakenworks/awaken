@@ -36,7 +36,10 @@ mod managed_application;
 mod managed_lifecycle;
 pub mod mcp_export;
 pub use managed_application::install_managed_agent_coordination;
-pub use managed_lifecycle::{ManagedLifecycleCompositionError, install_managed_lifecycle_delivery};
+pub use managed_lifecycle::{
+    ManagedLifecycleCompositionError, install_managed_lifecycle_delivery,
+    install_managed_lifecycle_delivery_with_deployments,
+};
 mod runtime_authority;
 pub mod webhooks;
 pub mod worker_observation_boundary;

@@ -36,6 +36,7 @@ pub async fn awaken_deployment_application::DeploymentApplication::archive_for_a
 pub fn awaken_deployment_application::DeploymentApplication::bind_executable_agents(&self, alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentRegistrationSource>)
 pub fn awaken_deployment_application::DeploymentApplication::bind_executable_projection_refresh(&self, alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>)
 pub fn awaken_deployment_application::DeploymentApplication::bind_launcher(&self, alloc::sync::Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>)
+pub fn awaken_deployment_application::DeploymentApplication::bind_lifecycle_notifier(&self, alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactNotifier>)
 pub async fn awaken_deployment_application::DeploymentApplication::create(&self, awaken_deployment_contract::model::CreateDeploymentCommand) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::from_repository(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<Self, awaken_deployment_application::DeploymentApplicationError>
 pub async fn awaken_deployment_application::DeploymentApplication::get(&self, &str, &str) -> core::result::Result<awaken_deployment_contract::model::DeploymentView, awaken_deployment_application::DeploymentApplicationError>

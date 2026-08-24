@@ -30,6 +30,29 @@ pub fn install_managed_lifecycle_delivery(
     webhook: Option<Arc<dyn LifecycleFactDelivery>>,
     service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
 ) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
+    install_managed_lifecycle_delivery_inner(state, webhook, None, service_lifecycle)
+}
+
+/// Install the same lifecycle delivery chain and bind Deployment wake-ups to it.
+///
+/// This additive entry point preserves the original Session-only composition
+/// API. Both wrappers delegate to one implementation and start exactly one
+/// durable outbox consumer.
+pub fn install_managed_lifecycle_delivery_with_deployments(
+    state: &Arc<ManagedState>,
+    webhook: Option<Arc<dyn LifecycleFactDelivery>>,
+    deployments: &awaken_deployment_application::DeploymentApplication,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
+    install_managed_lifecycle_delivery_inner(state, webhook, Some(deployments), service_lifecycle)
+}
+
+fn install_managed_lifecycle_delivery_inner(
+    state: &Arc<ManagedState>,
+    webhook: Option<Arc<dyn LifecycleFactDelivery>>,
+    deployments: Option<&awaken_deployment_application::DeploymentApplication>,
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+) -> Result<Arc<ManagedLifecycleFactDelivery>, ManagedLifecycleCompositionError> {
     let managed = Arc::new(ManagedLifecycleFactDelivery::new(state));
 
     let managed_delivery: Arc<dyn LifecycleFactDelivery> = managed.clone();
@@ -49,6 +72,10 @@ pub fn install_managed_lifecycle_delivery(
     application
         .set_lifecycle_notifier(notifier_port)
         .map_err(ManagedLifecycleCompositionError::Notifier)?;
+    if let Some(deployments) = deployments {
+        let deployment_notifier: Arc<dyn LifecycleFactNotifier> = notifier.clone();
+        deployments.bind_lifecycle_notifier(deployment_notifier);
+    }
     notifier
         .start(service_lifecycle)
         .map_err(ManagedLifecycleCompositionError::Supervisor)?;

@@ -3,6 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use awaken_session_contract::{
@@ -17,6 +18,11 @@ use chrono::{DateTime, Utc};
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 100;
+// Anthropic documents the `timeout` terminal kind but not the hosted runtime
+// budget. Awaken keeps that deployment policy private while preserving the
+// public failure contract. Six hours admits the documented multi-hour jobs and
+// still gives every self-hosted process a finite recovery boundary.
+const DEFAULT_DREAM_RUNTIME_BUDGET: Duration = Duration::from_secs(6 * 60 * 60);
 
 pub const BUILT_IN_DREAM_AGENT_ID: &str = "awaken_builtin_dream_agent";
 
@@ -380,6 +386,7 @@ pub struct DreamApplication {
     store: Arc<dyn DreamProcessStore>,
     session_source: Mutex<Option<Arc<dyn DreamSessionSource>>>,
     model_readiness: Mutex<Option<Arc<dyn DreamModelReadiness>>>,
+    runtime_budget: Duration,
 }
 
 impl DreamApplication {
@@ -414,6 +421,7 @@ impl DreamApplication {
             store,
             session_source: Mutex::new(None),
             model_readiness: Mutex::new(None),
+            runtime_budget: DEFAULT_DREAM_RUNTIME_BUDGET,
         })
     }
 
@@ -827,13 +835,38 @@ impl DreamApplication {
                 return;
             }
         };
+        let running_started = tokio::time::Instant::now();
         let request = running_job.request();
-        let preparation = match self.executor.prepare(&request).await {
-            Ok(preparation) => preparation,
-            Err(error) => {
+        let preparation = match tokio::time::timeout(
+            self.runtime_budget,
+            self.executor.prepare(&request),
+        )
+        .await
+        {
+            Ok(Ok(preparation)) => preparation,
+            Ok(Err(error)) => {
                 let cleanup_failed = self.executor.cleanup(&request, None).await.is_err();
                 if let Err(persist_error) = self.fail_if_active(&id, error) {
                     tracing::warn!(dream_id = %id, %persist_error, "Dream failure transition did not commit");
+                }
+                if cleanup_failed {
+                    let _ = self.commit_job_update(&id, |job| {
+                        job.cleanup_pending = true;
+                        Ok(())
+                    });
+                }
+                return;
+            }
+            Err(_) => {
+                let cleanup_failed = self.executor.cleanup(&request, None).await.is_err();
+                if let Err(persist_error) = self.fail_if_active(
+                    &id,
+                    DreamFailure::new(
+                        "timeout",
+                        "Dream pipeline exceeded its runtime budget during preparation",
+                    ),
+                ) {
+                    tracing::warn!(dream_id = %id, %persist_error, "Dream timeout transition did not commit");
                 }
                 if cleanup_failed {
                     let _ = self.commit_job_update(&id, |job| {
@@ -864,13 +897,32 @@ impl DreamApplication {
             self.cancellations.lock().unwrap().remove(&id);
             return;
         }
-        let result = match self
-            .executor
-            .execute(&request, &preparation, cancellation.clone())
-            .await
+        let remaining_budget = self
+            .runtime_budget
+            .saturating_sub(running_started.elapsed());
+        let (result, cleanup_completed) = match tokio::time::timeout(
+            remaining_budget,
+            self.executor
+                .execute(&request, &preparation, cancellation.clone()),
+        )
+        .await
         {
-            Ok(()) => self.executor.validate_inputs(&request).await,
-            Err(error) => Err(error),
+            Ok(Ok(())) => (self.executor.validate_inputs(&request).await, false),
+            Ok(Err(error)) => (Err(error), false),
+            Err(_) => {
+                let cleanup_completed = self
+                    .executor
+                    .cancel(&request, Some(&preparation))
+                    .await
+                    .is_ok();
+                (
+                    Err(DreamFailure::new(
+                        "timeout",
+                        "Dream pipeline exceeded its runtime budget",
+                    )),
+                    cleanup_completed,
+                )
+            }
         };
         let terminal_job = match self.commit_job_update(&id, |job| {
             match &result {
@@ -898,7 +950,10 @@ impl DreamApplication {
                     }
                 }
             }
-            job.cleanup_pending = true;
+            job.cleanup_pending = !cleanup_completed;
+            if cleanup_completed {
+                job.transcript_file_ids.clear();
+            }
             Ok(())
         }) {
             Ok(job) => job,
@@ -919,7 +974,9 @@ impl DreamApplication {
                 }
             }
         }
-        self.cleanup_job(&id).await;
+        if !cleanup_completed {
+            self.cleanup_job(&id).await;
+        }
         self.cancellations.lock().unwrap().remove(&id);
     }
 
@@ -1248,6 +1305,7 @@ fn valid_model_reference_shape(model: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
 
     fn valid_params() -> DreamCreateParams {
         DreamCreateParams {
@@ -1262,6 +1320,129 @@ mod tests {
             model: DreamModelInput::Id("claude-sonnet-5".into()),
             instructions: None,
             output_behavior: DreamOutputBehavior::CreateNew,
+        }
+    }
+
+    #[tokio::test]
+    async fn runtime_budget_fails_prepare_or_execution_with_one_cleanup_owner() {
+        enum Stall {
+            Prepare,
+            Execute,
+        }
+        struct TimedExecutor {
+            stall: Stall,
+            cleanup_calls: AtomicUsize,
+            cancel_calls: AtomicUsize,
+        }
+        #[async_trait]
+        impl DreamExecutor for TimedExecutor {
+            async fn validate_inputs(&self, _request: &DreamRequest) -> Result<(), DreamFailure> {
+                Ok(())
+            }
+
+            async fn prepare(
+                &self,
+                request: &DreamRequest,
+            ) -> Result<DreamPreparation, DreamFailure> {
+                if matches!(self.stall, Stall::Prepare) {
+                    std::future::pending().await
+                }
+                Ok(DreamPreparation {
+                    result_memory_store_id: format!("result-{}", request.job_id),
+                    session_id: format!("session-{}", request.job_id),
+                    transcript_file_ids: Vec::new(),
+                })
+            }
+
+            async fn execute(
+                &self,
+                _request: &DreamRequest,
+                _preparation: &DreamPreparation,
+                _cancellation: DreamCancellation,
+            ) -> Result<(), DreamFailure> {
+                if matches!(self.stall, Stall::Execute) {
+                    std::future::pending().await
+                }
+                Ok(())
+            }
+
+            async fn cleanup(
+                &self,
+                _request: &DreamRequest,
+                _preparation: Option<&DreamPreparation>,
+            ) -> Result<(), DreamFailure> {
+                self.cleanup_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+
+            async fn cancel(
+                &self,
+                _request: &DreamRequest,
+                _preparation: Option<&DreamPreparation>,
+            ) -> Result<(), DreamFailure> {
+                self.cancel_calls.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        // Runtime-budget cause/effect graph: C1 Running stalls before output
+        // preparation; C2 Running stalls after output/session publication; C3
+        // cancellation cleanup succeeds. Effects: E1 both become terminal
+        // `failed(timeout)`; E2 C1 owns no output and calls ordinary cleanup
+        // once; E3 C2 retains the prepared output, interrupts/cleans through
+        // `cancel` once, and never invokes a parallel cleanup path.
+        // Constraint K1 the private deployment budget is diagnostic policy, not
+        // persisted Dream truth; restart still resumes only committed state.
+        // Decision rules: T1 C1=>E1+E2; T2 C2+C3=>E1+E3.
+        for (rule, stall) in [("T1", Stall::Prepare), ("T2", Stall::Execute)] {
+            let executor = Arc::new(TimedExecutor {
+                stall,
+                cleanup_calls: AtomicUsize::new(0),
+                cancel_calls: AtomicUsize::new(0),
+            });
+            let mut application = DreamApplication::with_store(
+                executor.clone(),
+                Arc::new(InMemoryDreamProcessStore::default()),
+            )
+            .unwrap();
+            application.runtime_budget = Duration::from_millis(5);
+            let application = Arc::new(application);
+            let created = application
+                .create("workspace", valid_params())
+                .await
+                .expect(rule);
+            let terminal = tokio::time::timeout(Duration::from_secs(1), async {
+                loop {
+                    let current = application
+                        .retrieve("workspace", &created.id)
+                        .await
+                        .unwrap();
+                    if current.status == DreamStatus::Failed {
+                        break current;
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect(rule);
+            assert_eq!(
+                terminal.error.as_ref().unwrap().kind,
+                "timeout",
+                "{rule}/E1"
+            );
+            match rule {
+                "T1" => {
+                    assert!(terminal.outputs.is_empty(), "T1/E2");
+                    assert_eq!(executor.cleanup_calls.load(Ordering::SeqCst), 1, "T1/E2");
+                    assert_eq!(executor.cancel_calls.load(Ordering::SeqCst), 0, "T1/E2");
+                }
+                "T2" => {
+                    assert_eq!(terminal.outputs.len(), 1, "T2/E3");
+                    assert_eq!(executor.cancel_calls.load(Ordering::SeqCst), 1, "T2/E3");
+                    assert_eq!(executor.cleanup_calls.load(Ordering::SeqCst), 0, "T2/E3");
+                }
+                _ => unreachable!(),
+            }
         }
     }
 

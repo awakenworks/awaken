@@ -123,6 +123,7 @@ impl DeploymentApplication {
                     .await?
                 {
                     ScheduledRunClaimOutcome::Claimed => {
+                        self.notify_lifecycle();
                         // `tick` may calculate several overdue occurrences at
                         // once. Publish only this transaction's committed
                         // revision before launch so an auto-pause is fenced by
@@ -392,5 +393,100 @@ mod tests {
                 .is_some_and(|cursor| cursor > crate::now_ms()),
             "S5"
         );
+    }
+
+    #[tokio::test]
+    async fn fall_back_occurrences_receive_distinct_durable_claims() {
+        // DST/claim cause-effect graph: C1 New York `01:30` repeats at two UTC
+        // instants; C2 both are overdue on one tick; C3 the application restarts
+        // and evaluates the same horizon. Effects: E1 two runs retain distinct
+        // `scheduled_at` values; E2 the repository launches/records each once;
+        // E3 C3 produces no duplicate. Constraint K1 the claim identity remains
+        // `{deployment_id}:{scheduled_at}` and is committed by the one
+        // DeploymentRepository transaction. Rules D1=C1+C2=>E1+E2;
+        // D2=C1+C2+C3=>E3. Spring-gap absence is owned by Cron's adjacent table.
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory().unwrap(),
+        );
+        let application = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        let mut create = command(true);
+        create.schedule = Some(DeploymentSchedule::Cron {
+            expression: "30 1 * * *".into(),
+            timezone: "America/New_York".into(),
+        });
+        let deployment = application.create(create).await.unwrap();
+        const FIRST_FALL_BACK_0130_MS: u64 = 1_793_511_000_000;
+        const SECOND_FALL_BACK_0130_MS: u64 = 1_793_514_600_000;
+        let first = FIRST_FALL_BACK_0130_MS;
+        let second = SECOND_FALL_BACK_0130_MS;
+        let mut record = application
+            .get("workspace-a", &deployment.id)
+            .await
+            .unwrap()
+            .record;
+        let expected_revision = record.revision;
+        record.next_fire_ms = Some(first);
+        record.revision = next_revision(expected_revision).unwrap();
+        assert_eq!(
+            awaken_deployment_contract::DeploymentRepository::write_deployment(
+                repository.as_ref(),
+                stored_deployment(&deployment.id, &record).unwrap(),
+                Some(expected_revision),
+                crate::DEFAULT_SCHEDULED_LIMIT,
+                None,
+            )
+            .await
+            .unwrap(),
+            awaken_deployment_contract::DeploymentWriteOutcome::Applied,
+        );
+
+        let application = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        application.bind_launcher(Arc::new(OutcomeLauncher {
+            outcome: DeploymentLaunchOutcome::Created {
+                session_id: "session-dst".into(),
+            },
+            calls: calls.clone(),
+        }));
+        let due = first
+            .saturating_add(execution_jitter_ms(&deployment.id, first, second - first))
+            .max(second.saturating_add(execution_jitter_ms(
+                &deployment.id,
+                second,
+                24 * 60 * 60_000,
+            )));
+        let runs = application.tick_and_launch(due).await.unwrap();
+        let scheduled = runs
+            .iter()
+            .map(|run| match &run.record.trigger {
+                DeploymentTrigger::Schedule { scheduled_at } => scheduled_at.as_str(),
+                DeploymentTrigger::Manual => panic!("scheduler produced manual run"),
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            scheduled,
+            ["2026-11-01T05:30:00Z", "2026-11-01T06:30:00Z"],
+            "D1/E1"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "D1/E2");
+
+        let restarted = DeploymentApplication::from_repository(repository.clone())
+            .await
+            .unwrap();
+        restarted.bind_launcher(Arc::new(OutcomeLauncher {
+            outcome: DeploymentLaunchOutcome::Created {
+                session_id: "must-not-launch".into(),
+            },
+            calls: calls.clone(),
+        }));
+        assert!(
+            restarted.tick_and_launch(due).await.unwrap().is_empty(),
+            "D2/E3"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "D2/E3");
     }
 }

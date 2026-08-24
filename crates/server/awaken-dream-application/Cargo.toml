@@ -19,7 +19,7 @@ async-trait.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["serde"] }
 serde.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["sync"] }
+tokio = { workspace = true, features = ["sync", "time"] }
 tracing = "0.1"
 
 [lints]

@@ -18,6 +18,7 @@
 // | S5 | due + withdrawn Environment projection | active | not-found run then exact auto-pause |
 // | S6 | primary Agent archived | any | Deployment archives in same operation; no run |
 // | S7 | Deployment archived | terminal | mutation/manual run reject |
+// | S8 | archived referenced subagent | active schedule | failed run + exact Agent error + auto-pause |
 //
 // Causes: cron/timezone validity, Agent/Environment lifecycle, exact due instant,
 // and Deployment active/paused/archived state.
@@ -25,7 +26,7 @@
 // previews remain exact while the production timer alone applies execution jitter.
 // Effects: ordered previews, suppressed or terminal schedules, typed failed runs,
 // auto-pause, synchronous primary-Agent archive cascade, and atomic rejection.
-// Decision rules: S1-S7 above cover the schedule-owned alternatives without
+// Decision rules: S1-S8 above cover the schedule-owned alternatives without
 // repeating the general Deployment CRUD state machine.
 //
 // Run: (from e2e/)  node management_deployment_schedule_e2e.mjs
@@ -173,15 +174,38 @@ async function main() {
       initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
       schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' }, betas: BETAS,
     });
+    const archivedSubagent = await client.beta.agents.create({
+      name: 'scheduled-archived-subagent', model: 'claude-opus-4-8', betas: BETAS,
+    });
+    const coordinatingAgent = await client.beta.agents.create({
+      name: 'scheduled-coordinator',
+      model: 'claude-opus-4-8',
+      multiagent: { type: 'coordinator', agents: [archivedSubagent.id] },
+      betas: BETAS,
+    });
+    const archivedSubagentSchedule = await client.beta.deployments.create({
+      agent: coordinatingAgent.id,
+      environment_id: environment.id,
+      name: 'scheduled-archived-subagent',
+      initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+      schedule: { type: 'cron', expression: '* * * * *', timezone: 'UTC' },
+      betas: BETAS,
+    });
     await client.beta.environments.archive(scheduledEnvironment.id, { betas: BETAS });
+    await client.beta.agents.archive(archivedSubagent.id, { betas: BETAS });
     const deadline = Date.now() + 80_000;
     let failedRun;
+    let archivedSubagentRun;
     while (Date.now() < deadline) {
       const runs = await drain(client.beta.deploymentRuns.list({
         deployment_id: failingSchedule.id, trigger_type: 'schedule', betas: BETAS,
       }));
       failedRun = runs.find((run) => run.error?.type === 'environment_not_found_error');
-      if (failedRun) break;
+      const archivedRuns = await drain(client.beta.deploymentRuns.list({
+        deployment_id: archivedSubagentSchedule.id, trigger_type: 'schedule', betas: BETAS,
+      }));
+      archivedSubagentRun = archivedRuns.find((run) => run.error?.type === 'agent_archived_error');
+      if (failedRun && archivedSubagentRun) break;
       await sleep(1_000);
     }
     assert.ok(failedRun, 'S5 production scheduler records the withdrawn-Environment failure');
@@ -193,6 +217,23 @@ async function main() {
       autoPaused.paused_reason?.error?.type,
       failedRun.error.type,
       'S5 paused reason exactly matches the failed run error',
+    );
+    assert.ok(archivedSubagentRun, 'S8 scheduled run records the archived subagent failure');
+    assert.equal(archivedSubagentRun.session_id, null, 'S8 terminal XOR');
+    assert.match(
+      archivedSubagentRun.error?.message ?? '',
+      new RegExp(archivedSubagent.id),
+      'S8 exact referenced subagent explains the failure',
+    );
+    const subagentPaused = await client.beta.deployments.retrieve(archivedSubagentSchedule.id, {
+      betas: BETAS,
+    });
+    assert.equal(subagentPaused.status, 'paused', 'S8 future scheduled fires stop');
+    assert.equal(subagentPaused.paused_reason?.type, 'error', 'S8 error pause');
+    assert.equal(
+      subagentPaused.paused_reason?.error?.type,
+      'agent_archived_error',
+      'S8 paused reason mirrors the failed run',
     );
     pass('scheduled persistent launch failure records run and auto-pauses exactly');
 

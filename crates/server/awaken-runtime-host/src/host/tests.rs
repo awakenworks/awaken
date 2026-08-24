@@ -5208,9 +5208,10 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
     // fail without clobbering; E5 a policy-only WebFetch does not manufacture a
     // capability or materialize a Sandbox. Decision rules M1=C1+C2+C3 -> E1..E3;
     // M2=C4 absent -> create; M3=C4 current -> update; M4=C4 stale -> reject;
-    // M5=read-only binding -> reject; M6 a rebuild attempts to switch the
-    // delivery mode -> reject instead of exposing mounts and tools together;
-    // M7=C1+C2+unpublished WebFetch -> E5.
+    // M5=read-only binding -> reject; M6 a cold Runtime rebuild retains the
+    // physical Session's frozen delivery and tool projection; M7=C1+C2+
+    // unpublished WebFetch -> E5. Constraint K1 a rebuild may replace only
+    // process-local Runtime state, never the Session-owned delivery decision.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -5509,17 +5510,31 @@ async fn filesystem_free_session_projects_multiple_memories_as_semantic_tools() 
         "M4 never clobbers"
     );
     host.session_slots.update("semantic-memory", |slot| {
-        slot.tools = None;
         slot.runtime = None;
     });
-    let mode_switch = host
+    let rebuilt = host
         .ctx_for("semantic-memory", Some("assistant"))
         .await
-        .err()
-        .expect("M6 rejects the mode switch");
+        .expect("M6 rebuilds from the frozen Session projection");
+    assert_eq!(
+        host.session_slots
+            .read("semantic-memory", |slot| slot.content_delivery)
+            .flatten(),
+        Some(crate::session_slot::ManagedContentDelivery::SemanticTools),
+        "M6 keeps one delivery path"
+    );
     assert!(
-        mode_switch.message.contains("cannot change"),
-        "M6 one Session keeps one delivery path"
+        rebuilt
+            .config
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .any(|descriptor| descriptor.id == "read_memory"),
+        "M6 preserves the Session-owned semantic Memory tools"
+    );
+    assert!(
+        host.session_environment("semantic-memory").await.is_none(),
+        "M6 does not materialize a Sandbox while rebuilding"
     );
 }
 
@@ -12198,6 +12213,72 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
     assert!(
         host.session_allows_repository_skill_discovery("repository-policy", None),
         "R2 exact read admission"
+    );
+}
+
+#[test]
+fn session_content_delivery_is_frozen_across_auxiliary_agent_snapshots() {
+    // Content-delivery cause/effect graph: C1 the physical Session has no prior
+    // choice; C2 it already chose filesystem and a deny-all Outcome grader is
+    // projected; C3 it already chose semantic tools and a later Agent snapshot
+    // exposes filesystem capability. Effects: E1 C1 derives exactly once; E2
+    // C2/C3 reuse the existing Session choice without mutation or rejection.
+    // Constraint K1 Agent tool capability still gates what that Agent may call;
+    // reusing delivery neither widens tools nor creates a child-owned mount
+    // authority. Rules CD1=C1=>E1; CD2=C2=>E2; CD3=C3=>E2.
+    use crate::session_slot::ManagedContentDelivery;
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
+        ToolsetSource,
+    };
+
+    let host = SharedHost::new(Arc::new(OkModel), "stub");
+    let restricted = awaken_runtime_contract::ExecutableAgentSnapshot::builder("grader")
+        .model(test_model_binding())
+        .build();
+    assert!(
+        !host.session_allows_filesystem_tools("filesystem-session", Some(&restricted)),
+        "CD2 auxiliary snapshot would independently derive semantic delivery"
+    );
+    host.session_slots.update("filesystem-session", |slot| {
+        slot.content_delivery = Some(ManagedContentDelivery::ManagedFilesystem)
+    });
+    assert_eq!(
+        host.select_content_delivery("filesystem-session", Some(&restricted), None)
+            .expect("CD2 reuses physical Session delivery"),
+        ManagedContentDelivery::ManagedFilesystem,
+        "CD2/E2"
+    );
+
+    host.session_slots.update("semantic-session", |slot| {
+        slot.content_delivery = Some(ManagedContentDelivery::SemanticTools);
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: vec![ToolPolicyOverride::new(
+                    "write",
+                    ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
+                )],
+            }],
+            client_tools: Vec::new(),
+        });
+    });
+    assert!(
+        host.session_allows_filesystem_tools("semantic-session", None),
+        "CD3 later snapshot would independently derive filesystem delivery"
+    );
+    assert_eq!(
+        host.select_content_delivery("semantic-session", None, None)
+            .expect("CD3 reuses physical Session delivery"),
+        ManagedContentDelivery::SemanticTools,
+        "CD3/E2"
     );
 }
 
