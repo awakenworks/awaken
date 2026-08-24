@@ -50,7 +50,7 @@ import {
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38221);
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const SKILL_HEADERS = { 'anthropic-beta': 'skills-2025-10-02' };
 const SKILL_BETAS = ['skills-2025-10-02'];
@@ -127,11 +127,12 @@ async function approveGated(c, sid, evs, approved, receiptIds) {
   }
 }
 
-// Files GET is a read-only Artifact projection; reverse resource operations belong
-// to replacement/release.
+// Artifact projection rule: C8 exact Session scope + C9 Files beta selector ->
+// E8 read-only catalog observation. K8 GA Files has no scope_id; reverse
+// resource operations remain owned by replacement/release. R8 C8&&C9->E8.
 async function listArtifacts(c, sid) {
   try {
-    return await c.get(`/v1/files?scope_id=${sid}`);
+    return await c.beta.files.list({ scope_id: sid, betas: BETAS });
   } catch {
     return null;
   }

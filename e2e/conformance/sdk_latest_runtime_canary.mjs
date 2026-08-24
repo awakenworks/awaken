@@ -74,10 +74,12 @@ await withRealServer('echo', 38190, async (baseURL) => {
 
   // Cause/effect graph: C3=0.120 exposes GA Files and Skills outside `beta`;
   // C4=both project the existing FileCatalog/SkillStore; C5=GA Files expiry and
-  // ids[] pagination, and GA Skill source/latest-version fields differ from beta.
+  // ids[] pagination, GA Model capabilities, and GA Skill source/latest-version
+  // fields differ from beta.
   // Effects: E3 generated GA paths run without a beta header, E4 exact GA DTOs
   // decode, E5 the same created ids remain visible through their one repository.
-  // Decision table: R3 C3+C4+C5 -> create/list/retrieve/delete both families;
+  // Decision table: R3 C3+C4+C5 -> every GA Files/Skills method round-trips;
+  // R4 C3+C4 -> GA Models list/retrieve decode from the existing inventory;
   // any accidental beta projection, missing expiry, or duplicate store fails.
   const file = await client.files.upload({
     file: await toFile(Buffer.from(manifest.version), 'latest.txt'),
@@ -88,7 +90,18 @@ await withRealServer('echo', 38190, async (baseURL) => {
   const files = await client.files.list({ ids: [file.id, 'file_missing'] });
   assert.deepEqual(files.data.map((item) => item.id), [file.id], 'R3/E5 ids[]');
   assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id);
+  await assert.rejects(
+    () => client.files.download(file.id),
+    (error) => error?.status === 400 && String(error).includes('not downloadable'),
+    'R3 uploaded inputs remain non-downloadable through the latest GA client',
+  );
   await client.files.delete(file.id);
+
+  const models = [];
+  for await (const model of client.models.list()) models.push(model);
+  assert.ok(models.length > 0, 'R4 GA Models list is non-empty');
+  assert.ok(models.every((model) => !Object.hasOwn(model, 'allowed_fallback_models')), 'R4 GA shape');
+  assert.equal((await client.models.retrieve(models[0].id)).id, models[0].id, 'R4 retrieve');
 
   const skill = await client.skills.create({
     display_name: `Latest ${manifest.version}`,
@@ -102,9 +115,25 @@ await withRealServer('echo', 38190, async (baseURL) => {
   assert.equal((await client.skills.retrieve(skill.id)).id, skill.id);
   const skillPage = await client.skills.list({ source: 'custom' });
   assert.ok(skillPage.data.some((item) => item.id === skill.id), 'R3/E5 Skill list');
+  const version = await client.skills.versions.create(skill.id, {
+    files: [await toFile(
+      Buffer.from(`---\nname: latest-skill\ndescription: SDK ${manifest.version} v2\n---\n`),
+      'latest-skill/SKILL.md',
+    )],
+  });
+  assert.equal(
+    (await client.skills.versions.retrieve(version.id, { skill_id: skill.id })).id,
+    version.id,
+  );
+  const versionPage = await client.skills.versions.list(skill.id);
+  assert.ok(versionPage.data.some((item) => item.id === version.id), 'R3 Skill Version list');
+  assert.equal(
+    (await client.skills.versions.delete(skill.latest_version_id, { skill_id: skill.id })).type,
+    'skill_version_deleted',
+  );
   await client.skills.delete(skill.id);
 
-  pass(`registry SDK ${manifest.version} runs Session, Memory, GA Files and GA Skills defaults`);
+  pass(`registry SDK ${manifest.version} runs Session, Memory, GA Models, Files, and Skills defaults`);
 });
 
 // UserProfiles is Control-owned and intentionally absent from the echo runtime

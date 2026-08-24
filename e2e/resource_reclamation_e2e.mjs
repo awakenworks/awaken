@@ -9,6 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import {
+  managedFileUploadForm,
   managedWorkspaceClient,
   spawnProduction,
   stopServer,
@@ -90,10 +91,10 @@ async function json(method, url, body) {
 }
 
 async function upload(workspace, content, filename = 'input.txt') {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([content]), filename);
-  const response = await fetch(scoped(workspace, 'files'), { method: 'POST', body: form });
+  const response = await fetch(scoped(workspace, 'files'), {
+    method: 'POST',
+    body: managedFileUploadForm(content, filename),
+  });
   assert.equal(response.status, 200);
   return (await response.json()).id;
 }

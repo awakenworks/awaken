@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
-    ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
+    BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
 };
 use crate::types::file::{
     BetaFileListParams, BetaFileMetadata, BetaFileScope, DeletedFile, DeletedFileObjectType,
@@ -75,7 +75,12 @@ async fn list_files(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, FILES_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        FILES_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
@@ -207,7 +212,12 @@ async fn upload_file(
     RawQuery(raw): RawQuery,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, FILES_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        FILES_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
@@ -291,7 +301,12 @@ async fn get_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, FILES_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        FILES_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
@@ -316,7 +331,12 @@ async fn delete_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, FILES_BETA) {
+    if let Err(message) = resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        FILES_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         return error(StatusCode::BAD_REQUEST, message);
     }
     let now = std::time::SystemTime::now()
@@ -344,7 +364,12 @@ async fn download_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, FILES_BETA) {
+    if let Err(message) = resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        FILES_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         return error(StatusCode::BAD_REQUEST, message);
     }
     match files.bytes(&workspace, &id).await {

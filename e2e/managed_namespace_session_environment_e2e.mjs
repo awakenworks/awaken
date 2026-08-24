@@ -401,11 +401,21 @@ async function main() {
       'the create-time Memory authority remains in the frozen Session after live mutations/restart',
     );
 
-    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
-    const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
+    const artifacts = [];
+    for await (const entry of client.beta.files.list({ scope_id: session.id, betas: BETAS })) {
+      artifacts.push(entry);
+    }
+    const artifact = artifacts.find((entry) => entry.filename === 'result.txt');
     assert.ok(artifact, `${TIER} output must project through the Files API`);
     const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });
     assert.equal(await artifactContent.text(), 'NAMESPACE-ARTIFACT-OK');
+    // File download decision rule: C1=the harvested Session artifact is marked
+    // downloadable by the one FileCatalog; C2=Beta and GA SDK roots address the
+    // same public File id. Effects E1=both binary responses contain the exact
+    // harvested bytes. Constraint: SDK flavor changes only transport/projection,
+    // never artifact identity or storage. R1 C1+C2 -> E1.
+    const gaArtifactContent = await client.files.download(artifact.id);
+    assert.equal(await gaArtifactContent.text(), 'NAMESPACE-ARTIFACT-OK', 'R1/E1 GA download');
 
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     await waitUntil(

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
-    ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
+    BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
 };
 use crate::types::skill::{
     BetaSkill, BetaSkillListParams, BetaSkillVersion, BetaSkillVersionListParams, DeletedSkill,
@@ -347,7 +347,12 @@ async fn create_skill(
     RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -399,7 +404,12 @@ async fn list_skills(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -487,7 +497,12 @@ async fn retrieve_skill(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -517,7 +532,12 @@ async fn delete_skill(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    if let Err(message) = resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
     let definition = match state.definition(&workspace, &id).await {
@@ -567,7 +587,12 @@ async fn create_version(
     RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -623,7 +648,12 @@ async fn list_versions(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -692,7 +722,12 @@ async fn retrieve_version(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
@@ -712,7 +747,12 @@ async fn delete_version(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    if let Err(message) = resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    if let Err(message) = resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
     let found = match find_version(&state, &workspace, &id, &version).await {
@@ -768,7 +808,12 @@ async fn version_content(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {
             return err(StatusCode::NOT_FOUND, "GA Skills has no content endpoint");
@@ -805,7 +850,12 @@ async fn version_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    match resource_api_flavor(raw.as_deref(), &headers, SKILLS_BETA) {
+    match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        SKILLS_BETA,
+        BetaQueryPolicy::RequireHeader,
+    ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {
             return err(StatusCode::NOT_FOUND, "GA Skills has no file endpoint");

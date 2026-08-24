@@ -46,8 +46,12 @@ async function main() {
       assert.equal(up.size_bytes, body.length, 'upload reports byte size');
       pass(`file uploaded: ${up.id.slice(0, 12)} (${up.size_bytes} bytes)`);
 
-      // GET /v1/files/:id — metadata (presence + size).
-      const meta = await client.get(`/v1/files/${up.id}`);
+      // Metadata projection decision: C1 an uploaded input has no Session
+      // scope; C2 the Beta selector is explicit. E1 the typed Beta response
+      // carries `scope:null` while retaining exact size/type/downloadability.
+      // K1 GA intentionally omits the Beta-only scope field and is covered by
+      // management_files_models_e2e.mjs. R1 C1&&C2 -> E1.
+      const meta = await client.beta.files.retrieveMetadata(up.id, { betas: BETAS });
       assert.equal(meta.id, up.id);
       assert.equal(meta.size_bytes, body.length);
       assert.equal(meta.type, 'file');
@@ -79,7 +83,7 @@ async function main() {
 
       // A missing id is a 404.
       await assert.rejects(
-        () => client.get('/v1/files/blob_does_not_exist'),
+        () => client.beta.files.retrieveMetadata('blob_does_not_exist', { betas: BETAS }),
         (e) => String(e).includes('404'),
         'unknown file id is a 404',
       );
@@ -106,13 +110,13 @@ async function main() {
       assert.equal(deletedFile.status, 200);
       assert.equal(deletedFile.body.type, 'file_deleted');
       await assert.rejects(
-        () => client.get(`/v1/files/${up.id}`),
+        () => client.beta.files.retrieveMetadata(up.id, { betas: BETAS }),
         (e) => String(e).includes('404'),
         'logical File deletion denies reads before asynchronous reclamation',
       );
       assert.equal((await request(baseUrl, 'DELETE', `/v1/files/${up.id}`)).status, 404);
       assert.equal(
-        (await client.get(`/v1/files/${up2.id}`)).id,
+        (await client.beta.files.retrieveMetadata(up2.id, { betas: BETAS })).id,
         up2.id,
         'deleting one logical File does not delete another identity over the same blob',
       );

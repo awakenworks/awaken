@@ -53,6 +53,7 @@ const anthropicContractFingerprints01171 = {
   'resources/beta/vaults/index.d.ts': { declarations: 2, sha256: '60f01d986882b40ce3f8493c58a0571c55c58811e66b7218953599ef51e22656' },
   'resources/beta/vaults/vaults.d.ts': { declarations: 10, sha256: '33c512b558cd685d45a990247c5b22eba2becafc69fb869dc1e1bdde3147cc74' },
   'resources/beta/webhooks.d.ts': { declarations: 48, sha256: '9abf53b51b18eb3a5d7d4a7efd9bd63e71038e8e6731e809569b446b7a0ad1f3' },
+  'resources/models.d.ts': { declarations: 11, sha256: '9500962aafccaff6ff67ed014801d4998f6985401b98027f63f895342e445d18' },
 };
 
 // Version-fingerprint cause/effect graph: C1=the pinned 0.120.0 package or the
@@ -160,12 +161,13 @@ const surfaces = [
   },
   {
     package: '@anthropic-ai/sdk',
-    // The beta root remains the Managed API oracle; 0.119 GA Files/Skills and
+    // The beta root remains the Managed API oracle; GA Models/Files/Skills and
     // 0.120's self-hosted worker/memory helpers are separate public entrypoints,
     // so they are explicit roots in the same inventory rather than an MCP or
     // hand-maintained compatibility side channel.
     roots: [
       'resources/beta/beta.d.ts',
+      'resources/models.d.ts',
       'resources/files.d.ts',
       'resources/skills/index.d.ts',
       'lib/environments/worker.d.ts',
@@ -200,13 +202,14 @@ const surfaces = [
       [/resources\/beta\/webhooks/, 'managed_webhooks_official_sdk_e2e.mjs'],
       [/^resources\/beta\/beta\.d\.ts$/, 'managed_contract_guard_e2e.mjs'],
       [/^resources\/files\.d\.ts$/, 'management_files_models_e2e.mjs'],
+      [/^resources\/models\.d\.ts$/, 'management_files_models_e2e.mjs'],
       [/^resources\/skills\//, 'management_skills_e2e.mjs'],
       [/^lib\/environments\//, 'management_environment_worker_full_e2e.mjs'],
       [/^tools\/agent-toolset\//, 'management_environment_worker_full_e2e.mjs'],
     ],
     exclusions: [[
-      /^(client|internal\/|core\/|lib\/(?!environments\/)|tools\/(?!agent-toolset\/)|pagination|resource|error|uploads|version|index|resources\/messages|resources\/models|resources\/beta\/messages)/,
-      'shared SDK client/runtime or non-Managed Messages/Models machinery; no Awaken Managed wire DTO',
+      /^(client|internal\/|core\/|lib\/(?!environments\/)|tools\/(?!agent-toolset\/)|pagination|resource|error|uploads|version|index|resources\/messages|resources\/beta\/messages)/,
+      'shared SDK client/runtime or non-Managed Messages machinery; no Awaken Managed wire DTO',
     ]],
   },
 ];

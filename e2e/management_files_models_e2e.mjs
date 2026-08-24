@@ -1,18 +1,22 @@
-// Files.delete + the Models API, driven by the official Anthropic TypeScript SDK
-// (`client.beta.files.*`, `client.beta.models.*`). The upload/download/idempotency
-// path is covered by `managed_resources_api_e2e.mjs`; this file adds the previously
-// missing `files.delete` and the whole Models API so any wire-shape drift from the
-// official `DeletedFile` / `BetaModelInfo` types surfaces as an SDK decode error.
+// Files + Models, driven through both official Anthropic TypeScript SDK roots:
+// `client.beta.{files,models}` and GA `client.{files,models}`. Both roots call the
+// same catalog/store owners; this scenario verifies their distinct wire projections
+// without creating a second resource implementation.
 //
 // Run: (from e2e/)  node management_files_models_e2e.mjs
 //
-// Causal graph: multipart upload -> durable file -> delete -> metadata lookup
-// fails; configured model catalog -> list/retrieve -> exact model or 404.
+// Causal graph: C1=Beta or GA SDK root; C2=durable File identity exists/missing;
+// C3=published executable Model exists/missing. Effects: E1=each root decodes its
+// exact metadata/list/retrieve response; E2=input download is denied by the shared
+// file policy; E3=delete makes later metadata fail; E4=missing Model returns 404.
+// Downloadable artifact success is owned by the Session namespace E2E. Constraints:
+// both roots share one FileCatalog/model inventory and never copy state.
 // Decision table:
-// | resource | identity | operation | observable behavior |
-// | file | existing | delete | file_deleted then metadata 404 |
-// | model | executable publication | list/retrieve | typed BetaModelInfo |
-// | model | missing | retrieve | 404 without catalog mutation |
+// | rule | root | identity | operation | effects |
+// | R1 | Beta | existing File | delete | E1+E3 |
+// | R2 | GA | existing input File | upload/list/retrieve/download/delete | E1+E2+E3 |
+// | R3 | Beta/GA | published Model | list/retrieve | E1 |
+// | R4 | Beta/GA | missing Model | retrieve | E4 |
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -34,7 +38,6 @@ async function main() {
       // -- Files: upload → delete → 404 -------------------------------------
       const up = await client.beta.files.upload({
         file: await toFile(Buffer.from('to-be-deleted'), 'gone.txt'),
-        purpose: 'agent',
         betas: BETAS,
       });
       assert.ok(up.id, 'upload returns a content id');
@@ -46,6 +49,29 @@ async function main() {
         (err) => err.status === 404,
       );
       pass('beta.files.delete -> DeletedFile; metadata 404s after');
+
+      // GA Files uses the same durable File authority but a different metadata
+      // projection and no beta selector. Exercise all five current SDK methods.
+      const gaFile = await client.files.upload({
+        file: await toFile(Buffer.from('ga-file-content'), 'ga-file.txt'),
+        expires_in_seconds: 3600,
+      });
+      assert.equal(gaFile.type, 'file', 'R2/E1');
+      assert.equal(typeof gaFile.expires_at, 'string', 'R2 GA expiry projection');
+      assert.equal((await client.files.retrieveMetadata(gaFile.id)).id, gaFile.id, 'R2/E1');
+      const gaFiles = await drain(client.files.list({ ids: [gaFile.id, 'file_missing'] }));
+      assert.deepEqual(gaFiles.map((file) => file.id), [gaFile.id], 'R2/E1 ids filter');
+      await assert.rejects(
+        () => client.files.download(gaFile.id),
+        (error) => error?.status === 400 && String(error).includes('not downloadable'),
+        'R2/E2 GA input download fails closed',
+      );
+      assert.equal((await client.files.delete(gaFile.id)).type, 'file_deleted', 'R2/E3');
+      await assert.rejects(
+        () => client.files.retrieveMetadata(gaFile.id),
+        (error) => error?.status === 404,
+      );
+      pass('GA Files upload/list/retrieve/download/delete share the canonical File authority');
 
       // -- Models: list + retrieve + alias-miss 404 -------------------------
       // Model-directory cause/effect rules: M1 no authored catalog facts ->
@@ -105,11 +131,31 @@ async function main() {
       assert.equal(one.type, 'model');
       pass('beta.models.retrieve -> BetaModelInfo');
 
+      const gaModels = await drain(client.models.list());
+      assert.ok(gaModels.some((model) => model.id === 'claude-opus-4-8'), 'R3 GA model list');
+      assert.ok(
+        gaModels.every((model) => model.type === 'model' && typeof model.display_name === 'string'),
+        'R3/E1 every GA entry decodes as ModelInfo',
+      );
+      assert.ok(
+        gaModels.every((model) => !Object.hasOwn(model, 'allowed_fallback_models')),
+        'R3 GA ModelInfo omits the Beta-only fallback field',
+      );
+      const gaModel = await client.models.retrieve('claude-opus-4-8');
+      assert.equal(gaModel.id, 'claude-opus-4-8', 'R3 GA retrieve');
+      assert.equal(gaModel.type, 'model');
+      assert.equal(Object.hasOwn(gaModel, 'allowed_fallback_models'), false, 'R3 GA projection');
+      pass('GA models.list/retrieve -> ModelInfo over the same executable inventory');
+
       await assert.rejects(
         () => client.beta.models.retrieve('no-such-model', { betas: BETAS }),
         (err) => err.status === 404,
       );
-      pass('beta.models.retrieve(unknown) -> 404');
+      await assert.rejects(
+        () => client.models.retrieve('no-such-model'),
+        (err) => err.status === 404,
+      );
+      pass('Beta and GA models.retrieve(unknown) -> 404');
     }, {}, { upstream: { models: ['claude-opus-4-8'] } });
 
     console.log('E2E PASS: files.delete + the Models API round-trip through the official @anthropic-ai/sdk.');

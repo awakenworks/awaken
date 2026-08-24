@@ -6,7 +6,7 @@
 // into a SINGLE session — the real
 // StagedResources → sandbox_spec → provider realization path — then exercises:
 //   • the Run executes with both writable resources mounted (provisioning succeeded),
-//   • GET /v1/files?scope_id (read-only artifact projection),
+//   • beta.files.list({scope_id}) (read-only artifact projection),
 //   • fail-closed for each resource type (missing file / missing memory_store / bad repo).
 //
 // A File input is deliberately absent from the Workdir success rule: its read-only
@@ -31,7 +31,7 @@ import {
   withRealServer,
 } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 const PORT = Number(process.env.E2E_PORT ?? 38291);
 const TMP = path.join(os.tmpdir(), `awaken-sbxprov-e2e-${process.pid}`);
@@ -132,9 +132,12 @@ async function main() {
     pass('a Run executed over the combined writable-resource sandbox');
 
     // ── read-only artifact projection ─────────────────────────────────────────
-    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
+    // C4 exact Session scope + C5 Files beta selector -> E4 one read-only
+    // catalog projection. K4 GA Files has no scope_id and must reject that
+    // parameter; listing never publishes writable resources. R4 C4&&C5->E4.
+    const artifacts = await client.beta.files.list({ scope_id: session.id, betas: BETAS });
     assert.ok(artifacts, 'artifact/reverse-channel endpoint responded for the session');
-    pass('GET /v1/files?scope_id projects artifacts without hidden resource writes');
+    pass('beta.files.list({scope_id}) projects artifacts without hidden resource writes');
 
     // ── fail-closed: each resource type rejects a dangling reference ───────────
     const badFile = await createRaw(base, {

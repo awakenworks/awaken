@@ -25,7 +25,11 @@ import Anthropic from '@anthropic-ai/sdk';
 import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
-import { waitForSessionEventReceipt, waitForValue } from './harness.mjs';
+import {
+  managedFileUploadForm,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 38411);
@@ -727,9 +731,10 @@ async function main() {
     assert.equal(listedAgents.status, 200);
     assert.ok(listedAgents.json.data.some((entry) => entry.id === 'owned-agent'));
 
-    const upload = new FormData();
-    upload.set('file', new Blob(['workspace-owned-file']), 'owned.txt');
-    const uploaded = await fetch(`${base}/v1/workspaces/${WS_A}/files`, { method: 'POST', body: upload });
+    const uploaded = await fetch(`${base}/v1/workspaces/${WS_A}/files`, {
+      method: 'POST',
+      body: managedFileUploadForm('workspace-owned-file', 'owned.txt'),
+    });
     assert.equal(uploaded.status, 200);
     const fileId = (await uploaded.json()).id;
     assert.equal((await fetch(`${base}/v1/workspaces/${WS_A}/files/${fileId}`)).status, 200);

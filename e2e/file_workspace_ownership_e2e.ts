@@ -7,7 +7,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { deploymentEnv, pass, spawnServer, stopServer, waitForPort } from './harness.mjs';
+import {
+  deploymentEnv,
+  managedFileUploadForm,
+  pass,
+  spawnServer,
+  stopServer,
+  waitForPort,
+} from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38216);
 const SEAL_KEY = 'ffeeddccbbaa99887766554433221100ffeeddccbbaa99887766554433221100';
@@ -49,10 +56,13 @@ async function mint(base: string, bootstrap: string, workspace: string): Promise
 }
 
 async function upload(base: string, token: string, bytes: string): Promise<string> {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([bytes]), 'shared.txt');
-  const uploaded = await request(base, 'POST', '/v1/files', token, form);
+  const uploaded = await request(
+    base,
+    'POST',
+    '/v1/files',
+    token,
+    managedFileUploadForm(bytes, 'shared.txt'),
+  );
   assert.equal(uploaded.status, 200, uploaded.text);
   return uploaded.body.id;
 }

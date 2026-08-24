@@ -865,7 +865,9 @@ async function main() {
     // for O3; querying only after delete keeps the read plane side-effect free (O1).
     await client.beta.sessions.delete(session.id, { betas: BETAS });
     await waitForTestContainersToBeReaped();
-    const artifacts = await client.get(`/v1/files?scope_id=${session.id}`);
+    // O2 also requires the endpoint-specific Beta selector: GA Files has no
+    // scope_id and must not become a parallel Session-artifact query path.
+    const artifacts = await client.beta.files.list({ scope_id: session.id, betas: BETAS });
     const artifact = artifacts.data.find((entry) => entry.filename === 'result.txt');
     assert.ok(artifact, `terminal release must harvest container output: ${JSON.stringify(artifacts)}`);
     const artifactContent = await client.beta.files.download(artifact.id, { betas: BETAS });

@@ -39,7 +39,7 @@ import {
 } from './harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38217);
-const BETAS = ['managed-agents-2026-04-01'];
+const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const TMP = path.join(os.tmpdir(), `awaken-gitrepo-e2e-${process.pid}`);
 const README = 'SEED_README_CONTENT_7742';
 const FEATURE_README = 'FEATURE_BRANCH_CONTENT_5521';
@@ -75,10 +75,12 @@ function seedRemote() {
   return { bare, pinnedCommit };
 }
 
-// Files GET is deliberately read-only; it must not publish Repository changes.
+// Artifact projection rule: C4 exact Session scope + C5 Files beta selector ->
+// E4 read-only catalog observation. K4 GA Files has no scope_id, and neither
+// projection may publish Repository changes. R4 C4&&C5->E4.
 async function listArtifacts(sid) {
   try {
-    await client.get(`/v1/files?scope_id=${sid}`);
+    await client.beta.files.list({ scope_id: sid, betas: BETAS });
   } catch {
     /* ignore */
   }

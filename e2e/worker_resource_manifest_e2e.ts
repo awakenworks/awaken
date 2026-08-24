@@ -17,6 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   WORKER_PROVIDER_CREDENTIAL_CAPABILITY,
+  managedFileUploadForm,
   spawnProduction,
   stopServer,
   waitForPort,
@@ -142,13 +143,10 @@ async function resourceRequest(method: string, pathname: string, body?: unknown)
 }
 
 async function uploadFile(): Promise<string> {
-  const form = new FormData();
-  form.append('purpose', 'agent');
-  form.append('file', new Blob([FILE_BYTES]), 'input.txt');
   const response = await fetch(`${CONFIG_BASE}/v1/workspaces/${WORKSPACE}/files`, {
     method: 'POST',
     headers: { 'anthropic-beta': FILES_BETA },
-    body: form,
+    body: managedFileUploadForm(FILE_BYTES, 'input.txt'),
   });
   const text = await response.text();
   assert.equal(response.status, 200, `file upload accepted: ${text}`);

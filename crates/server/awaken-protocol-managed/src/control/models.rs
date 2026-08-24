@@ -1,6 +1,6 @@
-//! The Managed Models API (`/v1/models`) the official `@anthropic-ai/sdk` drives via
-//! `client.beta.models.list` / `.retrieve`. It reports the models this
-//! deployment can route to as `BetaModelInfo`. The list is a plain
+//! The Models API (`/v1/models`) the official `@anthropic-ai/sdk` drives via
+//! GA `client.models` or `client.beta.models`. Both report the same executable
+//! inventory through their distinct `ModelInfo` / `BetaModelInfo` projections. The list is a plain
 //! [`Page`](https://docs.anthropic.com/en/api/models-list) (`data` + `has_more` +
 //! `first_id` / `last_id`), NOT the vault family's cursor page.
 //!
@@ -11,13 +11,15 @@
 use std::sync::Arc;
 
 use axum::Router;
-use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, RawQuery, State};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
 use serde::Serialize;
 
+use crate::common::headers::MANAGED_BETA;
 use crate::common::scope::RequiredWorkspaceScope;
+use crate::resources::flavor::{BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor};
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
@@ -57,16 +59,17 @@ impl ModelEntry {
         self
     }
 
-    /// The `BetaModelInfo` projection. `max_input_tokens`/`max_tokens` carry the
+    /// The GA/Beta Model projection. `max_input_tokens`/`max_tokens` carry the
     /// model's published context window / output ceiling (or `null` when unknown);
-    /// `allowed_fallback_models` is an empty list (fallbacks are a gateway concern).
-    fn project(&self) -> ModelInfo<'_> {
+    /// Beta alone includes an empty `allowed_fallback_models` list because
+    /// fallbacks remain a gateway concern.
+    fn project(&self, flavor: ManagedResourceApiFlavor) -> ModelInfo<'_> {
         ModelInfo {
             id: &self.id,
             kind: "model",
             display_name: &self.display_name,
             created_at: CREATED_AT,
-            allowed_fallback_models: Vec::new(),
+            allowed_fallback_models: (flavor == ManagedResourceApiFlavor::Beta).then(Vec::new),
             capabilities: None,
             max_input_tokens: self.context_window,
             max_tokens: self.max_output_tokens,
@@ -81,7 +84,8 @@ struct ModelInfo<'a> {
     kind: &'static str,
     display_name: &'a str,
     created_at: &'static str,
-    allowed_fallback_models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    allowed_fallback_models: Option<Vec<String>>,
     capabilities: Option<()>,
     max_input_tokens: Option<u32>,
     max_tokens: Option<u32>,
@@ -156,13 +160,26 @@ fn models_router_for(models: AvailableModels) -> Router {
         .with_state(models)
 }
 
-/// `GET /v1/models` — the full directory as a `Page<BetaModelInfo>` (one page:
+/// `GET /v1/models` — the full directory as a GA/Beta model `Page` (one page:
 /// `has_more:false`). `first_id` / `last_id` bracket the page for the SDK's
 /// id-cursor paginator; both `null` when the directory is empty.
 async fn list_models(
     State(available): State<AvailableModels>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        MANAGED_BETA,
+        BetaQueryPolicy::QuerySelectsBeta,
+    ) {
+        Ok(flavor) => flavor,
+        Err(message) => {
+            return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
+        }
+    };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -170,7 +187,7 @@ async fn list_models(
             "model directory unavailable",
         );
     };
-    let data: Vec<_> = models.iter().map(ModelEntry::project).collect();
+    let data: Vec<_> = models.iter().map(|model| model.project(flavor)).collect();
     let first_id = models.first().map(|m| m.id.clone());
     let last_id = models.last().map(|m| m.id.clone());
     (
@@ -180,13 +197,26 @@ async fn list_models(
         .into_response()
 }
 
-/// `GET /v1/models/{id}` — one model as `BetaModelInfo`, or `404`. Doubles as the
+/// `GET /v1/models/{id}` — one model in the selected GA/Beta projection, or `404`. Doubles as the
 /// SDK's alias-resolution endpoint (an exact id here resolves to itself).
 async fn get_model(
     State(available): State<AvailableModels>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path(id): Path<String>,
+    headers: HeaderMap,
+    RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
+    let flavor = match resource_api_flavor(
+        raw.as_deref(),
+        &headers,
+        MANAGED_BETA,
+        BetaQueryPolicy::QuerySelectsBeta,
+    ) {
+        Ok(flavor) => flavor,
+        Err(message) => {
+            return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
+        }
+    };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -195,7 +225,7 @@ async fn get_model(
         );
     };
     match models.iter().find(|m| m.id == id) {
-        Some(entry) => (StatusCode::OK, axum::Json(entry.project())).into_response(),
+        Some(entry) => (StatusCode::OK, axum::Json(entry.project(flavor))).into_response(),
         None => model_error(
             StatusCode::NOT_FOUND,
             "not_found_error",
@@ -230,31 +260,66 @@ mod tests {
     }
 
     #[test]
-    fn default_models_are_nonempty_and_project_to_beta_model_info() {
-        // Cause/effect decision table: known limits -> numeric max fields;
-        // unknown capabilities -> explicit null; every entry -> the exact eight
-        // BetaModelInfo fields. The typed projection is the sole response owner.
+    fn default_models_project_one_ga_and_beta_contract() {
+        // Cause/effect graph: C1 GA/Beta flavor; C2 known token limits; C3 unknown
+        // capabilities. Effects: E1 both emit the seven shared ModelInfo fields;
+        // E2 Beta alone emits allowed_fallback_models; E3 limits are numeric and
+        // capabilities null. Constraint: flavor never selects inventory/state.
+        // Decision rules: R1 C1=GA+C2+C3->E1+E3; R2 C1=Beta+C2+C3->E1+E2+E3.
         let models = default_models();
         assert!(models.iter().any(|m| m.id == "claude-opus-4-8"));
-        // Every entry projects to the `BetaModelInfo` core shape the SDK decodes.
         for m in &models {
-            let v = serde_json::to_value(m.project()).unwrap();
-            assert_eq!(v.as_object().unwrap().len(), 8);
-            assert_eq!(v["type"], "model");
-            assert_eq!(v["id"], m.id);
-            assert!(v["display_name"].is_string());
-            assert!(v["created_at"].is_string());
-            assert!(v["allowed_fallback_models"].is_array());
-            // Capabilities stay null (unknown); the token limits now carry the model's
-            // published context window / output ceiling.
-            assert!(v["capabilities"].is_null());
+            for (rule, flavor, fields, fallback) in [
+                ("R1", ManagedResourceApiFlavor::Ga, 7, false),
+                ("R2", ManagedResourceApiFlavor::Beta, 8, true),
+            ] {
+                let v = serde_json::to_value(m.project(flavor)).unwrap();
+                assert_eq!(v.as_object().unwrap().len(), fields, "{rule}");
+                assert_eq!(v["type"], "model", "{rule}");
+                assert_eq!(v["id"], m.id, "{rule}");
+                assert!(v["display_name"].is_string(), "{rule}");
+                assert!(v["created_at"].is_string(), "{rule}");
+                assert_eq!(
+                    v.get("allowed_fallback_models").is_some(),
+                    fallback,
+                    "{rule}"
+                );
+                assert!(v["capabilities"].is_null(), "{rule}");
+                assert_eq!(v["max_input_tokens"], 200_000, "{rule}");
+                assert!(v["max_tokens"].as_u64().is_some(), "{rule}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn models_route_uses_the_canonical_header_flavor_without_splitting_inventory() {
+        // Causes: C1 no Managed beta header; C2 the canonical Managed beta
+        // header; C3 both requests address the same fixed inventory. Effects:
+        // E1 C1 returns GA ModelInfo without allowed_fallback_models; E2 C2
+        // returns BetaModelInfo with it; E3 both retain the same model id.
+        // Constraint: header selection changes projection only. Decision table:
+        // R1 C1+C3->E1+E3; R2 C2+C3->E2+E3.
+        let app = models_router(Arc::new(vec![ModelEntry::new("model-a", "Model A")])).layer(
+            axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
+        );
+        for (rule, beta, fallback) in [("R1", false, false), ("R2", true, true)] {
+            let mut request = axum::http::Request::builder().uri("/v1/models");
+            if beta {
+                request = request.header("anthropic-beta", MANAGED_BETA);
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(axum::body::Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{rule}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["data"][0]["id"], "model-a", "{rule}");
             assert_eq!(
-                v["max_input_tokens"], 200_000,
-                "the published context window is reported"
-            );
-            assert!(
-                v["max_tokens"].as_u64().is_some(),
-                "the output ceiling is reported"
+                value["data"][0].get("allowed_fallback_models").is_some(),
+                fallback,
+                "{rule}"
             );
         }
     }
