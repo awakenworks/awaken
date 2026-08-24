@@ -11,8 +11,10 @@
 import assert from 'node:assert/strict';
 import {
   sdkEventTypes,
+  sdkVersionBinding,
   rustOutboundTypes,
   rustInboundTypes,
+  rustPreviewTypes,
   CATALOG_WAIVERS,
 } from './catalog.mjs';
 
@@ -47,12 +49,22 @@ function checkFamily(label, sdk, rust, waivers) {
 
 async function main() {
   try {
+    // Cause/effect graph: C1=the declarations are the exactly pinned SDK;
+    // C2=each SDK family equals its Rust wire enum; C3=waivers describe only
+    // current deliberate differences. Effects: E1=accept one closed catalog;
+    // E2=reject stale installation, new/removed types, or stale waivers.
+    // Decision rules: R1 C1+C2+C3=>E1; R2 !C1=>E2 before comparison;
+    // R3 C1+(!C2||!C3)=>E2. Constraint: this gate owns vocabulary parity;
+    // behavioral ownership is delegated to the adjacent manifest test.
+    const version = sdkVersionBinding();
+    console.log(`  SDK version: pinned=${version.pinned} installed=${version.installed}`);
     const sdk = sdkEventTypes();
     checkFamily('outbound', sdk.outbound, rustOutboundTypes(), {
       missing: CATALOG_WAIVERS.outboundMissing,
       extra: CATALOG_WAIVERS.outboundExtra,
     });
     checkFamily('inbound', sdk.inbound, rustInboundTypes(), { missing: {}, extra: {} });
+    checkFamily('preview', sdk.preview, rustPreviewTypes(), { missing: {}, extra: {} });
     console.log('GATE PASS: Rust event catalog matches the installed SDK (no undocumented drift).');
     process.exitCode = 0;
   } catch (err) {

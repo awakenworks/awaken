@@ -21,6 +21,8 @@ const EVENTS_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/sessions/e
 const SESSIONS_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/sessions/sessions.d.ts';
 const BETA_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/beta.d.ts';
 const MANAGED_E2E = 'e2e/managed_e2e.mjs';
+const E2E_PACKAGE_JSON = 'e2e/package.json';
+const SDK_PACKAGE_JSON = 'e2e/node_modules/@anthropic-ai/sdk/package.json';
 
 // -- SDK oracle -------------------------------------------------------------
 
@@ -33,12 +35,27 @@ const MANAGED_E2E = 'e2e/managed_e2e.mjs';
 export function sdkEventTypes() {
   const text = read(EVENTS_DTS) + '\n' + read(SESSIONS_DTS);
   const all = new Set();
-  for (const m of text.matchAll(/type:\s*'([a-z_]+(?:\.[a-z_]+)+)'/g)) all.add(m[1]);
+  for (const m of text.matchAll(/type:\s*'([a-z_]+(?:\.[a-z_]+)*)'/g)) all.add(m[1]);
   const types = [...all];
   return {
     outbound: types.filter((t) => /^(agent|session|span|user|system)\./.test(t)).sort(),
     inbound: types.filter((t) => /^(user|system)\./.test(t)).sort(),
+    preview: types.filter((t) => /^(event_start|event_delta)$/.test(t)).sort(),
   };
+}
+
+// A catalog result is evidence for the pinned SDK only when the declarations
+// being read really belong to that exact package version. Keeping this check in
+// the extractor prevents every consumer from inventing its own version policy.
+export function sdkVersionBinding() {
+  const pinned = JSON.parse(read(E2E_PACKAGE_JSON)).dependencies['@anthropic-ai/sdk'];
+  const installed = JSON.parse(read(SDK_PACKAGE_JSON)).version;
+  if (installed !== pinned) {
+    throw new Error(
+      `installed @anthropic-ai/sdk ${installed} does not match pinned ${pinned}; run npm ci in e2e`,
+    );
+  }
+  return Object.freeze({ pinned, installed });
 }
 
 // The managed beta identifiers the SDK ships (e.g. `managed-agents-2026-04-01`).
@@ -67,6 +84,9 @@ export function rustOutboundTypes() {
 }
 export function rustInboundTypes() {
   return rustEnumRenames(read(SESSION_RS), 'InboundEvent');
+}
+export function rustPreviewTypes() {
+  return rustEnumRenames(read(SESSION_RS), 'PreviewFrame');
 }
 
 export function rustBeta() {

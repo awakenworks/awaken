@@ -31,6 +31,8 @@ import type {
   BetaManagedAgentsSessionEvent,
   BetaManagedAgentsStreamSessionEvents,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
+// @ts-ignore -- the shared JavaScript catalog intentionally has no declarations.
+import { sdkEventTypes } from './catalog.mjs';
 // @ts-ignore -- the shared JavaScript harness intentionally has no declarations.
 import { waitForSessionEventReceipt, waitForValue } from '../harness.mjs';
 
@@ -150,48 +152,8 @@ const sdkPackage = JSON.parse(
   await readFile(path.join(E2E_DIR, 'node_modules', '@anthropic-ai', 'sdk', 'package.json'), 'utf8'),
 ) as { version: string };
 
-const OFFICIAL_EVENT_TYPES = new Set([
-  'user.message',
-  'user.interrupt',
-  'user.tool_confirmation',
-  'user.custom_tool_result',
-  'user.tool_result',
-  'user.define_outcome',
-  'system.message',
-  'agent.message',
-  'agent.thinking',
-  'agent.tool_use',
-  'agent.tool_result',
-  'agent.mcp_tool_use',
-  'agent.mcp_tool_result',
-  'agent.custom_tool_use',
-  'agent.thread_context_compacted',
-  'agent.thread_message_received',
-  'agent.thread_message_sent',
-  'agent.session_thread_message_received',
-  'agent.session_thread_message_sent',
-  'session.error',
-  'session.updated',
-  'session.deleted',
-  'session.status_running',
-  'session.status_idle',
-  'session.status_rescheduled',
-  'session.status_terminated',
-  'session.usage',
-  'session.thread_created',
-  'session.thread_status_created',
-  'session.thread_status_running',
-  'session.thread_status_idle',
-  'session.thread_status_rescheduled',
-  'session.thread_status_terminated',
-  'span.model_request_start',
-  'span.model_request_end',
-  'span.outcome_evaluation_start',
-  'span.outcome_evaluation_ongoing',
-  'span.outcome_evaluation_end',
-  'event_start',
-  'event_delta',
-]);
+const eventCatalog = sdkEventTypes();
+const OFFICIAL_EVENT_TYPES = new Set([...eventCatalog.outbound, ...eventCatalog.preview]);
 
 function sha256(value: string): string {
   return createHash('sha256').update(value).digest('hex');
