@@ -51,6 +51,37 @@ pub fn thread_disposition_from_committed_state(
     ThreadDispositionKey::load(&Store::rebuild(commands))
 }
 
+/// Exact commit coordinate of the absorbing archive command. A malformed or
+/// cursor-less legacy prefix is not a listable archive event.
+#[must_use]
+pub fn archived_thread_commit_cursor(
+    commands: &[StateCommand],
+    state_commit_cursors: &[u64],
+) -> Option<u64> {
+    if commands.len() != state_commit_cursors.len() {
+        return None;
+    }
+    commands
+        .iter()
+        .zip(state_commit_cursors.iter().copied())
+        .rev()
+        .find_map(|(command, cursor)| {
+            let archived = match &command.action {
+                crate::agent::state::Action::Set(value) => {
+                    matches!(
+                        serde_json::from_value::<ThreadDisposition>(value.clone()),
+                        Ok(ThreadDisposition::Archived)
+                    )
+                }
+                crate::agent::state::Action::Remove => false,
+            };
+            (command.scope == Scope::Thread
+                && command.key.0 == THREAD_DISPOSITION_STATE_KEY
+                && archived)
+                .then_some(cursor)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

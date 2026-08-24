@@ -600,11 +600,12 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         .unwrap()
         .push("researcher".into());
     let child_run_id = awaken_agent_contract::agent::run::Id("coord-run-durable".into());
-    runtime
-        .coordinated
-        .lock()
-        .unwrap()
-        .push(awaken_session_contract::CoordinatedThreadLink {
+    runtime.install_agent_coordination_prefix(
+        "sesn_1",
+        awaken_agent_contract::agent::run::Id("parent".into()),
+        0,
+        "call-durable",
+        awaken_session_contract::CoordinatedThreadLink {
             session_id: "sesn_1".into(),
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
             target: awaken_session_contract::CoordinatedThreadTarget::Agent {
@@ -616,11 +617,12 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
                 "call-durable",
             ),
             latest_run_id: Some(child_run_id.clone()),
-        });
+        },
+    );
     runtime.lifecycle.lock().unwrap().extend([
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(1),
-            source_commit_cursor: 1,
+            cursor: awaken_agent_contract::RunLifecycleCursor(3),
+            source_commit_cursor: 3,
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
             run_id: child_run_id.clone(),
             kind: awaken_agent_contract::RunLifecycleEventKind::Running,
@@ -628,8 +630,8 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
             await_reason: None,
         },
         awaken_agent_contract::RunLifecycleEvent {
-            cursor: awaken_agent_contract::RunLifecycleCursor(2),
-            source_commit_cursor: 2,
+            cursor: awaken_agent_contract::RunLifecycleCursor(4),
+            source_commit_cursor: 4,
             thread_id: awaken_agent_contract::agent::thread::Id(child_thread_id.into()),
             run_id: child_run_id,
             kind: awaken_agent_contract::RunLifecycleEventKind::Completed,

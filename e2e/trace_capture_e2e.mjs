@@ -93,8 +93,9 @@ const CAPTURE_BEHAVIOR = { echo: 'echo', statemachine: 'stateMachine', memory: '
 // The MODEL runs over the real wire: `echo` is plain-mount (real mode), other modes
 // keep their `AWAKEN_MODEL_MODE=<mode>` host config with the model swapped to the
 // wire. Each call runs its own fake upstream reproducing that mode's behavior.
-// Background work is awaited through its observable resource effect rather than a
-// timing guess, so a captured aux span proves the governed binding actually ran.
+// The resource effect proves the governed binding ran; process shutdown then
+// joins the mounted ServiceLifecycle so the background parent span also ends
+// before the trace exporter is flushed. Neither boundary relies on a timing wait.
 async function captureTurn(mode, port, file, text, { extraEnv = {} } = {}) {
   fs.rmSync(file, { force: true });
   const behavior = CAPTURE_BEHAVIOR[mode] ?? 'echo';
@@ -261,13 +262,15 @@ async function main() {
 
     // 4) Spawn boundary decision table. C1 the admitted User Event persists its
     // traceparent on one durable RunDispatch; C2 the daemon owns terminal replay;
-    // C3 the Worker-owned post-commit observer enqueues Memory extraction; C4 its
-    // detached sub-run starts only after the MemoryStore effect is observable.
+    // C3 the Worker-owned post-commit observer enqueues Memory extraction; C4 the
+    // MemoryStore effect can become visible before its detached task returns;
+    // C5 graceful process shutdown joins the mounted Runtime background drain.
     // E1 aux.background descends through wake.dispatch to sessions.events.send;
     // E2 the extractor runtime.run is below aux.background; E3 one Memory effect
-    // completes before trace flush. K: RunDispatch is the sole causal relay and
-    // the MemoryStore write is the completion authority—there is no timing wait.
-    // D1: C1+C2+C3+C4 => E1+E2+E3.
+    // commits; E4 both child and parent spans finish before trace flush. K:
+    // RunDispatch is the sole causal relay, MemoryStore is the effect authority,
+    // and ServiceLifecycle is the sole bounded shutdown owner—there is no sleep
+    // or second completion ledger. D1: C1+C2+C3+C4+C5 => E1+E2+E3+E4.
     const memoryRoot = `/tmp/awaken-trace-memory-${process.pid}`;
     cleanupFixtureTree(memoryRoot);
     let memSpans;

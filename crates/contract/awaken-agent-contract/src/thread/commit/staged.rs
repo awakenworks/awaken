@@ -196,10 +196,12 @@ impl ThreadCommit {
         let run_state = run.state();
         if state_changed {
             let await_reason = run.resume_ticket().map(|ticket| ticket.reason());
+            let await_target = run.resume_ticket().map(|ticket| ticket.target().clone());
             events.push(
                 RunEvent::RunStateChanged {
                     state: run_state,
                     await_reason,
+                    await_target,
                 }
                 .into(),
             );

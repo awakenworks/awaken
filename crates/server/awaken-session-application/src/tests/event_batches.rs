@@ -34,6 +34,8 @@ struct EventBatchRuntime {
     committed: Mutex<Vec<Message>>,
     trace: Mutex<Vec<String>>,
     outcomes: Mutex<BTreeMap<String, (String, String, u32)>>,
+    outcome_commit_cursors: Mutex<BTreeMap<String, u64>>,
+    next_outcome_commit_cursor: AtomicU64,
     outcome_prepare_calls: Mutex<Vec<String>>,
     outcome_busy: AtomicBool,
     outcome_active: AtomicBool,
@@ -91,6 +93,15 @@ impl EventBatchRuntime {
                 committed.push(message);
             }
         }
+    }
+
+    fn committed_message_projection(&self) -> (Vec<Message>, Vec<u64>, u64) {
+        let messages = self.committed.lock().unwrap().clone();
+        let message_commit_cursors = (0..messages.len())
+            .map(|index| index as u64 + 1)
+            .collect::<Vec<_>>();
+        let store_cursor = message_commit_cursors.last().copied().unwrap_or(1);
+        (messages, message_commit_cursors, store_cursor)
     }
 }
 
@@ -224,10 +235,43 @@ impl SessionRuntime for EventBatchRuntime {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
+        session_id: &str,
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
+        let staged_run_id = self
+            .staged_tool_replies
+            .lock()
+            .unwrap()
+            .values()
+            .find(|command| command.target.thread_id(session_id).0 == thread_id)
+            .map(|command| command.expected_run_id.clone());
+        if let Some(run_id) = staged_run_id {
+            let thread_id = ThreadId(thread_id.to_string());
+            let (messages, message_commit_cursors, store_cursor) =
+                self.committed_message_projection();
+            return Ok(Some(
+                awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                    thread_id: thread_id.clone(),
+                    claimed_run_id: run_id.clone(),
+                    runs: vec![awaken_agent_contract::agent::run::Record {
+                        id: run_id.clone(),
+                        thread_id,
+                        state: RunState::Awaiting,
+                    }],
+                    latest_run_id: Some(run_id),
+                    messages,
+                    message_commit_cursors,
+                    state: Vec::new(),
+                    state_commit_cursors: Vec::new(),
+                    events: Vec::new(),
+                    resume_tickets: Vec::new(),
+                    thread_version: 1,
+                    store_cursor,
+                    next_commit_ordinal: 1,
+                },
+            ));
+        }
         let Some(latest_run_id) = self.latest_run.lock().unwrap().clone() else {
             return Ok(None);
         };
@@ -245,18 +289,21 @@ impl SessionRuntime for EventBatchRuntime {
                 },
             )
             .collect();
+        let (messages, message_commit_cursors, store_cursor) = self.committed_message_projection();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 thread_id,
                 claimed_run_id: latest_run_id.clone(),
                 runs,
                 latest_run_id: Some(latest_run_id),
-                messages: self.committed.lock().unwrap().clone(),
+                messages,
+                message_commit_cursors,
                 state: Vec::new(),
+                state_commit_cursors: Vec::new(),
                 events: Vec::new(),
                 resume_tickets: Vec::new(),
                 thread_version: 1,
-                store_cursor: 1,
+                store_cursor,
                 next_commit_ordinal: 1,
             },
         ))
@@ -359,7 +406,7 @@ impl SessionRuntime for EventBatchRuntime {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<(), RunError> {
+    ) -> Result<u64, RunError> {
         self.trace
             .lock()
             .unwrap()
@@ -376,17 +423,33 @@ impl SessionRuntime for EventBatchRuntime {
         }
         let definition = (description.to_string(), rubric.to_string(), max_iterations);
         let mut outcomes = self.outcomes.lock().unwrap();
-        if let Some(existing) = outcomes.get(outcome_id) {
+        let source_commit_cursor = if let Some(existing) = outcomes.get(outcome_id) {
             if existing != &definition {
                 return Err(RunError::bad_request(
                     "Outcome id was reused with another definition",
                 ));
             }
+            *self
+                .outcome_commit_cursors
+                .lock()
+                .unwrap()
+                .get(outcome_id)
+                .expect("fixture Outcome cursor exists with its definition")
         } else {
             outcomes.insert(outcome_id.to_string(), definition);
-        }
+            let source_commit_cursor = self
+                .next_outcome_commit_cursor
+                .fetch_add(1, Ordering::SeqCst)
+                .checked_add(1)
+                .expect("fixture Outcome cursor exhausted");
+            self.outcome_commit_cursors
+                .lock()
+                .unwrap()
+                .insert(outcome_id.to_string(), source_commit_cursor);
+            source_commit_cursor
+        };
         self.outcome_active.store(true, Ordering::SeqCst);
-        Ok(())
+        Ok(source_commit_cursor)
     }
 
     async fn continue_outcome(&self, _thread: &str) -> Result<Option<OutcomeDrive>, RunError> {
@@ -490,6 +553,229 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
     session.activity_epoch = epoch;
     session.active_activity_epochs.insert(epoch);
     session
+}
+
+#[tokio::test]
+async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects() {
+    // Cause/effect graph: C1 an old writer left a terminal Session with one
+    // accepted unprocessed command; C2 terminal cleanup is Fenced, Requested
+    // with a cursor, or a legacy Requested row with the cursor field absent;
+    // C3 the fence later freezes an exact Runtime cursor. Effects: E1 the
+    // canonical batch supervisor executes no Runtime effect; E2 Fenced remains
+    // incomplete; E3 Requested/Completed resolves under root CAS; E4 an exact
+    // cursor becomes the projection anchor while legacy Requested+None remains
+    // the explicit processed/no-anchor prefix. Rules T1=C1+Fenced=>E1+E2;
+    // T2=C1+Requested(Some)=>E1+E3+E4; T3=C1+legacy Requested(None)=>E1+E3+E4;
+    // T4=T1+C3=>E1+E3+E4. No migration store or second scheduler exists.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("terminal batch repository"),
+    );
+    for (session_id, cursor) in [
+        ("terminal-batch-anchor", Some(17)),
+        ("terminal-batch-legacy", None),
+    ] {
+        let mut session = planned_session(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("accepted before terminal")],
+            }],
+        );
+        session
+            .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
+            .expect("legacy writer reached a valid terminal aggregate");
+        assert!(session.terminal_cleanup.request(session_id));
+        if let Some(cursor) = cursor {
+            session
+                .terminal_cleanup
+                .freeze_targets(session_id, [], 0, cursor)
+                .expect("freeze terminal visibility cursor");
+        } else {
+            let mut legacy = serde_json::to_value(&session.terminal_cleanup).unwrap();
+            legacy["state"] = serde_json::Value::String("requested".into());
+            session.terminal_cleanup = serde_json::from_value(legacy)
+                .expect("legacy Requested cleanup without runtime cursor");
+        }
+        create(repository.as_ref(), session).await;
+    }
+    let mut fenced = planned_session(
+        "terminal-batch-fenced",
+        vec![SessionEventInput::UserMessage {
+            content: vec![ContentBlock::text("accepted before quiescence")],
+        }],
+    );
+    fenced
+        .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
+        .expect("terminal fence starts from a valid terminal aggregate");
+    assert!(fenced.terminal_cleanup.request("terminal-batch-fenced"));
+    create(repository.as_ref(), fenced).await;
+    let runtime = Arc::new(EventBatchRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let report = app.reconcile_event_batches().await;
+    assert!(
+        report.failures.is_empty(),
+        "T1/T2 root CAS succeeds: {:?}",
+        report.failures
+    );
+    assert_eq!(report.settled, 2, "T2/T3/E3");
+    for (session_id, cursor) in [
+        ("terminal-batch-anchor", Some(17)),
+        ("terminal-batch-legacy", None),
+    ] {
+        let session = repository.get(session_id).await.expect("resolved terminal");
+        let entry = &session.event_batches[0].events[0];
+        assert!(entry.processed, "{session_id}/E2");
+        assert_eq!(
+            entry
+                .projection_anchor
+                .map(|anchor| anchor.source_commit_cursor),
+            cursor,
+            "{session_id}/E3"
+        );
+    }
+    assert!(
+        !repository
+            .get("terminal-batch-fenced")
+            .await
+            .unwrap()
+            .event_batches[0]
+            .events[0]
+            .processed,
+        "T1/E2 Fenced is not legacy"
+    );
+
+    let mut frozen = repository.get("terminal-batch-fenced").await.unwrap();
+    frozen
+        .terminal_cleanup
+        .freeze_targets("terminal-batch-fenced", [], 0, 23)
+        .expect("T4/C3 freeze exact terminal visibility");
+    let expected_revision = frozen.revision;
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(frozen);
+    let payload_hash = payload.stable_hash();
+    assert!(matches!(
+        repository
+            .commit_mutation(
+                "workspace",
+                awaken_session_contract::SessionMutation {
+                    expected_revision,
+                    idempotency: awaken_session_contract::IdempotencyRecord {
+                        key: "freeze:terminal-batch-fenced".into(),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                },
+            )
+            .await
+            .unwrap(),
+        awaken_session_contract::SessionMutationResult::Applied { .. }
+    ));
+    let report = app.reconcile_event_batches().await;
+    assert!(report.failures.is_empty(), "T4 root CAS succeeds");
+    let frozen = repository.get("terminal-batch-fenced").await.unwrap();
+    assert!(frozen.event_batches[0].events[0].processed, "T4/E3");
+    assert_eq!(
+        frozen.event_batches[0].events[0]
+            .projection_anchor
+            .map(|anchor| anchor.source_commit_cursor),
+        Some(23),
+        "T4/E4"
+    );
+    assert!(runtime.trace.lock().unwrap().is_empty(), "T1/T2/E1");
+    assert!(runtime.reserved.lock().unwrap().is_empty(), "T1/T2/E1");
+    assert!(runtime.outcomes.lock().unwrap().is_empty(), "T1/T2/E1");
+    assert_eq!(
+        runtime.tool_reply_calls.load(Ordering::SeqCst),
+        0,
+        "T1/T2/E1"
+    );
+    assert_eq!(
+        runtime.primary_interrupt_calls.load(Ordering::SeqCst),
+        0,
+        "T1/T2/E1"
+    );
+}
+
+#[tokio::test]
+async fn deleting_tombstone_waits_for_terminal_batch_provenance() {
+    // Cause/effect graph: C1 an old writer left Deleting+cleanup-Completed with
+    // one accepted incomplete Event entry; C2 resource reconciliation runs
+    // before Event reconciliation; C3 the canonical Event supervisor resolves
+    // the entry at the retained terminal cursor; C4 resource reconciliation
+    // retries. Effects: E1 C2 retains the aggregate and its receipt without any
+    // Runtime command effect; E2 C3 commits processed+anchor under root CAS; E3
+    // only C4 replaces the now-complete aggregate with its compact tombstone.
+    // Decision table: D1=C1+C2=>E1; D2=D1+C3=>E2; D3=D2+C4=>E3. Tombstone
+    // admission and the supervisor share the existing Session root authority.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("deleting batch repository"),
+    );
+    let mut session = planned_session(
+        "deleting-batch",
+        vec![SessionEventInput::UserMessage {
+            content: vec![ContentBlock::text("accepted before old delete")],
+        }],
+    );
+    session
+        .transition_execution(awaken_session_contract::SessionExecutionState::Terminated)
+        .expect("legacy delete starts from a valid terminal aggregate");
+    session.disposition = awaken_session_contract::SessionDisposition::Deleting;
+    session.terminal_cleanup = serde_json::from_value(serde_json::json!({
+        "state": "completed",
+        "effect_id": "legacy-delete-cleanup",
+        "thread_ids": ["deleting-batch"],
+        "delegation_watermark": 0,
+        "runtime_commit_cursor": 31,
+        "receipt_fingerprint": "legacy-delete-receipt"
+    }))
+    .expect("legacy completed terminal cleanup");
+    create(repository.as_ref(), session).await;
+    let runtime = Arc::new(EventBatchRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let first = app.reconcile_resource_activations().await;
+    assert!(first.failures.is_empty(), "D1/E1");
+    assert!(
+        !repository
+            .get("deleting-batch")
+            .await
+            .unwrap()
+            .event_batches[0]
+            .events[0]
+            .processed,
+        "D1/E1 provenance survives the resource-first pass"
+    );
+
+    let events = app.reconcile_event_batches().await;
+    assert!(events.failures.is_empty(), "D2/E2: {:?}", events.failures);
+    let resolved = repository.get("deleting-batch").await.unwrap();
+    assert!(resolved.event_batches[0].events[0].processed, "D2/E2");
+    assert_eq!(
+        resolved.event_batches[0].events[0]
+            .projection_anchor
+            .map(|anchor| anchor.source_commit_cursor),
+        Some(31),
+        "D2/E2"
+    );
+
+    let second = app.reconcile_resource_activations().await;
+    assert!(second.failures.is_empty(), "D3/E3");
+    assert!(matches!(
+        repository.get("deleting-batch").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound)
+    ));
+    assert!(runtime.trace.lock().unwrap().is_empty(), "D1-D3/E1");
+    assert!(runtime.reserved.lock().unwrap().is_empty(), "D1-D3/E1");
 }
 
 #[tokio::test]
@@ -1086,16 +1372,16 @@ async fn interrupt_frozen_targets_recover_idempotently_after_partial_failure() {
     );
 }
 
-#[tokio::test]
-async fn user_system_batch_recovers_through_one_dispatch_and_thread_truth() {
+#[test]
+fn user_system_batch_recovers_through_one_dispatch_and_thread_truth() {
     // Coverage rationale. Causes: the canonical helper below partitions absent,
     // Reserved, active, and Ended User truth across restart/active-active scans.
     // Effects: it proves one dispatch plus ordered System/User committed truth.
     // Constraint/Invariant: this wrapper owns no second scenario or oracle.
     // Decision rule: delegate once to the helper's R1-R4 recovery matrix.
-    // Keep the one R1-R4 helper and oracle unchanged; pinning only moves its
-    // large composed future off the default libtest thread stack.
-    Box::pin(user_system_batch_case()).await;
+    // Keep the one R1-R4 helper and oracle unchanged; the shared test executor
+    // only moves its large composed future off the default libtest stack.
+    run_composed_async_test(user_system_batch_case);
 }
 
 async fn user_system_batch_case() {
@@ -1704,8 +1990,14 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     );
 }
 
-#[tokio::test]
-async fn rejected_user_reservation_cannot_orphan_an_accompanying_system() {
+#[test]
+fn rejected_user_reservation_cannot_orphan_an_accompanying_system() {
+    // Coverage rationale: the async case below owns S1 and its E1-E4 oracle.
+    // The shared executor changes stack placement only.
+    run_composed_async_test(rejected_user_reservation_cannot_orphan_an_accompanying_system_case);
+}
+
+async fn rejected_user_reservation_cannot_orphan_an_accompanying_system_case() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Cause/effect graph: C1 the complete initial batch is valid; C2 durable Run
@@ -1778,8 +2070,14 @@ async fn rejected_user_reservation_cannot_orphan_an_accompanying_system() {
     );
 }
 
-#[tokio::test]
-async fn activity_repair_replays_the_same_complete_system_user_reservation() {
+#[test]
+fn activity_repair_replays_the_same_complete_system_user_reservation() {
+    // The shared test executor changes stack placement only; the case below
+    // remains the single cause/effect oracle for this recovery boundary.
+    run_composed_async_test(activity_repair_replays_the_same_complete_system_user_reservation_case);
+}
+
+async fn activity_repair_replays_the_same_complete_system_user_reservation_case() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
     // documented here remain the only decision source; no parallel ledger is admitted.
     // Decision rule: execute every reachable cause partition documented here and
@@ -1912,8 +2210,14 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation() {
     );
 }
 
-#[tokio::test]
-async fn event_traceparent_survives_root_persistence_and_crash_recovery() {
+#[test]
+fn event_traceparent_survives_root_persistence_and_crash_recovery() {
+    // Coverage rationale: the async case below owns the full T1/T2 table. This
+    // wrapper only selects the shared composed-test executor and adds no oracle.
+    run_composed_async_test(event_traceparent_survives_root_persistence_and_crash_recovery_case);
+}
+
+async fn event_traceparent_survives_root_persistence_and_crash_recovery_case() {
     // Cause/effect graph: C1 admission trace context is present/absent; C2 the
     // root batch commits; C3 activation fails after reservation and a cold
     // supervisor retries. Effects: E1 root provenance and the first reservation
@@ -2126,8 +2430,16 @@ async fn ordinary_active_active_append_is_atomic_revision_ordered_and_activity_f
     );
 }
 
-#[tokio::test]
-async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart() {
+#[test]
+fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart() {
+    // Coverage rationale: the async case below owns Q1-Q3. The shared executor
+    // changes stack placement only and does not add another recovery oracle.
+    run_composed_async_test(
+        outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart_case,
+    );
+}
+
+async fn outcome_crosses_awaiting_user_while_next_user_stays_queued_after_restart_case() {
     // Eligibility/recovery decision table. C1 first User is Running/Awaiting;
     // C2 a later batch contains User then DefineOutcome; C3 one/two restarted
     // supervisors race. Effects: E1 Running User remains unprocessed; E2
@@ -2242,7 +2554,7 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
     // Outcome receipt cause/effect table. C1 the stable Outcome aggregate is
     // absent/present; C2 process is warm/restarted; C3 create wake is active.
     // Effects: E1 exact prepare once; E2 mark the retained entry processed on
-    // prepare receipt; E3 settle create wake immediately; E4 never hold receipt
+    // prepare receipt with its exact durable cursor; E3 settle create wake immediately; E4 never hold receipt
     // completion on Outcome evaluation/continue. Rules O1 absent+warm=>E1-E4;
     // O2 present+processed+cold=>skip every effect and retain provenance.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
@@ -2284,6 +2596,13 @@ async fn outcome_receipt_is_processed_on_stable_prepare_and_cold_replay_skips_it
     assert_eq!(runtime.outcomes.lock().unwrap().len(), 1, "O1/E1");
     let durable = repository.get("initial-outcome").await.unwrap();
     assert!(durable.event_batches[0].events[0].processed, "O1/E2");
+    assert_eq!(
+        durable.event_batches[0].events[0]
+            .projection_anchor
+            .map(|anchor| anchor.source_commit_cursor),
+        Some(1),
+        "O1/E2 exact Outcome prepare cursor"
+    );
     assert!(
         !durable.active_activity_epochs.contains(&batch_epoch),
         "O1/E3"

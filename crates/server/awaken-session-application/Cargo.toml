@@ -26,9 +26,13 @@ serde.workspace = true
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = "0.1"
 
+[features]
+test-support = []
+
 [dev-dependencies]
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 tempfile = "3"
 

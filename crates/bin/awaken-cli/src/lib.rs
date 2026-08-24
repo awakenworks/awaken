@@ -225,6 +225,10 @@ pub struct PreparedProcess {
     pub local_setup: Option<awaken_control::LocalSetupHandoff>,
     pub registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     pub service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    /// Read-only projection published by the exact Session application's sole
+    /// lifecycle supervisor.
+    pub event_batch_cutover_validation:
+        Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
     /// Canonical Coordinator persistence handles for a hosted composition.
     /// Consumers must reuse these handles and must not reopen the same stores.
     pub coordinator_authorities: Option<CoordinatorAuthorityHandles>,
@@ -236,6 +240,8 @@ struct ProcessRouters {
     private_router: Router,
     registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
     service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+    event_batch_cutover_validation:
+        Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>,
     admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
 }
 
@@ -245,6 +251,9 @@ impl ProcessRouters {
         private_router: Router,
         registration_supervisor: Option<Arc<awaken_control::StaticRegistrationSupervisor>>,
         service_lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+        event_batch_cutover_validation: Option<
+            Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>,
+        >,
         admin_tools: Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>>,
     ) -> Self {
         // Router-only embedding helpers do not retain PreparedProcess. Keep the
@@ -260,6 +269,7 @@ impl ProcessRouters {
             private_router,
             registration_supervisor,
             service_lifecycle,
+            event_batch_cutover_validation,
             admin_tools,
         }
     }
@@ -451,6 +461,26 @@ async fn open_process_stores(
     let coordinator = if role_owns_managed_execution(role) {
         ensure_parent(&coordinator_cfg.sessions)?;
         ensure_parent(&coordinator_cfg.captured_content)?;
+        let application_access = Arc::new(match &coordinator_cfg.sessions {
+            StoreBackend::Sqlite(path_value) => {
+                awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(
+                    &path(path_value),
+                )
+                .await
+                .map_err(|error| format!("open application access SQLite: {error}"))?
+            }
+            StoreBackend::Postgres(url) => match postgres_schema {
+                PostgresSchemaMode::Migrate => {
+                    awaken_coordinator::application_access_store::ApplicationAccessStore::connect_postgres(url)
+                        .await
+                }
+                PostgresSchemaMode::Verify => {
+                    awaken_coordinator::application_access_store::ApplicationAccessStore::connect_existing_postgres(url)
+                        .await
+                }
+            }
+            .map_err(|error| format!("connect application access Postgres: {error}"))?,
+        });
         let sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>;
         let deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>;
         let memory_extractions: Arc<dyn awaken_ext_memory::MemoryExtractionRepository>;
@@ -518,6 +548,7 @@ async fn open_process_stores(
             resources: resources
                 .ok_or_else(|| "Coordinator stores require Resources application".to_owned())?,
             sessions,
+            application_access,
             deployments,
             memory_extractions,
             dream_process_store,
@@ -1246,7 +1277,9 @@ mod runtime_session_store_tests {
             activity_epoch: 0,
             active_activity_epochs: Default::default(),
             running_interval: None,
+            closed_runtime_intervals: Vec::new(),
             runtime_active_millis: 0,
+            usage_cursor: Default::default(),
             environment: Default::default(),
             mcp: Default::default(),
             resources: Default::default(),

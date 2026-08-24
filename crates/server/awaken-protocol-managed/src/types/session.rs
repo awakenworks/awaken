@@ -1089,6 +1089,17 @@ pub struct Event {
     pub processed_at: Option<String>,
 }
 
+#[cfg(test)]
+impl PartialEq for Event {
+    fn eq(&self, other: &Self) -> bool {
+        // The wire payload is the public equality contract exercised by warm,
+        // cold, and paginated projection tests. Keep test comparison tied to
+        // that canonical serialization instead of duplicating every variant.
+        serde_json::to_value(self).expect("event serializes")
+            == serde_json::to_value(other).expect("event serializes")
+    }
+}
+
 impl Event {
     /// The public event `type`, used as the SSE `event:` field.
     pub fn type_str(&self) -> &'static str {
@@ -1193,6 +1204,13 @@ impl StreamFrame {
 pub struct ListEventsResponse {
     pub data: Vec<Event>,
     pub next_page: Option<String>,
+}
+
+#[cfg(test)]
+impl PartialEq for ListEventsResponse {
+    fn eq(&self, other: &Self) -> bool {
+        self.data == other.data && self.next_page == other.next_page
+    }
 }
 
 #[cfg(test)]

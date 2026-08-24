@@ -38,7 +38,8 @@ pub use thread::commit::coordinator::Coordinator as CommitCoordinator;
 pub use thread::commit::run_fact::RunFact;
 pub use thread::commit::staged::ThreadCommit;
 pub use thread::disposition::{
-    ThreadDisposition, archive_thread_command, thread_disposition_from_committed_state,
+    ThreadDisposition, archive_thread_command, archived_thread_commit_cursor,
+    thread_disposition_from_committed_state,
 };
 pub use thread::read::checkpoint::{CheckpointReader, EventScope};
 pub use thread::read::lifecycle::{

@@ -24,6 +24,7 @@ pub use managed::{
     ManagedGatewayWebProvider, ManagedWebGatewayEndpoint, ManagedWebRouteError,
     ManagedWebRouteResolver,
 };
+mod configured_fetch;
 mod providers;
 pub use providers::AwakenDirectFetchProvider;
 use providers::{
@@ -158,14 +159,6 @@ where
         .map_err(|err| ToolError::Execution(format!("blocking task: {err}")))?
 }
 
-/// HTTP GET a URL and return the response body as text (UTF-8 lossy, capped).
-pub struct WebFetchTool {
-    provider: Arc<dyn WebFetchProvider>,
-    descriptor: WebFetchProviderDescriptor,
-    config: WebProviderTarget,
-    credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
-}
-
 fn url_matches_filter(url: &url::Url, filter: &WebDomainFilter) -> bool {
     let matches = |configured: &str| {
         let (domain, path) = configured.split_once('/').unwrap_or((configured, ""));
@@ -193,34 +186,6 @@ pub struct WebFetchArgs {
     pub url: String,
 }
 
-#[async_trait]
-impl Tool for WebFetchTool {
-    type Args = WebFetchArgs;
-    type Output = String;
-    const ID: &'static str = "web_fetch";
-    const DESCRIPTION: &'static str = "Fetch a URL";
-
-    async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
-        let credential = resolve_credential(
-            &self.descriptor.credential,
-            self.config.credential.as_ref(),
-            self.credentials.as_ref(),
-            &self.descriptor.id,
-            "web-fetch",
-        )
-        .await?;
-        self.provider
-            .fetch(
-                WebFetchRequest {
-                    url: args.url,
-                    options: self.config.options.clone(),
-                },
-                credential.as_ref(),
-            )
-            .await
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct WebFetchRequest {
     pub url: String,
@@ -235,10 +200,22 @@ pub trait WebFetchProvider: Send + Sync {
         validate_object_options(options)
     }
 
+    /// Whether this provider can preserve the configured domain filter across
+    /// every HTTP redirect. Implementations returning `true` must either apply
+    /// the same filter before each redirected request or reject redirects
+    /// before opening the next connection.
+    fn enforces_domain_filter(&self) -> bool {
+        false
+    }
+
+    /// The configured plugin validates the initial URL before passing a filter.
+    /// A supporting provider then checks every redirect or rejects redirects
+    /// before the next connection; unsupported providers fail configuration.
     async fn fetch(
         &self,
         request: WebFetchRequest,
         credential: Option<&CredentialMaterial>,
+        domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError>;
 }
 
@@ -724,8 +701,8 @@ pub struct WebSearchArgs {
 }
 
 /// Configured model-callable tool. Native Runtime and ACP MCP export both use
-/// this exact instance type.
-pub struct WebSearchTool {
+/// this exact internal instance type through the configured plugin.
+struct WebSearchTool {
     targets: Vec<ConfiguredSearchTarget>,
     credentials: Option<Arc<dyn WebSearchCredentialResolver>>,
     execution_configuration: Option<WebSearchExecutionConfiguration>,
@@ -755,23 +732,6 @@ impl WebSearchTool {
             credentials,
             execution_configuration,
         }
-    }
-    pub fn duckduckgo() -> Self {
-        let registry = WebSearchProviderRegistry::builtins();
-        Self::configured(
-            vec![(
-                registry
-                    .provider(DUCKDUCKGO_PROVIDER_ID)
-                    .expect("DuckDuckGo is built in"),
-                WebProviderTarget {
-                    provider_id: DUCKDUCKGO_PROVIDER_ID.into(),
-                    credential: None,
-                    options: json!({}),
-                },
-            )],
-            None,
-            None,
-        )
     }
 }
 
@@ -881,7 +841,7 @@ pub struct WebSearchPlugin {
 
 enum ConfiguredWebRoute<T> {
     Host(Vec<T>),
-    ProviderServer(Box<WebServerToolProviderDescriptor>, Value),
+    ProviderServer(Box<(WebServerToolProviderDescriptor, Value)>),
 }
 
 type ConfiguredSearchRoute = ConfiguredWebRoute<(RegisteredWebSearchProvider, WebProviderTarget)>;
@@ -928,12 +888,22 @@ impl WebSearchPlugin {
                     "provider-server realization cannot mix host fallbacks or credentials",
                 ));
             }
+            if self
+                .execution_configuration
+                .as_ref()
+                .is_some_and(|policy| policy.domains.is_some() || policy.user_location.is_some())
+            {
+                return Err(PluginConfigError::new(
+                    WEB_SEARCH_PLUGIN_ID,
+                    "provider-server realization cannot enforce the Agent WebSearch execution policy",
+                ));
+            }
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredWebRoute::ProviderServer(
-                Box::new(provider.clone()),
+            return Ok(ConfiguredWebRoute::ProviderServer(Box::new((
+                provider.clone(),
                 config.options,
-            ));
+            ))));
         }
         let mut targets = Vec::new();
         for target in config.targets() {
@@ -993,14 +963,17 @@ impl WebSearchPlugin {
                     ),
                 )
             }
-            ConfiguredWebRoute::ProviderServer(provider, options) => (
-                web_search_descriptor().with_provider_server_tool(
-                    provider.provider_kind,
-                    provider.tool_type,
-                    options,
-                ),
-                erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
-            ),
+            ConfiguredWebRoute::ProviderServer(route) => {
+                let (provider, options) = *route;
+                (
+                    web_search_descriptor().with_provider_server_tool(
+                        provider.provider_kind,
+                        provider.tool_type,
+                        options,
+                    ),
+                    erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
+                )
+            }
         };
         Ok((descriptor, tool))
     }
@@ -1080,14 +1053,7 @@ pub fn web_search_descriptor() -> ToolDescriptor {
 }
 
 pub fn web_fetch_descriptor() -> ToolDescriptor {
-    ToolDescriptor::for_tool::<WebFetchTool>("builtin")
-}
-
-/// Compatibility view retained for callers migrating to configured web
-/// plugins. It is intentionally empty: WebFetch and WebSearch now each have one
-/// plugin execution owner and are never also registered as static Hand tools.
-pub fn web_hand_tools() -> Vec<Arc<dyn RawTool>> {
-    Vec::new()
+    ToolDescriptor::for_tool::<RoutedWebFetchTool>("builtin")
 }
 
 #[derive(Clone)]
@@ -1140,12 +1106,20 @@ impl WebFetchPlugin {
                     "provider-server realization cannot mix host fallbacks or credentials",
                 ));
             }
+            if self.execution_configuration.as_ref().is_some_and(|policy| {
+                policy.domains.is_some() || policy.max_content_tokens.is_some()
+            }) {
+                return Err(PluginConfigError::new(
+                    WEB_FETCH_PLUGIN_ID,
+                    "provider-server realization cannot enforce the Agent WebFetch execution policy",
+                ));
+            }
             validate_object_options(&config.options)
                 .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredWebRoute::ProviderServer(
-                Box::new(provider.clone()),
+            return Ok(ConfiguredWebRoute::ProviderServer(Box::new((
+                provider.clone(),
                 config.options,
-            ));
+            ))));
         }
         let mut targets = Vec::new();
         for target in config.targets() {
@@ -1158,6 +1132,21 @@ impl WebFetchPlugin {
                         format!("unknown host fetch provider `{}`", target.provider_id),
                     )
                 })?;
+            if self
+                .execution_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.domains.as_ref())
+                .is_some()
+                && !provider.provider.enforces_domain_filter()
+            {
+                return Err(PluginConfigError::new(
+                    WEB_FETCH_PLUGIN_ID,
+                    format!(
+                        "host fetch provider `{}` cannot enforce the Agent WebFetch domain policy",
+                        target.provider_id
+                    ),
+                ));
+            }
             validate_target(
                 WEB_FETCH_PLUGIN_ID,
                 &provider.descriptor.credential,
@@ -1212,14 +1201,17 @@ impl WebFetchPlugin {
                     ),
                 ))
             }
-            ConfiguredWebRoute::ProviderServer(provider, options) => Ok((
-                web_fetch_descriptor().with_provider_server_tool(
-                    provider.provider_kind,
-                    provider.tool_type,
-                    options,
-                ),
-                erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
-            )),
+            ConfiguredWebRoute::ProviderServer(route) => {
+                let (provider, options) = *route;
+                Ok((
+                    web_fetch_descriptor().with_provider_server_tool(
+                        provider.provider_kind,
+                        provider.tool_type,
+                        options,
+                    ),
+                    erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
+                ))
+            }
         }
     }
 }
@@ -1275,18 +1267,13 @@ impl Tool for RoutedWebFetchTool {
     const DESCRIPTION: &'static str = "Fetch a URL through the configured platform provider";
 
     async fn call(&self, args: WebFetchArgs) -> Result<String, ToolError> {
-        let url = url::Url::parse(&args.url)
-            .map_err(|error| ToolError::InvalidArguments(format!("url: {error}")))?;
-        if let Some(filter) = self
+        let configured_url = self
             .execution_configuration
             .as_ref()
-            .and_then(|configuration| configuration.domains.as_ref())
-            && !url_matches_filter(&url, filter)
-        {
-            return Err(ToolError::Execution(
-                "web_fetch URL is outside the configured domain policy".into(),
-            ));
-        }
+            .map(|configuration| {
+                configured_fetch::configured_web_fetch_url(&args.url, configuration)
+            })
+            .transpose()?;
         let mut last_unavailable = None;
         for target in &self.targets {
             let credential = resolve_credential(
@@ -1297,31 +1284,27 @@ impl Tool for RoutedWebFetchTool {
                 "web-fetch",
             )
             .await?;
-            match target
+            let request = WebFetchRequest {
+                url: args.url.clone(),
+                options: target.config.options.clone(),
+            };
+            let domain_filter = self
+                .execution_configuration
+                .as_ref()
+                .and_then(|configuration| configuration.domains.as_ref());
+            let result = target
                 .provider
-                .fetch(
-                    WebFetchRequest {
-                        url: args.url.clone(),
-                        options: target.config.options.clone(),
-                    },
-                    credential.as_ref(),
-                )
-                .await
-            {
+                .fetch(request, credential.as_ref(), domain_filter)
+                .await;
+            match result {
                 Ok(mut body) => {
-                    if let Some(max_content_tokens) = self
-                        .execution_configuration
-                        .as_ref()
-                        .and_then(|configuration| configuration.max_content_tokens)
-                        && !url.path().to_ascii_lowercase().ends_with(".pdf")
+                    if let (Some(url), Some(configuration)) = (
+                        configured_url.as_ref(),
+                        self.execution_configuration.as_ref(),
+                    ) && let Some(max_bytes) =
+                        configured_fetch::web_fetch_text_limit(url, configuration)
                     {
-                        let mut boundary = usize::try_from(max_content_tokens)
-                            .unwrap_or(usize::MAX)
-                            .min(body.len());
-                        while boundary > 0 && !body.is_char_boundary(boundary) {
-                            boundary -= 1;
-                        }
-                        body.truncate(boundary);
+                        configured_fetch::truncate_text(&mut body, max_bytes);
                     }
                     return Ok(body);
                 }
@@ -1617,26 +1600,31 @@ mod tests {
     }
 
     struct FakeFetchProvider {
-        seen_urls: Mutex<Vec<String>>,
+        seen_requests: Mutex<Vec<WebFetchRequest>>,
     }
 
     #[async_trait]
     impl WebFetchProvider for FakeFetchProvider {
         fn descriptor(&self) -> WebFetchProviderDescriptor {
             WebFetchProviderDescriptor {
-                id: "fixture-fetch".into(),
-                label: "Fixture fetch".into(),
+                id: "fetch-probe".into(),
+                label: "Fetch probe".into(),
                 credential: WebSearchCredentialRequirement::None,
                 options_schema: json!({ "type": "object" }),
             }
+        }
+
+        fn enforces_domain_filter(&self) -> bool {
+            true
         }
 
         async fn fetch(
             &self,
             request: WebFetchRequest,
             _credential: Option<&CredentialMaterial>,
+            _domain_filter: Option<&WebDomainFilter>,
         ) -> Result<String, ToolError> {
-            self.seen_urls.lock().unwrap().push(request.url);
+            self.seen_requests.lock().unwrap().push(request);
             Ok("abcdef".into())
         }
     }
@@ -1719,8 +1707,9 @@ mod tests {
     }
 
     /// Representation cause/effect table: R1 search and R2 fetch both combine a
-    /// small host target vector with the same large provider descriptor; boxing
-    /// that shared variant keeps either enum bounded without a parallel route.
+    /// small host target vector with one feature-dependent provider-server
+    /// descriptor/options payload; boxing that complete shared variant keeps
+    /// either enum bounded without a parallel route or a second options owner.
     #[test]
     fn configured_web_routes_have_one_bounded_representation() {
         assert!(std::mem::size_of::<ConfiguredSearchRoute>() <= 64, "R1");
@@ -1728,25 +1717,24 @@ mod tests {
     }
 
     /// Web configuration cause/effect graph: one normalized ToolPolicyOverride
-    /// selects the WebFetch or WebSearch provider policy. Fetch checks domains
-    /// before invoking its configured provider and caps
-    /// text afterward; Search sends location to the provider and filters results.
+    /// configures the selected WebFetch or WebSearch plugin. Fetch checks domains
+    /// before provider I/O and caps text afterward; Search sends location to the
+    /// provider and filters results. No static or executor-wrapper path exists.
     ///
     /// Decision table:
     /// | Rule | tool | domain | setting | effect |
-    /// | W1 | web_fetch | allowed | max=3 | provider invoked; text capped |
-    /// | W2 | web_fetch | outside allowlist | any | reject before provider invoke |
-    /// | W3 | web_fetch | allowed | config absent | full provider result |
-    /// | W4 | web_fetch | allowed `.PDF` URL | max=3 | legacy text projection is not policy-capped |
-    /// | W5 | web_search | blocked result | location present | provider sees location; result removed |
-    /// | W6 | web_fetch | unrestricted | max=0 | provider invoked; text capped to empty |
-    /// | W7 | web_fetch | wrong config tag | any | reject before executor construction |
-    /// | W8 | web_search | unknown config field | any | reject before provider construction |
-    /// Constraints/invariants: policy is normalized once, domain rejection
-    /// precedes I/O, WebFetchPlugin is the only route and Agent-policy owner,
-    /// `.pdf` legacy text bypasses its context cap while the direct provider
-    /// retains its 1 MiB safety ceiling, and malformed opaque configuration
-    /// never widens into an unconfigured Web tool.
+    /// | W1 | web_fetch | allowed | max=3 | provider invoked once; text capped |
+    /// | W2 | web_fetch | outside allowlist | any | reject before provider I/O |
+    /// | W3 | web_fetch | allowed `.PDF` URL | max=3 | legacy text projection is not policy-capped |
+    /// | W4 | web_search | blocked result | location present | provider sees location; result removed |
+    /// | W5 | web_fetch | unrestricted | max=0 | provider invoked; text capped to empty |
+    /// | W6 | web_fetch | wrong config tag | any | reject before executor construction |
+    /// | W7 | web_search | unknown config field | any | reject before provider construction |
+    /// Constraints/invariants: policy is normalized once, the configured plugin
+    /// is the internal execution owner, domain rejection precedes I/O, `.pdf`
+    /// legacy text bypasses its context cap while the raw fetch retains its 1 MiB
+    /// safety ceiling, and malformed configuration never widens into an
+    /// unconfigured Web tool.
     #[tokio::test]
     async fn normalized_web_configuration_controls_existing_execution_edges() {
         use awaken_runtime_contract::agent_bindings::{
@@ -1815,7 +1803,7 @@ mod tests {
                 json!({"type":"web_search"})
             ))
             .is_err(),
-            "W7"
+            "W6"
         );
         assert!(
             web_search_execution_configuration(&malformed(
@@ -1823,31 +1811,25 @@ mod tests {
                 json!({"type":"web_search", "unexpected":true})
             ))
             .is_err(),
-            "W8"
+            "W7"
         );
 
         let fetch_provider = Arc::new(FakeFetchProvider {
-            seen_urls: Mutex::new(Vec::new()),
+            seen_requests: Mutex::new(Vec::new()),
         });
         let mut fetch_registry = WebSearchProviderRegistry::default();
         fetch_registry
             .register_fetch(fetch_provider.clone())
             .unwrap();
-        let fetch_plugin = WebFetchPlugin::new(fetch_registry, None);
-        let fetch_tool = |configuration| {
-            fetch_plugin
-                .clone()
-                .with_execution_configuration(configuration)
-                .configured_tool(Some(&json!({
-                    "provider_id": "fixture-fetch",
-                    "options": {}
-                })))
-                .unwrap()
-                .1
-        };
-
-        let configured = fetch_tool(Some(fetch.clone()));
-        let allowed = configured
+        let fetch_plugin = WebFetchPlugin::new(fetch_registry.clone(), None)
+            .with_execution_configuration(Some(fetch.clone()));
+        let (_, fetch_tool) = fetch_plugin
+            .configured_tool(Some(&json!({
+                "provider_id": "fetch-probe",
+                "options": {}
+            })))
+            .unwrap();
+        let allowed = fetch_tool
             .invoke(ToolCall {
                 call_id: "fetch-allowed".into(),
                 tool_id: "web_fetch".into(),
@@ -1856,8 +1838,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(allowed.text(), "abc", "W1");
+        assert_eq!(fetch_provider.seen_requests.lock().unwrap().len(), 1, "W1");
         assert!(
-            configured
+            fetch_tool
                 .invoke(ToolCall {
                     call_id: "fetch-blocked".into(),
                     tool_id: "web_fetch".into(),
@@ -1867,17 +1850,9 @@ mod tests {
                 .is_err(),
             "W2"
         );
-        assert_eq!(fetch_provider.seen_urls.lock().unwrap().len(), 1, "W2");
-        let unrestricted = fetch_tool(None)
-            .invoke(ToolCall {
-                call_id: "fetch-unrestricted".into(),
-                tool_id: "web_fetch".into(),
-                arguments: json!({ "url": "https://example.net" }),
-            })
-            .await
-            .unwrap();
-        assert_eq!(unrestricted.text(), "abcdef", "W3");
-        let pdf = configured
+        assert_eq!(fetch_provider.seen_requests.lock().unwrap().len(), 1, "W2");
+
+        let pdf = fetch_tool
             .invoke(ToolCall {
                 call_id: "fetch-pdf".into(),
                 tool_id: "web_fetch".into(),
@@ -1885,20 +1860,30 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(pdf.text(), "abcdef", "W4");
+        assert_eq!(pdf.text(), "abcdef", "W3");
+        assert_eq!(fetch_provider.seen_requests.lock().unwrap().len(), 2, "W3");
 
-        let zero_cap = fetch_tool(Some(WebFetchExecutionConfiguration {
-            domains: None,
-            max_content_tokens: Some(0),
-        }))
-        .invoke(ToolCall {
-            call_id: "fetch-zero-cap".into(),
-            tool_id: "web_fetch".into(),
-            arguments: json!({ "url": "https://example.net" }),
-        })
-        .await
-        .unwrap();
-        assert_eq!(zero_cap.text(), "", "W6");
+        let zero_plugin = WebFetchPlugin::new(fetch_registry, None).with_execution_configuration(
+            Some(WebFetchExecutionConfiguration {
+                domains: None,
+                max_content_tokens: Some(0),
+            }),
+        );
+        let (_, zero_tool) = zero_plugin
+            .configured_tool(Some(&json!({
+                "provider_id": "fetch-probe",
+                "options": {}
+            })))
+            .unwrap();
+        let zero_cap = zero_tool
+            .invoke(ToolCall {
+                call_id: "fetch-zero-cap".into(),
+                tool_id: "web_fetch".into(),
+                arguments: json!({ "url": "https://example.net" }),
+            })
+            .await
+            .unwrap();
+        assert_eq!(zero_cap.text(), "", "W5");
 
         let provider = fake_provider("localized", false);
         let plugin = WebSearchPlugin::new(
@@ -1918,7 +1903,7 @@ mod tests {
             })
             .await
             .unwrap();
-        assert_eq!(output.text(), "no web-search results", "W5");
+        assert_eq!(output.text(), "no web-search results", "W4");
         assert_eq!(
             provider
                 .seen_request
@@ -1927,7 +1912,7 @@ mod tests {
                 .as_ref()
                 .and_then(|request| request.user_location.clone()),
             Some(search_location),
-            "W5"
+            "W4"
         );
     }
 

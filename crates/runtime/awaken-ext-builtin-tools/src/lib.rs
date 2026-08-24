@@ -35,18 +35,18 @@ pub use web::{
     ManagedWebRouteResolver, OPENROUTER_PROVIDER_ID, WEB_FETCH_PLUGIN_ID, WEB_FETCH_TOOL_ID,
     WEB_SEARCH_PLUGIN_ID, WEB_SEARCH_TOOL_ID, WebDomainFilter, WebFetchArgs, WebFetchConfig,
     WebFetchExecutionConfiguration, WebFetchPlugin, WebFetchProvider, WebFetchProviderDescriptor,
-    WebFetchRequest, WebFetchTool, WebProviderTarget, WebSearchArgs, WebSearchConfig,
+    WebFetchRequest, WebProviderTarget, WebSearchArgs, WebSearchConfig,
     WebSearchCredentialRequirement, WebSearchCredentialResolver, WebSearchExecutionConfiguration,
     WebSearchPlugin, WebSearchProvider, WebSearchProviderDescriptor, WebSearchProviderRegistry,
-    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchTool,
-    WebSearchUserLocation, WebServerToolProviderDescriptor, managed_web_route_ref,
-    web_fetch_descriptor, web_fetch_execution_configuration, web_hand_tools, web_search_descriptor,
-    web_search_execution_configuration,
+    WebSearchRegistryError, WebSearchRequest, WebSearchResult, WebSearchUserLocation,
+    WebServerToolProviderDescriptor, managed_web_route_ref, web_fetch_descriptor,
+    web_fetch_execution_configuration, web_search_descriptor, web_search_execution_configuration,
 };
 
 /// The one complete static Hand registry used by every SessionEnvironment.
-/// `web_search` is deliberately absent because its configured plugin is the
-/// sole execution owner; all other built-in Sandbox tools live here.
+/// `web_fetch` and `web_search` are deliberately absent because their configured
+/// plugins are the sole execution owners; all other built-in Sandbox tools live
+/// here.
 pub fn all_hand_tools() -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
     all_hand_tools_in(HandToolContext::default())
 }
@@ -55,9 +55,6 @@ pub fn all_hand_tools_in(
     context: HandToolContext,
 ) -> Vec<std::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>> {
     executable_hand_tools_in(context)
-        .into_iter()
-        .chain(web_hand_tools())
-        .collect()
 }
 
 use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
@@ -173,7 +170,6 @@ pub fn builtin_tools() -> Vec<BuiltinTool> {
         hand_tool::<DeleteTool>(),
         hand_tool::<GlobTool>(),
         hand_tool::<GrepTool>(),
-        BuiltinTool::hand(web_fetch_descriptor()),
         task_tool_with_recovery::<SendMessageTool>(ToolRecoveryPolicy::durable_request()),
         task_tool::<CancelTaskTool>(),
         task_tool::<RecoverFailedMessagesTool>(),

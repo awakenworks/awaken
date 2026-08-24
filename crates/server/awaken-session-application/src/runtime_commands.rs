@@ -543,7 +543,7 @@ impl SessionApplication {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<(), RunError> {
+    ) -> Result<u64, RunError> {
         self.runtime
             .prepare_outcome(thread, outcome_id, description, rubric, max_iterations)
             .await

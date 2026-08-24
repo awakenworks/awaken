@@ -303,7 +303,13 @@ impl WebFetchProvider for ManagedGatewayWebProvider {
         &self,
         request: WebFetchRequest,
         credential: Option<&CredentialMaterial>,
+        domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError> {
+        if domain_filter.is_some() {
+            return Err(ToolError::Execution(
+                "managed WebFetch cannot enforce target redirect domain policy".into(),
+            ));
+        }
         if credential.is_some() {
             return Err(ToolError::Execution(
                 "managed WebFetch must not receive plaintext credentials".into(),
@@ -385,7 +391,9 @@ mod tests {
         // Gateway request, E3 normalized output.
         // Decision rules: G1 search+exact+no credential -> results; G2
         // fetch+exact+no credential -> text; G3 wrong prefix -> pre-I/O error;
-        // G4 plaintext credential -> pre-I/O error.
+        // G4 plaintext credential -> pre-I/O error; G5 Agent fetch domain
+        // policy + Gateway topology that cannot observe target redirects ->
+        // configuration fails before resolver or Gateway I/O.
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let gateway_base_url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -414,6 +422,19 @@ mod tests {
             seen: Mutex::new(Vec::new()),
         });
         let provider = ManagedGatewayWebProvider::new(resolver.clone());
+        assert!(
+            WebFetchPlugin::new(provider.clone().registry(), None)
+                .with_execution_configuration(Some(WebFetchExecutionConfiguration {
+                    domains: Some(WebDomainFilter::Allow(vec!["docs.example".into()])),
+                    max_content_tokens: None,
+                }))
+                .validate_config(Some(&json!({
+                    "provider_id": AWAKEN_CLOUD_PROVIDER_ID,
+                    "options": {"route_ref":"web-fetch:direct@3"}
+                })))
+                .is_err(),
+            "G5"
+        );
 
         let search = awaken_runtime_contract::tool::with_tool_operation_context(
             awaken_runtime_contract::tool::ToolOperationContext::for_run("run-search", "op-search"),
@@ -438,6 +459,7 @@ mod tests {
                     url: "https://docs.example/page".into(),
                     options: json!({"route_ref":"web-fetch:direct@3"}),
                 },
+                None,
                 None,
             ),
         )

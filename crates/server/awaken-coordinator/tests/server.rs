@@ -1094,7 +1094,7 @@ async fn advertises_only_runnable_tools() {
     for tool in ["web_fetch", "web_search"] {
         assert!(
             !offered.contains(tool),
-            "`{tool}` must not be advertised without a connector: {offered:?}"
+            "`{tool}` must not be advertised without a routed plugin: {offered:?}"
         );
     }
 }

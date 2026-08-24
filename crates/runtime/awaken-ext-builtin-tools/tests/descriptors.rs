@@ -1,26 +1,24 @@
 //! Drift guards tying the `Toolset::Hand` descriptors to the erased hand-tool
 //! implementations and the closed built-in catalog pairings.
 
-use awaken_ext_builtin_tools::{
-    Toolset, all_hand_tools, builtin_tools, executable_hand_tools, web_hand_tools,
-};
+use awaken_ext_builtin_tools::{Toolset, all_hand_tools, builtin_tools, executable_hand_tools};
 use awaken_runtime_contract::tool::ToolExecutionTarget;
 use std::collections::BTreeSet;
 
-/// The `hand` toolset's model-visible descriptors and the registered
-/// Static Hand descriptors and implementations must match after excluding the
-/// two web capabilities whose sole owners are configured plugins.
+/// The static `hand` toolset's model-visible descriptors and registered
+/// implementations must match exactly. The two Web capabilities belong only to
+/// their configured plugins, so neither may enter this catalog.
 #[test]
 fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
     // Registry cause/effect rules: C1 every static hand descriptor -> E1 one
     // static implementation; C2 every static implementation -> E2 one
-    // descriptor; C3 WebFetch/WebSearch -> E3 no static implementation because
-    // their configured plugins are the single execution owners.
+    // descriptor; C3 WebFetch/WebSearch -> E3 absent from both sets because
+    // their configured plugins are the single execution owners. Decision rules:
+    // R1=C1|C2 => exact set equality; R2=C3 => neither Web id is present.
     let descriptor_ids: BTreeSet<String> = builtin_tools()
         .into_iter()
         .filter(|tool| tool.toolset() == Toolset::Hand)
         .map(|tool| tool.into_descriptor().id)
-        .filter(|id| id != "web_fetch")
         .collect();
 
     let implementation_ids: BTreeSet<String> = all_hand_tools()
@@ -37,22 +35,21 @@ fn hand_descriptors_exactly_cover_the_erased_hand_tool_implementations() {
         descriptor_ids, implementation_ids,
         "every hand descriptor has a matching erased implementation and vice versa"
     );
-    // Both web tools have one configurable plugin owner.
+    assert!(!descriptor_ids.contains("web_fetch"), "R2/E3");
+    assert!(!descriptor_ids.contains("web_search"), "R2/E3");
     assert_eq!(executable_hand_tools().len(), 8);
-    assert!(web_hand_tools().is_empty());
 }
 
 #[test]
 fn hand_tool_execution_targets_follow_the_placement_decision_table() {
     // Cause/effect graph: C1 the eight filesystem/shell implementations enter
-    // through `executable_hand_tools`; C2 dependency-expanded `WebFetchTool`
-    // enters through `web_hand_tools`. E1 every member targets Sandbox and is
+    // through `executable_hand_tools`. E1 every member targets Sandbox and is
     // therefore dispatched only by the SessionEnvironment-owned executor.
     // Constraint K1: `all_hand_tools` is the closed canonical union; configured
-    // `web_search` retains its separate plugin owner and is not a second member.
-    // Decision rules: P1=C1=>E1; P2=C2=>E1. Coverage rationale: iterating the
-    // closed registry covers all nine placements, including WebFetch, while the
-    // preceding membership test guards the exact dependency-expanded domain.
+    // `web_fetch` and `web_search` retain their separate plugin owners and are
+    // not second members. Decision rule P1=C1=>E1. Coverage rationale: iterating
+    // the closed registry covers all eight static placements, while the preceding
+    // membership test guards the exact dependency-expanded domain.
     for tool in all_hand_tools() {
         assert_eq!(
             tool.execution_target(),

@@ -16,6 +16,8 @@
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod runtime_intervals;
+
 use crate::ManagedLifecycleFact;
 
 mod execution_state;
@@ -192,10 +194,21 @@ pub struct PersistedSession {
     /// fabricate gaps or emit two customer-usage intervals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub running_interval: Option<crate::SessionRuntimeIntervalStart>,
+    /// Every closed aggregate Running interval in root-revision order. This is
+    /// intentionally retained for the Session lifetime: the public Events API
+    /// accepts any prior event id as a page cursor, so truncating this prefix
+    /// would make a valid cross-replica cursor unknowable.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_runtime_intervals: Vec<crate::SessionRuntimeInterval>,
     /// Cumulative wall-clock milliseconds across closed Running intervals.
     /// Overlapping activities share one interval, so this is the authoritative
     /// non-double-counted Session runtime quantity used by list-cost pricing.
     pub runtime_active_millis: u64,
+    /// Latest cumulative neutral Runtime usage observed by the Session root.
+    /// Runtime remains the counter authority; retaining this root-CAS projection
+    /// lets no-budget Sessions close an exact historical usage event too.
+    #[serde(default)]
+    pub usage_cursor: crate::ManagedBudgetUsageCursor,
     /// Exact Managed list-cost budget and immutable price snapshot. All
     /// Session threads share this root-owned admission and settlement fence.
     pub budget: crate::SessionBudgetState,
@@ -254,7 +267,9 @@ impl PersistedSession {
             activity_epoch: 0,
             active_activity_epochs: BTreeSet::new(),
             running_interval: None,
+            closed_runtime_intervals: Vec::new(),
             runtime_active_millis: 0,
+            usage_cursor: Default::default(),
             budget,
             environment: Default::default(),
             mcp,
@@ -280,6 +295,12 @@ impl PersistedSession {
         let activity_epoch = self
             .begin_activity_epoch()
             .ok_or(crate::SessionEventBatchError::ProgressMismatch)?;
+        plan.batch.admitted_revision = SessionRevision(
+            self.revision
+                .0
+                .checked_add(1)
+                .ok_or(crate::SessionEventBatchError::ProgressMismatch)?,
+        );
         plan.batch.wake_activity_epoch = Some(activity_epoch);
         self.event_batches.push(plan.batch);
         Ok(())
@@ -371,72 +392,13 @@ impl PersistedSession {
             self.disposition.is_hidden(),
             self.execution.is_terminal(),
             self.terminal_cleanup.is_completed(),
+            !self.has_incomplete_event_batches(),
             self.session_id == asserted_session_id,
             self.revision
                 .0
                 .checked_add(1)
                 .is_some_and(|next| deleted_revision == SessionRevision(next)),
         )
-    }
-
-    /// Open the one continuous Running interval after the execution transition
-    /// has committed its logical owner. Replays and overlapping activities join
-    /// the existing interval.
-    pub fn begin_runtime_interval(&mut self, started_at_unix_ms: u64) -> bool {
-        if !runtime_interval_may_open(
-            self.execution == SessionExecutionState::Running,
-            self.running_interval.is_some(),
-        ) {
-            return false;
-        }
-        self.running_interval = Some(crate::SessionRuntimeIntervalStart {
-            interval_id: crate::stable_fingerprint(&(
-                "session-runtime-interval-v1",
-                self.session_id.as_str(),
-                self.activity_epoch,
-            )),
-            activity_epoch: self.activity_epoch,
-            started_at_unix_ms,
-        });
-        true
-    }
-
-    /// Cumulative active time at an observation instant, including the one
-    /// currently open interval exactly once. The durable closed total and open
-    /// interval are the sole clock ledger; request admission must use this view
-    /// rather than inventing a gate-local timer.
-    #[must_use]
-    pub fn effective_runtime_active_millis(&self, now_unix_ms: u64) -> u64 {
-        self.runtime_active_millis.saturating_add(
-            self.running_interval
-                .as_ref()
-                .map(|start| {
-                    normalized_runtime_interval_end(start.started_at_unix_ms, now_unix_ms)
-                        .saturating_sub(start.started_at_unix_ms)
-                })
-                .unwrap_or_default(),
-        )
-    }
-
-    /// Close and remove the current interval. The returned value is committed
-    /// through the same root mutation's lifecycle outbox.
-    pub fn close_runtime_interval(
-        &mut self,
-        ended_at_unix_ms: u64,
-    ) -> Option<crate::SessionRuntimeInterval> {
-        self.running_interval.take().map(|start| {
-            let ended_at_unix_ms =
-                normalized_runtime_interval_end(start.started_at_unix_ms, ended_at_unix_ms);
-            self.runtime_active_millis = self
-                .runtime_active_millis
-                .saturating_add(ended_at_unix_ms.saturating_sub(start.started_at_unix_ms));
-            crate::SessionRuntimeInterval {
-                interval_id: start.interval_id,
-                activity_epoch: start.activity_epoch,
-                started_at_unix_ms: start.started_at_unix_ms,
-                ended_at_unix_ms,
-            }
-        })
     }
 
     /// Archive one visible Session while terminating further execution.
@@ -500,11 +462,13 @@ impl PersistedSession {
         &mut self,
         thread_ids: impl IntoIterator<Item = String>,
         delegation_watermark: u64,
+        runtime_commit_cursor: u64,
     ) -> Result<bool, crate::SessionCleanupError> {
         let mut changed = self.terminal_cleanup.freeze_targets(
             &self.session_id,
             thread_ids,
             delegation_watermark,
+            runtime_commit_cursor,
         )?;
         if self.resources.pending.is_none() {
             let before = self.resources.clone();
@@ -609,8 +573,13 @@ impl PersistedSession {
     /// produce repeated reconciliation work; an ordinary queued batch owns no
     /// aggregate activity while waiting behind an earlier Run.
     #[must_use]
+    pub fn has_incomplete_event_batches(&self) -> bool {
+        self.event_batches.iter().any(|batch| !batch.is_complete())
+    }
+
+    #[must_use]
     pub fn needs_event_reconciliation(&self) -> bool {
-        !self.is_terminal() && self.event_batches.iter().any(|batch| !batch.is_complete())
+        self.has_incomplete_event_batches()
     }
 
     /// Whether retained root provenance can identify a Thread whose canonical
@@ -686,60 +655,24 @@ impl PersistedSession {
     }
 }
 
-#[must_use]
-const fn runtime_interval_may_open(execution_is_running: bool, interval_is_open: bool) -> bool {
-    execution_is_running && !interval_is_open
-}
-
-#[must_use]
-const fn normalized_runtime_interval_end(started_at_unix_ms: u64, ended_at_unix_ms: u64) -> u64 {
-    if ended_at_unix_ms < started_at_unix_ms {
-        started_at_unix_ms
-    } else {
-        ended_at_unix_ms
-    }
-}
-
 /// Closed admission kernel for physically deleting the authoritative Session
-/// row. Visibility, execution fencing, and verified cleanup are independent
-/// axes; omitting any one of them fails closed.
+/// row. Visibility, execution fencing, accepted Event provenance, and verified
+/// cleanup are independent axes; omitting any one of them fails closed.
 #[must_use]
 pub const fn session_tombstone_is_admitted(
     disposition_hidden: bool,
     execution_terminal: bool,
     cleanup_completed: bool,
+    event_batches_complete: bool,
     session_identity_exact: bool,
     next_revision_exact: bool,
 ) -> bool {
     disposition_hidden
         && execution_terminal
         && cleanup_completed
+        && event_batches_complete
         && session_identity_exact
         && next_revision_exact
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn runtime_intervals_open_once_and_never_close_before_start() {
-    let execution_is_running = kani::any();
-    let interval_is_open = kani::any();
-    assert_eq!(
-        runtime_interval_may_open(execution_is_running, interval_is_open),
-        execution_is_running && !interval_is_open
-    );
-
-    let started_at_unix_ms = kani::any();
-    let ended_at_unix_ms = kani::any();
-    let normalized = normalized_runtime_interval_end(started_at_unix_ms, ended_at_unix_ms);
-    assert!(normalized >= started_at_unix_ms);
-    assert_eq!(
-        normalized,
-        if ended_at_unix_ms < started_at_unix_ms {
-            started_at_unix_ms
-        } else {
-            ended_at_unix_ms
-        }
-    );
 }
 
 /// One durable Session together with its intrinsic Workspace partition.
@@ -1085,7 +1018,7 @@ mod mutation_tests {
         expected: Result<SessionRevision, SessionMutationValidationError>,
     }
 
-    fn session(id: &str, revision: SessionRevision) -> PersistedSession {
+    pub(super) fn session(id: &str, revision: SessionRevision) -> PersistedSession {
         use awaken_credential_contract::{
             CredentialRealizationProfile, PlaintextBoundary, PlaintextHolder,
         };
@@ -1146,7 +1079,9 @@ mod mutation_tests {
             activity_epoch: 0,
             active_activity_epochs: Default::default(),
             running_interval: None,
+            closed_runtime_intervals: Vec::new(),
             runtime_active_millis: 0,
+            usage_cursor: Default::default(),
             budget: Default::default(),
             environment: Default::default(),
             mcp: Default::default(),
@@ -1764,6 +1699,11 @@ mod mutation_tests {
             activity_epoch: 3,
             started_at_unix_ms: 100,
             ended_at_unix_ms: 200,
+            opened_revision: SessionRevision(7),
+            closed_revision: SessionRevision(8),
+            observations: Vec::new(),
+            usage: Default::default(),
+            max_list_cost_minor: None,
         };
         let mutation = |session: PersistedSession, fact: ManagedLifecycleFact| SessionMutation {
             expected_revision,
@@ -1924,6 +1864,7 @@ mod verification {
         let disposition_hidden = kani::any::<bool>();
         let execution_terminal = kani::any::<bool>();
         let cleanup_completed = kani::any::<bool>();
+        let event_batches_complete = kani::any::<bool>();
         let session_identity_exact = kani::any::<bool>();
         let next_revision_exact = kani::any::<bool>();
         assert_eq!(
@@ -1931,12 +1872,14 @@ mod verification {
                 disposition_hidden,
                 execution_terminal,
                 cleanup_completed,
+                event_batches_complete,
                 session_identity_exact,
                 next_revision_exact,
             ),
             disposition_hidden
                 && execution_terminal
                 && cleanup_completed
+                && event_batches_complete
                 && session_identity_exact
                 && next_revision_exact
         );

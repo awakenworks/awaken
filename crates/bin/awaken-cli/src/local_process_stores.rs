@@ -40,6 +40,10 @@ pub(super) fn in_memory_process_stores() -> ProcessStores {
         coordinator: Some(CoordinatorStores {
             resources: ephemeral_resources_application(),
             sessions: sessions.clone(),
+            application_access: Arc::new(
+                awaken_coordinator::application_access_store::ApplicationAccessStore::open_in_memory()
+                    .expect("open ephemeral application access repository"),
+            ),
             deployments: sessions.clone(),
             memory_extractions: sessions.clone(),
             dream_process_store: sessions,
@@ -119,6 +123,12 @@ pub(super) fn process_stores_for_runtime_storage(
         .as_mut()
         .expect("test startup owns Coordinator");
     coordinator.sessions = sessions.clone();
+    coordinator.application_access = Arc::new(
+        awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite_for_test(
+            &dir.join("sessions.db").to_string_lossy(),
+        )
+        .expect("open application access under runtime storage directory"),
+    );
     coordinator.deployments = sessions.clone();
     coordinator.memory_extractions = sessions.clone();
     coordinator.dream_process_store = sessions;

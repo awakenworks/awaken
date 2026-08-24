@@ -4,7 +4,8 @@
 - Date: 2026-07-03
 - Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment);
   2026-07-24 (credential broker composition — see Amendment 2);
-  2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3)
+  2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3);
+  2026-08-24 (one signed sandbox-image publisher — see Amendment 4)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -286,3 +287,50 @@ fail closed because this binary posture contract cannot enforce arbitrary host
 sets. Removing or changing the cluster policy requires removing the evidence
 before Workers become ready; otherwise the operator has violated the advertised
 capability contract.
+
+## Amendment 4 (2026-08-24): one signed sandbox-image publisher
+
+The production Sandbox image is an Awaken product artifact, so this repository
+owns its build, publication, and exact-revision evidence. The existing
+`deploy/images/sandbox/build.sh` remains the only build-and-acceptance entry;
+`stage-binary.sh`, the Rust-generated ACP runtime contract, and the existing
+Dockerfile remain below it. Release automation may invoke that owner but may not
+recreate its staging, Docker build, or runtime acceptance logic.
+
+The sole publisher is `.github/workflows/release.yml`. It admits only an exact
+protected `vX.Y.Z` tag in `awakenworks/awaken`, builds the tagged commit through
+the existing script, pushes only
+`ghcr.io/awakenworks/awaken-sandbox:<tag>`, and immediately converts that mutable
+tag coordinate to the registry's immutable `repository@sha256:digest`
+coordinate. Every later release effect uses only that digest. There is no
+`latest`, branch, pull-request, manual, private-key, local-script, or second
+workflow publisher. Repository ruleset protection for the release tag family is
+an operational prerequisite, and the workflow also rejects a ref for which
+GitHub does not report protection.
+
+`scripts/release/awaken_sandbox_image_provenance.py` owns one strict, canonical
+predicate. It binds the fixed source repository, exact 40-hex revision, exact
+semantic tag ref, exact workflow identity and run coordinates, and the fixed
+immutable image coordinate. The workflow keyless-signs the image and attests
+that predicate with GitHub Actions OIDC, then verifies the exact certificate
+identity and issuer and re-runs the same validator over Cosign-verified DSSE.
+Unknown fields, wrong subjects, missing or duplicate predicates, format drift,
+and unbounded input fail closed.
+
+Static structure: ADR-0041 remains the artifact owner; `build.sh` remains the
+build/acceptance owner; the one workflow owns the remote push and Sigstore
+effects; the Open-owned predicate validator owns evidence interpretation; and
+`check_sandbox_image_release.py` rejects competing publishers or weakened
+release controls. A composing platform may invoke the exact validator and bind
+its canonical predicate digest into a signed product BOM, but it may neither
+build or republish this image nor parse a parallel Open-provenance schema.
+
+Dynamic behavior: a protected semantic tag selects one commit; the workflow
+checks tag, revision, repository, protection, and workflow identity before the
+build; the canonical script builds and accepts one local image; one push yields
+one immutable digest; keyless signature plus exact predicate are attached to
+that digest; exact identity/issuer verification and canonical revalidation must
+match the emitted bytes. Any failed precondition or verification terminates
+without producing downstream release evidence. A consumer starts from the
+immutable digest and exact Open revision, verifies through this owner, and only
+then records the returned predicate digest.

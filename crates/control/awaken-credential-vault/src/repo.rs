@@ -13,8 +13,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
 
 /// Local adoption progress. The cross-service HTTP adapter maps these two
-/// states directly to 204 and 202; no second JSON state vocabulary is needed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// states directly to 204 and 202, while command receipts serialize this same
+/// enum; no second JSON state vocabulary is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ManagedCredentialAdoptionProgress {
     Converged,
     Pending,
@@ -97,6 +99,7 @@ use crate::{
 mod application_mcp;
 pub use application_mcp::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, PreparedApplicationMcpBearerRotation,
+    application_mcp_material_ref, application_mcp_operation_id,
     enter_or_rotate_application_mcp_bearer, prepare_application_mcp_bearer_rotation,
 };
 
@@ -759,6 +762,13 @@ pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
         &self,
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError>;
+    /// Read one exact durable rollout through its primary identity. Request
+    /// paths use this bounded lookup; only the supervised reconciler enumerates
+    /// the full outbox.
+    async fn managed_rollout(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ManagedCredentialRollout>, CredentialError>;
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError>;
@@ -794,8 +804,8 @@ pub async fn reconcile_managed_credential_rollouts(
     let mut first_error = None;
     for event in repo.pending_managed_rollouts().await? {
         match reconcile_managed_credential_rollout(&event, repo, target).await {
-            Ok(true) => completed += 1,
-            Ok(false) => {}
+            Ok(progress) if progress.is_converged() => completed += 1,
+            Ok(_) => {}
             Err(error) if first_error.is_none() => first_error = Some(error),
             Err(_) => {}
         }
@@ -803,19 +813,21 @@ pub async fn reconcile_managed_credential_rollouts(
     first_error.map_or(Ok(completed), Err)
 }
 
-async fn reconcile_managed_credential_rollout(
+/// Deliver and, only after convergence, exactly acknowledge one durable
+/// rollout event. Target failures and an explicitly pending target both leave
+/// the event durable and return [`ManagedCredentialAdoptionProgress::Pending`].
+pub async fn reconcile_managed_credential_rollout(
     event: &ManagedCredentialRollout,
     repo: &dyn ManagedCredentialRepository,
     target: &dyn ManagedCredentialRolloutTarget,
-) -> Result<bool, CredentialError> {
+) -> Result<ManagedCredentialAdoptionProgress, CredentialError> {
     let Ok(progress) = target.rollout(event).await else {
-        return Ok(false);
+        return Ok(ManagedCredentialAdoptionProgress::Pending);
     };
-    if !progress.is_converged() {
-        return Ok(false);
+    if progress.is_converged() {
+        repo.complete_managed_rollout(event).await?;
     }
-    repo.complete_managed_rollout(event).await?;
-    Ok(true)
+    Ok(progress)
 }
 
 /// Resume one durable Vault-root deletion. Child retirement reuses the exact
@@ -1561,6 +1573,19 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             .collect::<Vec<_>>();
         events.sort_by(|left, right| left.id.cmp(&right.id));
         Ok(events)
+    }
+
+    async fn managed_rollout(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
+        Ok(self
+            .state
+            .lock()
+            .expect("credential repo")
+            .managed_rollouts
+            .get(event_id)
+            .cloned())
     }
 
     async fn complete_managed_rollout(

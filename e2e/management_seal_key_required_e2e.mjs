@@ -21,6 +21,9 @@ const PORT = Number(process.env.E2E_PORT ?? 38621);
 async function main() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-sealkey-required-'));
   const env = deploymentEnv(directory, {
+    // Identity is not this scenario's cause; freeze it so only seal-key custody
+    // can determine the pre-bind failure.
+    identityMode: 'no-login',
     fields: { mode: 'server', bind: `127.0.0.1:${PORT}` },
   });
   const server = spawn(ensureProductionBuilt(), automatedAllInOneArgs('--config', path.join(env.HOME, '.awaken', 'config.toml')), {

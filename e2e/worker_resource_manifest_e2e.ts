@@ -649,8 +649,6 @@ async function main(): Promise<void> {
     assert.equal(seedSettle.settled, true);
 
     const env = { ...process.env } as Record<string, string>;
-    delete env.ANTHROPIC_API_KEY;
-    delete env.OPENAI_API_KEY;
     const preexistingSandboxes = new Set(managedContainerIds());
     Object.assign(env, {
       AWAKEN_UPSTREAM_URL: INTERNAL_BASE,

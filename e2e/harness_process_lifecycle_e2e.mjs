@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { spawn } from 'node:child_process';
 
 import {
   availablePort,
+  deploymentEnv,
   stopServer,
   trackSpawnedServer,
   waitForPort,
@@ -10,6 +14,32 @@ import {
 } from './harness.mjs';
 
 async function main() {
+  // Fixture-identity cause/effect table: C1=identity omitted/empty;
+  // C2=an explicit no-login, self-managed, or Awaken Cloud selection.
+  // E1=C1 fails before creating deployment state; E2=C2 writes that exact
+  // value once. Rules I1=C1=>E1 and I2=C2=>E2 keep hermetic fixtures from
+  // silently inheriting the product's intentional local Cloud default while
+  // leaving the product parser as the identity-vocabulary authority.
+  const identityRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-harness-identity-'));
+  try {
+    assert.throws(
+      () => deploymentEnv(path.join(identityRoot, 'missing')),
+      /requires an explicit identityMode/u,
+      'I1',
+    );
+    for (const identityMode of ['no-login', 'self-managed', 'awaken-cloud']) {
+      const env = deploymentEnv(path.join(identityRoot, identityMode), { identityMode });
+      const config = fs.readFileSync(path.join(env.HOME, '.awaken', 'config.toml'), 'utf8');
+      assert.equal(
+        config.match(/^identity_mode = .*$/gmu)?.join('\n'),
+        `identity_mode = ${JSON.stringify(identityMode)}`,
+        `I2 ${identityMode}`,
+      );
+    }
+  } finally {
+    fs.rmSync(identityRoot, { recursive: true, force: true });
+  }
+
   // Cause/effect graph: port ownership (tracked child / explicit child / no
   // child) × child state (listening / terminal) -> readiness or bounded error.
   // Decision table: R1 tracked+terminal -> immediate child-exit error; R2

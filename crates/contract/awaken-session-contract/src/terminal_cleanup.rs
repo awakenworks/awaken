@@ -76,6 +76,10 @@ pub enum SessionCleanupOperation {
         thread_ids: BTreeSet<String>,
         #[serde(default)]
         delegation_watermark: u64,
+        /// Runtime commit high-water captured after the terminal fence joined
+        /// every admitted root/child execution.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_commit_cursor: Option<u64>,
         /// Canonical Runtime completions already admitted for this frozen
         /// target set. Local execution may settle the whole operation in one
         /// call; a remote Worker records these one at a time through the same
@@ -89,6 +93,8 @@ pub enum SessionCleanupOperation {
         thread_ids: BTreeSet<String>,
         #[serde(default)]
         delegation_watermark: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime_commit_cursor: Option<u64>,
         receipt_fingerprint: String,
     },
 }
@@ -127,22 +133,28 @@ impl SessionCleanupOperation {
         session_id: &str,
         thread_ids: impl IntoIterator<Item = String>,
         delegation_watermark: u64,
+        runtime_commit_cursor: u64,
     ) -> Result<bool, SessionCleanupError> {
         let Self::Fenced { effect_id } = self else {
             return match self {
                 Self::Requested {
                     thread_ids: durable,
                     delegation_watermark: durable_watermark,
+                    runtime_commit_cursor: durable_cursor,
                     ..
                 }
                 | Self::Completed {
                     thread_ids: durable,
                     delegation_watermark: durable_watermark,
+                    runtime_commit_cursor: durable_cursor,
                     ..
                 } => {
                     let mut asserted = BTreeSet::from([session_id.to_string()]);
                     asserted.extend(thread_ids);
-                    if *durable == asserted && *durable_watermark == delegation_watermark {
+                    if *durable == asserted
+                        && *durable_watermark == delegation_watermark
+                        && *durable_cursor == Some(runtime_commit_cursor)
+                    {
                         Ok(false)
                     } else {
                         Err(SessionCleanupError::FrozenTargetsMismatch)
@@ -162,6 +174,7 @@ impl SessionCleanupOperation {
             effect_id,
             thread_ids: durable,
             delegation_watermark,
+            runtime_commit_cursor: Some(runtime_commit_cursor),
             completions: BTreeMap::new(),
         });
         if !advanced {
@@ -176,6 +189,22 @@ impl SessionCleanupOperation {
             Self::Requested { thread_ids, .. } | Self::Completed { thread_ids, .. } => {
                 Some(thread_ids)
             }
+            Self::NotRequested | Self::Fenced { .. } => None,
+        }
+    }
+
+    /// Immutable terminal projection boundary after Runtime quiescence.
+    #[must_use]
+    pub const fn runtime_commit_cursor(&self) -> Option<u64> {
+        match self {
+            Self::Requested {
+                runtime_commit_cursor,
+                ..
+            }
+            | Self::Completed {
+                runtime_commit_cursor,
+                ..
+            } => *runtime_commit_cursor,
             Self::NotRequested | Self::Fenced { .. } => None,
         }
     }
@@ -347,6 +376,7 @@ impl SessionCleanupOperation {
             effect_id,
             thread_ids,
             delegation_watermark,
+            runtime_commit_cursor,
             ..
         } = self
         else {
@@ -402,10 +432,12 @@ impl SessionCleanupOperation {
         let completed_effect_id = effect_id.clone();
         let completed_thread_ids = thread_ids.clone();
         let completed_watermark = *delegation_watermark;
+        let completed_runtime_cursor = *runtime_commit_cursor;
         let advanced = self.advance_to(Self::Completed {
             effect_id: completed_effect_id,
             thread_ids: completed_thread_ids,
             delegation_watermark: completed_watermark,
+            runtime_commit_cursor: completed_runtime_cursor,
             receipt_fingerprint,
         });
         if !advanced {
@@ -572,13 +604,66 @@ mod tests {
         let mut state = SessionCleanupOperation::default();
         assert!(state.request("session-1"));
         assert!(state.is_fenced());
-        assert!(state.freeze_targets("session-1", [], 7).unwrap());
+        assert!(state.freeze_targets("session-1", [], 7, 13).unwrap());
         let first = state.command_for("session-1", "session-1").unwrap();
         let replay = state.command_for("session-1", "session-1").unwrap();
         assert_eq!(first, replay);
         let receipt = verified(&first);
         assert!(state.complete("session-1", &[receipt]).unwrap());
         assert!(state.is_completed());
+        assert_eq!(
+            state.runtime_commit_cursor(),
+            Some(13),
+            "the quiescent Runtime high-water survives Requested -> Completed"
+        );
+    }
+
+    #[test]
+    fn legacy_cleanup_rows_do_not_invent_a_terminal_projection_anchor() {
+        // Cause/effect decision table: C1 a legacy Requested/Completed row has
+        // no Runtime cursor field; C2 a fresh never-run Session durably records
+        // cursor zero. E1 legacy decode returns None so ParentTerminal remains
+        // withheld; E2 fresh zero remains Some(0) across completion.
+        //
+        // | Rule | shape | phase | Effect |
+        // | L1 | missing cursor | Requested/Completed | E1 |
+        // | L2 | explicit zero | Requested/Completed | E2 |
+        //
+        // The distinction is required because zero is a valid Runtime
+        // high-water, not a migration sentinel.
+        let mut requested = SessionCleanupOperation::default();
+        assert!(requested.request("never-run"));
+        assert!(requested.freeze_targets("never-run", [], 0, 0).unwrap());
+        assert_eq!(requested.runtime_commit_cursor(), Some(0), "L2 Requested");
+
+        let mut legacy_requested = serde_json::to_value(&requested).unwrap();
+        legacy_requested
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_commit_cursor");
+        let legacy_requested: SessionCleanupOperation =
+            serde_json::from_value(legacy_requested).unwrap();
+        assert_eq!(
+            legacy_requested.runtime_commit_cursor(),
+            None,
+            "L1 Requested"
+        );
+
+        let root = requested.command_for("never-run", "never-run").unwrap();
+        assert!(requested.complete("never-run", &[verified(&root)]).unwrap());
+        assert_eq!(requested.runtime_commit_cursor(), Some(0), "L2 Completed");
+        let mut legacy_completed = serde_json::to_value(&requested).unwrap();
+        legacy_completed
+            .as_object_mut()
+            .unwrap()
+            .remove("runtime_commit_cursor");
+        let legacy_completed: SessionCleanupOperation =
+            serde_json::from_value(legacy_completed).unwrap();
+        assert_eq!(
+            legacy_completed.runtime_commit_cursor(),
+            None,
+            "L1 Completed"
+        );
     }
 
     #[test]
@@ -587,7 +672,7 @@ mod tests {
         state.request("session-1");
         assert!(
             state
-                .freeze_targets("session-1", ["child-1".to_string()], 11)
+                .freeze_targets("session-1", ["child-1".to_string()], 11, 13)
                 .unwrap()
         );
         let root = state.command_for("session-1", "session-1").unwrap();
@@ -607,7 +692,7 @@ mod tests {
     fn mismatched_or_incomplete_receipts_fail_closed() {
         let mut state = SessionCleanupOperation::default();
         state.request("session-1");
-        state.freeze_targets("session-1", [], 0).unwrap();
+        state.freeze_targets("session-1", [], 0, 0).unwrap();
         let command = state.command_for("session-1", "session-1").unwrap();
         let mut completion = SessionCleanupCompletion::new(&command, Vec::new());
         completion.effect_id.push_str("-stale");
@@ -624,12 +709,12 @@ mod tests {
         assert!(state.request("session-1"));
         assert!(
             state
-                .freeze_targets("session-1", ["child-1".to_string()], 19)
+                .freeze_targets("session-1", ["child-1".to_string()], 19, 0)
                 .unwrap()
         );
         assert!(
             !state
-                .freeze_targets("session-1", ["child-1".to_string()], 19)
+                .freeze_targets("session-1", ["child-1".to_string()], 19, 0)
                 .unwrap()
         );
         assert_eq!(
@@ -637,6 +722,7 @@ mod tests {
                 "session-1",
                 ["child-1".to_string(), "child-2".to_string()],
                 20,
+                0,
             ),
             Err(SessionCleanupError::FrozenTargetsMismatch)
         );
@@ -657,7 +743,7 @@ mod tests {
         let mut foreign = SessionCleanupOperation::default();
         foreign.request("session-a");
         assert_eq!(
-            foreign.freeze_targets("session-b", [], 1),
+            foreign.freeze_targets("session-b", [], 1, 0),
             Err(SessionCleanupError::OperationMismatch),
             "T05"
         );
@@ -666,7 +752,7 @@ mod tests {
         let mut state = SessionCleanupOperation::default();
         state.request("session-a");
         state
-            .freeze_targets("session-a", ["child-a".to_string()], 7)
+            .freeze_targets("session-a", ["child-a".to_string()], 7, 0)
             .unwrap();
         let root = state.command_for("session-a", "session-a").unwrap();
         let child = state.command_for("session-a", "child-a").unwrap();
@@ -706,7 +792,7 @@ mod tests {
             let mut state = SessionCleanupOperation::default();
             state.request("session-order");
             state
-                .freeze_targets("session-order", ["child-order".to_string()], 9)
+                .freeze_targets("session-order", ["child-order".to_string()], 9, 0)
                 .unwrap();
             let root = state.command_for("session-order", "session-order").unwrap();
             let child = state.command_for("session-order", "child-order").unwrap();
@@ -724,10 +810,10 @@ mod tests {
         let mut watermark = SessionCleanupOperation::default();
         watermark.request("session-watermark");
         watermark
-            .freeze_targets("session-watermark", ["child".to_string()], 10)
+            .freeze_targets("session-watermark", ["child".to_string()], 10, 0)
             .unwrap();
         assert_eq!(
-            watermark.freeze_targets("session-watermark", ["child".to_string()], 11),
+            watermark.freeze_targets("session-watermark", ["child".to_string()], 11, 0),
             Err(SessionCleanupError::FrozenTargetsMismatch),
             "T10"
         );
@@ -753,7 +839,7 @@ mod tests {
         let mut state = SessionCleanupOperation::default();
         state.request("remote-session");
         state
-            .freeze_targets("remote-session", ["remote-child".to_string()], 17)
+            .freeze_targets("remote-session", ["remote-child".to_string()], 17, 0)
             .unwrap();
         let child = state.command_for("remote-session", "remote-child").unwrap();
         let child_completion = SessionCleanupCompletion::new(&child, Vec::new());
@@ -842,6 +928,7 @@ mod tests {
                             "model-session",
                             ["model-child".to_string()],
                             watermark,
+                            0,
                         );
                     }
                     2 => {
@@ -870,13 +957,14 @@ mod tests {
                         }
                     }
                     3 => {
-                        let _ = state.freeze_targets("foreign-session", [], watermark);
+                        let _ = state.freeze_targets("foreign-session", [], watermark, 0);
                     }
                     5 => {
                         let _ = state.freeze_targets(
                             "model-session",
                             ["late-child".to_string()],
                             watermark.wrapping_add(1),
+                            0,
                         );
                     }
                     _ => unreachable!(),

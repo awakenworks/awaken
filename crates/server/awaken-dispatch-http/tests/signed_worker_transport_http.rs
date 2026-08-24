@@ -964,7 +964,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     let mut cleanup_operation = awaken_session_contract::SessionCleanupOperation::default();
     assert!(cleanup_operation.request("signed-thread"), "K4 fence");
     cleanup_operation
-        .freeze_targets("signed-thread", [], 0)
+        .freeze_targets("signed-thread", [], 0, 0)
         .expect("K4 root target");
     let cleanup_command = cleanup_operation
         .command_for("signed-thread", "signed-thread")

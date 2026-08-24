@@ -321,12 +321,8 @@ async fn serve_prepared_process(
     process: crate::PreparedProcess,
     prepared_worker: Option<crate::PreparedLocalWorker>,
 ) -> Result<(), String> {
-    let coordinator_postgres_pool = process
-        .coordinator_authorities
-        .as_ref()
-        .and_then(|authorities| authorities.postgres_pool.clone());
+    let controller = configured_process_admin_controller(&process);
     let local_setup = process.local_setup;
-    let registration_supervisor = process.registration_supervisor;
     let service_lifecycle = process.service_lifecycle;
     let prepared_worker =
         prepared_worker.map(|prepared| prepared.with_admin_tools(process.admin_tools.clone()));
@@ -334,14 +330,6 @@ async fn serve_prepared_process(
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let private_app = process.private_router;
-    let controller = crate::DrainController::new();
-    controller.set_service_lifecycle(service_lifecycle.clone());
-    if let Some(pool) = coordinator_postgres_pool {
-        controller.set_postgres_pool(pool);
-    }
-    if let Some(supervisor) = registration_supervisor {
-        controller.set_registration_supervisor(supervisor);
-    }
     let _active_streams_gauge = crate::register_active_streams_gauge(controller.clone());
     let public_app = match &deployment.admin_listen {
         Some(_) => crate::with_connection_metric(public_app, controller.clone()),
@@ -369,7 +357,9 @@ async fn serve_prepared_process(
 
     if let (Some(listener), Some(admin_addr)) = (admin_listener, &deployment.admin_listen) {
         let admin = crate::process_admin_router(controller);
-        eprintln!("awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain)");
+        eprintln!(
+            "awaken: admin http://{admin_addr} (/readyz /metrics /admin/drain /admin/session-event-batch-cutover-validation)"
+        );
         service_lifecycle.spawn("service-admin-http", move |cancel| async move {
             axum::serve(listener, admin)
                 .with_graceful_shutdown(async move { cancel.cancelled().await })
@@ -555,6 +545,27 @@ async fn serve_prepared_process(
         .map_err(|error| error.to_string());
     result?;
     drain_result
+}
+
+fn configured_process_admin_controller(
+    process: &crate::PreparedProcess,
+) -> std::sync::Arc<crate::DrainController> {
+    let controller = crate::DrainController::new();
+    controller.set_service_lifecycle(process.service_lifecycle.clone());
+    if let Some(pool) = process
+        .coordinator_authorities
+        .as_ref()
+        .and_then(|authorities| authorities.postgres_pool.clone())
+    {
+        controller.set_postgres_pool(pool);
+    }
+    if let Some(supervisor) = &process.registration_supervisor {
+        controller.set_registration_supervisor(supervisor.clone());
+    }
+    if let Some(source) = &process.event_batch_cutover_validation {
+        controller.set_session_event_batch_cutover_validation_source(source.clone());
+    }
+    controller
 }
 
 async fn bind_application_listeners(
@@ -796,6 +807,107 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn tcp_get_json(
+        address: std::net::SocketAddr,
+        path: &'static str,
+    ) -> (u16, serde_json::Value) {
+        tokio::task::spawn_blocking(move || {
+            use std::io::{Read, Write};
+
+            let mut connection = std::net::TcpStream::connect(address).unwrap();
+            connection
+                .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .unwrap();
+            write!(
+                connection,
+                "GET {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            )
+            .unwrap();
+            let mut response = Vec::new();
+            connection.read_to_end(&mut response).unwrap();
+            let response = String::from_utf8(response).unwrap();
+            let (headers, body) = response.split_once("\r\n\r\n").unwrap();
+            let status = headers
+                .lines()
+                .next()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .parse()
+                .unwrap();
+            (status, serde_json::from_str(body).unwrap())
+        })
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn prepared_process_wires_one_cutover_source_into_the_real_admin_listener() {
+        // Cause/effect graph: C1 PreparedProcess owns one uninitialized
+        // Event-batch cutover source; C2 the canonical service/controller
+        // assembly consumes that exact Arc; C3 the same source publishes one
+        // complete scan. Effects: E1 a real admin TCP GET before C3 is 503;
+        // E2 after C3 the same listener returns 200 and the exact four public
+        // fields. No test-only route or second projection is allowed.
+        //
+        // | Rule | Prepared source | Published scan | HTTP effect |
+        // |---|---|---|---|
+        // | W1 | exact Arc | absent | 503 pending |
+        // | W2 | same Arc | generation 1 | 200 exact zero counts |
+        let source = std::sync::Arc::new(
+            awaken_session_application::SessionEventBatchCutoverValidationSource::new_for_test(),
+        );
+        let process = crate::PreparedProcess {
+            public_router: axum::Router::new(),
+            private_router: axum::Router::new(),
+            local_setup: None,
+            registration_supervisor: None,
+            service_lifecycle: awaken_service_lifecycle::ServiceLifecycle::new(),
+            event_batch_cutover_validation: Some(source.clone()),
+            coordinator_authorities: None,
+            admin_tools: Vec::new(),
+        };
+        let controller = configured_process_admin_controller(&process);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown, stopped) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, crate::process_admin_router(controller))
+                .with_graceful_shutdown(async move {
+                    let _ = stopped.await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let path = "/admin/session-event-batch-cutover-validation";
+        let (status, body) = tcp_get_json(address, path).await;
+        assert_eq!(status, 503, "W1/E1");
+        assert_eq!(
+            body,
+            serde_json::json!({"error": "session_event_batch_cutover_validation_pending"}),
+            "W1/E1"
+        );
+
+        source.complete_scan_for_test(&awaken_session_contract::SessionRecoveryScan::default(), 0);
+        let (status, body) = tcp_get_json(address, path).await;
+        assert_eq!(status, 200, "W2/E2");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "generation": 1,
+                "terminal_with_incomplete_event_batches": 0,
+                "event_batch_failures": 0,
+                "quarantined": 0,
+            }),
+            "W2/E2"
+        );
+
+        shutdown.send(()).unwrap();
+        server.await.unwrap();
+    }
 
     #[tokio::test]
     async fn public_and_private_servers_share_one_graceful_lifecycle() {

@@ -288,6 +288,15 @@ async fn managed_vault_delete_fences_children_waits_for_rollout_and_tombstones_r
     ));
 }
 
+/// Rollout delivery cause/effect graph: C1 one exact committed outbox event;
+/// C2 an exact primary-id read is present/absent; C3 the target fails, reports
+/// pending, or converges. Effects: E1 the bounded read returns only that event,
+/// E2 the event is retained, E3 the exact event is acknowledged, E4 no
+/// different payload is removed. Decision rules: R0 C1+C2 present -> E1 and an
+/// unknown id -> absent; R1 C1+failure -> Pending/E2; R2 C1+pending ->
+/// Pending/E2; R3 C1+converged -> Converged/E3+E4 and the same exact read is
+/// absent. The public batch reconciler consumes this same single-event result
+/// and counts only R3.
 #[tokio::test]
 async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowledges() {
     let repo = InMemoryCredentialRepo::new();
@@ -317,6 +326,12 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
     assert_eq!(events[0].vault_id, "vault-1");
     assert_eq!(events[0].source_version, 2);
     assert_eq!(events[0].credential_revision, after.revision);
+    assert_eq!(
+        repo.managed_rollout(&events[0].id).await.unwrap(),
+        Some(events[0].clone()),
+        "R0"
+    );
+    assert_eq!(repo.managed_rollout("missing").await.unwrap(), None, "R0");
 
     let target = RecordingRolloutTarget::default();
     target.fail.store(true, Ordering::SeqCst);
@@ -346,6 +361,11 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         1
     );
     assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
+    assert_eq!(
+        repo.managed_rollout(&events[0].id).await.unwrap(),
+        None,
+        "R3"
+    );
     let attempts = target.events.lock().unwrap();
     assert_eq!(attempts.len(), 2);
     assert!(attempts.iter().all(|attempt| attempt == &events[0]));

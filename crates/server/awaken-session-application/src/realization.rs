@@ -275,6 +275,35 @@ impl SessionApplication {
                 "reconciled durable Thread Outcomes"
             );
         }
+        let final_scan_failure_count = match self
+            .refresh_event_batch_cutover_validation(event_batch_failure_count)
+            .await
+        {
+            Ok(snapshot) => {
+                tracing::info!(
+                    validation_generation = snapshot.generation,
+                    terminal_with_incomplete_event_batches =
+                        snapshot.terminal_with_incomplete_event_batches,
+                    event_batch_failures = snapshot.event_batch_failures,
+                    quarantined_sessions = snapshot.quarantined,
+                    "Session Event-batch cutover validation scan completed"
+                );
+                0
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    "Session Event-batch cutover validation scan remains pending"
+                );
+                1
+            }
+        };
+        let retryable_failures = resource_failure_count
+            + continuation_failure_count
+            + realization_failure_count
+            + event_batch_failure_count
+            + outcome_failure_count
+            + final_scan_failure_count;
         tracing::info!(
             pending_sessions = pending
                 .max(realizations.pending)
@@ -284,20 +313,10 @@ impl SessionApplication {
                 .max(realizations.quarantined.len())
                 .max(event_batches.quarantined)
                 .max(outcomes.quarantined),
-            retryable_failures = resource_failure_count
-                + continuation_failure_count
-                + realization_failure_count
-                + event_batch_failure_count
-                + outcome_failure_count,
+            retryable_failures,
             "Session recovery scan completed"
         );
-        SessionRecoveryCycle {
-            retryable_failures: resource_failure_count
-                + continuation_failure_count
-                + realization_failure_count
-                + event_batch_failure_count
-                + outcome_failure_count,
-        }
+        SessionRecoveryCycle { retryable_failures }
     }
 
     /// Run the sole Session lifecycle supervisor for this application instance.

@@ -78,12 +78,7 @@ impl SessionApplication {
         session: awaken_session_contract::PersistedSession,
         source_thread_id: &ThreadId,
     ) -> Result<awaken_session_contract::PersistedSession, RunError> {
-        if session.is_terminal()
-            || matches!(
-                session.budget,
-                awaken_session_contract::SessionBudgetState::Absent
-            )
-        {
+        if session.is_terminal() {
             return Ok(session);
         }
         let usage = self
@@ -486,16 +481,19 @@ impl SessionAgentCoordination for SessionApplication {
         }
         let snapshot = self
             .runtime()
-            .session_thread_recovery_snapshot(&command.session_id, &command.source_thread_id.0)
+            .session_thread_run_recovery_snapshot(
+                &command.session_id,
+                &command.source_thread_id.0,
+                &command.source_run_id,
+            )
             .await?
             .ok_or_else(|| RunError::bad_request("settled Agent Run was not committed"))?;
-        if snapshot.claimed_run_id != command.source_run_id
-            || snapshot.latest_run_id.as_ref() != Some(&command.source_run_id)
-        {
-            return Err(RunError::bad_request(
-                "Agent settlement does not identify the latest committed Run",
-            ));
-        }
+        // The dispatch claim already authenticates the exact frozen source Run.
+        // A settlement may be replayed after its Session effect committed but
+        // before the queue row reached Done; by then a successor Run can
+        // legitimately be latest. Recovery therefore validates the exact
+        // committed source below instead of creating a second, time-relative
+        // identity fence from the Thread's latest projection.
         let state = snapshot
             .runs
             .iter()
@@ -503,6 +501,21 @@ impl SessionAgentCoordination for SessionApplication {
             .map(|run| &run.state)
             .ok_or_else(|| RunError::bad_request("settled Agent Run is absent from its Thread"))?;
         let boundary = coordinated_boundary(state)?;
+        let observation = self
+            .runtime_interval_observation(
+                &command.session_id,
+                command.session_activity_epoch,
+                &command.source_thread_id,
+                &command.source_run_id,
+                state,
+                Some(snapshot.store_cursor),
+            )
+            .await?
+            .ok_or_else(|| {
+                RunError::unavailable(
+                    "committed Agent boundary is not yet visible in the lifecycle feed",
+                )
+            })?;
         // Failure is absorbing for an ordinary coordinated Thread. Record
         // cancellation on any already-admitted later dispatch before settling
         // this activity; Dispatch remains the sole queued-work authority and
@@ -531,9 +544,13 @@ impl SessionAgentCoordination for SessionApplication {
             // retains the boundary and Session remains Running for exact retry.
             self.reconcile_coordination_boundary_usage(current, &command.source_thread_id)
                 .await?;
-            self.settle_activity(&command.session_id, command.session_activity_epoch)
-                .await
-                .map_err(crate::SessionActivityError::run_error)?;
+            self.settle_activity_observed(
+                &command.session_id,
+                command.session_activity_epoch,
+                Some(observation),
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
             self.wake_lifecycle_supervisor();
             return Ok(());
         }
@@ -546,6 +563,9 @@ impl SessionAgentCoordination for SessionApplication {
         let settled = self
             .reconcile_coordination_boundary_usage(settled, &command.source_thread_id)
             .await?;
+        self.observe_activity_runtime_boundary(&command.session_id, observation)
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
         let owner = self.owner(&command.session_id).await.map_err(|error| {
             RunError::unavailable(format!("Session ownership is unavailable: {error}"))
         })?;

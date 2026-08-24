@@ -106,6 +106,47 @@ OCI Registry. The Kubernetes Job owns no durable lifecycle state, and neither
 Runtime Host nor the Session Pod installs Environment packages after a prepared
 digest has been frozen.
 
+The existing Kubernetes objects also expose one secret-free, read-only release
+proof. A package Build Job and its Pod template carry the exact deterministic
+recipe fingerprint in `awaken.dev/package-recipe-fingerprint` and the mutable
+push target in `awaken.dev/package-image-destination`. The package-destination
+Registry probe reuses the same two annotations on its existing image-check Job
+and Pod, so a retry after Build completion can recover the correlation from the
+kubelet `imageID` even when the short-lived Build Job is gone. Base-image and
+general availability probes do not claim package provenance. The existing
+termination message remains the sole BuildKit result and contains the immutable
+pushed digest. At the one Sandbox Pod creation seam, the Pod carries the original
+`SandboxSpec.scope` in `awaken.dev/sandbox-scope` and the exact resolved
+`ContainerPlan.image` in `awaken.dev/resolved-image`; the adapter-local,
+possibly hashed Kubernetes runtime id is not a Session identity. The scope key
+is deliberately neutral: a warm-pool Pod carries its physical `warmpool-*`
+scope, not the later Session bound to its in-process handle. Cloud may use this
+field as mission join evidence only when warm capacity is disabled and its value
+equals the exact mission Session id. Because neutral `SandboxSpec.scope` is
+intentionally unbounded, the pair is emitted only within a small additive
+annotation budget. An overlong scope still creates the same Sandbox but yields
+no release proof; its hash is never substituted as a Cloud or Session identity.
+
+These annotations are correlation evidence, not a build record, Session map,
+admission decision, or cleanup owner. A bounded deployment observer may prove
+that a BuildKit termination digest, or the same destination observed by the
+annotated retry probe, equals the exact mission Session Pod image and that
+kubelet reports the same immutable `imageID`. It must not infer package
+provenance from the neutral resolved-image annotation alone. Recipe bodies,
+proxy values, registry authentication, image-pull Secret names, and any other
+secret material never enter these annotations.
+
+The existing Ready-image availability port receives the exact durable build
+demand together with its stored immutable image. Its claimed build completion,
+blocking Session readiness, and periodic non-blocking capacity reconciliation
+all use that same port. On Kubernetes the package adapter reuses the canonical
+recipe projection to derive the destination and the same two annotations, then
+runs only the existing destination image-check and accepts it only when the
+kubelet digest exactly equals the stored image. A missing or drifted destination
+invalidates Ready so the existing claimed build worker can converge it; the
+availability path never invokes BuildKit, claims work, or creates another retry
+owner. Docker and Podman retain their existing stored-image probes.
+
 ### D5: Delivery is durable and fail-closed
 
 The Control definition revision and registration intent commit atomically. A
@@ -153,6 +194,7 @@ task, or second Sandbox provisioning seam.
 | Environment update | a new immutable definition and executable revision | old Agent bindings remain resolvable |
 | archive | Control tombstone plus Coordinator lifecycle projection | no new binding; frozen Sessions continue |
 | image build pending at Session create | frozen Session baseline plus build demand | wait internally or fail without idle success |
+| bounded Kubernetes release observation | Build Job/Pod recipe and destination annotations, BuildKit termination digest, cold-created Sandbox scope/resolved image annotations, and kubelet `imageID` | with warm capacity disabled, accept proof only when the scope equals the exact mission Session id and the immutable image identities agree; absence or mismatch is no proof and changes no runtime state |
 
 ## Consequences
 

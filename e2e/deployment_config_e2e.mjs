@@ -45,7 +45,7 @@ function runToExit(bin, args, env, timeoutMs = 20_000) {
 async function rejected(bin, fields, expected) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-reject-'));
   try {
-    const env = deploymentEnv(root, { fields });
+    const env = deploymentEnv(root, { identityMode: 'no-login', fields });
     const result = await runToExit(bin, automatedAllInOneArgs('--config', configPath(env)), env);
     assert.notEqual(result.code, 0, `configuration unexpectedly booted: ${result.output}`);
     assert.match(result.output, expected);
@@ -124,6 +124,7 @@ async function main() {
   const isolationRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-config-isolation-'));
   try {
     const env = deploymentEnv(isolationRoot, {
+      identityMode: 'no-login',
       fields: { bind: `127.0.0.1:${BASE_PORT}`, role: 'all-in-one', run_local_pool: true },
     });
     Object.assign(env, {

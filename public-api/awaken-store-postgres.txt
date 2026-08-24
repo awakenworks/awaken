@@ -9,6 +9,7 @@ pub awaken_store_postgres::StoreError::Read(alloc::string::String)
 pub struct awaken_store_postgres::PostgresCommitCoordinator
 impl awaken_store_postgres::PostgresCommitCoordinator
 pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_committed_messages(&self, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, awaken_store_postgres::StoreError>
+pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_latest_run_record(&self, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Record>, awaken_store_postgres::StoreError>
 pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_open_wait_for_thread(&self, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<core::option::Option<(awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::awaiting::ResumeTicket)>, awaken_store_postgres::StoreError>
 pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_run_record(&self, &awaken_agent_contract::agent::run::Id) -> core::result::Result<core::option::Option<awaken_agent_contract::agent::run::Record>, awaken_store_postgres::StoreError>
 pub async fn awaken_store_postgres::PostgresCommitCoordinator::authoritative_thread_exists(&self, &awaken_agent_contract::agent::thread::Id) -> core::result::Result<bool, awaken_store_postgres::StoreError>

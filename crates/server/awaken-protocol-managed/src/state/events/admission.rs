@@ -443,30 +443,15 @@ impl ManagedState {
                     "accepted Session Event batch disappeared from the root",
                 ))
             })?;
-        let projections = durable_inbound_projections(session_id, std::slice::from_ref(accepted));
-        let receipt_ids = projections
+        let receipts = accepted_inbound_receipts(session_id, accepted)
             .iter()
-            .map(|projection| projection.event.id.clone())
+            .map(|projection| projection.event.clone())
             .collect::<Vec<_>>();
+        let projections = durable_inbound_projections(session_id, std::slice::from_ref(accepted));
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let start = record.events.len();
         merge_durable_inbound_projections(record, projections);
-        let receipts = receipt_ids
-            .iter()
-            .map(|id| {
-                record
-                    .events
-                    .iter()
-                    .find(|event| &event.id == id)
-                    .cloned()
-                    .ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "accepted Session Event receipt was not projected",
-                        ))
-                    })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
         self.broadcast_committed_from(session_id, record, start);
         Ok(SendEventsResponse { data: receipts })
     }

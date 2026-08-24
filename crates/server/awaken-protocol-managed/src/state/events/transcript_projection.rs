@@ -18,6 +18,7 @@ impl ManagedState {
             latest_run_state,
             pending,
             pending_source_run_id,
+            historical_pending,
         } = projection;
         let run_ids = lifecycle_events
             .iter()
@@ -202,17 +203,43 @@ impl ManagedState {
                     continue;
                 }
             }
+            let historical_message_boundary =
+                historical_pending.iter().find_map(|(cursor, pending)| {
+                    message
+                        .content
+                        .iter()
+                        .any(|block| {
+                            matches!(
+                                block,
+                                ContentBlock::ToolUse { id, .. } if id == &pending.tool_use_id
+                            )
+                        })
+                        .then(|| {
+                            lifecycle_events
+                                .iter()
+                                .find(|event| event.cursor == *cursor)
+                                .map(|event| (pending, &event.run_id))
+                        })
+                        .flatten()
+                });
+            let message_source_run_id = historical_message_boundary
+                .map(|(_, run_id)| run_id)
+                .or(pending_source_run_id);
             let tool_index = record.projected_tool_index_for(Some(thread_id));
             let selected = transcript_evidence.project_message(
                 message,
                 &tool_index.sources,
-                pending_source_run_id.map(|run_id| run_id.0.as_str()),
+                message_source_run_id.map(|run_id| run_id.0.as_str()),
             );
             pending_is_in_new_message |= selected.pending_occurrence;
-            let message_pending = selected
-                .retained_pending_occurrence
-                .then_some(pending)
-                .flatten();
+            let message_pending = historical_message_boundary
+                .map(|(pending, _)| pending)
+                .or_else(|| {
+                    selected
+                        .retained_pending_occurrence
+                        .then_some(pending)
+                        .flatten()
+                });
             let mut projected = project_messages_with_mcp_ids(
                 std::slice::from_ref(&selected.message),
                 message_pending,
@@ -224,7 +251,7 @@ impl ManagedState {
                 record,
                 Some(thread_id),
                 std::slice::from_ref(&selected.message),
-                pending_source_run_id,
+                message_source_run_id,
                 &mut projected,
             )?;
             for (ordinal, projected) in projected.into_iter().enumerate() {

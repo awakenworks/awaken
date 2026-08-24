@@ -329,6 +329,43 @@ impl PostgresCommitCoordinator {
         .transpose()
     }
 
+    /// Read the latest Run for a Thread directly from committed PostgreSQL
+    /// truth. The commit sequence selects the Run while `run_record` supplies
+    /// its current state, so an active-active peer never relies on its local
+    /// compatibility projection.
+    pub async fn authoritative_latest_run_record(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, StoreError> {
+        let row = sqlx::query(&format!(
+            "SELECT latest.run_id, run.phase \
+             FROM (\
+                 SELECT run_id FROM {NS}_commit \
+                 WHERE thread_id = $1 ORDER BY sequence DESC LIMIT 1\
+             ) AS latest \
+             JOIN {NS}_run_record AS run ON run.run_id = latest.run_id"
+        ))
+        .bind(&thread_id.0)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| StoreError::Read(error.to_string()))?;
+        row.map(|row| {
+            let run_id = RunId(
+                row.try_get("run_id")
+                    .map_err(|error| StoreError::Read(error.to_string()))?,
+            );
+            let Json(state): Json<RunState> = row
+                .try_get("phase")
+                .map_err(|error| StoreError::Read(error.to_string()))?;
+            Ok(RunRecord {
+                id: run_id,
+                thread_id: thread_id.clone(),
+                state,
+            })
+        })
+        .transpose()
+    }
+
     /// Read the latest Run's awaiting ticket directly from committed PostgreSQL
     /// truth. This is deliberately one query over the latest commit and its
     /// optional waiting row: a peer may have completed a newer Run without
@@ -865,28 +902,44 @@ impl RunRecoverySource for PostgresCommitCoordinator {
         }
 
         let message_rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_message WHERE thread_id = $1 ORDER BY id"
+            "SELECT commit_sequence, data FROM {p}_message WHERE thread_id = $1 ORDER BY id"
         ))
         .bind(&thread_id.0)
         .fetch_all(&mut *tx)
         .await
         .map_err(recovery_reject)?;
         let mut messages = Vec::with_capacity(message_rows.len());
+        let mut message_commit_cursors = Vec::with_capacity(message_rows.len());
         for row in message_rows {
+            let sequence = row
+                .try_get::<i64, _>("commit_sequence")
+                .map_err(recovery_reject)?;
             let Json(message): Json<Message> = row.try_get("data").map_err(recovery_reject)?;
+            message_commit_cursors.push(
+                decode_authority(sequence)
+                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            );
             messages.push(message);
         }
 
         let state_rows = sqlx::query(&format!(
-            "SELECT data FROM {p}_state_command WHERE thread_id = $1 ORDER BY id"
+            "SELECT commit_sequence, data FROM {p}_state_command WHERE thread_id = $1 ORDER BY id"
         ))
         .bind(&thread_id.0)
         .fetch_all(&mut *tx)
         .await
         .map_err(recovery_reject)?;
         let mut committed_state = Vec::with_capacity(state_rows.len());
+        let mut state_commit_cursors = Vec::with_capacity(state_rows.len());
         for row in state_rows {
+            let sequence = row
+                .try_get::<i64, _>("commit_sequence")
+                .map_err(recovery_reject)?;
             let Json(command): Json<StateCommand> = row.try_get("data").map_err(recovery_reject)?;
+            state_commit_cursors.push(
+                decode_authority(sequence)
+                    .map_err(|error| RecoveryError::Rejected(error.to_string()))?,
+            );
             committed_state.push(command);
         }
 
@@ -949,7 +1002,9 @@ impl RunRecoverySource for PostgresCommitCoordinator {
             runs,
             latest_run_id,
             messages,
+            message_commit_cursors,
             state: committed_state,
+            state_commit_cursors,
             events,
             resume_tickets,
             thread_version: decode_authority(thread_version)

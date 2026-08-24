@@ -104,6 +104,39 @@ impl ManagedState {
         Ok(children)
     }
 
+    /// Collect one deterministic coordinated-Thread prefix. Callers compare two
+    /// collections around projection reads so independent child commits cannot
+    /// form a mixed public prefix.
+    pub(super) async fn coordinated_projection_prefix(
+        &self,
+        session_id: &str,
+    ) -> Result<
+        (
+            Vec<CoordinatedThreadLink>,
+            std::collections::HashMap<
+                String,
+                awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+            >,
+        ),
+        StateError,
+    > {
+        let mut links = self
+            .application
+            .coordinated_threads(session_id)
+            .await
+            .map_err(StateError::Run)?;
+        let snapshots = self
+            .coordinated_recovery_snapshots(session_id, &links)
+            .await?;
+        for link in &mut links {
+            if let Some(snapshot) = snapshots.get(&link.thread_id.0) {
+                link.latest_run_id = snapshot.latest_run_id.clone();
+            }
+        }
+        links.sort_by(|left, right| left.thread_id.0.cmp(&right.thread_id.0));
+        Ok((links, snapshots))
+    }
+
     pub(super) fn pending_ticket_from_recovery_snapshot(
         snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
     ) -> Result<Option<(awaken_agent_contract::agent::run::Id, String, Pending)>, StateError> {

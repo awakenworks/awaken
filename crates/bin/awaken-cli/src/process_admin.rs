@@ -14,17 +14,20 @@
 //!   against its process-owned pool; it never opens a probe-only connection pool.
 //! - `GET /metrics` — connection/drain gauges plus Control registration
 //!   readiness, pending-domain, failure, and lag gauges.
+//! - `GET /admin/session-event-batch-cutover-validation` — the latest
+//!   secret-free legacy Event-batch cutover proof from this process's sole
+//!   Session lifecycle supervisor.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 
-use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 
 const POSTGRES_READINESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -70,6 +73,8 @@ pub struct DrainController {
     registration_health: RwLock<Option<Arc<awaken_control::RegistrationHealth>>>,
     service_lifecycle: RwLock<Option<awaken_service_lifecycle::ServiceLifecycle>>,
     postgres_pool: RwLock<Option<sqlx::PgPool>>,
+    event_batch_cutover_validation:
+        RwLock<Option<Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>>>,
 }
 
 impl DrainController {
@@ -112,6 +117,16 @@ impl DrainController {
             .service_lifecycle
             .write()
             .expect("service lifecycle lock poisoned") = Some(lifecycle);
+    }
+
+    pub(crate) fn set_session_event_batch_cutover_validation_source(
+        &self,
+        source: Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>,
+    ) {
+        *self
+            .event_batch_cutover_validation
+            .write()
+            .expect("Session Event-batch cutover validation source lock poisoned") = Some(source);
     }
 
     /// Attach the canonical Coordinator pool already opened by
@@ -186,6 +201,16 @@ impl DrainController {
             .map(|health| health.snapshot())
     }
 
+    fn session_event_batch_cutover_validation_snapshot(
+        &self,
+    ) -> Option<awaken_session_application::SessionEventBatchCutoverValidationSnapshot> {
+        self.event_batch_cutover_validation
+            .read()
+            .expect("Session Event-batch cutover validation source lock poisoned")
+            .as_ref()
+            .and_then(|source| source.snapshot())
+    }
+
     fn begin_drain(&self) {
         self.draining.store(true, Ordering::Relaxed);
     }
@@ -222,6 +247,29 @@ async fn readyz(State(ctrl): State<Arc<DrainController>>) -> impl IntoResponse {
     awaken_coordinator::admin::readyz(ctrl.is_serving_ready().await)
 }
 
+fn session_event_batch_cutover_validation_response(
+    snapshot: Option<awaken_session_application::SessionEventBatchCutoverValidationSnapshot>,
+) -> Response {
+    match snapshot {
+        Some(snapshot) => (StatusCode::OK, Json(snapshot)).into_response(),
+        None => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "error": "session_event_batch_cutover_validation_pending",
+            })),
+        )
+            .into_response(),
+    }
+}
+
+async fn session_event_batch_cutover_validation(
+    State(ctrl): State<Arc<DrainController>>,
+) -> Response {
+    session_event_batch_cutover_validation_response(
+        ctrl.session_event_batch_cutover_validation_snapshot(),
+    )
+}
+
 async fn bounded_readiness_probe<F, T, E>(probe: F, deadline: std::time::Duration) -> bool
 where
     F: std::future::Future<Output = Result<T, E>>,
@@ -252,6 +300,10 @@ pub fn with_connection_metric(base: Router, ctrl: Arc<DrainController>) -> Route
 pub fn process_admin_router(ctrl: Arc<DrainController>) -> Router {
     Router::new()
         .route("/admin/drain", post(drain))
+        .route(
+            "/admin/session-event-batch-cutover-validation",
+            get(session_event_batch_cutover_validation),
+        )
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics))
         .with_state(ctrl)
@@ -448,6 +500,51 @@ mod tests {
         assert_eq!(
             get(&app, "/readyz").await.0,
             StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn session_event_batch_cutover_validation_is_fail_closed_and_secret_free() {
+        // Cause/effect graph: C1 this process has not completed an authoritative
+        // final Session scan; C2 it has one published snapshot. Effects: E1 C1
+        // returns 503 with a stable pending classification; E2 C2 returns 200
+        // with exactly generation and the three aggregate counts. Session IDs,
+        // quarantine reasons, clocks, and repository details are never inputs.
+        //
+        // | Rule | Snapshot | Status | Body |
+        // |---|---|---|---|
+        // | A1 | absent | 503 | pending classification only |
+        // | A2 | present | 200 | exact four-field snapshot |
+        let (app, _) = app();
+        let (status, body) = get(&app, "/admin/session-event-batch-cutover-validation").await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "A1/E1");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"error": "session_event_batch_cutover_validation_pending"}),
+            "A1/E1"
+        );
+
+        let response = session_event_batch_cutover_validation_response(Some(
+            awaken_session_application::SessionEventBatchCutoverValidationSnapshot {
+                generation: 9,
+                terminal_with_incomplete_event_batches: 1,
+                event_batch_failures: 2,
+                quarantined: 3,
+            },
+        ));
+        assert_eq!(response.status(), StatusCode::OK, "A2/E2");
+        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
+            .await
+            .unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({
+                "generation": 9,
+                "terminal_with_incomplete_event_batches": 1,
+                "event_batch_failures": 2,
+                "quarantined": 3,
+            }),
+            "A2/E2"
         );
     }
 

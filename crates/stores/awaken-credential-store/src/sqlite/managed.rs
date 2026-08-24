@@ -675,6 +675,25 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         .await
     }
 
+    async fn managed_rollout(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
+        let event_id = event_id.to_owned();
+        with_conn(&self.conn, move |conn, p| {
+            conn.query_row(
+                &format!("SELECT data FROM {p}_managed_credential_rollout WHERE event_id = ?1"),
+                params![event_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(storage)?
+            .map(|data| serde_json::from_str(&data).map_err(storage))
+            .transpose()
+        })
+        .await
+    }
+
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {

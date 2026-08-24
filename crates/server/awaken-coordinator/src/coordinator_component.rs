@@ -6,7 +6,6 @@
 
 use std::sync::Arc;
 
-use awaken_authz_enforce::ApplicationAccessStore;
 use awaken_deployment_application::DeploymentApplication;
 use awaken_deployment_contract::DeploymentRepository;
 use awaken_environment_execution_application::EnvironmentExecutionApplication;
@@ -21,7 +20,18 @@ use awaken_session_contract::ManagedSessionRepository;
 use awaken_worker_transport_security::WorkerRequestAuthenticator;
 use axum::Router;
 
+use crate::application_access_store::ApplicationAccessStore;
 use crate::{SharedHost, WorkerTransportBuildError};
+
+const APPLICATION_ACCESS_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
+const APPLICATION_ACCESS_RETENTION_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(60);
+const RUNTIME_BACKGROUND_DRAIN_SLICE: std::time::Duration = std::time::Duration::from_secs(1);
+pub(crate) const APPLICATION_ACCESS_RETENTION_BATCH: u32 = 512;
+pub(crate) const APPLICATION_ACCESS_RETENTION_MAX_BATCHES_PER_TICK: u32 = 256;
+#[cfg(test)]
+pub(crate) const APPLICATION_ACCESS_RETENTION_CAPACITY_PER_TICK: u32 =
+    APPLICATION_ACCESS_RETENTION_BATCH * APPLICATION_ACCESS_RETENTION_MAX_BATCHES_PER_TICK;
 
 /// Coordinator-owned ports and already-built sibling components.
 ///
@@ -136,6 +146,78 @@ pub(crate) fn register_session_lifecycle(
     });
 }
 
+/// Drain the exact Runtime Host's detached auxiliary work through the process's
+/// one service lifecycle. Short slices let completed tasks be reaped while the
+/// lifecycle's outer shared deadline remains the sole shutdown timeout owner.
+pub(crate) fn register_runtime_background_drain(
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    host: Arc<SharedHost>,
+) {
+    service_lifecycle.spawn(
+        "coordinator-runtime-background-drain",
+        move |cancel| async move {
+            cancel.cancelled().await;
+            while !host.drain_memory(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
+                tokio::task::yield_now().await;
+            }
+            Ok(())
+        },
+    );
+}
+
+/// Attach bounded application-credential retention to the Coordinator's one
+/// service lifecycle. Cleanup failure is retried by this same task; it never
+/// installs a local authorization fallback or a second maintenance scheduler.
+pub fn register_application_access_retention(
+    service_lifecycle: &awaken_service_lifecycle::ServiceLifecycle,
+    application_access: Arc<ApplicationAccessStore>,
+) {
+    service_lifecycle.spawn(
+        "coordinator-application-access-retention",
+        move |cancel| async move {
+            let mut interval = tokio::time::interval(APPLICATION_ACCESS_RETENTION_INTERVAL);
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break,
+                    _ = interval.tick() => {}
+                }
+                let terminal_before = crate::application_access_store::now_unix_millis()
+                    .saturating_sub(APPLICATION_ACCESS_RETENTION_MS);
+                if let Err(error) =
+                    drain_application_access_retention(&application_access, terminal_before).await
+                {
+                    eprintln!("application access retention retry remains pending: {error}");
+                }
+            }
+            Ok(())
+        },
+    );
+}
+
+/// Drain one bounded retention budget through the same repository used for
+/// authorization. A short batch proves the backlog is empty; full batches yield
+/// to request work, and the hard cap prevents a stale backlog from monopolizing
+/// the runtime. Repository failure returns immediately and the next lifecycle
+/// tick resumes from durable truth without an authorization fallback.
+pub(crate) async fn drain_application_access_retention(
+    application_access: &ApplicationAccessStore,
+    terminal_before_unix_ms: u64,
+) -> Result<u64, crate::application_access_store::ApplicationAccessRepositoryError> {
+    let mut total = 0_u64;
+    for _ in 0..APPLICATION_ACCESS_RETENTION_MAX_BATCHES_PER_TICK {
+        let deleted = application_access
+            .delete_terminal_before(terminal_before_unix_ms, APPLICATION_ACCESS_RETENTION_BATCH)
+            .await?;
+        total += deleted;
+        if deleted < u64::from(APPLICATION_ACCESS_RETENTION_BATCH) {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    Ok(total)
+}
+
 /// Build the one authoritative Coordinator component.
 pub async fn build_coordinator_component(
     dependencies: CoordinatorDependencies,
@@ -177,16 +259,18 @@ pub async fn build_coordinator_component(
     // recovery as background work. Component construction must expose readiness
     // without awaiting an external sandbox timeout for every persisted Session.
     register_session_lifecycle(&service_lifecycle, session_application.clone());
+    register_runtime_background_drain(&service_lifecycle, host.clone());
+    register_application_access_retention(&service_lifecycle, application_access.clone());
     deployment_application.bind_launcher(deployment_session_launcher);
 
     let (managed, data, application, worker_transport, dream_application) =
         crate::mount_with_managed_application_access_models_and_dreams(
             host,
             managed_state.clone(),
+            application_access.clone(),
             crate::ManagedApplicationServices {
                 session_application,
                 resource_registry,
-                application_access: Some(application_access.clone()),
                 model_inventory: Some(model_inventory),
                 dream_process_store,
                 executable_projection_refresh,
