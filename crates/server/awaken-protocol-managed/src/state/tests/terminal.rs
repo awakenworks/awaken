@@ -1346,6 +1346,14 @@ impl SessionRuntime for EndSessionFailer {
     ) -> Result<OutcomeDrive, RunError> {
         unreachable!()
     }
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(None)
+    }
     async fn execute_terminal_cleanup(
         &self,
         _command: awaken_session_contract::SessionCleanupCommand,
@@ -1409,6 +1417,54 @@ async fn delete_is_best_effort_when_sandbox_teardown_fails() {
         durable.resources.activations[0].state,
         awaken_session_contract::ActivationState::Releasing,
         "cleanup failure stays durable for ResourceReclaimer"
+    );
+    assert_eq!(
+        repo.reconcilable_sessions().await.unwrap().sessions,
+        vec![awaken_session_contract::ScopedPersistedSession {
+            workspace_id: DEFAULT_SCOPE.to_string(),
+            session: durable,
+        }]
+    );
+}
+
+/// Archive and physical teardown are separate consistency boundaries. Once the
+/// durable Archived fence wins, a transient Runtime cleanup failure remains a
+/// lifecycle-recoverable effect instead of changing the command result.
+#[tokio::test]
+async fn archive_commits_while_sandbox_teardown_remains_recoverable() {
+    let repo = Arc::new(ephemeral_session_repo());
+    let state = ManagedState::new(EndSessionFailer).with_session_repo(repo.clone());
+    let request = serde_json::from_value(serde_json::json!({
+        "agent": "assistant",
+        "environment_id": "env_local",
+        "resources": [{
+            "type": "file",
+            "file_id": "immutable-file",
+            "mount_path": "/input.txt"
+        }]
+    }))
+    .unwrap();
+    let id = state
+        .create_session(request, None)
+        .await
+        .expect("create")
+        .id;
+
+    let archived = state
+        .archive_session(&id)
+        .await
+        .expect("the durable archive fence is independent from cleanup availability");
+    assert_eq!(archived.status, SessionStatus::Terminated);
+
+    let durable = repo.get(&id).await.unwrap();
+    assert!(matches!(
+        durable.disposition,
+        SessionDisposition::Archived { .. }
+    ));
+    assert_eq!(
+        durable.resources.activations[0].state,
+        awaken_session_contract::ActivationState::Releasing,
+        "failed cleanup remains visible to lifecycle recovery"
     );
     assert_eq!(
         repo.reconcilable_sessions().await.unwrap().sessions,

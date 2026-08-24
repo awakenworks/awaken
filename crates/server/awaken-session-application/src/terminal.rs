@@ -136,10 +136,25 @@ impl SessionApplication {
         let transition = self
             .commit_archive(session_id, archived_at, fact, admission)
             .await?;
-        self.release_terminal_resources(&transition.owner_scope, session_id)
-            .await?;
         if transition.transitioned {
             self.notify_lifecycle_fact();
+        }
+        // Archive is linearized by the durable terminal fence above. Physical
+        // Runtime/Resource cleanup is a recoverable saga and must not turn that
+        // committed business transition into a retryable command failure. Wake
+        // the lifecycle owner before the eager attempt so caller cancellation
+        // cannot strand the intent; the attempt only shortens convergence when
+        // the current projector is immediately available.
+        self.wake_lifecycle_supervisor();
+        if let Err(error) = self
+            .release_terminal_resources(&transition.owner_scope, session_id)
+            .await
+        {
+            tracing::warn!(
+                session = session_id,
+                error = ?error,
+                "Session archive cleanup remains pending for lifecycle recovery"
+            );
         }
         Ok(transition)
     }
