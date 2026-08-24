@@ -31,7 +31,7 @@ mod relay_hand;
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
     WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
-    spawn_heartbeat, wait_for_in_flight, wall_clock_ms,
+    spawn_heartbeat, spawn_session_realization_reconciliation, wait_for_in_flight, wall_clock_ms,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -1238,6 +1238,7 @@ impl WorkerNode {
             self.credential_observation_ttl,
         );
         let environment_warmups = spawn_environment_warmup_reconciliation(lifecycle.clone());
+        let session_realizations = spawn_session_realization_reconciliation(lifecycle.clone());
         let mut heartbeat = spawn_heartbeat(lifecycle.clone(), 2);
         eprintln!("awaken-worker registered with {upstream_url}");
 
@@ -1313,6 +1314,7 @@ impl WorkerNode {
         heartbeat.abort();
         credential_probe.abort();
         environment_warmups.abort();
+        session_realizations.abort();
         if let Some(admin_task) = admin_task {
             admin_task.abort();
         }
