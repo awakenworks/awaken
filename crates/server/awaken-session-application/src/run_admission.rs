@@ -30,6 +30,29 @@ pub trait SessionRunAdmission: Send + Sync {
         thread_id: &str,
         agent_id: &str,
     ) -> Result<(), RunApplicationError>;
+    /// Open the admitted operation's activity. The default preserves source and
+    /// behavior compatibility for non-Session test/application adapters; the
+    /// canonical SessionApplication implementation returns its durable epoch.
+    async fn begin(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<u64>, RunApplicationError> {
+        self.admit(workspace_id, thread_id, agent_id).await?;
+        Ok(None)
+    }
+
+    /// Settle the exact activity opened by [`Self::begin`]. Implementations that
+    /// do not own a Session aggregate retain their former pass-through behavior.
+    async fn finish(
+        &self,
+        _thread_id: &str,
+        _activity_epoch: Option<u64>,
+        step: Result<StepOutcome, RunApplicationError>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        step
+    }
 }
 
 /// Protocol-independent request to create a Session from one published Agent
@@ -616,6 +639,34 @@ impl SessionRunAdmission for SessionApplication {
         self.admit_run_session(workspace_id, thread_id, agent_id)
             .await
     }
+
+    async fn begin(
+        &self,
+        workspace_id: &str,
+        thread_id: &str,
+        agent_id: &str,
+    ) -> Result<Option<u64>, RunApplicationError> {
+        self.admit_run_session(workspace_id, thread_id, agent_id)
+            .await?;
+        self.begin_activity(thread_id)
+            .await
+            .map(|session| Some(session.activity_epoch))
+            .map_err(crate::SessionActivityError::run_error)
+    }
+
+    async fn finish(
+        &self,
+        thread_id: &str,
+        activity_epoch: Option<u64>,
+        step: Result<StepOutcome, RunApplicationError>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        let Some(activity_epoch) = activity_epoch else {
+            return step;
+        };
+        self.finish_runtime_activity(thread_id, activity_epoch, step)
+            .await
+            .map(|outcome| outcome.step)
+    }
 }
 
 /// The sole admission decorator for all public Run protocols.
@@ -645,14 +696,14 @@ impl AdmittedRunApplication {
         }
     }
 
-    async fn admit_run(
+    async fn begin_run(
         &self,
         thread: &str,
         requested_agent: Option<&str>,
-    ) -> Result<(), RunApplicationError> {
+    ) -> Result<Option<u64>, RunApplicationError> {
         let projected = (self.projected_agent)(thread);
         self.admission
-            .admit(
+            .begin(
                 &(self.workspace)(thread),
                 thread,
                 requested_agent
@@ -671,8 +722,9 @@ impl RunApplication for AdmittedRunApplication {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.admit_run(thread, agent.as_deref()).await?;
-        self.runtime.run(thread, agent, messages).await
+        let activity_epoch = self.begin_run(thread, agent.as_deref()).await?;
+        let step = self.runtime.run(thread, agent, messages).await;
+        self.admission.finish(thread, activity_epoch, step).await
     }
 
     async fn run_streaming(
@@ -682,10 +734,12 @@ impl RunApplication for AdmittedRunApplication {
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.admit_run(thread, agent.as_deref()).await?;
-        self.runtime
+        let activity_epoch = self.begin_run(thread, agent.as_deref()).await?;
+        let step = self
+            .runtime
             .run_streaming(thread, agent, messages, sink)
-            .await
+            .await;
+        self.admission.finish(thread, activity_epoch, step).await
     }
 
     async fn resume(
@@ -694,8 +748,9 @@ impl RunApplication for AdmittedRunApplication {
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.admit_run(thread, None).await?;
-        self.runtime.resume(thread, tool_use_id, resume).await
+        let activity_epoch = self.begin_run(thread, None).await?;
+        let step = self.runtime.resume(thread, tool_use_id, resume).await;
+        self.admission.finish(thread, activity_epoch, step).await
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
@@ -722,12 +777,14 @@ impl RunApplication for AdmittedRunApplication {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct Admission {
         calls: Mutex<Vec<(String, String, String)>>,
         fail: bool,
+        active: Arc<Mutex<HashSet<String>>>,
     }
 
     #[async_trait::async_trait]
@@ -738,6 +795,17 @@ mod tests {
             thread_id: &str,
             agent_id: &str,
         ) -> Result<(), RunApplicationError> {
+            self.begin(workspace_id, thread_id, agent_id)
+                .await
+                .map(|_| ())
+        }
+
+        async fn begin(
+            &self,
+            workspace_id: &str,
+            thread_id: &str,
+            agent_id: &str,
+        ) -> Result<Option<u64>, RunApplicationError> {
             self.calls.lock().unwrap().push((
                 workspace_id.to_owned(),
                 thread_id.to_owned(),
@@ -746,12 +814,28 @@ mod tests {
             if self.fail {
                 Err(RunApplicationError::unavailable("session store offline"))
             } else {
-                Ok(())
+                self.active.lock().unwrap().insert(thread_id.to_owned());
+                Ok(Some(1))
             }
+        }
+
+        async fn finish(
+            &self,
+            thread_id: &str,
+            activity_epoch: Option<u64>,
+            step: Result<StepOutcome, RunApplicationError>,
+        ) -> Result<StepOutcome, RunApplicationError> {
+            assert_eq!(activity_epoch, Some(1));
+            assert!(self.active.lock().unwrap().remove(thread_id));
+            step
         }
     }
 
-    struct Runtime(AtomicUsize);
+    struct Runtime {
+        calls: AtomicUsize,
+        active: Arc<Mutex<HashSet<String>>>,
+        fail_thread: Option<&'static str>,
+    }
 
     #[async_trait::async_trait]
     impl RunApplication for Runtime {
@@ -761,7 +845,11 @@ mod tests {
             _agent: Option<String>,
             _messages: Vec<Message>,
         ) -> Result<StepOutcome, RunApplicationError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            assert!(self.active.lock().unwrap().contains(_thread));
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_thread == Some(_thread) {
+                return Err(RunApplicationError::unavailable("runtime offline"));
+            }
             Ok(StepOutcome::ended(
                 Vec::new(),
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -774,7 +862,8 @@ mod tests {
             _tool_use_id: &str,
             _resume: RunResume,
         ) -> Result<StepOutcome, RunApplicationError> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            assert!(self.active.lock().unwrap().contains(_thread));
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(StepOutcome::ended(
                 Vec::new(),
                 awaken_agent_contract::agent::run::EndCause::NaturalEnd,
@@ -799,15 +888,32 @@ mod tests {
         // Cause/effect decision table: R1 explicit Agent + admission success =>
         // exact Agent admitted then one Run; R2 no Agent + recovered projection =>
         // projected Agent admitted; R3 admission unavailable => zero Runs and the
-        // retryable error preserved; R4 read-only history => no admission; R5 a
-        // continuation is admitted before Runtime resume. These
-        // rules keep application policy out of Runtime Host without introducing a
-        // second execution path.
+        // retryable error preserved; R4 read-only history => no activity; R5 a
+        // continuation opens the activity before Runtime resume; R6 Runtime
+        // failure still closes the activity. E1 every effect-capable Runtime call
+        // observes its Session as Running; E2 every terminal return observes the
+        // activity closed. These rules reproduce the hosted MCP failure where
+        // `tools/call` queried the durable Thread during an AI SDK Run but saw
+        // Idle, while keeping application policy out of Runtime Host.
+        //
+        // | Rule | Admission | Operation | Runtime | Effect |
+        // |---|---|---|---|---|
+        // | R1/R2 | allow | Run | success | E1 then E2 |
+        // | R3 | deny | Run | not called | no activity |
+        // | R4 | n/a | read | n/a | no activity |
+        // | R5 | allow | resume | success | E1 then E2 |
+        // | R6 | allow | Run | failure | E1 then E2 + same error |
+        let active = Arc::new(Mutex::new(HashSet::new()));
         let admission = Arc::new(Admission {
             calls: Mutex::new(Vec::new()),
             fail: false,
+            active: active.clone(),
         });
-        let runtime = Arc::new(Runtime(AtomicUsize::new(0)));
+        let runtime = Arc::new(Runtime {
+            calls: AtomicUsize::new(0),
+            active: active.clone(),
+            fail_thread: Some("thread-failure"),
+        });
         let app = AdmittedRunApplication::new(
             runtime.clone(),
             admission.clone(),
@@ -826,8 +932,14 @@ mod tests {
         )
         .await
         .expect("R5");
+        let error = app
+            .run("thread-failure", None, Vec::new())
+            .await
+            .expect_err("R6");
+        assert_eq!(error.message, "runtime offline", "R6");
         app.history("thread-a").await.expect("R4");
-        assert_eq!(runtime.0.load(Ordering::SeqCst), 3, "R1/R2/R4/R5");
+        assert_eq!(runtime.calls.load(Ordering::SeqCst), 4, "R1/R2/R4-R6");
+        assert!(active.lock().unwrap().is_empty(), "R1-R6/E2");
         assert_eq!(
             admission.calls.lock().unwrap().as_slice(),
             [
@@ -846,16 +958,27 @@ mod tests {
                     "thread-resume".into(),
                     "projected-agent".into()
                 ),
+                (
+                    "workspace-a".into(),
+                    "thread-failure".into(),
+                    "projected-agent".into()
+                ),
             ],
-            "R1/R2/R4/R5"
+            "R1/R2/R4-R6"
         );
 
-        let denied_runtime = Arc::new(Runtime(AtomicUsize::new(0)));
+        let denied_active = Arc::new(Mutex::new(HashSet::new()));
+        let denied_runtime = Arc::new(Runtime {
+            calls: AtomicUsize::new(0),
+            active: denied_active.clone(),
+            fail_thread: None,
+        });
         let denied = AdmittedRunApplication::new(
             denied_runtime.clone(),
             Arc::new(Admission {
                 calls: Mutex::new(Vec::new()),
                 fail: true,
+                active: denied_active.clone(),
             }),
             |_| "workspace-a".into(),
             |_| None,
@@ -866,6 +989,7 @@ mod tests {
             awaken_session_contract::RunErrorKind::Unavailable,
             "R3"
         );
-        assert_eq!(denied_runtime.0.load(Ordering::SeqCst), 0, "R3");
+        assert_eq!(denied_runtime.calls.load(Ordering::SeqCst), 0, "R3");
+        assert!(denied_active.lock().unwrap().is_empty(), "R3");
     }
 }

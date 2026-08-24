@@ -5,6 +5,62 @@ struct ColdEventRuntime {
     prepared: std::sync::atomic::AtomicBool,
 }
 
+struct BlockingProtocolRuntime {
+    entered: Arc<tokio::sync::Semaphore>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::RunApplication for BlockingProtocolRuntime {
+    async fn run(
+        &self,
+        _thread: &str,
+        _agent: Option<String>,
+        _messages: Vec<awaken_agent_contract::agent::message::Message>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        self.entered.add_permits(1);
+        self.release
+            .acquire()
+            .await
+            .expect("test release semaphore")
+            .forget();
+        Ok(awaken_session_contract::StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _resume: awaken_session_contract::RunResume,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        unreachable!("protocol activity test never resumes")
+    }
+
+    async fn pending(
+        &self,
+        _thread: &str,
+    ) -> Result<Option<awaken_session_contract::Pending>, awaken_session_contract::RunError> {
+        Ok(None)
+    }
+
+    async fn history(
+        &self,
+        _thread: &str,
+    ) -> Result<
+        Vec<awaken_agent_contract::agent::message::Message>,
+        awaken_session_contract::RunError,
+    > {
+        Ok(Vec::new())
+    }
+
+    fn model(&self) -> String {
+        "blocking-protocol".into()
+    }
+}
+
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
     async fn prepare_session(
@@ -243,6 +299,79 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
         .expect("successor activity advances the durable fence");
     assert_eq!(successor.execution, SessionExecutionState::Running);
     assert_eq!(successor.activity_epoch, 2);
+}
+
+#[tokio::test]
+async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
+    // Hosted MCP authorization cause/effect graph: C1 an AI SDK/AG-UI/A2A Run
+    // has passed the canonical Session owner/Agent admission; C2 Runtime is
+    // executing; C3 Runtime settles. Effects: E1 the durable Session is Running
+    // throughout C2 so an internal MCP `tools/call` can prove a live Run; E2 C3
+    // closes the same activity and returns the Session to Idle. Constraint: the
+    // protocol keeps its original Message/stream path; SessionApplication is the
+    // sole activity owner. Decision table: P1=C1+C2=>E1; P2=C1+C3=>E2. The
+    // adjacent decorator test covers admission and Runtime failures.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        persisted("protocol-running", false, "idle"),
+    )
+    .await;
+    let application = Arc::new(application(
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let runtime = Arc::new(BlockingProtocolRuntime {
+        entered: entered.clone(),
+        release: release.clone(),
+    });
+    let protocol = AdmittedRunApplication::new(
+        runtime,
+        application,
+        |_| "workspace".into(),
+        |_| Some("agent".into()),
+    );
+
+    let drive = tokio::spawn(async move {
+        awaken_session_contract::RunApplication::run(
+            &protocol,
+            "protocol-running",
+            None,
+            Vec::new(),
+        )
+        .await
+    });
+    entered
+        .acquire()
+        .await
+        .expect("P1 Runtime entered")
+        .forget();
+    assert_eq!(
+        repository
+            .get("protocol-running")
+            .await
+            .expect("P1 durable Session")
+            .execution,
+        SessionExecutionState::Running,
+        "P1/E1"
+    );
+
+    release.add_permits(1);
+    drive.await.expect("P2 join").expect("P2 Run settled");
+    assert_eq!(
+        repository
+            .get("protocol-running")
+            .await
+            .expect("P2 durable Session")
+            .execution,
+        SessionExecutionState::Idle,
+        "P2/E2"
+    );
 }
 
 #[tokio::test]

@@ -157,10 +157,11 @@ Verified state after the 2026-08-04 cut:
   Its collaborators are private and reached through explicit application operations/ports;
   `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
   wire validation/lowering, projections, event ids, and SSE channels. AI SDK, AG-UI, and A2A
-  share one `AdmittedRunApplication`: it invokes `SessionApplication` admission before the
-  neutral `RunApplication`, while resume/control/read operations address committed Thread
-  truth directly. Coordinator only assembles these ports; Runtime Host executes the admitted
-  Run and never creates or recovers a Session.
+  share one `AdmittedRunApplication`: it invokes `SessionApplication` admission and the
+  existing durable activity fence around each effect-capable neutral `RunApplication`
+  operation, while control/read operations address committed Thread truth directly.
+  Coordinator only assembles these ports; Runtime Host executes the admitted Run and never
+  creates, recovers, or owns the lifecycle of a Session.
 - **Coordinator runtime interface** — `awaken-run-ingress-http` owns durable-operation
   HTTP routing. Neutral durable-control methods remain on `SharedHost` as its application API.
 - **Worker runtime interface** — `awaken-worker-runtime` owns registration, heartbeat,
@@ -218,3 +219,13 @@ reimplement that behavior.
 - This ADR is documentation *plus* code: Phases 0.1 / 0.2 / 3 of the layout work landed the
   three new fitness functions; the neutral-port extractions (session-contract, the InMemory
   backends, and the common Run-attempt seam) landed the structural changes it describes.
+
+## Amendment 1 — Public Run protocols share the Session activity fence (2026-08-25)
+
+AI SDK, AG-UI, and A2A retain their protocol-neutral Message and streaming adapters, but
+their effect-capable Run and resume calls now cross the same SessionApplication-owned
+Running/Idle activity boundary already used by Managed messages and background jobs. This
+removes the former admitted-but-unfenced path: an internal MCP server can authorize
+`tools/call` from durable running truth while a hosted Worker executes, without a public
+callback URL, protocol-specific lifecycle store, or relaxed running-Run guard. Read-only
+history, pending, model, and usage queries remain activity-free.
