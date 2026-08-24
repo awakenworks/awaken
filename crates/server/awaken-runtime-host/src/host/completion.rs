@@ -165,11 +165,15 @@ pub fn self_hosted_inference_holder(
         }
         boundary = Some(candidate_boundary);
     }
-    if common_holders
-        .as_ref()
-        .is_some_and(|holders| holders.len() == 1)
-    {
-        return Ok(common_holders.and_then(|holders| holders.into_iter().next()));
+    if let Some(common_holders) = common_holders {
+        if common_holders.is_empty() {
+            return Err(HostError::bad_request(
+                "one execution candidate set has no common credential plaintext holder",
+            ));
+        }
+        if common_holders.len() == 1 {
+            return Ok(common_holders.into_iter().next());
+        }
     }
     Ok(boundary.map(|boundary| match boundary {
         awaken_runtime_contract::PlaintextBoundary::Workload => {

@@ -63,6 +63,7 @@ use pod_projection::{
     CONFIGMAP_KEY, append_writable_and_cache_volumes, build_configmap, build_credential_secret,
     content_binds, credential_binds, credential_key,
 };
+pub(crate) use pod_security::sandbox_network_labels;
 use pod_security::{
     admit_network, egress_label, hardened_security_context, pod_resources, unenforceable_k8s_limit,
 };
@@ -535,12 +536,7 @@ fn build_pod_with_continuation(
         // selects and enforces it (deny-all-except-proxy/DNS for `restricted`). The
         // per-cluster NetworkPolicy holds the real proxy/DNS addresses; the adapter
         // only declares the posture — it does not invent IPs it doesn't have.
-        let mut labels = std::collections::BTreeMap::new();
-        labels.insert("app".to_string(), "awaken-sandbox".to_string());
-        labels.insert(
-            "awaken-egress".to_string(),
-            egress_label(&plan.network).to_string(),
-        );
+        let labels = sandbox_network_labels(Some(egress_label(&plan.network)));
 
         Pod {
             metadata: ObjectMeta {

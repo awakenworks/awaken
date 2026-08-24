@@ -17,6 +17,17 @@ pub(super) fn egress_label(network: &crate::NetworkMode) -> &'static str {
     }
 }
 
+/// Canonical labels selected by the composition-owned sandbox NetworkPolicies.
+/// `None` selects only the default deny policy; a posture additionally selects
+/// the matching egress policy.
+pub(crate) fn sandbox_network_labels(posture: Option<&str>) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::from([("app".to_owned(), "awaken-sandbox".to_owned())]);
+    if let Some(posture) = posture {
+        labels.insert("awaken-egress".to_owned(), posture.to_owned());
+    }
+    labels
+}
+
 /// Admit the posture only when the Kubernetes composition has supplied exact
 /// enforcement evidence. Labels alone never turn metadata into a boundary.
 pub(super) fn admit_network(

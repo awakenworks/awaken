@@ -8965,7 +8965,8 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // Cause graph: C1=credential-bearing candidate; C2=Native; C3=ACP;
     // C4=mixed boundaries; C5=publication freezes one common holder;
     // C6=prepared Environment requests a different holder; C7=closed Remote
-    // coordinate (exact A2A backend with no local model reference). The same
+    // coordinate (exact A2A backend with no local model reference); C8=the
+    // candidates' allowed-holder intersection is empty. The same
     // immutable publication decision feeds root, child, direct, and dispatch paths.
     // Remote authentication uses the Worker boundary, while every candidate in
     // one attempt set must admit one common holder.
@@ -8977,6 +8978,7 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
     // | R5   | T  | -  | -  | -  | T  | F  | F  | exact publication holder |
     // | R6   | T  | -  | -  | -  | T  | T  | F  | exact publication holder |
     // | R7   | T  | F  | F  | F  | F  | F  | T  | Worker holder            |
+    // | R8   | T  | -  | -  | -  | F  | -  | F  | reject empty intersection |
     let host = SharedHost::new(Arc::new(OkModel), "host-default");
     let candidate_with_policy =
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
@@ -9144,6 +9146,35 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
             .unwrap(),
         Some(platform_holder),
         "R6"
+    );
+    let worker_candidate = candidate_with_policy(
+        "worker-exact",
+        "native",
+        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_native()
+                .inference_holder,
+            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+        ),
+    );
+    let workload_candidate = candidate_with_policy(
+        "workload-exact",
+        "native",
+        awaken_runtime_contract::CredentialExecutionPolicy::exact(
+            awaken_runtime_contract::CredentialRealizationProfile::self_hosted_acp()
+                .inference_holder,
+            awaken_runtime_contract::ModelExposurePolicy::Forbidden,
+        ),
+    );
+    let error = super::self_hosted_inference_holder(&activation(
+        worker_candidate,
+        vec![workload_candidate],
+    ))
+    .expect_err("R8 disjoint exact holder policies must fail closed");
+    assert!(
+        error
+            .to_string()
+            .contains("no common credential plaintext holder"),
+        "R8 exact rejection reason: {error}"
     );
 }
 
