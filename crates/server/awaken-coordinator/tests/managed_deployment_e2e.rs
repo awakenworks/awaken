@@ -33,6 +33,39 @@ use tower::ServiceExt;
 
 use support::wait_for_session_events;
 
+struct DeploymentPriceProvider;
+
+#[async_trait::async_trait]
+impl awaken_session_contract::ManagedListPriceProvider for DeploymentPriceProvider {
+    async fn resolve_snapshot(
+        &self,
+        request: awaken_session_contract::ManagedListPriceRequest,
+    ) -> Result<
+        awaken_session_contract::ManagedListPriceSnapshot,
+        awaken_session_contract::ManagedListPriceError,
+    > {
+        let rate = awaken_session_contract::ManagedTokenListRates {
+            input_micros_per_million: 10_000_000,
+            output_micros_per_million: 10_000_000,
+            cache_read_micros_per_million: 10_000_000,
+            cache_creation_micros_per_million: 10_000_000,
+        };
+        Ok(awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "deployment-budget-test".into(),
+            version: 1,
+            effective_at_unix_ms: request.occurred_at_unix_ms,
+            arithmetic_version: 1,
+            model_rates: request
+                .model_refs
+                .into_iter()
+                .map(|model| (model, rate))
+                .collect(),
+            runtime_rates: Default::default(),
+            fingerprint: "deployment-budget-test-v1".into(),
+        })
+    }
+}
+
 async fn publish_assistant(
     catalog: Arc<ExecutableAgentCatalog>,
     workspace_id: &str,
@@ -259,14 +292,18 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
 
 #[tokio::test]
 async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_events() {
-    // Official-docs cause/effect graph and FMECA: C1 valid Agent/environment;
+    // Official-docs cause/effect graph and FMECA: C1 valid Agent/environment
+    // plus one authoritative Managed list-price snapshot;
     // C2 Deployment carries its wider official initial-event union, including a
     // user.message immediately followed by the final system.message; C3 manual
     // trigger; C4 due cron;
-    // C5 pause. Effects: E1 active Deployment; E2 exactly one ordinary Session;
+    // C5 pause; C6 create/update/null Deployment budget across successive
+    // manual runs. Effects: E1 active Deployment; E2 exactly one ordinary Session;
     // E3 both Events commit in the Session root and execute through its sole
     // lifecycle state machine; E4 a schedule-triggered Session; E5 no launch
-    // while paused. If the Deployment batch bypasses the shared validator, or is
+    // while paused; E6 every new Session freezes the current budget independently,
+    // while prior Sessions keep their original cap and null removes it only for
+    // later runs. If the Deployment batch bypasses the shared validator, or is
     // revalidated as the narrower public Session-create input, authoring and
     // execution can diverge (terminal run, severity high). The mitigation is one
     // Deployment validator followed by one atomic Session creation command.
@@ -277,7 +314,8 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     // D1 C1+C2 -> E1;
     // D2 manual run -> DeploymentRun XOR terminal branch with a Session id;
     // D3 C1+C2+C3 -> E2+E3; D4 C1+C2+C4 -> E4;
-    // D5 C5 -> E5, then unpause advances the future-only cursor.
+    // D5 C5 -> E5, then unpause advances the future-only cursor;
+    // D6 C1+C6 -> E6.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
     let (_, host) = build_router_and_host_with_agent_publications(
         Arc::new(EchoModel),
@@ -286,8 +324,11 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     );
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed =
-        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
+    let managed = Arc::new(
+        ManagedState::new(ManagedHost::new(host.clone()))
+            .with_config_source(catalog)
+            .with_managed_list_price_provider(Arc::new(DeploymentPriceProvider)),
+    );
     let deployments = Arc::new(DeploymentApplication::new());
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
         managed.clone(),
@@ -316,7 +357,8 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
                     "content":[{"type":"text","text":"deployment system directive"}]
                 }
             ],
-            "schedule":{"type":"cron","expression":"*/15 * * * *","timezone":"UTC"}
+            "schedule":{"type":"cron","expression":"*/15 * * * *","timezone":"UTC"},
+            "budget":{"type":"limit","max_list_cost":{"amount":"2000","currency":"USD"}}
         })),
     )
     .await;
@@ -353,6 +395,78 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
         .filter(|kind| matches!(*kind, "system.message" | "user.message"))
         .collect::<Vec<_>>();
     assert_eq!(initial_types, vec!["user.message", "system.message"], "D3");
+
+    let (_, first_session) = call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(
+        first_session["budget"]["max_list_cost"]["amount"], "2000",
+        "D6/E6 create budget copied"
+    );
+    let (status, updated) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{deployment_id}"),
+        Some(json!({
+            "budget":{"type":"limit","max_list_cost":{"amount":"500","currency":"USD"}}
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "D6 budget update: {updated}");
+    let (_, second_run) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{deployment_id}/run"),
+        None,
+    )
+    .await;
+    let second_session_id = second_run["session_id"]
+        .as_str()
+        .expect("D6 second Session");
+    let (_, second_session) = call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{second_session_id}"),
+        None,
+    )
+    .await;
+    assert_ne!(second_session_id, session_id, "D6 independent Sessions");
+    assert_eq!(
+        second_session["budget"]["max_list_cost"]["amount"], "500",
+        "D6/E6"
+    );
+    let (_, first_after_update) =
+        call(&app, "GET", &format!("/v1/sessions/{session_id}"), None).await;
+    assert_eq!(
+        first_after_update["budget"]["max_list_cost"]["amount"], "2000",
+        "D6/E6 old Session cap is immutable"
+    );
+    let (status, cleared) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{deployment_id}"),
+        Some(json!({"budget": null})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "D6 clear budget: {cleared}");
+    assert!(cleared["budget"].is_null(), "D6 clear projection");
+    let (_, third_run) = call(
+        &app,
+        "POST",
+        &format!("/v1/deployments/{deployment_id}/run"),
+        None,
+    )
+    .await;
+    let third_session_id = third_run["session_id"].as_str().expect("D6 third Session");
+    let (_, third_session) = call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{third_session_id}"),
+        None,
+    )
+    .await;
+    assert!(
+        third_session["budget"].is_null(),
+        "D6/E6 null affects future only"
+    );
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

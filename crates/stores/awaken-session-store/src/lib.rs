@@ -45,7 +45,7 @@ fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepository
     serde_json::to_string(session).map_err(corrupt)
 }
 
-fn lifecycle_str(fact: &ManagedLifecycleFact) -> String {
+pub(crate) fn lifecycle_str(fact: &ManagedLifecycleFact) -> String {
     serde_json::to_string(fact).expect("Managed lifecycle fact serializes")
 }
 

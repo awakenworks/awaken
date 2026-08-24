@@ -102,6 +102,13 @@ async fn make_deployment(app: &Router) -> String {
 
 #[tokio::test]
 async fn deployment_lifecycle_and_runs() {
+    // Lifecycle cause/effect graph: C1 active Deployment; C2 manually paused;
+    // C3 archived. Effects: E1 create/update commit; E2 C2 suppresses only
+    // scheduled triggers while manual run still creates a Session and preserves
+    // the manual pause reason; E3 unpause restores Active; E4 C3 is terminal.
+    // Constraint K1 manual and schedule triggers share the same launcher but
+    // only the scheduler consults Active. Rules L1=C1=>E1; L2=C2+manual=>E2;
+    // L3=C2+unpause=>E3; L4=C3=>E4.
     let app = app();
 
     // Create — agent string normalizes to a reference; status defaults active.
@@ -140,10 +147,20 @@ async fn deployment_lifecycle_and_runs() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(up["name"], "hourly");
 
-    // Pause → paused + manual reason; unpause → active + null.
+    // Pause suppresses future schedule occurrences, but not an explicit manual
+    // run. The Deployment remains paused after the manual run.
     let (_, paused) = call(&app, "POST", &format!("/v1/deployments/{id}/pause"), None).await;
     assert_eq!(paused["status"], "paused");
     assert_eq!(paused["paused_reason"]["type"], "manual");
+    let (s, paused_run) = call(&app, "POST", &format!("/v1/deployments/{id}/run"), None).await;
+    assert_eq!(s, StatusCode::OK, "L2/E2");
+    assert_eq!(paused_run["trigger_context"]["type"], "manual", "L2/E2");
+    assert!(paused_run["session_id"].is_string(), "L2/E2");
+    let (_, still_paused) = call(&app, "GET", &format!("/v1/deployments/{id}"), None).await;
+    assert_eq!(still_paused["status"], "paused", "L2/E2");
+    assert_eq!(still_paused["paused_reason"]["type"], "manual", "L2/E2");
+
+    // Unpause → active + null.
     let (_, unp) = call(&app, "POST", &format!("/v1/deployments/{id}/unpause"), None).await;
     assert_eq!(unp["status"], "active");
     assert!(unp["paused_reason"].is_null());
@@ -170,7 +187,7 @@ async fn deployment_lifecycle_and_runs() {
         None,
     )
     .await;
-    assert_eq!(runs["data"].as_array().unwrap().len(), 1);
+    assert_eq!(runs["data"].as_array().unwrap().len(), 2);
     // A filter that matches nothing yields an empty page.
     let (_, none) = call(
         &app,

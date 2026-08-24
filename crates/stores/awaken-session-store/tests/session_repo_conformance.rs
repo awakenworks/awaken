@@ -856,6 +856,7 @@ fn deployment_fact(id: &str) -> DeploymentLifecycleFact {
         workspace_id: Some("ws_a".into()),
         event_type: "deployment.updated".into(),
         timestamp: 1,
+        runtime_interval: None,
     }
 }
 
@@ -979,6 +980,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
         workspace_id: Some("ws_a".into()),
         event_type: "deployment_run.started".into(),
         timestamp: 1,
+        runtime_interval: None,
     };
     assert_eq!(
         repo.claim_scheduled_run("depl_cas:instant", 1, advanced.clone(), run, fact)
@@ -1011,6 +1013,7 @@ async fn deployment_cas_decision_table<R: DeploymentRepository + ManagedSessionR
                 workspace_id: Some("ws_a".into()),
                 event_type: "deployment_run.started".into(),
                 timestamp: 2,
+                runtime_interval: None,
             },
         )
         .await

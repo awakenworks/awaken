@@ -68,12 +68,23 @@ impl SharedHost {
         self.session_allows_agent_tool(thread, published_snapshot, "read")
     }
 
-    pub(super) fn select_content_delivery(
+    pub(crate) fn select_content_delivery(
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
         frozen_skill_versions: Option<&Vec<awaken_resource_contract::SkillVersion>>,
     ) -> Result<crate::session_slot::ManagedContentDelivery, HostError> {
+        // Content delivery belongs to the physical Session, not to each
+        // auxiliary/child Agent snapshot. Once the root projection chooses it,
+        // a restricted Outcome grader or delegate must reuse that immutable
+        // choice instead of trying to re-author the Session's mounts/tools.
+        if let Some(existing) = self
+            .session_slots
+            .read(thread, |slot| slot.content_delivery)
+            .flatten()
+        {
+            return Ok(existing);
+        }
         let delivery = if self.session_allows_filesystem_tools(thread, published_snapshot) {
             crate::session_slot::ManagedContentDelivery::ManagedFilesystem
         } else {
@@ -105,18 +116,6 @@ impl SharedHost {
                     "a selected Skill requires filesystem tools, but this Session disables every filesystem tool",
                 ));
             }
-        }
-        let conflicting = self
-            .session_slots
-            .read(thread, |slot| {
-                slot.content_delivery
-                    .is_some_and(|existing| existing != delivery)
-            })
-            .unwrap_or(false);
-        if conflicting {
-            return Err(HostError::bad_request(
-                "Session content delivery cannot change after its first runtime projection",
-            ));
         }
         self.session_slots
             .update(thread, |slot| slot.content_delivery = Some(delivery));

@@ -5,11 +5,11 @@
 //! multi-replica schedule claims explicit.
 
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
-
 mod model;
 mod schedule;
 
+/// Compatibility name for the one cross-aggregate lifecycle fact contract.
+pub use awaken_session_contract::ManagedLifecycleFact as DeploymentLifecycleFact;
 pub use model::{
     AgentSelector, CreateDeploymentCommand, DeploymentAgent, DeploymentLaunch,
     DeploymentLaunchOutcome, DeploymentOutcomeRubric, DeploymentPauseError, DeploymentPauseReason,
@@ -22,18 +22,6 @@ pub use schedule::Cron;
 
 /// Largest revision representable by every supported durable SQL adapter.
 pub const MAX_DEPLOYMENT_REVISION: u64 = i64::MAX as u64;
-
-/// Durable lifecycle fact committed atomically with one Deployment mutation.
-/// The public protocol may project it to a webhook, but the application owns
-/// the fact and never depends on a protocol-specific state object.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeploymentLifecycleFact {
-    pub id: String,
-    pub object_id: String,
-    pub workspace_id: Option<String>,
-    pub event_type: String,
-    pub timestamp: i64,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum DeploymentRepositoryError {

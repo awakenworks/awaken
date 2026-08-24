@@ -34,6 +34,29 @@ Your only task is to curate durable memories from the frozen inputs into the des
 8. Use narrow searches over JSONL when detailed evidence is needed; tool calls and tool results are retained in commit order.
 "#;
 
+// Anthropic intentionally does not publish the hosted Dream pipeline's input
+// byte ceiling. This is Awaken's private execution-policy value: the public
+// compatibility promise is the typed failure, not an asserted hosted number.
+const DREAM_INPUT_MEMORY_LIMIT_BYTES: usize = 10 * 1024 * 1024;
+
+fn validate_input_memory_size(files: &[Memory], limit: usize) -> Result<(), DreamFailure> {
+    let total = files.iter().try_fold(0_usize, |total, memory| {
+        let size = memory.content.as_deref().map_or(0, str::len);
+        total.checked_add(size)
+    });
+    if total.is_none_or(|total| total > limit) {
+        Err(DreamFailure::new(
+            "input_memory_store_too_large",
+            format!(
+                "input MemoryStore exceeds this Dream pipeline's {} byte limit",
+                limit
+            ),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) struct SessionTranscriptJsonlExporter;
 
 impl SessionTranscriptJsonlExporter {
@@ -395,6 +418,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                     DreamFailure::new("input_memory_store_unavailable", error.to_string())
                 })?,
         };
+        validate_input_memory_size(&snapshot.files, DREAM_INPUT_MEMORY_LIMIT_BYTES)?;
         for head in &snapshot.files {
             let content = head.content.as_deref().ok_or_else(|| {
                 DreamFailure::new(
@@ -616,6 +640,35 @@ mod tests {
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::{Id, Message, Role};
     use awaken_agent_contract::agent::run::Failure;
+
+    fn memory(path: &str, content: &str) -> Memory {
+        Memory {
+            id: format!("memory-{path}"),
+            path: path.into(),
+            content_sha256: "sha256:test".into(),
+            content_size: content.len() as u64,
+            version: 1,
+            created_unix_nanos: 1,
+            updated_unix_nanos: 1,
+            content: Some(content.into()),
+        }
+    }
+
+    #[test]
+    fn dream_input_memory_limit_maps_the_exact_pipeline_error() {
+        // Input-size cause/effect graph: C1 total UTF-8 content is at the
+        // private pipeline limit; C2 it exceeds the limit across multiple
+        // otherwise-valid memories; C3 arithmetic would overflow. Effects: E1
+        // C1 is accepted; E2 C2/C3 fail before snapshot/result/session writes
+        // with `input_memory_store_too_large`. Constraint K1 individual memory
+        // limits remain owned by MemoryRepository and this aggregate check owns
+        // only Dream admission. Rules S1=C1=>E1; S2=C2=>E2 (checked addition
+        // makes C3 share E2 without a wrapping alternative).
+        let at_limit = vec![memory("/a", "abc"), memory("/b", "de")];
+        assert!(validate_input_memory_size(&at_limit, 5).is_ok(), "S1/E1");
+        let error = validate_input_memory_size(&at_limit, 4).expect_err("S2/E2");
+        assert_eq!(error.kind, "input_memory_store_too_large", "S2/E2");
+    }
 
     #[test]
     fn jsonl_export_preserves_every_committed_message_and_tool_payload_in_order() {
