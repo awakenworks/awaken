@@ -3,10 +3,13 @@
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::stream::sink::Sink;
+use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError, SessionExecutionState,
-    SessionRuntimeInterval, StepOutcome,
+    SessionRuntimeInterval, SessionRuntimeIntervalObservation, StepOutcome,
 };
 
 use super::{
@@ -237,20 +240,51 @@ impl SessionApplication {
         activity_epoch: u64,
         step: Result<StepOutcome, RunError>,
     ) -> Result<SessionMessageOutcome, RunError> {
-        let budget = match self.session_usage(session_id).await {
-            Ok(usage) => self
-                .reconcile_managed_budget_usage(session_id, usage)
-                .await
-                .map(|outcome| outcome.session)
-                .map_err(|error| RunError::unavailable(error.to_string())),
-            Err(error) => Err(error),
+        // Causes: C1 Runtime Step succeeds/fails; C2 cumulative usage read and
+        // root reconciliation succeed/fail; C3 exact lifecycle observation is
+        // present/absent; C4 activity is/is not the last overlapping epoch.
+        // Effects: E1 usage failure retains Running for exact retry; E2 a failed
+        // Step with readable usage still settles; E3 an observed boundary is
+        // retained before epoch removal; E4 only the last epoch closes one
+        // interval. Rules: R1=C2 fail=>E1; R2=C1 fail+C2 ok=>E2;
+        // R3=C1 ok+C2 ok+C3 present=>E3; R4=C4 false/true=>retain/E4.
+        // Constraint: usage and interval history commit only through root CAS.
+        let usage = self.session_usage(session_id).await?;
+        let _usage_projection = self
+            .reconcile_managed_budget_usage(session_id, usage)
+            .await
+            .map_err(|error| RunError::unavailable(error.to_string()))?;
+        let observation = match step.as_ref().ok().and_then(StepOutcome::run_id) {
+            Some(run_id) => self
+                .runtime_interval_observation(
+                    session_id,
+                    activity_epoch,
+                    &ThreadId(session_id.to_string()),
+                    run_id,
+                    step.as_ref().expect("successful Step was matched").state(),
+                    None,
+                )
+                .await?
+                .ok_or_else(|| {
+                    RunError::unavailable(
+                        "committed Run boundary is not yet visible in the lifecycle feed",
+                    )
+                })?,
+            None => {
+                let settled = self
+                    .settle_activity(session_id, activity_epoch)
+                    .await
+                    .map_err(SessionActivityError::run_error);
+                let step = step?;
+                let session = settled?;
+                return Ok(SessionMessageOutcome { step, session });
+            }
         };
         let settled = self
-            .settle_activity(session_id, activity_epoch)
+            .settle_activity_observed(session_id, activity_epoch, Some(observation))
             .await
             .map_err(SessionActivityError::run_error);
         let step = step?;
-        budget?;
         let session = settled?;
         Ok(SessionMessageOutcome { step, session })
     }
@@ -528,6 +562,20 @@ impl SessionApplication {
         session_id: &str,
         expected_epoch: u64,
     ) -> Result<PersistedSession, SessionActivityError> {
+        self.settle_activity_observed(session_id, expected_epoch, None)
+            .await
+    }
+
+    /// Settle one admitted activity while retaining the exact Runtime commit
+    /// boundary that caused it. Infrastructure-only and definitively rejected
+    /// activities carry no observation; they still close through this same root
+    /// CAS and never create a protocol-side lifecycle owner.
+    pub async fn settle_activity_observed(
+        &self,
+        session_id: &str,
+        expected_epoch: u64,
+        observation: Option<SessionRuntimeIntervalObservation>,
+    ) -> Result<PersistedSession, SessionActivityError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner_scope = self
                 .owner(session_id)
@@ -541,6 +589,46 @@ impl SessionApplication {
                 .map_err(SessionActivityError::mutation)?;
             if session.is_terminal() {
                 return Ok(session);
+            }
+            if let Some(observation) = observation.clone() {
+                if session.closed_runtime_intervals.iter().any(|interval| {
+                    interval
+                        .observations
+                        .iter()
+                        .any(|existing| existing == &observation)
+                }) {
+                    return Ok(session);
+                }
+                if session.closed_runtime_intervals.iter().any(|interval| {
+                    interval.observations.iter().any(|existing| {
+                        existing.activity_epoch == expected_epoch && existing != &observation
+                    })
+                }) {
+                    return Err(SessionActivityError::Unavailable(
+                        "Session activity epoch was reused with another Runtime boundary".into(),
+                    ));
+                }
+                // Older rows may have settled before exact observation
+                // provenance existed. Keep that replay a no-op and never attach
+                // its late boundary to a successor interval.
+                if !session.active_activity_epochs.contains(&expected_epoch)
+                    && !(session.active_activity_epochs.is_empty()
+                        && session.execution == SessionExecutionState::Running
+                        && session.activity_epoch == expected_epoch)
+                {
+                    return Ok(session);
+                }
+                let exact_replay = session.running_interval.as_ref().is_some_and(|interval| {
+                    interval
+                        .observations
+                        .iter()
+                        .any(|existing| existing == &observation)
+                });
+                if !exact_replay && !session.observe_runtime_interval(observation) {
+                    return Err(SessionActivityError::Unavailable(
+                        "Runtime boundary does not belong to the active Session interval".into(),
+                    ));
+                }
             }
             let Some(last_active) = session.settle_activity_epoch(expected_epoch) else {
                 return Ok(session);
@@ -584,5 +672,123 @@ impl SessionApplication {
             }
         }
         Err(SessionActivityError::Conflict)
+    }
+
+    /// Retain a child or intermediate Runtime boundary without settling the
+    /// shared activity epoch. A child-to-primary report continuation uses this
+    /// path so the final interval carries both exact commit coordinates.
+    pub(crate) async fn observe_activity_runtime_boundary(
+        &self,
+        session_id: &str,
+        observation: SessionRuntimeIntervalObservation,
+    ) -> Result<PersistedSession, SessionActivityError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner_scope = self
+                .owner(session_id)
+                .await
+                .map_err(SessionActivityError::mutation)?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_failure)
+                .map_err(SessionActivityError::mutation)?;
+            if session.is_terminal()
+                || session.closed_runtime_intervals.iter().any(|interval| {
+                    interval
+                        .observations
+                        .iter()
+                        .any(|existing| existing == &observation)
+                })
+                || session.running_interval.as_ref().is_some_and(|interval| {
+                    interval
+                        .observations
+                        .iter()
+                        .any(|existing| existing == &observation)
+                })
+            {
+                return Ok(session);
+            }
+            if session.closed_runtime_intervals.iter().any(|interval| {
+                interval.observations.iter().any(|existing| {
+                    existing.activity_epoch == observation.activity_epoch
+                        && existing != &observation
+                })
+            }) {
+                return Err(SessionActivityError::Unavailable(
+                    "Session activity epoch was reused with another Runtime boundary".into(),
+                ));
+            }
+            if !session.observe_runtime_interval(observation.clone()) {
+                return Err(SessionActivityError::Unavailable(
+                    "Runtime boundary does not belong to the active Session interval".into(),
+                ));
+            }
+            match self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    session,
+                    "observe-runtime-boundary",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(session) => return Ok(session),
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(error) => return Err(SessionActivityError::mutation(error)),
+            }
+        }
+        Err(SessionActivityError::Conflict)
+    }
+
+    /// Resolve one exact terminal Runtime lifecycle coordinate from the existing
+    /// committed feed. `source_commit_fence` is the recovery snapshot boundary
+    /// used for child settlement; direct steps select the latest matching commit
+    /// observed after their synchronous Runtime result.
+    pub(crate) async fn runtime_interval_observation(
+        &self,
+        session_id: &str,
+        activity_epoch: u64,
+        thread_id: &ThreadId,
+        run_id: &RunId,
+        state: &RunState,
+        source_commit_fence: Option<u64>,
+    ) -> Result<Option<SessionRuntimeIntervalObservation>, RunError> {
+        const PAGE_SIZE: usize = 256;
+        let mut cursor = RunLifecycleCursor::default();
+        let mut selected = None;
+        loop {
+            let page = self
+                .committed_run_lifecycle(session_id, cursor, PAGE_SIZE)
+                .await?;
+            let count = page.events.len();
+            for event in page.events {
+                if &event.thread_id == thread_id
+                    && &event.run_id == run_id
+                    && &event.state == state
+                    && matches!(
+                        event.kind,
+                        RunLifecycleEventKind::Awaiting
+                            | RunLifecycleEventKind::Completed
+                            | RunLifecycleEventKind::Failed
+                            | RunLifecycleEventKind::Cancelled
+                    )
+                    && source_commit_fence.is_none_or(|fence| event.source_commit_cursor <= fence)
+                {
+                    selected = Some(SessionRuntimeIntervalObservation {
+                        activity_epoch,
+                        thread_id: event.thread_id,
+                        run_id: event.run_id,
+                        lifecycle_cursor: event.cursor,
+                        source_commit_cursor: event.source_commit_cursor,
+                    });
+                }
+            }
+            if page.next_cursor == cursor || count < PAGE_SIZE {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        Ok(selected)
     }
 }

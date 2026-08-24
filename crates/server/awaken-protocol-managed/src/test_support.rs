@@ -2,7 +2,6 @@
 
 use std::sync::Arc;
 
-use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_environment_execution_application::{
     CoordinatorEnvironmentRegistrar, EnvironmentExecutionApplication,
 };
@@ -63,8 +62,11 @@ pub struct CoordinatedRuntimeFake {
     >,
     root_messages:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_agent_contract::agent::message::Message>>>,
+    root_message_cursors: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
     child_messages:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_agent_contract::agent::message::Message>>>,
+    child_message_cursors: std::sync::Arc<std::sync::Mutex<Vec<u64>>>,
+    coordination_operation_id: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     lifecycle: std::sync::Arc<std::sync::Mutex<Vec<awaken_agent_contract::RunLifecycleEvent>>>,
     interrupts: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     rejected_interrupt: std::sync::Arc<std::sync::Mutex<Option<String>>>,
@@ -73,6 +75,8 @@ pub struct CoordinatedRuntimeFake {
             std::collections::HashMap<(String, String), awaken_agent_contract::ThreadDisposition>,
         >,
     >,
+    disposition_commit_cursors:
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<(String, String), u64>>>,
     archive_commits: std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>,
     reject_archive: std::sync::Arc<std::sync::atomic::AtomicBool>,
     defer_child_completion: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -114,11 +118,15 @@ impl Default for CoordinatedRuntimeFake {
             reserved_user_runs: Default::default(),
             user_run_states: Default::default(),
             root_messages: Default::default(),
+            root_message_cursors: Default::default(),
             child_messages: Default::default(),
+            child_message_cursors: Default::default(),
+            coordination_operation_id: Default::default(),
             lifecycle: Default::default(),
             interrupts: Default::default(),
             rejected_interrupt: Default::default(),
             disposition_by_thread: Default::default(),
+            disposition_commit_cursors: Default::default(),
             archive_commits: Default::default(),
             reject_archive: Default::default(),
             defer_child_completion: Default::default(),
@@ -277,7 +285,11 @@ impl CoordinatedRuntimeFake {
         use awaken_agent_contract::agent::content::ContentBlock;
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         let (run_id, step) = self.current_child_response();
-        self.child_messages.lock().unwrap().push(Message::new(
+        let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
+        let source_commit_cursor = run_ordinal.saturating_sub(1) * 4 + 3;
+        let mut messages = self.child_messages.lock().unwrap();
+        let mut cursors = self.child_message_cursors.lock().unwrap();
+        messages.push(Message::new(
             MessageId::assistant(&run_id, step),
             Role::Assistant,
             vec![
@@ -289,19 +301,25 @@ impl CoordinatedRuntimeFake {
                 ),
             ],
         ));
+        cursors.push(source_commit_cursor);
     }
 
     pub fn complete_deferred_child(&self, text: &str) {
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         use awaken_agent_contract::agent::run::{EndCause, RunState};
         let run_ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst);
-        let base = (run_ordinal - 1) * 4;
+        let base = run_ordinal.saturating_sub(1) * 4;
         let (run_id, step) = self.current_child_response();
-        self.child_messages.lock().unwrap().push(Message::text(
-            MessageId::assistant(&run_id, step),
-            Role::Assistant,
-            text,
-        ));
+        {
+            let mut messages = self.child_messages.lock().unwrap();
+            let mut cursors = self.child_message_cursors.lock().unwrap();
+            messages.push(Message::text(
+                MessageId::assistant(&run_id, step),
+                Role::Assistant,
+                text,
+            ));
+            cursors.push(base + 4);
+        }
         self.lifecycle
             .lock()
             .unwrap()
@@ -383,21 +401,27 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         }
 
         use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
-        if let Some(system) = &command.accompanying_system {
-            self.root_messages.lock().unwrap().push(Message::new(
-                MessageId::session_system(&command.session_id, &system.operation_id),
-                Role::System,
-                system.content.clone(),
-            ));
-        }
-        self.root_messages.lock().unwrap().push(Message::new(
-            MessageId::session_event_input(&command.session_id, &command.operation_id),
-            Role::User,
-            command.content.clone(),
-        ));
-
         let ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst) + 1;
         let base = (ordinal - 1) * 4;
+        {
+            let mut messages = self.root_messages.lock().unwrap();
+            let mut cursors = self.root_message_cursors.lock().unwrap();
+            if let Some(system) = &command.accompanying_system {
+                messages.push(Message::new(
+                    MessageId::session_system(&command.session_id, &system.operation_id),
+                    Role::System,
+                    system.content.clone(),
+                ));
+                cursors.push(base + 1);
+            }
+            messages.push(Message::new(
+                MessageId::session_event_input(&command.session_id, &command.operation_id),
+                Role::User,
+                command.content.clone(),
+            ));
+            cursors.push(base + 1);
+        }
+
         self.lifecycle
             .lock()
             .unwrap()
@@ -457,7 +481,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
     async fn run(
         &self,
         _agent: &str,
-        _thread: &str,
+        thread: &str,
         _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
     ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
         use awaken_agent_contract::agent::content::ContentBlock;
@@ -465,6 +489,28 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
 
         let run_ordinal = self.runs.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let base = (run_ordinal - 1) * 4;
+        let (root_run_id, synthetic_root_lifecycle) = {
+            let mut lifecycle = self.lifecycle.lock().unwrap();
+            if let Some(root) = lifecycle
+                .iter()
+                .find(|event| event.thread_id.0 == thread && event.source_commit_cursor == base + 1)
+            {
+                (root.run_id.clone(), false)
+            } else {
+                let root_run_id = RunId(format!("coord-root-{run_ordinal}"));
+                lifecycle.push(awaken_agent_contract::RunLifecycleEvent {
+                    cursor: awaken_agent_contract::RunLifecycleCursor(base + 1),
+                    source_commit_cursor: base + 1,
+                    thread_id: awaken_agent_contract::agent::thread::Id(thread.into()),
+                    run_id: root_run_id.clone(),
+                    kind: awaken_agent_contract::RunLifecycleEventKind::Running,
+                    state: RunState::Running,
+                    await_reason: None,
+                });
+                (root_run_id, true)
+            }
+        };
         let call_id = format!("send-{run_ordinal}");
         let target = if run_ordinal == 1 {
             serde_json::json!({"agent_id":"researcher","message":"find the docs"})
@@ -476,7 +522,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         };
         let delta = vec![
             Message::new(
-                MessageId(format!("root-assistant-{run_ordinal}")),
+                MessageId::assistant(&root_run_id, 0),
                 Role::Assistant,
                 vec![
                     ContentBlock::text(format!("coordinating {run_ordinal}")),
@@ -488,18 +534,26 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                 ],
             ),
             Message::new(
-                MessageId(format!("root-result-{run_ordinal}")),
+                MessageId::tool_result(&call_id),
                 Role::Tool,
                 vec![ContentBlock::ToolResult {
-                    tool_use_id: call_id,
+                    tool_use_id: call_id.clone(),
                     content: vec![Self::receipt()],
                     is_error: false,
                 }],
             ),
         ];
-        self.root_messages.lock().unwrap().extend(delta.clone());
+        {
+            let mut messages = self.root_messages.lock().unwrap();
+            let mut cursors = self.root_message_cursors.lock().unwrap();
+            messages.extend(delta.clone());
+            cursors.extend([base + 1, base + 1]);
+        }
+        self.coordination_operation_id
+            .lock()
+            .unwrap()
+            .get_or_insert_with(|| ToolBatch::operation_id_for_step(&root_run_id, 0, &call_id));
         let run_id = RunId(format!("coord-run-{run_ordinal}"));
-        let base = (run_ordinal - 1) * 4;
         let running = awaken_agent_contract::RunLifecycleEvent {
             cursor: awaken_agent_contract::RunLifecycleCursor(base + 2),
             source_commit_cursor: base + 2,
@@ -514,21 +568,26 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .defer_child_completion
             .load(std::sync::atomic::Ordering::SeqCst)
         {
-            self.child_messages.lock().unwrap().push(Message::new(
-                MessageId::assistant(&run_id, 0),
-                Role::Assistant,
-                vec![
-                    // DeepSeek and other reasoning providers commit this alongside
-                    // the public answer. Managed message projection must retain it
-                    // in Thread truth without leaking it into a cross-Thread wire.
-                    ContentBlock::thinking("private child reasoning"),
-                    ContentBlock::text(if run_ordinal == 1 {
-                        "here are the docs"
-                    } else {
-                        "the docs are verified"
-                    }),
-                ],
-            ));
+            {
+                let mut messages = self.child_messages.lock().unwrap();
+                let mut cursors = self.child_message_cursors.lock().unwrap();
+                messages.push(Message::new(
+                    MessageId::assistant(&run_id, 0),
+                    Role::Assistant,
+                    vec![
+                        // DeepSeek and other reasoning providers commit this alongside
+                        // the public answer. Managed message projection must retain it
+                        // in Thread truth without leaking it into a cross-Thread wire.
+                        ContentBlock::thinking("private child reasoning"),
+                        ContentBlock::text(if run_ordinal == 1 {
+                            "here are the docs"
+                        } else {
+                            "the docs are verified"
+                        }),
+                    ],
+                ));
+                cursors.push(base + 3);
+            }
             self.lifecycle
                 .lock()
                 .unwrap()
@@ -539,6 +598,28 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                         Self::CHILD_THREAD_ID.into(),
                     ),
                     run_id,
+                    kind: awaken_agent_contract::RunLifecycleEventKind::Completed,
+                    state: RunState::Ended(EndCause::NaturalEnd),
+                    await_reason: None,
+                });
+        }
+        if synthetic_root_lifecycle {
+            let root_terminal_cursor = if self
+                .defer_child_completion
+                .load(std::sync::atomic::Ordering::SeqCst)
+            {
+                base + 3
+            } else {
+                base + 4
+            };
+            self.lifecycle
+                .lock()
+                .unwrap()
+                .push(awaken_agent_contract::RunLifecycleEvent {
+                    cursor: awaken_agent_contract::RunLifecycleCursor(root_terminal_cursor),
+                    source_commit_cursor: root_terminal_cursor,
+                    thread_id: awaken_agent_contract::agent::thread::Id(thread.into()),
+                    run_id: root_run_id,
                     kind: awaken_agent_contract::RunLifecycleEventKind::Completed,
                     state: RunState::Ended(EndCause::NaturalEnd),
                     await_reason: None,
@@ -627,13 +708,24 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         if run_count == 0 {
             return Ok(None);
         }
-        let messages = if thread_id == session_id {
-            self.root_messages.lock().unwrap().clone()
+        // Recovery-fixture decision table: C1 a Thread has committed Messages,
+        // C2 it has an Archived state command. E1 every Message has its exact
+        // same-index commit coordinate; E2 the state command has its recorded
+        // archive coordinate; E3 the snapshot high-water covers both. Empty
+        // vectors remain aligned by construction. These are projections of this
+        // fake's one commit path, never fallback coordinates minted at read time.
+        let (messages, message_commit_cursors) = if thread_id == session_id {
+            let messages = self.root_messages.lock().unwrap();
+            let cursors = self.root_message_cursors.lock().unwrap();
+            (messages.clone(), cursors.clone())
         } else if thread_id == Self::CHILD_THREAD_ID {
-            self.child_messages.lock().unwrap().clone()
+            let messages = self.child_messages.lock().unwrap();
+            let cursors = self.child_message_cursors.lock().unwrap();
+            (messages.clone(), cursors.clone())
         } else {
             return Ok(None);
         };
+        debug_assert_eq!(messages.len(), message_commit_cursors.len());
         let lifecycle = self.lifecycle.lock().unwrap();
         let thread_lifecycle = lifecycle
             .iter()
@@ -655,17 +747,33 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                 });
             }
         }
-        let state = if self
-            .disposition_by_thread
-            .lock()
-            .unwrap()
-            .get(&(session_id.to_string(), thread_id.to_string()))
-            == Some(&awaken_agent_contract::ThreadDisposition::Archived)
-        {
-            vec![awaken_agent_contract::archive_thread_command()]
-        } else {
-            Vec::new()
+        let disposition_key = (session_id.to_string(), thread_id.to_string());
+        let (state, state_commit_cursors) = {
+            let dispositions = self.disposition_by_thread.lock().unwrap();
+            let cursors = self.disposition_commit_cursors.lock().unwrap();
+            if dispositions.get(&disposition_key)
+                == Some(&awaken_agent_contract::ThreadDisposition::Archived)
+            {
+                (
+                    vec![awaken_agent_contract::archive_thread_command()],
+                    cursors
+                        .get(&disposition_key)
+                        .copied()
+                        .into_iter()
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                (Vec::new(), Vec::new())
+            }
         };
+        debug_assert_eq!(state.len(), state_commit_cursors.len());
+        let store_cursor = lifecycle
+            .iter()
+            .map(|event| event.source_commit_cursor)
+            .chain(message_commit_cursors.iter().copied())
+            .chain(state_commit_cursors.iter().copied())
+            .max()
+            .unwrap_or_default();
         Ok(Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
@@ -673,15 +781,13 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                 runs,
                 latest_run_id: Some(run_id),
                 messages,
+                message_commit_cursors,
                 state,
+                state_commit_cursors,
                 events: Vec::new(),
                 resume_tickets: Vec::new(),
                 thread_version: lifecycle.len() as u64,
-                store_cursor: lifecycle
-                    .iter()
-                    .map(|event| event.source_commit_cursor)
-                    .max()
-                    .unwrap_or_default(),
+                store_cursor,
                 next_commit_ordinal: 0,
             },
         ))
@@ -716,22 +822,23 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         awaken_session_contract::RunError,
     > {
         let run_count = self.runs.load(std::sync::atomic::Ordering::SeqCst);
-        Ok((run_count > 0)
-            .then(|| awaken_session_contract::CoordinatedThreadLink {
-                session_id: session_id.into(),
-                thread_id: awaken_agent_contract::agent::thread::Id(Self::CHILD_THREAD_ID.into()),
-                target: awaken_session_contract::CoordinatedThreadTarget::Agent {
-                    agent_id: "researcher".into(),
+        let operation_id = self.coordination_operation_id.lock().unwrap().clone();
+        Ok(operation_id
+            .map(
+                |created_by_operation_id| awaken_session_contract::CoordinatedThreadLink {
+                    session_id: session_id.into(),
+                    thread_id: awaken_agent_contract::agent::thread::Id(
+                        Self::CHILD_THREAD_ID.into(),
+                    ),
+                    target: awaken_session_contract::CoordinatedThreadTarget::Agent {
+                        agent_id: "researcher".into(),
+                    },
+                    created_by_operation_id,
+                    latest_run_id: Some(awaken_agent_contract::agent::run::Id(format!(
+                        "coord-run-{run_count}"
+                    ))),
                 },
-                created_by_operation_id: ToolBatch::operation_id_for_step(
-                    &RunId("root".into()),
-                    0,
-                    "send-1",
-                ),
-                latest_run_id: Some(awaken_agent_contract::agent::run::Id(format!(
-                    "coord-run-{run_count}"
-                ))),
-            })
+            )
             .into_iter()
             .collect())
     }
@@ -782,12 +889,59 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             ));
         }
         let key = (session_id.to_string(), thread_id.to_string());
+        let lifecycle_cursor = self
+            .lifecycle
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.source_commit_cursor)
+            .max()
+            .unwrap_or_default();
+        let root_message_cursor = self
+            .root_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let child_message_cursor = self
+            .child_message_cursors
+            .lock()
+            .unwrap()
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let disposition_cursor = self
+            .disposition_commit_cursors
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .max()
+            .unwrap_or_default();
+        let source_commit_cursor = [
+            lifecycle_cursor,
+            root_message_cursor,
+            child_message_cursor,
+            disposition_cursor,
+        ]
+        .into_iter()
+        .max()
+        .unwrap_or_default()
+        .checked_add(1)
+        .ok_or_else(|| {
+            awaken_session_contract::RunError::internal("test disposition commit cursor exhausted")
+        })?;
         let mut dispositions = self.disposition_by_thread.lock().unwrap();
+        let mut disposition_cursors = self.disposition_commit_cursors.lock().unwrap();
         if dispositions.get(&key) != Some(&awaken_agent_contract::ThreadDisposition::Archived) {
             dispositions.insert(
                 key.clone(),
                 awaken_agent_contract::ThreadDisposition::Archived,
             );
+            disposition_cursors.insert(key.clone(), source_commit_cursor);
             self.archive_commits.lock().unwrap().push(key);
         }
         Ok(())

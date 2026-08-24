@@ -283,7 +283,11 @@ pub trait EnvironmentImageBuilder: Send + Sync {
         demand: &EnvironmentImageBuildDemand,
     ) -> Result<String, EnvironmentImageBuildError>;
 
-    async fn available(&self, image: &str) -> Result<bool, EnvironmentImageBuildError>;
+    async fn available(
+        &self,
+        demand: &EnvironmentImageBuildDemand,
+        image: &str,
+    ) -> Result<bool, EnvironmentImageBuildError>;
 }
 
 #[async_trait]

@@ -2,9 +2,11 @@ pub mod awaken_store_inmem
 pub struct awaken_store_inmem::CommittedThread
 pub awaken_store_inmem::CommittedThread::events: alloc::vec::Vec<awaken_agent_contract::audit::record::Record>
 pub awaken_store_inmem::CommittedThread::latest_run: core::option::Option<awaken_agent_contract::agent::run::Record>
+pub awaken_store_inmem::CommittedThread::message_commit_cursors: alloc::vec::Vec<u64>
 pub awaken_store_inmem::CommittedThread::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_store_inmem::CommittedThread::run_facts: alloc::vec::Vec<awaken_agent_contract::thread::commit::run_fact::RunFact>
 pub awaken_store_inmem::CommittedThread::state: alloc::vec::Vec<awaken_agent_contract::agent::state::Command>
+pub awaken_store_inmem::CommittedThread::state_commit_cursors: alloc::vec::Vec<u64>
 pub awaken_store_inmem::CommittedThread::thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub struct awaken_store_inmem::MemoryCommitCoordinator
 impl awaken_store_inmem::MemoryCommitCoordinator

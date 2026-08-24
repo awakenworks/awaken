@@ -148,9 +148,23 @@ pub fn build_outcome_matrix_router() -> Router {
 /// `AWAKEN_MODEL_MODE=memory`; the caller must create and attach a governed
 /// MemoryStore resource to each participating Session.
 pub fn build_memory_router() -> Router {
+    build_memory_service().0
+}
+
+/// The Memory Scenario's one mounted Router and outer-owned service lifecycle.
+/// The process entrypoint retains the lifecycle so graceful shutdown drains the
+/// exact auxiliary Runtime work whose spans and durable effects it serves.
+pub fn build_memory_service() -> (Router, awaken_service_lifecycle::ServiceLifecycle) {
     let (model, model_ref) = scenario_model(Arc::new(MemoryProbeModel), "memory");
     let host = resource_host(model, model_ref);
-    mount_with_memory_publication(host, "memory", Vec::new())
+    let lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let router = scenario_platform::mount_with_memory_publication_on_lifecycle(
+        host,
+        "memory",
+        Vec::new(),
+        lifecycle.clone(),
+    );
+    (router, lifecycle)
 }
 
 /// A router for the memory_store RESOURCE durability e2e (ADR-0038 MemoryStore

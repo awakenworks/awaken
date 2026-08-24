@@ -1209,7 +1209,11 @@ impl SessionApplication {
                             .map(|thread| thread.0),
                     );
                 intent_changed = session
-                    .freeze_terminal_cleanup_targets(thread_ids, snapshot.watermark)
+                    .freeze_terminal_cleanup_targets(
+                        thread_ids,
+                        snapshot.watermark,
+                        snapshot.runtime_commit_cursor,
+                    )
                     .map_err(internal)?;
             }
             if intent_changed {
@@ -1311,6 +1315,13 @@ impl SessionApplication {
                 .map_err(mutation_failure)?;
         }
         if session.is_hidden() {
+            if session.has_incomplete_event_batches() {
+                // The canonical Event-batch supervisor must first preserve and
+                // resolve every accepted receipt under the same root CAS. A
+                // compact tombstone cannot carry that provenance and resource
+                // reconciliation never executes or cancels those commands.
+                return Ok(Some(session));
+            }
             self.commit_delete_tombstone(owner_scope, &session)
                 .await
                 .map_err(mutation_failure)?;

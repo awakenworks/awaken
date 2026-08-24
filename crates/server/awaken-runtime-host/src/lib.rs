@@ -1503,7 +1503,7 @@ impl SessionRuntime for ManagedHost {
         description: &str,
         rubric: &str,
         max_iterations: u32,
-    ) -> Result<(), RunError> {
+    ) -> Result<u64, RunError> {
         managed_outcome::prepare(
             &self.host,
             thread,
@@ -1825,6 +1825,29 @@ impl SessionRuntime for ManagedHost {
             )
             .await
             .map_err(to_run_error)
+    }
+
+    async fn session_thread_run_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        let snapshot = self
+            .host
+            .session_thread_run_recovery_snapshot(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+                run_id,
+            )
+            .await
+            .map_err(to_run_error)?;
+        Ok(snapshot
+            .runs
+            .iter()
+            .any(|run| &run.id == run_id)
+            .then_some(snapshot))
     }
 
     async fn session_thread_usage(

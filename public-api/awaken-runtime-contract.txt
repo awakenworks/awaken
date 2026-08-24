@@ -245,6 +245,7 @@ pub struct awaken_runtime_contract::compaction::RunCompactionMarker
 impl awaken_runtime_contract::compaction::RunCompactionMarker
 pub fn awaken_runtime_contract::compaction::RunCompactionMarker::command(&str) -> awaken_agent_contract::agent::state::Command
 pub fn awaken_runtime_contract::compaction::RunCompactionMarker::is_recorded(&[awaken_agent_contract::agent::state::Command], &str) -> bool
+pub fn awaken_runtime_contract::compaction::RunCompactionMarker::recorded_commit_cursor(&[awaken_agent_contract::agent::state::Command], &[u64], &str) -> core::option::Option<u64>
 pub mod awaken_runtime_contract::control
 pub enum awaken_runtime_contract::control::Error
 pub awaken_runtime_contract::control::Error::NotActive

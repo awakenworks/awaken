@@ -551,8 +551,10 @@ impl RunRecoverySource for SqliteCommitCoordinator {
             }
         }
 
-        let messages = read_thread_json_rows::<Message>(&tx, "message", thread_id)?;
-        let state = read_thread_json_rows::<StateCommand>(&tx, "state_command", thread_id)?;
+        let (message_commit_cursors, messages) =
+            read_thread_json_rows_with_commit::<Message>(&tx, "message", thread_id)?;
+        let (state_commit_cursors, state) =
+            read_thread_json_rows_with_commit::<StateCommand>(&tx, "state_command", thread_id)?;
         let mut events = Vec::new();
         {
             let mut statement = tx
@@ -615,7 +617,9 @@ impl RunRecoverySource for SqliteCommitCoordinator {
             runs,
             latest_run_id,
             messages,
+            message_commit_cursors,
             state,
+            state_commit_cursors,
             events,
             resume_tickets,
             thread_version: StoredU64::try_from(thread_version)
@@ -631,27 +635,36 @@ impl RunRecoverySource for SqliteCommitCoordinator {
     }
 }
 
-fn read_thread_json_rows<T>(
+fn read_thread_json_rows_with_commit<T>(
     tx: &rusqlite::Transaction<'_>,
     table: &str,
     thread_id: &ThreadId,
-) -> Result<Vec<T>, RecoveryError>
+) -> Result<(Vec<u64>, Vec<T>), RecoveryError>
 where
     T: serde::de::DeserializeOwned,
 {
     let mut statement = tx
         .prepare(&format!(
-            "SELECT data FROM {NS}_{table} WHERE thread_id = ?1 ORDER BY id"
+            "SELECT commit_sequence, data FROM {NS}_{table} WHERE thread_id = ?1 ORDER BY id"
         ))
         .map_err(recovery_reject)?;
     let rows = statement
-        .query_map(params![&thread_id.0], |row| row.get::<_, String>(0))
+        .query_map(params![&thread_id.0], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
         .map_err(recovery_reject)?;
-    rows.map(|row| {
-        row.map_err(recovery_reject)
-            .and_then(|data| serde_json::from_str(&data).map_err(recovery_reject))
-    })
-    .collect()
+    let mut cursors = Vec::new();
+    let mut values = Vec::new();
+    for row in rows {
+        let (cursor, value) = row.map_err(recovery_reject)?;
+        cursors.push(
+            StoredU64::try_from(cursor)
+                .map(StoredU64::domain_value)
+                .map_err(recovery_reject)?,
+        );
+        values.push(serde_json::from_str(&value).map_err(recovery_reject)?);
+    }
+    Ok((cursors, values))
 }
 
 fn recovery_reject(error: impl ToString) -> RecoveryError {

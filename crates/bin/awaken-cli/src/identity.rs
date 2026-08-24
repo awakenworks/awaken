@@ -186,9 +186,20 @@ impl DesktopCloudLogin {
             .operation
             .lock()
             .map_err(|_| "Awaken Cloud credential operation is unavailable".to_owned())?;
-        self.oauth
-            .cached_credential()
-            .map_err(|error| format!("Awaken Cloud credential refresh failed: {error}"))
+        if let Some(credential) = self.cache.load(&self.issuer) {
+            return Ok(Some(credential));
+        }
+        // IAM owns refresh semantics, but its desktop client is deliberately
+        // blocking. Keep a stale-cache refresh off every Tokio request worker
+        // that consumes the synchronous Cloud token-source contract.
+        let oauth = self.oauth.clone();
+        std::thread::spawn(move || {
+            oauth
+                .cached_credential()
+                .map_err(|error| format!("Awaken Cloud credential refresh failed: {error}"))
+        })
+        .join()
+        .map_err(|_| "Awaken Cloud credential refresh thread panicked".to_owned())?
     }
 
     fn observed_status(&self) -> awaken_admin_config_api::CloudLoginStatusView {
@@ -333,7 +344,9 @@ fn awaken_cloud_authz(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_iam_client::{CachedCredential, CredentialCache, RedactedString as IamSecret};
+    use awaken_iam_client::{
+        CachedCredential, CachedOAuthGrant, CredentialCache, RedactedString as IamSecret,
+    };
     use awaken_iam_contract::{AccountId as IamAccountId, PrincipalRef};
 
     fn cloud_config() -> config::CloudIamConfig {
@@ -457,6 +470,69 @@ mod tests {
                 "C2"
             );
         });
+    }
+
+    /// Runtime refresh cause/effect decision table:
+    ///
+    /// | cache entry | OAuth owner | call context | effect |
+    /// | live | any | Tokio | return through the cache fast path; no refresh |
+    /// | expired | another/none | Tokio | IAM returns interaction-required; no refresh |
+    /// | expired | matching | current-thread Tokio | run IAM refresh off-worker and return its typed result |
+    ///
+    /// R3 is the regression row here: the fixture closes the one discovery
+    /// connection so refresh must return a transport error without unwinding
+    /// the async runtime. IAM remains the sole refresh/rotation authority; this
+    /// test owns only the synchronous token-source to blocking-client boundary.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_cloud_credential_refresh_returns_an_error_without_runtime_panic() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let issuer = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            drop(stream);
+        });
+
+        let directory = tempfile::tempdir().unwrap();
+        let cache = CredentialCache::at(directory.path().join("credentials.json"));
+        let mut config = cloud_config();
+        config.issuer = issuer.clone();
+        cache
+            .store(
+                &issuer,
+                CachedCredential {
+                    token: IamSecret::new("expired-runtime-access"), // awaken-allow: secret
+                    principal: PrincipalRef::Account {
+                        account_id: IamAccountId("acct-expired-runtime".into()),
+                    },
+                    expires_at: 0,
+                    oauth: Some(CachedOAuthGrant {
+                        refresh_token: IamSecret::new("runtime-refresh"), // awaken-allow: secret
+                        client_id: config.oauth_client_id.clone(),
+                        scopes: vec!["openid".into()],
+                    }),
+                },
+            )
+            .unwrap();
+        let login = tokio::task::spawn_blocking({
+            let cache = cache.clone();
+            move || DesktopCloudLogin::new(&config, cache)
+        })
+        .await
+        .unwrap()
+        .unwrap();
+
+        let error = login.credential().unwrap_err();
+        server.join().unwrap();
+        assert!(
+            error.contains("Awaken Cloud credential refresh failed"),
+            "R3: {error}"
+        );
+        assert!(cache.load(&issuer).is_none(), "R3");
+        assert_eq!(
+            cache.load_entry(&issuer).unwrap().token.expose(),
+            "expired-runtime-access",
+            "R3"
+        );
     }
 
     /// Cause/effect decision rule: C1 interactive Cloud identity is assembled

@@ -143,7 +143,6 @@ lines.on('line', (line) => {
 
 function start(binary, cli) {
   const environment = { ...process.env };
-  delete environment.GEMINI_API_KEY;
   const configPath = path.join(TMP, 'config.toml');
   fs.writeFileSync(configPath, [
     `data_dir = ${JSON.stringify(STORAGE)}`,

@@ -22,6 +22,16 @@ impl Tool for ProviderServerWebFetchTool {
 
 pub struct AwakenDirectFetchProvider;
 
+fn read_fetch_body(response: ureq::Response) -> Result<String, ToolError> {
+    let mut bytes = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_BODY)
+        .read_to_end(&mut bytes)
+        .map_err(|err| ToolError::Execution(format!("read body: {err}")))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 #[async_trait]
 impl WebFetchProvider for AwakenDirectFetchProvider {
     fn descriptor(&self) -> WebFetchProviderDescriptor {
@@ -33,22 +43,38 @@ impl WebFetchProvider for AwakenDirectFetchProvider {
         }
     }
 
+    fn enforces_domain_filter(&self) -> bool {
+        true
+    }
+
     async fn fetch(
         &self,
         request: WebFetchRequest,
         _credential: Option<&CredentialMaterial>,
+        domain_filter: Option<&WebDomainFilter>,
     ) -> Result<String, ToolError> {
+        let filter_active = domain_filter.is_some();
         blocking(move || {
-            let response = ureq::get(&request.url)
+            let call = if filter_active {
+                ureq::AgentBuilder::new()
+                    .redirects(0)
+                    .build()
+                    .get(&request.url)
+            } else {
+                ureq::get(&request.url)
+            };
+            let response = call
                 .call()
                 .map_err(|err| ToolError::Execution(format!("fetch {}: {err}", request.url)))?;
-            let mut bytes = Vec::new();
-            response
-                .into_reader()
-                .take(MAX_BODY)
-                .read_to_end(&mut bytes)
-                .map_err(|err| ToolError::Execution(format!("read body: {err}")))?;
-            Ok(String::from_utf8_lossy(&bytes).into_owned())
+            // The configured plugin matched the initial URL with the canonical
+            // filter. Disabling redirects makes 3xx observable before any
+            // unvalidated second request can escape.
+            if filter_active && (300..400).contains(&response.status()) {
+                return Err(ToolError::Execution(
+                    "web_fetch redirect is disabled while domain policy is active".into(),
+                ));
+            }
+            read_fetch_body(response)
         })
         .await
     }

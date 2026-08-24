@@ -13,6 +13,24 @@ use crate::types::{AgentRef, AgentRefObject, ModelEffortInput, Session, SessionC
 pub(crate) const SESSION_CREATE_REQUEST_FINGERPRINT: &str =
     "awaken.managed_session_create_request_fingerprint";
 
+/// Derive the one public Session address selected by an owner-scoped create
+/// idempotency key.
+///
+/// This is an address prediction only. The Managed Session repository remains
+/// the payload-match and replay authority, and callers must still create or
+/// retrieve the Session through the ordinary Managed API.
+#[must_use]
+pub fn managed_session_id_from_idempotency(owner_scope: &str, idempotency_key: &str) -> String {
+    format!(
+        "sesn_{}",
+        awaken_session_contract::stable_fingerprint(&(
+            "managed-session-create-idempotency",
+            owner_scope,
+            idempotency_key,
+        ))
+    )
+}
+
 fn agent_fingerprint(agent: &AgentRef) -> String {
     match agent {
         AgentRef::Id(id) => awaken_session_contract::stable_fingerprint(&("id", id)),
@@ -101,14 +119,7 @@ impl ManagedState {
                 "Session create request contains reserved metadata",
             )));
         }
-        let session_id = format!(
-            "sesn_{}",
-            awaken_session_contract::stable_fingerprint(&(
-                "managed-session-create-idempotency",
-                &owner_scope,
-                idempotency_key,
-            ))
-        );
+        let session_id = managed_session_id_from_idempotency(&owner_scope, idempotency_key);
         let request_fingerprint = request_fingerprint(&req, &session_id)?;
         if let Some(session) = self
             .replay_session_with_metadata(

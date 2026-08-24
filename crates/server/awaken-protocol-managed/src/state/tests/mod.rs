@@ -41,6 +41,7 @@ impl SessionRuntime for EndSessionRecorder {
             delegated_runs: self.delegated.lock().unwrap().clone(),
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
+            runtime_commit_cursor: 0,
         })
     }
 

@@ -113,7 +113,13 @@ pub trait PackageImageProvisioner: Send + Sync {
         network: &pc::NetworkPolicy,
     ) -> Result<String, RuntimeError>;
 
-    async fn package_image_available(&self, _image: &str) -> Result<bool, RuntimeError> {
+    async fn package_image_available(
+        &self,
+        _base_image: &str,
+        _packages: &pc::PackageRequirements,
+        _network: &pc::NetworkPolicy,
+        _image: &str,
+    ) -> Result<bool, RuntimeError> {
         Ok(false)
     }
 }

@@ -19,6 +19,10 @@ pub enum RunEvent {
     RunStateChanged {
         state: RunState,
         await_reason: Option<crate::agent::awaiting::AwaitReason>,
+        /// Exact closed resume target at an Awaiting boundary. The active ticket
+        /// may later be consumed and deleted; retaining this neutral fact lets a
+        /// cold history projection reproduce the original answerable payload.
+        await_target: Option<crate::agent::awaiting::AwaitTarget>,
     },
     /// A dispatch lease was durably reclaimed and its replacement claim is
     /// about to execute. `claim_epoch` is the queue's existing fencing
@@ -49,11 +53,16 @@ impl From<RunEvent> for Draft {
             RunEvent::RunStateChanged {
                 state,
                 await_reason,
+                await_target,
             } => {
                 let mut payload = serde_json::json!({ "state": state });
                 if let Some(reason) = await_reason {
                     payload["await_reason"] = serde_json::to_value(reason)
                         .expect("AwaitReason serialization is infallible");
+                }
+                if let Some(target) = await_target {
+                    payload["await_target"] = serde_json::to_value(target)
+                        .expect("AwaitTarget serialization is infallible");
                 }
                 (Kind::RunStateChanged, payload)
             }
@@ -136,6 +145,7 @@ mod tests {
         let d: Draft = RunEvent::RunStateChanged {
             state: RunState::Ended(EndCause::NaturalEnd),
             await_reason: None,
+            await_target: None,
         }
         .into();
         assert_eq!(d.kind, Kind::RunStateChanged);
@@ -144,9 +154,41 @@ mod tests {
         let d2: Draft = RunEvent::RunStateChanged {
             state: RunState::Running,
             await_reason: None,
+            await_target: None,
         }
         .into();
         assert_eq!(d2.payload, serde_json::json!({ "state": "Running" }));
+    }
+
+    #[test]
+    fn awaiting_state_retains_the_consumable_target_in_the_committed_fact() {
+        // Causes: C1 a Run enters Awaiting with an exact permission target; C2
+        // the active resume ticket may be deleted after a later resume. Effects:
+        // E1 the same RunStateChanged fact retains reason and closed target; E2 a
+        // cold reader can recover call/tool identity without a ticket table row.
+        // Decision rule R1=C1=>E1, which guarantees E2 under C2. Constraint: the
+        // audit fact is existing Runtime commit truth, not a second ticket owner.
+        use crate::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
+        let target = AwaitTarget::ToolCall {
+            reason: ToolAwaitReason::Permission,
+            call_id: "call-1".into(),
+            tool: PendingTool {
+                tool_id: "shell".into(),
+                arguments: serde_json::json!({"command": "pwd"}),
+            },
+        };
+        let draft: Draft = RunEvent::RunStateChanged {
+            state: RunState::Awaiting,
+            await_reason: Some(target.reason()),
+            await_target: Some(target.clone()),
+        }
+        .into();
+        assert_eq!(draft.kind, Kind::RunStateChanged, "R1/E1");
+        assert_eq!(
+            serde_json::from_value::<AwaitTarget>(draft.payload["await_target"].clone()).unwrap(),
+            target,
+            "R1/E1/E2"
+        );
     }
 
     #[test]

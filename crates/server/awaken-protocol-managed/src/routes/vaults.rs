@@ -48,9 +48,11 @@ use awaken_credential_vault::catalog::{
 };
 use awaken_credential_vault::repo::{
     APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, CredentialMaterialPatch,
-    ManagedCredentialCreateCommand, ManagedCredentialCreationError, ManagedCredentialOperation,
-    ManagedCredentialRepository, create_managed_credential, enter_credential,
-    prepare_application_mcp_bearer_rotation, reconcile_managed_vault_deletion,
+    ManagedCredentialAdoptionProgress, ManagedCredentialCreateCommand,
+    ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
+    application_mcp_material_ref, application_mcp_operation_id, create_managed_credential,
+    enter_credential, prepare_application_mcp_bearer_rotation,
+    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
     retire_managed_credential, rotate_credential_materials, update_managed_credential,
     update_managed_credential_prepared,
 };
@@ -209,6 +211,48 @@ impl VaultState {
         .await
     }
 
+    async fn reconcile_application_mcp_rollout(
+        &self,
+        event_id: Option<&str>,
+        workspace_id: &str,
+        vault_id: &str,
+        credential_id: &str,
+        source_id: &CredentialSourceId,
+        source_revision: u64,
+    ) -> Result<ManagedCredentialAdoptionProgress, awaken_credential_vault::CredentialError> {
+        let Some(event_id) = event_id else {
+            // Managed creation has no predecessor to replace and therefore no
+            // rollout.
+            return Ok(ManagedCredentialAdoptionProgress::Converged);
+        };
+        let Some(event) = self.repository.managed_rollout(event_id).await? else {
+            // An absent exact update event has already been exactly
+            // acknowledged by this same repository.
+            return Ok(ManagedCredentialAdoptionProgress::Converged);
+        };
+        if event.workspace_id != workspace_id
+            || event.vault_id != vault_id
+            || event.credential_id != credential_id
+            || event.source_id != *source_id
+            || event.source_version != source_revision
+            || event.operation != ManagedCredentialOperation::Update
+        {
+            return Err(awaken_credential_vault::CredentialError::MutationConflict(
+                "application MCP rollout identity conflicts with committed credential".into(),
+            ));
+        }
+        let target = self
+            .rollout_target
+            .read()
+            .expect("Vault rollout target")
+            .clone();
+        let Some(target) = target else {
+            return Ok(ManagedCredentialAdoptionProgress::Pending);
+        };
+        reconcile_managed_credential_rollout(&event, self.repository.as_ref(), target.as_ref())
+            .await
+    }
+
     /// Create or rotate one hosted application's stable MCP bearer in the
     /// authoritative credential aggregate. HTTP ownership stays with Awaken
     /// Control; this method returns only secret-free receipt facts.
@@ -218,8 +262,17 @@ impl VaultState {
         application_authority_id: &str,
         mcp_server_url: &str,
         idempotency_key: &str,
+        credential_generation: u64,
         bearer: RedactedString,
-    ) -> Result<(String, CredentialSourceId, u64), awaken_credential_vault::CredentialError> {
+    ) -> Result<
+        (
+            String,
+            CredentialSourceId,
+            u64,
+            ManagedCredentialAdoptionProgress,
+        ),
+        awaken_credential_vault::CredentialError,
+    > {
         let target_fingerprint =
             application_mcp_target_fingerprint(mcp_server_url).map_err(|_| {
                 awaken_credential_vault::CredentialError::InvalidSource(
@@ -237,6 +290,11 @@ impl VaultState {
                 idempotency_key,
             ],
         );
+        let material_ref = application_mcp_material_ref(
+            &source_id,
+            &command_key_fingerprint,
+            credential_generation,
+        )?;
         self.repository
             .ensure_vault(
                 workspace_id,
@@ -257,11 +315,6 @@ impl VaultState {
         );
         let atomically_created = match self.repository.get(&source_id).await {
             Err(awaken_credential_vault::CredentialError::SourceNotFound(_)) => {
-                let material_ref = awaken_credential_vault::SecretRef(format!(
-                    "sec:{}:application-mcp:{}:{command_key_fingerprint}",
-                    source_id.0,
-                    command_key_fingerprint.len(),
-                ));
                 match create_managed_credential(
                     ManagedCredentialCreateCommand {
                         source: DomainCredentialCreateParams {
@@ -312,8 +365,8 @@ impl VaultState {
             Ok(_) => None,
             Err(error) => return Err(error),
         };
-        let source = if let Some(source) = atomically_created {
-            source
+        let (source, rollout_id) = if let Some(source) = atomically_created {
+            (source, None)
         } else {
             let before_source = self.repository.get(&source_id).await?;
             let before_credential = self
@@ -325,12 +378,14 @@ impl VaultState {
                         "application MCP Source has no matching Managed child".into(),
                     )
                 })?;
+            let replay_command_key_fingerprint = command_key_fingerprint.clone();
             let rotation = prepare_application_mcp_bearer_rotation(
                 ApplicationMcpBearerCommand {
                     source_id: source_id.clone(),
                     workspace_id: workspace_id.to_owned(),
                     target_fingerprint,
                     command_key_fingerprint,
+                    credential_generation,
                     bearer,
                 },
                 &before_source,
@@ -338,9 +393,25 @@ impl VaultState {
             )
             .await?;
             match rotation {
-                None => before_source,
+                None => {
+                    let rollout_id = before_source
+                        .version
+                        .checked_sub(1)
+                        .filter(|prior_version| *prior_version > 0)
+                        .map(|prior_version| {
+                            application_mcp_operation_id(
+                                &source_id,
+                                prior_version,
+                                &replay_command_key_fingerprint,
+                                credential_generation,
+                            )
+                        })
+                        .transpose()?;
+                    (before_source, rollout_id)
+                }
                 Some(rotation) => {
-                    update_managed_credential_prepared(
+                    let rollout_id = rotation.operation_id.clone();
+                    let source = update_managed_credential_prepared(
                         before_credential.clone(),
                         before_credential,
                         before_source,
@@ -354,7 +425,8 @@ impl VaultState {
                             error.to_string(),
                         )
                     })?
-                    .0
+                    .0;
+                    (source, Some(rollout_id))
                 }
             }
         };
@@ -363,7 +435,17 @@ impl VaultState {
                 "application MCP credential revision is invalid".into(),
             )
         })?;
-        Ok((vault_id, source.id, revision))
+        let adoption = self
+            .reconcile_application_mcp_rollout(
+                rollout_id.as_deref(),
+                workspace_id,
+                &vault_id,
+                &credential_id,
+                &source.id,
+                revision,
+            )
+            .await?;
+        Ok((vault_id, source.id, revision, adoption))
     }
 
     /// Wire the live MCP probe, so `POST .../mcp_oauth_validate` reports a real

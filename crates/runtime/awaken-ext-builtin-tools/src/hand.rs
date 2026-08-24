@@ -1401,9 +1401,8 @@ impl Drop for ProcessGroupGuard {
     }
 }
 
-/// The local hand tools, erased for `Runtime::with_tool` registration. The
-/// network tool `web_fetch` is added by `web_hand_tools`; `web_search` is owned
-/// exclusively by the separately configured plugin path.
+/// The local hand tools, erased for `Runtime::with_tool` registration. Both
+/// network tools are owned exclusively by their configured plugin paths.
 pub fn executable_hand_tools() -> Vec<Arc<dyn RawTool>> {
     executable_hand_tools_in(HandToolContext::default())
 }

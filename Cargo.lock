@@ -369,12 +369,14 @@ version = "1.0.0-dev"
 name = "awaken-authz-enforce"
 version = "1.0.0-dev"
 dependencies = [
+ "async-trait",
  "awaken-iam-contract",
  "awaken-iam-core",
  "awaken-iam-preset",
  "awaken-tenancy",
  "axum",
  "proptest",
+ "serde",
  "serde_json",
  "tokio",
  "tower",
@@ -703,6 +705,8 @@ dependencies = [
  "awaken-sandbox-local",
  "awaken-sandbox-memoryd",
  "awaken-scenario-host",
+ "awaken-scoped-migration",
+ "awaken-scoped-migration-sqlite",
  "awaken-service-auth-contract",
  "awaken-service-lifecycle",
  "awaken-session-application",
@@ -720,6 +724,7 @@ dependencies = [
  "awaken-worker-runtime",
  "awaken-worker-transport-security",
  "axum",
+ "base64 0.22.1",
  "http-body-util",
  "reqwest 0.12.28",
  "rusqlite",
@@ -731,6 +736,7 @@ dependencies = [
  "tokio",
  "tower",
  "tower-http",
+ "uuid",
 ]
 
 [[package]]
@@ -2187,6 +2193,7 @@ dependencies = [
  "awaken-runtime-contract",
  "awaken-runtime-host",
  "awaken-sandbox-local",
+ "awaken-service-lifecycle",
  "awaken-session-contract",
  "awaken-tenancy",
  "awaken-worker",
@@ -2252,6 +2259,7 @@ dependencies = [
  "awaken-session-contract",
  "awaken-session-store",
  "serde",
+ "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

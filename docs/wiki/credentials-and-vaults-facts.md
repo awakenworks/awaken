@@ -62,9 +62,9 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 
 - Status: active
 - Owner: [Hosted application static-bearer admission](../design/credentials-and-vaults.md#hosted-application-static-bearer-admission)
-- Fact: a trusted hosted application creates or rotates its stable MCP bearer through the existing Credential/Vault WAL and CAS, then gives the returned Vault id to ordinary Managed Session creation; it owns no local credential mirror or fallback.
-- Links: [ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-13-amendment-application-mcp-credential-admission)
-- Verification: idempotent replay, rotation, conflicting replay, concurrent-winner, normalized-target, and secret-free response tests.
+- Fact: a trusted hosted application creates or monotonically rotates its stable MCP bearer through the existing Credential/Vault WAL and CAS; the current material reference itself fences delayed older generations, while legacy references upgrade from generation zero without a receipt table. The command reads its rollout by the existing primary event id while only the supervisor enumerates the outbox. The application waits for exact existing-target adoption to converge, then gives the returned Vault id to ordinary idempotent Managed Session creation; one exported server-owned helper predicts that Session address without metadata identity, a local mirror, or fallback.
+- Links: [ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-24-amendment-hosted-session-identity-and-credential-adoption)
+- Verification: idempotent Session prediction/create; positive/zero, exact replay, same-generation conflict, newer rotation, delayed-older rejection, legacy-zero upgrade, concurrent CAS, and no-extra-secret credential rules; no-target/pending/failure/converged adoption, exact acknowledgement, normalized-target, and secret-free response tests.
 
 ## FACT-CRED-008: Hosted governance credentials extend the canonical CRUD
 

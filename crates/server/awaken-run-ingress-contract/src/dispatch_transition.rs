@@ -230,9 +230,18 @@ impl DispatchTransition {
                     revoked_lease: true,
                 })
             }
-            DispatchPhase::DeadLetter | DispatchPhase::Superseded => {
-                Ok(CancelTransition::NotCancellable)
-            }
+            // DeadLetter retains its pending input and can ordinarily be
+            // requeued. A terminal Session fence therefore seals that existing
+            // row by reusing the durable cancellation bit without making it
+            // runnable or inventing another terminal state.
+            DispatchPhase::DeadLetter => Ok(CancelTransition::Applied {
+                state: Self {
+                    cancellation_requested: true,
+                    ..self
+                },
+                revoked_lease: false,
+            }),
+            DispatchPhase::Superseded => Ok(CancelTransition::NotCancellable),
         }
     }
 }
@@ -478,9 +487,9 @@ mod proofs {
 
     #[kani::proof]
     fn dispatch_cancel_revokes_old_epoch_and_is_idempotent() {
-        // Causes: C1 the row is terminal, live-leased, or another cancellable
+        // Causes: C1 the row is superseded, dead-lettered, live-leased, or another cancellable
         // phase; C2 its lease epoch is incrementable; C3 cancellation repeats.
-        // Effects: E1 terminal rows reject cancellation; E2 a live lease returns
+        // Effects: E1 superseded rows reject cancellation; E2 a live lease returns
         // to its non-leased phase, advances exactly one epoch, and fences the old
         // claim; E3 other cancellable phases retain phase/epoch and set the flag;
         // E4 a repeat is an applied state stutter with no second revocation.
@@ -493,10 +502,7 @@ mod proofs {
         let first = state.cancel().unwrap();
         match first {
             CancelTransition::NotCancellable => {
-                assert!(matches!(
-                    state.phase,
-                    DispatchPhase::DeadLetter | DispatchPhase::Superseded
-                ));
+                assert_eq!(state.phase, DispatchPhase::Superseded);
             }
             CancelTransition::Applied {
                 state: cancelled,

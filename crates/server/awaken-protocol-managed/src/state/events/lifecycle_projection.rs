@@ -44,6 +44,7 @@ impl ManagedState {
         record: &mut SessionRecord,
         events: &[RunLifecycleEvent],
         pending: &std::collections::HashMap<String, Pending>,
+        historical_pending: &std::collections::HashMap<RunLifecycleCursor, Pending>,
     ) -> Result<(), StateError> {
         let latest_cursor_by_thread =
             events
@@ -140,10 +141,11 @@ impl ManagedState {
                 | RunLifecycleEventKind::Completed
                 | RunLifecycleEventKind::Failed
                 | RunLifecycleEventKind::Cancelled => {
-                    let terminal_pending = (latest_cursor_by_thread.get(thread_id)
-                        == Some(&event.cursor))
-                    .then(|| pending.get(thread_id))
-                    .flatten();
+                    let terminal_pending = historical_pending.get(&event.cursor).or_else(|| {
+                        (latest_cursor_by_thread.get(thread_id) == Some(&event.cursor))
+                            .then(|| pending.get(thread_id))
+                            .flatten()
+                    });
                     let budget_reached = event.await_reason.as_ref()
                         == Some(
                             &awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached,
@@ -448,6 +450,7 @@ impl ManagedState {
             lifecycle_events,
             latest_run_states,
             pending,
+            historical_pending,
             dispositions,
             usage,
         } = evidence;
@@ -563,10 +566,16 @@ impl ManagedState {
                                 && event.kind == RunLifecycleEventKind::Awaiting
                         })
                         .map(|event| &event.run_id),
+                    historical_pending,
                 },
             )?;
         }
-        self.append_child_lifecycle_projection(record, lifecycle_events, pending)?;
+        self.append_child_lifecycle_projection(
+            record,
+            lifecycle_events,
+            pending,
+            historical_pending,
+        )?;
         // Archive is an absorbing Thread disposition, so it is projected after
         // historical Run lifecycle. On warm refresh it prevents later lifecycle
         // pages from reviving the child; on cold rebuild it closes the same

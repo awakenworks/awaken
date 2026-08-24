@@ -71,15 +71,15 @@ async function main() {
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });
-      // Cause/effect graph: both WebFetch and WebSearch are configurable routes
-      // owned by the unified provider registry. With no connector published,
-      // neither route is runnable, so the official toolset exposes both as
-      // disabled members without a parallel static fetch or custom search tool.
+      // Cause/effect graph: WebFetch and WebSearch are both configured-plugin
+      // capabilities. Without a selected routed plugin, neither has an
+      // executable owner, so the official toolset projects both as disabled
+      // members without restoring a parallel static Web path.
       //
       // Decision table:
-      // | Rule | official member | provider configured | effect             |
-      // | C1   | web_fetch       | no                  | disabled override |
-      // | C2   | web_search      | no                  | disabled override |
+      // | Rule | official member | routed plugin selected | effect           |
+      // | C1   | web_fetch       | no                     | disabled override |
+      // | C2   | web_search      | no                     | disabled override |
       assert.deepEqual(cfg.web_search, {
         name: 'web_search',
         type: 'web_search',

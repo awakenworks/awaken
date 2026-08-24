@@ -70,11 +70,16 @@ export function deploymentEnv(
   dataDir,
   { identityMode, iamWorkspaces = [], controlSealKey, cloudIam, databases = {}, fields = {} } = {},
 ) {
+  if (typeof identityMode !== 'string' || identityMode.length === 0) {
+    throw new TypeError('deploymentEnv requires an explicit identityMode');
+  }
   const home = path.join(dataDir, 'e2e-home');
   const configDir = path.join(home, '.awaken');
   fs.mkdirSync(configDir, { recursive: true });
-  const lines = [`data_dir = ${JSON.stringify(dataDir)}`];
-  if (identityMode) lines.push(`identity_mode = ${JSON.stringify(identityMode)}`);
+  const lines = [
+    `data_dir = ${JSON.stringify(dataDir)}`,
+    `identity_mode = ${JSON.stringify(identityMode)}`,
+  ];
   if (iamWorkspaces.length > 0) lines.push(`iam_workspaces = ${JSON.stringify(iamWorkspaces)}`);
   if (controlSealKey) lines.push(`control_seal_key = ${JSON.stringify(controlSealKey)}`);
   for (const [field, value] of Object.entries(databases)) {
@@ -171,18 +176,18 @@ function untrackSpawnedServer(server) {
 //
 // Keeping this merge in one place prevents the three spawn entry points from
 // recreating competing precedence rules.
-function serverProcessEnv(addr, configured = {}) {
+function serverProcessEnv(addr, configured = {}, inheritedEnvironment = process.env) {
   // Ephemeral scenarios previously let every child invent a process-named
   // /tmp sandbox root that the Node owner could not clean after a hard crash.
   // A durable storage root remains authoritative; otherwise the harness-owned
   // tree is the one cleanup boundary for HOME plus sandbox projections.
   const hasDurableRoot = configured.SESSION_DEPLOYMENT_STORAGE_DIR
-    ?? process.env.SESSION_DEPLOYMENT_STORAGE_DIR;
+    ?? inheritedEnvironment.SESSION_DEPLOYMENT_STORAGE_DIR;
   const sandboxDir = configured.SESSION_DEPLOYMENT_SANDBOX_DIR
-    ?? process.env.SESSION_DEPLOYMENT_SANDBOX_DIR
+    ?? inheritedEnvironment.SESSION_DEPLOYMENT_SANDBOX_DIR
     ?? (hasDurableRoot ? undefined : `${E2E_HOME_ROOT}/sandboxes`);
   return {
-    ...process.env,
+    ...inheritedEnvironment,
     HOME: E2E_HOME,
     ...configured,
     // A caller's shell may globally clamp Rust logs (Codex commonly uses
@@ -190,7 +195,8 @@ function serverProcessEnv(addr, configured = {}) {
     // would otherwise exercise the request successfully while exporting no
     // evidence at all. Trace scenarios own their minimum deterministic filter;
     // an explicit per-scenario RUST_LOG still wins.
-    RUST_LOG: configured.RUST_LOG ?? (configured.AWAKEN_TRACE_FILE ? 'info' : process.env.RUST_LOG),
+    RUST_LOG: configured.RUST_LOG
+      ?? (configured.AWAKEN_TRACE_FILE ? 'info' : inheritedEnvironment.RUST_LOG),
     ...(sandboxDir ? { SESSION_DEPLOYMENT_SANDBOX_DIR: sandboxDir } : {}),
     AWAKEN_HTTP_ADDR: addr,
     AWAKEN_E2E_SHUTDOWN_ON_STDIN_EOF: '1',
@@ -624,13 +630,17 @@ export async function withRealServer(behavior, port, fn, opts = {}) {
 // Spawn the server without a fixed lifetime, so a test can stop and restart it
 // (e.g. to verify durable state survives a process restart). `extraEnv` layers on
 // top of the inherited environment — pass `SESSION_DEPLOYMENT_STORAGE_DIR` for durability.
-export function spawnServer(mode, port, extraEnv = {}) {
+export function spawnServer(mode, port, extraEnv = {}, inheritedEnvironment = process.env) {
   const bin = ensureBuilt();
   const addr = `127.0.0.1:${port}`;
   const server = trackSpawnedServer(
     port,
     spawn(bin, {
-      env: serverProcessEnv(addr, { ...extraEnv, AWAKEN_MODEL_MODE: mode }),
+      env: serverProcessEnv(
+        addr,
+        { ...extraEnv, AWAKEN_MODEL_MODE: mode },
+        inheritedEnvironment,
+      ),
       stdio: ['pipe', 'inherit', 'inherit'],
     }),
   );

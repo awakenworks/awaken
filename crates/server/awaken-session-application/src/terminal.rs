@@ -24,6 +24,13 @@ enum ArchiveAdmission {
     ForceTerminal,
 }
 
+fn pending_event_batch_error() -> SessionPreparationError {
+    SessionPreparationError::Rejected(RunError::unavailable_classified(
+        "session_event_batch_pending",
+        "Session Event batch effects must settle before a terminal transition",
+    ))
+}
+
 /// Protocol-neutral request to commit the durable Session Delete fence.
 /// Application code, not an edge adapter, derives the canonical lifecycle fact.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +202,15 @@ impl SessionApplication {
             if session.is_hidden() {
                 return Err(SessionPreparationError::NotFound);
             }
+            if session.has_incomplete_event_batches() {
+                // Admission itself owns no activity epoch, so Idle does not
+                // imply that every accepted Event effect has crossed its
+                // authoritative Runtime boundary. Keep the root nonterminal
+                // and let the existing lifecycle supervisor finish the batch;
+                // otherwise terminal state would make that work undiscoverable.
+                self.wake_lifecycle_supervisor();
+                return Err(pending_event_batch_error());
+            }
             if admission == ArchiveAdmission::IdleOnly
                 && session.execution != SessionExecutionState::Idle
             {
@@ -254,6 +270,10 @@ impl SessionApplication {
                     session,
                     transitioned: false,
                 });
+            }
+            if session.has_incomplete_event_batches() {
+                self.wake_lifecycle_supervisor();
+                return Err(pending_event_batch_error());
             }
             session.request_delete();
             let mut facts = session

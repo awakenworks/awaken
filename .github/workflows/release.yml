@@ -1,0 +1,147 @@
+# The sole Awaken Sandbox image publisher. The existing repository-owned build
+# script still owns binary staging, the production Dockerfile, and acceptance.
+name: release-awaken-sandbox-image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: release-awaken-sandbox-image-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  IMAGE_REPOSITORY: ghcr.io/awakenworks/awaken-sandbox
+  PREDICATE_TYPE: https://awakenworks.com/attestations/awaken-sandbox-image-provenance/v1
+  SIGSTORE_OIDC_ISSUER: https://token.actions.githubusercontent.com
+  WORKFLOW_PATH: .github/workflows/release.yml
+  CONTAINER_ENGINE: docker
+
+jobs:
+  publish:
+    if: github.repository == 'awakenworks/awaken' && github.ref_protected == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    outputs:
+      image: ${{ steps.provenance.outputs.image }}
+      provenance_sha256: ${{ steps.provenance.outputs.sha256 }}
+      revision: ${{ steps.source.outputs.revision }}
+
+    steps:
+      - name: Check out the exact protected tag
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+
+      - name: Validate the release source and Open-owned contracts
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF_TYPE" = "tag"
+          test "$GITHUB_REF_PROTECTED" = "true"
+          SOURCE_REVISION="$(git rev-parse "$GITHUB_SHA^{commit}")"
+          test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+          python3 scripts/release/awaken_sandbox_image_provenance.py self-test
+          python3 scripts/ci/check_sandbox_image_release.py --self-test
+          python3 scripts/ci/check_sandbox_image_release.py
+          python3 scripts/release/awaken_sandbox_image_provenance.py validate-context \
+            --revision "$SOURCE_REVISION" \
+            --source-ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT"
+          RELEASE_TAG="${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}"
+          printf 'revision=%s\n' "$SOURCE_REVISION" >> "$GITHUB_OUTPUT"
+          printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
+
+      - name: Build and accept the production Sandbox image
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          deploy/images/sandbox/build.sh "$RELEASE_TAG"
+
+      - name: Push once and emit exact Open provenance
+        id: provenance
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          docker push "$RELEASE_TAG"
+          IMAGE="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$RELEASE_TAG")"
+          test -n "$IMAGE"
+          [[ "$IMAGE" != *$'\n'* ]]
+          PROVENANCE_SHA256="$(python3 scripts/release/awaken_sandbox_image_provenance.py emit \
+            --image "$IMAGE" \
+            --revision "$SOURCE_REVISION" \
+            --source-ref "$GITHUB_REF" \
+            --workflow-ref "$GITHUB_WORKFLOW_REF" \
+            --run-id "$GITHUB_RUN_ID" \
+            --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --output "$RUNNER_TEMP/awaken-sandbox-image-provenance.json")"
+          printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
+          printf 'sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Install the pinned Cosign release
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: v3.0.6
+
+      - name: Keyless-sign image and exact provenance
+        shell: bash
+        env:
+          IMAGE: ${{ steps.provenance.outputs.image }}
+        run: |
+          set -euo pipefail
+          cosign sign --yes "$IMAGE"
+          cosign attest --yes \
+            --type "$PREDICATE_TYPE" \
+            --predicate "$RUNNER_TEMP/awaken-sandbox-image-provenance.json" \
+            "$IMAGE"
+
+      - name: Verify the published image and canonical provenance
+        shell: bash
+        env:
+          IMAGE: ${{ steps.provenance.outputs.image }}
+          EXPECTED_PROVENANCE_SHA256: ${{ steps.provenance.outputs.sha256 }}
+          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
+        run: |
+          set -euo pipefail
+          CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/${WORKFLOW_PATH}@${GITHUB_REF}"
+          cosign verify \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
+            "$IMAGE" > "$RUNNER_TEMP/awaken-sandbox-image-signature.json"
+          cosign verify-attestation \
+            --type "$PREDICATE_TYPE" \
+            --certificate-identity "$CERTIFICATE_IDENTITY" \
+            --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
+            --output json \
+            "$IMAGE" > "$RUNNER_TEMP/awaken-sandbox-image-attestations.json"
+          VERIFIED_PROVENANCE_SHA256="$(python3 scripts/release/awaken_sandbox_image_provenance.py \
+            validate-attestations \
+            --image "$IMAGE" \
+            --revision "$SOURCE_REVISION" \
+            --attestations "$RUNNER_TEMP/awaken-sandbox-image-attestations.json" \
+            --output "$RUNNER_TEMP/verified-awaken-sandbox-image-provenance.json")"
+          test "$VERIFIED_PROVENANCE_SHA256" = "$EXPECTED_PROVENANCE_SHA256"
+          cmp "$RUNNER_TEMP/awaken-sandbox-image-provenance.json" \
+            "$RUNNER_TEMP/verified-awaken-sandbox-image-provenance.json"

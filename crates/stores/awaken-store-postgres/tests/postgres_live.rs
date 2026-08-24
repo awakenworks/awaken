@@ -567,17 +567,22 @@ async fn resume_ticket_awaits_then_clears() {
 }
 
 #[tokio::test]
-async fn authoritative_wait_tracks_the_latest_cross_replica_run() {
+async fn authoritative_latest_and_wait_track_cross_replica_runs() {
     /*
      * Awaiting-read cause/effect decision table.
      * Causes: C1 this coordinator's compatibility projection contains an older
      * Awaiting Run; C2 a peer commits a newer terminal Run on the same Thread;
-     * C3 that peer then commits a still newer Awaiting Run. Effects: E1 the
+     * C3 that peer then commits a still newer Awaiting Run; C4 a cold observer
+     * opened before every commit and retains an empty compatibility projection.
+     * Effects: E1 the
      * authoritative read returns no ticket after C2 instead of blocking on C1;
      * E2 after C3 it returns exactly the newest durable ticket even though the
-     * observer projection never advanced. Rules: W1=C1+C2=>E1;
-     * W2=C1+C2+C3=>E2. This is the cross-protocol recovery race: admission and
-     * resume must follow shared PostgreSQL truth, not a process-local cache.
+     * observer projection never advanced; E3 the authoritative latest-Run read
+     * returns the peer's exact Run/state while C4 still reports no projected
+     * latest Run. Rules: W1=C1+C2=>E1; W2=C1+C2+C3=>E2;
+     * W3=C2+C4=>E3. This is the cross-protocol recovery race: admission,
+     * settlement, and resume must follow shared PostgreSQL truth, not a
+     * process-local cache.
      */
     let Some(pool) = schema_pool("t_authoritative_wait").await else {
         return;
@@ -585,9 +590,12 @@ async fn authoritative_wait_tracks_the_latest_cross_replica_run() {
     let observer = PostgresCommitCoordinator::with_pool(pool.clone())
         .await
         .expect("observer");
-    let peer = PostgresCommitCoordinator::with_existing_pool(pool)
+    let peer = PostgresCommitCoordinator::with_existing_pool(pool.clone())
         .await
         .expect("peer");
+    let cold = PostgresCommitCoordinator::with_existing_pool(pool)
+        .await
+        .expect("cold observer");
     let thread = ThreadId("thread-1".to_string());
 
     observer
@@ -609,6 +617,23 @@ async fn authoritative_wait_tracks_the_latest_cross_replica_run() {
     })
     .await
     .expect("new terminal");
+
+    assert_eq!(
+        CommittedThreadView::latest_run(&cold, &thread),
+        None,
+        "W3/C4 cold compatibility projection remains empty"
+    );
+    assert_eq!(
+        cold.authoritative_latest_run_record(&thread)
+            .await
+            .expect("W3 authoritative latest read"),
+        Some(awaken_agent_contract::agent::run::Record {
+            id: RunId("run-new".into()),
+            thread_id: thread.clone(),
+            state: RunState::Ended(EndCause::NaturalEnd),
+        }),
+        "W3/E3 shared committed latest Run bypasses the cold projection"
+    );
 
     assert!(
         observer

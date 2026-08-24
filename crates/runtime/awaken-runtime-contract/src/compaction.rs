@@ -39,6 +39,31 @@ impl RunCompactionMarker {
                 Action::Remove => false,
             })
     }
+
+    /// Backend commit coordinate of the effective true marker. Recovery owns
+    /// the aligned cursor vector; a missing/misaligned legacy vector yields no
+    /// listable public fact instead of moving a late-discovered marker earlier.
+    #[must_use]
+    pub fn recorded_commit_cursor(
+        state: &[Command],
+        state_commit_cursors: &[u64],
+        run_id: &str,
+    ) -> Option<u64> {
+        if state.len() != state_commit_cursors.len() {
+            return None;
+        }
+        let key = Self::key(run_id);
+        let cell = Self::cell(run_id);
+        state
+            .iter()
+            .zip(state_commit_cursors.iter().copied())
+            .rev()
+            .find(|(command, _)| command.scope == Scope::Thread && command.key.0 == key)
+            .and_then(|(command, cursor)| match &command.action {
+                Action::Set(value) if cell.decode(value) == Ok(true) => Some(cursor),
+                Action::Set(_) | Action::Remove => None,
+            })
+    }
 }
 
 #[cfg(test)]

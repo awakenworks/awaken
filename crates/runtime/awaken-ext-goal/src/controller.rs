@@ -140,7 +140,7 @@ impl<'a> Controller<'a> {
         definition: Definition,
         binding: Binding,
     ) -> Result<Report, Error> {
-        self.prepare(outcome_id, definition, binding).await?;
+        let _ = self.prepare(outcome_id, definition, binding).await?;
         self.resume_active()
             .await?
             .ok_or_else(|| Error::Persistence("prepared Outcome is not active".into()))
@@ -155,7 +155,7 @@ impl<'a> Controller<'a> {
         outcome_id: Id,
         definition: Definition,
         binding: Binding,
-    ) -> Result<(), Error> {
+    ) -> Result<u64, Error> {
         definition
             .validate()
             .map_err(|error| Error::Domain(error.to_string()))?;
@@ -172,7 +172,11 @@ impl<'a> Controller<'a> {
                             outcome_id: active.state.outcome_id,
                         });
                     }
-                    return Ok(());
+                    return self
+                        .state
+                        .preparation_commit_cursor(&outcome_id)
+                        .await
+                        .map_err(state_error);
                 }
                 None => {
                     // A crash may occur after the exact Outcome reached a terminal
@@ -187,7 +191,11 @@ impl<'a> Controller<'a> {
                                         .into(),
                                 ));
                             }
-                            return Ok(());
+                            return self
+                                .state
+                                .preparation_commit_cursor(&outcome_id)
+                                .await
+                                .map_err(state_error);
                         }
                         Ok(_) => {
                             return Err(Error::ActiveDefinitionConflict { outcome_id });
@@ -200,7 +208,13 @@ impl<'a> Controller<'a> {
                         self.reader.committed_messages(self.thread_id).len(),
                     );
                     match self.state.create(&definition, &binding, &state).await {
-                        Ok(()) => return Ok(()),
+                        Ok(()) => {
+                            return self
+                                .state
+                                .preparation_commit_cursor(&outcome_id)
+                                .await
+                                .map_err(state_error);
+                        }
                         Err(StateError::AlreadyActive(_) | StateError::ConcurrentCommit { .. }) => {
                             continue;
                         }

@@ -86,9 +86,15 @@ impl EnvironmentImageBuilder for PackageEnvironmentImageBuilder {
             .map_err(|error| EnvironmentImageBuildError::Unavailable(error.to_string()))
     }
 
-    async fn available(&self, image: &str) -> Result<bool, EnvironmentImageBuildError> {
+    async fn available(
+        &self,
+        demand: &EnvironmentImageBuildDemand,
+        image: &str,
+    ) -> Result<bool, EnvironmentImageBuildError> {
+        let packages = package_requirements(demand);
+        let network = build_network_policy(&demand.config);
         self.provisioner
-            .package_image_available(image)
+            .package_image_available(&demand.base_image, &packages, &network, image)
             .await
             .map_err(|error| EnvironmentImageBuildError::Unavailable(error.to_string()))
     }
@@ -122,6 +128,14 @@ mod tests {
                 awaken_provisioning_contract::NetworkPolicy,
             )>,
         >,
+        availability_calls: Mutex<
+            Vec<(
+                String,
+                awaken_provisioning_contract::PackageRequirements,
+                awaken_provisioning_contract::NetworkPolicy,
+                String,
+            )>,
+        >,
     }
 
     #[async_trait]
@@ -149,8 +163,17 @@ mod tests {
 
         async fn package_image_available(
             &self,
+            base_image: &str,
+            packages: &awaken_provisioning_contract::PackageRequirements,
+            network: &awaken_provisioning_contract::NetworkPolicy,
             image: &str,
         ) -> Result<bool, awaken_sandbox_container::RuntimeError> {
+            self.availability_calls.lock().unwrap().push((
+                base_image.to_owned(),
+                packages.clone(),
+                network.clone(),
+                image.to_owned(),
+            ));
             Ok(image == "registry/awaken@sha256:prepared")
         }
     }
@@ -162,7 +185,9 @@ mod tests {
         // manager names/values and revision-scoped resolution; R2 limited
         // package-manager networking becomes the normalized allowlist; R3 the
         // provisioner's immutable reference and availability are returned
-        // without another build-state or cache implementation.
+        // without another build-state or cache implementation; R4 availability
+        // receives the exact same recipe inputs plus the stored immutable image,
+        // so the adapter cannot create a second build executor or identity path.
         let provisioner = Arc::new(RecordingProvisioner::default());
         let builder = package_environment_image_builder(provisioner.clone());
         let demand = EnvironmentImageBuildDemand {
@@ -222,10 +247,20 @@ mod tests {
         );
         assert!(
             builder
-                .available("registry/awaken@sha256:prepared")
+                .available(&demand, "registry/awaken@sha256:prepared")
                 .await
                 .unwrap(),
-            "R3"
+            "R4"
+        );
+        assert_eq!(
+            provisioner.availability_calls.lock().unwrap().as_slice(),
+            [(
+                "registry/base@sha256:exact".into(),
+                packages,
+                network,
+                "registry/awaken@sha256:prepared".into(),
+            )],
+            "R4 exact demand and stored identity reuse the one availability port"
         );
     }
 }

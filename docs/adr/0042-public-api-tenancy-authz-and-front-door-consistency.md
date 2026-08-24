@@ -273,6 +273,59 @@ accidentally presented to the service guard fails closed. This refines D3's
 authority appropriate to each caller; it does not introduce another runtime,
 Session store, proxy, tenancy model, or protocol route.
 
+## Amendment (2026-08-23): Application capabilities use one durable Coordinator authority
+
+The application PEP remains the canonical browser-protocol guard, but its
+authentication port now resolves the short-lived capability through one
+Coordinator-owned durable repository. The repository uses the same physical
+SQLite or PostgreSQL database selected for Coordinator Sessions, under its own
+aggregate table and scoped-migration ledger. PostgreSQL therefore provides one
+mint/revoke truth to every Coordinator replica without sticky routing; SQLite
+preserves the same truth across a local process restart.
+
+Only a hash of the high-entropy cleartext token, its UUIDv7 management id,
+expiry/revocation stamps, Workspace, and the PEP-consumed protocol, operation,
+and thread-binding grant persist. Caller user, project, and correlation data
+remain in the caller's own authority; the issuance wire neither accepts nor
+echoes a dead correlation surface. The cleartext is returned once. No IAM
+service principal, `admin` role binding, Session metadata, process-local
+credential directory, cache, dual-read, or fallback is created.
+Unknown, wrong, expired, and revoked credentials converge on `401`; repository
+unavailability or corrupt durable state converges on `503` before dispatch.
+Mint, guard, and revoke all use this same repository. Mint is classified by the
+existing Managed Create request limiter, admits at most 32 one-to-one bindings
+with 255-byte ids, and returns the one cleartext with `Cache-Control: no-store`.
+Revoke is Workspace-fenced: missing, repeated, and foreign ids share `204`, but
+a foreign Workspace cannot revoke the owner's live credential.
+
+The existing Coordinator service lifecycle owns one bounded retention loop over
+that repository. Every minute it drains 512-row batches, yielding between full
+batches, stopping on a short batch, and enforcing a 256-batch hard cap per tick.
+It retains live and inside-window terminal rows; failure stops the current tick
+and the next tick resumes durable backlog without a local authorization or
+cleanup path. This bounds maintenance work but does not assert a global storage
+bound: Hosted admission is per organization and Open has no active-organization
+ceiling. The backlog recurrence is
+`Q[n+1] = max(0, Q[n] + E[n] - D[n])`.
+
+## Amendment (2026-08-24): Application-capability cutover preserves the incumbent ceiling
+
+`APPLICATION_ACCESS_MAX_TTL_SECONDS` is the single issuance and release-profile
+authority for application capabilities. Its current value is the legacy v1
+process-local upper bound of 900 seconds. During the one-time transition to the
+v2 durable repository, it must not be lowered until every legacy issuer is
+drained and every credential it could have issued has expired. Otherwise a new
+replica could underestimate an incumbent credential that remains valid under
+the old authority.
+
+Schema v2 of the existing hosted runtime-surface profile projects this exact
+Coordinator constant. Cloud release compatibility consumes that field instead
+of copying 900 or substituting a shorter candidate; Control receives the value
+as a composition input and does not own another TTL. After the cutover window
+is explicitly closed, future policy changes still update the one Coordinator
+constant and its same profile projection—never a second field, store, or
+fallback.
+
 ## References
 
 - [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) — front-door axis vs

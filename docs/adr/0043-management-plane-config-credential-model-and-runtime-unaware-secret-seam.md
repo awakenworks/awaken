@@ -470,8 +470,13 @@ route. Deployment tooling consumes the deterministic runtime-surface profile
 exported by the Awaken executable; it must not copy a list of Session, File,
 Memory, Deployment, or protocol prefixes. This composition is transport routing
 to the existing Coordinator Router, not a Cloud translation or a second Managed
-API implementation. A split Control without that explicit composition fact
-continues to advertise `managed_runtime=false` and fail closed.
+API implementation. Schema v2 of that same profile also carries the required,
+positive `application_access_max_ttl_seconds` projected from Coordinator's
+canonical issuance limit by the executable composition root. Control accepts
+that value as an explicit projection input and does not depend on Coordinator;
+deployment and Flow consumers therefore cannot drift by copying a numeric
+limit. A split Control without that explicit composition fact continues to
+advertise `managed_runtime=false` and fail closed.
 
 ```text
 Catalog Offering + executor capability

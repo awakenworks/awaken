@@ -33,6 +33,22 @@ const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 30 * 60;
 const IMAGE_CHECK_TIMEOUT_SECS: i64 = 10 * 60;
 const IMAGE_CHECK_CLIENT_GRACE_SECS: u64 = 10;
 
+const PACKAGE_RECIPE_FINGERPRINT_ANNOTATION: &str = "awaken.dev/package-recipe-fingerprint";
+const PACKAGE_IMAGE_DESTINATION_ANNOTATION: &str = "awaken.dev/package-image-destination";
+
+fn package_release_annotations(fingerprint: &str, destination: &str) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        (
+            PACKAGE_RECIPE_FINGERPRINT_ANNOTATION.into(),
+            fingerprint.into(),
+        ),
+        (
+            PACKAGE_IMAGE_DESTINATION_ANNOTATION.into(),
+            destination.into(),
+        ),
+    ])
+}
+
 fn image_check_client_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(IMAGE_CHECK_TIMEOUT_SECS as u64 + IMAGE_CHECK_CLIENT_GRACE_SECS)
 }
@@ -65,6 +81,36 @@ fn immutable_registry_identity(identity: Option<String>) -> Option<String> {
                 digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
             })
     })
+}
+
+fn package_image_matches_stored_identity(observed: Option<String>, stored: &str) -> bool {
+    immutable_registry_identity(Some(stored.to_owned())).is_some()
+        && immutable_registry_identity(observed).as_deref() == Some(stored)
+}
+
+fn require_unrestricted_package_build(network: &pc::NetworkPolicy) -> Result<(), RuntimeError> {
+    if network.is_restricted() {
+        return Err(backend(
+            "Kubernetes package builder cannot prove a no-bypass restricted build network",
+        ));
+    }
+    Ok(())
+}
+
+fn image_check_identity(pods: Vec<Pod>) -> Option<String> {
+    pods.into_iter()
+        .find_map(|pod| {
+            pod.status?
+                .container_statuses?
+                .into_iter()
+                .find(|status| status.name == "verify")
+                .map(|status| status.image_id)
+        })
+        .map(|identity| {
+            identity
+                .split_once("://")
+                .map_or(identity.clone(), |(_, reference)| reference.to_owned())
+        })
 }
 
 fn terminal_image_pull_reason(reason: Option<&str>) -> bool {
@@ -367,11 +413,17 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             "app.kubernetes.io/managed-by".into(),
             "awaken-environment-builder".into(),
         )]);
+        // These values are already the deterministic, non-secret inputs of the
+        // one BuildKit realization. They let a bounded cluster observer join the
+        // Job/Pod to its termination digest without copying the Coordinator's
+        // durable build state or exposing proxy/auth material.
+        let annotations = package_release_annotations(&fingerprint, &destination);
         let job = Job {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: Some(labels.clone()),
+                annotations: Some(annotations.clone()),
                 ..Default::default()
             },
             spec: Some(JobSpec {
@@ -381,6 +433,7 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 template: PodTemplateSpec {
                     metadata: Some(ObjectMeta {
                         labels: Some(labels),
+                        annotations: Some(annotations),
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -465,15 +518,21 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         }
     }
 
-    async fn resolve_image_identity(&self, image: &str) -> Result<Option<String>, RuntimeError> {
+    fn image_check_job(
+        &self,
+        image: &str,
+        release_annotations: Option<&BTreeMap<String, String>>,
+    ) -> (String, Job) {
         // A kubelet pull is the shared Registry truth for base identity and
         // persisted Ready verification; builder-local cache is never trusted.
         let fingerprint = blake3::hash(image.as_bytes()).to_hex().to_string();
         let name = format!("awaken-image-check-{}", &fingerprint[..20]);
+        let release_annotations = release_annotations.cloned();
         let job = Job {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
+                annotations: release_annotations.clone(),
                 ..Default::default()
             },
             spec: Some(JobSpec {
@@ -481,6 +540,10 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 backoff_limit: Some(0),
                 ttl_seconds_after_finished: Some(60),
                 template: PodTemplateSpec {
+                    metadata: release_annotations.map(|annotations| ObjectMeta {
+                        annotations: Some(annotations),
+                        ..Default::default()
+                    }),
                     spec: Some(PodSpec {
                         automount_service_account_token: Some(false),
                         containers: vec![Container {
@@ -506,6 +569,15 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             }),
             ..Default::default()
         };
+        (name, job)
+    }
+
+    async fn resolve_image_identity(
+        &self,
+        image: &str,
+        release_annotations: Option<&BTreeMap<String, String>>,
+    ) -> Result<Option<String>, RuntimeError> {
+        let (name, job) = self.image_check_job(image, release_annotations);
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
         if let Err(error) = jobs.create(&PostParams::default(), &job).await
@@ -561,22 +633,12 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 tokio::time::Instant::now() >= deadline,
             ) {
                 ImageCheckDisposition::Available => {
-                    let identity = listed.items.into_iter().find_map(|pod| {
-                        pod.status?
-                            .container_statuses?
-                            .into_iter()
-                            .find(|status| status.name == "verify")
-                            .map(|status| status.image_id)
-                    });
+                    let identity = image_check_identity(listed.items);
                     // The Job's TTL is the cleanup owner. Retaining a successful
                     // deterministic observation lets concurrent readiness,
                     // warmup, and registration callers share one kubelet result
                     // instead of deleting and recreating the same Job in a loop.
-                    return Ok(identity.map(|identity| {
-                        identity
-                            .split_once("://")
-                            .map_or(identity.clone(), |(_, reference)| reference.to_owned())
-                    }));
+                    return Ok(identity);
                 }
                 ImageCheckDisposition::Continue => {}
                 ImageCheckDisposition::Missing => {
@@ -602,7 +664,7 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
         if let Some(identity) = immutable_registry_identity(Some(reference.to_owned())) {
             return Ok(identity);
         }
-        self.resolve_image_identity(reference)
+        self.resolve_image_identity(reference, None)
             .await?
             .filter(|identity| identity.contains("@sha256:"))
             .ok_or_else(|| backend("kubelet returned no immutable base-image digest"))
@@ -617,26 +679,39 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
         if packages.is_empty() {
             return Ok(base_image.to_owned());
         }
-        if network.is_restricted() {
-            return Err(backend(
-                "Kubernetes package builder cannot prove a no-bypass restricted build network",
-            ));
-        }
+        require_unrestricted_package_build(network)?;
         let (config, job, destination) = self.build_objects(base_image, packages)?;
         // The destination tag is a content fingerprint.  Coordinator build
         // records can be rebuilt after restart, but the shared Registry is the
         // cross-process source of truth.  Reuse its immutable digest instead of
         // downloading and reinstalling the same package set on every restart.
-        if let Some(image) =
-            immutable_registry_identity(self.resolve_image_identity(&destination).await?)
-        {
+        let release_annotations = job.metadata.annotations.clone();
+        if let Some(image) = immutable_registry_identity(
+            self.resolve_image_identity(&destination, release_annotations.as_ref())
+                .await?,
+        ) {
             return Ok(image);
         }
         self.run_job(config, job).await
     }
 
-    async fn package_image_available(&self, image: &str) -> Result<bool, RuntimeError> {
-        Ok(self.resolve_image_identity(image).await?.is_some())
+    async fn package_image_available(
+        &self,
+        base_image: &str,
+        packages: &pc::PackageRequirements,
+        network: &pc::NetworkPolicy,
+        image: &str,
+    ) -> Result<bool, RuntimeError> {
+        if packages.is_empty() {
+            return Ok(self.resolve_image_identity(image, None).await?.is_some());
+        }
+        require_unrestricted_package_build(network)?;
+        let (_, job, destination) = self.build_objects(base_image, packages)?;
+        let release_annotations = job.metadata.annotations;
+        let observed = self
+            .resolve_image_identity(&destination, release_annotations.as_ref())
+            .await?;
+        Ok(package_image_matches_stored_identity(observed, image))
     }
 }
 
@@ -644,9 +719,165 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
 mod tests {
     use super::{
         IMAGE_CHECK_TIMEOUT_SECS, ImageCheckDisposition, ImageCheckObservation,
-        image_check_client_timeout, image_check_disposition, image_check_observation,
-        immutable_registry_identity, terminal_image_pull_reason,
+        K8sPackageImageProvisioner, PACKAGE_IMAGE_DESTINATION_ANNOTATION,
+        PACKAGE_RECIPE_FINGERPRINT_ANNOTATION, image_check_client_timeout, image_check_disposition,
+        image_check_identity, image_check_observation, immutable_registry_identity,
+        package_image_matches_stored_identity, terminal_image_pull_reason,
     };
+
+    fn test_builder() -> K8sPackageImageProvisioner {
+        crate::k8s::install_rustls_crypto_provider();
+        let config = kube::Config::new("http://127.0.0.1:1/".parse().unwrap());
+        let client = kube::Client::try_from(config).unwrap();
+        K8sPackageImageProvisioner::new(
+            client,
+            "awaken-system",
+            "registry.local:5000/environments",
+            vec!["registry-auth".into()],
+            true,
+        )
+        .unwrap()
+        .with_forward_proxy(crate::ForwardProxy {
+            url: "http://proxy.internal:8080".into(),
+        })
+        .unwrap()
+    }
+
+    fn package_requirements() -> awaken_provisioning_contract::PackageRequirements {
+        awaken_provisioning_contract::PackageRequirements {
+            managers: [("npm".into(), vec!["@playwright/mcp@latest".into()])]
+                .into_iter()
+                .collect(),
+            resolution_id: Some("env-browser:3".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn package_build_objects_expose_only_secret_free_release_correlation() {
+        /* Release-correlation cause/effect table — R1:
+         * C1 one deterministic recipe is pushed to one generated destination;
+         * C2 the same Job carries private recipe, proxy, Registry auth, and base
+         * image inputs. Effects: E1 Job and Pod template expose the exact recipe
+         * fingerprint and destination; E2 no C2 material enters annotations.
+         * Rule R1=C1+C2=>E1+E2. The termination message remains the immutable
+         * build result; these two fields are correlation only, not another build
+         * record or completion authority.
+         */
+        let builder = test_builder();
+        let packages = package_requirements();
+        let (_, job, destination) = builder
+            .build_objects("registry.local/base@sha256:exact", &packages)
+            .unwrap();
+        let fingerprint = destination
+            .rsplit_once(':')
+            .map(|(_, fingerprint)| fingerprint)
+            .unwrap();
+        let job_annotations = job.metadata.annotations.as_ref().unwrap();
+        let pod_annotations = job
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.metadata.as_ref())
+            .and_then(|metadata| metadata.annotations.as_ref())
+            .unwrap();
+
+        for annotations in [job_annotations, pod_annotations] {
+            assert_eq!(
+                annotations
+                    .get(PACKAGE_RECIPE_FINGERPRINT_ANNOTATION)
+                    .map(String::as_str),
+                Some(fingerprint),
+                "R1/E1 exact deterministic recipe identity"
+            );
+            assert_eq!(
+                annotations
+                    .get(PACKAGE_IMAGE_DESTINATION_ANNOTATION)
+                    .map(String::as_str),
+                Some(destination.as_str()),
+                "R1/E1 exact BuildKit push target"
+            );
+            assert_eq!(annotations.len(), 2, "R1/E2 no parallel metadata payload");
+            assert!(
+                annotations.values().all(|value| {
+                    !value.contains("@playwright/mcp")
+                        && !value.contains("proxy.internal")
+                        && !value.contains("registry-auth")
+                        && !value.contains("registry.local/base")
+                }),
+                "R1/E2 recipes, proxy coordinates, auth Secret names, and base inputs stay private"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn package_destination_retry_probe_preserves_release_correlation_and_digest() {
+        /* Release-correlation cause/effect table — R2/R3:
+         * C1 the destination is missing, so the existing BuildKit Job runs;
+         * C2 BuildKit pushed it but the process crashed before its durable
+         * receipt, so the retry reaches the existing destination image-check;
+         * C3 a base/general image is checked outside package realization.
+         * Effects: E1 the Build Job/Pod owns the recipe+destination pair; E2 the
+         * check Job/Pod reuses that exact pair and kubelet imageID recovers the
+         * immutable digest; E3 a generic check carries no package provenance.
+         * Rules: R2=C1=>E1; R3=C2=>E2; R4=C3=>E3.
+         */
+        let builder = test_builder();
+        let packages = package_requirements();
+        let (_, build_job, destination) = builder
+            .build_objects("registry.local/base@sha256:exact", &packages)
+            .unwrap();
+        let build_annotations = build_job.metadata.annotations.as_ref().unwrap();
+        let (_, retry_check) = builder.image_check_job(&destination, Some(build_annotations));
+        let retry_annotations = retry_check.metadata.annotations.as_ref().unwrap();
+        let retry_pod_annotations = retry_check
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.metadata.as_ref())
+            .and_then(|metadata| metadata.annotations.as_ref())
+            .unwrap();
+        let retry_image = retry_check
+            .spec
+            .as_ref()
+            .and_then(|spec| spec.template.spec.as_ref())
+            .and_then(|spec| spec.containers.first())
+            .and_then(|container| container.image.as_deref());
+
+        assert_eq!(retry_annotations, build_annotations, "R3/E2 Job join");
+        assert_eq!(retry_pod_annotations, build_annotations, "R3/E2 Pod join");
+        assert_eq!(retry_image, Some(destination.as_str()), "R3/E2 target");
+
+        let digest = "a".repeat(64);
+        let immutable = format!("registry.local:5000/environments/awaken-packages@sha256:{digest}");
+        let observed = image_check_identity(vec![k8s_openapi::api::core::v1::Pod {
+            status: Some(k8s_openapi::api::core::v1::PodStatus {
+                container_statuses: Some(vec![k8s_openapi::api::core::v1::ContainerStatus {
+                    image: destination.clone(),
+                    image_id: format!("containerd://{immutable}"),
+                    name: "verify".into(),
+                    ready: false,
+                    restart_count: 0,
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        assert_eq!(
+            immutable_registry_identity(observed),
+            Some(immutable),
+            "R3/E2 exact kubelet digest"
+        );
+
+        let (_, generic_check) = builder.image_check_job("registry.local/base:mutable", None);
+        assert!(generic_check.metadata.annotations.is_none(), "R4/E3 Job");
+        assert!(
+            generic_check
+                .spec
+                .as_ref()
+                .and_then(|spec| spec.template.metadata.as_ref())
+                .is_none(),
+            "R4/E3 Pod"
+        );
+    }
 
     #[test]
     fn image_check_lifecycle_has_one_shared_success_and_bounded_retry_path() {
@@ -709,6 +940,43 @@ mod tests {
             )),
             None,
             "R2: a malformed digest must fail closed"
+        );
+    }
+
+    #[test]
+    fn demand_aware_availability_accepts_only_the_exact_stored_digest() {
+        // Cause/effect decision table for the side-effect-free availability
+        // decision after the annotated destination probe: R1 exact immutable
+        // kubelet imageID equals the Ready row -> available; R2 destination is
+        // missing -> unavailable; R3 another digest is observed -> unavailable;
+        // R4 the stored identity is mutable/malformed -> unavailable. The
+        // Coordinator test owns the resulting Ready invalidation and proves no
+        // build occurs outside the claim/lease worker; build_objects tests own
+        // the exact recipe/destination annotations supplied to the probe.
+        let digest = "a".repeat(64);
+        let stored = format!("registry.local/environments/awaken-packages@sha256:{digest}");
+        assert!(
+            package_image_matches_stored_identity(Some(stored.clone()), &stored),
+            "R1 exact destination digest"
+        );
+        assert!(
+            !package_image_matches_stored_identity(None, &stored),
+            "R2 missing destination"
+        );
+        let drifted = format!(
+            "registry.local/environments/awaken-packages@sha256:{}",
+            "b".repeat(64)
+        );
+        assert!(
+            !package_image_matches_stored_identity(Some(drifted), &stored),
+            "R3 digest drift"
+        );
+        assert!(
+            !package_image_matches_stored_identity(
+                Some("registry.local/environments/awaken-packages:mutable".into()),
+                "registry.local/environments/awaken-packages:mutable",
+            ),
+            "R4 mutable stored identity"
         );
     }
 

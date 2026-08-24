@@ -144,6 +144,9 @@ async function startHostLoginProfile() {
   fs.writeFileSync(config, [
     `data_dir = ${JSON.stringify(path.join(temp, 'data'))}`,
     `bind = ${JSON.stringify(`127.0.0.1:${port}`)}`,
+    // This profile reads the local bootstrap admin token; Cloud login is a
+    // separate live gate and must not become an implicit prerequisite.
+    'identity_mode = "self-managed"',
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.

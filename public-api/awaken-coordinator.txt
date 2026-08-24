@@ -28,27 +28,45 @@ pub use awaken_coordinator::resources_router
 pub mod awaken_coordinator::admin
 pub fn awaken_coordinator::admin::readyz(bool) -> (http::status::StatusCode, &'static str)
 pub mod awaken_coordinator::application_access
+pub enum awaken_coordinator::application_access::ApplicationAccessIssuanceError
+pub awaken_coordinator::application_access::ApplicationAccessIssuanceError::AuthorityUnavailable
+pub awaken_coordinator::application_access::ApplicationAccessIssuanceError::Conflict(&'static str)
+pub awaken_coordinator::application_access::ApplicationAccessIssuanceError::Invalid(&'static str)
+pub awaken_coordinator::application_access::ApplicationAccessIssuanceError::SessionNotFound
+pub awaken_coordinator::application_access::ApplicationAccessIssuanceError::SessionUnavailable
 pub struct awaken_coordinator::application_access::CreateApplicationThreadBinding
 pub awaken_coordinator::application_access::CreateApplicationThreadBinding::external_thread_id: alloc::string::String
 pub awaken_coordinator::application_access::CreateApplicationThreadBinding::managed_session_id: alloc::string::String
 pub struct awaken_coordinator::application_access::CreateApplicationToken
-pub awaken_coordinator::application_access::CreateApplicationToken::actor_key: core::option::Option<alloc::string::String>
-pub awaken_coordinator::application_access::CreateApplicationToken::application_scope: alloc::string::String
-pub awaken_coordinator::application_access::CreateApplicationToken::authority_id: alloc::string::String
 pub awaken_coordinator::application_access::CreateApplicationToken::expires_in_seconds: u64
 pub awaken_coordinator::application_access::CreateApplicationToken::operations: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::CreateApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::CreateApplicationToken::thread_bindings: alloc::vec::Vec<awaken_coordinator::application_access::CreateApplicationThreadBinding>
 pub struct awaken_coordinator::application_access::IssuedApplicationToken
 pub awaken_coordinator::application_access::IssuedApplicationToken::access_token: alloc::string::String
-pub awaken_coordinator::application_access::IssuedApplicationToken::application_scope: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::expires_at: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::id: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::object: alloc::string::String
 pub awaken_coordinator::application_access::IssuedApplicationToken::operations: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::protocols: alloc::vec::Vec<alloc::string::String>
 pub awaken_coordinator::application_access::IssuedApplicationToken::token_type: alloc::string::String
-pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
+pub const awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS: u64
+pub async fn awaken_coordinator::application_access::issue_application_access(&awaken_coordinator::application_access_store::ApplicationAccessStore, &dyn awaken_session_contract::session_repo::ManagedSessionRepository, &str, awaken_coordinator::application_access::CreateApplicationToken) -> core::result::Result<awaken_coordinator::application_access::IssuedApplicationToken, awaken_coordinator::application_access::ApplicationAccessIssuanceError>
+pub fn awaken_coordinator::application_access::router(alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, alloc::sync::Arc<dyn awaken_session_contract::session_repo::ManagedSessionRepository>, alloc::string::String) -> axum::routing::Router
+pub mod awaken_coordinator::application_access_store
+pub enum awaken_coordinator::application_access_store::ApplicationAccessRepositoryError
+pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Corrupt(alloc::string::String)
+pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Invalid(alloc::string::String)
+pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::NotFound
+pub awaken_coordinator::application_access_store::ApplicationAccessRepositoryError::Unavailable(alloc::string::String)
+pub struct awaken_coordinator::application_access_store::ApplicationAccessStore
+impl awaken_coordinator::application_access_store::ApplicationAccessStore
+pub async fn awaken_coordinator::application_access_store::ApplicationAccessStore::connect_existing_postgres(&str) -> core::result::Result<Self, awaken_coordinator::application_access_store::ApplicationAccessRepositoryError>
+pub async fn awaken_coordinator::application_access_store::ApplicationAccessStore::connect_postgres(&str) -> core::result::Result<Self, awaken_coordinator::application_access_store::ApplicationAccessRepositoryError>
+pub async fn awaken_coordinator::application_access_store::ApplicationAccessStore::migrate_postgres(&str) -> core::result::Result<(), awaken_coordinator::application_access_store::ApplicationAccessRepositoryError>
+pub async fn awaken_coordinator::application_access_store::ApplicationAccessStore::open_sqlite(&str) -> core::result::Result<Self, awaken_coordinator::application_access_store::ApplicationAccessRepositoryError>
+impl awaken_authz_enforce::ApplicationAccessAuthenticator for awaken_coordinator::application_access_store::ApplicationAccessStore
+pub fn awaken_coordinator::application_access_store::ApplicationAccessStore::authenticate<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_authz_enforce::ApplicationIdentity, awaken_authz_enforce::ApplicationAuthenticationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub mod awaken_coordinator::console
 pub fn awaken_coordinator::console::mount(axum::routing::Router, &std::path::Path) -> axum::routing::Router
 pub mod awaken_coordinator::control_service_boundary
@@ -149,7 +167,7 @@ pub awaken_coordinator::CoordinatorComponent::private_router: axum::routing::Rou
 pub awaken_coordinator::CoordinatorComponent::router: axum::routing::Router
 pub awaken_coordinator::CoordinatorComponent::work_session_access: alloc::sync::Arc<awaken_protocol_managed::work_session_access::ManagedWorkSessionAccess>
 pub struct awaken_coordinator::CoordinatorDependencies
-pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>
+pub awaken_coordinator::CoordinatorDependencies::application_access: alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>
 pub awaken_coordinator::CoordinatorDependencies::default_workspace: alloc::string::String
 pub awaken_coordinator::CoordinatorDependencies::deployment_application: alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>
 pub awaken_coordinator::CoordinatorDependencies::deployment_session_launcher: alloc::sync::Arc<dyn awaken_deployment_application::DeploymentSessionLauncher>
@@ -181,7 +199,6 @@ pub awaken_coordinator::CoordinatorPersistence::run_recovery: core::option::Opti
 pub awaken_coordinator::CoordinatorPersistence::runtime_authority: alloc::sync::Arc<dyn awaken_runtime_host::authority::RuntimeAuthority>
 pub awaken_coordinator::CoordinatorPersistence::worker_directory: awaken_coordinator::WorkerDirectoryHandle
 pub struct awaken_coordinator::ManagedApplicationServices
-pub awaken_coordinator::ManagedApplicationServices::application_access: core::option::Option<alloc::sync::Arc<awaken_authz_enforce::ApplicationAccessStore>>
 pub awaken_coordinator::ManagedApplicationServices::dream_process_store: alloc::sync::Arc<dyn awaken_session_contract::dream::DreamProcessStore>
 pub awaken_coordinator::ManagedApplicationServices::executable_projection_refresh: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::ExecutableProjectionRefresh>>
 pub awaken_coordinator::ManagedApplicationServices::model_inventory: core::option::Option<alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>>
@@ -213,10 +230,11 @@ pub fn awaken_coordinator::install_managed_lifecycle_delivery(&alloc::sync::Arc<
 pub fn awaken_coordinator::install_managed_lifecycle_delivery_with_deployments(&alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::lifecycle::LifecycleFactDelivery>>, &awaken_deployment_application::DeploymentApplication, &awaken_service_lifecycle::ServiceLifecycle) -> core::result::Result<alloc::sync::Arc<awaken_protocol_managed::lifecycle_delivery::ManagedLifecycleFactDelivery>, awaken_coordinator::ManagedLifecycleCompositionError>
 pub fn awaken_coordinator::install_platform_memory_data_plane(&awaken_runtime_host::host::SharedHost)
 pub async fn awaken_coordinator::migrate_postgres_coordinator_schema(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<(), alloc::string::String>
-pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, awaken_coordinator::ManagedApplicationServices, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, axum::routing::Router, axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
+pub fn awaken_coordinator::mount_with_managed_application_access_models_and_dreams(alloc::sync::Arc<awaken_runtime_host::host::SharedHost>, alloc::sync::Arc<awaken_protocol_managed::state::managed_state::ManagedState>, alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>, awaken_coordinator::ManagedApplicationServices, awaken_coordinator::ManagedRoutingExtensions) -> core::result::Result<(axum::routing::Router, axum::routing::Router, axum::routing::Router, axum::routing::Router, alloc::sync::Arc<awaken_dream_application::DreamApplication>), awaken_coordinator::WorkerTransportBuildError>
 pub async fn awaken_coordinator::open_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub async fn awaken_coordinator::open_existing_coordinator_persistence(&awaken_runtime_host::deployment_config::DeploymentConfig) -> core::result::Result<awaken_coordinator::CoordinatorPersistence, alloc::string::String>
 pub fn awaken_coordinator::postgres_local_commit(alloc::sync::Arc<awaken_store_postgres::PostgresCommitCoordinator>) -> alloc::sync::Arc<dyn awaken_runtime_host::authority::LocalCommit>
 pub async fn awaken_coordinator::prepare_local_acp(awaken_acp_application::LocalAcpPreparation) -> core::result::Result<awaken_acp_application::PreparedAcpCapabilities, alloc::string::String>
+pub fn awaken_coordinator::register_application_access_retention(&awaken_service_lifecycle::ServiceLifecycle, alloc::sync::Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>)
 pub async fn awaken_coordinator::restore_deployment_application(alloc::sync::Arc<dyn awaken_deployment_contract::DeploymentRepository>) -> core::result::Result<alloc::sync::Arc<awaken_deployment_application::DeploymentApplication>, awaken_coordinator::CoordinatorBuildError>
 pub type awaken_coordinator::WorkerDirectoryHandle = alloc::sync::Arc<dyn awaken_worker_contract::WorkerDirectory>

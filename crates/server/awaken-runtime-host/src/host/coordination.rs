@@ -766,7 +766,11 @@ impl SharedHost {
             });
         let commit = self.commit_for_read(session_id).await?;
         let root_thread = ThreadId(session_id.to_string());
-        let Some(claimed_run) = commit.latest_run(&root_thread) else {
+        let Some(claimed_run) = commit
+            .authoritative_latest_run(&root_thread)
+            .await
+            .map_err(HostError::internal)?
+        else {
             return Ok(Vec::new());
         };
         // The claim only selects the recovery port's required Run coordinate.
@@ -810,7 +814,11 @@ impl SharedHost {
         thread_id: &ThreadId,
     ) -> Result<Option<RunRecoverySnapshot>, HostError> {
         let commit = self.commit_for_read(session_id).await?;
-        let Some(latest_run) = commit.latest_run(thread_id) else {
+        let Some(latest_run) = commit
+            .authoritative_latest_run(thread_id)
+            .await
+            .map_err(HostError::internal)?
+        else {
             return Ok(None);
         };
         commit
@@ -1204,11 +1212,13 @@ mod tests {
         // prefix; E3 the snapshot retains the backend-wide cursor while excluding
         // unrelated logical facts; E4 ManagedHost delegates to this same read;
         // E5 the registered-Worker recovery adapter preserves the guarded parent
-        // partition while retaining the child's logical identity.
+        // partition while retaining the child's logical identity; C4 the caller
+        // supplies an exact present/absent Run id. E6 exact recovery reuses the
+        // same prefix for the present Run and fails closed for the absent Run.
         //
         // | Rule | C1 | C2 | C3 | Effects       |
         // | R1   | N  | -  | -  | E1            |
-        // | R2   | Y  | Y  | Y  | E2,E3,E4,E5   |
+        // | R2   | Y  | Y  | Y  | E2,E3,E4,E5,E6 |
         let session_id = "snapshot-parent-session";
         let child_id = ThreadId("snapshot-logical-child".into());
         let child_run = RunId("snapshot-child-run".into());
@@ -1340,6 +1350,24 @@ mod tests {
         assert_eq!(snapshot.thread_version, 2, "R2/E3 child-only version");
         assert_eq!(snapshot.store_cursor, 3, "R2/E3 parent-store cursor");
         assert_eq!(snapshot.next_commit_ordinal, 2, "R2/E2 claimed ordinal");
+        let exact_snapshot = managed
+            .session_thread_run_recovery_snapshot(session_id, &child_id.0, &child_run)
+            .await
+            .expect("R2 ManagedHost exact read")
+            .expect("R2 exact committed child Run");
+        assert_eq!(exact_snapshot, snapshot, "R2/E6 exact recovery authority");
+        assert_eq!(
+            managed
+                .session_thread_run_recovery_snapshot(
+                    session_id,
+                    &child_id.0,
+                    &RunId("snapshot-absent-run".into()),
+                )
+                .await
+                .expect("R2 absent exact read"),
+            None,
+            "R2/E6 absent exact Run fails closed"
+        );
         let worker_snapshot = host
             .worker_recovery_source()
             .recovery_snapshot_in_session(&ThreadId(session_id.into()), &child_id, &child_run)
@@ -1483,7 +1511,9 @@ mod tests {
             }],
             latest_run_id: Some(run_id.clone()),
             messages: vec![assistant, published_result],
+            message_commit_cursors: Vec::new(),
             state: vec![batch_state],
+            state_commit_cursors: vec![7],
             events: Vec::new(),
             resume_tickets: Vec::new(),
             thread_version: 2,

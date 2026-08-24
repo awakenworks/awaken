@@ -83,6 +83,8 @@ awaken-iam-host = { workspace = true }
 # The embedded IAM token/binding rows persist under typed data_dir/iam.sqlite;
 # same rusqlite generation as every other sqlite store in the workspace.
 rusqlite = { workspace = true }
+awaken-scoped-migration.workspace = true
+awaken-scoped-migration-sqlite.workspace = true
 awaken-agent-contract.workspace = true
 awaken-runtime-contract.workspace = true
 awaken-ext-mcp.workspace = true
@@ -105,6 +107,8 @@ async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+base64 = "0.22"
+uuid = { version = "1", features = ["v7"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal", "sync"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres"] }

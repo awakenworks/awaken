@@ -29,9 +29,19 @@ impl Pending {
     pub fn from_resume_ticket(
         ticket: &awaken_agent_contract::agent::awaiting::ResumeTicket,
     ) -> Option<Self> {
+        Self::from_await_target(ticket.target())
+    }
+
+    /// Rebuild the same externally answerable projection from a historical
+    /// committed Awaiting fact after its active resume ticket has been consumed.
+    /// Both live and cold paths share this decoder so they cannot classify the
+    /// closed target differently.
+    pub fn from_await_target(
+        target: &awaken_agent_contract::agent::awaiting::AwaitTarget,
+    ) -> Option<Self> {
         use awaken_agent_contract::agent::awaiting::{AwaitTarget, ToolAwaitReason};
 
-        match ticket.target() {
+        match target {
             AwaitTarget::ToolCall {
                 reason: reason @ (ToolAwaitReason::Permission | ToolAwaitReason::ClientExecution),
                 call_id,
@@ -45,7 +55,7 @@ impl Pending {
             AwaitTarget::RemoteInput { call_id, .. } => Some(Self {
                 tool_use_id: call_id.clone(),
                 name: "agent_input".to_string(),
-                input: serde_json::json!({ "reason": ticket.reason().as_stream_str() }),
+                input: serde_json::json!({ "reason": target.reason().as_stream_str() }),
                 client_executed: true,
             }),
             AwaitTarget::ToolCall {
@@ -77,6 +87,10 @@ pub struct DelegatedRunSnapshot {
     pub coordinated_thread_ids: Vec<awaken_agent_contract::agent::thread::Id>,
     /// Monotonic committed-state position from which `delegated_runs` was rebuilt.
     pub watermark: u64,
+    /// Backend-wide commit high-water read only after terminal quiescence. This
+    /// is the immutable first-listability anchor for the Session terminal wire
+    /// projection; it is intentionally distinct from `commands.len()`.
+    pub runtime_commit_cursor: u64,
 }
 
 /// Session-approved delivery that resumes one exact committed budget pause.
@@ -742,6 +756,11 @@ pub trait SessionRuntime: Send + Sync {
             delegated_runs: self.delegated_runs(thread).await?,
             coordinated_thread_ids: Vec::new(),
             watermark: 0,
+            runtime_commit_cursor: self
+                .session_thread_recovery_snapshot(thread, thread)
+                .await?
+                .map(|snapshot| snapshot.store_cursor)
+                .unwrap_or_default(),
         })
     }
 
@@ -988,6 +1007,35 @@ pub trait SessionRuntime: Send + Sync {
         ))
     }
 
+    /// Read one exact committed Run through the same internally consistent
+    /// logical-Thread prefix. Settlement already owns the immutable Run id from
+    /// its guarded dispatch and must not rediscover it through a process-local
+    /// "latest Run" projection.
+    ///
+    /// The compatibility default filters the existing Thread snapshot. Shared
+    /// durable adapters override this method so a cold replica can query its
+    /// authoritative [`RunRecoverySource`](awaken_agent_contract::thread::read::recovery::RunRecoverySource)
+    /// directly by `run_id`.
+    async fn session_thread_run_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &RunId,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        let Some(mut snapshot) = self
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !snapshot.runs.iter().any(|run| &run.id == run_id) {
+            return Ok(None);
+        }
+        snapshot.claimed_run_id = run_id.clone();
+        Ok(Some(snapshot))
+    }
+
     /// Read committed Run lifecycle facts after `cursor`. The commit log remains
     /// the sole authority; Managed uses this projection to observe Runs accepted
     /// through AI SDK, AG-UI, A2A, or another Coordinator replica.
@@ -1090,7 +1138,7 @@ pub trait SessionRuntime: Send + Sync {
         _description: &str,
         _rubric: &str,
         _max_iterations: u32,
-    ) -> Result<(), RunError> {
+    ) -> Result<u64, RunError> {
         Err(RunError::unavailable(
             "runtime does not implement durable Outcome preparation",
         ))
@@ -1106,7 +1154,8 @@ pub trait SessionRuntime: Send + Sync {
     ) -> Result<OutcomeDrive, RunError> {
         let outcome_id =
             crate::session_outcome_convenience_id(thread, description, rubric, max_iterations);
-        self.prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
+        let _ = self
+            .prepare_outcome(thread, &outcome_id, description, rubric, max_iterations)
             .await?;
         self.continue_outcome(thread)
             .await?

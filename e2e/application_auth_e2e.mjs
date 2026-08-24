@@ -47,15 +47,23 @@ async function request(base, method, route, body, token) {
   };
 }
 
-async function mint(base, serviceToken, scope, managedSessionId, externalThreadId = 'shared') {
+// Mint-helper cause/effect rule. C1 the trusted service bearer is valid; C2 the
+// exact existing Managed Session is supplied; C3 the AI SDK protocol, run/read
+// operations, and one explicit external-thread binding are supported; C4 the
+// requested TTL is within policy. Effect E1 is one 201 response carrying the
+// short-lived `aat_` capability used by the remaining E2E assertions.
+//
+// | Rule | C1 | C2 | C3 | C4 | Effect |
+// | MINT-E2E1 | T | T | T | T | E1 |
+//
+// Negative issuance combinations remain owned by the route/store contract
+// tests; this production-composition E2E owns the successful boundary.
+async function mint(base, serviceToken, managedSessionId, externalThreadId = 'shared') {
   const response = await request(
     base,
     'POST',
     '/v1/application-access-tokens',
     {
-      authority_id: 'e2e-customer-backend',
-      application_scope: scope,
-      actor_key: 'opaque-e2e-user',
       protocols: ['ai-sdk'],
       operations: ['thread.run', 'thread.messages.read'],
       thread_bindings: [{
@@ -67,7 +75,7 @@ async function mint(base, serviceToken, scope, managedSessionId, externalThreadI
     serviceToken,
   );
   assert.equal(response.status, 201, `mint application token: ${response.text}`);
-  assert.ok(response.body.access_token.startsWith('sk-awaken-'));
+  assert.ok(response.body.access_token.startsWith('aat_'));
   return response.body;
 }
 
@@ -195,7 +203,7 @@ async function main() {
     const beforeRuns = await managed.beta.sessions.list({ betas: BETAS });
     const sessionIdsBeforeRuns = beforeRuns.data.map((session) => session.id).sort();
 
-    const projectA = await mint(base, serviceToken, 'project-a', sessionA.id);
+    const projectA = await mint(base, serviceToken, sessionA.id);
     response = await request(
       base,
       'POST',
@@ -223,7 +231,7 @@ async function main() {
     assert.match(assistantText(clientA), /message from project A/);
     pass('official AI SDK Chat streams through the application-authenticated route');
 
-    const projectB = await mint(base, serviceToken, 'project-b', sessionB.id);
+    const projectB = await mint(base, serviceToken, sessionB.id);
     const clientB = chat(base, 'shared', projectB.access_token);
     await clientB.sendMessage({ text: 'message from project B' });
     assert.match(assistantText(clientB), /message from project B/);

@@ -3,7 +3,6 @@
 
 use super::*;
 use crate::types::{EvaluatedPermission, SpanModelUsage};
-#[cfg(test)]
 use awaken_agent_contract::RunLifecycleCursor;
 use awaken_agent_contract::{RunLifecycleEvent, RunLifecycleEventKind};
 use awaken_ext_builtin_tools::SEND_TO_AGENT;
@@ -39,15 +38,37 @@ fn durable_inbound_projections(
             batch
                 .events
                 .iter()
-                .map(move |entry| DurableInboundProjection {
-                    event: Event {
-                        id: durable_inbound_event_id(session_id, entry.event.operation_id()),
-                        kind: public_inbound_kind_from_command(session_id, &entry.event),
-                        processed_at: entry.processed.then(|| PROCESSED_AT.to_string()),
-                    },
-                })
+                // `processed && no anchor` is the isolated pre-anchor schema.
+                // Preserve its functional history at the legacy prefix; only
+                // new unprocessed/unanchored receipts stay non-listable.
+                .filter(|entry| entry.projection_anchor.is_some() || entry.processed)
+                .map(move |entry| inbound_projection(session_id, entry))
         })
         .collect()
+}
+
+fn accepted_inbound_receipts(
+    session_id: &str,
+    batch: &awaken_session_contract::SessionEventBatch,
+) -> Vec<DurableInboundProjection> {
+    batch
+        .events
+        .iter()
+        .map(|entry| inbound_projection(session_id, entry))
+        .collect()
+}
+
+fn inbound_projection(
+    session_id: &str,
+    entry: &awaken_session_contract::SessionEventEntry,
+) -> DurableInboundProjection {
+    DurableInboundProjection {
+        event: Event {
+            id: durable_inbound_event_id(session_id, entry.event.operation_id()),
+            kind: public_inbound_kind_from_command(session_id, &entry.event),
+            processed_at: entry.processed.then(|| PROCESSED_AT.to_string()),
+        },
+    }
 }
 
 fn public_inbound_kind_from_command(
@@ -169,6 +190,7 @@ struct ChildTranscriptProjection<'a> {
     latest_run_state: Option<&'a awaken_agent_contract::agent::run::RunState>,
     pending: Option<&'a Pending>,
     pending_source_run_id: Option<&'a awaken_agent_contract::agent::run::Id>,
+    historical_pending: &'a std::collections::HashMap<RunLifecycleCursor, Pending>,
 }
 
 /// One borrowed view of the already-read coordination facts consumed by the
@@ -186,6 +208,7 @@ struct DelegationProjectionEvidence<'a> {
     latest_run_states:
         &'a std::collections::HashMap<String, awaken_agent_contract::agent::run::RunState>,
     pending: &'a std::collections::HashMap<String, Pending>,
+    historical_pending: &'a std::collections::HashMap<RunLifecycleCursor, Pending>,
     dispositions: &'a std::collections::HashMap<String, awaken_agent_contract::ThreadDisposition>,
     usage: &'a std::collections::HashMap<String, Option<crate::types::SessionThreadUsage>>,
 }
@@ -372,6 +395,9 @@ enum ManagedMultiagentEventProvenance<'a> {
     },
     LifecyclePrefix {
         cursor: u64,
+    },
+    RuntimeInterval {
+        interval_id: &'a str,
     },
     BudgetReach {
         generation: u64,

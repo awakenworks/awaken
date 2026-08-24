@@ -1,8 +1,7 @@
 //! Session-root list-cost admission and cumulative usage settlement.
 
 use awaken_session_contract::{
-    ManagedBudgetUsageCursor, ManagedLifecycleFact, PersistedSession, SessionBudgetState,
-    SessionUsage,
+    ManagedBudgetUsageCursor, ManagedLifecycleFact, PersistedSession, SessionUsage,
 };
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
@@ -26,12 +25,6 @@ impl SessionApplication {
                 .get(session_id)
                 .await
                 .map_err(repository_failure)?;
-            if matches!(session.budget, SessionBudgetState::Absent) {
-                return Ok(BudgetSettlementOutcome {
-                    session,
-                    reached_now: false,
-                });
-            }
             let fallback_model = session
                 .frozen_baseline()
                 .map(|baseline| baseline.execution_model_ref.clone())
@@ -41,17 +34,30 @@ impl SessionApplication {
                     )
                 })?;
             let was_admissible = session.budget.can_admit_model_request();
+            // Historical rows recorded the unconditional cursor only inside a
+            // configured budget. Seed the new neutral root projection from that
+            // same fact without inventing a migration ledger.
+            if let Some(legacy) = session.budget.usage_cursor()
+                && session.usage_cursor == ManagedBudgetUsageCursor::default()
+            {
+                session.usage_cursor = legacy.clone();
+            }
             let active_seconds = session
-                .budget
-                .usage_cursor()
-                .map_or(usage.active_seconds, |cursor| {
-                    cursor.active_seconds.max(usage.active_seconds)
-                });
+                .usage_cursor
+                .active_seconds
+                .max(usage.active_seconds);
             let mut usage_cursor =
                 ManagedBudgetUsageCursor::from_session_usage(&usage, Some(fallback_model.as_str()))
                     .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
             usage_cursor.active_seconds = active_seconds;
-            let usage_changed = session
+            if !usage_cursor.is_at_least(&session.usage_cursor) {
+                return Err(SessionMutationError::Unavailable(
+                    "cumulative usage cannot move backwards".into(),
+                ));
+            }
+            let usage_changed = usage_cursor != session.usage_cursor;
+            session.usage_cursor = usage_cursor.clone();
+            let budget_usage_changed = session
                 .budget
                 .reconcile_cumulative_usage(usage_cursor)
                 .map_err(|error| SessionMutationError::Unavailable(error.to_string()))?;
@@ -72,7 +78,7 @@ impl SessionApplication {
             } else {
                 None
             };
-            if !usage_changed && !reached_now {
+            if !usage_changed && !budget_usage_changed && !reached_now {
                 return Ok(BudgetSettlementOutcome {
                     session,
                     reached_now: false,

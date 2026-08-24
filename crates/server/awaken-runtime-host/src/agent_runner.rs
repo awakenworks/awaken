@@ -7,369 +7,71 @@
 //! path. Auxiliary Agents may deliberately request transient identity and an
 //! isolated context because their work is outside the user-visible Run tree.
 //!
-//! [`run_configured_agent`] is the parameterized form: it resolves the Agent's
-//! own `ExecutableAgentSnapshot` (instructions, model, tools) from an [`AgentCatalog`] by
-//! id. [`run_agent`] is the thin wrapper that runs the default
+//! [`root_execution::run_configured_agent`] is the parameterized form: it resolves the Agent's
+//! own `ExecutableAgentSnapshot` (instructions, model, tools) from an
+//! [`AgentCatalog`](crate::agent_catalog::AgentCatalog) by id. [`run_agent`] is the thin wrapper that runs the default
 //! `assistant` config with a plain string prompt.
 
+#[cfg(test)]
 use std::collections::HashSet;
+#[cfg(test)]
 use std::sync::Arc;
 
 #[cfg(test)]
 use awaken_agent_contract::agent::delegation::DelegationOrigin;
 #[cfg(test)]
 use awaken_agent_contract::agent::run::Record as RunRecord;
+#[cfg(test)]
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
+#[cfg(test)]
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+#[cfg(test)]
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
 #[cfg(test)]
 use awaken_run_ingress::AnyDispatchStore;
+#[cfg(test)]
 use awaken_runtime::RunInput;
+#[cfg(test)]
 use awaken_runtime_contract::CancellationToken;
 #[cfg(test)]
 use awaken_runtime_contract::activation::RunActivation;
-use awaken_runtime_contract::delegation::RunDelegationService;
 #[cfg(test)]
 use awaken_runtime_contract::execution::RunAttemptExecutor;
-use awaken_runtime_contract::llm::{LlmExecutor, ThreadUsage};
+#[cfg(test)]
+use awaken_runtime_contract::llm::LlmExecutor;
 #[cfg(test)]
 use awaken_runtime_contract::resolved::Backend;
-use awaken_runtime_contract::resume::ResumeResult;
-use awaken_runtime_contract::runtime_context::RuntimeRunContext;
-use awaken_runtime_contract::tool::{RawTool, RawToolRegistry, ToolExecutor};
-use awaken_sandbox_local::LocalProvider;
 #[cfg(test)]
-use awaken_sandbox_local::LocalSandbox;
+use awaken_runtime_contract::resume::ResumeResult;
+#[cfg(test)]
+use awaken_runtime_contract::runtime_context::RuntimeRunContext;
+#[cfg(test)]
+use awaken_runtime_contract::tool::{RawToolRegistry, ToolExecutor};
+#[cfg(test)]
+use awaken_sandbox_local::LocalProvider;
 
+#[cfg(test)]
 use crate::agent_catalog::AgentCatalog;
-use crate::config::{
-    build_runtime_with_authorization, effective_tool_authorization, latest_assistant_text,
-    server_config,
-};
+#[cfg(test)]
+use crate::config::{effective_tool_authorization, server_config};
 
 mod child_execution;
+mod root_execution;
 pub(crate) use child_execution::{
     AgentRunBoundary, ChildAcpExecutorFactory, ChildExecutionAdapters, ChildRunRequest,
-    RunScheduler, child_attempt_executor, child_dispatch_request,
+    RunScheduler, child_attempt_executor, child_dispatch_request, configure_child_native_runtime,
     run_configured_agent_until_boundary,
 };
 #[cfg(test)]
 use child_execution::{
     await_committed_child_boundary, isolated_child_recovery_projection, settled_agent_boundary,
 };
-
-/// Where an Agent Run's tools execute. A delegated Agent shares the initiating
-/// Agent's sandbox by default, or receives a fresh sandbox when placement policy
-/// requests isolation. Sandbox placement does not alter Run semantics.
-pub(crate) enum AgentRunSandbox<'a> {
-    /// Reuse the parent agent's live sandbox — the default (`与主 agent 共用`).
-    Shared(&'a crate::session_environment::SessionEnvironment),
-    #[cfg(test)]
-    SharedLocal(&'a LocalSandbox),
-    /// Create a fresh, isolated sandbox for this Agent Run via the given provider.
-    Fresh(&'a LocalProvider),
-}
-
-/// Runtime capabilities of an Agent regardless of who initiated its Run.
-/// A child Run receives the target Agent's own delegation interface and roster;
-/// initiation never copies capabilities from the parent Agent.
-pub(crate) struct AgentExecution<'a> {
-    pub(crate) agent_id: &'a str,
-    pub(crate) model_ref: &'a str,
-    pub(crate) delegates: &'a HashSet<String>,
-    pub(crate) run_delegation: Option<Arc<dyn RunDelegationService>>,
-    pub(crate) context: Option<RuntimeRunContext>,
-    #[cfg(test)]
-    pub(crate) scheduler: Option<RunScheduler>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum AgentRunError {
-    #[error("{0}")]
-    Configuration(String),
-    #[error("{0}")]
-    Provisioning(String),
-    #[error(transparent)]
-    Runtime(awaken_runtime_contract::execution::Error),
-}
-
-/// Run the agent identified by `agent_id` — its config resolved from `catalog` —
-/// on its own `thread`, seeded with `seed`, to completion, returning its last
-/// assistant line **and its accumulated token usage**. A child Run receives the
-/// parent's resolved Runtime context and delegation executor, so it follows the
-/// ordinary Agent lifecycle; auxiliary work may request an isolated context.
-/// `cancellation`, when set, is forwarded so cancelling the parent cancels the
-/// child Run too.
-///
-/// The returned [`ThreadUsage`] follows `rollup`: under
-/// [`FoldIntoParent`](UsageRollup::FoldIntoParent) it is read from the child Run's own
-/// committed thread state so the caller can fold it into a parent thread's total;
-/// under [`Isolated`](UsageRollup::Isolated) the return is empty, so an auxiliary Agent's tokens are never
-/// counted against the session. Also empty when the model reported no usage.
-///
-/// This helper is intentionally auxiliary-only. Delegated children use
-/// [`run_configured_agent_until_boundary`] and the ordinary durable dispatch path;
-/// retaining optional child identity/origin arguments here would recreate the
-/// retired second child-execution path.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_configured_agent(
-    catalog: &AgentCatalog,
-    sandbox: AgentRunSandbox<'_>,
-    llm: Arc<dyn LlmExecutor>,
-    agent_id: &str,
-    thread: &str,
-    seed: impl Into<RunInput>,
-    extra_tools: Vec<Arc<dyn RawTool>>,
-    cancellation: Option<CancellationToken>,
-    context: Option<RuntimeRunContext>,
-    run_delegation: Option<Arc<dyn RunDelegationService>>,
-) -> Result<(String, ThreadUsage), AgentRunError> {
-    run_configured_agent_inner(
-        catalog,
-        sandbox,
-        llm,
-        agent_id,
-        thread,
-        seed.into(),
-        extra_tools,
-        cancellation,
-        context,
-        run_delegation,
-        None,
-    )
-    .await
-}
-
-/// Execute one recoverable auxiliary Agent using a caller-owned stable Run id.
-///
-/// This is still the ordinary Runtime lifecycle and commit boundary. The helper
-/// only removes random identity from housekeeping retries; it carries no parent
-/// delegation origin and cannot create a delegated child relationship.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn run_configured_agent_with_id(
-    catalog: &AgentCatalog,
-    sandbox: AgentRunSandbox<'_>,
-    llm: Arc<dyn LlmExecutor>,
-    agent_id: &str,
-    thread: &str,
-    run_id: RunId,
-    seed: impl Into<RunInput>,
-    extra_tools: Vec<Arc<dyn RawTool>>,
-    context: RuntimeRunContext,
-) -> Result<(String, ThreadUsage), AgentRunError> {
-    run_configured_agent_inner(
-        catalog,
-        sandbox,
-        llm,
-        agent_id,
-        thread,
-        seed.into(),
-        extra_tools,
-        None,
-        Some(context),
-        None,
-        Some(run_id),
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn run_configured_agent_inner(
-    catalog: &AgentCatalog,
-    sandbox: AgentRunSandbox<'_>,
-    llm: Arc<dyn LlmExecutor>,
-    agent_id: &str,
-    thread: &str,
-    seed: RunInput,
-    extra_tools: Vec<Arc<dyn RawTool>>,
-    cancellation: Option<CancellationToken>,
-    context: Option<RuntimeRunContext>,
-    run_delegation: Option<Arc<dyn RunDelegationService>>,
-    stable_run_id: Option<RunId>,
-) -> Result<(String, ThreadUsage), AgentRunError> {
-    let config = catalog
-        .resolve(agent_id)
-        .ok_or_else(|| AgentRunError::Configuration(format!("unknown agent {agent_id:?}")))?
-        .clone();
-    // Reuse the parent's sandbox by default; a `Fresh` Agent Run gets its own root. The
-    // created sandbox (if any) is bound here so the borrow lives for the whole run.
-    let created = match &sandbox {
-        AgentRunSandbox::Fresh(provider) => Some(
-            provider
-                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec(thread))
-                .await
-                .map_err(|error| AgentRunError::Provisioning(error.to_string()))?,
-        ),
-        AgentRunSandbox::Shared(_) => None,
-        #[cfg(test)]
-        AgentRunSandbox::SharedLocal(_) => None,
-    };
-    let env: &dyn crate::config::RuntimeToolSource = match &sandbox {
-        AgentRunSandbox::Shared(shared) => *shared,
-        #[cfg(test)]
-        AgentRunSandbox::SharedLocal(shared) => *shared,
-        AgentRunSandbox::Fresh(_) => created
-            .as_ref()
-            .expect("a Fresh Agent Run created a sandbox"),
-    };
-    let current_tool_executor: Arc<dyn ToolExecutor> = match &sandbox {
-        AgentRunSandbox::Shared(environment) => environment.tool_executor(),
-        #[cfg(test)]
-        AgentRunSandbox::SharedLocal(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
-        AgentRunSandbox::Fresh(_) => Arc::new(RawToolRegistry::new(env.runtime_tools())),
-    };
-    let authorization = effective_tool_authorization(
-        &config.resolved_spec.plugin_config,
-        &[],
-        &config.resolved_spec.plugin_config.agent.toolsets,
-    );
-    let mut runtime = build_runtime_with_authorization(llm, env, &authorization);
-    // Tools the caller provisions on top of the sandbox's own (e.g. a
-    // persistent write_memory scoped outside the ephemeral sandbox).
-    for tool in extra_tools {
-        runtime = runtime.with_tool(tool);
-    }
-    if let Some(service) = run_delegation {
-        runtime = runtime.with_run_delegation(service);
-    }
-    let mut ctx = context.ok_or_else(|| {
-        AgentRunError::Configuration(
-            "an Agent Run requires an explicitly owned commit/history context".to_string(),
-        )
-    })?;
-    if let Some(token) = cancellation {
-        ctx = ctx.with_cancellation(token);
-    }
-    ctx = ctx.with_tool_executor(current_tool_executor);
-    if ctx.commit.is_none() || ctx.reader.is_none() {
-        return Err(AgentRunError::Configuration(
-            "an Agent Run requires commit and history wiring".to_string(),
-        ));
-    }
-    let reader = ctx.reader.clone().expect("checked above");
-    let thread_id = ThreadId(thread.to_string());
-    let state = match stable_run_id {
-        Some(run_id) => {
-            runtime
-                .run_to_completion_with_id(&config, run_id, thread, seed, ctx, |_| {
-                    ResumeResult::allow()
-                })
-                .await
-        }
-        None => {
-            runtime
-                .run_to_completion(&config, thread, seed, ctx, |_| ResumeResult::allow())
-                .await
-        }
-    }
-    .map_err(AgentRunError::Runtime)?;
-    if let RunState::Ended(cause) = &state
-        && !matches!(
-            cause,
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd
-                | awaken_agent_contract::agent::run::EndCause::MaxSteps
-        )
-    {
-        return Err(AgentRunError::Runtime(
-            awaken_runtime_contract::execution::Error::Execution(format!(
-                "auxiliary Agent ended unsuccessfully: {cause:?}"
-            )),
-        ));
-    }
-    let text = latest_assistant_text(&reader.committed_messages(&thread_id));
-    let usage = usage_from_committed(reader.as_ref(), &thread_id);
-    Ok((text, usage))
-}
-
-/// Read a finished Agent Run's accumulated [`ThreadUsage`] out of committed
-/// thread state. The run loop writes the running cumulative under
-/// `THREAD_USAGE_STATE_KEY` each step, so the last `Set` is the whole tally
-/// (mirrors `SharedHost::thread_usage`).
-fn usage_from_committed(reader: &dyn CommittedThreadView, thread_id: &ThreadId) -> ThreadUsage {
-    ThreadUsage::from_committed_state(&reader.committed_state(thread_id))
-}
-
-/// Run a default `assistant` Agent with `input` to completion and return its last
-/// assistant line. Thin wrapper over [`run_configured_agent`]: it
-/// builds a one-entry catalog holding the shared `assistant` config (no skills,
-/// ADR-0036). Callers that need a differently-configured agent resolve it from a
-/// richer catalog through [`run_configured_agent`] instead.
-pub(crate) async fn run_agent(
-    llm: Arc<dyn LlmExecutor>,
-    execution: AgentExecution<'_>,
-    sandbox: AgentRunSandbox<'_>,
-    thread: &str,
-    input: impl Into<RunInput>,
-    cancellation: Option<CancellationToken>,
-) -> Result<(String, ThreadUsage), AgentRunError> {
-    // Auxiliary Agents deliberately do not inherit user-visible Skills.
-    let config = server_config(
-        execution.agent_id,
-        execution.model_ref,
-        &HashSet::new(),
-        execution.delegates,
-        &[],
-        &Default::default(),
-        &[],
-        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
-    let catalog = AgentCatalog::new().with_agent(config);
-    run_configured_agent(
-        &catalog,
-        sandbox,
-        llm,
-        execution.agent_id,
-        thread,
-        input,
-        Vec::new(),
-        cancellation,
-        execution.context,
-        execution.run_delegation,
-    )
-    .await
-}
-
-/// One-boundary counterpart of [`run_agent`] for a first-class delegated Run.
-/// The target Agent receives the same config it would receive when admitted as a
-/// root Run; only the supplied identity records that a parent created it.
+use root_execution::usage_from_committed;
+pub(crate) use root_execution::{
+    AgentExecution, AgentRunError, AgentRunSandbox, run_agent, run_configured_agent_with_id,
+};
 #[cfg(test)]
-pub(crate) async fn run_agent_until_boundary(
-    llm: Arc<dyn LlmExecutor>,
-    execution: AgentExecution<'_>,
-    sandbox: AgentRunSandbox<'_>,
-    request: ChildRunRequest,
-) -> Result<AgentRunBoundary, AgentRunError> {
-    let config = server_config(
-        execution.agent_id,
-        execution.model_ref,
-        &HashSet::new(),
-        execution.delegates,
-        &[],
-        &Default::default(),
-        &[],
-        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
-    );
-    run_configured_agent_until_boundary(
-        &config,
-        sandbox,
-        llm,
-        request.run_id,
-        request.origin,
-        request.seed,
-        request.resume,
-        execution.context.unwrap_or_else(|| {
-            let commit = Arc::new(awaken_store_inmem::MemoryCommitCoordinator::new());
-            RuntimeRunContext::new()
-                .with_commit(commit.clone())
-                .with_reader(commit)
-        }),
-        execution.run_delegation,
-        request.parent_thread_id,
-        execution.scheduler,
-        ChildExecutionAdapters::default(),
-    )
-    .await
-}
+use root_execution::{run_agent_until_boundary, run_configured_agent};
 
 #[cfg(test)]
 mod tests {
@@ -737,12 +439,16 @@ mod tests {
         // installed an ACP materializer. C1+C2 causes E1=materialize the exact
         // selected backend, E2=route the child attempt to ACP, and E3=bind the
         // child's own frozen permission policy. C1+!C2 causes E4=fail closed
-        // before execution. !C1 causes E5=do not consult ACP.
+        // before execution. !C1 causes E5=do not consult ACP. C1 plus a selected
+        // Web plugin causes E6=fail closed until the child ACP boundary can
+        // retain the canonical exported-tool lease; it never exports a broken
+        // placeholder or silently drops the selected tool.
         //
         // | Rule | C1 ACP | C2 adapter | Effect |
         // | A1 | yes | yes | E1 + E2 + E3 |
         // | A2 | yes | no | E4 |
         // | A3 | no | either | E5 |
+        // | A4 | yes + Web plugin | yes | E6 before adapter materialization |
         // FMECA: capturing the coordinator's policy in the ACP factory lets a
         // parent silently broaden or narrow its referenced Agent, unlike the
         // Managed Agents version-pinned thread model.
@@ -862,6 +568,28 @@ mod tests {
         )
         .expect("A3 native remains available");
         assert_eq!(materializations.load(Ordering::SeqCst), 1, "A3/E4");
+
+        let mut acp_web_snapshot = acp_snapshot;
+        acp_web_snapshot
+            .resolved_spec
+            .plugin_ids
+            .push(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.into());
+        let error = match child_attempt_executor(
+            Arc::new(awaken_runtime::Runtime::new()),
+            &acp_web_snapshot,
+            &adapters,
+            effective_tool_authorization(
+                &acp_web_snapshot.resolved_spec.plugin_config,
+                &[],
+                &acp_web_snapshot.resolved_spec.plugin_config.agent.toolsets,
+            )
+            .policy,
+        ) {
+            Ok(_) => panic!("A4 ACP child Web export must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("ACP child"), "A4/E6: {error}");
+        assert_eq!(materializations.load(Ordering::SeqCst), 1, "A4/E6");
     }
 
     #[test]
@@ -1348,24 +1076,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn child_runs_bind_the_current_sandbox_without_parent_web_policy_leakage() {
+    async fn child_runs_bind_the_current_sandbox_and_selected_web_plugin() {
         // Causes: C1 execution enters the boundary or auxiliary child path; C2
         // placement is Shared, SharedLocal, or Fresh; C3 the child WebFetch
-        // plugin configuration is absent, valid, or malformed; C4 the parent
-        // context carries an executor for a different sandbox. Effects: E1 a
-        // successful child writes only through its current placement executor;
-        // E2 neither the parent's executor nor a second WebFetch route is inherited;
-        // E3 malformed child configuration fails before model/tool effects.
+        // configuration is absent, valid, malformed, or incompatible with a
+        // provider-server realization; C4 the parent context carries an executor
+        // for a different sandbox; C5 the frozen child selects the WebFetch
+        // plugin; C6 the Host supplies its configured WebFetch adapter. Effects:
+        // E1 a successful child writes only through
+        // its current placement executor; E2 the parent's executor is not
+        // inherited; E3 selected malformed child configuration
+        // fails before model/tool effects; E4 a selected WebFetch plugin resolves
+        // from the Host adapter; E5 a missing selected adapter fails before
+        // inference; E6 an incompatible provider-server policy fails through the
+        // same configured plugin before inference.
         // Constraints: K1 the current sandbox is the sole child Hand authority;
-        // K2 WebFetchPlugin is the sole WebFetch route/policy owner and remains
-        // separate from the Hand executor; K3 the durable child entry path uses
-        // the same host adapter shape as a root Run.
+        // K2 WebFetch policy belongs to the configured plugin, never the Hand;
+        // K3 direct and recovered Native children use one plugin composition owner.
         //
-        // | Rule | Child path | Placement | WebFetch config | Effect |
-        // | R1 | boundary | Shared | absent | E1+E2 current Shared executor |
-        // | R2 | boundary | SharedLocal | valid | E1+E2 current Hand + one plugin |
-        // | R3 | auxiliary | Fresh | absent | E1+E2 fresh executor/root |
-        // | R4 | boundary | SharedLocal | malformed | E3 fail closed |
+        // | Rule | Child path | Placement | Fetch selected/adapter | Effect |
+        // | R1 | boundary | Shared | no/either | E1+E2 current Shared executor |
+        // | R2 | auxiliary | SharedLocal | no/either, inert policy | E1+E2 current executor |
+        // | R3 | auxiliary | Fresh | no/either | E1+E2 fresh executor/root |
+        // | R4 | boundary | SharedLocal | yes/yes, malformed policy | E3 fail closed |
+        // | R5 | boundary | Shared | yes/yes | E1+E4 configured plugin |
+        // | R6 | boundary | Shared | yes/no | E5 fail closed |
+        // | R7 | boundary | Shared | provider-server/restrictive policy | E6 capability-bound before inference |
         use awaken_runtime_contract::agent_bindings::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
@@ -1449,6 +1185,17 @@ mod tests {
             config
                 .recompute_fingerprint()
                 .expect("test child configuration remains coherent");
+            config
+        }
+
+        fn select_web_fetch(mut config: ExecutableAgentSnapshot) -> ExecutableAgentSnapshot {
+            config
+                .resolved_spec
+                .plugin_ids
+                .push(awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string());
+            config
+                .recompute_fingerprint()
+                .expect("selected child WebFetch configuration remains coherent");
             config
         }
 
@@ -1572,16 +1319,141 @@ mod tests {
         );
         assert_eq!(fresh_inferences.load(Ordering::SeqCst), 2, "R3/E1");
 
+        let selected_config = select_web_fetch(child_config(None));
+        let selected_inferences = Arc::new(AtomicUsize::new(0));
+        let selected = run_configured_agent_until_boundary(
+            &selected_config,
+            AgentRunSandbox::Shared(&shared_environment),
+            model("selected-web-fetch.txt", selected_inferences.clone()),
+            RunId("selected-web-fetch-child".into()),
+            DelegationOrigin::root_for_agent(
+                RunId("parent-selected-web-fetch".into()),
+                "call-selected-web-fetch",
+                "parent",
+            ),
+            Some(vec![user("write")].into()),
+            None,
+            context(),
+            None,
+            ThreadId("parent-thread".into()),
+            None,
+            ChildExecutionAdapters {
+                web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
+                    awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+                    None,
+                ))),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("R5 selected WebFetch resolves through the Host adapter");
+        assert!(matches!(selected, AgentRunBoundary::Ended { .. }), "R5/E4");
+        assert!(
+            shared_path.join("selected-web-fetch.txt").is_file(),
+            "R5/E1"
+        );
+        assert_eq!(selected_inferences.load(Ordering::SeqCst), 2, "R5/E4");
+
+        let missing_inferences = Arc::new(AtomicUsize::new(0));
+        let missing = match run_configured_agent_until_boundary(
+            &selected_config,
+            AgentRunSandbox::Shared(&shared_environment),
+            model("missing-web-fetch.txt", missing_inferences.clone()),
+            RunId("missing-web-fetch-child".into()),
+            DelegationOrigin::root_for_agent(
+                RunId("parent-missing-web-fetch".into()),
+                "call-missing-web-fetch",
+                "parent",
+            ),
+            Some(vec![user("write")].into()),
+            None,
+            context(),
+            None,
+            ThreadId("parent-thread".into()),
+            None,
+            ChildExecutionAdapters::default(),
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("R6 selected WebFetch without its adapter must fail closed"),
+        };
+        assert!(
+            missing.to_string().contains("no WebFetch adapter"),
+            "R6/E5: {missing}"
+        );
+        assert_eq!(missing_inferences.load(Ordering::SeqCst), 0, "R6/E5");
+        assert!(!shared_path.join("missing-web-fetch.txt").exists(), "R6/E5");
+
+        let mut provider_server_config = select_web_fetch(child_config(Some(
+            serde_json::json!({"type": "web_fetch", "max_content_tokens": 3}),
+        )));
+        provider_server_config.resolved_spec.plugin_config.insert(
+            awaken_ext_builtin_tools::WEB_FETCH_PLUGIN_ID.to_string(),
+            serde_json::json!({"provider_id": "openrouter", "options": {}}),
+        );
+        provider_server_config
+            .recompute_fingerprint()
+            .expect("provider-server child configuration remains coherent");
+        let provider_server_inferences = Arc::new(AtomicUsize::new(0));
+        let provider_server = match run_configured_agent_until_boundary(
+            &provider_server_config,
+            AgentRunSandbox::Shared(&shared_environment),
+            model(
+                "provider-server-web-fetch.txt",
+                provider_server_inferences.clone(),
+            ),
+            RunId("provider-server-web-fetch-child".into()),
+            DelegationOrigin::root_for_agent(
+                RunId("parent-provider-server-web-fetch".into()),
+                "call-provider-server-web-fetch",
+                "parent",
+            ),
+            Some(vec![user("write")].into()),
+            None,
+            context(),
+            None,
+            ThreadId("parent-thread".into()),
+            None,
+            ChildExecutionAdapters {
+                web_fetch: Some(Arc::new(awaken_ext_builtin_tools::WebFetchPlugin::new(
+                    awaken_ext_builtin_tools::WebSearchProviderRegistry::builtins(),
+                    None,
+                ))),
+                ..Default::default()
+            },
+        )
+        .await
+        {
+            Err(error) => error,
+            Ok(_) => panic!("R7 provider-server child policy must fail closed"),
+        };
+        assert!(
+            provider_server
+                .to_string()
+                .contains("Error(CapabilityBound)"),
+            "R7/E6: {provider_server}"
+        );
+        assert_eq!(
+            provider_server_inferences.load(Ordering::SeqCst),
+            0,
+            "R7/E6"
+        );
+        assert!(
+            !shared_path.join("provider-server-web-fetch.txt").exists(),
+            "R7/E6"
+        );
+
         let malformed_sandbox = LocalProvider::new(tmp.path().join("malformed"))
             .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("current"))
             .await
             .unwrap();
         let malformed_path = malformed_sandbox.workspace_path().to_path_buf();
         let malformed_inferences = Arc::new(AtomicUsize::new(0));
-        let malformed_config = child_config(Some(serde_json::json!({
+        let malformed_config = select_web_fetch(child_config(Some(serde_json::json!({
             "type": "web_fetch",
             "unexpected": true
-        })));
+        }))));
         let error = match run_configured_agent_until_boundary(
             &malformed_config,
             AgentRunSandbox::SharedLocal(&malformed_sandbox),
@@ -1616,6 +1488,9 @@ mod tests {
             "shared.txt",
             "shared-local.txt",
             "fresh.txt",
+            "selected-web-fetch.txt",
+            "missing-web-fetch.txt",
+            "provider-server-web-fetch.txt",
             "malformed.txt",
         ] {
             assert!(

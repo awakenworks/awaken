@@ -131,6 +131,25 @@ impl<'a> ThreadOutcomeState<'a> {
             .map(|projection| projection.aggregate)
     }
 
+    /// Exact existing commit coordinate that created one Outcome definition.
+    /// The command row and cursor are read under the same recovery snapshot;
+    /// callers persist this neutral receipt instead of inventing protocol order.
+    pub async fn preparation_commit_cursor(&self, id: &Id) -> Result<u64, Error> {
+        let snapshot = self.snapshot(&control_run_id(id)).await?;
+        if snapshot.state.len() != snapshot.state_commit_cursors.len() {
+            return Err(Error::Recovery(
+                "Outcome state recovery omitted commit coordinates".into(),
+            ));
+        }
+        let key = definition_key(id);
+        snapshot
+            .state
+            .iter()
+            .zip(snapshot.state_commit_cursors.iter().copied())
+            .find_map(|(command, cursor)| (command.key.0 == key).then_some(cursor))
+            .ok_or_else(|| Error::NotFound(id.0.clone()))
+    }
+
     /// Rebuild one Outcome and its transcript from one durable recovery read.
     /// This is a query only: it neither resumes the aggregate nor reconstructs
     /// state from an in-process execution result.

@@ -1025,6 +1025,25 @@ impl ManagedCredentialRepository for PostgresCredentialRepo {
         tx.commit().await.map_err(storage)
     }
 
+    async fn managed_rollout(
+        &self,
+        event_id: &str,
+    ) -> Result<Option<ManagedCredentialRollout>, CredentialError> {
+        sqlx::query(&format!(
+            "SELECT data FROM {NS}_managed_credential_rollout WHERE event_id = $1"
+        ))
+        .bind(event_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(storage)?
+        .map(|row| {
+            row.try_get::<Json<ManagedCredentialRollout>, _>("data")
+                .map(|Json(value)| value)
+                .map_err(storage)
+        })
+        .transpose()
+    }
+
     async fn pending_managed_rollouts(
         &self,
     ) -> Result<Vec<ManagedCredentialRollout>, CredentialError> {

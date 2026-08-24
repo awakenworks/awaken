@@ -15,7 +15,7 @@ use awaken_agent_contract::{
     RunLifecycleCursor, RunLifecycleEvent, RunLifecycleEventKind, RunLifecyclePage,
     encode_run_lifecycle_cursor,
 };
-use awaken_protocol_managed::{ManagedState, router};
+use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency, router};
 use awaken_session_contract::{
     AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, OutcomeDrive,
     OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime, SessionUserRunCommand,
@@ -33,7 +33,7 @@ async fn json_call(
     uri: &str,
     body: serde_json::Value,
 ) -> serde_json::Value {
-    let (status, json) = json_response(app, method, uri, body).await;
+    let (status, json) = Box::pin(json_response(app, method, uri, body)).await;
     assert_eq!(status, StatusCode::OK, "{method} {uri}: {json}");
     json
 }
@@ -54,7 +54,7 @@ async fn json_response(
             Body::from(serde_json::to_vec(&body).unwrap())
         })
         .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
+    let resp = Box::pin(app.clone().oneshot(req)).await.unwrap();
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
     let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
@@ -104,6 +104,7 @@ async fn create(app: &Router) -> String {
 /// | I4 | empty/overlong | any | 400 before Session creation |
 /// | I5 | same key, different owner | same | distinct owner-scoped Sessions |
 /// | I6 | valid, repeated | same non-empty initial Events | one Session and one durable batch |
+/// | I7 | valid key and exact owner | same | exported prediction equals the server-selected Session id |
 #[tokio::test]
 async fn session_create_idempotency_replays_one_canonical_session() {
     // Causes: the fixtures below establish `session create idempotency replays one canonical
@@ -231,6 +232,11 @@ async fn session_create_idempotency_replays_one_canonical_session() {
         .create_session_idempotent(request(), Some("owner-b".into()), "shared-key")
         .await
         .unwrap();
+    assert_eq!(
+        owner_a.id,
+        managed_session_id_from_idempotency("owner-a", "shared-key"),
+        "I7 the public predictor and create path share one formula"
+    );
     assert_ne!(owner_a.id, owner_b.id, "I5 keys are owner-scoped");
 }
 
@@ -249,6 +255,7 @@ static ECHO_MESSAGE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 struct EchoState {
     runs: HashMap<String, RunState>,
     messages: HashMap<String, Vec<Message>>,
+    message_commit_cursors: HashMap<String, Vec<u64>>,
     lifecycle: HashMap<String, Vec<RunLifecycleEvent>>,
 }
 
@@ -275,26 +282,32 @@ impl EchoFake {
                 });
             }
         }
+        let messages = state
+            .messages
+            .get(&latest.thread_id.0)
+            .cloned()
+            .unwrap_or_default();
+        let message_commit_cursors = state
+            .message_commit_cursors
+            .get(&latest.thread_id.0)
+            .cloned()
+            .unwrap_or_default();
+        let next_commit_ordinal = u64::try_from(messages.len()).unwrap();
         Some(
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
                 thread_id,
                 claimed_run_id: latest.run_id.clone(),
                 runs,
                 latest_run_id: Some(latest.run_id.clone()),
-                messages: state
-                    .messages
-                    .get(&latest.thread_id.0)
-                    .cloned()
-                    .unwrap_or_default(),
+                messages,
+                message_commit_cursors,
                 state: Vec::new(),
+                state_commit_cursors: Vec::new(),
                 events: Vec::new(),
                 resume_tickets: Vec::new(),
                 thread_version: u64::try_from(lifecycle.len()).unwrap(),
                 store_cursor: latest.source_commit_cursor,
-                next_commit_ordinal: u64::try_from(
-                    state.messages.get(&latest.thread_id.0).map_or(0, Vec::len),
-                )
-                .unwrap(),
+                next_commit_ordinal,
             },
         )
     }
@@ -314,6 +327,14 @@ impl SessionRuntime for EchoFake {
             command.run_id.0.clone(),
             RunState::Ended(EndCause::NaturalEnd),
         );
+        let opening_commit_cursor = u64::try_from(
+            state
+                .lifecycle
+                .get(&command.session_id)
+                .map_or(1, |lifecycle| lifecycle.len() + 1),
+        )
+        .unwrap();
+        let terminal_commit_cursor = opening_commit_cursor + 1;
 
         let user_text = Message::new(
             Id::session_event_input(&command.session_id, &command.operation_id),
@@ -321,30 +342,41 @@ impl SessionRuntime for EchoFake {
             command.content.clone(),
         )
         .text_content();
-        let transcript = state
-            .messages
-            .entry(command.session_id.clone())
-            .or_default();
-        if let Some(system) = command.accompanying_system {
-            let message = Message::new(
-                Id::session_system(&command.session_id, &system.operation_id),
-                Role::System,
-                system.content,
-            );
-            if !transcript.iter().any(|existing| existing.id == message.id) {
-                transcript.push(message);
+        let mut new_message_commit_cursors = Vec::new();
+        {
+            let transcript = state
+                .messages
+                .entry(command.session_id.clone())
+                .or_default();
+            if let Some(system) = command.accompanying_system {
+                let message = Message::new(
+                    Id::session_system(&command.session_id, &system.operation_id),
+                    Role::System,
+                    system.content,
+                );
+                if !transcript.iter().any(|existing| existing.id == message.id) {
+                    transcript.push(message);
+                    new_message_commit_cursors.push(opening_commit_cursor);
+                }
             }
+            transcript.push(Message::new(
+                Id::session_event_input(&command.session_id, &command.operation_id),
+                Role::User,
+                command.content,
+            ));
+            new_message_commit_cursors.push(opening_commit_cursor);
+            transcript.push(Message::text(
+                Id(format!("{}/reply", command.run_id.0)),
+                Role::Assistant,
+                format!("echo: {user_text}"),
+            ));
+            new_message_commit_cursors.push(terminal_commit_cursor);
         }
-        transcript.push(Message::new(
-            Id::session_event_input(&command.session_id, &command.operation_id),
-            Role::User,
-            command.content,
-        ));
-        transcript.push(Message::text(
-            Id(format!("{}/reply", command.run_id.0)),
-            Role::Assistant,
-            format!("echo: {user_text}"),
-        ));
+        state
+            .message_commit_cursors
+            .entry(command.session_id.clone())
+            .or_default()
+            .extend(new_message_commit_cursors);
 
         // The adapter's one warm/cold projector is intentionally driven by the
         // committed lifecycle feed, never by `session_user_run_state` or the
@@ -354,10 +386,18 @@ impl SessionRuntime for EchoFake {
             .lifecycle
             .entry(command.session_id.clone())
             .or_default();
-        let source_commit_cursor = u64::try_from(lifecycle.len() + 1).unwrap();
         lifecycle.push(RunLifecycleEvent {
-            cursor: encode_run_lifecycle_cursor(source_commit_cursor, 0).unwrap(),
-            source_commit_cursor,
+            cursor: encode_run_lifecycle_cursor(opening_commit_cursor, 0).unwrap(),
+            source_commit_cursor: opening_commit_cursor,
+            thread_id: ThreadId(command.session_id.clone()),
+            run_id: RunId(command.run_id.0.clone()),
+            kind: RunLifecycleEventKind::Running,
+            state: RunState::Running,
+            await_reason: None,
+        });
+        lifecycle.push(RunLifecycleEvent {
+            cursor: encode_run_lifecycle_cursor(terminal_commit_cursor, 0).unwrap(),
+            source_commit_cursor: terminal_commit_cursor,
             thread_id: ThreadId(command.session_id),
             run_id: RunId(command.run_id.0),
             kind: RunLifecycleEventKind::Completed,
@@ -600,6 +640,13 @@ async fn clearing_the_model_on_a_session_override_is_rejected() {
 /// | C6 | valid | outcome missing rubric or two outcomes | >1/invalid | 400 |
 #[tokio::test]
 async fn session_initial_events_follow_the_atomic_decision_table() {
+    // This decision-table fixture intentionally retains the maximum-size JSON
+    // boundary cases. Heap-own its generated future so the default Tokio test
+    // thread stack is independent of those wire-fixture sizes.
+    Box::pin(session_initial_events_decision_table_case()).await;
+}
+
+async fn session_initial_events_decision_table_case() {
     // Causes: the fixtures below establish `session initial events follow the atomic decision
     // table` with the concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
@@ -625,14 +672,7 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
     }
 
     let running_state = Arc::new(ManagedState::new(EchoFake::default()));
-    let cancellation = awaken_runtime_contract::CancellationToken::new();
-    let supervisor = tokio::spawn(
-        running_state
-            .session_application()
-            .run_lifecycle_supervisor(cancellation.clone()),
-    );
-    tokio::task::yield_now().await;
-    let running_app = router(running_state);
+    let running_app = router(running_state.clone());
     let (status, session) = json_response(
         &running_app,
         "POST",
@@ -649,29 +689,17 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
     assert_eq!(status, StatusCode::OK, "C2 message admitted");
     assert_eq!(session["status"], "running", "C2 starts immediately");
     let id = session["id"].as_str().unwrap();
-    let mut completed = None;
-    let mut last_events = serde_json::Value::Null;
-    for _ in 0..100 {
-        let events = json_call(
-            &running_app,
-            "GET",
-            &format!("/v1/sessions/{id}/events"),
-            serde_json::Value::Null,
-        )
-        .await;
-        if types(&events)
-            .iter()
-            .any(|event_type| event_type == "session.status_idle")
-        {
-            completed = Some(events);
-            break;
-        }
-        last_events = events;
-        tokio::task::yield_now().await;
-    }
-    let completed = completed.unwrap_or_else(|| {
-        panic!("C2 initial Event did not complete; last projection: {last_events}")
-    });
+    // This adapter table owns atomic create/Event effects, not supervisor
+    // scheduling. Reuse the canonical application test driver once so no
+    // parallel test-only lifecycle loop competes with the retained batch.
+    support::drive_retained_session_events(&running_state, id).await;
+    let completed = json_call(
+        &running_app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
     assert_eq!(
         types(&completed),
         vec![
@@ -686,11 +714,6 @@ async fn session_initial_events_follow_the_atomic_decision_table() {
         "C2 preserves inbound-before-output ordering"
     );
     assert!(completed["data"][0]["processed_at"].is_string());
-    cancellation.cancel();
-    supervisor
-        .await
-        .expect("C2 supervisor task")
-        .expect("C2 supervisor stop");
 
     let outcome_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
     let (status, session) = json_response(
@@ -1063,6 +1086,7 @@ struct AdapterToolRun {
     run_id: RunId,
     state: RunState,
     messages: Vec<Message>,
+    message_commit_cursors: Vec<u64>,
     lifecycle: Vec<RunLifecycleEvent>,
     pending: Option<Pending>,
 }
@@ -1165,7 +1189,9 @@ impl ToolAwaitingFake {
                 }],
                 latest_run_id: Some(run.run_id.clone()),
                 messages: run.messages.clone(),
+                message_commit_cursors: run.message_commit_cursors.clone(),
                 state: Vec::new(),
+                state_commit_cursors: Vec::new(),
                 events: Vec::new(),
                 resume_tickets,
                 thread_version: u64::try_from(run.lifecycle.len()).unwrap(),
@@ -1212,20 +1238,33 @@ impl SessionRuntime for ToolAwaitingFake {
                 }],
             },
         ];
-        let source_commit_cursor = 1;
-        let lifecycle = vec![RunLifecycleEvent {
-            cursor: encode_run_lifecycle_cursor(source_commit_cursor, 0).unwrap(),
-            source_commit_cursor,
-            thread_id: ThreadId(command.session_id.clone()),
-            run_id: command.run_id.clone(),
-            kind: RunLifecycleEventKind::Awaiting,
-            state: RunState::Awaiting,
-            await_reason: Some(self.await_reason()),
-        }];
+        let opening_commit_cursor = 1;
+        let awaiting_commit_cursor = 2;
+        let lifecycle = vec![
+            RunLifecycleEvent {
+                cursor: encode_run_lifecycle_cursor(opening_commit_cursor, 0).unwrap(),
+                source_commit_cursor: opening_commit_cursor,
+                thread_id: ThreadId(command.session_id.clone()),
+                run_id: command.run_id.clone(),
+                kind: RunLifecycleEventKind::Running,
+                state: RunState::Running,
+                await_reason: None,
+            },
+            RunLifecycleEvent {
+                cursor: encode_run_lifecycle_cursor(awaiting_commit_cursor, 0).unwrap(),
+                source_commit_cursor: awaiting_commit_cursor,
+                thread_id: ThreadId(command.session_id.clone()),
+                run_id: command.run_id.clone(),
+                kind: RunLifecycleEventKind::Awaiting,
+                state: RunState::Awaiting,
+                await_reason: Some(self.await_reason()),
+            },
+        ];
         *slot = Some(AdapterToolRun {
             session_id: command.session_id,
             run_id: command.run_id,
             state: RunState::Awaiting,
+            message_commit_cursors: vec![opening_commit_cursor, awaiting_commit_cursor],
             messages,
             lifecycle,
             pending: Some(pending),
@@ -1370,6 +1409,13 @@ impl SessionRuntime for ToolAwaitingFake {
                 ));
             }
         };
+        // The staged reply is one atomic Thread commit: its ToolResult, final
+        // assistant Message, Resumed edge, and terminal edge therefore share
+        // one durable source coordinate while retaining distinct feed cursors.
+        let reply_commit_cursor = run
+            .lifecycle
+            .last()
+            .map_or(1, |event| event.source_commit_cursor + 1);
         run.messages.push(Message {
             id: Id(format!("{}/tool-result", run.run_id.0)),
             role: Role::Tool,
@@ -1385,10 +1431,20 @@ impl SessionRuntime for ToolAwaitingFake {
             result_text,
         ));
         run.state = RunState::Ended(EndCause::NaturalEnd);
-        let source_commit_cursor = u64::try_from(run.lifecycle.len() + 1).unwrap();
+        run.message_commit_cursors
+            .extend([reply_commit_cursor, reply_commit_cursor]);
         run.lifecycle.push(RunLifecycleEvent {
-            cursor: encode_run_lifecycle_cursor(source_commit_cursor, 0).unwrap(),
-            source_commit_cursor,
+            cursor: encode_run_lifecycle_cursor(reply_commit_cursor, 0).unwrap(),
+            source_commit_cursor: reply_commit_cursor,
+            thread_id: ThreadId(run.session_id.clone()),
+            run_id: run.run_id.clone(),
+            kind: RunLifecycleEventKind::Resumed,
+            state: RunState::Running,
+            await_reason: None,
+        });
+        run.lifecycle.push(RunLifecycleEvent {
+            cursor: encode_run_lifecycle_cursor(reply_commit_cursor, 1).unwrap(),
+            source_commit_cursor: reply_commit_cursor,
             thread_id: ThreadId(run.session_id.clone()),
             run_id: run.run_id.clone(),
             kind: RunLifecycleEventKind::Completed,
@@ -1463,7 +1519,8 @@ impl SessionRuntime for ToolAwaitingFake {
 /// this fixture owns no second drive loop.
 #[derive(Default)]
 struct OutcomeFake {
-    reports: Mutex<HashMap<String, OutcomeReport>>,
+    reports: Mutex<HashMap<String, (u64, OutcomeReport)>>,
+    next_commit_cursor: AtomicU64,
     prepare_gate: Option<Arc<OutcomePrepareGate>>,
 }
 
@@ -1477,11 +1534,51 @@ struct OutcomePrepareGate {
 impl SessionRuntime for OutcomeFake {
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
-        _thread_id: &str,
+        session_id: &str,
+        thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        Ok(None)
+        if session_id != thread_id {
+            return Ok(None);
+        }
+        let reports = self.reports.lock().unwrap();
+        if reports.is_empty() {
+            return Ok(None);
+        }
+        let mut reports = reports.iter().collect::<Vec<_>>();
+        reports.sort_by(|(left, _), (right, _)| left.cmp(right));
+        let thread_version = u64::try_from(reports.len()).unwrap();
+        let mut state = Vec::new();
+        let mut state_commit_cursors = Vec::new();
+        for (outcome_id, (source_commit_cursor, report)) in reports {
+            for (offset, iteration) in report.iterations.iter().enumerate() {
+                state.push(awaken_agent_contract::agent::state::Command::set(
+                    awaken_agent_contract::agent::state::Scope::Thread,
+                    awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                    format!("outcome/{outcome_id}/evaluation/{}", iteration.iteration),
+                    serde_json::json!({"fixture": "committed"}),
+                ));
+                state_commit_cursors.push(source_commit_cursor + u64::try_from(offset).unwrap());
+            }
+        }
+        let store_cursor = state_commit_cursors.iter().copied().max().unwrap_or(0);
+        Ok(Some(
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                thread_id: ThreadId(thread_id.to_string()),
+                claimed_run_id: RunId(format!("outcome-snapshot:{thread_id}")),
+                runs: Vec::new(),
+                latest_run_id: None,
+                messages: Vec::new(),
+                message_commit_cursors: Vec::new(),
+                state,
+                state_commit_cursors,
+                events: Vec::new(),
+                resume_tickets: Vec::new(),
+                thread_version,
+                store_cursor,
+                next_commit_ordinal: 0,
+            },
+        ))
     }
 
     async fn run(
@@ -1507,39 +1604,43 @@ impl SessionRuntime for OutcomeFake {
         _d: &str,
         _r: &str,
         _m: u32,
-    ) -> Result<(), RunError> {
+    ) -> Result<u64, RunError> {
         if let Some(gate) = &self.prepare_gate {
             gate.entered.notify_waiters();
             gate.release.notified().await;
         }
+        let source_commit_cursor = self.next_commit_cursor.fetch_add(2, Ordering::SeqCst) + 1;
         self.reports.lock().unwrap().insert(
             outcome_id.to_string(),
-            OutcomeReport {
-                iterations: vec![
-                    OutcomeIteration {
-                        messages: Vec::new(),
-                        outcome_id: outcome_id.to_string(),
-                        description: "produce final answer".into(),
-                        iteration: 1,
-                        result: "needs_revision".into(),
-                        explanation: "add FINAL".into(),
-                    },
-                    OutcomeIteration {
-                        messages: vec![Message::text(
-                            Id("r".into()),
-                            Role::Assistant,
-                            "FINAL answer",
-                        )],
-                        outcome_id: outcome_id.to_string(),
-                        description: "produce final answer".into(),
-                        iteration: 2,
-                        result: "satisfied".into(),
-                        explanation: "ok".into(),
-                    },
-                ],
-            },
+            (
+                source_commit_cursor,
+                OutcomeReport {
+                    iterations: vec![
+                        OutcomeIteration {
+                            messages: Vec::new(),
+                            outcome_id: outcome_id.to_string(),
+                            description: "produce final answer".into(),
+                            iteration: 1,
+                            result: "needs_revision".into(),
+                            explanation: "add FINAL".into(),
+                        },
+                        OutcomeIteration {
+                            messages: vec![Message::text(
+                                Id("r".into()),
+                                Role::Assistant,
+                                "FINAL answer",
+                            )],
+                            outcome_id: outcome_id.to_string(),
+                            description: "produce final answer".into(),
+                            iteration: 2,
+                            result: "satisfied".into(),
+                            explanation: "ok".into(),
+                        },
+                    ],
+                },
+            ),
         );
-        Ok(())
+        Ok(source_commit_cursor)
     }
     async fn committed_outcome_projection(
         &self,
@@ -1551,7 +1652,7 @@ impl SessionRuntime for OutcomeFake {
             .lock()
             .unwrap()
             .get(outcome_id)
-            .cloned()
+            .map(|(_, report)| report.clone())
             .map(CommittedOutcomeProjection::Completed))
     }
     async fn resume_custom(
@@ -1589,6 +1690,7 @@ async fn outcome_send_returns_the_root_receipt_before_lifecycle_execution() {
     let gate = Arc::new(OutcomePrepareGate::default());
     let state = Arc::new(ManagedState::new(OutcomeFake {
         reports: Default::default(),
+        next_commit_cursor: AtomicU64::new(0),
         prepare_gate: Some(gate.clone()),
     }));
     let cancellation = awaken_runtime_contract::CancellationToken::new();
@@ -1926,6 +2028,9 @@ async fn hitl_await_confirm_resume() {
     // committed ticket, transfers aggregate activity once, and the same Run's
     // new committed prefix is projected. The transfer therefore opens one
     // aggregate Running edge before Thread output.
+    // The retained confirmation and staged reply share one atomic source
+    // coordinate; the canonical phase order keeps the inbound receipt before
+    // the Run's Resumed edge and output.
     // This narrow adapter fixture intentionally has no Host settlement observer,
     // so H6 asserts Thread terminal truth only; the official SDK E2E and Host
     // decision table own aggregate Session activity/usage settlement.
@@ -2165,8 +2270,7 @@ async fn interrupt_event_is_acknowledged_without_starting_a_run() {
 struct RecordingFake {
     interrupts: Arc<Mutex<Vec<String>>>,
     subjects: Arc<Mutex<Vec<Option<String>>>>,
-    messages: Arc<Mutex<HashMap<String, Vec<Message>>>>,
-    runs: Arc<Mutex<HashMap<String, RunState>>>,
+    committed: EchoFake,
     supports_mid_conversation_system: bool,
 }
 
@@ -2180,52 +2284,43 @@ impl SessionRuntime for RecordingFake {
             .lock()
             .unwrap()
             .push(command.data_subject_id.clone());
-        let transcript = &mut *self.messages.lock().unwrap();
-        let transcript = transcript.entry(command.session_id.clone()).or_default();
-        if let Some(system) = command.accompanying_system {
-            transcript.push(Message::new(
-                Id::session_system(&command.session_id, &system.operation_id),
-                Role::System,
-                system.content,
-            ));
-        }
-        transcript.push(Message::new(
-            Id::session_event_input(&command.session_id, &command.operation_id),
-            Role::User,
-            command.content,
-        ));
-        self.runs
-            .lock()
-            .unwrap()
-            .insert(command.run_id.0, RunState::Ended(EndCause::NaturalEnd));
-        Ok(SessionUserRunReservation::Completed)
+        self.committed.reserve_session_user_run(command).await
     }
 
     async fn session_user_run_state(
         &self,
-        _session_id: &str,
+        session_id: &str,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
-        Ok(self.runs.lock().unwrap().get(&run_id.0).cloned())
+        self.committed
+            .session_user_run_state(session_id, run_id)
+            .await
     }
 
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
-        Ok(self
-            .messages
-            .lock()
-            .unwrap()
-            .get(thread)
-            .cloned()
-            .unwrap_or_default())
+        self.committed.committed_messages(thread).await
     }
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
-        _thread_id: &str,
+        session_id: &str,
+        thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        Ok(None)
+        self.committed
+            .session_thread_recovery_snapshot(session_id, thread_id)
+            .await
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        thread: &str,
+        cursor: RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<RunLifecyclePage, RunError> {
+        self.committed
+            .committed_run_lifecycle(thread, cursor, limit)
+            .await
     }
 
     async fn run(
@@ -2293,8 +2388,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     let state = Arc::new(ManagedState::new(RecordingFake {
         interrupts: interrupts.clone(),
         subjects: subjects.clone(),
-        messages: Arc::new(Mutex::new(HashMap::new())),
-        runs: Arc::new(Mutex::new(HashMap::new())),
+        committed: EchoFake::default(),
         supports_mid_conversation_system: true,
     }));
     let app = router(state.clone());
@@ -2437,8 +2531,7 @@ async fn system_message_follows_the_batch_admission_decision_table() {
     let unsupported = router(Arc::new(ManagedState::new(RecordingFake {
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: Arc::new(Mutex::new(Vec::new())),
-        messages: Arc::new(Mutex::new(HashMap::new())),
-        runs: Arc::new(Mutex::new(HashMap::new())),
+        committed: EchoFake::default(),
         supports_mid_conversation_system: false,
     })));
     let unsupported_id = create(&unsupported).await;
@@ -2488,8 +2581,7 @@ async fn managed_event_attribution_uses_request_header_not_body_field() {
     let state = Arc::new(ManagedState::new(RecordingFake {
         interrupts: Arc::new(Mutex::new(Vec::new())),
         subjects: subjects.clone(),
-        messages: Arc::new(Mutex::new(HashMap::new())),
-        runs: Arc::new(Mutex::new(HashMap::new())),
+        committed: EchoFake::default(),
         supports_mid_conversation_system: true,
     }));
     let app = router(state.clone());

@@ -216,6 +216,7 @@ pub fn awaken_cli::PreparedLocalWorker::with_admin_tools(self, alloc::vec::Vec<a
 pub struct awaken_cli::PreparedProcess
 pub awaken_cli::PreparedProcess::admin_tools: alloc::vec::Vec<alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
 pub awaken_cli::PreparedProcess::coordinator_authorities: core::option::Option<awaken_cli::CoordinatorAuthorityHandles>
+pub awaken_cli::PreparedProcess::event_batch_cutover_validation: core::option::Option<alloc::sync::Arc<awaken_session_application::event_batch_cutover_validation::SessionEventBatchCutoverValidationSource>>
 pub awaken_cli::PreparedProcess::local_setup: core::option::Option<awaken_iam_host::local_browser::LocalSetupHandoff>
 pub awaken_cli::PreparedProcess::private_router: axum::routing::Router
 pub awaken_cli::PreparedProcess::public_router: axum::routing::Router

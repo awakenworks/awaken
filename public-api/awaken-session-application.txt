@@ -171,7 +171,7 @@ pub async fn awaken_session_application::SessionApplication::missing_vault(&self
 pub fn awaken_session_application::SessionApplication::model(&self) -> alloc::string::String
 pub fn awaken_session_application::SessionApplication::notify_lifecycle_fact(&self)
 pub async fn awaken_session_application::SessionApplication::pending_tool(&self, &str) -> core::result::Result<core::option::Option<awaken_session_contract::session::Pending>, awaken_session_contract::session::RunError>
-pub async fn awaken_session_application::SessionApplication::prepare_outcome(&self, &str, &str, &str, &str, u32) -> core::result::Result<(), awaken_session_contract::session::RunError>
+pub async fn awaken_session_application::SessionApplication::prepare_outcome(&self, &str, &str, &str, &str, u32) -> core::result::Result<u64, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::rebind_model(&self, &str, &str) -> core::result::Result<(), awaken_session_contract::session::RunError>
 pub fn awaken_session_application::SessionApplication::resolve_session_inputs(&self, &str, &[awaken_resource_contract::input::InputBinding], &[awaken_session_contract::resource::SessionInputAttachment]) -> core::result::Result<awaken_session_contract::resource::ResolvedSessionResources, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::resolve_session_skills(&self, &str, &[awaken_agent_contract::skill::AgentSkillBinding]) -> core::result::Result<alloc::vec::Vec<awaken_session_contract::resource::ResolvedSkillBinding>, awaken_session_contract::session::RunError>
@@ -200,6 +200,7 @@ pub async fn awaken_session_application::SessionApplication::begin_admitted_acti
 pub async fn awaken_session_application::SessionApplication::run_session_message(&self, &str, &str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_application::SessionMessageOutcome, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::run_session_message_in_activity(&self, &str, &str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::result::Result<awaken_session_contract::session::StepOutcome, awaken_session_contract::session::RunError>
 pub async fn awaken_session_application::SessionApplication::settle_activity(&self, &str, u64) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionActivityError>
+pub async fn awaken_session_application::SessionApplication::settle_activity_observed(&self, &str, u64, core::option::Option<awaken_session_contract::lifecycle::SessionRuntimeIntervalObservation>) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionActivityError>
 impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::claim_lifecycle_supervisor(&self) -> bool
 pub fn awaken_session_application::SessionApplication::deployment_agent_unavailable(&self, &str, &str) -> bool
@@ -269,6 +270,8 @@ pub async fn awaken_session_application::SessionApplication::retire_repository(&
 pub async fn awaken_session_application::SessionApplication::retire_session_repositories(&self, &str, &str, &awaken_session_contract::resource_activation::SessionResourceState) -> bool
 pub async fn awaken_session_application::SessionApplication::rotate_repository_credential(&self, &str, &str, &awaken_resource_contract::input::BindingId, awaken_agent_contract::secret::RedactedString) -> core::result::Result<awaken_session_contract::session_repo::PersistedSession, awaken_session_application::SessionPreparationError>
 impl awaken_session_application::SessionApplication
+pub fn awaken_session_application::SessionApplication::session_event_batch_cutover_validation_source(&self) -> alloc::sync::Arc<awaken_session_application::SessionEventBatchCutoverValidationSource>
+impl awaken_session_application::SessionApplication
 pub fn awaken_session_application::SessionApplication::update_operation_id(&str, &str) -> alloc::string::String
 pub async fn awaken_session_application::SessionApplication::update_session(&self, &str, awaken_session_application::SessionUpdateCommand) -> core::result::Result<awaken_session_application::SessionUpdateOutcome, awaken_session_application::SessionUpdateError>
 impl awaken_session_application::SessionRunAdmission for awaken_session_application::SessionApplication
@@ -312,6 +315,14 @@ pub struct awaken_session_application::SessionDispositionMutation
 pub awaken_session_application::SessionDispositionMutation::owner_scope: alloc::string::String
 pub awaken_session_application::SessionDispositionMutation::session: awaken_session_contract::session_repo::PersistedSession
 pub awaken_session_application::SessionDispositionMutation::transitioned: bool
+pub struct awaken_session_application::SessionEventBatchCutoverValidationSnapshot
+pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::event_batch_failures: u64
+pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::generation: u64
+pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::quarantined: u64
+pub awaken_session_application::SessionEventBatchCutoverValidationSnapshot::terminal_with_incomplete_event_batches: u64
+pub struct awaken_session_application::SessionEventBatchCutoverValidationSource
+impl awaken_session_application::SessionEventBatchCutoverValidationSource
+pub fn awaken_session_application::SessionEventBatchCutoverValidationSource::snapshot(&self) -> core::option::Option<awaken_session_application::SessionEventBatchCutoverValidationSnapshot>
 pub struct awaken_session_application::SessionMessageOutcome
 pub awaken_session_application::SessionMessageOutcome::session: awaken_session_contract::session_repo::PersistedSession
 pub awaken_session_application::SessionMessageOutcome::step: awaken_session_contract::session::StepOutcome

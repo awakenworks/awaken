@@ -142,6 +142,7 @@ test-support = [
     "awaken-model-catalog/test-support",
     "awaken-sandbox-policy-store/test-support",
     "awaken-session-store/test-support",
+    "awaken-session-application/test-support",
     "awaken-work-store/test-support",
     "awaken-protocol-managed/test-support",
     "awaken-coordinator/test-support",
@@ -155,6 +156,7 @@ container-podman = ["awaken-runtime-host/container-podman"]
 container-k8s = ["awaken-runtime-host/container-k8s"]
 
 [dev-dependencies]
+awaken-session-application = { workspace = true, features = ["test-support"] }
 awaken-environment-image-build = { workspace = true, features = ["test-support"] }
 awaken-environment-realization-contract.workspace = true
 awaken-resource-persistence = { workspace = true, features = ["test-support"] }
@@ -170,6 +172,7 @@ awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 awaken-session-store = { workspace = true, features = ["test-support"] }
 awaken-work-store = { workspace = true, features = ["test-support"] }
 awaken-protocol-managed = { workspace = true, features = ["test-support"] }
+awaken-coordinator = { workspace = true, features = ["test-support"] }
 # The management integration tests moved here from awaken-coordinator (they drive
 # build_all_in_one_router* over this process startup).
 awaken-scenario-host = { workspace = true }

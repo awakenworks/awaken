@@ -87,6 +87,9 @@ run static "commit-message self-test" python3 scripts/ci/check_commit_message.py
 run static "Cargo target isolation self-test" scripts/ci/_cargo_target.sh --self-test
 run static "Rust gate control-flow self-test" scripts/ci/check-rust.sh --self-test
 run static "sandbox image build deadline self-test" deploy/images/sandbox/build.sh --self-test
+run static "sandbox image provenance self-test" python3 scripts/release/awaken_sandbox_image_provenance.py self-test
+run static "sandbox image release checker self-test" python3 scripts/ci/check_sandbox_image_release.py --self-test
+run static "sandbox image release contract" python3 scripts/ci/check_sandbox_image_release.py
 run docs "documentation" scripts/ci/check-docs.sh
 run rust "rust" scripts/ci/check-rust.sh --full
 run rust "dependency-policy" cargo deny --log-level error check bans

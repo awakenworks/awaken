@@ -42,6 +42,10 @@ pub(super) struct CoordinatorStores {
     pub(super) resources: awaken_resource_application::ResourcesApplication,
     /// Durable home for the Managed Session aggregate and lifecycle outbox.
     pub(super) sessions: Arc<dyn awaken_session_contract::ManagedSessionRepository>,
+    /// Coordinator-owned short-lived application capabilities. It shares the
+    /// selected Session database but has its own aggregate table and ledger.
+    pub(super) application_access:
+        Arc<awaken_coordinator::application_access_store::ApplicationAccessStore>,
     /// Coordinator-owned Deployment and DeploymentRun view over the same physical
     /// repository as Session.
     pub(super) deployments: Arc<dyn awaken_deployment_contract::DeploymentRepository>,

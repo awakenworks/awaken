@@ -53,6 +53,7 @@ mod rehydration;
 mod resource;
 mod resources;
 mod session_create_idempotency;
+pub use session_create_idempotency::managed_session_id_from_idempotency;
 mod session_mcp_projection;
 mod session_record;
 mod session_service;
@@ -72,7 +73,7 @@ pub use managed_state::ManagedState;
 
 pub(crate) use constants::{DEFAULT_SCOPE, MEMORY_CREATE_ONLY, PROCESSED_AT};
 pub(crate) use helpers::{
-    content_text, durable_inbound_event_id, lifecycle_fact, rubric_text,
+    content_text, durable_inbound_event_id, is_transient_event_id, lifecycle_fact, rubric_text,
     session_thread_usage_value, session_usage_value,
 };
 pub(crate) use resource::{

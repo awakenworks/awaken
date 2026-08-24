@@ -114,6 +114,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let runtime_authority = awaken_coordinator::init_scenario_runtime(&deployment).await?;
         awaken_scenario_host::install_scenario_runtime_authority(runtime_authority)?;
     }
+    let mut scenario_lifecycle = None;
     let app = match model_mode.as_deref() {
         Ok("probe") => {
             awaken_scenario_host::build_router(Arc::new(awaken_scenario_host::ProbeModel), "probe")
@@ -191,7 +192,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("acp-gateway") => awaken_scenario_host::build_acp_gateway_router(),
         Ok("acp-managed-mcp") => awaken_scenario_host::build_acp_managed_mcp_router().await,
         Ok("acp-real-mcp") => awaken_scenario_host::build_acp_real_mcp_router().await,
-        Ok("memory") => awaken_scenario_host::build_memory_router(),
+        Ok("memory") => {
+            let (router, lifecycle) = awaken_scenario_host::build_memory_service();
+            scenario_lifecycle = Some(lifecycle);
+            router
+        }
         Ok("memory-resource") => awaken_scenario_host::build_memory_resource_router(),
         Ok("dream") => awaken_scenario_host::build_dream_runtime_router().await,
         Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
@@ -227,6 +232,18 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+    // Shutdown decision table: C1 no auxiliary Runtime work => immediate join;
+    // C2 MemoryStore effect is visible while its extraction task remains active
+    // => the registered Host drain keeps waiting; C3 work completes => all child
+    // and aux.background spans end before exporter shutdown; C4 work never
+    // completes => the outer lifecycle deadline reports the named task. The one
+    // ServiceLifecycle mounted with the Router owns every rule; Router drop and
+    // a timing sleep are not completion authorities.
+    if let Some(lifecycle) = scenario_lifecycle {
+        lifecycle
+            .shutdown(std::time::Duration::from_secs(10))
+            .await?;
+    }
     // Flush any buffered spans (OTLP batch / trace-file) before exit.
     awaken_observability::shutdown();
     Ok(())

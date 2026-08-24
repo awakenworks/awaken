@@ -411,6 +411,17 @@ impl LocalCommitQueries<PostgresCommitCoordinator> for PostgresQueries {
             .map_err(|error| error.to_string())
     }
 
+    async fn authoritative_latest_run(
+        &self,
+        store: &PostgresCommitCoordinator,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        store
+            .authoritative_latest_run_record(thread_id)
+            .await
+            .map_err(|error| error.to_string())
+    }
+
     async fn authoritative_committed_messages(
         &self,
         store: &PostgresCommitCoordinator,

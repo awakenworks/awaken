@@ -64,6 +64,10 @@ self_test() {
     echo "Postgres gate omits Session quarantine and migration parity" >&2
     return 1
   }
+  grep -Fqx "cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1" "$0" || {
+    echo "Postgres gate omits fail-closed ApplicationAccess durability conformance" >&2
+    return 1
+  }
   grep -Fq "cargo test -p awaken-model-catalog-store --features postgres,test-support" "$0" || {
     echo "Postgres gate omits the authoritative model-catalog store" >&2
     return 1
@@ -250,6 +254,7 @@ cargo test -p awaken-session-store --features test-support --test session_repo_c
   || status=1
 cargo test -p awaken-session-store --features test-support postgres_round_trips_and_upserts -- --test-threads=1 \
   || status=1
+cargo test -p awaken-coordinator application_access_store::tests::provisioned_postgres_application_access_durability_release_gate -- --ignored --exact || status=1
 cargo test -p awaken-config-store --test postgres || status=1
 cargo test -p awaken-admin-config-api --features postgres --test postgres_store || status=1
 cargo test -p awaken-store-postgres --test postgres_live || status=1

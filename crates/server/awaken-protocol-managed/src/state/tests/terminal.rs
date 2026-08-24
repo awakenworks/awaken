@@ -103,14 +103,17 @@ async fn coordinator_only_creation_reports_durable_preparing_without_fabricated_
 /// command commits Archived through the parent Session partition; C5 the same
 /// request retries; C6 the disposable Managed cache is lost; C7 the id is
 /// unknown; C8 the Runtime fixture exposes one already-committed coordinated
-/// prefix before Thread assertions. Effects: E1 C1+C2+C4+C8 returns Terminated and emits one terminal; E2
+/// prefix whose root/child Messages and disposition state carry their exact
+/// same-index commit coordinates before Thread assertions. Effects: E1
+/// C1+C2+C4+C8 returns Terminated and emits one terminal; E2
 /// C3 conflicts before the command; E3 C5 is idempotent; E4 C6 rebuilds the same
-/// terminal event id from disposition truth; E5 C7 is not found. No child-named
+/// terminal event id from disposition truth; E5 C7 is not found; E6 every
+/// pre-terminal cursor reaches the same append-only suffix warm and cold. No child-named
 /// teardown or Managed archive registry participates.
 ///
 /// | Rule | Real | State | Archived | Retry | Cold | Result/effect |
 /// |---|---|---|---|---|---|---|
-/// | A1 | yes | idle | no→yes | no | no | E1 |
+/// | A1 | yes | idle | no→yes | no | no | E1,E6 |
 /// | A2 | yes | running | no | no | no | E2 |
 /// | A3 | yes | terminated | yes | yes | no | E3 |
 /// | A4 | yes | n/a | yes | no | yes | E4 |
@@ -251,10 +254,10 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1 a real child is Idle; C2 the parent-partition
     // disposition commit fails; C3 the Runtime fixture exposes one committed
-    // coordinated prefix. Effect E1 the error is returned while both the
-    // disposable Thread and event stream remain unchanged. Decision rule F1 is
-    // C1+C2=>E1; command-success/retry/restart rules are covered by the archive
-    // decision table above.
+    // coordinated prefix with exact Message commit coordinates. Effect E1 the
+    // error is returned while both the disposable Thread and event stream remain
+    // unchanged. Decision rule F1 is C1+C2+C3=>E1; command-success/retry/restart
+    // rules are covered by the archive decision table above.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     let state = Arc::new(ManagedState::new(runtime.clone()));
     let session = state
@@ -339,7 +342,10 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
-    // selects only its stated effect and preserves the authority constraint.
+    // selects only its stated effect and preserves the authority constraint. The shared
+    // Runtime fixture first returns one root/child recovery prefix with exact
+    // same-index Message commit coordinates; selector behavior never relies on
+    // a read-time anchor fallback.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
     let state = Arc::new(ManagedState::new(runtime.clone()));
     let request = serde_json::from_value(serde_json::json!({
@@ -616,13 +622,17 @@ async fn archive_session_disposes_on_the_terminal_transition_only() {
 /// closes only on the aggregate terminal; E4 cold recovery derives the same
 /// terminal Thread DTO/event ids without a child disposition write; E5 the
 /// primary emits its own terminated edge, using the one public `sthr_` id,
-/// between child termination and aggregate Session termination.
+/// between child termination and aggregate Session termination; E6 every
+/// terminal-relevant issued cursor remains accepted warm/cold and reaches that
+/// identical terminal trio. This fixture deliberately has no retained runtime
+/// interval, so pre-cutover aggregate Usage/Idle cursors are excluded here and
+/// remain owned by the interval-lineage cutover tests.
 ///
 /// | Rule | Child before archive | Parent terminal | Live | Cold | Effects |
 /// |---|---|---|---|---|---|
-/// | P1 | Running | yes | yes | yes | E1,E2,E3,E4,E5 |
-/// | P2 | Awaiting | yes | yes | yes | E1,E2,E3,E4,E5 |
-/// | P3 | Idle | yes | yes | yes | E1,E2,E3,E4,E5 |
+/// | P1 | Running | yes | yes | yes | E1,E2,E3,E4,E5,E6 |
+/// | P2 | Awaiting | yes | yes | yes | E1,E2,E3,E4,E5,E6 |
+/// | P3 | Idle | yes | yes | yes | E1,E2,E3,E4,E5,E6 |
 #[tokio::test]
 async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
     // Causes: the fixtures below establish `parent terminal` with the concrete inputs, state,
@@ -671,11 +681,13 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             .expect(rule);
         let child_id = format!("thread-parent-terminal-{rule}");
         let child_run = RunId(format!("run-parent-terminal-{rule}"));
-        runtime
-            .coordinated
-            .lock()
-            .unwrap()
-            .push(CoordinatedThreadLink {
+        let coordination_call_id = format!("terminal-{rule}");
+        runtime.install_agent_coordination_prefix(
+            &session.id,
+            RunId("root".into()),
+            0,
+            &coordination_call_id,
+            CoordinatedThreadLink {
                 session_id: session.id.clone(),
                 thread_id: awaken_agent_contract::agent::thread::Id(child_id.clone()),
                 target: CoordinatedThreadTarget::Agent {
@@ -684,10 +696,11 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
                 created_by_operation_id: ToolBatch::operation_id_for_step(
                     &RunId("root".into()),
                     0,
-                    &format!("terminal-{rule}"),
+                    &coordination_call_id,
                 ),
                 latest_run_id: Some(child_run.clone()),
-            });
+            },
+        );
         let call_id = format!("client-call-{rule}");
         let child_message = if terminal_kind == Some(RunLifecycleEventKind::Awaiting) {
             runtime.pending_by_thread.lock().unwrap().insert(
@@ -747,6 +760,10 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             expects_idle,
             "{rule} precondition"
         );
+        let issued_prefix = state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data;
 
         let (_snapshot, mut receiver) = state.stream_subscribe(&session.id).unwrap();
         let archived = state.archive_session(&session.id).await.expect(rule);
@@ -852,6 +869,12 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             1,
             "{rule}/E5 warm"
         );
+        let warm_full = state.list_events(&session.id, None, None, false).unwrap();
+        assert_eq!(
+            &warm_full.data[..issued_prefix.len()],
+            issued_prefix.as_slice(),
+            "{rule}/E6 terminal appends after the issued prefix"
+        );
 
         let restarted = ManagedState::new(runtime.clone()).with_session_repo(repo.clone());
         restarted.ensure_session(&session.id).await.expect(rule);
@@ -916,6 +939,47 @@ async fn parent_terminal_closes_every_derived_child_live_and_after_restart() {
             cold_aggregate[0].id, warm_aggregate_terminal_id,
             "{rule}/E4 aggregate id"
         );
+        let terminal_ids = vec![
+            warm_child_terminal_id.clone(),
+            warm_primary_terminal_id.clone(),
+            warm_aggregate_terminal_id.clone(),
+        ];
+        for issued in issued_prefix.iter().filter(|event| {
+            !matches!(
+                &event.kind,
+                OutboundKind::SessionUsage { .. } | OutboundKind::SessionStatusIdle { .. }
+            )
+        }) {
+            let cursor = issued.id.as_str();
+            let warm_suffix = state
+                .list_events(&session.id, Some(cursor), None, false)
+                .unwrap();
+            let cold_suffix = restarted
+                .list_events(&session.id, Some(cursor), None, false)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "{rule}/E6 cold suffix after {} {cursor}: {error:?}",
+                        issued.type_str()
+                    )
+                });
+            let selected = |events: &[Event]| {
+                events
+                    .iter()
+                    .filter(|event| terminal_ids.contains(&event.id))
+                    .map(|event| event.id.clone())
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(
+                selected(&warm_suffix.data),
+                terminal_ids,
+                "{rule}/E6 warm terminal suffix after {cursor}"
+            );
+            assert_eq!(
+                selected(&cold_suffix.data),
+                terminal_ids,
+                "{rule}/E6 cold terminal suffix after {cursor}"
+            );
+        }
         assert!(
             runtime.archive_commits.lock().unwrap().is_empty(),
             "{rule}/E4"
@@ -1236,6 +1300,18 @@ struct EndSessionFailer;
 
 #[async_trait]
 impl SessionRuntime for EndSessionFailer {
+    async fn quiesce_terminal_delegations(
+        &self,
+        _thread: &str,
+    ) -> Result<awaken_session_contract::DelegatedRunSnapshot, RunError> {
+        Ok(awaken_session_contract::DelegatedRunSnapshot {
+            delegated_runs: Vec::new(),
+            coordinated_thread_ids: Vec::new(),
+            watermark: 0,
+            runtime_commit_cursor: 0,
+        })
+    }
+
     async fn run(
         &self,
         _agent: &str,
@@ -1281,9 +1357,13 @@ impl SessionRuntime for EndSessionFailer {
     }
 }
 
-/// D2: a sandbox teardown failure at delete is swallowed (best-effort): the delete is
-/// terminal, so the session is still removed and reads 404 afterwards — a dispose
-/// error must never leave a "deleted" session alive.
+/// Delete-cleanup cause/effect graph: C1 terminal quiescence proves there are no
+/// child targets; C2 the durable cleanup intent moves the active Resource to
+/// Releasing; C3 Runtime teardown fails. Effects: E1 DELETE remains accepted and
+/// public reads are 404; E2 the durable Session remains Deleting+Releasing for
+/// the existing ResourceReclaimer; E3 it remains in the reconcilable index.
+/// Decision rule D2=C1+C2+C3=>E1+E2+E3. The teardown error is retriable cleanup
+/// state, not authority to resurrect the public Session.
 #[tokio::test]
 async fn delete_is_best_effort_when_sandbox_teardown_fails() {
     let repo = Arc::new(ephemeral_session_repo());
@@ -1408,7 +1488,9 @@ pub(in crate::state) fn sample_persisted(id: &str) -> PersistedSession {
         activity_epoch: 0,
         active_activity_epochs: Default::default(),
         running_interval: None,
+        closed_runtime_intervals: Vec::new(),
         runtime_active_millis: 0,
+        usage_cursor: Default::default(),
         budget: Default::default(),
         environment: Default::default(),
         mcp,

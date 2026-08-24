@@ -2,6 +2,30 @@
 
 use super::*;
 
+const SANDBOX_SCOPE_ANNOTATION: &str = "awaken.dev/sandbox-scope";
+const RESOLVED_IMAGE_ANNOTATION: &str = "awaken.dev/resolved-image";
+// Correlation evidence must never narrow the generic Sandbox scope contract.
+// Generated Session ids and OCI references are far below this additive budget;
+// an arbitrary longer scope remains runnable but deliberately yields no proof.
+const RELEASE_ANNOTATION_VALUE_BUDGET: usize = 4 * 1024;
+
+fn stamp_sandbox_release_annotations(pod: &mut Pod, scope: &str, resolved_image: &str) -> bool {
+    if scope
+        .len()
+        .checked_add(resolved_image.len())
+        .is_none_or(|size| size > RELEASE_ANNOTATION_VALUE_BUDGET)
+    {
+        return false;
+    }
+    let annotations = pod
+        .metadata
+        .annotations
+        .get_or_insert_with(Default::default);
+    annotations.insert(SANDBOX_SCOPE_ANNOTATION.into(), scope.into());
+    annotations.insert(RESOLVED_IMAGE_ANNOTATION.into(), resolved_image.into());
+    true
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ExistingContinuationDecision {
     Preserve,
@@ -188,6 +212,11 @@ pub(super) async fn create(
             create_or_verify(&secrets, &secret).await?;
         }
         let mut pod = runtime.pod(&runtime_id, plan);
+        // `runtime_id` is an adapter-local Kubernetes name and may be a hash.
+        // Preserve the original Sandbox scope and the already-resolved image at
+        // the sole Pod creation seam so a bounded cluster observer can correlate
+        // this exact Sandbox without acquiring Session or build authority.
+        stamp_sandbox_release_annotations(&mut pod, id, &plan.image);
         if let Some(uid) = claim_uid.as_deref() {
             continuation::bind_claim_uid(&mut pod, uid);
         }
@@ -266,6 +295,115 @@ pub(super) async fn create(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn package_plan(image: &str) -> ContainerPlan {
+        ContainerPlan {
+            image: image.into(),
+            command: vec!["sleep".into(), "30".into()],
+            env: vec![("PRIVATE_RUNTIME_INPUT".into(), "never-annotate-me".into())],
+            packages: Default::default(),
+            binds: Vec::new(),
+            outputs_volume: "/mnt/session/outputs".into(),
+            network: crate::NetworkMode::Open,
+            requests: pc::ResourceRequests::default(),
+            limits: pc::ResourceLimits::default(),
+            filesystem_continuity: pc::FilesystemContinuity::Retained,
+            memory_mounts: Vec::new(),
+            rootfs: crate::RootfsPlan::Image(image.into()),
+        }
+    }
+
+    #[test]
+    fn sandbox_release_annotations_preserve_scope_and_only_the_resolved_image() {
+        /* Release-correlation cause/effect decision table — SR1/SR2:
+         * C1 an opaque Sandbox scope is not itself the Kubernetes-safe runtime
+         * id; C2 the frozen Environment resolved one exact package image; C3 the
+         * runtime plan also contains private env and image-pull inputs; C4 an
+         * otherwise valid opaque scope exceeds the optional evidence budget. Effects:
+         * E1 the Pod name remains the adapter-local id; E2 annotations retain the
+         * exact original scope and resolved image; E3 no runtime env, registry
+         * Secret, or adapter id becomes correlation metadata; E4 C4 preserves
+         * Sandbox realization with absent correlation proof and no hashed identity
+         * substitute. Rules: SR1 C1+C2=>E1+E2; SR2 C1+C2+C3=>E2+E3; SR3
+         * C1+C2+C4=>E1+E4. A deployment observer establishes package provenance
+         * only by equality with the BuildKit termination digest; this neutral
+         * Sandbox seam does not create another build fact.
+         */
+        let scope = "sesn_fnv1a64:mission-call-of-duty";
+        let runtime_id = k8s_runtime_id(scope).unwrap();
+        let pod_runtime_name = pod_name(&runtime_id);
+        let image = format!(
+            "registry.local/environments/awaken-packages@sha256:{}",
+            "a".repeat(64)
+        );
+        let plan = package_plan(&image);
+        let runtime = K8sRuntime::for_test("127.0.0.1:9000".parse().unwrap())
+            .with_image_pull_secrets(["registry-auth-secret".into()]);
+        let mut pod = runtime.pod(&runtime_id, &plan);
+
+        assert!(
+            stamp_sandbox_release_annotations(&mut pod, scope, &plan.image),
+            "SR1"
+        );
+        stamp_pod_realization(&mut pod).unwrap();
+
+        assert_eq!(
+            pod.metadata.name.as_deref(),
+            Some(pod_runtime_name.as_str()),
+            "SR1"
+        );
+        let annotations = pod.metadata.annotations.as_ref().unwrap();
+        assert_eq!(
+            annotations
+                .get(SANDBOX_SCOPE_ANNOTATION)
+                .map(String::as_str),
+            Some(scope),
+            "SR1 exact original identity"
+        );
+        assert_eq!(
+            annotations
+                .get(RESOLVED_IMAGE_ANNOTATION)
+                .map(String::as_str),
+            Some(image.as_str()),
+            "SR1 exact frozen image"
+        );
+        assert_eq!(
+            annotations.len(),
+            3,
+            "SR2 two correlation facts plus the existing realization digest"
+        );
+        assert!(
+            annotations.contains_key("awaken.dev/realization-digest"),
+            "SR2 production stamping remains authoritative"
+        );
+        assert!(
+            annotations.values().all(|value| {
+                !value.contains("never-annotate-me")
+                    && !value.contains("registry-auth-secret")
+                    && value != &runtime_id
+            }),
+            "SR2 secrets and the adapter-local identity stay out of annotations"
+        );
+
+        let overlong_scope = "s".repeat(RELEASE_ANNOTATION_VALUE_BUDGET + 1);
+        let overlong_runtime_id = k8s_runtime_id(&overlong_scope).unwrap();
+        let mut overlong_pod = runtime.pod(&overlong_runtime_id, &plan);
+        assert!(
+            !stamp_sandbox_release_annotations(&mut overlong_pod, &overlong_scope, &plan.image),
+            "SR3"
+        );
+        stamp_pod_realization(&mut overlong_pod).unwrap();
+        let overlong_annotations = overlong_pod.metadata.annotations.as_ref().unwrap();
+        assert_eq!(
+            overlong_annotations.len(),
+            1,
+            "SR3 realization survives while release proof is absent"
+        );
+        assert!(
+            overlong_annotations.contains_key("awaken.dev/realization-digest"),
+            "SR3 no correlation hash replaces the original scope"
+        );
+    }
 
     #[test]
     fn failed_creation_cleans_only_resources_created_by_that_attempt() {

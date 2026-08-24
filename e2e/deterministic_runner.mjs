@@ -402,6 +402,9 @@ export function runMain() {
     throw new Error('--prebuild-only requires AWAKEN_E2E_PREBUILT_DIR');
   }
   const prebuildStarted = performance.now();
+  // The package entry executes the canonical shell sanitizer before Node starts.
+  // Snapshot that environment once so every deterministic leaf and its children
+  // inherit the same secretless boundary without a second JavaScript predicate.
   const selectedPrebuiltDirectory = prebuiltDirectory(process.env.AWAKEN_E2E_PREBUILT_DIR);
   const environment = preparedEnvironment(process.env, selectedPrebuiltDirectory);
   report.prebuildDurationMs = Math.round(performance.now() - prebuildStarted);

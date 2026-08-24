@@ -370,7 +370,7 @@ extension package with independently enabled toolsets:
 
 | Toolset | Example ids | Ownership rule |
 |---|---|---|
-| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep`, `web_fetch` | registers descriptors and concrete tools that execute in-process; `web_search` is owned by one separately configured plugin path |
+| `builtin-hand-tools` | `bash`, `read`, `write`, `edit`, `glob`, `grep` | registers filesystem and shell tools that execute in-process; `web_fetch` and `web_search` each have one separately configured plugin owner |
 | `builtin-task-tools` | `send_message`, `cancel_task`, `recover_failed_messages` | registers task orchestration tools over runtime state/effect seams; recovery tools are ops-scoped unless explicitly enabled |
 | `builtin-delegation-tools` | `agent_run` | registers one delegation tool; target agent is an argument, not a generated tool id |
 

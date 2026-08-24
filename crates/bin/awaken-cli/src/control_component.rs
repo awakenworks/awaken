@@ -352,6 +352,7 @@ pub(super) async fn prepare_control_routers(
         private_router,
         Some(component.registration_supervisor),
         process.service_lifecycle,
+        None,
         admin_tools,
     ))
 }

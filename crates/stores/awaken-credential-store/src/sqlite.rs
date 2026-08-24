@@ -1051,6 +1051,13 @@ mod tests {
             .unwrap();
     }
 
+    /// Collision/acknowledgement cause/effect table. C1 an exact live pair is
+    /// ready to update; C2 its would-be event id is already occupied by a
+    /// different payload; C3 an acknowledgement presents a payload different
+    /// from that durable event. Effects are E1 transaction conflict with the
+    /// pair unchanged, E2 the original event retained, and E3 stale-ack
+    /// rejection with that event still retained. Rules: SR1 C1+C2 -> E1+E2;
+    /// SR2 C2+C3 -> E3+E2.
     #[tokio::test]
     async fn managed_update_event_collision_rolls_back_pair_and_stale_ack_is_rejected() {
         use awaken_credential_vault::InMemorySecretStore;
@@ -1114,6 +1121,10 @@ mod tests {
             repo.pending_managed_rollouts().await.unwrap(),
             vec![conflicting.clone()]
         );
+        assert_eq!(
+            repo.managed_rollout(&conflicting.id).await.unwrap(),
+            Some(conflicting.clone())
+        );
 
         let stale_ack = ManagedCredentialRollout {
             id: conflicting.id.clone(),
@@ -1131,7 +1142,11 @@ mod tests {
         ));
         assert_eq!(
             repo.pending_managed_rollouts().await.unwrap(),
-            vec![conflicting]
+            vec![conflicting.clone()]
+        );
+        assert_eq!(
+            repo.managed_rollout(&conflicting.id).await.unwrap(),
+            Some(conflicting)
         );
     }
 

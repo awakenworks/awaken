@@ -273,7 +273,11 @@ mod startup_tests {
             panic!("composition test does not run the asynchronous build worker")
         }
 
-        async fn available(&self, _image: &str) -> Result<bool, EnvironmentImageBuildError> {
+        async fn available(
+            &self,
+            _demand: &EnvironmentImageBuildDemand,
+            _image: &str,
+        ) -> Result<bool, EnvironmentImageBuildError> {
             Ok(false)
         }
     }

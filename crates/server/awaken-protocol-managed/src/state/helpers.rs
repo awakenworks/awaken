@@ -19,6 +19,17 @@ pub(crate) fn durable_inbound_event_id(session_id: &str, operation_id: &str) -> 
     )
 }
 
+/// Process-local update/delete notifications use the decimal sequence emitted
+/// by `next_event_id`. Durable inbound receipts deliberately share the public
+/// `evt_` namespace but carry a stable fingerprint and must remain in canonical
+/// committed ordering.
+#[must_use]
+pub(crate) fn is_transient_event_id(id: &str) -> bool {
+    id.strip_prefix("evt_").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
+    })
+}
+
 pub(crate) fn lifecycle_fact(
     id: String,
     session_id: &str,
@@ -143,6 +154,21 @@ pub(crate) fn content_text(
 #[cfg(test)]
 mod usage_tests {
     use super::*;
+
+    #[test]
+    fn transient_event_ids_exclude_durable_inbound_fingerprints() {
+        // Cause/effect graph: C1 next_event_id emits a decimal process-local
+        // suffix; C2 an accepted command emits a stable fingerprint in the same
+        // public namespace; C3 a malformed/empty suffix is supplied. Effects:
+        // E1 only C1 is an overlay; E2 C2 remains canonically ordered durable
+        // history; E3 C3 is never reclassified as a local notification.
+        // Decision rules T1=C1=>E1, T2=C2=>E2, T3=C3=>E3.
+        assert!(is_transient_event_id("evt_0"), "T1/E1");
+        assert!(is_transient_event_id("evt_18446744073709551615"), "T1/E1");
+        assert!(!is_transient_event_id("evt_fnv1a64:abcdef"), "T2/E2");
+        assert!(!is_transient_event_id("evt_"), "T3/E3");
+        assert!(!is_transient_event_id("evt_12x"), "T3/E3");
+    }
 
     #[test]
     fn session_and_thread_usage_share_the_frozen_pricing_decision_table() {

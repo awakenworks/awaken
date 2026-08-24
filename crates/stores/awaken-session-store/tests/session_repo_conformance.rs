@@ -95,7 +95,9 @@ fn session(id: &str, title: &str) -> PersistedSession {
         activity_epoch: 0,
         active_activity_epochs: Default::default(),
         running_interval: None,
+        closed_runtime_intervals: Vec::new(),
         runtime_active_millis: 0,
+        usage_cursor: Default::default(),
         environment: Default::default(),
         mcp: awaken_session_contract::SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -204,7 +206,7 @@ fn complete_terminal_cleanup(value: &mut PersistedSession) {
         assert!(
             value
                 .terminal_cleanup
-                .freeze_targets(&session_id, [], 0)
+                .freeze_targets(&session_id, [], 0, 0)
                 .expect("freeze root cleanup target")
         );
     }
@@ -372,6 +374,11 @@ async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRep
         activity_epoch: 7,
         started_at_unix_ms: 1_700_000_000_100,
         ended_at_unix_ms: 1_700_000_000_900,
+        opened_revision: Default::default(),
+        closed_revision: Default::default(),
+        observations: Vec::new(),
+        usage: Default::default(),
+        max_list_cost_minor: None,
     });
     create_session(
         r,
@@ -562,7 +569,7 @@ async fn tombstone_requires_hidden_completed_cleanup<R: ManagedSessionRepository
     assert!(pending.request_delete());
     pending
         .terminal_cleanup
-        .freeze_targets(&pending.session_id.clone(), [], 0)
+        .freeze_targets(&pending.session_id.clone(), [], 0, 0)
         .expect("pending delete freezes its root target");
     let pending = create_session(repo, "ws_a", pending, Vec::new()).await;
 

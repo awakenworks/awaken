@@ -78,6 +78,6 @@ Owner: [tool-and-capability.md](../design/tool-and-capability.md).
 
 - Status: active
 - Owner: [Builtin Web provider realizations](../design/builtin-tools-extension-contract.md#web-provider-realizations)
-- Fact: `web_search` and `web_fetch` retain one builtin identity while publication resolves exactly one host or provider-server realization; provider accounts and explicit fallback stay outside runtime core.
+- Fact: `web_search` and `web_fetch` retain one builtin identity while publication resolves exactly one host or provider-server realization; provider accounts and explicit fallback stay outside runtime core. A host WebFetch under domain policy is eligible only when its provider enforces every redirect hop or rejects redirects before the next request; unproven Gateway topology fails configuration.
 - Links: [ADR-0007 amendment](../adr/0007-runtime-owns-tool-execution.md#amendment-2026-08-23-provider-server-realization-is-still-one-runtime-tool-path); guardrails G8, G9, and G22
-- Verification: catalog uniqueness, realization exclusivity, permission compatibility, fallback and adapter projection tests.
+- Verification: catalog uniqueness, realization exclusivity, permission compatibility, fallback, redirect fail-closed, and adapter projection tests.

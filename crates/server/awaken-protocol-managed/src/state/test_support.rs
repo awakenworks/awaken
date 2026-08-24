@@ -95,6 +95,23 @@ pub(crate) struct RehydrateFake {
     pub(super) committed: Arc<std::sync::Mutex<Option<Vec<Message>>>>,
     pub(super) committed_by_thread:
         Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<Message>>>>,
+    /// Explicit Run records used by canonical coordination fixtures whose
+    /// accepted root transcript is committed before any root lifecycle edge.
+    pub(super) run_ids_by_thread: Arc<
+        std::sync::Mutex<std::collections::HashMap<String, awaken_agent_contract::agent::run::Id>>,
+    >,
+    /// Exact fake commit coordinates aligned with `committed_by_thread`.
+    /// Absent entries mean the fixture committed its configured messages in
+    /// one atomic prefix, not that production may omit the coordinates.
+    pub(super) message_cursors_by_thread:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
+    pub(super) state_by_thread: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, Vec<awaken_agent_contract::agent::state::Command>>,
+        >,
+    >,
+    pub(super) state_cursors_by_thread:
+        Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u64>>>>,
     pub(super) outcome_projections: Arc<
         std::sync::Mutex<
             std::collections::HashMap<
@@ -117,6 +134,107 @@ pub(crate) struct RehydrateFake {
 }
 
 impl RehydrateFake {
+    /// Install the one Runtime-owned accepted `send_to_agent` prefix that
+    /// authorizes an ordinary coordinated link. Tests must not fabricate a
+    /// Managed-only link anchor: the root ToolUse/ToolResult messages, their
+    /// exact commit coordinate, the root Run, and the relationship are one
+    /// recovery fixture.
+    pub(crate) fn install_agent_coordination_prefix(
+        &self,
+        session_id: &str,
+        root_run_id: awaken_agent_contract::agent::run::Id,
+        step: usize,
+        call_id: &str,
+        link: awaken_session_contract::CoordinatedThreadLink,
+    ) {
+        assert!(matches!(
+            &link.target,
+            awaken_session_contract::CoordinatedThreadTarget::Agent { .. }
+        ));
+        assert_eq!(
+            link.created_by_operation_id,
+            awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
+                &root_run_id,
+                step,
+                call_id,
+            )
+        );
+        let agent_id = link
+            .target
+            .agent_id()
+            .expect("ordinary coordination fixture has an Agent target")
+            .to_string();
+        let mut messages = self
+            .committed_by_thread
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .cloned()
+            .or_else(|| self.committed.lock().unwrap().clone())
+            .unwrap_or_default();
+        let mut cursors = self
+            .message_cursors_by_thread
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .filter(|cursors| cursors.len() == messages.len())
+            .cloned()
+            .unwrap_or_else(|| {
+                (1..=messages.len())
+                    .map(|cursor| u64::try_from(cursor).expect("fixture message cursor"))
+                    .collect()
+            });
+        let source_commit_cursor = cursors
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or_default()
+            .checked_add(1)
+            .expect("fixture message cursor exhausted");
+        messages.extend([
+            Message::new(
+                awaken_agent_contract::agent::message::Id::assistant(&root_run_id, step),
+                awaken_agent_contract::agent::message::Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    call_id,
+                    awaken_ext_builtin_tools::SEND_TO_AGENT,
+                    serde_json::json!({
+                        "agent_id": agent_id,
+                        "message": "fixture coordination"
+                    }),
+                )],
+            ),
+            Message::new(
+                awaken_agent_contract::agent::message::Id::tool_result(call_id),
+                awaken_agent_contract::agent::message::Role::Tool,
+                vec![ContentBlock::tool_result(
+                    call_id,
+                    vec![ContentBlock::text(
+                        serde_json::json!({
+                            "accepted": true,
+                            "session_thread_id": link.thread_id.0.clone()
+                        })
+                        .to_string(),
+                    )],
+                )],
+            ),
+        ]);
+        cursors.extend([source_commit_cursor, source_commit_cursor]);
+        self.message_cursors_by_thread
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), cursors);
+        self.committed_by_thread
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), messages);
+        self.run_ids_by_thread
+            .lock()
+            .unwrap()
+            .insert(session_id.to_string(), root_run_id);
+        self.coordinated.lock().unwrap().push(link);
+    }
+
     fn commit_staged_child_prefix_after_snapshot(&self, thread_id: &str) {
         let staged = self
             .child_commit_after_history_snapshot
@@ -125,6 +243,16 @@ impl RehydrateFake {
             .take();
         if let Some((target_thread, messages, lifecycle)) = staged {
             if target_thread == thread_id {
+                let message_cursor = lifecycle
+                    .iter()
+                    .filter(|event| event.thread_id.0 == target_thread)
+                    .map(|event| event.source_commit_cursor)
+                    .max()
+                    .expect("staged child message has its atomic lifecycle commit");
+                self.message_cursors_by_thread
+                    .lock()
+                    .unwrap()
+                    .insert(target_thread.clone(), vec![message_cursor; messages.len()]);
                 self.committed_by_thread
                     .lock()
                     .unwrap()
@@ -278,18 +406,34 @@ impl SessionRuntime for RehydrateFake {
             "child_snapshot"
         });
         let lifecycle = self.lifecycle.lock().unwrap().clone();
+        let has_outcome_projection = self
+            .outcome_projections
+            .lock()
+            .unwrap()
+            .keys()
+            .any(|(owner, _)| owner == thread_id);
+        let explicit_run_id = self
+            .run_ids_by_thread
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned();
         let latest_run_id = if thread_id == session_id {
             lifecycle
                 .iter()
                 .rev()
                 .find(|event| event.thread_id.0 == thread_id)
                 .map(|event| event.run_id.clone())
+                .or(explicit_run_id.clone())
                 .or_else(|| {
                     (self.committed.lock().unwrap().is_some()
-                        || self.pending.lock().unwrap().is_some())
-                    .then(|| {
-                        awaken_agent_contract::agent::run::Id(format!("test-root-run:{thread_id}"))
-                    })
+                        || self.pending.lock().unwrap().is_some()
+                        || has_outcome_projection)
+                        .then(|| {
+                            awaken_agent_contract::agent::run::Id(format!(
+                                "test-root-run:{thread_id}"
+                            ))
+                        })
                 })
         } else {
             self.coordinated
@@ -355,17 +499,47 @@ impl SessionRuntime for RehydrateFake {
             })
             .into_iter()
             .collect();
-        let state = if self
+        let mut state = self
+            .state_by_thread
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_default();
+        if self
             .disposition_by_thread
             .lock()
             .unwrap()
             .get(&(session_id.to_string(), thread_id.to_string()))
             == Some(&awaken_agent_contract::ThreadDisposition::Archived)
         {
-            vec![awaken_agent_contract::archive_thread_command()]
-        } else {
-            Vec::new()
-        };
+            state.push(awaken_agent_contract::archive_thread_command());
+        }
+        for ((owner, outcome_id), projection) in self.outcome_projections.lock().unwrap().iter() {
+            if owner != thread_id {
+                continue;
+            }
+            match projection {
+                awaken_session_contract::CommittedOutcomeProjection::Completed(report) => {
+                    for iteration in &report.iterations {
+                        state.push(awaken_agent_contract::agent::state::Command::set(
+                            awaken_agent_contract::agent::state::Scope::Thread,
+                            awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                            format!("outcome/{outcome_id}/evaluation/{}", iteration.iteration),
+                            serde_json::json!({"fixture": "committed"}),
+                        ));
+                    }
+                }
+                awaken_session_contract::CommittedOutcomeProjection::Errored(_) => {
+                    state.push(awaken_agent_contract::agent::state::Command::set(
+                        awaken_agent_contract::agent::state::Scope::Thread,
+                        awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                        format!("outcome/{outcome_id}/state"),
+                        serde_json::json!({"fixture": "errored"}),
+                    ));
+                }
+            }
+        }
         let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
         for event in lifecycle
             .iter()
@@ -381,26 +555,61 @@ impl SessionRuntime for RehydrateFake {
                 });
             }
         }
-        let store_cursor = lifecycle
+        if let Some(run_id) = explicit_run_id
+            && !runs.iter().any(|run| run.id == run_id)
+        {
+            runs.push(awaken_agent_contract::agent::run::Record {
+                id: run_id,
+                thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+                state: awaken_agent_contract::agent::run::RunState::Running,
+            });
+        }
+        let base_store_cursor = lifecycle
             .iter()
             .map(|event| event.source_commit_cursor)
             .max()
             .unwrap_or_default();
-        let store_cursor = if thread_id == session_id {
+        let base_store_cursor = if thread_id == session_id {
             self.root_store_cursor_override
                 .lock()
                 .unwrap()
-                .unwrap_or(store_cursor)
+                .unwrap_or(base_store_cursor)
         } else {
-            store_cursor
+            base_store_cursor
         };
+        let atomic_fixture_cursor = if messages.is_empty() && state.is_empty() {
+            base_store_cursor
+        } else {
+            base_store_cursor.max(1)
+        };
+        let message_commit_cursors = self
+            .message_cursors_by_thread
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(|| vec![atomic_fixture_cursor; messages.len()]);
+        let state_commit_cursors = self
+            .state_cursors_by_thread
+            .lock()
+            .unwrap()
+            .get(thread_id)
+            .cloned()
+            .unwrap_or_else(|| vec![atomic_fixture_cursor; state.len()]);
+        let store_cursor = std::iter::once(base_store_cursor)
+            .chain(message_commit_cursors.iter().copied())
+            .chain(state_commit_cursors.iter().copied())
+            .max()
+            .unwrap_or_default();
         let snapshot = awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
             thread_id: awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
             claimed_run_id: latest_run_id.clone(),
             runs,
             latest_run_id: Some(latest_run_id),
             messages,
+            message_commit_cursors,
             state,
+            state_commit_cursors,
             events: Vec::new(),
             resume_tickets,
             thread_version: lifecycle.len() as u64,

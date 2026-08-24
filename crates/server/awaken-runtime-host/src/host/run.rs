@@ -104,11 +104,31 @@ impl SharedHost {
         thread: &str,
     ) -> Result<awaken_session_contract::DelegatedRunSnapshot, HostError> {
         let commit = self.commit_for_read(thread).await?;
-        let commands = commit.committed_state(&ThreadId(thread.to_string()));
+        let root_thread = ThreadId(thread.to_string());
+        let recovery = match commit
+            .authoritative_latest_run(&root_thread)
+            .await
+            .map_err(HostError::internal)?
+        {
+            Some(run) => Some(
+                commit
+                    .recovery_snapshot(&root_thread, &run.id)
+                    .await
+                    .map_err(|error| HostError::internal(error.to_string()))?,
+            ),
+            None => None,
+        };
+        let commands = recovery
+            .as_ref()
+            .map(|snapshot| snapshot.state.as_slice())
+            .unwrap_or_default();
         let watermark = u64::try_from(commands.len())
             .map_err(|_| HostError::internal("delegation watermark exceeds u64"))?;
+        let runtime_commit_cursor = recovery
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.store_cursor);
         let mut stores: HashMap<RunId, Store> = HashMap::new();
-        for command in &commands {
+        for command in commands {
             let Some(run_id) = command
                 .run_id
                 .clone()
@@ -130,6 +150,7 @@ impl SharedHost {
             delegated_runs: projected,
             coordinated_thread_ids: Vec::new(),
             watermark,
+            runtime_commit_cursor,
         })
     }
 
@@ -180,6 +201,7 @@ impl SharedHost {
                                 | awaken_run_ingress_contract::DispatchState::Pending
                                 | awaken_run_ingress_contract::DispatchState::Leased
                                 | awaken_run_ingress_contract::DispatchState::Awaiting
+                                | awaken_run_ingress_contract::DispatchState::DeadLetter
                         )
                 }) {
                     // The root's resident attempt receives the same post-intent
@@ -224,40 +246,37 @@ impl SharedHost {
                         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                     }
                 }
-                if self.deployment.disable_local_pool && self.upstream.is_none() {
-                    // A Coordinator-only topology has no resident attempt to
-                    // join. Cancellation is complete only after the remote
-                    // Worker settles every root/parent-affined dispatch row;
-                    // the durable cancellation bit alone is not quiescence.
-                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-                    loop {
-                        let still_active = store
-                            .list_dispatches()
-                            .await
-                            .map_err(|error| HostError::internal(error.to_string()))?
-                            .into_iter()
-                            .any(|dispatch| {
-                                (dispatch.thread_id == thread_id
-                                    || dispatch.session_thread_id.as_ref() == Some(&thread_id))
-                                    && matches!(
-                                        dispatch.state,
-                                        awaken_run_ingress_contract::DispatchState::Reserved
-                                            | awaken_run_ingress_contract::DispatchState::ReservationLeased
-                                            | awaken_run_ingress_contract::DispatchState::Pending
-                                            | awaken_run_ingress_contract::DispatchState::Leased
-                                            | awaken_run_ingress_contract::DispatchState::Awaiting
-                                    )
-                            });
-                        if !still_active {
-                            break;
-                        }
-                        if tokio::time::Instant::now() >= deadline {
-                            return Err(HostError::internal(format!(
-                                "terminal dispatch quiescence timed out for Session `{thread}`"
-                            )));
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                // Cancellation is complete only after every local or remote
+                // Worker settles all root/parent-affined runnable rows. A local
+                // root join does not cover recovered child Workers.
+                let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                loop {
+                    let still_active = store
+                        .list_dispatches()
+                        .await
+                        .map_err(|error| HostError::internal(error.to_string()))?
+                        .into_iter()
+                        .any(|dispatch| {
+                            (dispatch.thread_id == thread_id
+                                || dispatch.session_thread_id.as_ref() == Some(&thread_id))
+                                && matches!(
+                                    dispatch.state,
+                                    awaken_run_ingress_contract::DispatchState::Reserved
+                                        | awaken_run_ingress_contract::DispatchState::ReservationLeased
+                                        | awaken_run_ingress_contract::DispatchState::Pending
+                                        | awaken_run_ingress_contract::DispatchState::Leased
+                                        | awaken_run_ingress_contract::DispatchState::Awaiting
+                                )
+                        });
+                    if !still_active {
+                        break;
                     }
+                    if tokio::time::Instant::now() >= deadline {
+                        return Err(HostError::internal(format!(
+                            "terminal dispatch quiescence timed out for Session `{thread}`"
+                        )));
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
                 }
             }
         } else if let Some(ctx) = resident {
@@ -1567,7 +1586,9 @@ mod committed_step_proof_tests {
                 Message::text(MessageId("input-proof".into()), Role::User, "question"),
                 Message::text(MessageId("output-proof".into()), Role::Assistant, "answer"),
             ],
+            message_commit_cursors: Vec::new(),
             state: Vec::new(),
+            state_commit_cursors: Vec::new(),
             events: Vec::new(),
             resume_tickets: Vec::new(),
             thread_version: 1,

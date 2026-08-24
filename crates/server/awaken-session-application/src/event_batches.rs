@@ -7,8 +7,8 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::RunState;
 use awaken_session_contract::{
     OUTCOME_BUSY_CODE, PersistedSession, RunError, SessionAgentCoordination, SessionEventBatch,
-    SessionEventCommand, SessionEventInput, SessionRevision, SessionThreadTarget,
-    SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
+    SessionEventCommand, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
+    SessionThreadTarget, SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
     SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput,
     session_event_batch_id, session_run_activity_operation_id,
 };
@@ -40,6 +40,61 @@ struct SelectedSessionEvent {
 }
 
 impl SessionApplication {
+    async fn message_projection_anchor(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        message_id: &MessageId,
+    ) -> Result<SessionEventProjectionAnchor, RunError> {
+        let snapshot = self
+            .runtime()
+            .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
+            .await?
+            .ok_or_else(|| {
+                RunError::unavailable(
+                    "committed Session Event message owner is not yet recoverable",
+                )
+            })?;
+        if snapshot.messages.len() != snapshot.message_commit_cursors.len() {
+            return Err(RunError::unavailable(
+                "committed Session Event message has no durable commit coordinate",
+            ));
+        }
+        snapshot
+            .messages
+            .iter()
+            .zip(snapshot.message_commit_cursors.iter().copied())
+            .find_map(|(message, cursor)| {
+                (&message.id == message_id).then_some(SessionEventProjectionAnchor {
+                    source_commit_cursor: cursor,
+                })
+            })
+            .ok_or_else(|| {
+                RunError::unavailable(
+                    "committed Session Event message is not yet visible in recovery",
+                )
+            })
+    }
+
+    async fn run_snapshot_projection_anchor(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<SessionEventProjectionAnchor, RunError> {
+        self.runtime()
+            .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
+            .await?
+            .filter(|snapshot| snapshot.runs.iter().any(|run| &run.id == run_id))
+            .map(|snapshot| SessionEventProjectionAnchor {
+                source_commit_cursor: snapshot.store_cursor,
+            })
+            .ok_or_else(|| {
+                RunError::unavailable("committed Session Event Run owner is not yet recoverable")
+            })
+    }
+
     /// Recover the canonical disposable projection, reserve one stable User
     /// Run, then commit/recover its exact Session activity receipt without
     /// making the reservation executable.
@@ -179,7 +234,7 @@ impl SessionApplication {
             );
             let batch_id = session_event_batch_id(session_id, committed_revision)
                 .map_err(|error| RunError::bad_request(error.to_string()))?;
-            let batch = SessionEventBatch::compile_attributed(
+            let mut batch = SessionEventBatch::compile_attributed(
                 session_id,
                 batch_id,
                 inputs.clone(),
@@ -187,6 +242,7 @@ impl SessionApplication {
                 traceparent.clone(),
             )
             .map_err(|error| RunError::bad_request(error.to_string()))?;
+            batch.admitted_revision = committed_revision;
             session.event_batches.push(batch.clone());
             match self
                 .commit_session_snapshot(&owner, session, "append-event-batch", Vec::new())
@@ -269,7 +325,7 @@ impl SessionApplication {
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
             if session.is_terminal() {
-                return Ok(false);
+                return self.resolve_terminal_event_batches(session_id).await;
             }
             let selected = match preferred_batch_id {
                 Some(batch_id) => select_preferred_batch_receipt(&session, batch_id),
@@ -284,6 +340,71 @@ impl SessionApplication {
             }
         }
         Ok(false)
+    }
+
+    /// Close only the legacy race in which an old writer terminalized a root
+    /// after accepting, but before anchoring, an Event batch. The canonical
+    /// supervisor marks those receipts resolved under root CAS and never calls
+    /// any Runtime effect after terminal state.
+    async fn resolve_terminal_event_batches(&self, session_id: &str) -> Result<bool, RunError> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner_scope = self.owner(session_id).await.map_err(mutation_run_error)?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(repository_failure)
+                .map_err(mutation_run_error)?;
+            if !session.is_terminal() {
+                return Ok(false);
+            }
+            let runtime_commit_cursor = match &session.terminal_cleanup {
+                awaken_session_contract::SessionCleanupOperation::NotRequested
+                | awaken_session_contract::SessionCleanupOperation::Fenced { .. } => {
+                    // The fence has not yet joined every root/child Runtime
+                    // writer. Resolving now would misclassify a current row as
+                    // legacy and could place accepted input before an unstable
+                    // terminal high-water.
+                    return Ok(false);
+                }
+                awaken_session_contract::SessionCleanupOperation::Requested {
+                    runtime_commit_cursor,
+                    ..
+                }
+                | awaken_session_contract::SessionCleanupOperation::Completed {
+                    runtime_commit_cursor,
+                    ..
+                } => *runtime_commit_cursor,
+            };
+            let anchor =
+                runtime_commit_cursor.map(|source_commit_cursor| SessionEventProjectionAnchor {
+                    source_commit_cursor,
+                });
+            let resolved = session
+                .event_batches
+                .iter_mut()
+                .map(|batch| batch.resolve_terminally(anchor))
+                .sum::<usize>();
+            if resolved == 0 {
+                return Ok(true);
+            }
+            match self
+                .commit_session_snapshot(
+                    &owner_scope,
+                    session,
+                    "resolve-terminal-event-batches",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(_) => return Ok(true),
+                Err(SessionMutationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {}
+                Err(error) => return Err(mutation_run_error(error)),
+            }
+        }
+        Err(RunError::unavailable(
+            "terminal Session Event-batch resolution conflicted repeatedly",
+        ))
     }
 
     fn reconcile_one_session_event<'a>(
@@ -318,11 +439,23 @@ impl SessionApplication {
                         .await?
                     {
                         Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
+                            let anchor = self
+                                .message_projection_anchor(
+                                    &session.session_id,
+                                    &session.session_id,
+                                    &run_id,
+                                    &MessageId::session_event_input(
+                                        &session.session_id,
+                                        &operation_id,
+                                    ),
+                                )
+                                .await?;
                             self.settle_event_batch_wake(session, &batch_id).await?;
                             self.mark_session_event_processed(
                                 &session.session_id,
                                 &batch_id,
                                 &operation_id,
+                                anchor,
                             )
                             .await?;
                             return Ok(EventBatchProgress::Advanced);
@@ -373,10 +506,22 @@ impl SessionApplication {
                                     .await?,
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {
+                                let anchor = self
+                                    .message_projection_anchor(
+                                        &session.session_id,
+                                        &session.session_id,
+                                        &run_id,
+                                        &MessageId::session_event_input(
+                                            &session.session_id,
+                                            &operation_id,
+                                        ),
+                                    )
+                                    .await?;
                                 self.mark_session_event_processed(
                                     &session.session_id,
                                     &batch_id,
                                     &operation_id,
+                                    anchor,
                                 )
                                 .await?;
                                 return Ok(EventBatchProgress::Advanced);
@@ -399,10 +544,22 @@ impl SessionApplication {
                                     .await?,
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {
+                                let anchor = self
+                                    .message_projection_anchor(
+                                        &session.session_id,
+                                        &session.session_id,
+                                        &run_id,
+                                        &MessageId::session_event_input(
+                                            &session.session_id,
+                                            &operation_id,
+                                        ),
+                                    )
+                                    .await?;
                                 self.mark_session_event_processed(
                                     &session.session_id,
                                     &batch_id,
                                     &operation_id,
+                                    anchor,
                                 )
                                 .await?;
                                 Ok(EventBatchProgress::Advanced)
@@ -430,11 +587,27 @@ impl SessionApplication {
                             "committed Session System input conflicts with root command intent",
                         ));
                     }
+                    let (thread_id, run_id) =
+                        preceding_event_runtime_target(session, &batch_id, &operation_id)
+                            .ok_or_else(|| {
+                                RunError::internal(
+                                    "committed Session System input has no retained Run owner",
+                                )
+                            })?;
+                    let anchor = self
+                        .message_projection_anchor(
+                            &session.session_id,
+                            &thread_id.0,
+                            &run_id,
+                            &message_id,
+                        )
+                        .await?;
                     self.settle_event_batch_wake(session, &batch_id).await?;
                     self.mark_session_event_processed(
                         &session.session_id,
                         &batch_id,
                         &operation_id,
+                        anchor,
                     )
                     .await?;
                     Ok(EventBatchProgress::Advanced)
@@ -446,7 +619,7 @@ impl SessionApplication {
                     rubric,
                     max_iterations,
                 } => {
-                    match self
+                    let source_commit_cursor = match self
                         .prepare_outcome(
                             &session.session_id,
                             &outcome_id,
@@ -456,17 +629,20 @@ impl SessionApplication {
                         )
                         .await
                     {
-                        Ok(()) => {}
+                        Ok(source_commit_cursor) => source_commit_cursor,
                         Err(error) if error.code == OUTCOME_BUSY_CODE => {
                             return Ok(EventBatchProgress::Pending);
                         }
                         Err(error) => return Err(error),
-                    }
+                    };
                     self.settle_event_batch_wake(session, &batch_id).await?;
                     self.mark_session_event_processed(
                         &session.session_id,
                         &batch_id,
                         &operation_id,
+                        SessionEventProjectionAnchor {
+                            source_commit_cursor,
+                        },
                     )
                     .await?;
                     Ok(EventBatchProgress::Advanced)
@@ -482,11 +658,20 @@ impl SessionApplication {
                         reply.delivery_command(&session.session_id, accompanying_system),
                     )
                     .await?;
+                    let target_thread = reply.target.thread_id(&session.session_id);
+                    let anchor = self
+                        .run_snapshot_projection_anchor(
+                            &session.session_id,
+                            &target_thread.0,
+                            &reply.expected_run_id,
+                        )
+                        .await?;
                     self.settle_event_batch_wake(session, &batch_id).await?;
                     self.mark_session_event_processed(
                         &session.session_id,
                         &batch_id,
                         &operation_id,
+                        anchor,
                     )
                     .await?;
                     Ok(EventBatchProgress::Advanced)
@@ -496,7 +681,8 @@ impl SessionApplication {
                     interrupt,
                 } => {
                     let mut first_error = None;
-                    for target in interrupt.targets {
+                    let targets = interrupt.targets;
+                    for target in &targets {
                         let result = match target {
                             SessionThreadTarget::Primary => {
                                 self.interrupt(&session.session_id).await
@@ -519,11 +705,32 @@ impl SessionApplication {
                     if let Some(error) = first_error {
                         return Err(error);
                     }
+                    let mut source_commit_cursor = session
+                        .event_batches
+                        .iter()
+                        .flat_map(|batch| &batch.events)
+                        .filter_map(|entry| entry.projection_anchor)
+                        .map(|anchor| anchor.source_commit_cursor)
+                        .max()
+                        .unwrap_or_default();
+                    for target in &targets {
+                        let thread_id = target.thread_id(&session.session_id);
+                        if let Some(snapshot) = self
+                            .runtime()
+                            .session_thread_recovery_snapshot(&session.session_id, &thread_id.0)
+                            .await?
+                        {
+                            source_commit_cursor = source_commit_cursor.max(snapshot.store_cursor);
+                        }
+                    }
                     self.settle_event_batch_wake(session, &batch_id).await?;
                     self.mark_session_event_processed(
                         &session.session_id,
                         &batch_id,
                         &operation_id,
+                        SessionEventProjectionAnchor {
+                            source_commit_cursor,
+                        },
                     )
                     .await?;
                     Ok(EventBatchProgress::Advanced)
@@ -537,6 +744,7 @@ impl SessionApplication {
         session_id: &str,
         batch_id: &str,
         operation_id: &str,
+        projection_anchor: SessionEventProjectionAnchor,
     ) -> Result<PersistedSession, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
@@ -551,15 +759,21 @@ impl SessionApplication {
                 .iter_mut()
                 .find(|batch| batch.batch_id == batch_id)
                 .ok_or_else(|| RunError::internal("Session Event batch disappeared"))?;
-            if batch
+            if let Some(entry) = batch
                 .events
                 .iter()
-                .any(|entry| entry.event.operation_id() == operation_id && entry.processed)
+                .find(|entry| entry.event.operation_id() == operation_id && entry.processed)
             {
-                return Ok(session);
+                return if entry.projection_anchor == Some(projection_anchor) {
+                    Ok(session)
+                } else {
+                    Err(RunError::internal(
+                        "Session Event replay changed its projection anchor",
+                    ))
+                };
             }
             batch
-                .mark_processed(operation_id)
+                .mark_processed(operation_id, projection_anchor)
                 .map_err(|error| RunError::internal(error.to_string()))?;
             match self
                 .commit_session_snapshot(&owner, session, "mark-event-processed", Vec::new())
@@ -652,6 +866,40 @@ fn adjacent_system_input(
                 content: content.clone(),
             }),
             _ => None,
+        })
+}
+
+fn preceding_event_runtime_target(
+    session: &PersistedSession,
+    batch_id: &str,
+    operation_id: &str,
+) -> Option<(
+    awaken_agent_contract::agent::thread::Id,
+    awaken_agent_contract::agent::run::Id,
+)> {
+    let batch = session
+        .event_batches
+        .iter()
+        .find(|batch| batch.batch_id == batch_id)?;
+    let ordinal = batch
+        .events
+        .iter()
+        .position(|entry| entry.event.operation_id() == operation_id)?;
+    batch.events[..ordinal]
+        .iter()
+        .rev()
+        .find_map(|entry| match &entry.event {
+            SessionEventCommand::UserMessage { run_id, .. } => Some((
+                awaken_agent_contract::agent::thread::Id(session.session_id.clone()),
+                run_id.clone(),
+            )),
+            SessionEventCommand::ToolReply { reply, .. } => Some((
+                reply.target.thread_id(&session.session_id),
+                reply.expected_run_id.clone(),
+            )),
+            SessionEventCommand::SystemMessage { .. }
+            | SessionEventCommand::DefineOutcome { .. }
+            | SessionEventCommand::Interrupt { .. } => None,
         })
 }
 

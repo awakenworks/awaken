@@ -43,8 +43,10 @@ use awaken_agent_contract::thread::read::recovery::{
 pub struct CommittedThread {
     pub thread_id: Option<ThreadId>,
     pub messages: Vec<Message>,
+    pub message_commit_cursors: Vec<u64>,
     pub run_facts: Vec<RunFact>,
     pub state: Vec<StateCommand>,
+    pub state_commit_cursors: Vec<u64>,
     pub events: Vec<EventRecord>,
     pub latest_run: Option<RunRecord>,
 }
@@ -88,8 +90,12 @@ impl CommitState {
             if let Some(thread) = self.threads.get(thread_id) {
                 flat.thread_id = Some(thread_id.clone());
                 flat.messages.extend(thread.messages.iter().cloned());
+                flat.message_commit_cursors
+                    .extend(thread.message_commit_cursors.iter().copied());
                 flat.run_facts.extend(thread.run_facts.iter().cloned());
                 flat.state.extend(thread.state.iter().cloned());
+                flat.state_commit_cursors
+                    .extend(thread.state_commit_cursors.iter().copied());
                 flat.events.extend(thread.events.iter().cloned());
                 if thread.latest_run.is_some() {
                     flat.latest_run = thread.latest_run.clone();
@@ -307,7 +313,13 @@ fn apply_commit_locked(
     }
     let thread = state.threads.entry(thread_id.clone()).or_default();
     thread.thread_id = Some(thread_id.clone());
+    thread
+        .message_commit_cursors
+        .extend(std::iter::repeat_n(next, commit.messages.len()));
     thread.messages.extend(commit.messages);
+    thread
+        .state_commit_cursors
+        .extend(std::iter::repeat_n(next, commit.state.len()));
     thread.state.extend(commit.state);
     for (draft, sequence) in commit.events.into_iter().zip(event_sequences) {
         thread.events.push(EventRecord {
@@ -458,8 +470,14 @@ impl RunRecoverySource for MemoryCommitCoordinator {
         let messages = thread
             .map(|thread| thread.messages.clone())
             .unwrap_or_default();
+        let message_commit_cursors = thread
+            .map(|thread| thread.message_commit_cursors.clone())
+            .unwrap_or_default();
         let committed_state = thread
             .map(|thread| thread.state.clone())
+            .unwrap_or_default();
+        let state_commit_cursors = thread
+            .map(|thread| thread.state_commit_cursors.clone())
             .unwrap_or_default();
         let events = thread
             .map(|thread| thread.events.clone())
@@ -493,7 +511,9 @@ impl RunRecoverySource for MemoryCommitCoordinator {
             latest_run_id: thread
                 .and_then(|thread| thread.latest_run.as_ref().map(|run| run.id.clone())),
             messages,
+            message_commit_cursors,
             state: committed_state,
+            state_commit_cursors,
             events,
             resume_tickets,
             thread_version,

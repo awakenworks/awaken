@@ -20,6 +20,17 @@ pub(super) struct SessionRecord {
     /// Durable source of truth for the runtime's currently applied input projection.
     pub(super) resource_state: awaken_session_contract::SessionResourceState,
     pub(super) events: Vec<Event>,
+    /// Process-local Session update events waiting for the durable command that
+    /// preceded their root CAS to acquire its immutable projection anchor.
+    /// Keeping them outside `events` prevents a PATCH from becoming visible
+    /// before an earlier accepted input, while the Session root remains the
+    /// only durable ordering authority.
+    pub(super) pending_transient_events: Vec<(Event, String)>,
+    /// Disposable predecessor hints for visible `evt_N` overlays. The key is a
+    /// process-local event id and the value is the stable durable event id after
+    /// which it was committed. These hints never cross replicas and therefore
+    /// cannot become another Managed event source of truth.
+    pub(super) transient_event_anchors: HashMap<String, String>,
     /// Runtime message identities already lowered into `events`. The transcript
     /// is durable authority; this set only prevents a peer refresh and the local
     /// request finisher from projecting the same committed message twice.
@@ -150,6 +161,8 @@ impl SessionRecord {
             session,
             resource_state,
             events,
+            pending_transient_events: Vec::new(),
+            transient_event_anchors: Default::default(),
             projected_thread_message_ids: Default::default(),
             projected_child_latest_run_ids: Default::default(),
             deferred_session_stop_reason: None,

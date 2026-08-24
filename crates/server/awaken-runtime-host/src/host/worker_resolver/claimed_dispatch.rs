@@ -43,24 +43,12 @@ impl HostWorkerResolver {
             &[],
             &snapshot.resolved_spec.plugin_config.agent.toolsets,
         );
-        let mut runtime = crate::config::build_runtime_with_authorization(
+        let runtime = crate::config::build_runtime_with_authorization(
             host.llm.clone(),
             environment.as_ref(),
             &authorization,
         );
         let commit = substrate.commit;
-        if let Some(delegation) = host
-            .run_delegation(
-                &session_thread_id.0,
-                environment.clone(),
-                commit.clone(),
-                Some(snapshot),
-                publication_source,
-            )
-            .map_err(|error| Self::execution_error(error.to_string()))?
-        {
-            runtime = runtime.with_run_delegation(delegation);
-        }
         let acp = host.acp.clone().map(|acp| {
             let environment = environment.clone();
             Arc::new(move |backend, permission| {
@@ -77,6 +65,21 @@ impl HostWorkerResolver {
             web_search: Some(host.web_search_plugin(&session_thread_id.0, None)),
             web_fetch: Some(host.web_fetch_plugin(&session_thread_id.0, None)),
         };
+        let mut runtime =
+            crate::agent_runner::configure_child_native_runtime(runtime, snapshot, &adapters)
+                .map_err(|error| Self::execution_error(error.to_string()))?;
+        if let Some(delegation) = host
+            .run_delegation(
+                &session_thread_id.0,
+                environment.clone(),
+                commit.clone(),
+                Some(snapshot),
+                publication_source,
+            )
+            .map_err(|error| Self::execution_error(error.to_string()))?
+        {
+            runtime = runtime.with_run_delegation(delegation);
+        }
         let runtime = Arc::new(runtime);
         let attempt = crate::agent_runner::child_attempt_executor(
             runtime,

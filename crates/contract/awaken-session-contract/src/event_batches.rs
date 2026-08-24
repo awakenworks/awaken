@@ -403,6 +403,15 @@ pub enum SessionEventCommand {
     },
 }
 
+/// Immutable backend-wide Runtime coordinate selected from the command's
+/// authoritative committed effect. The Session root persists it in the same
+/// CAS that marks the command processed, so every replica lowers the retained
+/// input at one append-only position without a protocol event store.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionEventProjectionAnchor {
+    pub source_commit_cursor: u64,
+}
+
 impl SessionEventCommand {
     #[must_use]
     pub fn operation_id(&self) -> &str {
@@ -424,6 +433,11 @@ pub struct SessionEventEntry {
     pub event: SessionEventCommand,
     #[serde(default)]
     pub processed: bool,
+    /// Absent for unprocessed and legacy commands. Such entries remain durable
+    /// provenance but are not listable until the existing effect owner supplies
+    /// one immutable commit coordinate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_anchor: Option<SessionEventProjectionAnchor>,
 }
 
 /// Ordered Session Event-batch provenance. Identity, Events, order, optional
@@ -436,6 +450,12 @@ pub struct SessionEventEntry {
 pub struct SessionEventBatch {
     pub batch_id: String,
     pub events: Vec<SessionEventEntry>,
+    /// Exact Session root revision that admitted this immutable batch. Interval
+    /// projection uses the same root-CAS coordinate to assign overlapping and
+    /// sequential input to one closed Running interval without guessing from
+    /// vector position or a process-local clock.
+    #[serde(default)]
+    pub admitted_revision: crate::SessionRevision,
     /// W3C trace context captured once for this atomic ordinary admission. It
     /// is request-local observability provenance, not Event or Run identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -454,17 +474,45 @@ impl SessionEventBatch {
 
     /// Mark one exact retained entry processed. Exact replay is a no-op; an
     /// operation outside this immutable batch fails closed.
-    pub fn mark_processed(&mut self, operation_id: &str) -> Result<bool, SessionEventBatchError> {
+    pub fn mark_processed(
+        &mut self,
+        operation_id: &str,
+        projection_anchor: SessionEventProjectionAnchor,
+    ) -> Result<bool, SessionEventBatchError> {
         let entry = self
             .events
             .iter_mut()
             .find(|entry| entry.event.operation_id() == operation_id)
             .ok_or(SessionEventBatchError::ProgressMismatch)?;
         if entry.processed {
-            return Ok(false);
+            return if entry.projection_anchor == Some(projection_anchor) {
+                Ok(false)
+            } else {
+                Err(SessionEventBatchError::ProgressMismatch)
+            };
         }
+        entry.projection_anchor = Some(projection_anchor);
         entry.processed = true;
         Ok(true)
+    }
+
+    /// Resolve every still-pending accepted command after a legacy terminal
+    /// root won. No Runtime effect is executed: the terminal cleanup cursor is
+    /// the first immutable visibility anchor when available, while `None`
+    /// deliberately preserves the isolated pre-anchor legacy prefix.
+    pub fn resolve_terminally(
+        &mut self,
+        projection_anchor: Option<SessionEventProjectionAnchor>,
+    ) -> usize {
+        let mut resolved = 0;
+        for entry in &mut self.events {
+            if !entry.processed {
+                entry.projection_anchor = projection_anchor;
+                entry.processed = true;
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     pub fn compile(
@@ -540,6 +588,7 @@ impl SessionEventBatch {
                             data_subject_id: data_subject_id.clone(),
                         },
                         processed: false,
+                        projection_anchor: None,
                     });
                 }
                 SessionEventInput::SystemMessage { content } => {
@@ -552,6 +601,7 @@ impl SessionEventBatch {
                             content,
                         },
                         processed: false,
+                        projection_anchor: None,
                     });
                 }
                 SessionEventInput::DefineOutcome {
@@ -578,6 +628,7 @@ impl SessionEventBatch {
                             max_iterations,
                         },
                         processed: false,
+                        projection_anchor: None,
                     });
                 }
                 SessionEventInput::ToolReply(reply) => {
@@ -594,6 +645,7 @@ impl SessionEventBatch {
                             reply,
                         },
                         processed: false,
+                        projection_anchor: None,
                     });
                 }
                 SessionEventInput::Interrupt(interrupt) => {
@@ -621,6 +673,7 @@ impl SessionEventBatch {
                             interrupt,
                         },
                         processed: false,
+                        projection_anchor: None,
                     });
                 }
             }
@@ -628,6 +681,7 @@ impl SessionEventBatch {
         Ok(Self {
             batch_id,
             events,
+            admitted_revision: crate::SessionRevision::default(),
             traceparent,
             wake_activity_epoch: None,
         })
@@ -779,14 +833,36 @@ mod tests {
         let mut progress = plan.batch;
         assert!(
             matches!(
-                progress.mark_processed("foreign"),
+                progress.mark_processed(
+                    "foreign",
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 9,
+                    },
+                ),
                 Err(SessionEventBatchError::ProgressMismatch)
             ),
             "R4/E4"
         );
         let retained = progress.events[0].event.operation_id().to_string();
-        assert!(progress.mark_processed(&retained).unwrap(), "R3/E4");
+        assert!(
+            progress
+                .mark_processed(
+                    &retained,
+                    SessionEventProjectionAnchor {
+                        source_commit_cursor: 9,
+                    },
+                )
+                .unwrap(),
+            "R3/E4"
+        );
         assert!(progress.events[0].processed, "R3/E4");
+        assert_eq!(
+            progress.events[0]
+                .projection_anchor
+                .map(|anchor| anchor.source_commit_cursor),
+            Some(9),
+            "R3/E4 processed CAS retains its immutable public-order receipt"
+        );
     }
 
     #[test]

@@ -12,6 +12,32 @@ use awaken_session_contract::{
 
 use super::*;
 
+const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn run_composed_async_test<F, Fut>(case: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    // One test-only executor owns the larger stack required by the two deeply
+    // composed Event-batch recovery futures. The cases remain ordinary async
+    // functions, so this changes neither their authority nor their oracle.
+    let test = std::thread::Builder::new()
+        .name("session-application-composed-test".into())
+        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("composed test runtime")
+                .block_on(case());
+        })
+        .expect("spawn composed test thread");
+    if let Err(panic) = test.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 struct NoopRuntime;
 struct SuccessfulRuntime;
 struct DiscardProgress;
@@ -44,6 +70,7 @@ enum ReplyRuntimeOutcome {
 struct RecordingReplyRuntime {
     outcome: ReplyRuntimeOutcome,
     deliveries: Mutex<Vec<awaken_session_contract::SessionThreadToolReplyDelivery>>,
+    boundaries: RecordingBoundaries,
 }
 
 struct RecordingBoundaryBudgetRuntime {
@@ -57,6 +84,12 @@ struct RecordingBoundaryBudgetRuntime {
     budget_resume_deliveries: Mutex<Vec<awaken_session_contract::SessionBudgetResumeDelivery>>,
     budget_resume_dispositions:
         Mutex<VecDeque<awaken_session_contract::SessionBudgetResumeDisposition>>,
+}
+
+struct ScriptedMessageBoundaryRuntime {
+    boundaries: RecordingBoundaries,
+    usage_unavailable: AtomicBool,
+    publish_boundary_on_run: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -75,17 +108,19 @@ struct RecordingAgentAdmissionRuntime {
     continuations: Mutex<Vec<awaken_session_contract::SessionAgentReportContinuation>>,
     interruptions: Mutex<Vec<(String, awaken_agent_contract::agent::thread::Id)>>,
     boundaries: RecordingBoundaries,
+    generic_recovery_available: AtomicBool,
 }
 
 type RecordedBoundaryKey = (String, String);
-type RecordedBoundary = (
-    awaken_agent_contract::agent::run::Id,
-    awaken_agent_contract::agent::run::RunState,
-    String,
-);
-
 #[derive(Default)]
-struct RecordingBoundaries(Mutex<HashMap<RecordedBoundaryKey, RecordedBoundary>>);
+struct RecordingBoundaries(
+    Mutex<
+        HashMap<
+            RecordedBoundaryKey,
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
+    >,
+);
 
 impl RecordingBoundaries {
     fn commit(
@@ -96,10 +131,67 @@ impl RecordingBoundaries {
         state: awaken_agent_contract::agent::run::RunState,
         report: impl Into<String>,
     ) {
-        self.0.lock().unwrap().insert(
-            (session_id.to_string(), thread_id.0.clone()),
-            (run_id.clone(), state, report.into()),
+        let commit_cursor = self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|((candidate_session, _), _)| candidate_session == session_id)
+            .map(|(_, snapshot)| snapshot.store_cursor)
+            .max()
+            .unwrap_or_default()
+            .saturating_add(1);
+        let report = report.into();
+        let messages: Vec<awaken_agent_contract::agent::message::Message> = (!report.is_empty())
+            .then(|| {
+                awaken_agent_contract::agent::message::Message::text(
+                    awaken_agent_contract::agent::message::Id::assistant(run_id, 0),
+                    awaken_agent_contract::agent::message::Role::Assistant,
+                    report,
+                )
+            })
+            .into_iter()
+            .collect();
+        let message_commit_cursors = (!messages.is_empty())
+            .then_some(commit_cursor)
+            .into_iter()
+            .collect();
+        self.set_recovery_snapshot(
+            session_id,
+            thread_id,
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                thread_id: thread_id.clone(),
+                claimed_run_id: run_id.clone(),
+                runs: vec![awaken_agent_contract::agent::run::Record {
+                    id: run_id.clone(),
+                    thread_id: thread_id.clone(),
+                    state,
+                }],
+                latest_run_id: Some(run_id.clone()),
+                messages,
+                message_commit_cursors,
+                state: Vec::new(),
+                state_commit_cursors: Vec::new(),
+                events: Vec::new(),
+                resume_tickets: Vec::new(),
+                thread_version: 1,
+                store_cursor: commit_cursor,
+                next_commit_ordinal: 1,
+            },
         );
+    }
+
+    fn set_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        snapshot: awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) {
+        assert_eq!(snapshot.thread_id, *thread_id, "test recovery Thread");
+        self.0
+            .lock()
+            .unwrap()
+            .insert((session_id.to_string(), thread_id.0.clone()), snapshot);
     }
 
     fn snapshot(
@@ -107,42 +199,11 @@ impl RecordingBoundaries {
         session_id: &str,
         thread_id: &str,
     ) -> Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot> {
-        let (run_id, state, report) = self
-            .0
+        self.0
             .lock()
             .unwrap()
             .get(&(session_id.to_string(), thread_id.to_string()))
-            .cloned()?;
-        let thread_id = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
-        let messages = (!report.is_empty())
-            .then(|| {
-                awaken_agent_contract::agent::message::Message::text(
-                    awaken_agent_contract::agent::message::Id::assistant(&run_id, 0),
-                    awaken_agent_contract::agent::message::Role::Assistant,
-                    report,
-                )
-            })
-            .into_iter()
-            .collect();
-        Some(
-            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
-                thread_id: thread_id.clone(),
-                claimed_run_id: run_id.clone(),
-                runs: vec![awaken_agent_contract::agent::run::Record {
-                    id: run_id.clone(),
-                    thread_id,
-                    state,
-                }],
-                latest_run_id: Some(run_id),
-                messages,
-                state: Vec::new(),
-                events: Vec::new(),
-                resume_tickets: Vec::new(),
-                thread_version: 1,
-                store_cursor: 1,
-                next_commit_ordinal: 1,
-            },
-        )
+            .cloned()
     }
 
     fn lifecycle(&self, session_id: &str) -> Vec<awaken_agent_contract::RunLifecycleEvent> {
@@ -152,31 +213,70 @@ impl RecordingBoundaries {
             .unwrap()
             .iter()
             .filter(|((candidate_session, _), _)| candidate_session == session_id)
-            .map(|((_, thread_id), (run_id, state, _))| {
-                (
-                    awaken_agent_contract::agent::thread::Id(thread_id.clone()),
-                    run_id.clone(),
-                    state.clone(),
-                )
+            .flat_map(|((_, thread_id), snapshot)| {
+                let commit_count = snapshot.runs.len();
+                snapshot.runs.iter().enumerate().map(move |(index, run)| {
+                    let source_commit_cursor = if commit_count == 1 {
+                        snapshot.store_cursor.max(1)
+                    } else {
+                        (index as u64 + 1).min(snapshot.store_cursor.max(1))
+                    };
+                    (
+                        source_commit_cursor,
+                        awaken_agent_contract::agent::thread::Id(thread_id.clone()),
+                        run.id.clone(),
+                        run.state.clone(),
+                    )
+                })
             })
             .collect::<Vec<_>>();
-        boundaries.sort_by(|left, right| left.0.0.cmp(&right.0.0));
+        boundaries.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.0.cmp(&right.1.0))
+                .then_with(|| left.2.0.cmp(&right.2.0))
+        });
+        let mut offsets = HashMap::<u64, usize>::new();
         boundaries
             .into_iter()
-            .enumerate()
-            .map(
-                |(offset, (thread_id, run_id, state))| awaken_agent_contract::RunLifecycleEvent {
-                    cursor: awaken_agent_contract::encode_run_lifecycle_cursor(1, offset)
-                        .expect("test lifecycle cursor"),
-                    source_commit_cursor: 1,
+            .map(|(source_commit_cursor, thread_id, run_id, state)| {
+                let offset = offsets.entry(source_commit_cursor).or_default();
+                let cursor = awaken_agent_contract::encode_run_lifecycle_cursor(
+                    source_commit_cursor,
+                    *offset,
+                )
+                .expect("test lifecycle cursor");
+                *offset += 1;
+                awaken_agent_contract::RunLifecycleEvent {
+                    cursor,
+                    source_commit_cursor,
                     kind: awaken_agent_contract::classify_run_lifecycle_event(&state, None),
                     thread_id,
                     run_id,
                     state,
                     await_reason: None,
-                },
-            )
+                }
+            })
             .collect()
+    }
+
+    fn lifecycle_page(
+        &self,
+        session_id: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> awaken_agent_contract::RunLifecyclePage {
+        let events = self
+            .lifecycle(session_id)
+            .into_iter()
+            .filter(|event| event.cursor > cursor)
+            .take(limit)
+            .collect::<Vec<_>>();
+        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
+        awaken_agent_contract::RunLifecyclePage {
+            events,
+            next_cursor,
+        }
     }
 }
 
@@ -190,6 +290,7 @@ impl RecordingAgentAdmissionRuntime {
             continuations: Mutex::new(Vec::new()),
             interruptions: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
+            generic_recovery_available: AtomicBool::new(true),
         }
     }
 
@@ -327,6 +428,32 @@ impl RecordingBoundaryBudgetRuntime {
     }
 }
 
+impl ScriptedMessageBoundaryRuntime {
+    fn new(usage_unavailable: bool, publish_boundary_on_run: bool) -> Self {
+        Self {
+            boundaries: RecordingBoundaries::default(),
+            usage_unavailable: AtomicBool::new(usage_unavailable),
+            publish_boundary_on_run: AtomicBool::new(publish_boundary_on_run),
+        }
+    }
+
+    fn set_usage_unavailable(&self, unavailable: bool) {
+        self.usage_unavailable.store(unavailable, Ordering::SeqCst);
+    }
+
+    fn commit_root_boundary(&self, session_id: &str) {
+        self.boundaries.commit(
+            session_id,
+            &awaken_agent_contract::agent::thread::Id(session_id.into()),
+            &awaken_agent_contract::agent::run::Id(format!("{session_id}-run")),
+            awaken_agent_contract::agent::run::RunState::Ended(
+                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+            ),
+            "",
+        );
+    }
+}
+
 impl RecordingAgentAdmissionRuntime {
     fn commit_boundary(
         &self,
@@ -338,6 +465,21 @@ impl RecordingAgentAdmissionRuntime {
     ) {
         self.boundaries
             .commit(session_id, thread_id, run_id, state, report);
+    }
+
+    fn set_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        snapshot: awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+    ) {
+        self.boundaries
+            .set_recovery_snapshot(session_id, thread_id, snapshot);
+    }
+
+    fn set_generic_recovery_available(&self, available: bool) {
+        self.generic_recovery_available
+            .store(available, Ordering::SeqCst);
     }
 }
 
@@ -360,6 +502,7 @@ impl RecordingReplyRuntime {
         Self {
             outcome,
             deliveries: Mutex::new(Vec::new()),
+            boundaries: RecordingBoundaries::default(),
         }
     }
 }
@@ -537,6 +680,15 @@ impl SessionRuntime for NoopRuntime {
         ))
     }
 
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(None)
+    }
+
     async fn run(
         &self,
         _agent: &str,
@@ -620,15 +772,25 @@ impl SessionRuntime for RecordingReplyRuntime {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        let boundaries = RecordingBoundaries::default();
-        boundaries.commit(
-            session_id,
-            &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
-            &awaken_agent_contract::agent::run::Id("reply-run".into()),
-            awaken_agent_contract::agent::run::RunState::Awaiting,
-            "",
-        );
-        Ok(boundaries.snapshot(session_id, thread_id))
+        if self.boundaries.snapshot(session_id, thread_id).is_none() {
+            self.boundaries.commit(
+                session_id,
+                &awaken_agent_contract::agent::thread::Id(thread_id.to_string()),
+                &awaken_agent_contract::agent::run::Id("reply-run".into()),
+                awaken_agent_contract::agent::run::RunState::Awaiting,
+                "",
+            );
+        }
+        Ok(self.boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        session_id: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 
     async fn reply_session_thread_tool(
@@ -747,7 +909,36 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
         thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
+        if !self.generic_recovery_available.load(Ordering::SeqCst) {
+            return Ok(None);
+        }
         Ok(self.boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn session_thread_run_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        let Some(mut snapshot) = self.boundaries.snapshot(session_id, thread_id) else {
+            return Ok(None);
+        };
+        if !snapshot.runs.iter().any(|run| &run.id == run_id) {
+            return Ok(None);
+        }
+        snapshot.claimed_run_id = run_id.clone();
+        Ok(Some(snapshot))
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        session_id: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 
     async fn admit_coordinated_run(
@@ -929,18 +1120,7 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
         cursor: awaken_agent_contract::RunLifecycleCursor,
         limit: usize,
     ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        let events = self
-            .boundaries
-            .lifecycle(session_id)
-            .into_iter()
-            .filter(|event| event.cursor > cursor)
-            .take(limit)
-            .collect::<Vec<_>>();
-        let next_cursor = events.last().map_or(cursor, |event| event.cursor);
-        Ok(awaken_agent_contract::RunLifecyclePage {
-            events,
-            next_cursor,
-        })
+        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
     }
 
     async fn continue_session_agent_report(
@@ -991,6 +1171,89 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
     fn model(&self) -> String {
         "model".into()
+    }
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for ScriptedMessageBoundaryRuntime {
+    async fn session_usage(
+        &self,
+        _thread: &str,
+    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
+        if self.usage_unavailable.load(Ordering::SeqCst) {
+            Err(RunError::unavailable("scripted usage unavailable"))
+        } else {
+            Ok(Default::default())
+        }
+    }
+
+    async fn session_thread_recovery_snapshot(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(self.boundaries.snapshot(session_id, thread_id))
+    }
+
+    async fn committed_run_lifecycle(
+        &self,
+        session_id: &str,
+        cursor: awaken_agent_contract::RunLifecycleCursor,
+        limit: usize,
+    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
+        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
+    }
+
+    async fn run(
+        &self,
+        _agent: &str,
+        thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        if self.publish_boundary_on_run.load(Ordering::SeqCst) {
+            self.commit_root_boundary(thread);
+        }
+        Ok(awaken_session_contract::StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        )
+        .with_run_id(awaken_agent_contract::agent::run::Id(format!(
+            "{thread}-run"
+        ))))
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("message boundary test never resumes")
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("message boundary test never custom-resumes")
+    }
+
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
+        unreachable!("message boundary test never defines an outcome")
+    }
+
+    fn model(&self) -> String {
+        "scripted-message-model".into()
     }
 }
 
@@ -1129,6 +1392,7 @@ struct FaultingSessionRepository {
     running_conflict_operation_once: Mutex<Option<String>>,
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
+    fail_recovery_scan_once: AtomicBool,
 }
 
 fn report_committed_mutation_as_conflict(
@@ -1157,6 +1421,7 @@ impl FaultingSessionRepository {
             running_conflict_operation_once: Mutex::new(None),
             tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
+            fail_recovery_scan_once: AtomicBool::new(false),
         }
     }
 
@@ -1178,6 +1443,10 @@ impl FaultingSessionRepository {
 
     fn get_not_found_once(&self) {
         self.get_not_found_once.store(true, Ordering::SeqCst);
+    }
+
+    fn fail_recovery_scan_once(&self) {
+        self.fail_recovery_scan_once.store(true, Ordering::SeqCst);
     }
 }
 
@@ -1388,6 +1657,13 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
     > {
+        if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst) {
+            return Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "injected recovery scan outage".into(),
+                ),
+            );
+        }
         self.inner.reconcilable_sessions().await
     }
 
@@ -1604,7 +1880,9 @@ fn persisted(id: &str, self_hosted: bool, status: &str) -> PersistedSession {
         activity_epoch: 0,
         active_activity_epochs: Default::default(),
         running_interval: None,
+        closed_runtime_intervals: Vec::new(),
         runtime_active_millis: 0,
+        usage_cursor: Default::default(),
         budget: Default::default(),
         environment: Default::default(),
         mcp: Default::default(),
@@ -1712,6 +1990,7 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
 mod authority;
 mod continuation;
 mod creation;
+mod event_batch_cutover_validation;
 mod event_batches;
 mod realization;
 mod run_admission;

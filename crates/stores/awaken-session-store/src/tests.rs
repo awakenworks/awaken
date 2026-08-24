@@ -252,7 +252,9 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
         activity_epoch: 0,
         active_activity_epochs: Default::default(),
         running_interval: None,
+        closed_runtime_intervals: Vec::new(),
         runtime_active_millis: 0,
+        usage_cursor: Default::default(),
         environment: Default::default(),
         mcp: SessionMcpAttachmentSet::from_initial(
             vec![McpAttachmentDraft {
@@ -389,7 +391,7 @@ fn make_deletable(session: &mut PersistedSession) {
     session.request_delete();
     session
         .terminal_cleanup
-        .freeze_targets(&session_id, [], 0)
+        .freeze_targets(&session_id, [], 0, 0)
         .unwrap();
     let command = session
         .terminal_cleanup
@@ -799,7 +801,7 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
         requested.terminal_cleanup.request("sesn_cleanup");
         requested
             .terminal_cleanup
-            .freeze_targets("sesn_cleanup", ["child-cleanup".to_string()], 3)
+            .freeze_targets("sesn_cleanup", ["child-cleanup".to_string()], 3, 0)
             .unwrap();
         requested.environment.set_resident("opaque-binding");
         replace_fixture(&repo, "ws_a", requested, "test:cleanup:request", Vec::new()).await;

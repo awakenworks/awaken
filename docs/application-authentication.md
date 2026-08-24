@@ -24,13 +24,17 @@ The customer's backend remains authoritative for users, roles, memberships,
 projects, and which application-visible thread belongs to which Managed Session.
 Awaken does not import that policy model.
 
-| Owner | Authoritative data or decision |
-|---|---|
-| Customer/Design backend | end-user authorization, `chat_thread_id`, and its durable `managed_session_id` link |
-| Managed Sessions | Session existence, Workspace owner, frozen Agent baseline, lifecycle, transcript, and sandbox |
-| Application token issuer | validates existing Sessions and projects a short-lived binding |
-| Application guard | exact route, protocol, operation, external-thread binding, and bound Agent enforcement |
-| AI SDK / AG-UI adapters | protocol translation only; both use the resolved Managed Session |
+## Application Authentication Role Catalog
+
+| Name | Kind | Owns | Uses | Must Not Own | Failure Mode | Guardrail/Test |
+|---|---|---|---|---|---|---|
+| Customer/Design backend | External authority | End-user authorization, `chat_thread_id`, and its durable `managed_session_id` link | Managed Session and application-token APIs | Awaken Session, Run, token, or protocol state | An unauthorized customer user obtains a valid application binding | Product authorization tests and the explicit backend exchange below |
+| Managed Sessions | Durable aggregate | Session existence, Workspace owner, frozen Agent baseline, lifecycle, transcript, and sandbox | Session repository and Runtime applications | Customer thread mapping or application credential storage | A token binds a missing, foreign, unfrozen, or terminal Session | Coordinator issuance decision table and Session repository conformance |
+| `issue_application_access` | Application service | Canonical request validation, exact Session binding projection, and one credential mint | Managed Session repository and `ApplicationAccessStore` | Caller product relations, HTTP response mapping, persistence, or token authentication | A product adapter repeats Session/token policy or calls the store primitive directly | Transport-neutral issuance and HTTP route decision tables |
+| `ApplicationAccessStore` | Durable internal component | Token hash, expiry/revocation stamps, Workspace, and the short-lived application grant | Coordinator Session database, scoped migrations, and token entropy/hash primitives | Cleartext token recovery, IAM role bindings, Session metadata, or a process-local fallback | Replica or process restart loses mint/revoke truth, or an unavailable store is mistaken for invalid credentials | SQLite/PostgreSQL two-instance conformance, restart/revoke tests, and provisioned PostgreSQL release gate |
+| `ApplicationAccessAuthenticator` | Boundary port | Authentication result consumed by the protocol PEP | The Coordinator-owned `ApplicationAccessStore` implementation | Minting, revocation, persistence, caching, or fallback | A protocol guard reaches a second credential authority | Public API snapshot and application-guard tests |
+| Application guard | Permission gate | Exact route, protocol, operation, external-thread binding, Workspace, and bound-Agent enforcement | `ApplicationAccessAuthenticator` and the Managed Session binding in the grant | Session creation, token minting, protocol translation, or customer authorization | A bearer bypasses tenancy or dispatches before an authority failure | Default-deny route and tenancy decision tables |
+| AI SDK / AG-UI adapters | Protocol adapters | Wire translation only | The resolved Managed Session and canonical Run application | Authentication, customer mapping, or an alternate Run path | Protocol handling diverges into a second execution authority | Protocol adapter and application-authentication E2E tests |
 
 The process composition keeps two authentication domains disjoint. Session and
 token-management routes use the service/IAM edge; AI SDK and AG-UI routes are
@@ -40,10 +44,10 @@ two guards would reinterpret one credential as two unrelated authorities and
 make every valid request fail. This separation is routing composition only: it
 does not add a proxy, token type, identity store, or alternate protocol path.
 
-An application grant contains:
+Caller-specific users, projects, and correlation identifiers remain in the
+customer backend; the token API neither accepts nor echoes them. An application
+grant contains only:
 
-- opaque `authority_id`, `application_scope`, and optional `actor_key` for
-  correlation—not runtime identity derivation;
 - allowed `protocols`: `ai-sdk` and/or `ag-ui`;
 - allowed `operations`: `thread.run` and/or `thread.messages.read`;
 - one-to-one `thread_bindings` from an external thread id to an existing Managed
@@ -80,9 +84,6 @@ Authorization: Bearer <service-api-key>
 Content-Type: application/json
 
 {
-  "authority_id": "my-backend",
-  "application_scope": "project_42",
-  "actor_key": "opaque-user-ref",
   "protocols": ["ai-sdk"],
   "operations": ["thread.run", "thread.messages.read"],
   "thread_bindings": [{
@@ -95,9 +96,34 @@ Content-Type: application/json
 
 The issuer rejects missing or foreign-workspace Sessions, unfrozen baselines,
 and terminal Sessions when `thread.run` is requested. Bindings must be complete,
-unique, and one-to-one. Tokens expire after at most 15 minutes, can be revoked
-with `DELETE /v1/application-access-tokens/{id}`, and are invalidated by an
-Awaken process restart.
+unique, one-to-one, limited to 32 per token, and each external or Managed
+Session id is limited to 255 bytes. This bounds the two authoritative Session
+reads required for each binding. Mint reuses the existing Managed Create
+request limiter; it does not create an application-specific rate limiter.
+Tokens expire after at most 15 minutes, can be revoked with
+`DELETE /v1/application-access-tokens/{id}`, and remain valid across a
+Coordinator restart until expiry or revocation. Revoke is fenced by the
+authenticated Workspace: a missing, repeated, or foreign id returns the same
+`204`, while a foreign Workspace cannot invalidate the owner's credential.
+SQLite deployments keep the record in the configured Coordinator Session
+database; PostgreSQL deployments use that same selected database so every
+Coordinator replica observes mint and revocation without sticky routing. The
+provisioned PostgreSQL release gate fails if this two-instance conformance does
+not run. Only the one-way token hash is stored; the cleartext returned by the
+mint response cannot be read back and the response carries
+`Cache-Control: no-store`.
+
+The Coordinator's existing supervised service lifecycle deletes expired or
+revoked records after a 24-hour retention window. Once per minute it drains
+batches of at most 512 rows, yielding after each full batch and stopping on a
+short batch or after 256 batches. Live credentials and terminal credentials
+still inside the window are retained. Cleanup failure stops that tick; the next
+tick resumes from the same durable repository and never enables a process-local
+authorization fallback. This is bounded best-effort maintenance, not a claim
+that Open can cap the global backlog: Hosted admission is partitioned per
+organization and Open does not bound the number of active organizations. For
+durable backlog `Q`, new eligible rows `E`, and deletions `D`, each tick follows
+`Q[n+1] = max(0, Q[n] + E[n] - D[n])`.
 
 ## Frontend AI SDK
 
@@ -141,6 +167,15 @@ or operations, unbound threads, and Agent overrides return `403`; conflicting
 path/body thread ids return `400`. None of these failures creates a Session or
 falls back to hashing. Retries with a replacement token must carry the same
 explicit binding if they are to continue the same conversation.
+
+An unavailable or corrupt application-access repository returns one fixed `503`
+before a protocol adapter can dispatch. Session-repository failures during mint
+also use one fixed `503`; neither response exposes an adapter URL, SQL error, or
+corrupt row detail. Repository failure is not collapsed into `401`, cached
+locally, or retried against an in-memory fallback. Revocation is idempotent and
+consistent across replicas within the authenticated Workspace: deleting an
+already-revoked, unknown, or foreign valid token id returns the same terminal
+success and never requires a read-before-delete.
 
 In explicit local `NoLogin` mode, management and service APIs retain the local
 single-user trust posture. Application protocol routes still require an

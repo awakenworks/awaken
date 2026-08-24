@@ -64,7 +64,12 @@ async fn run(command: Command) -> Result<(), String> {
             "Hosted Runtime IAM profile",
         ),
         Command::ControlHostedRuntimeRouteProfile => print_json(
-            &awaken_control::hosted_runtime_route_profile(),
+            &awaken_control::hosted_runtime_route_profile(
+                std::num::NonZeroU64::new(
+                    awaken_coordinator::application_access::APPLICATION_ACCESS_MAX_TTL_SECONDS,
+                )
+                .expect("Coordinator application-access maximum TTL must remain positive"),
+            ),
             "Hosted Runtime route profile",
         ),
         Command::AllInOne(args) => awaken_cli::run_service(args, ServiceRole::AllInOne).await,

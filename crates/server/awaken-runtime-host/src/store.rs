@@ -156,6 +156,19 @@ impl HostCommit {
         }
     }
 
+    /// Latest committed Run from the selected read authority. Local shared
+    /// stores use their asynchronous query policy; a database-less Worker can
+    /// only answer from the claim-fenced recovery projection it was given.
+    pub(crate) async fn authoritative_latest_run(
+        &self,
+        thread_id: &ThreadId,
+    ) -> Result<Option<RunRecord>, String> {
+        match self {
+            HostCommit::Local(store) => store.authoritative_latest_run(thread_id).await,
+            HostCommit::Remote(remote) => Ok(remote.projection.latest_run(thread_id)),
+        }
+    }
+
     pub(crate) async fn authoritative_committed_messages(
         &self,
         thread_id: &ThreadId,

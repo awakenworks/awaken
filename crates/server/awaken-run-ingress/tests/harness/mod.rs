@@ -1247,8 +1247,9 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S
 }
 
 /// Shared spec for the crash-retry budget and dead-letter (M5): a run reclaimed
-/// past its budget is dead-lettered and no longer claimed, and `requeue` brings
-/// it back. Every backend must match.
+/// past its budget is dead-lettered and no longer claimed, `requeue` brings an
+/// ordinary row back, and a terminal cancellation fence makes it non-runnable.
+/// Every backend must match.
 pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     use awaken_run_ingress::RunDispatch;
     let run = RunId("run-1".to_string());
@@ -1313,6 +1314,51 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
             .unwrap()
             .is_some(),
         "a requeued run is claimable again"
+    );
+
+    // Cause/effect decision table for terminal fencing of retained poison rows:
+    // C1 an ordinary DeadLetter has no cancel bit; C2 terminal quiescence calls
+    // the existing durable cancel operation; E1 ordinary requeue succeeds; E2
+    // cancellation retains DeadLetter but seals requeue and all future claims.
+    //
+    // | Rule | DeadLetter | cancel requested | Effect |
+    // | D1 | yes | no | E1 |
+    // | D2 | yes | yes | E2 |
+    assert!(
+        store
+            .claim("w", 100, 1000, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert!(
+        store
+            .claim("w", 100, 1200, &Default::default())
+            .await
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(store.quarantine_retry_exhausted(2, 1400).await.unwrap(), 1);
+    assert!(
+        store.cancel(&run).await.unwrap().is_some(),
+        "D2 terminal fence seals the retained row"
+    );
+    let sealed = store
+        .list_dispatches()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|row| row.run_id == run)
+        .expect("D2 retained DeadLetter");
+    assert_eq!(sealed.state, awaken_run_ingress::DispatchState::DeadLetter);
+    assert!(sealed.cancellation_requested, "D2 durable fence bit");
+    assert!(!store.requeue(&run).await.unwrap(), "D2/E2");
+    assert!(
+        store
+            .claim("w", 100, 1600, &Default::default())
+            .await
+            .unwrap()
+            .is_none()
     );
 }
 

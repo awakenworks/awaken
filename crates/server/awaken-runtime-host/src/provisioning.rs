@@ -752,7 +752,7 @@ mod provisioning_registry_tests {
     ) -> awaken_session_contract::SessionCleanupCommand {
         let mut operation = awaken_session_contract::SessionCleanupOperation::default();
         assert!(operation.request(session_id));
-        operation.freeze_targets(session_id, [], 0).unwrap();
+        operation.freeze_targets(session_id, [], 0, 0).unwrap();
         operation.command_for(session_id, session_id).unwrap()
     }
 

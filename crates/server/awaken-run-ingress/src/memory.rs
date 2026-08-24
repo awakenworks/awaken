@@ -1612,7 +1612,7 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
-            Some(row) if row.state == RowState::DeadLetter => {
+            Some(row) if row.state == RowState::DeadLetter && !row.cancellation_requested => {
                 row.state = RowState::Pending;
                 row.lease = None;
                 row.attempt_count = 0;

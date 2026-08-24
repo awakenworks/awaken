@@ -1259,7 +1259,13 @@ impl PackageImageProvisioner for DockerRuntime {
         ContainerRuntime::prepare_package_image(self, base_image, packages, network).await
     }
 
-    async fn package_image_available(&self, image: &str) -> Result<bool, RuntimeError> {
+    async fn package_image_available(
+        &self,
+        _base_image: &str,
+        _packages: &pc::PackageRequirements,
+        _network: &pc::NetworkPolicy,
+        image: &str,
+    ) -> Result<bool, RuntimeError> {
         if self.package_registry.is_none() {
             return Ok(self.docker.inspect_image(image).await.is_ok());
         }

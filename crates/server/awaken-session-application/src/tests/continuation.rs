@@ -29,6 +29,15 @@ impl SessionRuntime for ContinuationRuntime {
         ))
     }
 
+    async fn session_thread_recovery_snapshot(
+        &self,
+        _session_id: &str,
+        _thread_id: &str,
+    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
+    {
+        Ok(None)
+    }
+
     async fn quiesce_session_environment(
         &self,
         _thread: &str,

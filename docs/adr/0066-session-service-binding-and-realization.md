@@ -155,3 +155,50 @@ the existing realization port and cannot become another desired-state owner.
 Resource, MCP, environment, and execution state remain separate value/state
 objects under one Session root. Local and remote realization share one phase
 protocol, and no adapter carries a second desired-state registry.
+
+## 2026-08-24 amendment: hosted Session identity and credential adoption
+
+An application that must issue a Session-bound credential before Session create
+uses the Managed adapter's exported
+`managed_session_id_from_idempotency(owner_scope, key)` function. The public
+create path calls that same pure function; there is no copied formula or
+metadata lookup identity. This predicts only the opaque address. The scoped
+Session repository remains the payload-match and replay authority, so the
+application still performs direct `GET /v1/sessions/{id}` and, only on `404`,
+the ordinary idempotent `POST /v1/sessions`.
+
+The application MCP credential receipt now carries the existing closed
+credential-adoption state, `converged | pending`. Creation has no predecessor
+generation and is converged. Rotation synchronously attempts the exact durable
+outbox event through the already configured `ManagedCredentialRolloutTarget`.
+Only target convergence followed by the repository's exact-event
+acknowledgement returns `converged`; an absent target, a busy Session, or target
+failure returns `pending` and leaves the same event for the existing supervised
+reconciler. Command responses read only the existing primary event id; full
+outbox enumeration remains exclusive to that reconciler and is never amplified
+per HTTP replay. A hosted application must wait/retry on `pending` before
+starting a Run that requires the new bearer.
+
+The write command also carries a required positive, caller-monotonic
+`credential_generation`. The existing deterministic material reference records
+that generation beside the command-key fingerprint and before its existing
+writer-attempt fence; no receipt row or counter is added. A legacy reference is
+generation zero and may be upgraded by the first positive generation. Only the
+exact current `(generation, key fingerprint, sealed material)` replays. A
+strictly newer generation uses the existing WAL/CAS rotation; an equal
+conflicting or delayed older generation fails before writing. This narrows the
+earlier “new key rotates” statement: a key change alone is never authority to
+restore an older bearer.
+
+This adds no Session mapping table, metadata identity, credential store, route,
+scheduler, lease, compatibility fallback, or second rollout vocabulary. The
+dynamic order is:
+
+```text
+derive canonical Session id -> direct GET
+  404 -> issue Session-bound MCP bearer with positive monotonic generation
+       -> enter/replay/rotate existing Vault source
+       -> receipt pending: retry after existing Idle-only adoption
+       -> receipt converged: idempotent Session create or replay
+  200 -> reuse the exact durable Session
+```

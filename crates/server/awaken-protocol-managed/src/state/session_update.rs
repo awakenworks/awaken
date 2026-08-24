@@ -74,7 +74,7 @@ impl ManagedState {
         let record = sessions
             .get_mut(&outcome.session.session_id)
             .ok_or(StateError::NotFound)?;
-        record.events.push(Event {
+        let event = Event {
             id: self.next_event_id(),
             kind: OutboundKind::SessionUpdated {
                 title: title_in_request
@@ -91,7 +91,33 @@ impl ManagedState {
                     .then(|| record.session.budget.clone()),
             },
             processed_at: Some(PROCESSED_AT.to_string()),
-        });
+        };
+        let predecessor = outcome
+            .session
+            .event_batches
+            .iter()
+            .rev()
+            .flat_map(|batch| batch.events.iter().rev())
+            .next()
+            .map(|entry| {
+                durable_inbound_event_id(&outcome.session.session_id, entry.event.operation_id())
+            });
+        if let Some(predecessor) = predecessor {
+            record
+                .transient_event_anchors
+                .insert(event.id.clone(), predecessor.clone());
+            if record
+                .events
+                .iter()
+                .any(|candidate| candidate.id == predecessor)
+            {
+                record.events.push(event);
+            } else {
+                record.pending_transient_events.push((event, predecessor));
+            }
+        } else {
+            record.events.push(event);
+        }
         Ok(())
     }
 

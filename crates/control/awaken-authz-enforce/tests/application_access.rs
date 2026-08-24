@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_authz_enforce::{
-    ApplicationAccessStore, ApplicationGrant, ApplicationThreadBinding, application_guard,
+    ApplicationAccessAuthenticator, ApplicationAuthenticationError, ApplicationGrant,
+    ApplicationIdentity, ApplicationThreadBinding, application_guard,
 };
 use axum::Router;
 use axum::body::{Body, to_bytes};
@@ -14,9 +16,6 @@ use tower::ServiceExt;
 
 fn grant(protocols: &[&str], operations: &[&str]) -> ApplicationGrant {
     ApplicationGrant {
-        authority_id: "customer-app".to_string(),
-        application_scope: "project-a".to_string(),
-        actor_key: Some("opaque-user-7".to_string()),
         protocols: protocols.iter().map(|value| (*value).to_string()).collect(),
         operations: operations
             .iter()
@@ -32,7 +31,53 @@ fn grant(protocols: &[&str], operations: &[&str]) -> ApplicationGrant {
     }
 }
 
-fn app(store: Arc<ApplicationAccessStore>) -> Router {
+struct TestAuthenticator {
+    token: String,
+    identity: ApplicationIdentity,
+    failure: Option<ApplicationAuthenticationError>,
+}
+
+#[async_trait::async_trait]
+impl ApplicationAccessAuthenticator for TestAuthenticator {
+    async fn authenticate(
+        &self,
+        presented: &str,
+    ) -> Result<ApplicationIdentity, ApplicationAuthenticationError> {
+        if let Some(error) = self.failure {
+            return Err(error);
+        }
+        if presented != self.token {
+            return Err(ApplicationAuthenticationError::Invalid);
+        }
+        Ok(self.identity.clone())
+    }
+}
+
+fn authenticator(token: &str, grant: ApplicationGrant) -> Arc<dyn ApplicationAccessAuthenticator> {
+    Arc::new(TestAuthenticator {
+        token: token.to_string(),
+        identity: ApplicationIdentity {
+            workspace_id: "ws-1".into(),
+            grant,
+        },
+        failure: None,
+    })
+}
+
+fn failing_authenticator(
+    error: ApplicationAuthenticationError,
+) -> Arc<dyn ApplicationAccessAuthenticator> {
+    Arc::new(TestAuthenticator {
+        token: String::new(),
+        identity: ApplicationIdentity {
+            workspace_id: "ws-1".into(),
+            grant: grant(&["ai-sdk"], &["thread.run"]),
+        },
+        failure: Some(error),
+    })
+}
+
+fn app(authenticator: Arc<dyn ApplicationAccessAuthenticator>) -> Router {
     async fn echo_run(
         Path(thread): Path<String>,
         resolved: Option<axum::Extension<awaken_tenancy::ResolvedResourceId>>,
@@ -73,7 +118,7 @@ fn app(store: Arc<ApplicationAccessStore>) -> Router {
         .route("/v1/ag-ui", post(echo_ag_ui))
         .route("/v1/ag-ui/threads/{thread}/messages", get(echo_history))
         .layer(axum::middleware::from_fn_with_state(
-            store,
+            authenticator,
             application_guard,
         ))
 }
@@ -99,10 +144,6 @@ async fn json_body(response: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap()
 }
 
-fn mint(store: &ApplicationAccessStore, id: &str, grant: ApplicationGrant) -> String {
-    store.mint(id.into(), "ws-1".into(), None, grant).unwrap()
-}
-
 /// Cause-effect graph: authenticated token (C1), protocol permission (C2),
 /// operation permission (C3), exact external-thread binding (C4), matching
 /// path/body thread (C5), and matching frozen Agent (C6) gate the sole effects:
@@ -111,20 +152,19 @@ fn mint(store: &ApplicationAccessStore, id: &str, grant: ApplicationGrant) -> St
 /// R2 C1 false -> 401/E2. Later tests cover R3-R7 for each other false cause.
 #[tokio::test]
 async fn exact_binding_rewrites_to_the_existing_managed_session() {
-    let store = Arc::new(ApplicationAccessStore::new());
-    let token = mint(
-        &store,
-        "valid",
+    let token = "valid-application-token"; // awaken-allow: secret -- inert test fixture
+    let authenticator = authenticator(
+        token,
         grant(&["ai-sdk"], &["thread.run", "thread.messages.read"]),
     );
-    let router = app(store.clone());
+    let router = app(authenticator);
 
     let response = router
         .clone()
         .oneshot(request(
             "POST",
             "/v1/ai-sdk/threads/customer-thread/runs",
-            Some(&token),
+            Some(token),
             json!({ "threadId": "customer-thread", "messages": [] }),
         ))
         .await
@@ -150,17 +190,16 @@ async fn exact_binding_rewrites_to_the_existing_managed_session() {
         .await
         .unwrap();
     assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
-    store.revoke("valid").unwrap();
-    let revoked = router
+    let invalid = router
         .oneshot(request(
             "GET",
             "/v1/ai-sdk/threads/customer-thread/messages",
-            Some(&token),
+            Some("invalid-application-token"),
             Value::Null,
         ))
         .await
         .unwrap();
-    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(invalid.status(), StatusCode::UNAUTHORIZED);
 }
 
 /// Cause/effect graph extension: the authenticated application token's exact
@@ -177,19 +216,19 @@ async fn application_token_fences_and_projects_its_workspace() {
         scope.0
     }
 
-    let store = Arc::new(ApplicationAccessStore::new());
-    let token = mint(&store, "workspace", grant(&["ai-sdk"], &["thread.run"]));
+    let token = "workspace-application-token"; // awaken-allow: secret -- inert test fixture
+    let authenticator = authenticator(token, grant(&["ai-sdk"], &["thread.run"]));
     let router = Router::new()
         .route("/v1/ai-sdk/chat", post(workspace))
         .layer(axum::middleware::from_fn_with_state(
-            store,
+            authenticator,
             application_guard,
         ));
     let scoped_request = |selected: Option<&str>| {
         let mut request = request(
             "POST",
             "/v1/ai-sdk/chat",
-            Some(&token),
+            Some(token),
             json!({"threadId": "customer-thread", "messages": []}),
         );
         if let Some(selected) = selected {
@@ -228,16 +267,15 @@ async fn application_token_fences_and_projects_its_workspace() {
 /// credential cannot become an AG-UI credential even for the same Session.
 #[tokio::test]
 async fn protocol_operation_and_binding_permissions_fail_closed() {
-    let store = Arc::new(ApplicationAccessStore::new());
-    let run_only = mint(&store, "limited", grant(&["ai-sdk"], &["thread.run"]));
-    let router = app(store);
+    let run_only = "limited-application-token";
+    let router = app(authenticator(run_only, grant(&["ai-sdk"], &["thread.run"])));
 
     let ag_ui = router
         .clone()
         .oneshot(request(
             "POST",
             "/v1/ag-ui",
-            Some(&run_only),
+            Some(run_only),
             json!({ "threadId": "customer-thread", "messages": [] }),
         ))
         .await
@@ -249,7 +287,7 @@ async fn protocol_operation_and_binding_permissions_fail_closed() {
         .oneshot(request(
             "GET",
             "/v1/ai-sdk/threads/customer-thread/messages",
-            Some(&run_only),
+            Some(run_only),
             Value::Null,
         ))
         .await
@@ -260,7 +298,7 @@ async fn protocol_operation_and_binding_permissions_fail_closed() {
         .oneshot(request(
             "POST",
             "/v1/ai-sdk/threads/another-thread/runs",
-            Some(&run_only),
+            Some(run_only),
             json!({ "messages": [] }),
         ))
         .await
@@ -272,16 +310,15 @@ async fn protocol_operation_and_binding_permissions_fail_closed() {
 /// R7 requested Agent differs from the bound Session baseline -> 403/E2.
 #[tokio::test]
 async fn conflicting_request_identity_cannot_override_the_binding() {
-    let store = Arc::new(ApplicationAccessStore::new());
-    let token = mint(&store, "identity", grant(&["ai-sdk"], &["thread.run"]));
-    let router = app(store);
+    let token = "identity-application-token"; // awaken-allow: secret -- inert test fixture
+    let router = app(authenticator(token, grant(&["ai-sdk"], &["thread.run"])));
 
     let thread_mismatch = router
         .clone()
         .oneshot(request(
             "POST",
             "/v1/ai-sdk/threads/customer-thread/runs",
-            Some(&token),
+            Some(token),
             json!({ "threadId": "another-thread", "messages": [] }),
         ))
         .await
@@ -292,7 +329,7 @@ async fn conflicting_request_identity_cannot_override_the_binding() {
         .oneshot(request(
             "POST",
             "/v1/ai-sdk/threads/customer-thread/runs",
-            Some(&token),
+            Some(token),
             json!({ "agentId": "billing", "messages": [] }),
         ))
         .await
@@ -304,20 +341,61 @@ async fn conflicting_request_identity_cannot_override_the_binding() {
 /// route means no operation exists to authorize, so the terminal effect is 403.
 #[tokio::test]
 async fn unknown_routes_are_not_inferred_from_the_http_method() {
-    let store = Arc::new(ApplicationAccessStore::new());
-    let token = mint(
-        &store,
-        "unknown",
+    let token = "unknown-route-application-token"; // awaken-allow: secret -- inert test fixture
+    let response = app(authenticator(
+        token,
         grant(&["ai-sdk"], &["thread.messages.read"]),
-    );
-    let response = app(store)
-        .oneshot(request(
-            "GET",
-            "/v1/ai-sdk/threads/customer-thread/export",
-            Some(&token),
-            Value::Null,
-        ))
-        .await
-        .unwrap();
+    ))
+    .oneshot(request(
+        "GET",
+        "/v1/ai-sdk/threads/customer-thread/export",
+        Some(token),
+        Value::Null,
+    ))
+    .await
+    .unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
+}
+
+/// Authority health is independent from credential validity. Cause/effect
+/// rules: R11 repository unavailable and R12 durable row corrupt both produce
+/// 503/E2; neither condition may be collapsed into 401 or invoke the adapter.
+#[tokio::test]
+async fn authority_failures_return_service_unavailable_before_dispatch() {
+    async fn dispatched(axum::Extension(calls): axum::Extension<Arc<AtomicUsize>>) -> StatusCode {
+        calls.fetch_add(1, Ordering::Relaxed);
+        StatusCode::OK
+    }
+
+    let mut expected_body = None;
+    for error in [
+        ApplicationAuthenticationError::Unavailable,
+        ApplicationAuthenticationError::Corrupt,
+    ] {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let router = Router::new()
+            .route("/v1/ai-sdk/chat", post(dispatched))
+            .layer(axum::Extension(calls.clone()))
+            .layer(axum::middleware::from_fn_with_state(
+                failing_authenticator(error),
+                application_guard,
+            ));
+        let response = router
+            .oneshot(request(
+                "POST",
+                "/v1/ai-sdk/chat",
+                Some("opaque-application-token"),
+                json!({"threadId": "customer-thread", "messages": []}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        if let Some(expected) = &expected_body {
+            assert_eq!(&body, expected, "R11/R12 expose one fixed response");
+        } else {
+            expected_body = Some(body);
+        }
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+    }
 }

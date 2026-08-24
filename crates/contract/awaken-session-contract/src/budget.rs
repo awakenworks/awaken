@@ -198,6 +198,23 @@ pub struct ManagedBudgetUsageCursor {
 }
 
 impl ManagedBudgetUsageCursor {
+    /// Whether `self` is a monotonic successor of `previous` in every cumulative
+    /// counter. Session history and budget accounting share this one check so the
+    /// two root-CAS projections cannot accept different rewinds.
+    #[must_use]
+    pub fn is_at_least(&self, previous: &Self) -> bool {
+        self.active_seconds >= previous.active_seconds
+            && self.web_fetch_requests >= previous.web_fetch_requests
+            && self.web_search_requests >= previous.web_search_requests
+            && previous.by_model.iter().all(|(model, prior)| {
+                let current = self.by_model.get(model).copied().unwrap_or_default();
+                current.input_tokens >= prior.input_tokens
+                    && current.output_tokens >= prior.output_tokens
+                    && current.cache_read_tokens >= prior.cache_read_tokens
+                    && current.cache_creation_tokens >= prior.cache_creation_tokens
+            })
+    }
+
     /// Convert the neutral cumulative Session/Thread usage vocabulary once at
     /// the pricing boundary. A legacy tally without per-model attribution may
     /// use the already-frozen model supplied by its Session baseline; callers
@@ -521,17 +538,7 @@ impl SessionBudgetState {
             } => (consumed_numerator, usage_cursor, snapshot),
             Self::Absent => return Ok(false),
         };
-        if next.active_seconds < cursor.active_seconds
-            || next.web_fetch_requests < cursor.web_fetch_requests
-            || next.web_search_requests < cursor.web_search_requests
-            || cursor.by_model.iter().any(|(model, previous)| {
-                let current = next.by_model.get(model).copied().unwrap_or_default();
-                current.input_tokens < previous.input_tokens
-                    || current.output_tokens < previous.output_tokens
-                    || current.cache_read_tokens < previous.cache_read_tokens
-                    || current.cache_creation_tokens < previous.cache_creation_tokens
-            })
-        {
+        if !next.is_at_least(cursor) {
             return Err(ManagedListPriceError::InvalidSnapshot(
                 "cumulative usage cannot move backwards".into(),
             ));
