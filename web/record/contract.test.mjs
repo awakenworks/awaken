@@ -145,6 +145,17 @@ test("recording guidance separates Provider authentication from ACP credentials"
   assert.match(readme, /Codex ACP uses its native operator-selected `auth\.json`/);
 });
 
+test("recording guidance starts the canonical product launcher", () => {
+  // Cause/effect decision table: C1=reader follows the recording guide;
+  // C2=the CLI accepts only the canonical launcher name. R1 C1+C2 requires
+  // `all-in-one` and reaches startup; R2 C1+deprecated `serve` is rejected
+  // before recording. The guide must therefore contain one valid launcher and
+  // no retired alias.
+  const readme = readFileSync(resolve(here, "README.md"), "utf8");
+  assert.match(readme, /-- all-in-one --config \.recording-awaken\/config\.toml/);
+  assert.doesNotMatch(readme, /-- serve(?:\s|$)/);
+});
+
 test("the complete series covers every release-ready platform capability", () => {
   assert.deepEqual(flows, [
     "00-platform-overview.mjs",

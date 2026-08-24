@@ -35,7 +35,7 @@ mkdir -p .recording-awaken
 printf 'data_dir = ".recording-awaken/data"\nbind = "127.0.0.1:38080"\n' \
   > .recording-awaken/config.toml
 CLOUDSDK_CORE_ACCOUNT=you@example.com cargo run -p awaken-cli --bin awaken \
-  -- serve --config .recording-awaken/config.toml
+  -- all-in-one --config .recording-awaken/config.toml
 pnpm dev
 AWAKEN_RECORD_SETUP_TOKEN=the-one-time-token \
   GEMINI_PROJECT=my-project pnpm -C web record 01-connect-model
