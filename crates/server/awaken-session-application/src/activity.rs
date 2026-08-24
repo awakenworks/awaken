@@ -234,7 +234,7 @@ impl SessionApplication {
     /// then settle it exactly once. This ordering makes active-time pricing
     /// visible at the boundary and prevents protocol adapters from racing a
     /// separate usage ledger against Session activity closure.
-    async fn finish_runtime_activity(
+    pub(crate) async fn finish_runtime_activity(
         &self,
         session_id: &str,
         activity_epoch: u64,
