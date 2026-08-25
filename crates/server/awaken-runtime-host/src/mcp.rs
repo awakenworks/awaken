@@ -12,6 +12,7 @@
 //! drives — a connect + `initialize` handshake as the live credential check).
 
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use awaken_agent_contract::RedactedString;
 use awaken_ext_mcp::{AuthChallenge, Credential, CredentialRefresher, HttpTransportBuilder};
@@ -22,6 +23,11 @@ use awaken_session_contract::{McpProbe, McpProbeStatus};
 use crate::host::HostError;
 
 mod prompt_skills;
+
+/// Native Worker-side MCP calls may legitimately outlive control-plane
+/// discovery. This policy is deliberately private runtime composition, not
+/// attachment desired state or a public Managed Agents wire extension.
+const MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Private Worker-side material for one exact MCP generation. It is never an
 /// authoring or desired-state value and cannot cross the Runtime Host boundary.
@@ -542,6 +548,14 @@ impl McpWiring {
 pub(crate) async fn connect_materialized(
     staged: &[McpTransportMaterial],
 ) -> Result<McpWiring, HostError> {
+    connect_materialized_with_tool_call_timeout(staged, MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT)
+        .await
+}
+
+async fn connect_materialized_with_tool_call_timeout(
+    staged: &[McpTransportMaterial],
+    tool_call_timeout: Duration,
+) -> Result<McpWiring, HostError> {
     let mut wiring = McpWiring::empty();
     for server in staged {
         let Some((url, bearer, refresh)) = server.http() else {
@@ -554,7 +568,9 @@ pub(crate) async fn connect_materialized(
             Some(token) => awaken_ext_mcp::Credential::Bearer(token.expose_secret().to_string()),
             None => awaken_ext_mcp::Credential::None,
         };
-        let builder = HttpTransportBuilder::new(url.to_string()).credential(credential);
+        let builder = HttpTransportBuilder::new(url.to_string())
+            .credential(credential)
+            .tool_call_timeout(tool_call_timeout);
         let builder = match refresh {
             Some(refresh) => builder.refresher(refresh.0.clone()),
             None => builder,
@@ -949,7 +965,7 @@ mod acp_projection_tests {
 }
 
 #[cfg(test)]
-mod prompt_skill_projection_tests {
+mod native_mcp_wiring_tests {
     use super::*;
 
     // MCP Prompt Skill cause/effect table:
@@ -968,6 +984,55 @@ mod prompt_skill_projection_tests {
                 refresh: None,
             },
         }
+    }
+
+    #[tokio::test]
+    async fn materialized_http_wiring_applies_the_tool_call_timeout_override() {
+        // Causes: C1 Runtime Host materializes native HTTP MCP; C2 initialize and
+        // tools/list finish normally; C3 tools/call exceeds the injected tool
+        // deadline. Effects: E1 staging succeeds through the unchanged control
+        // deadline; E2 the discovered executable reports a transport failure;
+        // E3 upstream observes exactly one tools/call. Rule H1 C1+C2+C3 ->
+        // E1+E2+E3. Constraint: production calls the same helper with the private
+        // 300s policy; neither attachment desired state nor probe wiring carries
+        // this override. FMECA: omitting the host builder override silently leaves
+        // materialized calls on the shared 30s default.
+        assert_eq!(
+            MATERIALIZED_HTTP_MCP_TOOL_CALL_TIMEOUT,
+            Duration::from_secs(300)
+        );
+        let (url, seen) =
+            crate::test_mcp::start_with_tool_call_delay(Duration::from_millis(100)).await;
+        let wiring = connect_materialized_with_tool_call_timeout(
+            &[material(url, false)],
+            Duration::from_millis(25),
+        )
+        .await
+        .expect("H1/E1: control-plane staging succeeds");
+        let contributions = wiring.plugins[0].resolve();
+        let error = contributions.dynamic_tools[0]
+            .executable()
+            .invoke(awaken_runtime_contract::tool::ToolCall {
+                call_id: "call-1".into(),
+                tool_id: "mcp__docs__echo".into(),
+                arguments: serde_json::json!({ "value": "slow" }),
+            })
+            .await
+            .expect_err("H1/E2: injected tool deadline is wired to execution");
+        assert!(
+            matches!(
+                &error,
+                awaken_runtime_contract::tool::ToolError::Execution(_)
+            ),
+            "{error}"
+        );
+        let tool_calls = seen
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(method, _)| method == "tools/call")
+            .count();
+        assert_eq!(tool_calls, 1, "H1/E3: transport never replays");
     }
 
     #[tokio::test]
