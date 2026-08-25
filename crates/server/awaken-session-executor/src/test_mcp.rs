@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use axum::extract::{Request, State};
 use axum::http::{StatusCode, header};
@@ -10,15 +11,32 @@ pub(crate) type SeenMcpRequests = Arc<Mutex<Vec<(String, String)>>>;
 /// protocol emulator here prevents each security test from growing a subtly
 /// different initialize/list/call implementation.
 pub(crate) async fn start(required_bearer: Option<&str>) -> (String, SeenMcpRequests) {
-    start_with_prompts(required_bearer, false).await
+    start_with_options(required_bearer, false, Duration::ZERO).await
 }
 
 pub(crate) async fn start_with_prompts(
     required_bearer: Option<&str>,
     prompts: bool,
 ) -> (String, SeenMcpRequests) {
+    start_with_options(required_bearer, prompts, Duration::ZERO).await
+}
+
+pub(crate) async fn start_with_tool_call_delay(delay: Duration) -> (String, SeenMcpRequests) {
+    start_with_options(None, false, delay).await
+}
+
+async fn start_with_options(
+    required_bearer: Option<&str>,
+    prompts: bool,
+    tool_call_delay: Duration,
+) -> (String, SeenMcpRequests) {
     async fn mcp(
-        State((seen, required_bearer, prompts)): State<(SeenMcpRequests, Option<String>, bool)>,
+        State((seen, required_bearer, prompts, tool_call_delay)): State<(
+            SeenMcpRequests,
+            Option<String>,
+            bool,
+            Duration,
+        )>,
         req: Request,
     ) -> Response {
         let bearer = req
@@ -78,10 +96,13 @@ pub(crate) async fn start_with_prompts(
                     }
                 }]
             }),
-            "tools/call" => serde_json::json!({
-                "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
-                "isError": false
-            }),
+            "tools/call" => {
+                tokio::time::sleep(tool_call_delay).await;
+                serde_json::json!({
+                    "content": [{ "type": "text", "text": value["params"]["arguments"]["value"] }],
+                    "isError": false
+                })
+            }
             "prompts/list" if prompts => serde_json::json!({
                 "prompts": [{
                     "name": "review",
@@ -127,7 +148,12 @@ pub(crate) async fn start_with_prompts(
     let address = listener.local_addr().unwrap();
     let app = axum::Router::new()
         .route("/mcp", axum::routing::post(mcp))
-        .with_state((seen.clone(), required_bearer.map(str::to_string), prompts));
+        .with_state((
+            seen.clone(),
+            required_bearer.map(str::to_string),
+            prompts,
+            tool_call_delay,
+        ));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
