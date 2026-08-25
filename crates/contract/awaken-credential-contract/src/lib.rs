@@ -13,7 +13,11 @@ pub use awaken_agent_contract::StructuredCredentialMaterial;
 use serde::{Deserialize, Deserializer, Serialize};
 
 mod http_effect;
-pub use http_effect::{CredentialUsageError, HttpEffectPlacement};
+pub use http_effect::{
+    CredentialUsageError, HttpEffectFieldPlacements, HttpEffectMaterialPlacements,
+    HttpEffectMaterialReference, HttpEffectMaterialReferenceError, HttpEffectPlacement,
+    project_http_effect_material_placements,
+};
 mod http_basic;
 pub use http_basic::{HTTP_BASIC_MATERIAL_TYPE, http_basic_material};
 mod custody;
