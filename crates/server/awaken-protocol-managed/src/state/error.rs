@@ -18,6 +18,11 @@ pub enum StateError {
     Conflict,
     #[error("session idempotency key was reused with another request")]
     IdempotencyMismatch,
+    /// Deterministic create found its exact durable receipt, but the original
+    /// activation ended permanently. The identity remains occupied and cannot
+    /// be replayed, retried, or replaced by the protocol adapter.
+    #[error("session_create_terminal_conflict")]
+    TerminalCreateConflict,
     /// A session create named a vault that does not exist (`vault_ids`); the
     /// router maps it to the standard 404 envelope naming the vault id.
     #[error("vault `{0}` not found")]

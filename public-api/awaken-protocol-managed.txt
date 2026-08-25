@@ -1781,6 +1781,7 @@ pub awaken_protocol_managed::StateError::IdempotencyMismatch
 pub awaken_protocol_managed::StateError::LiveInbox(awaken_session_contract::session::LiveInboxError)
 pub awaken_protocol_managed::StateError::NotFound
 pub awaken_protocol_managed::StateError::Run(awaken_session_contract::session::RunError)
+pub awaken_protocol_managed::StateError::TerminalCreateConflict
 pub awaken_protocol_managed::StateError::VaultNotFound(alloc::string::String)
 impl core::convert::From<awaken_session_contract::session_repo::SessionRepositoryError> for awaken_protocol_managed::StateError
 pub fn awaken_protocol_managed::StateError::from(awaken_session_contract::session_repo::SessionRepositoryError) -> Self

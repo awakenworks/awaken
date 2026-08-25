@@ -32,6 +32,9 @@ impl ManagedState {
         {
             return Err(StateError::IdempotencyMismatch);
         }
+        if persisted.execution == SessionExecutionState::ActivationFailed {
+            return Err(StateError::TerminalCreateConflict);
+        }
         self.ensure_session(session_id).await?;
         self.get_session(session_id).map(Some)
     }
@@ -132,6 +135,74 @@ mod tests {
     };
     use crate::state::tests::{sample_inputs, sample_persisted};
     use awaken_session_contract::ManagedSessionRepository;
+
+    #[tokio::test]
+    async fn exact_failed_create_replay_is_a_terminal_conflict_without_rehydration() {
+        // Create-replay cause/effect decision table. C1 durable identity exists;
+        // C2 owner matches; C3 request fingerprint matches; C4 execution is
+        // ActivationFailed. Effects: E1 owner/request mismatch is the existing
+        // idempotency conflict; E2 an exact live receipt rehydrates (covered by
+        // `idempotent_create_rehydrates_durable_session_after_restart`); E3 an
+        // exact failed receipt returns the typed terminal-create conflict; E4 no
+        // cache projection, retry, replacement identity, or durable mutation.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | R1 | yes | no  | any | any | E1 |
+        // | R2 | yes | yes | no  | any | E1 |
+        // | R3 | yes | yes | yes | no  | E2 |
+        // | R4 | yes | yes | yes | yes | E3 + E4 |
+        //
+        // Constraint: the repository remains the single receipt and lifecycle
+        // authority; replay only classifies it and never revives failed truth.
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let mut failed = crate::state::tests::sample_persisted("sesn_failed_create_replay");
+        failed
+            .metadata
+            .insert("awaken.test_request_fingerprint".into(), "request-a".into());
+        failed.execution = SessionExecutionState::ActivationFailed;
+        create_session_fixture(repo.as_ref(), "workspace-a", failed).await;
+        let durable_before = repo.get("sesn_failed_create_replay").await.unwrap();
+        let restarted = ManagedState::new(RehydrateFake::default()).with_session_repo(repo.clone());
+
+        for (rule, owner, fingerprint) in [
+            ("R1", "workspace-b", "request-a"),
+            ("R2", "workspace-a", "request-b"),
+        ] {
+            assert!(
+                matches!(
+                    restarted
+                        .replay_session_with_metadata(
+                            "sesn_failed_create_replay",
+                            owner,
+                            &[("awaken.test_request_fingerprint", fingerprint)],
+                        )
+                        .await,
+                    Err(StateError::IdempotencyMismatch)
+                ),
+                "{rule}/E1"
+            );
+        }
+        assert!(
+            matches!(
+                restarted
+                    .replay_session_with_metadata(
+                        "sesn_failed_create_replay",
+                        "workspace-a",
+                        &[("awaken.test_request_fingerprint", "request-a")],
+                    )
+                    .await,
+                Err(StateError::TerminalCreateConflict)
+            ),
+            "R4/E3"
+        );
+        assert!(restarted.list_sessions().is_empty(), "R4/E4 cold cache");
+        assert_eq!(
+            repo.get("sesn_failed_create_replay").await.unwrap(),
+            durable_before,
+            "R4/E4 durable truth is unchanged"
+        );
+    }
 
     #[tokio::test]
     async fn coordinator_rehydrate_does_not_adopt_a_worker_owned_environment() {
