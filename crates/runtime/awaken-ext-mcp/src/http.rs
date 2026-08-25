@@ -67,7 +67,10 @@ struct HttpShared {
     headers: Vec<(String, String)>,
     /// Host hook consulted once per 401/403 before the failure is surfaced.
     refresher: Option<Arc<dyn CredentialRefresher>>,
-    timeout: Duration,
+    /// Deadline for control-plane requests such as initialize and discovery.
+    control_request_timeout: Duration,
+    /// Independently bounded deadline for effectful `tools/call` requests.
+    tool_call_timeout: Duration,
     session_id: Mutex<Option<String>>,
     sinks: Arc<NotificationSinks>,
     request_handler: Option<Arc<dyn ServerRequestHandler>>,
@@ -107,11 +110,11 @@ impl HttpShared {
     }
 
     /// Build a POST with all headers applied.
-    fn post_builder(&self, body: &Value) -> reqwest::RequestBuilder {
+    fn post_builder(&self, body: &Value, timeout: Duration) -> reqwest::RequestBuilder {
         self.apply_headers(
             self.client
                 .post(&self.url)
-                .timeout(self.timeout)
+                .timeout(timeout)
                 .header("Accept", "application/json, text/event-stream")
                 .json(body),
         )
@@ -162,7 +165,10 @@ impl HttpShared {
                 let reply =
                     server_request_reply(self.request_handler.as_ref(), &id, &method, params).await;
                 // Fire-and-forget reply.
-                let _ = self.post_builder(&reply).send().await;
+                let _ = self
+                    .post_builder(&reply, self.control_request_timeout)
+                    .send()
+                    .await;
             }
             (Some(method), None) => {
                 route(
@@ -208,9 +214,10 @@ impl HttpShared {
         self: &Arc<Self>,
         body: &Value,
         id: i64,
+        timeout: Duration,
     ) -> Result<Option<Value>, McpTransportError> {
         let mut response = self
-            .record_send(self.post_builder(body).send().await)
+            .record_send(self.post_builder(body, timeout).send().await)
             .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
         // Auth failure: rotate once, but resend only the explicit read-only
         // allowlist. A 401/403 is not proof that an opaque tools/call or vendor
@@ -224,7 +231,7 @@ impl HttpShared {
                 return Err(unauthorized_error(&challenge));
             }
             response = self
-                .record_send(self.post_builder(body).send().await)
+                .record_send(self.post_builder(body, timeout).send().await)
                 .map_err(|e| McpTransportError::TransportError(e.to_string()))?;
             if is_auth_failure(response.status()) {
                 return Err(unauthorized_error(&challenge_from(&response)));
@@ -280,10 +287,15 @@ impl HttpShared {
     /// Send one request. The response may legally arrive either in the POST
     /// body or on the already-open standalone GET stream; both routes resolve
     /// this request's single pending-response slot.
-    async fn request(self: &Arc<Self>, body: &Value, id: i64) -> Result<Value, McpTransportError> {
+    async fn request(
+        self: &Arc<Self>,
+        body: &Value,
+        id: i64,
+        timeout: Duration,
+    ) -> Result<Value, McpTransportError> {
         let (sender, mut receiver) = oneshot::channel();
         self.pending_responses.lock().await.insert(id, sender);
-        let direct = self.request_post(body, id);
+        let direct = self.request_post(body, id, timeout);
         tokio::pin!(direct);
         let mut streamed = None;
         let direct_result = tokio::select! {
@@ -295,7 +307,7 @@ impl HttpShared {
         };
         let raw = match (direct_result, streamed) {
             (Some(Ok(Some(value))), _) => Ok(value),
-            (Some(Ok(None)), _) => tokio::time::timeout(self.timeout, receiver)
+            (Some(Ok(None)), _) => tokio::time::timeout(timeout, receiver)
                 .await
                 .map_err(|_| {
                     McpTransportError::TransportError(
@@ -344,6 +356,8 @@ pub struct HttpTransportBuilder {
     headers: Vec<(String, String)>,
     refresher: Option<Arc<dyn CredentialRefresher>>,
     sampling: Option<Arc<dyn crate::sampling::SamplingHandler>>,
+    control_request_timeout: Duration,
+    tool_call_timeout: Duration,
 }
 
 impl HttpTransportBuilder {
@@ -354,6 +368,8 @@ impl HttpTransportBuilder {
             headers: Vec::new(),
             refresher: None,
             sampling: None,
+            control_request_timeout: crate::stdio::DEFAULT_TIMEOUT,
+            tool_call_timeout: crate::stdio::DEFAULT_TIMEOUT,
         }
     }
 
@@ -382,6 +398,13 @@ impl HttpTransportBuilder {
         self
     }
 
+    /// Override the deadline for `tools/call` without lengthening initialize,
+    /// discovery, notifications, or other control-plane requests.
+    pub fn tool_call_timeout(mut self, timeout: Duration) -> Self {
+        self.tool_call_timeout = timeout;
+        self
+    }
+
     /// Build without the MCP handshake, for callers that defer `initialize`.
     pub fn build(self) -> HttpTransport {
         let handler = self.sampling.map(|s| {
@@ -394,7 +417,8 @@ impl HttpTransportBuilder {
                 credential: RwLock::new(self.credential),
                 headers: self.headers,
                 refresher: self.refresher,
-                timeout: crate::stdio::DEFAULT_TIMEOUT,
+                control_request_timeout: self.control_request_timeout,
+                tool_call_timeout: self.tool_call_timeout,
                 session_id: Mutex::new(None),
                 sinks: Arc::new(NotificationSinks::new()),
                 request_handler: handler,
@@ -515,6 +539,7 @@ impl HttpTransport {
             .shared
             .post_builder(
                 &json!({ "jsonrpc": "2.0", "method": "notifications/initialized", "params": {} }),
+                self.shared.control_request_timeout,
             )
             .send()
             .await;
@@ -524,7 +549,12 @@ impl HttpTransport {
     async fn request(&self, method: &str, params: Value) -> Result<Value, McpTransportError> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let body = build_request_body(id, method, params);
-        self.shared.request(&body, id).await
+        let timeout = if method == "tools/call" {
+            self.shared.tool_call_timeout
+        } else {
+            self.shared.control_request_timeout
+        };
+        self.shared.request(&body, id, timeout).await
     }
 
     /// Subscribe to `list_changed` signals.
@@ -784,11 +814,23 @@ mod tests {
     /// Serve one canned response per accepted connection; returns the base URL
     /// and a handle resolving to the raw request bytes each connection sent.
     async fn serve(responses: Vec<String>) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        serve_after(
+            responses
+                .into_iter()
+                .map(|response| (Duration::ZERO, response))
+                .collect(),
+        )
+        .await
+    }
+
+    async fn serve_after(
+        responses: Vec<(Duration, String)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let handle = tokio::spawn(async move {
             let mut captured = Vec::new();
-            for response in responses {
+            for (delay, response) in responses {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let mut request = Vec::new();
                 let mut buf = [0u8; 4096];
@@ -805,7 +847,15 @@ mod tests {
                     }
                 }
                 captured.push(String::from_utf8_lossy(&request).to_string());
-                socket.write_all(response.as_bytes()).await.unwrap();
+                tokio::time::sleep(delay).await;
+                if delay.is_zero() {
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    // A timeout case intentionally drops the client before the
+                    // delayed fixture writes; the accepted request still proves
+                    // the transport sent exactly once.
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
                 socket.shutdown().await.ok();
             }
             captured
@@ -838,6 +888,71 @@ mod tests {
         let request = captured[0].to_ascii_lowercase();
         assert!(request.contains("authorization: bearer tok"), "{request}");
         assert!(request.contains("x-org-id: org-42"), "{request}");
+    }
+
+    #[tokio::test]
+    async fn control_and_tool_calls_follow_independent_timeout_decision_rules() {
+        // Causes: C1 request is control-plane or tools/call; C2 the response
+        // arrives after the short control deadline; C3 it arrives before the
+        // longer tool deadline. Effects: E1 control remains bounded by the short
+        // deadline; E2 a valid long tool call succeeds; E3 a call beyond its own
+        // deadline fails without transport replay. Constraints: tool timeout
+        // override never changes the control default, and every rule sends one
+        // upstream request. Rules: T1 control+C2 -> E1; T2 tool+C2+C3 -> E2;
+        // T3 tool+C2+!C3 -> E3. FMECA: one shared 30s deadline truncates committed
+        // long-running tools, while automatic replay can duplicate their effects.
+        const SHORT: Duration = Duration::from_millis(25);
+        const BETWEEN: Duration = Duration::from_millis(100);
+        const LONG: Duration = Duration::from_millis(500);
+
+        let defaults = HttpTransportBuilder::new("http://unused");
+        assert_eq!(
+            defaults.control_request_timeout,
+            crate::stdio::DEFAULT_TIMEOUT
+        );
+        assert_eq!(defaults.tool_call_timeout, crate::stdio::DEFAULT_TIMEOUT);
+
+        let (url, server) = serve_after(vec![(BETWEEN, ok_response(EMPTY_TOOLS))]).await;
+        let mut builder = HttpTransportBuilder::new(url).tool_call_timeout(LONG);
+        assert_eq!(
+            builder.control_request_timeout,
+            crate::stdio::DEFAULT_TIMEOUT
+        );
+        builder.control_request_timeout = SHORT;
+        let control_error = builder
+            .build()
+            .list_tools()
+            .await
+            .expect_err("T1/E1: slow control request times out");
+        assert!(
+            matches!(control_error, McpTransportError::TransportError(_)),
+            "{control_error:?}"
+        );
+        assert_eq!(server.await.unwrap().len(), 1, "T1 sends once");
+
+        let call_body = r#"{"jsonrpc":"2.0","id":1,"result":{"content":[{"type":"text","text":"done"}],"isError":false}}"#;
+        let (url, server) = serve_after(vec![(BETWEEN, ok_response(call_body))]).await;
+        let mut builder = HttpTransportBuilder::new(url).tool_call_timeout(LONG);
+        builder.control_request_timeout = SHORT;
+        builder
+            .build()
+            .call_tool("slow", json!({}))
+            .await
+            .expect("T2/E2: tool uses the longer deadline");
+        assert_eq!(server.await.unwrap().len(), 1, "T2 sends once");
+
+        let (url, server) = serve_after(vec![(BETWEEN, ok_response(call_body))]).await;
+        let tool_error = HttpTransportBuilder::new(url)
+            .tool_call_timeout(SHORT)
+            .build()
+            .call_tool("too-slow", json!({}))
+            .await
+            .expect_err("T3/E3: tool remains bounded by its own deadline");
+        assert!(
+            matches!(tool_error, McpTransportError::TransportError(_)),
+            "{tool_error:?}"
+        );
+        assert_eq!(server.await.unwrap().len(), 1, "T3 never replays");
     }
 
     #[tokio::test]
