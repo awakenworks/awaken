@@ -223,7 +223,10 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
         ),
         // Writing to an archived (terminated, read-only) session conflicts with the
         // session's terminal state — 409 in the shared error envelope.
-        err @ (StateError::Archived | StateError::Conflict | StateError::IdempotencyMismatch) => (
+        err @ (StateError::Archived
+        | StateError::Conflict
+        | StateError::IdempotencyMismatch
+        | StateError::TerminalCreateConflict) => (
             StatusCode::CONFLICT,
             "invalid_request_error",
             err.to_string(),

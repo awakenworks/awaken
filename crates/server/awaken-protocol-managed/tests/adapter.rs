@@ -17,10 +17,12 @@ use awaken_agent_contract::{
 };
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency, router};
 use awaken_session_contract::{
-    AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, OutcomeDrive,
-    OutcomeIteration, OutcomeReport, Pending, RunError, SessionRuntime, SessionUserRunCommand,
-    SessionUserRunReservation, StepOutcome, ToolPermissionDecision,
+    AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool,
+    ManagedSessionRepository, OutcomeDrive, OutcomeIteration, OutcomeReport, Pending, RunError,
+    SessionExecutionState, SessionRuntime, SessionUserRunCommand, SessionUserRunReservation,
+    StepOutcome, ToolPermissionDecision,
 };
+use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -94,6 +96,39 @@ async fn create(app: &Router) -> String {
     s["id"].as_str().unwrap().to_string()
 }
 
+async fn post_session_with_idempotency(
+    app: &Router,
+    key: Option<&str>,
+    title: &str,
+) -> (StatusCode, serde_json::Value) {
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/v1/sessions")
+        .header("content-type", "application/json");
+    if let Some(key) = key {
+        request = request.header("idempotency-key", key);
+    }
+    let response = app
+        .clone()
+        .oneshot(
+            request
+                .body(Body::from(
+                    serde_json::to_vec(&session_request(serde_json::json!({
+                        "agent": "coder",
+                        "title": title,
+                    })))
+                    .unwrap(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
 /// Session-create idempotency cause/effect decision table.
 ///
 /// | Rule | Key | Payload | Effect |
@@ -116,64 +151,35 @@ async fn session_create_idempotency_replays_one_canonical_session() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    async fn post(app: &Router, key: Option<&str>, title: &str) -> (StatusCode, serde_json::Value) {
-        let mut request = Request::builder()
-            .method("POST")
-            .uri("/v1/sessions")
-            .header("content-type", "application/json");
-        if let Some(key) = key {
-            request = request.header("idempotency-key", key);
-        }
-        let response = app
-            .clone()
-            .oneshot(
-                request
-                    .body(Body::from(
-                        serde_json::to_vec(&session_request(serde_json::json!({
-                            "agent": "coder",
-                            "title": title,
-                        })))
-                        .unwrap(),
-                    ))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        let status = response.status();
-        let bytes = response.into_body().collect().await.unwrap().to_bytes();
-        let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
-        (status, body)
-    }
-
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
-    let first = post(&app, Some("design-project-a"), "Project A").await;
-    let replay = post(&app, Some("design-project-a"), "Project A").await;
+    let first = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;
+    let replay = post_session_with_idempotency(&app, Some("design-project-a"), "Project A").await;
     assert_eq!(first.0, StatusCode::OK, "I2 first create succeeds");
     assert_eq!(replay.0, StatusCode::OK, "I2 replay succeeds");
     assert_eq!(first.1["id"], replay.1["id"], "I2 identity is stable");
 
-    let mismatch = post(&app, Some("design-project-a"), "Changed").await;
+    let mismatch = post_session_with_idempotency(&app, Some("design-project-a"), "Changed").await;
     assert_eq!(
         mismatch.0,
         StatusCode::CONFLICT,
         "I3 changed payload conflicts"
     );
 
-    let independent_a = post(&app, None, "ordinary").await;
-    let independent_b = post(&app, None, "ordinary").await;
+    let independent_a = post_session_with_idempotency(&app, None, "ordinary").await;
+    let independent_b = post_session_with_idempotency(&app, None, "ordinary").await;
     assert_ne!(
         independent_a.1["id"], independent_b.1["id"],
         "I1 preserves ordinary create"
     );
 
-    let invalid = post(&app, Some(""), "invalid").await;
+    let invalid = post_session_with_idempotency(&app, Some(""), "invalid").await;
     assert_eq!(
         invalid.0,
         StatusCode::BAD_REQUEST,
         "I4 rejects an empty key"
     );
     let overlong = "x".repeat(256);
-    let invalid = post(&app, Some(&overlong), "invalid").await;
+    let invalid = post_session_with_idempotency(&app, Some(&overlong), "invalid").await;
     assert_eq!(
         invalid.0,
         StatusCode::BAD_REQUEST,
@@ -238,6 +244,66 @@ async fn session_create_idempotency_replays_one_canonical_session() {
         "I7 the public predictor and create path share one formula"
     );
     assert_ne!(owner_a.id, owner_b.id, "I5 keys are owner-scoped");
+}
+
+#[tokio::test]
+async fn failed_idempotent_create_is_409_while_exact_get_remains_404() {
+    // HTTP cause/effect decision table. C1 the deterministic create receipt is
+    // durable; C2 owner and request fingerprint match; C3 execution is
+    // ActivationFailed; C4 the process cache is cold. Effects: E1 replay is 409
+    // `invalid_request_error` with the stable machine-readable message; E2 exact
+    // GET remains 404 `not_found_error`; E3 neither request creates, rehydrates,
+    // retries, replaces, or mutates the failed Session.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | POST replay | exact GET | Side effect |
+    // |---|---|---|---|---|---|---|---|
+    // | F1 | yes | yes | yes | yes | E1 | E2 | E3 |
+    //
+    // Live and mismatch partitions are owned by the complete idempotency table
+    // above. The same router and repository paths are used; this test adds no
+    // recovery or failure-only implementation.
+    let repo = Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open Session repository"),
+    );
+    let original = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let app = router(original.clone());
+    let created = post_session_with_idempotency(&app, Some("failed-create"), "Failed create").await;
+    assert_eq!(
+        created.0,
+        StatusCode::OK,
+        "F1 fixture create: {}",
+        created.1
+    );
+    let id = created.1["id"].as_str().unwrap().to_string();
+    let mut failed = repo.get(&id).await.expect("durable Session");
+    failed.execution = SessionExecutionState::ActivationFailed;
+    let failed = support::replace_session_fixture(
+        repo.as_ref(),
+        "default",
+        failed,
+        "test:activation-failed",
+    )
+    .await;
+    drop(app);
+    drop(original);
+
+    let restarted =
+        Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let app = router(restarted.clone());
+    let replay = post_session_with_idempotency(&app, Some("failed-create"), "Failed create").await;
+    assert_eq!(replay.0, StatusCode::CONFLICT, "F1/E1: {}", replay.1);
+    assert_eq!(replay.1["type"], "error", "F1/E1");
+    assert_eq!(replay.1["error"]["type"], "invalid_request_error", "F1/E1");
+    assert_eq!(
+        replay.1["error"]["message"], "session_create_terminal_conflict",
+        "F1/E1 stable machine-readable message"
+    );
+    assert!(restarted.list_sessions().is_empty(), "F1/E3 no rehydration");
+
+    let (status, body) = raw_call(&app, "GET", &format!("/v1/sessions/{id}"), Body::empty()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "F1/E2: {body}");
+    assert_eq!(body["error"]["type"], "not_found_error", "F1/E2");
+    assert_eq!(repo.get(&id).await.unwrap(), failed, "F1/E3 durable truth");
 }
 
 fn ended(messages: Vec<Message>) -> StepOutcome {
