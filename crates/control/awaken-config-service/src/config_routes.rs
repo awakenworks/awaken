@@ -487,6 +487,7 @@ pub(crate) async fn publish(
                 "publication_id": publication.publication_id,
                 "fingerprint": publication.fingerprint,
                 "agent_id": publication.agent_id,
+                "source_revision": publication.source_revision,
                 "installed": true,
             })),
         ),
