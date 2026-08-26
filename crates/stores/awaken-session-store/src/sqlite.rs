@@ -431,10 +431,13 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
     }
 
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
-        let conn = self.conn.lock().map_err(storage)?;
-        (|| -> Result<SessionRecoveryScan, SessionRepositoryError> {
-            let mut scan = SessionRecoveryScan::default();
-            let mut statement = conn
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        let mut scan = SessionRecoveryScan::default();
+        {
+            let mut statement = tx
                 .prepare(
                     "SELECT session.scope_id, session.session_id, session.aggregate_json, \
                             session.revision, work.observed_revision \
@@ -466,7 +469,11 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 let stored_revision = row.revision;
                 match decode(row) {
                     Ok(session) => {
-                        conn.execute(
+                        // Quarantine records are evidence, not an absorbing
+                        // lifecycle state. A newer codec may make a known old
+                        // format readable, so every scan revalidates the row
+                        // and clears stale isolation before returning work.
+                        tx.execute(
                             "DELETE FROM managed_session_quarantine WHERE session_id = ?1",
                             params![session_id],
                         )
@@ -480,7 +487,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     }
                     Err(error) => {
                         let reason = error.to_string();
-                        conn.execute(
+                        tx.execute(
                             "INSERT INTO managed_session_quarantine \
                                 (session_id, reason, observed_revision) \
                              VALUES (?1, ?2, ?3) \
@@ -495,7 +502,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 }
             }
             {
-                let mut quarantined = conn
+                let mut quarantined = tx
                     .prepare(
                         "SELECT session_id, reason FROM managed_session_quarantine \
                          ORDER BY session_id LIMIT ?1",
@@ -513,8 +520,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     .collect::<Result<Vec<_>, rusqlite::Error>>()
                     .map_err(storage)?;
             }
-            Ok(scan)
-        })()
+        }
+        tx.commit().map_err(storage)?;
+        Ok(scan)
     }
 
     async fn sessions_referencing_vault(
