@@ -83,6 +83,7 @@ async fn catalog() -> ProviderCatalog {
 fn disabled_source(id: &str) -> CredentialSource {
     CredentialSource {
         id: CredentialSourceId(id.into()),
+        replacement_of: None,
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
         descriptor: None,

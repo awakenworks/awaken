@@ -75,6 +75,7 @@ async fn exact_vault_refresher(
     let repo = Arc::new(InMemoryCredentialRepo::new());
     repo.put(CredentialSource {
         id: id.clone(),
+        replacement_of: None,
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
         descriptor: None,

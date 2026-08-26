@@ -684,6 +684,7 @@ pub async fn build_oauth_resolved_router() -> Router {
     // An OAuth-kind source: nothing sealed; its token is minted by the helper.
     let source = CredentialSource {
         id: CredentialSourceId("cred:ws:oauth".into()),
+        replacement_of: None,
         workspace_id: "ws".into(),
         kind: CredentialKind::Oauth,
         descriptor: None,

@@ -35,12 +35,33 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<bool, CredentialError> {
         pending.validate_for_begin().map_err(invalid_pending)?;
         with_conn(&self.conn, move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(storage)?;
+            let durable: Option<PendingManagedCredentialMutation> = tx
+                .query_row(
+                    &format!(
+                        "SELECT data FROM {p}_managed_credential_mutation WHERE source_id = ?1"
+                    ),
+                    params![pending.after_source.id.0],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(storage)?
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?;
+            if let Some(durable) = durable {
+                if !durable.matches_logical_command(&pending) {
+                    return Err(CredentialError::MutationConflict(
+                        "another Managed credential mutation is pending".into(),
+                    ));
+                }
+                tx.commit().map_err(storage)?;
+                return Ok(false);
+            }
             let current_source = tx
                 .query_row(
                     &format!("SELECT data FROM {p}_source WHERE id = ?1"),
@@ -67,7 +88,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     "Managed credential changed before its mutation was prepared".into(),
                 ));
             }
-            tx.execute(
+            let inserted = tx.execute(
                 &format!("INSERT OR IGNORE INTO {p}_managed_credential_mutation (source_id, data) VALUES (?1, ?2)"),
                 params![pending.after_source.id.0, serde_json::to_string(&pending).map_err(storage)?],
             )
@@ -85,12 +106,13 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 ))?;
             let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&durable).map_err(storage)?;
-            if durable != pending {
+            if !durable.matches_logical_command(&pending) {
                 return Err(CredentialError::MutationConflict(
                     "another Managed credential mutation is pending".into(),
                 ));
             }
-            tx.commit().map_err(storage)
+            tx.commit().map_err(storage)?;
+            Ok(inserted == 1)
         })
         .await
     }
@@ -118,9 +140,10 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .ok_or_else(|| CredentialError::MutationConflict(
                     "Managed credential mutation has no durable pending fact".into()
                 ))?;
-            if (durable != pending || pending.phase != ManagedCredentialMutationPhase::Ready)
-                && (durable.phase != ManagedCredentialMutationPhase::Reclaiming
-                    || durable.operation_id != pending.operation_id)
+            durable.validate()?;
+            if durable.material_fence.phase != CredentialMaterialMutationPhase::Reclaiming
+                && (durable != pending
+                    || pending.material_fence.phase != CredentialMaterialMutationPhase::Ready)
             {
                 return Err(CredentialError::MutationConflict(
                     "Managed credential mutation is not ready or does not match its durable fact".into(),
@@ -156,9 +179,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .map_err(storage)?
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            if durable.phase == ManagedCredentialMutationPhase::Reclaiming {
-                if durable.writer_token != pending.writer_token
-                    || durable.writer_epoch != pending.writer_epoch
+            if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
+                let expected_reclaiming = pending.with_material_reclaiming()?;
+                if durable != expected_reclaiming
                     || current_source.as_ref() != Some(&pending.after_source)
                     || current_child.as_ref() != Some(&pending.after_credential)
                 {
@@ -315,8 +338,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             if child_changed != 1 {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
-            let mut reclaiming = pending.clone();
-            reclaiming.phase = ManagedCredentialMutationPhase::Reclaiming;
+            let reclaiming = pending
+                .with_material_reclaiming()
+                .map_err(ManagedCredentialMutationError::Store)?;
             tx.execute(
                 &format!("UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"),
                 params![
@@ -375,26 +399,28 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                         "Managed credential mutation has no durable pending fact".into(),
                     )
                 })?;
-            let mut durable: PendingManagedCredentialMutation =
+            let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&data).map_err(storage)?;
-            if durable != pending || pending.phase != ManagedCredentialMutationPhase::Writing {
+            if durable != pending
+                || pending.material_fence.phase != CredentialMaterialMutationPhase::Writing
+            {
                 return Err(CredentialError::MutationConflict(
                     "Managed credential ready transition does not match Writing".into(),
                 ));
             }
-            durable.phase = ManagedCredentialMutationPhase::Ready;
+            let ready = durable.with_material_ready()?;
             tx.execute(
                 &format!(
                     "UPDATE {p}_managed_credential_mutation SET data = ?1 WHERE source_id = ?2"
                 ),
                 params![
-                    serde_json::to_string(&durable).map_err(storage)?,
+                    serde_json::to_string(&ready).map_err(storage)?,
                     pending.after_source.id.0
                 ],
             )
             .map_err(storage)?;
             tx.commit().map_err(storage)?;
-            Ok(durable)
+            Ok(ready)
         })
         .await
     }
@@ -414,28 +440,14 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(storage)?;
-            let mut pending = Vec::new();
-            for row in rows {
+            rows.map(|row| {
                 let (source_id, data) = row.map_err(storage)?;
-                match serde_json::from_str::<PendingManagedCredentialMutation>(&data) {
-                    Ok(value) => match value.validate() {
-                        Ok(()) => pending.push(value),
-                        Err(error) => tracing::error!(
-                            recovery_record = "managed_credential_mutation",
-                            record_id = %source_id,
-                            error = %error,
-                            "retaining and isolating an invalid durable recovery record"
-                        ),
-                    },
-                    Err(error) => tracing::error!(
-                        recovery_record = "managed_credential_mutation",
-                        record_id = %source_id,
-                        error = %error,
-                        "retaining and isolating an undecodable durable recovery record"
-                    ),
-                }
-            }
-            Ok(pending)
+                let pending = serde_json::from_str::<PendingManagedCredentialMutation>(&data)
+                    .map_err(storage)?;
+                pending.validate_durable_key(&source_id)?;
+                Ok(pending)
+            })
+            .collect()
         })
         .await
     }
@@ -472,7 +484,9 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             };
             let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&current).map_err(storage)?;
-            if durable != pending || durable.phase != ManagedCredentialMutationPhase::Writing {
+            if durable != pending
+                || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
+            {
                 tx.commit().map_err(storage)?;
                 return Ok(None);
             }
@@ -552,23 +566,23 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
             let durable: PendingManagedCredentialMutation =
                 serde_json::from_str(&current).map_err(storage)?;
             if durable == pending
-                && pending.phase == ManagedCredentialMutationPhase::ReclaimingAbort
+                && pending.material_fence.phase == CredentialMaterialMutationPhase::ReclaimingAbort
             {
                 tx.commit().map_err(storage)?;
                 return Ok(durable);
             }
             if durable != pending
                 || !matches!(
-                    pending.phase,
-                    ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready
+                    pending.material_fence.phase,
+                    CredentialMaterialMutationPhase::Writing
+                        | CredentialMaterialMutationPhase::Ready
                 )
             {
                 return Err(CredentialError::MutationConflict(
                     "Managed credential abort does not match its durable pending fact".into(),
                 ));
             }
-            let mut reclaiming = pending.clone();
-            reclaiming.phase = ManagedCredentialMutationPhase::ReclaimingAbort;
+            let reclaiming = pending.with_material_reclaiming_abort()?;
             let changed = tx
                 .execute(
                     &format!(
@@ -597,6 +611,7 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
         &self,
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError> {
+        pending.validate().map_err(invalid_pending)?;
         let pending = pending.clone();
         with_conn(&self.conn, move |conn, p| {
             let tx = conn
@@ -638,18 +653,17 @@ impl ManagedCredentialRepository for SqliteCredentialRepo {
                 .map_err(storage)?
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            let truth_matches_phase = match pending.phase {
-                ManagedCredentialMutationPhase::Reclaiming => {
+            let truth_matches_phase = match pending.material_fence.phase {
+                CredentialMaterialMutationPhase::Reclaiming => {
                     current_source.as_ref() == Some(&pending.after_source)
                         && current_child.as_ref() == Some(&pending.after_credential)
                 }
-                ManagedCredentialMutationPhase::ReclaimingAbort => {
+                CredentialMaterialMutationPhase::ReclaimingAbort => {
                     current_source == pending.before_source
                         && current_child == pending.before_credential
                 }
-                ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready => {
-                    false
-                }
+                CredentialMaterialMutationPhase::Writing
+                | CredentialMaterialMutationPhase::Ready => false,
             };
             if durable != pending || !truth_matches_phase {
                 return Err(CredentialError::MutationConflict(

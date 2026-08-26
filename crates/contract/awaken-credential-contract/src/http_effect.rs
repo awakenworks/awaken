@@ -304,7 +304,8 @@ impl CredentialUsage {
 
     /// Return the sole declared material field for a built-in HTTP effect.
     /// Gateways use this to bind an opaque [`crate::CredentialMaterial::Secret`]
-    /// to a route projection's `sole_field` without reimplementing map rules.
+    /// when the canonical usage declares exactly one field, without
+    /// reimplementing the usage map rules.
     pub fn http_effect_single_field(&self) -> Result<Option<&str>, CredentialUsageError> {
         self.validate()?;
         let Self::HttpEffect { fields } = self else {

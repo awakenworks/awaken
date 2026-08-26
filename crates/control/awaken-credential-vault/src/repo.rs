@@ -8,7 +8,6 @@ use std::collections::HashMap;
 use std::collections::{BTreeMap, HashSet};
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use awaken_credential_contract::{ManagedCredentialOperation, ManagedCredentialRollout};
 
@@ -102,16 +101,218 @@ pub use application_mcp::{
     application_mcp_material_ref, application_mcp_operation_id,
     enter_or_rotate_application_mcp_bearer, prepare_application_mcp_bearer_rotation,
 };
+mod material_mutation;
+pub use material_mutation::{
+    CREDENTIAL_MATERIAL_WRITER_LEASE_MS, CredentialMaterialMutationFence,
+    CredentialMaterialMutationPhase,
+};
+use material_mutation::{
+    CredentialMaterialRecoveryAction, credential_material_now_unix_ms,
+    credential_material_recovery_action, fence_material_writes,
+    idempotent_credential_source_matches, logical_credential_source_matches,
+    namespace_new_material_refs,
+};
 
 /// Secret-free write-ahead intent for create, rotate, disable, archive, or
-/// revoke. `before = None` is creation; every other change compares the exact
-/// previous revision before atomically publishing `after`.
+/// revoke. `before = None` is creation. A `before` with the same id is an exact
+/// revision mutation. A `before` with a different id is a distinct replacement
+/// create: publication compares the old source exactly, inserts `after`, and
+/// deliberately leaves the old source unchanged for its pinned consumers.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct CredentialMutationIntent {
+    #[serde(flatten)]
+    pub material_fence: CredentialMaterialMutationFence,
     #[serde(default)]
     pub before: Option<CredentialSource>,
     #[serde(alias = "source")]
     pub after: CredentialSource,
+}
+
+impl CredentialMutationIntent {
+    /// Validate the physical repository key before a decoded recovery envelope
+    /// can reach the external SecretStore participant. The JSON payload owns
+    /// the command identity; the table/map key may only index that exact id.
+    pub fn validate_durable_key(&self, source_id: &str) -> Result<(), CredentialError> {
+        validate_mutation_durable_key(source_id, &self.after.id)
+    }
+
+    /// Prepare one source-only publication envelope with the same leased,
+    /// attempt-specific external-effect fence used by Managed pair mutations.
+    pub fn prepare(
+        before: Option<CredentialSource>,
+        mut after: CredentialSource,
+    ) -> Result<Self, CredentialError> {
+        let before_refs = before
+            .iter()
+            .flat_map(CredentialSource::material_refs)
+            .collect::<HashSet<_>>();
+        let writes_new_material = after
+            .material_refs()
+            .any(|reference| !before_refs.contains(reference));
+        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)?;
+        namespace_new_material_refs(before.as_ref(), &mut after, material_fence.attempt_id());
+        let intent = Self {
+            material_fence,
+            before,
+            after,
+        };
+        intent.validate_for_begin()?;
+        Ok(intent)
+    }
+
+    /// Whether this intent creates a distinct replacement instead of changing
+    /// one source in place.
+    #[must_use]
+    pub fn is_distinct_replacement(&self) -> bool {
+        self.before
+            .as_ref()
+            .is_some_and(|before| before.id != self.after.id)
+    }
+
+    /// Whether two fresh requests name the same logical command while one
+    /// durable pending row already owns its random physical attempt. This never
+    /// transfers writer ownership; repositories return `false` from `begin` so
+    /// the follower performs zero SecretStore writes and retries after the
+    /// owner publishes or recovery aborts it.
+    #[must_use]
+    pub fn matches_logical_command(&self, candidate: &Self) -> bool {
+        self.before == candidate.before
+            && logical_credential_source_matches(&self.after, &candidate.after)
+    }
+
+    /// Validate the invariant that lets every repository adapter interpret a
+    /// cross-id intent identically. The repository owns only publication shape:
+    /// one Workspace/kind, an active version-1 insertion, and disjoint material.
+    /// A higher application layer owns provider/descriptor replacement policy.
+    pub fn validate_for_begin(&self) -> Result<(), CredentialError> {
+        self.validate()?;
+        let before_refs = self
+            .before
+            .iter()
+            .flat_map(CredentialSource::material_refs)
+            .collect::<HashSet<_>>();
+        let writes_new_material = self
+            .after
+            .material_refs()
+            .any(|reference| !before_refs.contains(reference));
+        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
+        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
+            && self
+                .after
+                .material_refs()
+                .filter(|reference| !before_refs.contains(reference))
+                .all(|reference| reference.0.ends_with(&suffix));
+        self.material_fence
+            .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
+    }
+
+    pub fn validate(&self) -> Result<(), CredentialError> {
+        self.after.validate_authority()?;
+        let Some(before) = self.before.as_ref() else {
+            if self.after.replacement_of.is_some() {
+                return Err(CredentialError::InvalidSource(
+                    "ordinary credential creation cannot publish replacement provenance".into(),
+                ));
+            }
+            return self.validate_material_fence();
+        };
+        before.validate_authority()?;
+        if before.id == self.after.id {
+            if before.replacement_of != self.after.replacement_of {
+                return Err(CredentialError::InvalidSource(
+                    "credential replacement provenance is immutable across one-source mutations"
+                        .into(),
+                ));
+            }
+            return self.validate_material_fence();
+        }
+        let before_revision = u64::try_from(before.version).map_err(|_| {
+            CredentialError::InvalidSource(
+                "credential replacement predecessor revision must be positive".into(),
+            )
+        })?;
+        let expected_provenance = awaken_credential_contract::CredentialRef {
+            id: before.id.0.clone(),
+            revision: before_revision,
+        };
+        let valid_publication = !before.id.0.trim().is_empty()
+            && !self.after.id.0.trim().is_empty()
+            && before.workspace_id == self.after.workspace_id
+            && before.kind == self.after.kind
+            && before.status == CredentialStatus::Active
+            && self.after.status == CredentialStatus::Active
+            && before.version > 0
+            && self.after.version == 1
+            && self.after.replacement_of.as_ref() == Some(&expected_provenance);
+        let before_refs = before.material_refs().collect::<HashSet<_>>();
+        let after_refs = self.after.material_refs().collect::<HashSet<_>>();
+        if !valid_publication || !before_refs.is_disjoint(&after_refs) {
+            return Err(CredentialError::InvalidSource(
+                "a distinct replacement must preserve one active Workspace/kind publication boundary and own disjoint material"
+                    .into(),
+            ));
+        }
+        self.validate_material_fence()
+    }
+
+    fn validate_material_fence(&self) -> Result<(), CredentialError> {
+        let before_refs = self
+            .before
+            .iter()
+            .flat_map(CredentialSource::material_refs)
+            .collect::<HashSet<_>>();
+        let writes_new_material = self
+            .after
+            .material_refs()
+            .any(|reference| !before_refs.contains(reference));
+        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
+        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
+            && self
+                .after
+                .material_refs()
+                .filter(|reference| !before_refs.contains(reference))
+                .all(|reference| reference.0.ends_with(&suffix));
+        self.material_fence
+            .validate(writes_new_material, new_refs_bound_to_attempt)
+    }
+
+    pub fn claim_after_expiry(
+        &self,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<Self>, CredentialError> {
+        let Some(material_fence) = self
+            .material_fence
+            .claim_after_expiry(now_unix_ms, lease_expires_at_unix_ms)?
+        else {
+            return Ok(None);
+        };
+        let mut claimed = self.clone();
+        claimed.material_fence = material_fence;
+        claimed.validate()?;
+        Ok(Some(claimed))
+    }
+
+    pub fn with_material_ready(&self) -> Result<Self, CredentialError> {
+        let mut ready = self.clone();
+        ready.material_fence = self.material_fence.ready()?;
+        ready.validate()?;
+        Ok(ready)
+    }
+
+    pub fn with_material_reclaiming(&self) -> Result<Self, CredentialError> {
+        let mut reclaiming = self.clone();
+        reclaiming.material_fence = self.material_fence.reclaiming()?;
+        reclaiming.validate()?;
+        Ok(reclaiming)
+    }
+
+    pub fn with_material_reclaiming_abort(&self) -> Result<Self, CredentialError> {
+        let mut reclaiming = self.clone();
+        reclaiming.material_fence = self.material_fence.reclaiming_abort()?;
+        reclaiming.validate()?;
+        Ok(reclaiming)
+    }
 }
 
 /// Parent-aggregate fence for terminal child commands. A Vault deletion may
@@ -159,27 +360,6 @@ fn managed_vault_delete_fence_allows_only_absorbing_child_delete() {
     }
 }
 
-/// Durable process phase around the external SecretStore participant.
-/// `Writing` is live-writer owned, `Ready` may atomically publish,
-/// `Reclaiming` means database truth is already committed and only retired
-/// material remains to be removed, and `ReclaimingAbort` means publication was
-/// durably abandoned while unpublished material remains to be removed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ManagedCredentialMutationPhase {
-    Writing,
-    Ready,
-    Reclaiming,
-    ReclaimingAbort,
-}
-
-/// A writer has this long to finish the external material write before a
-/// reconciler may fence it and take ownership. The next periodic pass performs
-/// the actual recovery, so expiry does not itself mutate durable state.
-pub const MANAGED_CREDENTIAL_WRITER_LEASE_MS: u64 = 120_000;
-
-const MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION: u8 = 1;
-
 /// Secret-free durable authority for every Managed Credential mutation.
 /// Source and management child are one consistency pair. Plaintext never enters
 /// this fact; only frozen references cross the recovery boundary.
@@ -189,8 +369,8 @@ pub struct PendingManagedCredentialMutation {
     /// cannot construct a durable authority with a struct literal; repository
     /// adapters deserialize legacy rows as version zero and may only recover
     /// them, never admit them as a new command.
-    #[serde(default)]
-    format_version: u8,
+    #[serde(flatten)]
+    pub material_fence: CredentialMaterialMutationFence,
     pub operation_id: String,
     pub operation: ManagedCredentialOperation,
     #[serde(default)]
@@ -199,22 +379,6 @@ pub struct PendingManagedCredentialMutation {
     #[serde(default)]
     pub before_credential: Option<ManagedVaultCredential>,
     pub after_credential: ManagedVaultCredential,
-    pub phase: ManagedCredentialMutationPhase,
-    /// Stable physical-effect namespace. Unlike writer ownership, this never
-    /// changes when recovery fences an expired writer.
-    #[serde(default)]
-    attempt_id: String,
-    /// Stable token of the process attempt allowed to advance `Writing`.
-    /// Missing legacy fields deserialize as an unowned, expired writer and are
-    /// claimed by recovery before any transition is attempted.
-    #[serde(default)]
-    pub writer_token: String,
-    /// Monotonic fencing generation. A recovery takeover always increments it.
-    #[serde(default)]
-    pub writer_epoch: u64,
-    /// Wall-clock lease fence used only to decide when takeover is allowed.
-    #[serde(default)]
-    pub writer_lease_expires_at_unix_ms: u64,
 }
 
 /// Construct the public secret-free adoption event from an exact committed
@@ -254,6 +418,7 @@ const fn managed_creation_pair_admitted(
     credential_present: bool,
     source_active: bool,
     initial_revision: bool,
+    ordinary_lineage: bool,
 ) -> bool {
     workspace_matches
         && source_matches
@@ -261,6 +426,7 @@ const fn managed_creation_pair_admitted(
         && credential_present
         && source_active
         && initial_revision
+        && ordinary_lineage
 }
 
 #[must_use]
@@ -284,38 +450,29 @@ const fn managed_mutation_operation_shape_allowed(
 }
 
 #[must_use]
-const fn managed_material_attempt_admitted(
-    current_format: bool,
-    writing: bool,
-    writes_new_material: bool,
-    valid_owner: bool,
-    new_refs_bound_to_attempt: bool,
-) -> bool {
-    !current_format
-        || (((!writing && !writes_new_material) || valid_owner)
-            && (!writes_new_material || new_refs_bound_to_attempt))
-}
-
-#[must_use]
 #[cfg(kani)]
 const fn managed_creation_begin_allowed(source_published: bool, child_published: bool) -> bool {
     !source_published && !child_published
 }
 
 impl PendingManagedCredentialMutation {
-    fn fresh_writer_lease() -> Result<(String, u64, u64), CredentialError> {
-        let now_unix_ms = managed_credential_now_unix_ms()?;
-        Ok((
-            uuid::Uuid::new_v4().simple().to_string(),
-            1,
-            now_unix_ms
-                .checked_add(MANAGED_CREDENTIAL_WRITER_LEASE_MS)
-                .ok_or_else(|| {
-                    CredentialError::MutationConflict(
-                        "Managed credential writer lease deadline overflowed".into(),
-                    )
-                })?,
-        ))
+    /// Validate the physical repository key before a decoded recovery envelope
+    /// can reach the external SecretStore participant.
+    pub fn validate_durable_key(&self, source_id: &str) -> Result<(), CredentialError> {
+        validate_mutation_durable_key(source_id, &self.after_source.id)
+    }
+
+    /// Compare the complete secret-free logical command while ignoring only
+    /// the source's random physical material-attempt namespace. The durable
+    /// pending row remains the sole writer attempt when this returns true.
+    #[must_use]
+    pub fn matches_logical_command(&self, candidate: &Self) -> bool {
+        self.operation_id == candidate.operation_id
+            && self.operation == candidate.operation
+            && self.before_source == candidate.before_source
+            && logical_credential_source_matches(&self.after_source, &candidate.after_source)
+            && self.before_credential == candidate.before_credential
+            && self.after_credential == candidate.after_credential
     }
 
     pub fn claim_after_expiry(
@@ -323,54 +480,68 @@ impl PendingManagedCredentialMutation {
         now_unix_ms: u64,
         lease_expires_at_unix_ms: u64,
     ) -> Result<Option<Self>, CredentialError> {
-        if self.phase != ManagedCredentialMutationPhase::Writing
-            || self.writer_lease_expires_at_unix_ms > now_unix_ms
-        {
+        let Some(material_fence) = self
+            .material_fence
+            .claim_after_expiry(now_unix_ms, lease_expires_at_unix_ms)?
+        else {
             return Ok(None);
-        }
-        if lease_expires_at_unix_ms <= now_unix_ms {
-            return Err(CredentialError::MutationConflict(
-                "Managed credential recovery lease must expire after claim time".into(),
-            ));
-        }
+        };
         let mut claimed = self.clone();
-        // A legacy durable fact has no attempt namespace to migrate without
-        // plaintext. Keep it in the legacy validation format for this one
-        // recovery cycle while fencing its former writer with a fresh owner.
-        // The fact is removed after commit/abort, so no new command can enter
-        // through this compatibility path.
-        if self.format_version != 0 {
-            claimed.format_version = MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION;
-        }
-        claimed.writer_token = uuid::Uuid::new_v4().simple().to_string();
-        claimed.writer_epoch = self.writer_epoch.checked_add(1).ok_or_else(|| {
-            CredentialError::MutationConflict("Managed credential writer epoch is exhausted".into())
-        })?;
-        claimed.writer_lease_expires_at_unix_ms = lease_expires_at_unix_ms;
+        claimed.material_fence = material_fence;
         Ok(Some(claimed))
     }
 
-    #[must_use]
-    fn has_valid_writer_owner(&self) -> bool {
-        !self.writer_token.is_empty()
-            && self.writer_epoch > 0
-            && self.writer_lease_expires_at_unix_ms > 0
+    pub fn with_material_ready(&self) -> Result<Self, CredentialError> {
+        let mut ready = self.clone();
+        ready.material_fence = self.material_fence.ready()?;
+        Ok(ready)
+    }
+
+    pub fn with_material_reclaiming(&self) -> Result<Self, CredentialError> {
+        let mut reclaiming = self.clone();
+        reclaiming.material_fence = self.material_fence.reclaiming()?;
+        Ok(reclaiming)
+    }
+
+    pub fn with_material_reclaiming_abort(&self) -> Result<Self, CredentialError> {
+        let mut reclaiming = self.clone();
+        reclaiming.material_fence = self.material_fence.reclaiming_abort()?;
+        Ok(reclaiming)
     }
 
     /// New commands must use the current closed construction format. Legacy
     /// rows are accepted only through recovery after deserialization.
     pub fn validate_for_begin(&self) -> Result<(), ManagedCredentialMutationError> {
-        if self.format_version != MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION {
-            return Err(ManagedCredentialMutationError::RevisionConflict);
-        }
-        self.validate()
+        self.validate()?;
+        let before_refs = self
+            .before_source
+            .iter()
+            .flat_map(CredentialSource::material_refs)
+            .collect::<HashSet<_>>();
+        let writes_new_material = self
+            .after_source
+            .material_refs()
+            .any(|reference| !before_refs.contains(reference));
+        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
+        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
+            && self
+                .after_source
+                .material_refs()
+                .filter(|reference| !before_refs.contains(reference))
+                .all(|reference| reference.0.ends_with(&suffix));
+        self.material_fence
+            .validate_fresh_for_begin(writes_new_material, new_refs_bound_to_attempt)
+            .map_err(|_| ManagedCredentialMutationError::RevisionConflict)
     }
 
     /// Revalidate the complete durable command shape at every persistence
     /// boundary. Public serde fields are transport data, never authority.
     pub fn validate(&self) -> Result<(), ManagedCredentialMutationError> {
-        if self.format_version > MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION
-            || self.operation_id.trim().is_empty()
+        self.after_source.validate_authority()?;
+        if let Some(before_source) = self.before_source.as_ref() {
+            before_source.validate_authority()?;
+        }
+        if self.operation_id.trim().is_empty()
             || self.after_source.kind != CredentialKind::Vault
             || self.after_source.workspace_id != self.after_credential.workspace_id
             || self.after_source.id != self.after_credential.source_id
@@ -389,22 +560,16 @@ impl PendingManagedCredentialMutation {
             .after_source
             .material_refs()
             .any(|reference| !before_refs.contains(reference));
-        let suffix = format!(":attempt:{}", self.attempt_id);
-        let new_refs_bound_to_attempt = !self.attempt_id.is_empty()
+        let suffix = format!(":attempt:{}", self.material_fence.attempt_id());
+        let new_refs_bound_to_attempt = !self.material_fence.attempt_id().is_empty()
             && self
                 .after_source
                 .material_refs()
                 .filter(|reference| !before_refs.contains(reference))
                 .all(|reference| reference.0.ends_with(&suffix));
-        if !managed_material_attempt_admitted(
-            self.format_version != 0,
-            self.phase == ManagedCredentialMutationPhase::Writing,
-            writes_new_material,
-            self.has_valid_writer_owner(),
-            new_refs_bound_to_attempt,
-        ) {
-            return Err(ManagedCredentialMutationError::RevisionConflict);
-        }
+        self.material_fence
+            .validate(writes_new_material, new_refs_bound_to_attempt)
+            .map_err(|_| ManagedCredentialMutationError::RevisionConflict)?;
 
         let operation = match self.operation {
             ManagedCredentialOperation::Create => 0,
@@ -435,6 +600,7 @@ impl PendingManagedCredentialMutation {
                 || self.before_credential.is_some()
                 || self.after_source.version != 1
                 || self.after_credential.revision != 1
+                || self.after_source.replacement_of.is_some()
             {
                 return Err(ManagedCredentialMutationError::RevisionConflict);
             }
@@ -463,6 +629,7 @@ impl PendingManagedCredentialMutation {
         let immutable_source_axes_match = before_source.id == self.after_source.id
             && before_source.workspace_id == self.after_source.workspace_id
             && before_source.kind == self.after_source.kind
+            && before_source.replacement_of == self.after_source.replacement_of
             && before_source.descriptor == self.after_source.descriptor
             && before_source.provider_id == self.after_source.provider_id
             && before_source.protocol_endpoint_id == self.after_source.protocol_endpoint_id
@@ -505,27 +672,23 @@ impl PendingManagedCredentialMutation {
             !credential.id.trim().is_empty(),
             source.status == CredentialStatus::Active,
             source.version == 1 && credential.revision == 1 && credential.lifecycle.is_active(),
+            source.replacement_of.is_none(),
         ) {
             return Err(CredentialError::InvalidSource(
                 "Managed credential creation must freeze one exact active source/child pair".into(),
             ));
         }
-        let (writer_token, writer_epoch, writer_lease_expires_at_unix_ms) =
-            Self::fresh_writer_lease()?;
-        namespace_new_managed_material_refs(None, &mut source, &writer_token);
+        let writes_new_material = source.material_refs().next().is_some();
+        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)?;
+        namespace_new_material_refs(None, &mut source, material_fence.attempt_id());
         Ok(Self {
-            format_version: MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION,
+            material_fence,
             operation_id: format!("managed-create:{}", source.id.0),
             operation: ManagedCredentialOperation::Create,
             before_source: None,
             after_source: source,
             before_credential: None,
             after_credential: credential,
-            phase: ManagedCredentialMutationPhase::Writing,
-            attempt_id: writer_token.clone(),
-            writer_token,
-            writer_epoch,
-            writer_lease_expires_at_unix_ms,
         })
     }
 
@@ -555,35 +718,23 @@ impl PendingManagedCredentialMutation {
             before_credential.revision,
             &after_credential,
         )?;
-        let (writer_token, writer_epoch, writer_lease_expires_at_unix_ms) = if writes_new_material {
-            Self::fresh_writer_lease().map_err(ManagedCredentialMutationError::Store)?
-        } else {
-            (String::new(), 0, 0)
-        };
+        let material_fence = CredentialMaterialMutationFence::fresh(writes_new_material)
+            .map_err(ManagedCredentialMutationError::Store)?;
         if writes_new_material {
-            namespace_new_managed_material_refs(
+            namespace_new_material_refs(
                 Some(&before_source),
                 &mut after_source,
-                &writer_token,
+                material_fence.attempt_id(),
             );
         }
         Ok(Self {
-            format_version: MANAGED_CREDENTIAL_MUTATION_FORMAT_VERSION,
+            material_fence,
             operation_id,
             operation,
             before_source: Some(before_source),
             after_source,
             before_credential: Some(before_credential),
             after_credential,
-            phase: if writes_new_material {
-                ManagedCredentialMutationPhase::Writing
-            } else {
-                ManagedCredentialMutationPhase::Ready
-            },
-            attempt_id: writer_token.clone(),
-            writer_token,
-            writer_epoch,
-            writer_lease_expires_at_unix_ms,
         })
     }
 
@@ -593,37 +744,18 @@ impl PendingManagedCredentialMutation {
     }
 }
 
-fn namespace_new_managed_material_refs(
-    before: Option<&CredentialSource>,
-    after: &mut CredentialSource,
-    attempt_id: &str,
-) {
-    let before_refs = before
-        .into_iter()
-        .flat_map(CredentialSource::material_refs)
-        .cloned()
-        .collect::<HashSet<_>>();
-    let suffix = format!(":attempt:{attempt_id}");
-    if let Some(reference) = after.material_ref.as_mut()
-        && !before_refs.contains(reference)
-        && !reference.0.ends_with(&suffix)
-    {
-        reference.0.push_str(&suffix);
+fn validate_mutation_durable_key(
+    durable_source_id: &str,
+    envelope_source_id: &CredentialSourceId,
+) -> Result<(), CredentialError> {
+    if durable_source_id == envelope_source_id.0 {
+        Ok(())
+    } else {
+        Err(CredentialError::Storage(format!(
+            "credential mutation row key `{durable_source_id}` does not match envelope source `{}`",
+            envelope_source_id.0
+        )))
     }
-    for reference in after.auxiliary_material_refs.values_mut() {
-        if !before_refs.contains(reference) && !reference.0.ends_with(&suffix) {
-            reference.0.push_str(&suffix);
-        }
-    }
-}
-
-fn managed_credential_now_unix_ms() -> Result<u64, CredentialError> {
-    let millis = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| CredentialError::Storage(format!("credential clock: {error}")))?
-        .as_millis();
-    u64::try_from(millis)
-        .map_err(|_| CredentialError::Storage("credential clock overflowed u64".into()))
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -646,9 +778,11 @@ fn managed_creation_pair_requires_every_binding_axis() {
         kani::any::<bool>(),
         kani::any::<bool>(),
         kani::any::<bool>(),
+        kani::any::<bool>(),
     ];
-    let admitted =
-        managed_creation_pair_admitted(axes[0], axes[1], axes[2], axes[3], axes[4], axes[5]);
+    let admitted = managed_creation_pair_admitted(
+        axes[0], axes[1], axes[2], axes[3], axes[4], axes[5], axes[6],
+    );
     assert_eq!(admitted, axes.into_iter().all(|axis| axis));
     if admitted {
         assert!(axes.into_iter().all(|axis| axis));
@@ -698,37 +832,18 @@ fn managed_mutation_operation_shape_is_closed_and_delete_is_absorbing() {
     }
 }
 
-#[cfg(kani)]
-#[kani::proof]
-fn managed_material_attempt_requires_owner_and_exact_physical_namespace() {
-    let writing = kani::any::<bool>();
-    let writes_new_material = kani::any::<bool>();
-    let valid_owner = kani::any::<bool>();
-    let new_refs_bound_to_attempt = kani::any::<bool>();
-    let admitted = managed_material_attempt_admitted(
-        true,
-        writing,
-        writes_new_material,
-        valid_owner,
-        new_refs_bound_to_attempt,
-    );
-    if admitted && (writing || writes_new_material) {
-        assert!(valid_owner);
-    }
-    if admitted && writes_new_material {
-        assert!(new_refs_bound_to_attempt);
-    }
-}
-
 /// One physical persistence boundary for every Managed Credential command.
 /// Implementations publish Source + child/tombstone and advance the durable
 /// fact to `Reclaiming` in one local transaction.
 #[async_trait::async_trait]
 pub trait ManagedCredentialRepository: CredentialRepo + ManagedVaultRepo {
+    /// Return `true` only to the command that inserted and owns the durable
+    /// physical attempt. A logically identical follower returns `false` and
+    /// must perform zero SecretStore writes; a different command conflicts.
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
-    ) -> Result<(), CredentialError>;
+    ) -> Result<bool, CredentialError>;
     async fn commit_managed_mutation(
         &self,
         pending: &PendingManagedCredentialMutation,
@@ -1048,20 +1163,44 @@ pub trait CredentialRepo: Send + Sync {
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError>;
 
-    /// Claim this source-keyed WAL intent. `true` means this caller inserted
-    /// the intent; `false` means an identical durable intent already existed.
+    /// Durably claim this exact source-only publication envelope. New commands
+    /// must carry the current material-fence format. `true` owns the inserted
+    /// physical attempt; a logically identical live retry returns `false`, does
+    /// not acquire another writer token, and must perform zero SecretStore writes.
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
     ) -> Result<bool, CredentialError>;
-    /// Atomically compare/publish the source while retaining the WAL intent until
-    /// material cleanup completes.
+    /// Fence a completed external write before publication.
+    async fn mark_mutation_ready(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError>;
+    /// Atomically compare/publish the source and advance the exact durable fact
+    /// to `Reclaiming`; external cleanup is forbidden before this returns.
     async fn apply_mutation(
         &self,
         intent: &CredentialMutationIntent,
-    ) -> Result<(), CredentialError>;
+    ) -> Result<CredentialMutationIntent, CredentialError>;
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError>;
-    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError>;
+    async fn claim_expired_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError>;
+    /// Atomically retain exact unpublished truth as `ReclaimingAbort` before
+    /// any candidate material is deleted.
+    async fn abort_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError>;
+    /// Remove only an exact terminal cleanup fact whose published/unpublished
+    /// source truth still matches its phase.
+    async fn complete_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError>;
     /// Every material reference reachable from committed metadata.
     async fn material_refs(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
         Err(CredentialError::Storage(
@@ -1151,63 +1290,201 @@ impl CredentialRepo for InMemoryCredentialRepo {
         &self,
         intent: CredentialMutationIntent,
     ) -> Result<bool, CredentialError> {
+        intent.validate_for_begin()?;
         let mut state = self.state.lock().expect("credential repo");
-        match state.intents.entry(intent.after.id.0.clone()) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(intent);
-                Ok(true)
-            }
-            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &intent => {
+        if let Some(durable) = state.intents.get(&intent.after.id.0) {
+            return if durable.matches_logical_command(&intent) {
                 Ok(false)
-            }
-            std::collections::hash_map::Entry::Occupied(_) => Err(
-                CredentialError::MutationConflict("another credential mutation is pending".into()),
-            ),
+            } else {
+                Err(CredentialError::MutationConflict(
+                    "another credential mutation is pending".into(),
+                ))
+            };
         }
+        let current_after = state.rows.get(&intent.after.id.0);
+        let before_matches = if intent.is_distinct_replacement() {
+            current_after.is_none()
+                && intent
+                    .before
+                    .as_ref()
+                    .is_some_and(|before| state.rows.get(&before.id.0) == Some(before))
+        } else {
+            current_after == intent.before.as_ref()
+        };
+        if !before_matches {
+            return Err(CredentialError::MutationConflict(
+                "credential changed before its material mutation was prepared".into(),
+            ));
+        }
+        state.intents.insert(intent.after.id.0.clone(), intent);
+        Ok(true)
+    }
+
+    async fn mark_mutation_ready(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        let ready = intent.with_material_ready()?;
+        let mut state = self.state.lock().expect("credential repo");
+        let durable = state.intents.get_mut(&intent.after.id.0).ok_or_else(|| {
+            CredentialError::MutationConflict(
+                "credential material mutation has no durable pending fact".into(),
+            )
+        })?;
+        if durable != intent {
+            return Err(CredentialError::MutationConflict(
+                "credential ready transition does not match its durable Writing owner".into(),
+            ));
+        }
+        *durable = ready.clone();
+        Ok(ready)
     }
 
     async fn apply_mutation(
         &self,
         intent: &CredentialMutationIntent,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        if intent.material_fence.phase != CredentialMaterialMutationPhase::Ready {
+            return Err(CredentialError::MutationConflict(
+                "credential material mutation is not ready to publish".into(),
+            ));
+        }
         let mut state = self.state.lock().expect("credential repo");
+        let expected_reclaiming = intent.with_material_reclaiming()?;
+        if state.intents.get(&intent.after.id.0) == Some(&expected_reclaiming)
+            && state.rows.get(&intent.after.id.0) == Some(&intent.after)
+        {
+            return Ok(expected_reclaiming);
+        }
         if state.intents.get(&intent.after.id.0) != Some(intent) {
             return Err(CredentialError::MutationConflict(
                 "credential mutation has no matching durable intent".into(),
             ));
         }
-        let current = state.rows.get(&intent.after.id.0);
-        if current == Some(&intent.after) {
-            return Ok(());
-        }
-        if current != intent.before.as_ref() {
+        let current_after = state.rows.get(&intent.after.id.0);
+        if intent.is_distinct_replacement() {
+            let before = intent.before.as_ref().ok_or_else(|| {
+                CredentialError::InvalidSource(
+                    "distinct replacement requires an exact predecessor".into(),
+                )
+            })?;
+            if current_after.is_some() || state.rows.get(&before.id.0) != Some(before) {
+                return Err(CredentialError::MutationConflict(
+                    "credential replacement precondition changed during mutation".into(),
+                ));
+            }
+            state
+                .rows
+                .insert(intent.after.id.0.clone(), intent.after.clone());
+        } else if current_after != intent.before.as_ref() {
             return Err(CredentialError::MutationConflict(
                 "credential revision changed during mutation".into(),
             ));
+        } else {
+            state
+                .rows
+                .insert(intent.after.id.0.clone(), intent.after.clone());
         }
         state
-            .rows
-            .insert(intent.after.id.0.clone(), intent.after.clone());
-        Ok(())
+            .intents
+            .insert(intent.after.id.0.clone(), expected_reclaiming.clone());
+        Ok(expected_reclaiming)
     }
 
     async fn pending_mutations(&self) -> Result<Vec<CredentialMutationIntent>, CredentialError> {
-        Ok(self
-            .state
-            .lock()
-            .expect("credential repo")
-            .intents
-            .values()
-            .cloned()
-            .collect())
-    }
-
-    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
         self.state
             .lock()
             .expect("credential repo")
             .intents
-            .remove(&id.0);
+            .iter()
+            .map(|(source_id, intent)| {
+                intent.validate_durable_key(source_id)?;
+                Ok(intent.clone())
+            })
+            .collect()
+    }
+
+    async fn claim_expired_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let Some(claimed) = intent.claim_after_expiry(now_unix_ms, lease_expires_at_unix_ms)?
+        else {
+            return Ok(None);
+        };
+        let mut state = self.state.lock().expect("credential repo");
+        let Some(durable) = state.intents.get_mut(&intent.after.id.0) else {
+            return Ok(None);
+        };
+        if durable != intent
+            || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
+        {
+            return Ok(None);
+        }
+        *durable = claimed.clone();
+        Ok(Some(claimed))
+    }
+
+    async fn abort_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        let abort = intent.with_material_reclaiming_abort()?;
+        let mut state = self.state.lock().expect("credential repo");
+        if state.intents.get(&intent.after.id.0) == Some(&abort) {
+            return Ok(abort);
+        }
+        let unpublished = if intent.is_distinct_replacement() {
+            !state.rows.contains_key(&intent.after.id.0)
+        } else {
+            state.rows.get(&intent.after.id.0) == intent.before.as_ref()
+        };
+        if !unpublished || state.intents.get(&intent.after.id.0) != Some(intent) {
+            return Err(CredentialError::MutationConflict(
+                "credential abort does not match exact unpublished truth".into(),
+            ));
+        }
+        state
+            .intents
+            .insert(intent.after.id.0.clone(), abort.clone());
+        Ok(abort)
+    }
+
+    async fn complete_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError> {
+        intent.validate()?;
+        let mut state = self.state.lock().expect("credential repo");
+        let Some(durable) = state.intents.get(&intent.after.id.0) else {
+            return Ok(());
+        };
+        let truth_matches_phase = match intent.material_fence.phase {
+            CredentialMaterialMutationPhase::Reclaiming => {
+                state.rows.get(&intent.after.id.0) == Some(&intent.after)
+            }
+            CredentialMaterialMutationPhase::ReclaimingAbort => {
+                if intent.is_distinct_replacement() {
+                    !state.rows.contains_key(&intent.after.id.0)
+                } else {
+                    state.rows.get(&intent.after.id.0) == intent.before.as_ref()
+                }
+            }
+            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
+                false
+            }
+        };
+        if durable != intent || !truth_matches_phase {
+            return Err(CredentialError::MutationConflict(
+                "credential completion does not match durable cleanup truth".into(),
+            ));
+        }
+        state.intents.remove(&intent.after.id.0);
         Ok(())
     }
 
@@ -1260,11 +1537,20 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
     async fn begin_managed_mutation(
         &self,
         pending: PendingManagedCredentialMutation,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<bool, CredentialError> {
         pending
             .validate_for_begin()
             .map_err(invalid_pending_mutation)?;
         let mut state = self.state.lock().expect("credential repo");
+        if let Some(durable) = state.managed_mutations.get(&pending.after_source.id.0) {
+            return if durable.matches_logical_command(&pending) {
+                Ok(false)
+            } else {
+                Err(CredentialError::MutationConflict(
+                    "another Managed credential mutation is pending".into(),
+                ))
+            };
+        }
         let current_source = state.rows.get(&pending.after_source.id.0);
         let current_child = state.vault_credentials.get(&pending.after_credential.id);
         if current_source != pending.before_source.as_ref()
@@ -1274,21 +1560,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                 "Managed credential changed before its mutation was prepared".into(),
             ));
         }
-        match state
+        state
             .managed_mutations
-            .entry(pending.after_source.id.0.clone())
-        {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(pending);
-                Ok(())
-            }
-            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &pending => Ok(()),
-            std::collections::hash_map::Entry::Occupied(_) => {
-                Err(CredentialError::MutationConflict(
-                    "another Managed credential mutation is pending".into(),
-                ))
-            }
-        }
+            .insert(pending.after_source.id.0.clone(), pending);
+        Ok(true)
     }
 
     async fn commit_managed_mutation(
@@ -1306,10 +1581,10 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                     "Managed credential mutation has no durable pending fact".into(),
                 ))
             })?;
-        if durable.phase == ManagedCredentialMutationPhase::Reclaiming {
-            if durable.operation_id == pending.operation_id
-                && durable.writer_token == pending.writer_token
-                && durable.writer_epoch == pending.writer_epoch
+        durable.validate()?;
+        if durable.material_fence.phase == CredentialMaterialMutationPhase::Reclaiming {
+            let expected_reclaiming = pending.with_material_reclaiming()?;
+            if durable == expected_reclaiming
                 && state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
                 && state.vault_credentials.get(&pending.after_credential.id)
                     == Some(&pending.after_credential)
@@ -1318,7 +1593,9 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
             }
             return Err(ManagedCredentialMutationError::RevisionConflict);
         }
-        if &durable != pending || pending.phase != ManagedCredentialMutationPhase::Ready {
+        if &durable != pending
+            || pending.material_fence.phase != CredentialMaterialMutationPhase::Ready
+        {
             return Err(ManagedCredentialMutationError::Store(
                 CredentialError::MutationConflict(
                     "Managed credential mutation is not ready or does not match its durable fact"
@@ -1432,8 +1709,9 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                 .entry(rollout.id.clone())
                 .or_insert(rollout);
         }
-        let mut reclaiming = pending.clone();
-        reclaiming.phase = ManagedCredentialMutationPhase::Reclaiming;
+        let reclaiming = pending
+            .with_material_reclaiming()
+            .map_err(ManagedCredentialMutationError::Store)?;
         state
             .managed_mutations
             .insert(pending.after_source.id.0.clone(), reclaiming.clone());
@@ -1454,26 +1732,31 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                     "Managed credential mutation has no durable pending fact".into(),
                 )
             })?;
-        if durable != pending || pending.phase != ManagedCredentialMutationPhase::Writing {
+        if durable != pending
+            || pending.material_fence.phase != CredentialMaterialMutationPhase::Writing
+        {
             return Err(CredentialError::MutationConflict(
                 "Managed credential ready transition does not match Writing".into(),
             ));
         }
-        durable.phase = ManagedCredentialMutationPhase::Ready;
-        Ok(durable.clone())
+        let ready = pending.with_material_ready()?;
+        *durable = ready.clone();
+        Ok(ready)
     }
 
     async fn pending_managed_mutations(
         &self,
     ) -> Result<Vec<PendingManagedCredentialMutation>, CredentialError> {
-        Ok(self
-            .state
+        self.state
             .lock()
             .expect("credential repo")
             .managed_mutations
-            .values()
-            .cloned()
-            .collect())
+            .iter()
+            .map(|(source_id, pending)| {
+                pending.validate_durable_key(source_id)?;
+                Ok(pending.clone())
+            })
+            .collect()
     }
 
     async fn claim_expired_managed_mutation(
@@ -1491,7 +1774,9 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
         let Some(durable) = state.managed_mutations.get_mut(&pending.after_source.id.0) else {
             return Ok(None);
         };
-        if durable != pending || durable.phase != ManagedCredentialMutationPhase::Writing {
+        if durable != pending
+            || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
+        {
             return Ok(None);
         }
         *durable = claimed.clone();
@@ -1520,44 +1805,48 @@ impl ManagedCredentialRepository for InMemoryCredentialRepo {
                     "Managed credential abort has no durable pending fact".into(),
                 )
             })?;
-        if durable == pending && pending.phase == ManagedCredentialMutationPhase::ReclaimingAbort {
+        if durable == pending
+            && pending.material_fence.phase == CredentialMaterialMutationPhase::ReclaimingAbort
+        {
             return Ok(durable.clone());
         }
         if durable != pending
             || !matches!(
-                pending.phase,
-                ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready
+                pending.material_fence.phase,
+                CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready
             )
         {
             return Err(CredentialError::MutationConflict(
                 "Managed credential abort does not match its durable pending fact".into(),
             ));
         }
-        durable.phase = ManagedCredentialMutationPhase::ReclaimingAbort;
-        Ok(durable.clone())
+        let reclaiming = pending.with_material_reclaiming_abort()?;
+        *durable = reclaiming.clone();
+        Ok(reclaiming)
     }
 
     async fn complete_managed_mutation(
         &self,
         pending: &PendingManagedCredentialMutation,
     ) -> Result<(), CredentialError> {
+        pending.validate().map_err(invalid_pending_mutation)?;
         let mut state = self.state.lock().expect("credential repo");
         let durable = state.managed_mutations.get(&pending.after_source.id.0);
         if durable.is_none() {
             return Ok(());
         }
-        let truth_matches_phase = match pending.phase {
-            ManagedCredentialMutationPhase::Reclaiming => {
+        let truth_matches_phase = match pending.material_fence.phase {
+            CredentialMaterialMutationPhase::Reclaiming => {
                 state.rows.get(&pending.after_source.id.0) == Some(&pending.after_source)
                     && state.vault_credentials.get(&pending.after_credential.id)
                         == Some(&pending.after_credential)
             }
-            ManagedCredentialMutationPhase::ReclaimingAbort => {
+            CredentialMaterialMutationPhase::ReclaimingAbort => {
                 state.rows.get(&pending.after_source.id.0) == pending.before_source.as_ref()
                     && state.vault_credentials.get(&pending.after_credential.id)
                         == pending.before_credential.as_ref()
             }
-            ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready => {
+            CredentialMaterialMutationPhase::Writing | CredentialMaterialMutationPhase::Ready => {
                 false
             }
         };

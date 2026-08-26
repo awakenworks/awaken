@@ -1,4 +1,4 @@
-use awaken_credential_contract::{CredentialDescriptor, CredentialMaterial};
+use awaken_credential_contract::{CredentialDescriptor, CredentialMaterial, CredentialRef};
 use awaken_credential_vault::{CredentialError, CredentialKind};
 
 use super::{CredentialMaterialInput, EnterCredentialRequest, validate_hosted_credential_identity};
@@ -18,6 +18,7 @@ impl EnterCredentialRequest {
         Ok(Self {
             workspace_id,
             idempotency_key: Some(idempotency_key),
+            replacement_of: None,
             kind: CredentialKind::Vault,
             provider_id: Some(provider_id),
             descriptor: None,
@@ -57,6 +58,7 @@ impl EnterCredentialRequest {
         Ok(Self {
             workspace_id,
             idempotency_key: Some(idempotency_key),
+            replacement_of: None,
             kind: CredentialKind::Vault,
             provider_id: None,
             descriptor: Some(descriptor),
@@ -65,6 +67,27 @@ impl EnterCredentialRequest {
             material,
             oauth_helper: None,
         })
+    }
+
+    /// Fence one exact predecessor while publishing this described request as
+    /// a distinct deterministic source. Relinking and predecessor retirement
+    /// remain separate exact commands owned by their consumer/application.
+    pub fn with_replacement_of(
+        mut self,
+        replacement_of: CredentialRef,
+    ) -> Result<Self, CredentialError> {
+        if self.descriptor.is_none()
+            || self.idempotency_key.is_none()
+            || replacement_of.id.trim().is_empty()
+            || replacement_of.revision == 0
+        {
+            return Err(CredentialError::InvalidSource(
+                "replacement_of requires a described idempotent request and an exact positive credential revision"
+                    .into(),
+            ));
+        }
+        self.replacement_of = Some(replacement_of);
+        Ok(self)
     }
 
     #[must_use]
@@ -114,16 +137,20 @@ mod tests {
     /// Hosted request cause/effect graph: C1 one validated descriptor owns the
     /// provider, material shape, target, and usage; C2 material matches that
     /// descriptor; C3 a legacy caller supplies only provider id; C4 material is
-    /// OAuth. Effects: E1 one described request with no provider_id; E2 shape
+    /// OAuth; C5 replacement_of is exact and used only with a described request.
+    /// Effects: E1 one described request with no provider_id; E2 shape
     /// drift is rejected before serialization; E3 the explicitly named compat
-    /// request remains descriptor-free; E4 OAuth cannot become stored material.
+    /// request remains descriptor-free; E4 OAuth cannot become stored material;
+    /// E5 replacement metadata cannot attach to the compatibility path.
     ///
-    /// | Rule | C1 | C2 | C3 | C4 | Effect |
-    /// |---|---|---|---|---|---|
-    /// | H1 | T | T | F | F | E1 |
-    /// | H2 | T | F | F | F | E2 |
-    /// | H3 | F | - | T | F | E3 |
-    /// | H4 | T | - | F | T | E4 |
+    /// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | H1 | T | T | F | F | F | E1 |
+    /// | H2 | T | F | F | F | F | E2 |
+    /// | H3 | F | - | T | F | F | E3 |
+    /// | H4 | T | - | F | T | F | E4 |
+    /// | H5 | T | T | F | F | T | E1 |
+    /// | H6 | F | - | T | F | T | E5 |
     #[test]
     fn hosted_constructor_keeps_described_and_compat_authorities_disjoint() {
         let target = CredentialTarget::new(
@@ -156,6 +183,21 @@ mod tests {
         assert!(described.provider_id.is_none(), "H1/E1");
         assert_eq!(described.descriptor.as_ref(), Some(&descriptor), "H1/E1");
 
+        let replacement = described
+            .with_replacement_of(CredentialRef {
+                id: "credential-old".into(),
+                revision: 3,
+            })
+            .expect("H5/E1");
+        assert_eq!(
+            replacement
+                .replacement_of
+                .as_ref()
+                .map(|reference| reference.revision),
+            Some(3),
+            "H5/E1"
+        );
+
         assert!(
             EnterCredentialRequest::described_hosted_vault(
                 "workspace-a".into(),
@@ -176,6 +218,15 @@ mod tests {
         .expect("H3/E3");
         assert_eq!(compat.provider_id(), Some("legacy-provider"), "H3/E3");
         assert!(compat.descriptor.is_none(), "H3/E3");
+        assert!(
+            compat
+                .with_replacement_of(CredentialRef {
+                    id: "credential-old".into(),
+                    revision: 1,
+                })
+                .is_err(),
+            "H6/E5"
+        );
 
         assert!(
             EnterCredentialRequest::described_hosted_vault(

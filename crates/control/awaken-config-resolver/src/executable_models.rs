@@ -315,6 +315,7 @@ mod tests {
         };
         let credential = CredentialSource {
             id: awaken_credential_contract::CredentialSourceId("credential".into()),
+            replacement_of: None,
             workspace_id: "workspace".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             descriptor: None,

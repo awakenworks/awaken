@@ -870,6 +870,234 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     assert_eq!(status, StatusCode::NOT_FOUND, "H4: {problem}");
 }
 
+/// Hosted replacement decision table. C1 the existing POST carries one exact
+/// `replacement_of`; C2 the request is described and has a stable idempotency
+/// key (therefore one deterministic new id); C3 predecessor is exact, stale,
+/// or foreign-Workspace; C4 the same request is replayed. Effects: E1 create a distinct
+/// secret-free version-1 receipt while old remains unchanged; E2 replay the
+/// same receipt; E3 stale predecessor conflicts with no third source; E4 a
+/// compatibility/provider-id body cannot use replacement metadata.
+/// E5 a foreign Workspace id is indistinguishable from an absent predecessor
+/// and creates no source.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | HR1 | T | T | exact | F | E1 |
+/// | HR2 | T | T | exact | T | E2 |
+/// | HR3 | T | T | stale | F | E3 |
+/// | HR4 | T | F | exact | F | E4 |
+/// | HR5 | T | T | foreign Workspace | F | E5 |
+#[tokio::test]
+async fn hosted_described_replacement_reuses_post_and_preserves_predecessor() {
+    let h = harness();
+    let descriptor = json!({
+        "provider": "github",
+        "material": {
+            "kind": "structured",
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": ["password", "username"]
+        },
+        "targets": [{
+            "target": {
+                "purpose": {"type": "repository_transport"},
+                "audience": "https://github.com/git"
+            },
+            "usage": {"type": "http_basic_auth"}
+        }]
+    });
+    let old_request = json!({
+        "workspace_id": "workspace-a",
+        "idempotency_key": "credential-resource:create:old",
+        "kind": "vault",
+        "descriptor": descriptor,
+        "material": {
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": {"username": "x-access-token", "password": "old-token"} // awaken-allow: secret -- inert fixture
+        }
+    });
+    let (status, old) = call(&h.app, "POST", "/v1/config/credentials", Some(old_request)).await;
+    assert_eq!(status, StatusCode::CREATED, "HR1 predecessor: {old}");
+
+    let replacement_request = json!({
+        "workspace_id": "workspace-a",
+        "idempotency_key": "credential-resource:replace:new",
+        "replacement_of": {
+            "id": old["id"],
+            "revision": old["version"]
+        },
+        "kind": "vault",
+        "descriptor": old["descriptor"],
+        "material": {
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": {"username": "x-access-token", "password": "new-token"} // awaken-allow: secret -- inert fixture
+        }
+    });
+    let (status, replacement) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(replacement_request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "HR1/E1: {replacement}");
+    assert_ne!(replacement["id"], old["id"], "HR1/E1");
+    assert_eq!(replacement["version"], 1, "HR1/E1");
+    assert_eq!(
+        replacement["replacement_of"],
+        json!({"id": old["id"], "revision": old["version"]}),
+        "HR1/E1 durable lineage"
+    );
+    assert!(!replacement.to_string().contains("new-token"), "HR1/E1");
+
+    let old_id = old["id"].as_str().expect("HR1 old id");
+    let (status, old_after) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/config/credentials/{old_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "HR1/E1: {old_after}");
+    assert_eq!(old_after, old, "HR1/E1");
+
+    let (status, replay) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(replacement_request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "HR2/E2: {replay}");
+    assert_eq!(replay, replacement, "HR2/E2");
+
+    let stale_request = json!({
+        "workspace_id": "workspace-a",
+        "idempotency_key": "credential-resource:replace:stale",
+        "replacement_of": {
+            "id": old["id"],
+            "revision": old["version"].as_u64().unwrap() + 1
+        },
+        "kind": "vault",
+        "descriptor": old["descriptor"],
+        "material": {
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": {"username": "x-access-token", "password": "stale-token"} // awaken-allow: secret -- inert fixture
+        }
+    });
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(stale_request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "HR3/E3: {problem}");
+    let (status, listed) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=workspace-a",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "HR3/E3: {listed}");
+    assert_eq!(listed.as_array().unwrap().len(), 2, "HR3/E3");
+
+    let compat_replacement = json!({
+        "workspace_id": "workspace-a",
+        "idempotency_key": "credential-resource:replace:compat",
+        "replacement_of": {"id": old["id"], "revision": old["version"]},
+        "kind": "vault",
+        "provider_id": "github",
+        "secret": "compat-token" // awaken-allow: secret -- inert fixture
+    });
+    let (status, problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(compat_replacement),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "HR4/E4: {problem}"
+    );
+
+    let foreign_request = json!({
+        "workspace_id": "workspace-b",
+        "idempotency_key": "credential-resource:create:foreign",
+        "kind": "vault",
+        "descriptor": old["descriptor"],
+        "material": {
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": {"username": "x-access-token", "password": "foreign-token"} // awaken-allow: secret -- inert fixture
+        }
+    });
+    let (status, foreign) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(foreign_request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "HR5 foreign setup: {foreign}");
+    let cross_workspace = json!({
+        "workspace_id": "workspace-a",
+        "idempotency_key": "credential-resource:replace:cross-workspace",
+        "replacement_of": {"id": foreign["id"], "revision": foreign["version"]},
+        "kind": "vault",
+        "descriptor": old["descriptor"],
+        "material": {
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": {"username": "x-access-token", "password": "cross-workspace-token"} // awaken-allow: secret -- inert fixture
+        }
+    });
+    let (cross_status, cross_problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(cross_workspace),
+    )
+    .await;
+    let (absent_status, absent_problem) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "workspace-a",
+            "idempotency_key": "credential-resource:replace:absent",
+            "replacement_of": {"id": "credential-absent", "revision": 1},
+            "kind": "vault",
+            "descriptor": old["descriptor"],
+            "material": {
+                "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                "fields": {"username": "x-access-token", "password": "absent-token"} // awaken-allow: secret -- inert fixture
+            }
+        })),
+    )
+    .await;
+    assert_eq!(
+        cross_status,
+        StatusCode::NOT_FOUND,
+        "HR5/E5: {cross_problem}"
+    );
+    assert_eq!(
+        absent_status,
+        StatusCode::NOT_FOUND,
+        "HR5/E5: {absent_problem}"
+    );
+    assert_eq!(cross_problem["type"], absent_problem["type"], "HR5/E5");
+    let (status, listed) = call(
+        &h.app,
+        "GET",
+        "/v1/config/credentials?workspace_id=workspace-a",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "HR5/E5: {listed}");
+    assert_eq!(listed.as_array().unwrap().len(), 2, "HR5/E5");
+}
+
 /// Hosted-list cause/effect graph: C1 the Workspace contains ordinary and hosted
 /// sources; C2 `hosted_only=true`. C1+C2 yields only operation-owned receipts;
 /// C1+!C2 preserves the existing complete management inventory.

@@ -20,6 +20,7 @@ use awaken_credential_vault::{
 fn source(id: &str, ws: &str) -> CredentialSource {
     CredentialSource {
         id: CredentialSourceId(id.into()),
+        replacement_of: None,
         workspace_id: ws.into(),
         kind: CredentialKind::Vault,
         descriptor: None,

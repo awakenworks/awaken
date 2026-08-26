@@ -12,18 +12,62 @@
 //! R3 C2|C3+C4+C5 -> E3; R4 C1|C2|C3+C6 -> E4. Shared helpers keep the
 //! behavior contract authoritative while concrete storage lives in this crate.
 
-use awaken_credential_contract::CredentialSourceId;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::{CredentialRef, CredentialSourceId};
+use awaken_credential_vault::catalog::{
+    ManagedCredentialAuth, ManagedCredentialLifecycle, ManagedVault, ManagedVaultCredential,
+    ManagedVaultRepo,
+};
 use awaken_credential_vault::repo::{
-    CredentialMutationIntent, CredentialRepo, InMemoryCredentialRepo, ensure_worker_local,
+    CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialRepo,
+    InMemoryCredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
+    PendingManagedCredentialMutation, ensure_worker_local, recover_credential_mutations,
+    recover_managed_credential_mutations,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,
-    CredentialSource, CredentialStatus, SecretRef, SelectionPolicy, WorkerLocalBinding,
+    CredentialSource, CredentialStatus, InMemorySecretStore, SecretRef, SecretStore,
+    SelectionPolicy, WorkerLocalBinding,
 };
+
+#[derive(Default)]
+struct DeleteCountingStore {
+    inner: InMemorySecretStore,
+    reads: AtomicUsize,
+    deletes: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SecretStore for DeleteCountingStore {
+    async fn put(
+        &self,
+        reference: &SecretRef,
+        secret: RedactedString,
+    ) -> Result<(), CredentialError> {
+        self.inner.put(reference, secret).await
+    }
+
+    async fn get(&self, reference: &SecretRef) -> Result<RedactedString, CredentialError> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.inner.get(reference).await
+    }
+
+    async fn delete(&self, reference: &SecretRef) -> Result<(), CredentialError> {
+        self.deletes.fetch_add(1, Ordering::SeqCst);
+        self.inner.delete(reference).await
+    }
+
+    async fn inventory(&self) -> Result<Vec<SecretRef>, CredentialError> {
+        self.inner.inventory().await
+    }
+}
 
 fn source(id: &str, ws: &str) -> CredentialSource {
     CredentialSource {
         id: CredentialSourceId(id.into()),
+        replacement_of: None,
         workspace_id: ws.into(),
         kind: CredentialKind::Vault,
         descriptor: None,
@@ -37,6 +81,18 @@ fn source(id: &str, ws: &str) -> CredentialSource {
         status: CredentialStatus::Active,
         version: 1,
     }
+}
+
+fn replacement_source(before: &CredentialSource, id: &str, material_ref: &str) -> CredentialSource {
+    let mut after = before.clone();
+    after.id = CredentialSourceId(id.into());
+    after.replacement_of = Some(CredentialRef {
+        id: before.id.0.clone(),
+        revision: u64::try_from(before.version).expect("positive predecessor revision"),
+    });
+    after.material_ref = Some(SecretRef(material_ref.into()));
+    after.version = 1;
+    after
 }
 
 fn pool(id: &str, ws: &str) -> CredentialPool {
@@ -66,6 +122,17 @@ async fn sources_round_trip_and_scope_by_workspace(repo: &dyn CredentialRepo) {
     assert_eq!(repo.list("ws").await.unwrap().len(), 2);
     assert_eq!(repo.list("other").await.unwrap().len(), 1);
     assert_eq!(repo.list("empty").await.unwrap().len(), 0);
+}
+
+/// Secret-free replacement provenance is part of the source row itself, so
+/// every adapter must round-trip it without a second lineage table.
+async fn replacement_lineage_round_trips(repo: &dyn CredentialRepo) {
+    let mut before = source("cred:lineage-old", "ws");
+    before.material_ref = Some(SecretRef("sec:lineage:old".into()));
+    let after = replacement_source(&before, "cred:lineage-new", "sec:lineage:new");
+    repo.put(before).await.unwrap();
+    repo.put(after.clone()).await.unwrap();
+    assert_eq!(repo.get(&after.id).await.unwrap(), after);
 }
 
 async fn pools_round_trip_and_scope_by_workspace(repo: &dyn CredentialRepo) {
@@ -202,49 +269,90 @@ async fn worker_local_registration_is_atomic_idempotent_and_secret_free(repo: &d
 }
 
 /// Cause/effect decision table for the mutation WAL:
-/// R1 first intent => begin returns the single-writer claim; R2 same pending
-/// intent => begin reports replay without a second claim; R3 current==before =>
-/// publish after while retaining WAL; R4 current==after => apply is idempotent;
-/// R5 completion => WAL is removed idempotently. Cleanup deliberately sits
-/// between R4 and R5, so a process crash cannot hide unreclaimed material.
+/// R0 forged Ready, epoch, or owner => reject with zero WAL; R1 first canonical
+/// intent => begin records the single-writer claim; R2 exact or
+/// logically identical fresh-attempt replay => no second claim or physical ref;
+/// R3 current==before and phase Ready => publish after while retaining
+/// Reclaiming WAL; R4 exact Reclaiming replay is idempotent; R5 completion =>
+/// WAL is removed idempotently. Cleanup sits between R4 and R5, so a process
+/// crash cannot hide unreclaimed material.
 async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn CredentialRepo) {
-    let source = source("cred:intent", "ws");
-    let intent = CredentialMutationIntent {
-        before: None,
-        after: source.clone(),
-    };
+    let mut source = source("cred:intent", "ws");
+    source.material_ref = Some(SecretRef("sec:intent:r1:primary".into()));
+    let intent = CredentialMutationIntent::prepare(None, source.clone()).unwrap();
+    let follower = CredentialMutationIntent::prepare(None, source).unwrap();
+
+    let mut forged_ready = intent.clone();
+    forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
+    assert!(
+        matches!(
+            repo.begin_mutation(forged_ready).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R0 forged Ready"
+    );
+    let mut forged_epoch = intent.clone();
+    forged_epoch.material_fence.writer_epoch = 2;
+    assert!(
+        matches!(
+            repo.begin_mutation(forged_epoch).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R0 forged epoch"
+    );
+    let mut forged_owner = intent.clone();
+    forged_owner.material_fence.writer_token = "forged-owner".into(); // awaken-allow: secret -- writer identity, not material
+    assert!(
+        matches!(
+            repo.begin_mutation(forged_owner).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "R0 forged owner"
+    );
+    assert!(repo.pending_mutations().await.unwrap().is_empty(), "R0");
 
     assert!(repo.begin_mutation(intent.clone()).await.unwrap(), "R1");
     assert!(!repo.begin_mutation(intent.clone()).await.unwrap(), "R2");
-    assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
+    assert_ne!(
+        intent.material_fence.attempt_id(),
+        follower.material_fence.attempt_id(),
+        "R2 exercises a fresh random physical attempt"
+    );
+    assert!(!repo.begin_mutation(follower).await.unwrap(), "R2");
+    assert_eq!(
+        repo.pending_mutations().await.unwrap(),
+        vec![intent.clone()]
+    );
     assert!(matches!(
-        repo.get(&source.id).await,
+        repo.get(&intent.after.id).await,
         Err(CredentialError::SourceNotFound(_))
     ));
 
-    repo.apply_mutation(&intent).await.unwrap();
-    repo.apply_mutation(&intent).await.unwrap();
-    assert_eq!(repo.get(&source.id).await.unwrap(), source);
+    let ready = repo.mark_mutation_ready(&intent).await.unwrap();
+    let reclaiming = repo.apply_mutation(&ready).await.unwrap();
+    assert_eq!(repo.apply_mutation(&ready).await.unwrap(), reclaiming, "R4");
+    assert_eq!(repo.get(&ready.after.id).await.unwrap(), ready.after);
     assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
 
-    repo.complete_mutation(&source.id).await.unwrap();
-    repo.complete_mutation(&source.id).await.unwrap();
-    assert_eq!(repo.get(&source.id).await.unwrap(), source);
+    repo.complete_mutation(&reclaiming).await.unwrap();
+    repo.complete_mutation(&reclaiming).await.unwrap();
+    assert_eq!(
+        repo.get(&reclaiming.after.id).await.unwrap(),
+        reclaiming.after
+    );
     assert!(repo.pending_mutations().await.unwrap().is_empty());
 }
 
-/// Cause/effect rule R5: completing a mutation before publication removes only
-/// its WAL record; no source row is synthesized, and repeating completion is safe.
+/// Cause/effect rule R5A: exact unpublished truth must first become durable
+/// ReclaimingAbort; only that terminal phase may remove the WAL, and repeating
+/// completion is safe.
 async fn completing_unpublished_mutation_is_idempotent(repo: &dyn CredentialRepo) {
     let source = source("cred:abort", "ws");
-    repo.begin_mutation(CredentialMutationIntent {
-        before: None,
-        after: source.clone(),
-    })
-    .await
-    .unwrap();
-    repo.complete_mutation(&source.id).await.unwrap();
-    repo.complete_mutation(&source.id).await.unwrap();
+    let intent = CredentialMutationIntent::prepare(None, source.clone()).unwrap();
+    repo.begin_mutation(intent.clone()).await.unwrap();
+    let abort = repo.abort_mutation(&intent).await.unwrap();
+    repo.complete_mutation(&abort).await.unwrap();
+    repo.complete_mutation(&abort).await.unwrap();
     assert!(repo.pending_mutations().await.unwrap().is_empty());
     assert!(matches!(
         repo.get(&source.id).await,
@@ -266,39 +374,347 @@ async fn rotation_publication_is_revision_cas_and_idempotent(repo: &dyn Credenti
     let mut after = before.clone();
     after.version = 2;
     after.material_ref = Some(SecretRef("sec:rotation:r2:primary".into()));
-    let exact = CredentialMutationIntent {
-        before: Some(before.clone()),
-        after: after.clone(),
-    };
-    repo.begin_mutation(exact.clone()).await.unwrap();
-    repo.apply_mutation(&exact).await.unwrap();
-    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R6");
+    let exact = CredentialMutationIntent::prepare(Some(before.clone()), after).unwrap();
+    assert!(
+        repo.begin_mutation(exact.clone()).await.unwrap(),
+        "R6 owner"
+    );
+    assert!(
+        !repo.begin_mutation(exact.clone()).await.unwrap(),
+        "R6 pending replay"
+    );
+    let ready = repo.mark_mutation_ready(&exact).await.unwrap();
+    let reclaiming = repo.apply_mutation(&ready).await.unwrap();
+    assert_eq!(repo.get(&ready.after.id).await.unwrap(), ready.after, "R6");
     assert_eq!(
         repo.pending_mutations().await.unwrap(),
-        vec![exact.clone()],
+        vec![reclaiming.clone()],
         "R6"
     );
-    repo.apply_mutation(&exact).await.unwrap();
-    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R7");
-    repo.complete_mutation(&after.id).await.unwrap();
+    assert_eq!(repo.apply_mutation(&ready).await.unwrap(), reclaiming, "R7");
+    repo.complete_mutation(&reclaiming).await.unwrap();
 
-    let mut stale_after = before.clone();
+    let mut stale_before = source("cred:rotation-stale", "ws");
+    stale_before.material_ref = Some(SecretRef("sec:rotation:stale:r1:primary".into()));
+    repo.put(stale_before.clone()).await.unwrap();
+    let mut stale_after = stale_before.clone();
     stale_after.version = 2;
     stale_after.material_ref = Some(SecretRef("sec:rotation:stale:primary".into()));
-    let stale = CredentialMutationIntent {
-        before: Some(before),
-        after: stale_after,
-    };
+    let stale = CredentialMutationIntent::prepare(Some(stale_before.clone()), stale_after).unwrap();
     repo.begin_mutation(stale.clone()).await.unwrap();
+    let stale_ready = repo.mark_mutation_ready(&stale).await.unwrap();
+    let mut winner = stale_before;
+    winner.version = 3;
+    repo.put(winner.clone()).await.unwrap();
     assert!(
         matches!(
-            repo.apply_mutation(&stale).await,
+            repo.apply_mutation(&stale_ready).await,
             Err(CredentialError::MutationConflict(_))
         ),
         "R8"
     );
-    assert_eq!(repo.get(&after.id).await.unwrap(), after, "R8");
-    repo.complete_mutation(&after.id).await.unwrap();
+    assert_eq!(repo.get(&winner.id).await.unwrap(), winner, "R8");
+}
+
+/// Distinct replacement cause/effect table. C1 the old full row equals the
+/// intent's exact `before`; C2 the deterministic new id is absent, exact, or
+/// foreign; C3 the old row races to a different revision; C4 old/new material
+/// ownership is disjoint and the authority projection is unchanged. Effects:
+/// E1 atomically insert the new version-1 row while preserving old; E2 exact
+/// replay; E3 conflict without inserting/overwriting either row; E4 malformed
+/// cross-id intent is rejected before its WAL claim. Every backend runs the
+/// same rules so the repository port, not an adapter, owns these semantics.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | X1 | T | absent | F | T | E1 |
+/// | X2 | - | exact | - | T | E2 |
+/// | X3 | F | absent | T | T | E3 |
+/// | X4 | T | foreign | F | T | E3 |
+/// | X5 | T | absent | F | F | E4 |
+async fn distinct_replacement_is_old_row_cas_and_idempotent(repo: &dyn CredentialRepo) {
+    let mut old = source("cred:replacement-old", "ws");
+    old.material_ref = Some(SecretRef("sec:replacement:old:primary".into()));
+    repo.put(old.clone()).await.unwrap();
+    let replacement =
+        replacement_source(&old, "cred:replacement-new", "sec:replacement:new:primary");
+    let exact = CredentialMutationIntent::prepare(Some(old.clone()), replacement).unwrap();
+    repo.begin_mutation(exact.clone()).await.unwrap();
+    let exact_ready = repo.mark_mutation_ready(&exact).await.unwrap();
+    let exact_reclaiming = repo.apply_mutation(&exact_ready).await.unwrap();
+    assert_eq!(repo.get(&old.id).await.unwrap(), old, "X1/E1");
+    assert_eq!(
+        repo.get(&exact.after.id).await.unwrap(),
+        exact.after,
+        "X1/E1"
+    );
+    repo.apply_mutation(&exact_ready).await.unwrap();
+    assert_eq!(
+        repo.get(&exact.after.id).await.unwrap(),
+        exact.after,
+        "X2/E2"
+    );
+    repo.complete_mutation(&exact_reclaiming).await.unwrap();
+
+    let mut stale_old = source("cred:replacement-stale-old", "ws");
+    stale_old.material_ref = Some(SecretRef("sec:replacement:stale-old:primary".into()));
+    repo.put(stale_old.clone()).await.unwrap();
+    let stale_new = replacement_source(
+        &stale_old,
+        "cred:replacement-stale-new",
+        "sec:replacement:stale-new:primary",
+    );
+    let stale =
+        CredentialMutationIntent::prepare(Some(stale_old.clone()), stale_new.clone()).unwrap();
+    repo.begin_mutation(stale.clone()).await.unwrap();
+    let stale_ready = repo.mark_mutation_ready(&stale).await.unwrap();
+    let mut winner = stale_old.clone();
+    winner.version = 2;
+    repo.put(winner.clone()).await.unwrap();
+    assert!(
+        matches!(
+            repo.apply_mutation(&stale_ready).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "X3/E3"
+    );
+    assert_eq!(repo.get(&stale_old.id).await.unwrap(), winner, "X3/E3");
+    assert!(matches!(
+        repo.get(&stale_new.id).await,
+        Err(CredentialError::SourceNotFound(_))
+    ));
+    let stale_abort = repo.abort_mutation(&stale_ready).await.unwrap();
+    repo.complete_mutation(&stale_abort).await.unwrap();
+
+    let mut occupied_old = source("cred:replacement-occupied-old", "ws");
+    occupied_old.material_ref = Some(SecretRef("sec:replacement:occupied-old:primary".into()));
+    repo.put(occupied_old.clone()).await.unwrap();
+    let occupied_new = replacement_source(
+        &occupied_old,
+        "cred:replacement-occupied-new",
+        "sec:replacement:occupied-new:primary",
+    );
+    let occupied =
+        CredentialMutationIntent::prepare(Some(occupied_old.clone()), occupied_new.clone())
+            .unwrap();
+    repo.begin_mutation(occupied.clone()).await.unwrap();
+    let occupied_ready = repo.mark_mutation_ready(&occupied).await.unwrap();
+    let mut foreign = occupied_new.clone();
+    foreign.version = 2;
+    repo.put(foreign.clone()).await.unwrap();
+    assert!(
+        matches!(
+            repo.apply_mutation(&occupied_ready).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "X4/E3"
+    );
+    assert_eq!(
+        repo.get(&occupied_old.id).await.unwrap(),
+        occupied_old,
+        "X4/E3"
+    );
+    assert_eq!(repo.get(&occupied_new.id).await.unwrap(), foreign, "X4/E3");
+    assert!(matches!(
+        repo.abort_mutation(&occupied_ready).await,
+        Err(CredentialError::MutationConflict(_))
+    ));
+
+    let mut invalid_after = replacement_source(
+        &old,
+        "cred:replacement-invalid-new",
+        "sec:replacement:invalid-new:primary",
+    );
+    invalid_after.workspace_id = "other-workspace".into();
+    assert!(
+        matches!(
+            CredentialMutationIntent::prepare(Some(old), invalid_after),
+            Err(CredentialError::InvalidSource(_))
+        ),
+        "X5/E4"
+    );
+}
+
+/// Cross-id recovery decision table. C1 the replacement row committed before
+/// the crash; C2 its material was sealed; C3 the predecessor remains pinned.
+/// Effects: E1 an unpublished replacement loses only its own material; E2 a
+/// published replacement keeps both rows and both generations of material;
+/// E3 recovery completes the one existing WAL idempotently. These rules run
+/// against InMemory, SQLite, and Postgres repositories with the same Vault
+/// reconciler and SecretStore port.
+///
+/// | Rule | C1 | C2 | C3 | Effect |
+/// |---|---|---|---|---|
+/// | XR1 | F | T | T | E1+E3 |
+/// | XR2 | T | T | T | E2+E3 |
+/// | XR3 | foreign same ref | T | T | zero delete, retain WAL/bytes |
+async fn distinct_replacement_recovery_is_directional(repo: &dyn CredentialRepo) {
+    let store = InMemorySecretStore::new();
+
+    let mut aborted_old = source("cred:recovery-aborted-old", "ws");
+    aborted_old.material_ref = Some(SecretRef("sec:recovery:aborted-old:primary".into()));
+    repo.put(aborted_old.clone()).await.unwrap();
+    store
+        .put(
+            aborted_old.material_ref.as_ref().unwrap(),
+            RedactedString::new("aborted-old-material"),
+        )
+        .await
+        .unwrap();
+    let aborted_new = replacement_source(
+        &aborted_old,
+        "cred:recovery-aborted-new",
+        "sec:recovery:aborted-new:primary",
+    );
+    let aborted =
+        CredentialMutationIntent::prepare(Some(aborted_old.clone()), aborted_new.clone()).unwrap();
+    repo.begin_mutation(aborted.clone()).await.unwrap();
+    store
+        .put(
+            aborted.after.material_ref.as_ref().unwrap(),
+            RedactedString::new("aborted-new-material"),
+        )
+        .await
+        .unwrap();
+    let claim_now = aborted.material_fence.writer_lease_expires_at_unix_ms + 1;
+    let claimed = repo
+        .claim_expired_mutation(&aborted, claim_now, claim_now + 120_000)
+        .await
+        .unwrap()
+        .expect("XR1 expired Writing claim");
+    repo.abort_mutation(&claimed).await.unwrap();
+    assert_eq!(
+        recover_credential_mutations(&store, repo).await.unwrap(),
+        1,
+        "XR1"
+    );
+    assert_eq!(
+        repo.get(&aborted_old.id).await.unwrap(),
+        aborted_old,
+        "XR1/E1"
+    );
+    assert!(
+        store
+            .get(aborted_old.material_ref.as_ref().unwrap())
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .get(aborted.after.material_ref.as_ref().unwrap())
+            .await
+            .is_err()
+    );
+    assert!(matches!(
+        repo.get(&aborted_new.id).await,
+        Err(CredentialError::SourceNotFound(_))
+    ));
+
+    let mut committed_old = source("cred:recovery-committed-old", "ws");
+    committed_old.material_ref = Some(SecretRef("sec:recovery:committed-old:primary".into()));
+    repo.put(committed_old.clone()).await.unwrap();
+    store
+        .put(
+            committed_old.material_ref.as_ref().unwrap(),
+            RedactedString::new("committed-old-material"),
+        )
+        .await
+        .unwrap();
+    let committed_new = replacement_source(
+        &committed_old,
+        "cred:recovery-committed-new",
+        "sec:recovery:committed-new:primary",
+    );
+    let committed =
+        CredentialMutationIntent::prepare(Some(committed_old.clone()), committed_new.clone())
+            .unwrap();
+    repo.begin_mutation(committed.clone()).await.unwrap();
+    store
+        .put(
+            committed.after.material_ref.as_ref().unwrap(),
+            RedactedString::new("committed-new-material"),
+        )
+        .await
+        .unwrap();
+    let committed_ready = repo.mark_mutation_ready(&committed).await.unwrap();
+    repo.apply_mutation(&committed_ready).await.unwrap();
+    assert_eq!(
+        recover_credential_mutations(&store, repo).await.unwrap(),
+        1,
+        "XR2"
+    );
+    assert_eq!(
+        repo.get(&committed_old.id).await.unwrap(),
+        committed_old,
+        "XR2/E2"
+    );
+    assert_eq!(
+        repo.get(&committed.after.id).await.unwrap(),
+        committed.after,
+        "XR2/E2"
+    );
+    assert!(
+        store
+            .get(committed_old.material_ref.as_ref().unwrap())
+            .await
+            .is_ok()
+    );
+    assert!(
+        store
+            .get(committed.after.material_ref.as_ref().unwrap())
+            .await
+            .is_ok()
+    );
+    assert!(
+        repo.pending_mutations().await.unwrap().is_empty(),
+        "XR1/XR2/E3"
+    );
+
+    let guarded = DeleteCountingStore::default();
+    let mut foreign_old = source("cred:recovery-foreign-old", "ws");
+    foreign_old.material_ref = Some(SecretRef("sec:recovery:foreign-old:primary".into()));
+    repo.put(foreign_old.clone()).await.unwrap();
+    guarded
+        .put(
+            foreign_old.material_ref.as_ref().unwrap(),
+            RedactedString::new("foreign-old-material"),
+        )
+        .await
+        .unwrap();
+    let foreign_after = replacement_source(
+        &foreign_old,
+        "cred:recovery-foreign-new",
+        "sec:recovery:foreign-new:primary",
+    );
+    let foreign_intent =
+        CredentialMutationIntent::prepare(Some(foreign_old), foreign_after).unwrap();
+    assert!(repo.begin_mutation(foreign_intent.clone()).await.unwrap());
+    let candidate_ref = foreign_intent.after.material_ref.clone().unwrap();
+    guarded
+        .put(&candidate_ref, RedactedString::new("candidate-material"))
+        .await
+        .unwrap();
+    let foreign_ready = repo.mark_mutation_ready(&foreign_intent).await.unwrap();
+    let mut foreign_row = foreign_ready.after.clone();
+    foreign_row.replacement_of = None;
+    repo.put(foreign_row.clone()).await.unwrap();
+
+    assert!(matches!(
+        recover_credential_mutations(&guarded, repo).await,
+        Err(CredentialError::MutationConflict(_))
+    ));
+    assert_eq!(guarded.deletes.load(Ordering::SeqCst), 0, "XR3");
+    assert_eq!(repo.get(&foreign_row.id).await.unwrap(), foreign_row, "XR3");
+    assert_eq!(
+        guarded.get(&candidate_ref).await.unwrap().expose_secret(),
+        "candidate-material",
+        "XR3"
+    );
+    assert_eq!(
+        repo.pending_mutations().await.unwrap(),
+        vec![foreign_ready],
+        "XR3"
+    );
 }
 
 // CONTRACT: `CredentialRepo::get` is a deliberate unscoped by-id PRIMITIVE — it is
@@ -323,9 +739,169 @@ async fn get_is_an_unscoped_by_id_primitive(repo: &dyn CredentialRepo) {
     assert_eq!(cross.workspace_id, "ws-owner");
 }
 
+/// Managed begin/phase cause-effect table shared by all three adapters. C1 the
+/// fresh fence is canonical or forged; C2 no WAL or one logically identical WAL
+/// already exists; C3 the caller is the durable physical owner. Effects: M1
+/// forged Ready/epoch/owner/replacement lineage rejects with zero WAL; M2 first begin owns exactly
+/// one attempt; M3 a fresh random follower attaches as non-owner and creates no
+/// second WAL/ref; M4 only the exact owner may mark Ready, publish the pair, and
+/// complete Reclaiming; M5 a caller whose before-material projection differs
+/// from the exact durable Reclaiming envelope is rejected and cannot drive
+/// cleanup. Rules M1 !C1=>E1; M2 C1+no WAL=>E2; M3 C1+same logical WAL=>E3;
+/// M4 C3=>E4; M5 !exact-envelope=>conflict and durable WAL retained.
+async fn managed_material_mutation_begin_and_phases_conform(
+    repo: &dyn ManagedCredentialRepository,
+) {
+    let vault = ManagedVault {
+        id: "vault-begin-owner".into(),
+        workspace_id: "ws".into(),
+        display_name: "vault-begin-owner".into(),
+        metadata: Default::default(),
+        archived_at: None,
+        deletion: None,
+        revision: 1,
+    };
+    repo.insert_vault("ws", vault.clone()).await.unwrap();
+    let mut source = source("cred:managed-begin-owner", "ws");
+    source.material_ref = Some(SecretRef("sec:managed-begin-owner:r1:primary".into()));
+    let child = ManagedVaultCredential {
+        id: "child-begin-owner".into(),
+        vault_id: vault.id,
+        workspace_id: "ws".into(),
+        source_id: source.id.clone(),
+        auth: ManagedCredentialAuth::StaticBearer {
+            mcp_server_url: "https://mcp.example.test".into(),
+        },
+        metadata: Default::default(),
+        display_name: None,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    let owner = PendingManagedCredentialMutation::create(source.clone(), child.clone()).unwrap();
+    let follower = PendingManagedCredentialMutation::create(source, child).unwrap();
+
+    let mut forged_ready = owner.clone();
+    forged_ready.material_fence.phase = CredentialMaterialMutationPhase::Ready;
+    assert!(
+        matches!(
+            repo.begin_managed_mutation(forged_ready).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "M1 forged Ready"
+    );
+    let mut forged_epoch = owner.clone();
+    forged_epoch.material_fence.writer_epoch = 2;
+    assert!(
+        matches!(
+            repo.begin_managed_mutation(forged_epoch).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "M1 forged epoch"
+    );
+    let mut forged_owner = owner.clone();
+    forged_owner.material_fence.writer_token = "forged-owner".into(); // awaken-allow: secret -- writer identity, not material
+    assert!(
+        matches!(
+            repo.begin_managed_mutation(forged_owner).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "M1 forged owner"
+    );
+    let mut forged_lineage = owner.clone();
+    forged_lineage.after_source.replacement_of = Some(CredentialRef {
+        id: "predecessor-not-fenced-by-managed-create".into(),
+        revision: 1,
+    });
+    assert!(
+        matches!(
+            repo.begin_managed_mutation(forged_lineage).await,
+            Err(CredentialError::MutationConflict(_))
+        ),
+        "M1 forged replacement lineage"
+    );
+    assert!(
+        repo.pending_managed_mutations().await.unwrap().is_empty(),
+        "M1"
+    );
+
+    assert!(
+        repo.begin_managed_mutation(owner.clone()).await.unwrap(),
+        "M2"
+    );
+    assert_ne!(
+        owner.material_fence.attempt_id(),
+        follower.material_fence.attempt_id(),
+        "M3 exercises a fresh random physical attempt"
+    );
+    assert!(!repo.begin_managed_mutation(follower).await.unwrap(), "M3");
+    assert_eq!(
+        repo.pending_managed_mutations().await.unwrap(),
+        vec![owner.clone()],
+        "M3"
+    );
+
+    let ready = repo.mark_managed_mutation_ready(&owner).await.unwrap();
+    let reclaiming = repo.commit_managed_mutation(&ready).await.unwrap();
+    assert_eq!(
+        reclaiming.material_fence.phase,
+        CredentialMaterialMutationPhase::Reclaiming,
+        "M4"
+    );
+    repo.complete_managed_mutation(&reclaiming).await.unwrap();
+    assert!(
+        repo.pending_managed_mutations().await.unwrap().is_empty(),
+        "M4"
+    );
+
+    let before_source = repo.get(&owner.after_source.id).await.unwrap();
+    let before_child = repo
+        .get_vault_credential("ws", &owner.after_credential.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let after_source = before_source.clone();
+    let mut after_child = before_child.clone();
+    after_child.revision += 1;
+    after_child
+        .metadata
+        .insert("generation".into(), "two".into());
+    let update = PendingManagedCredentialMutation::change(
+        "managed-update:exact-reclaiming-envelope".into(),
+        ManagedCredentialOperation::Update,
+        before_source,
+        after_source,
+        before_child,
+        after_child,
+        false,
+    )
+    .unwrap();
+    assert!(repo.begin_managed_mutation(update.clone()).await.unwrap());
+    let update_reclaiming = repo.commit_managed_mutation(&update).await.unwrap();
+    let mut forged_update = update.clone();
+    forged_update
+        .before_source
+        .as_mut()
+        .unwrap()
+        .auxiliary_material_refs
+        .insert("foreign".into(), SecretRef("sec:foreign".into()));
+    assert!(
+        repo.commit_managed_mutation(&forged_update).await.is_err(),
+        "M5"
+    );
+    assert_eq!(
+        repo.pending_managed_mutations().await.unwrap(),
+        vec![update_reclaiming.clone()],
+        "M5"
+    );
+    repo.complete_managed_mutation(&update_reclaiming)
+        .await
+        .unwrap();
+}
+
 /// Run every suite, each on a fresh repo from `make`.
 async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     sources_round_trip_and_scope_by_workspace(&*make()).await;
+    replacement_lineage_round_trips(&*make()).await;
     pools_round_trip_and_scope_by_workspace(&*make()).await;
     missing_rows_are_not_found(&*make()).await;
     put_is_upsert(&*make()).await;
@@ -333,12 +909,15 @@ async fn run_all(make: impl Fn() -> Box<dyn CredentialRepo>) {
     mutation_wal_publish_and_completion_are_idempotent(&*make()).await;
     completing_unpublished_mutation_is_idempotent(&*make()).await;
     rotation_publication_is_revision_cas_and_idempotent(&*make()).await;
+    distinct_replacement_is_old_row_cas_and_idempotent(&*make()).await;
+    distinct_replacement_recovery_is_directional(&*make()).await;
     get_is_an_unscoped_by_id_primitive(&*make()).await;
 }
 
 #[tokio::test]
 async fn in_memory_repo_conforms() {
     run_all(|| Box::new(InMemoryCredentialRepo::new())).await;
+    managed_material_mutation_begin_and_phases_conform(&InMemoryCredentialRepo::new()).await;
 }
 
 #[cfg(feature = "sqlite")]
@@ -346,6 +925,94 @@ async fn in_memory_repo_conforms() {
 async fn sqlite_repo_conforms() {
     use awaken_credential_store::sqlite::SqliteCredentialRepo;
     run_all(|| Box::new(SqliteCredentialRepo::open_in_memory().unwrap())).await;
+    managed_material_mutation_begin_and_phases_conform(
+        &SqliteCredentialRepo::open_in_memory().unwrap(),
+    )
+    .await;
+}
+
+/// Durable-key cause/effect table for the persistent recovery scans. C1 a
+/// decoded Ready source or Managed envelope is internally valid; C2 its SQL
+/// `source_id` differs from the envelope source id. C1+C2 => one batch storage
+/// error, zero SecretStore read/delete, and both repairable rows retained.
+#[cfg(feature = "sqlite")]
+#[tokio::test]
+async fn sqlite_recovery_scans_reject_mismatched_durable_keys_before_secret_io() {
+    use awaken_credential_store::sqlite::SqliteCredentialRepo;
+    use rusqlite::{Connection, params};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("credential-key-fence.db");
+    let path = path.to_str().unwrap();
+    let repo = SqliteCredentialRepo::open(path).unwrap();
+
+    let mut source_after = source("cred:sqlite:key-envelope", "ws");
+    source_after.env_key = None;
+    source_after.material_ref = Some(SecretRef("sec:sqlite:key-envelope".into()));
+    let source_ready = CredentialMutationIntent::prepare(None, source_after)
+        .unwrap()
+        .with_material_ready()
+        .unwrap();
+
+    let mut managed_source = source("cred:sqlite:managed-key-envelope", "ws");
+    managed_source.env_key = None;
+    managed_source.material_ref = Some(SecretRef("sec:sqlite:managed-key-envelope".into()));
+    let managed_child = ManagedVaultCredential {
+        id: "child:sqlite:managed-key-envelope".into(),
+        vault_id: "vault:sqlite:managed-key-envelope".into(),
+        workspace_id: "ws".into(),
+        source_id: managed_source.id.clone(),
+        auth: ManagedCredentialAuth::StaticBearer {
+            mcp_server_url: "https://mcp.example.test".into(),
+        },
+        metadata: Default::default(),
+        display_name: None,
+        revision: 1,
+        lifecycle: ManagedCredentialLifecycle::Active,
+    };
+    let managed_ready = PendingManagedCredentialMutation::create(managed_source, managed_child)
+        .unwrap()
+        .with_material_ready()
+        .unwrap();
+
+    let connection = Connection::open(path).unwrap();
+    connection
+        .execute(
+            "INSERT INTO credential_creation_intent (source_id, data) VALUES (?1, ?2)",
+            params![
+                "wrong-source-row-key",
+                serde_json::to_string(&source_ready).unwrap()
+            ],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES (?1, ?2)",
+            params![
+                "wrong-managed-row-key",
+                serde_json::to_string(&managed_ready).unwrap()
+            ],
+        )
+        .unwrap();
+
+    let store = DeleteCountingStore::default();
+    assert!(recover_credential_mutations(&store, &repo).await.is_err());
+    assert!(
+        recover_managed_credential_mutations(&store, &repo)
+            .await
+            .is_err()
+    );
+    assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+    let retained: i64 = connection
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM credential_creation_intent) + \
+             (SELECT COUNT(*) FROM credential_managed_credential_mutation)",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(retained, 2);
 }
 
 /// Live Postgres conformance: the same suites as the other backends, each on a
@@ -355,14 +1022,7 @@ async fn sqlite_repo_conforms() {
 mod postgres {
     use super::*;
     use awaken_credential_store::postgres::PostgresCredentialRepo;
-    use awaken_credential_vault::catalog::{
-        ManagedCredentialAuth, ManagedCredentialLifecycle, ManagedCredentialMutationError,
-        ManagedVault, ManagedVaultCredential, ManagedVaultRepo,
-    };
-    use awaken_credential_vault::repo::{
-        ManagedCredentialMutationPhase, ManagedCredentialRepository,
-        PendingManagedCredentialMutation,
-    };
+    use awaken_credential_vault::catalog::ManagedCredentialMutationError;
     use sqlx::Executor;
     use sqlx::postgres::{PgPool, PgPoolOptions};
     use std::collections::BTreeMap;
@@ -416,6 +1076,7 @@ mod postgres {
     fn managed_source(id: &str, workspace_id: &str) -> CredentialSource {
         CredentialSource {
             id: CredentialSourceId(id.into()),
+            replacement_of: None,
             workspace_id: workspace_id.into(),
             kind: CredentialKind::Vault,
             descriptor: None,
@@ -470,7 +1131,8 @@ mod postgres {
         child: ManagedVaultCredential,
     ) -> PendingManagedCredentialMutation {
         let writing = PendingManagedCredentialMutation::create(source, child).unwrap();
-        repo.begin_managed_mutation(writing.clone()).await.unwrap();
+        assert!(repo.begin_managed_mutation(writing.clone()).await.unwrap());
+        assert!(!repo.begin_managed_mutation(writing.clone()).await.unwrap());
         repo.mark_managed_mutation_ready(&writing).await.unwrap()
     }
 
@@ -498,6 +1160,7 @@ mod postgres {
             return;
         };
         sources_round_trip_and_scope_by_workspace(&r).await;
+        replacement_lineage_round_trips(&repo("t_cred_lineage").await.unwrap()).await;
         pools_round_trip_and_scope_by_workspace(&repo("t_cred_pools").await.unwrap()).await;
         missing_rows_are_not_found(&repo("t_cred_missing").await.unwrap()).await;
         put_is_upsert(&repo("t_cred_upsert").await.unwrap()).await;
@@ -511,7 +1174,281 @@ mod postgres {
             &repo("t_cred_rotation_cas").await.unwrap(),
         )
         .await;
+        distinct_replacement_is_old_row_cas_and_idempotent(
+            &repo("t_cred_replacement_cas").await.unwrap(),
+        )
+        .await;
+        distinct_replacement_recovery_is_directional(
+            &repo("t_cred_replacement_recovery").await.unwrap(),
+        )
+        .await;
+        managed_material_mutation_begin_and_phases_conform(
+            &repo("t_cred_managed_begin_phases").await.unwrap(),
+        )
+        .await;
         get_is_an_unscoped_by_id_primitive(&repo("t_cred_xtenant").await.unwrap()).await;
+    }
+
+    /// Same durable-key rule as the SQLite cause/effect test, executed against
+    /// PostgreSQL JSON rows: valid Ready payload + foreign SQL key => batch
+    /// error, zero SecretStore I/O, both rows retained.
+    #[tokio::test]
+    async fn postgres_recovery_scans_reject_mismatched_durable_keys_before_secret_io() {
+        use sqlx::types::Json;
+
+        const SCHEMA: &str = "t_cred_recovery_key_fence";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let mut source_after = source("cred:pg:key-envelope", "ws");
+        source_after.env_key = None;
+        source_after.material_ref = Some(SecretRef("sec:pg:key-envelope".into()));
+        let source_ready = CredentialMutationIntent::prepare(None, source_after)
+            .unwrap()
+            .with_material_ready()
+            .unwrap();
+        let mut managed_source = source("cred:pg:managed-key-envelope", "ws");
+        managed_source.env_key = None;
+        managed_source.material_ref = Some(SecretRef("sec:pg:managed-key-envelope".into()));
+        let managed_child = managed_child(
+            "child:pg:managed-key-envelope",
+            "vault:pg:managed-key-envelope",
+            "ws",
+            managed_source.id.clone(),
+        );
+        let managed_ready = PendingManagedCredentialMutation::create(managed_source, managed_child)
+            .unwrap()
+            .with_material_ready()
+            .unwrap();
+
+        sqlx::query("INSERT INTO credential_creation_intent (source_id, data) VALUES ($1, $2)")
+            .bind("wrong-source-row-key")
+            .bind(Json(&source_ready))
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_mutation (source_id, data) VALUES ($1, $2)",
+        )
+        .bind("wrong-managed-row-key")
+        .bind(Json(&managed_ready))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = DeleteCountingStore::default();
+        assert!(recover_credential_mutations(&store, &repo).await.is_err());
+        assert!(
+            recover_managed_credential_mutations(&store, &repo)
+                .await
+                .is_err()
+        );
+        assert_eq!(store.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(store.deletes.load(Ordering::SeqCst), 0);
+        let retained = sqlx::query_scalar::<_, i64>(
+            "SELECT (SELECT COUNT(*) FROM credential_creation_intent) + \
+             (SELECT COUNT(*) FROM credential_managed_credential_mutation)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, 2);
+    }
+
+    /// PostgreSQL recovery decode cause/effect table. C1 each source and
+    /// Managed table contains one healthy envelope plus one valid-JSON row that
+    /// cannot decode as the current envelope. E1 each scan fails as a batch
+    /// before SecretStore I/O, and E2 all four rows remain durable for operator
+    /// repair. This is the PostgreSQL counterpart of the SQLite batch boundary.
+    #[tokio::test]
+    async fn postgres_undecodable_recovery_row_blocks_each_batch_before_secret_io() {
+        use sqlx::types::Json;
+
+        const SCHEMA: &str = "t_cred_recovery_decode_fence";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = PostgresCredentialRepo::with_pool(pool.clone())
+            .await
+            .expect("store");
+        let mut source_after = source("cred:pg:decode-healthy", "ws");
+        source_after.env_key = None;
+        source_after.material_ref = Some(SecretRef("sec:pg:decode-healthy".into()));
+        let source_writing = CredentialMutationIntent::prepare(None, source_after).unwrap();
+        let mut managed_source = source("cred:pg:managed-decode-healthy", "ws");
+        managed_source.env_key = None;
+        managed_source.material_ref = Some(SecretRef("sec:pg:managed-decode-healthy".into()));
+        let managed_child = managed_child(
+            "crd-pg-managed-decode-healthy",
+            "vlt-pg-managed-decode-healthy",
+            "ws",
+            managed_source.id.clone(),
+        );
+        let managed_writing =
+            PendingManagedCredentialMutation::create(managed_source, managed_child).unwrap();
+        let undecodable = serde_json::json!({"format_version": u64::MAX});
+
+        sqlx::query(
+            "INSERT INTO credential_creation_intent (source_id, data) VALUES ($1, $2), ($3, $4)",
+        )
+        .bind(&source_writing.after.id.0)
+        .bind(Json(&source_writing))
+        .bind("cred:pg:decode-undecodable")
+        .bind(Json(&undecodable))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO credential_managed_credential_mutation (source_id, data) \
+             VALUES ($1, $2), ($3, $4)",
+        )
+        .bind(&managed_writing.after_source.id.0)
+        .bind(Json(&managed_writing))
+        .bind("cred:pg:managed-decode-undecodable")
+        .bind(Json(&undecodable))
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let store = DeleteCountingStore::default();
+        assert!(recover_credential_mutations(&store, &repo).await.is_err());
+        assert!(
+            recover_managed_credential_mutations(&store, &repo)
+                .await
+                .is_err()
+        );
+        assert_eq!(store.reads.load(Ordering::SeqCst), 0, "E1");
+        assert_eq!(store.deletes.load(Ordering::SeqCst), 0, "E1");
+        let retained = sqlx::query_scalar::<_, i64>(
+            "SELECT (SELECT COUNT(*) FROM credential_creation_intent) + \
+             (SELECT COUNT(*) FROM credential_managed_credential_mutation)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(retained, 4, "E2");
+    }
+
+    /// PostgreSQL unique-key race rule. C1 two fresh physical attempts carry
+    /// the same logical create and cross the start barrier together. E1 exactly
+    /// one insert owns the SecretStore attempt, the loser attaches as
+    /// non-owner, and one durable WAL row remains. This is the concurrent form
+    /// of the sequential begin conformance rule.
+    #[tokio::test]
+    async fn postgres_concurrent_begin_has_one_physical_attempt_owner() {
+        use std::sync::Arc;
+
+        const SCHEMA: &str = "t_cred_concurrent_begin";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = Arc::new(
+            PostgresCredentialRepo::with_pool(pool)
+                .await
+                .expect("store"),
+        );
+        let mut after = source("cred:pg:concurrent-begin", "ws");
+        after.env_key = None;
+        after.material_ref = Some(SecretRef("sec:pg:concurrent-begin".into()));
+        let left = CredentialMutationIntent::prepare(None, after.clone()).unwrap();
+        let right = CredentialMutationIntent::prepare(None, after).unwrap();
+        assert_ne!(
+            left.material_fence.attempt_id(),
+            right.material_fence.attempt_id()
+        );
+        let start = Arc::new(tokio::sync::Barrier::new(3));
+        let left_task = {
+            let repo = repo.clone();
+            let start = start.clone();
+            tokio::spawn(async move {
+                start.wait().await;
+                repo.begin_mutation(left).await
+            })
+        };
+        let right_task = {
+            let repo = repo.clone();
+            let start = start.clone();
+            tokio::spawn(async move {
+                start.wait().await;
+                repo.begin_mutation(right).await
+            })
+        };
+        start.wait().await;
+        let mut ownership = vec![
+            left_task.await.unwrap().unwrap(),
+            right_task.await.unwrap().unwrap(),
+        ];
+        ownership.sort_unstable();
+        assert_eq!(ownership, vec![false, true], "E1");
+        assert_eq!(repo.pending_mutations().await.unwrap().len(), 1, "E1");
+    }
+
+    /// Managed PostgreSQL unique-key race rule. C1 two fresh physical attempts
+    /// carry the same logical source+child create and cross the start barrier
+    /// together. E1 exactly one insert owns the SecretStore attempt, the loser
+    /// attaches as non-owner, and one exact Managed WAL envelope remains. This
+    /// freezes the independent Managed table path, not only the source WAL.
+    #[tokio::test]
+    async fn postgres_concurrent_managed_begin_has_one_physical_attempt_owner() {
+        use std::sync::Arc;
+
+        const SCHEMA: &str = "t_cred_managed_concurrent_begin";
+        let Some(pool) = schema_pool(SCHEMA).await else {
+            return;
+        };
+        let repo = Arc::new(
+            PostgresCredentialRepo::with_pool(pool)
+                .await
+                .expect("store"),
+        );
+        let mut after_source = managed_source("cred:pg:managed-concurrent-begin", "ws");
+        after_source.material_ref = Some(SecretRef("sec:pg:managed-concurrent-begin".into()));
+        let after_child = managed_child(
+            "crd-pg-managed-concurrent-begin",
+            "vlt-pg-managed-concurrent-begin",
+            "ws",
+            after_source.id.clone(),
+        );
+        let left =
+            PendingManagedCredentialMutation::create(after_source.clone(), after_child.clone())
+                .unwrap();
+        let right = PendingManagedCredentialMutation::create(after_source, after_child).unwrap();
+        assert_ne!(
+            left.material_fence.attempt_id(),
+            right.material_fence.attempt_id()
+        );
+        let start = Arc::new(tokio::sync::Barrier::new(3));
+        let left_task = {
+            let repo = repo.clone();
+            let start = start.clone();
+            tokio::spawn(async move {
+                start.wait().await;
+                repo.begin_managed_mutation(left).await
+            })
+        };
+        let right_task = {
+            let repo = repo.clone();
+            let start = start.clone();
+            tokio::spawn(async move {
+                start.wait().await;
+                repo.begin_managed_mutation(right).await
+            })
+        };
+        start.wait().await;
+        let mut ownership = vec![
+            left_task.await.unwrap().unwrap(),
+            right_task.await.unwrap().unwrap(),
+        ];
+        ownership.sort_unstable();
+        assert_eq!(ownership, vec![false, true], "E1");
+        assert_eq!(
+            repo.pending_managed_mutations().await.unwrap().len(),
+            1,
+            "E1"
+        );
     }
 
     /// Exact rollout lookup cause/effect table. C1 a non-create mutation commits
@@ -787,7 +1724,7 @@ mod postgres {
         )
         .unwrap();
         repo.begin_managed_mutation(writing.clone()).await.unwrap();
-        let now = writing.writer_lease_expires_at_unix_ms;
+        let now = writing.material_fence.writer_lease_expires_at_unix_ms;
         let deadline = now.checked_add(10_000).unwrap();
 
         let (left, right) = tokio::join!(
@@ -797,9 +1734,18 @@ mod postgres {
         let claims = [left.unwrap(), right.unwrap()];
         assert_eq!(claims.iter().filter(|claim| claim.is_some()).count(), 1);
         let claimed = claims.into_iter().flatten().next().unwrap();
-        assert_eq!(claimed.writer_epoch, writing.writer_epoch + 1);
-        assert_ne!(claimed.writer_token, writing.writer_token);
-        assert_eq!(claimed.writer_lease_expires_at_unix_ms, deadline);
+        assert_eq!(
+            claimed.material_fence.writer_epoch,
+            writing.material_fence.writer_epoch + 1
+        );
+        assert_ne!(
+            claimed.material_fence.writer_token,
+            writing.material_fence.writer_token
+        );
+        assert_eq!(
+            claimed.material_fence.writer_lease_expires_at_unix_ms,
+            deadline
+        );
         assert_eq!(
             repo.pending_managed_mutations().await.unwrap(),
             vec![claimed.clone()]
@@ -810,8 +1756,8 @@ mod postgres {
         ));
         let reclaiming = repo.abort_managed_mutation(&claimed).await.unwrap();
         assert_eq!(
-            reclaiming.phase,
-            ManagedCredentialMutationPhase::ReclaimingAbort
+            reclaiming.material_fence.phase,
+            CredentialMaterialMutationPhase::ReclaimingAbort
         );
         repo.complete_managed_mutation(&reclaiming).await.unwrap();
     }
@@ -839,8 +1785,8 @@ mod postgres {
 
         let reclaiming = repo.abort_managed_mutation(&writing).await.unwrap();
         assert_eq!(
-            reclaiming.phase,
-            ManagedCredentialMutationPhase::ReclaimingAbort
+            reclaiming.material_fence.phase,
+            CredentialMaterialMutationPhase::ReclaimingAbort
         );
         assert_eq!(
             repo.pending_managed_mutations().await.unwrap(),
@@ -891,10 +1837,7 @@ mod postgres {
             .expect("store");
         let mut proposed = source("cred:plain-race", "ws-proposed");
         proposed.provider_id = Some("blocked-proposal".into());
-        let intent = CredentialMutationIntent {
-            before: None,
-            after: proposed.clone(),
-        };
+        let intent = CredentialMutationIntent::prepare(None, proposed.clone()).unwrap();
         repo.begin_mutation(intent.clone()).await.unwrap();
 
         sqlx::query(

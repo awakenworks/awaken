@@ -310,6 +310,7 @@ mod tests {
             Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let source = awaken_credential_vault::CredentialSource {
             id: CredentialSourceId("cred:run-mcp".into()),
+            replacement_of: None,
             workspace_id: "workspace".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
             descriptor: None,

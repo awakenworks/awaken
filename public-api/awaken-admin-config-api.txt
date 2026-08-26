@@ -79,6 +79,7 @@ pub awaken_admin_config_api::CredentialSourceView::kind: awaken_credential_vault
 pub awaken_admin_config_api::CredentialSourceView::oauth_helper: core::option::Option<awaken_credential_vault::OAuthHelper>
 pub awaken_admin_config_api::CredentialSourceView::protocol_endpoint_id: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::CredentialSourceView::provider_id: core::option::Option<alloc::string::String>
+pub awaken_admin_config_api::CredentialSourceView::replacement_of: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_admin_config_api::CredentialSourceView::status: awaken_credential_vault::CredentialStatus
 pub awaken_admin_config_api::CredentialSourceView::version: i64
 pub awaken_admin_config_api::CredentialSourceView::workspace_id: alloc::string::String
@@ -93,6 +94,7 @@ impl awaken_admin_config_api::EnterCredentialRequest
 pub fn awaken_admin_config_api::EnterCredentialRequest::compat_hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::described_hosted_vault(alloc::string::String, alloc::string::String, awaken_credential_contract::descriptor::CredentialDescriptor, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::provider_id(&self) -> core::option::Option<&str>
+pub fn awaken_admin_config_api::EnterCredentialRequest::with_replacement_of(self, awaken_credential_contract::CredentialRef) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::workspace_id(&self) -> &str
 pub struct awaken_admin_config_api::IdentityCapabilityView
 pub awaken_admin_config_api::IdentityCapabilityView::authenticated: bool

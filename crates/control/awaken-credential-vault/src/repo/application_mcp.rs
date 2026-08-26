@@ -107,6 +107,7 @@ fn expected_source(
 ) -> CredentialSource {
     CredentialSource {
         id: command.source_id.clone(),
+        replacement_of: None,
         workspace_id: command.workspace_id.clone(),
         kind: CredentialKind::Vault,
         descriptor: None,
@@ -248,8 +249,10 @@ fn validate_source(
     expected: &CredentialSource,
 ) -> Result<(), CredentialError> {
     if actual.id != expected.id
+        || actual.replacement_of != expected.replacement_of
         || actual.workspace_id != expected.workspace_id
         || actual.kind != CredentialKind::Vault
+        || actual.descriptor != expected.descriptor
         || actual.provider_id.as_deref() != Some(APPLICATION_MCP_PROVIDER_ID)
         || actual.protocol_endpoint_id != expected.protocol_endpoint_id
         || actual.env_key.is_some()

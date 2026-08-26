@@ -297,6 +297,7 @@ impl ProviderConnectionService {
             ConnectionCredential::OAuth(helper) => {
                 let probe = CredentialSource {
                     id: CredentialSourceId("cred:provider-connection-probe".into()),
+                    replacement_of: None,
                     workspace_id: command.workspace_id.clone(),
                     kind: CredentialKind::Oauth,
                     descriptor: None,

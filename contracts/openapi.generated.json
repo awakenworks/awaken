@@ -947,6 +947,24 @@
               }
             ]
           },
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
           "CredentialSourceId": {
             "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
@@ -1305,6 +1323,16 @@
               "null"
             ]
           },
+          "replacement_of": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CredentialRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "status": {
             "$ref": "#/$defs/CredentialStatus"
           },
@@ -1616,6 +1644,24 @@
                 "type": "object"
               }
             ]
+          },
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
           },
           "CredentialSubjectRef": {
             "description": "Opaque provider subject such as one account or installation. This is\nmetadata for binding/probing, not an IAM principal.",
@@ -1972,6 +2018,17 @@
               "string",
               "null"
             ]
+          },
+          "replacement_of": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CredentialRef"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exact active predecessor fenced while this request publishes a distinct\ndeterministic source. The predecessor is not mutated or retired."
           },
           "secret": {
             "description": "The secret to seal — required for `vault`. Environment-backed credentials\nare not accepted; environment discovery is exposed only as proposals.",
@@ -3404,6 +3461,24 @@
               }
             ]
           },
+          "CredentialRef": {
+            "description": "A stable reference to one credential source revision.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "id",
+              "revision"
+            ],
+            "type": "object"
+          },
           "CredentialSourceId": {
             "description": "Stable, secret-free identity of a credential source.\n\nThe identifier crosses Control-to-Coordinator application ports, so its\ncanonical owner is the credential contract rather than the Vault adapter.",
             "type": "string"
@@ -3453,6 +3528,16 @@
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "replacement_of": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/CredentialRef"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "status": {
