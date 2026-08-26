@@ -141,7 +141,12 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
   const stamp = Date.now();
   const id = `quickstart-${stamp}`;
   const model = `quickstart-model-${stamp}`;
-  await syntheticModels.configure(request, model);
+  await page.goto("/w/default/agents/new");
+  const configuredWorkspace = await syntheticModels.configure(
+    page.context().request,
+    model,
+    "/v1/workspaces/default/config",
+  );
   const environmentResponse = await request.post("/v1/environments", {
     headers: MANAGED_HEADERS,
     data: {
@@ -153,7 +158,12 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
   expect(environmentResponse.ok(), environmentBody).toBe(true);
   const environment = JSON.parse(environmentBody);
 
-  await page.goto("/w/default/agents/new");
+  await page.reload();
+  const browserWorkspace = await page.evaluate(async () => {
+    const response = await fetch("/v1/workspaces/default/config/workspace-context");
+    return response.headers.get("anthropic-workspace-id");
+  });
+  expect(browserWorkspace).toBe(configuredWorkspace);
   await page.getByRole("button", { name: /Repository change/ }).click();
   await page.getByPlaceholder("coding-agent").fill(id);
   await page.getByLabel("Model", { exact: true })
@@ -169,20 +179,27 @@ test("Quickstart publishes the reviewed draft and starts a durable Session in th
   await expect(modal).toContainText(environment.id);
   await expect(modal).toContainText(task);
   const sessionResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" && response.url().endsWith("/v1/sessions"));
+    response.request().method() === "POST"
+      && /\/v1\/(?:workspaces\/[^/]+\/)?sessions$/.test(new URL(response.url()).pathname));
   const eventRequest = page.waitForRequest((req) =>
-    req.method() === "POST" && /\/v1\/sessions\/[^/]+\/events$/.test(req.url()));
+    req.method() === "POST"
+      && /\/v1\/(?:workspaces\/[^/]+\/)?sessions\/[^/]+\/events$/.test(new URL(req.url()).pathname));
   await modal.getByRole("button", { name: /Publish & run/ }).click();
-  const session = await (await sessionResponse).json();
+  const createdSessionResponse = await sessionResponse;
+  const createSessionBody = createdSessionResponse.request().postDataJSON();
+  expect(createSessionBody.agent).toEqual({ id, type: "agent", version: expect.any(Number) });
+  expect(createSessionBody.agent.version).toBeGreaterThan(0);
+  const session = await createdSessionResponse.json();
   expect((await eventRequest).postDataJSON()).toEqual({
     events: [{ type: "user.message", content: [{ type: "text", text: task }] }],
   });
   await expect(page).toHaveURL(new RegExp(`/sessions/${session.id}$`));
-  const stored = await (await request.get(`/v1/sessions/${session.id}`, {
+  const stored = await (await request.get(`/v1/workspaces/default/sessions/${session.id}`, {
     headers: MANAGED_HEADERS,
   })).json();
   expect(stored.environment_id).toBe(environment.id);
   expect(stored.agent.id).toBe(id);
+  expect(stored.agent.version).toBe(createSessionBody.agent.version);
 });
 
 test("PermissionEditor authors a rule and persists it through save + reload", async ({ page }) => {
