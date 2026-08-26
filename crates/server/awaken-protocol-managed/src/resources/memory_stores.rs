@@ -346,7 +346,14 @@ pub fn memory_stores_router(
         )
         .route(
             "/v1/memory_stores/{id}/memories/{mid}",
-            get(get_memory).post(update_memory).delete(delete_memory),
+            // Published SDKs historically issue POST while the canonical
+            // Managed Agents endpoint uses PATCH. Both verbs enter the same
+            // aggregate command so CAS and version-history semantics cannot
+            // drift between clients.
+            get(get_memory)
+                .post(update_memory)
+                .patch(update_memory)
+                .delete(delete_memory),
         )
         .route("/v1/memory_stores/{id}/memory_versions", get(list_versions))
         .route(
@@ -749,7 +756,7 @@ async fn get_memory(
     }
 }
 
-/// `POST /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
+/// `POST|PATCH /v1/memory_stores/:id/memories/:mid` — update a memory's content (and/or
 /// path). A `content_sha256` precondition that does not match the durable head is a
 /// `409` (the SDK's `memory_precondition_failed_error`), enforced as a compare-and-
 /// swap in the store. Content, optional rename-replace, and history are one atomic
