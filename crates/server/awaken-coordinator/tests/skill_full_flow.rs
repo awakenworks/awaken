@@ -99,9 +99,10 @@ async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::
         Some(&receipt),
         "the confirmed skill command's terminal Session event",
         |events| {
-            events
-                .iter()
-                .any(|event| event["type"] == "session.status_idle")
+            events.iter().any(|event| {
+                event["type"] == "session.status_idle"
+                    && event["stop_reason"]["type"] != "requires_action"
+            })
         },
     )
     .await

@@ -108,6 +108,30 @@ async fn send_message(app: &Router, session: &str, text: &str) -> serde_json::Va
 }
 
 async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::Value {
+    let before = json_call(
+        app,
+        "GET",
+        &format!("/v1/sessions/{session}/events?limit=500"),
+        serde_json::Value::Null,
+    )
+    .await;
+    let prior_pending_tool_ids = before["data"]
+        .as_array()
+        .expect("Managed Event page")
+        .iter()
+        .filter(|event| {
+            event["type"] == "session.status_idle"
+                && event["stop_reason"]["type"] == "requires_action"
+        })
+        .flat_map(|event| {
+            event["stop_reason"]["event_ids"]
+                .as_array()
+                .into_iter()
+                .flatten()
+        })
+        .filter_map(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .collect::<std::collections::HashSet<_>>();
     let receipt = json_call(
         app,
         "POST",
@@ -121,9 +145,21 @@ async fn confirm(app: &Router, session: &str, tool_use_id: &str) -> serde_json::
         Some(&receipt),
         "the accepted tool confirmation to reach an aggregate idle boundary",
         |events| {
-            events
-                .iter()
-                .any(|event| event["type"] == "session.status_idle")
+            events.iter().any(|event| {
+                if event["type"] != "session.status_idle" {
+                    return false;
+                }
+                if event["stop_reason"]["type"] != "requires_action" {
+                    return true;
+                }
+                event["stop_reason"]["event_ids"]
+                    .as_array()
+                    .is_some_and(|ids| {
+                        ids.iter()
+                            .filter_map(serde_json::Value::as_str)
+                            .any(|id| !prior_pending_tool_ids.contains(id))
+                    })
+            })
         },
     )
     .await
