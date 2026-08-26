@@ -315,14 +315,14 @@ impl DeploymentRepository for SqliteManagedSessionRepository {
             return Ok(ScheduledRunClaimOutcome::AlreadyClaimed);
         }
         tx.execute(
-            "INSERT INTO managed_deployment_claim (claim_id, run_id) VALUES (?1, ?2)",
-            params![claim_id, run.run_id],
+            "INSERT INTO managed_deployment_run \
+             (run_id, deployment_id, workspace_id, data) VALUES (?1, ?2, ?3, ?4)",
+            params![&run.run_id, run.deployment_id, run.workspace_id, run.data],
         )
         .map_err(storage)?;
         tx.execute(
-            "INSERT INTO managed_deployment_run \
-             (run_id, deployment_id, workspace_id, data) VALUES (?1, ?2, ?3, ?4)",
-            params![run.run_id, run.deployment_id, run.workspace_id, run.data],
+            "INSERT INTO managed_deployment_claim (claim_id, run_id) VALUES (?1, ?2)",
+            params![claim_id, run.run_id],
         )
         .map_err(storage)?;
         let affected = tx
@@ -552,12 +552,23 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
             tx.rollback().await.map_err(storage)?;
             return Ok(ScheduledRunClaimOutcome::StaleDeployment);
         }
+        sqlx::query(
+            "INSERT INTO managed_deployment_run (run_id, deployment_id, workspace_id, data) \
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(&run.run_id)
+        .bind(run.deployment_id)
+        .bind(run.workspace_id)
+        .bind(run.data)
+        .execute(&mut *tx)
+        .await
+        .map_err(storage)?;
         let inserted = sqlx::query(
             "INSERT INTO managed_deployment_claim (claim_id, run_id) VALUES ($1, $2) \
              ON CONFLICT(claim_id) DO NOTHING",
         )
         .bind(claim_id)
-        .bind(&run.run_id)
+        .bind(run.run_id)
         .execute(&mut *tx)
         .await
         .map_err(storage)?
@@ -567,17 +578,6 @@ impl DeploymentRepository for PostgresManagedSessionRepository {
             tx.rollback().await.map_err(storage)?;
             return Ok(ScheduledRunClaimOutcome::AlreadyClaimed);
         }
-        sqlx::query(
-            "INSERT INTO managed_deployment_run (run_id, deployment_id, workspace_id, data) \
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(run.run_id)
-        .bind(run.deployment_id)
-        .bind(run.workspace_id)
-        .bind(run.data)
-        .execute(&mut *tx)
-        .await
-        .map_err(storage)?;
         sqlx::query(
             "INSERT INTO managed_lifecycle_outbox (fact_id, data) VALUES ($1, $2) \
              ON CONFLICT(fact_id) DO NOTHING",
