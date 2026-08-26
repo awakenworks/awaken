@@ -4,6 +4,7 @@ use super::*;
 
 mod canonical_order;
 mod historical_pending;
+mod interval_aggregate_projection;
 mod refresh_entrypoint;
 mod run_observation_projection;
 #[cfg(test)]
@@ -12,271 +13,12 @@ use canonical_order::*;
 use historical_pending::historical_pending_by_lifecycle;
 
 impl ManagedState {
-    fn replace_interval_aggregate_projections(
-        record: &mut SessionRecord,
-        persisted: &awaken_session_contract::PersistedSession,
-        lifecycle_events: &[RunLifecycleEvent],
-        historical_pending: &std::collections::HashMap<
-            awaken_agent_contract::RunLifecycleCursor,
-            Pending,
-        >,
-        price_snapshot: Option<&awaken_session_contract::ManagedListPriceSnapshot>,
-    ) -> Result<(), StateError> {
-        let append_running_once = |record: &mut SessionRecord, id: String| {
-            if record.events.iter().all(|event| event.id != id) {
-                record.events.push(Event {
-                    id,
-                    kind: OutboundKind::SessionStatusRunning {},
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                });
-            }
-        };
-        // Session-level Usage/Idle belongs to the root-owned interval, while
-        // Running belongs to the exact lifecycle opening already visible to a
-        // client. Closing an interval must never replace that issued cursor.
-        // Replace only non-canonical opening candidates and former interval-ID
-        // Running projections. A legacy row with no interval history, and
-        // independent BudgetReach facts, retain their projections unchanged.
-        let has_interval_lineage = !persisted.closed_runtime_intervals.is_empty()
-            || persisted
-                .running_interval
-                .as_ref()
-                .is_some_and(|interval| interval.opened_revision.0 != 0);
-        if has_interval_lineage {
-            let mut replaced_ids = std::collections::HashSet::new();
-            let mut prior_close = 0;
-            for interval in &persisted.closed_runtime_intervals {
-                let close = interval_close_cursor(interval).unwrap_or(prior_close);
-                let opening =
-                    interval_lifecycle_open_event(interval, prior_close, lifecycle_events);
-                let open = opening
-                    .map(|event| event.source_commit_cursor)
-                    .unwrap_or(close);
-                let interval_lifecycle = lifecycle_events
-                    .iter()
-                    .filter(|event| {
-                        event.source_commit_cursor >= open && event.source_commit_cursor <= close
-                    })
-                    .collect::<Vec<_>>();
-                for lifecycle in &interval_lifecycle {
-                    if opening.is_some_and(|opening| opening.cursor == lifecycle.cursor) {
-                        continue;
-                    }
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        "aggregate-status-running",
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: lifecycle.cursor.0,
-                        },
-                    ));
-                }
-                if let Some(terminal_cursor) = interval_lifecycle
-                    .iter()
-                    .filter(|event| {
-                        matches!(
-                            event.kind,
-                            RunLifecycleEventKind::Awaiting
-                                | RunLifecycleEventKind::Completed
-                                | RunLifecycleEventKind::Failed
-                                | RunLifecycleEventKind::Cancelled
-                        )
-                    })
-                    .map(|event| event.cursor)
-                    .max()
-                {
-                    for role in ["aggregate-usage", "aggregate-status-idle"] {
-                        replaced_ids.insert(managed_multiagent_event_id(
-                            &record.session.id,
-                            &record.session.id,
-                            role,
-                            ManagedMultiagentEventProvenance::LifecyclePrefix {
-                                cursor: terminal_cursor.0,
-                            },
-                        ));
-                    }
-                }
-                for role in ["aggregate-usage", "aggregate-status-idle"] {
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        role,
-                        ManagedMultiagentEventProvenance::RuntimeInterval {
-                            interval_id: &interval.interval_id,
-                        },
-                    ));
-                }
-                replaced_ids.insert(managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "aggregate-status-running",
-                    ManagedMultiagentEventProvenance::RuntimeInterval {
-                        interval_id: &interval.interval_id,
-                    },
-                ));
-                prior_close = close;
-            }
-            if let Some(interval) = persisted.running_interval.as_ref()
-                && let Some(opening) = running_interval_lifecycle_open_event(
-                    interval,
-                    prior_close,
-                    &persisted.event_batches,
-                    lifecycle_events,
-                )
-            {
-                for lifecycle in lifecycle_events.iter().filter(|event| {
-                    event.source_commit_cursor >= opening.source_commit_cursor
-                        && event.cursor != opening.cursor
-                }) {
-                    replaced_ids.insert(managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        "aggregate-status-running",
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: lifecycle.cursor.0,
-                        },
-                    ));
-                }
-                replaced_ids.insert(managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "aggregate-status-running",
-                    ManagedMultiagentEventProvenance::RuntimeInterval {
-                        interval_id: &interval.interval_id,
-                    },
-                ));
-            }
-            record
-                .events
-                .retain(|event| !replaced_ids.contains(&event.id));
-        }
-
-        let mut prior_close = 0;
-        for interval in &persisted.closed_runtime_intervals {
-            let close = interval_close_cursor(interval).unwrap_or(prior_close);
-            if interval.observations.is_empty() {
-                prior_close = close;
-                continue;
-            }
-            let running_id = interval_lifecycle_open_event(interval, prior_close, lifecycle_events)
-                .map(|opening| {
-                    managed_multiagent_event_id(
-                        &record.session.id,
-                        &record.session.id,
-                        "aggregate-status-running",
-                        ManagedMultiagentEventProvenance::Lifecycle {
-                            cursor: opening.cursor.0,
-                        },
-                    )
-                });
-            let usage_id = managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                "aggregate-usage",
-                ManagedMultiagentEventProvenance::RuntimeInterval {
-                    interval_id: &interval.interval_id,
-                },
-            );
-            let idle_id = managed_multiagent_event_id(
-                &record.session.id,
-                &record.session.id,
-                "aggregate-status-idle",
-                ManagedMultiagentEventProvenance::RuntimeInterval {
-                    interval_id: &interval.interval_id,
-                },
-            );
-            let mut usage = session_usage_value(
-                interval
-                    .usage
-                    .to_session_usage()
-                    .map_err(|error| StateError::Run(RunError::internal(error.to_string())))?,
-                price_snapshot,
-            )
-            .map_err(StateError::Run)?;
-            let budget = interval.max_list_cost_minor.map(|amount| {
-                let max_list_cost = crate::types::MonetaryAmount {
-                    amount: amount.to_string(),
-                    currency: crate::types::Currency::USD,
-                };
-                if usage.list_cost.is_none() {
-                    usage.list_cost = Some(crate::types::MonetaryAmount {
-                        amount: "0".to_string(),
-                        currency: crate::types::Currency::USD,
-                    });
-                }
-                crate::types::BudgetLimit::Limit { max_list_cost }
-            });
-            let stop_reason = interval
-                .observations
-                .last()
-                .and_then(|observation| {
-                    lifecycle_events.iter().find(|event| {
-                        event.cursor == observation.lifecycle_cursor
-                            && event.thread_id == observation.thread_id
-                            && event.run_id == observation.run_id
-                    })
-                })
-                .map(|terminal| {
-                    let owner = (terminal.thread_id.0 != record.session.id)
-                        .then_some(terminal.thread_id.0.as_str());
-                    Self::public_run_stop_reason(
-                        record,
-                        owner,
-                        &terminal.state,
-                        historical_pending.get(&terminal.cursor),
-                        terminal.await_reason.as_ref(),
-                    )
-                })
-                .transpose()?
-                .unwrap_or(StopReason::EndTurn);
-            if let Some(running_id) = running_id {
-                append_running_once(record, running_id);
-            }
-            record.events.extend([
-                Event {
-                    id: usage_id,
-                    kind: OutboundKind::SessionUsage { usage, budget },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                },
-                Event {
-                    id: idle_id,
-                    kind: OutboundKind::SessionStatusIdle { stop_reason },
-                    processed_at: Some(PROCESSED_AT.to_string()),
-                },
-            ]);
-        }
-        if let Some(interval) = persisted.running_interval.as_ref() {
-            let prior_close = persisted
-                .closed_runtime_intervals
-                .iter()
-                .filter_map(interval_close_cursor)
-                .max()
-                .unwrap_or_default();
-            if let Some(opening) = running_interval_lifecycle_open_event(
-                interval,
-                prior_close,
-                &persisted.event_batches,
-                lifecycle_events,
-            ) {
-                let running_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "aggregate-status-running",
-                    ManagedMultiagentEventProvenance::Lifecycle {
-                        cursor: opening.cursor.0,
-                    },
-                );
-                append_running_once(record, running_id);
-            }
-        }
-        Ok(())
-    }
-
     fn canonicalize_committed_events(
         record: &mut SessionRecord,
         persisted: &awaken_session_contract::PersistedSession,
         lifecycle_events: &[RunLifecycleEvent],
         root_snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+        outcome_projections: &[AnchoredOutcomeProjection],
         child_snapshots: &std::collections::HashMap<
             String,
             awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
@@ -612,7 +354,7 @@ impl ManagedState {
                     .copied(),
             };
             if let Some(source_order) = source_order {
-                for (role, phase) in [("link-thread-created", 15), ("link-status-running", 16)] {
+                for (role, phase) in [("link-thread-created", 51), ("link-status-running", 52)] {
                     retain_earliest_order(
                         &mut orders,
                         managed_multiagent_event_id(
@@ -701,80 +443,60 @@ impl ManagedState {
             }
         }
 
-        for (batch_index, batch) in persisted.event_batches.iter().enumerate() {
-            for entry in &batch.events {
-                let SessionEventCommand::DefineOutcome { outcome_id, .. } = &entry.event else {
-                    continue;
-                };
-                for iteration in 0..=record.events.len() {
-                    let state_key = format!("outcome/{outcome_id}/evaluation/{iteration}");
-                    let source_commit_cursor = root_snapshot.and_then(|snapshot| {
-                        (snapshot.state.len() == snapshot.state_commit_cursors.len())
-                            .then(|| {
-                                snapshot
-                                    .state
-                                    .iter()
-                                    .zip(snapshot.state_commit_cursors.iter().copied())
-                                    .find_map(|(command, cursor)| {
-                                        (command.key.0 == state_key).then_some(cursor)
-                                    })
-                            })
-                            .flatten()
-                    });
-                    let Some(source_commit_cursor) = source_commit_cursor else {
-                        continue;
-                    };
-                    for (role, phase) in [
-                        ("outcome-evaluation-start", 60),
-                        ("outcome-evaluation-ongoing", 61),
-                        ("outcome-evaluation-end", 62),
-                    ] {
-                        retain_earliest_order(
-                            &mut orders,
-                            managed_multiagent_event_id(
-                                &record.session.id,
-                                &record.session.id,
-                                role,
-                                ManagedMultiagentEventProvenance::OutcomeEvaluation {
-                                    outcome_id,
-                                    iteration: u32::try_from(iteration).unwrap_or(u32::MAX),
+        for (batch_index, projection) in outcome_projections.iter().enumerate() {
+            match &projection.terminal {
+                CommittedOutcomeProjection::Completed(report) => {
+                    for iteration in &report.iterations {
+                        let Some(source_commit_cursor) = projection
+                            .evaluation_commit_cursors
+                            .get(&iteration.iteration)
+                            .copied()
+                        else {
+                            continue;
+                        };
+                        for (role, phase) in [
+                            ("outcome-evaluation-start", 60),
+                            ("outcome-evaluation-ongoing", 61),
+                            ("outcome-evaluation-end", 62),
+                        ] {
+                            retain_earliest_order(
+                                &mut orders,
+                                managed_multiagent_event_id(
+                                    &record.session.id,
+                                    &record.session.id,
+                                    role,
+                                    ManagedMultiagentEventProvenance::OutcomeEvaluation {
+                                        outcome_id: &projection.outcome_id,
+                                        iteration: iteration.iteration,
+                                    },
+                                ),
+                                CanonicalEventOrder {
+                                    source_commit_cursor,
+                                    phase,
+                                    ordinal: batch_index
+                                        .saturating_mul(batch_stride)
+                                        .saturating_add(
+                                            usize::try_from(iteration.iteration)
+                                                .unwrap_or(usize::MAX),
+                                        ),
                                 },
-                            ),
-                            CanonicalEventOrder {
-                                source_commit_cursor,
-                                phase,
-                                ordinal: batch_index
-                                    .saturating_mul(batch_stride)
-                                    .saturating_add(iteration),
-                            },
-                        );
+                            );
+                        }
                     }
                 }
-                let state_key = format!("outcome/{outcome_id}/state");
-                if let Some(source_commit_cursor) = root_snapshot.and_then(|snapshot| {
-                    (snapshot.state.len() == snapshot.state_commit_cursors.len())
-                        .then(|| {
-                            snapshot
-                                .state
-                                .iter()
-                                .zip(snapshot.state_commit_cursors.iter().copied())
-                                .rev()
-                                .find_map(|(command, cursor)| {
-                                    (command.key.0 == state_key).then_some(cursor)
-                                })
-                        })
-                        .flatten()
-                }) {
+                CommittedOutcomeProjection::Errored(_) => {
                     retain_earliest_order(
                         &mut orders,
                         managed_multiagent_event_id(
                             &record.session.id,
                             &record.session.id,
                             "outcome-error",
-                            ManagedMultiagentEventProvenance::Outcome { outcome_id },
+                            ManagedMultiagentEventProvenance::Outcome {
+                                outcome_id: &projection.outcome_id,
+                            },
                         ),
                         CanonicalEventOrder {
-                            source_commit_cursor,
+                            source_commit_cursor: projection.terminal_commit_cursor,
                             phase: 63,
                             ordinal: batch_index.saturating_mul(batch_stride),
                         },
@@ -948,6 +670,12 @@ impl ManagedState {
             .session(session_id)
             .await
             .map_err(StateError::from)?;
+        let persisted_status = Self::wire_session_status(persisted.execution);
+        // The Session root is authoritative for its public status even while an
+        // accepted command is waiting for an immutable Runtime projection
+        // anchor. The anchor barrier below withholds only the ordered Event
+        // suffix; it must not also preserve a stale disposable Session DTO.
+        self.refresh_cached_projection(&persisted)?;
         if persisted.event_batches.iter().any(|batch| {
             batch
                 .events
@@ -961,7 +689,6 @@ impl ManagedState {
             // inserted before an already-issued lifecycle cursor.
             return Ok(true);
         }
-        let persisted_status = Self::wire_session_status(persisted.execution);
         let price_snapshot = persisted.budget.price_snapshot().cloned();
         let budget_reach_projections = persisted
             .budget
@@ -995,7 +722,6 @@ impl ManagedState {
                 ))
             })
             .collect::<Result<Vec<_>, StateError>>()?;
-        self.refresh_cached_projection(&persisted)?;
         let initial_cursor = self
             .sessions
             .lock()
@@ -1003,13 +729,11 @@ impl ManagedState {
             .get(session_id)
             .ok_or(StateError::NotFound)?
             .projected_lifecycle_cursor;
-        // Read the root fence before the later relationship snapshot. This
-        // ordering makes an unknown lifecycle event classifiable without
-        // guessing from its Thread id: a relationship read taken after the
-        // root fence must include every coordinated link committed at or before
-        // that fence. An event beyond the fence remains unconsumed until the
-        // next refresh, when its matching root/link snapshot can catch up.
-        let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+        // Read Outcome observation before the root recovery fence. A terminal
+        // Outcome projection is derived from that same Thread aggregate and its
+        // evaluation/state command is the immutable public-order anchor. Reading
+        // the fence first could pair an older state prefix with a newer terminal
+        // and manufacture an unanchored public event during a concurrent commit.
         let mut durable_outcome_projections = Vec::new();
         for outcome_id in retained_outcome_ids(&persisted.event_batches) {
             if let Some(terminal) = self
@@ -1022,6 +746,17 @@ impl ManagedState {
                     .push(validate_durable_outcome_projection(outcome_id, terminal)?);
             }
         }
+        // Read the root fence before the later relationship snapshot. This
+        // ordering makes an unknown lifecycle event classifiable without
+        // guessing from its Thread id: a relationship read taken after the
+        // root fence must include every coordinated link committed at or before
+        // that fence. An event beyond the fence remains unconsumed until the
+        // next refresh, when its matching root/link snapshot can catch up.
+        let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+        let durable_outcome_projections = durable_outcome_projections
+            .into_iter()
+            .filter_map(|projection| projection.anchor(root_snapshot.as_ref()))
+            .collect::<Vec<_>>();
         let (links, child_snapshots) = self.coordinated_projection_prefix(session_id).await?;
         // The lifecycle feed may advance after the snapshots. Each event carries
         // its source commit cursor, so the recovery snapshot's store cursor can
@@ -1292,18 +1027,64 @@ impl ManagedState {
         // later interval under the same Run id. The lifecycle cursor is the one
         // durable coordinate that is both known at the opening and unique for
         // every reopen.
-        let aggregate_running_event_id = accepted_lifecycle
-            .iter()
-            .rev()
-            .find(|event| {
-                event.thread_id.0 == session_id
-                    && matches!(
-                        event.kind,
-                        RunLifecycleEventKind::Running
-                            | RunLifecycleEventKind::Resumed
-                            | RunLifecycleEventKind::Rescheduled
-                    )
+        let is_root_opening = |event: &&RunLifecycleEvent| {
+            event.thread_id.0 == session_id
+                && matches!(
+                    event.kind,
+                    RunLifecycleEventKind::Running
+                        | RunLifecycleEventKind::Resumed
+                        | RunLifecycleEventKind::Rescheduled
+                )
+        };
+        let latest_interval_opening = persisted
+            .running_interval
+            .as_ref()
+            .and_then(|interval| {
+                let prior_close = persisted
+                    .closed_runtime_intervals
+                    .iter()
+                    .filter_map(interval_close_cursor)
+                    .max()
+                    .unwrap_or_default();
+                running_interval_lifecycle_open_event(
+                    &record.session.id,
+                    interval,
+                    prior_close,
+                    &persisted.event_batches,
+                    &all_accepted_lifecycle,
+                )
             })
+            .or_else(|| {
+                let (latest, preceding) = persisted.closed_runtime_intervals.split_last()?;
+                let prior_close = preceding
+                    .iter()
+                    .filter_map(interval_close_cursor)
+                    .max()
+                    .unwrap_or_default();
+                interval_lifecycle_open_event(
+                    &record.session.id,
+                    latest,
+                    prior_close,
+                    &persisted.event_batches,
+                    &all_accepted_lifecycle,
+                )
+            });
+        let aggregate_running_event_id = latest_interval_opening
+            .or_else(|| {
+                root_terminal.and_then(|terminal| {
+                    // The opening may have been consumed by an earlier refresh
+                    // while Session activity was not yet Running. A later terminal
+                    // must still recover that exact bracket from the complete
+                    // accepted prefix. Select the latest opening of this same Run:
+                    // one Run can Await and Resume more than once.
+                    all_accepted_lifecycle
+                        .iter()
+                        .rev()
+                        .filter(is_root_opening)
+                        .find(|event| event.run_id == terminal.run_id)
+                })
+            })
+            .or_else(|| accepted_lifecycle.iter().rev().find(is_root_opening))
             .map(|event| {
                 managed_multiagent_event_id(
                     &record.session.id,
@@ -1944,6 +1725,7 @@ impl ManagedState {
             &persisted,
             &all_accepted_lifecycle,
             root_snapshot.as_ref(),
+            &durable_outcome_projections,
             &child_snapshots,
             &links,
         )?;

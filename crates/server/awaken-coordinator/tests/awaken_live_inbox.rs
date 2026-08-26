@@ -140,15 +140,48 @@ impl SessionRuntime for QueueFake {
 
     async fn session_thread_recovery_snapshot(
         &self,
-        _session_id: &str,
-        _thread_id: &str,
+        session_id: &str,
+        thread_id: &str,
     ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
     {
-        // Fake boundary rule F2/R1: this adapter fake owns no committed Thread
-        // store, so the only consistent recovery answer is no committed Run.
-        // Returning `None` exercises the durable event ingress without teaching
-        // the test a forbidden reconstruction from independently read fields.
-        Ok(None)
+        // Fake boundary rule F2/R1: `Completed` and `Ended` are observable only
+        // together with the committed message and its exact cursor. Returning a
+        // partial terminal view would construct an impossible Runtime state and
+        // leave the Session event permanently accepted but unprocessed.
+        let runs = self.user_runs.lock().unwrap();
+        let Some(command) = runs
+            .values()
+            .find(|command| command.session_id == session_id)
+        else {
+            return Ok(None);
+        };
+        let run_id = command.run_id.clone();
+        let thread_id = awaken_agent_contract::agent::thread::Id(thread_id.to_string());
+        Ok(Some(
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+                thread_id: thread_id.clone(),
+                claimed_run_id: run_id.clone(),
+                runs: vec![awaken_agent_contract::agent::run::Record {
+                    id: run_id.clone(),
+                    thread_id,
+                    state: awaken_agent_contract::agent::run::RunState::Ended(EndCause::NaturalEnd),
+                }],
+                latest_run_id: Some(run_id),
+                messages: vec![Message {
+                    id: Id::session_event_input(session_id, &command.operation_id),
+                    role: Role::User,
+                    content: command.content.clone(),
+                }],
+                message_commit_cursors: vec![1],
+                state: Vec::new(),
+                state_commit_cursors: Vec::new(),
+                events: Vec::new(),
+                resume_tickets: Vec::new(),
+                thread_version: 1,
+                store_cursor: 1,
+                next_commit_ordinal: 1,
+            },
+        ))
     }
 
     async fn run(
@@ -293,7 +326,9 @@ impl SessionRuntime for QueueFake {
     }
 }
 
-fn app(fake: Arc<QueueFake>) -> Router {
+fn app_with_session_application(
+    fake: Arc<QueueFake>,
+) -> (Router, Arc<awaken_session_application::SessionApplication>) {
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
@@ -388,7 +423,15 @@ fn app(fake: Arc<QueueFake>) -> Router {
         }
     }
     let state = Arc::new(ManagedState::new(Shared(fake)));
-    router(state.clone()).merge(live_inbox_router(state.session_application()))
+    let application = state.session_application();
+    (
+        router(state).merge(live_inbox_router(application.clone())),
+        application,
+    )
+}
+
+fn app(fake: Arc<QueueFake>) -> Router {
+    app_with_session_application(fake).0
 }
 
 #[tokio::test]
@@ -530,7 +573,7 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     // |---|---|---|---|
     // | F1 | no | LiveInbox | 410, no queue entry |
     // | F2 | no | Session events | 200, one committed user.message |
-    let app = app(Arc::new(QueueFake::default()));
+    let (app, session_application) = app_with_session_application(Arc::new(QueueFake::default()));
     let session = create(&app).await;
     let live = format!("/v1/awaken/sessions/{session}/live-inbox");
 
@@ -550,6 +593,10 @@ async fn inactive_live_steer_has_the_existing_durable_event_fallback() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "F2: {body}");
+    session_application
+        .drive_session_event_batches(&session, None)
+        .await
+        .expect("F2 lifecycle drive");
 
     let (status, events) = call(
         &app,

@@ -599,6 +599,18 @@ impl SessionApplication {
                 }) {
                     return Ok(session);
                 }
+                // A reply may transfer the activity while its predecessor's
+                // leased Worker is still closing. Fence that stale observation
+                // before comparing it with the predecessor's already-closed
+                // boundary: it belongs to neither the closed interval nor the
+                // successor and is therefore an exact no-op.
+                if !(session.active_activity_epochs.contains(&expected_epoch)
+                    || (session.active_activity_epochs.is_empty()
+                        && session.execution == SessionExecutionState::Running
+                        && session.activity_epoch == expected_epoch))
+                {
+                    return Ok(session);
+                }
                 if session.closed_runtime_intervals.iter().any(|interval| {
                     interval.observations.iter().any(|existing| {
                         existing.activity_epoch == expected_epoch && existing != &observation
@@ -607,16 +619,6 @@ impl SessionApplication {
                     return Err(SessionActivityError::Unavailable(
                         "Session activity epoch was reused with another Runtime boundary".into(),
                     ));
-                }
-                // Older rows may have settled before exact observation
-                // provenance existed. Keep that replay a no-op and never attach
-                // its late boundary to a successor interval.
-                if !(session.active_activity_epochs.contains(&expected_epoch)
-                    || (session.active_activity_epochs.is_empty()
-                        && session.execution == SessionExecutionState::Running
-                        && session.activity_epoch == expected_epoch))
-                {
-                    return Ok(session);
                 }
                 let exact_replay = session.running_interval.as_ref().is_some_and(|interval| {
                     interval

@@ -22,13 +22,27 @@ pub async fn drive_retained_session_events(
     state: &awaken_protocol_managed::ManagedState,
     session_id: &str,
 ) {
-    Box::pin(
-        state
-            .session_application()
-            .drive_session_event_batches(session_id, None),
-    )
-    .await
-    .expect("drive retained Session Event batch through the canonical application");
+    // Product reconciliation enters this large Resource/realization/Runtime
+    // graph from its process-owned supervisor task. Preserve that scheduler
+    // boundary here: directly nesting the complete graph under a libtest future
+    // can exceed the default worker stack and is not the deployed execution
+    // shape. JoinSet keeps cancellation structural rather than detaching work.
+    let application = state.session_application();
+    let session_id = session_id.to_string();
+    let mut task = tokio::task::JoinSet::new();
+    task.spawn(async move {
+        application
+            .drive_session_event_batches(&session_id, None)
+            .await
+    });
+    match task.join_next().await {
+        Some(Ok(Ok(()))) => {}
+        Some(Ok(Err(error))) => {
+            panic!("drive retained Session Event batch through the canonical application: {error}")
+        }
+        Some(Err(error)) => panic!("retained Session Event supervisor task failed: {error}"),
+        None => panic!("retained Session Event supervisor task disappeared"),
+    }
 }
 
 /// Shared integration-test decorator for deterministic root-CAS races.

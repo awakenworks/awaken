@@ -63,6 +63,10 @@ async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
             .await
             .expect("settle the application-owned activity epoch");
     }
+    // The completion callback wakes a subsequent supervisor turn. The fake
+    // commits terminal truth synchronously but has no Runtime Host callback, so
+    // drive that exact second turn explicitly before asking GET to project it.
+    support::drive_retained_session_events(state, session_id).await;
 }
 
 async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
@@ -663,8 +667,9 @@ async fn stream_thread_events_accepts_the_preview_opt_in() {
 }
 
 /// Managed child live-preview cause/effect table:
-/// C0 the reserved Event batch is advanced once and its initial committed prefix
-/// exposes the real child selector; C1 exact child text is followed by a tool
+/// C0 the reserved Event batch is activated, then the completion-woken
+/// supervisor turn anchors its initial committed prefix and exposes the real
+/// child selector; C1 exact child text is followed by a tool
 /// delta (ordinary-message proof); C2 child
 /// stream opts into `agent.message`; C3 child reasoning is observed; C4
 /// primary/Session share only the committed broadcast; C5 later text becomes the
@@ -706,6 +711,7 @@ async fn child_stream_previews_only_ordinary_text_and_never_the_terminal_report(
         }),
     )
     .await;
+    support::drive_retained_session_events(&state, &id).await;
     support::drive_retained_session_events(&state, &id).await;
 
     let child_id = CoordinatedRuntimeFake::CHILD_THREAD_ID;
@@ -967,9 +973,11 @@ async fn the_stream_full_replays_and_ignores_last_event_id() {
 
 // === 1(d) Lagged / Closed broadcast handling ================================
 
-/// Causes: C1 an open receiver does not drain; C2 one durable batch publishes
-/// 1,025 accepted receipts, exceeding the 1,024-frame channel; C3 canonical Run
-/// reconciliation/projector publishes terminal facts afterward. Effects: E1 the
+/// Causes: C1 an open receiver does not drain; C2 bounded durable batches
+/// publish 65 processed interrupt receipts, exceeding the test-support
+/// 64-frame channel (production retains 1,024); C3 canonical Run
+/// reconciliation/projector publishes terminal facts
+/// afterward. Effects: E1 the
 /// receiver reports a lag gap; E2 later `session.status_idle` remains observable.
 /// Decision table: G1=C1+receipts<=1024=>no required gap (boundary owned by the
 /// channel); G2=C1+C2+C3=>E1+E2 (covered here).
@@ -983,25 +991,30 @@ async fn a_lagging_subscriber_skips_frames_but_still_receives_later_ones() {
     let id = state_create(&state).await;
     let (_snap, mut rx) = state.stream_subscribe(&id).expect("subscribe");
 
-    // Admission itself owns every receipt. Overflow with that authoritative
-    // prefix, then project the later committed Run through the normal read path.
-    let events: Vec<serde_json::Value> = (0..1_025)
-        .map(|_| serde_json::json!({ "type": "user.message", "content": [{ "type": "text", "text": "x" }] }))
-        .collect();
-    let req = serde_json::from_value(serde_json::json!({ "events": events })).unwrap();
-    state.send_events(&id, req).await.expect("batch of Runs");
-    reconcile_published_run(&state, &id).await;
-    let app = router(state.clone());
-    let _ = http_json(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/events"),
-        serde_json::Value::Null,
-    )
-    .await;
+    // Admission owns every receipt, while only a processed/anchored receipt is
+    // a replayable live frame. Interrupts are immediate receipt commands; keep
+    // each batch within the supervisor's 50-step slice so all 65 facts cross
+    // the same durable projection path instead of relying on unanchored User
+    // inputs that are intentionally withheld from the public event prefix.
+    for batch in 0..2 {
+        let batch_size = (65 - batch * 50).min(50);
+        let events = (0..batch_size)
+            .map(|_| serde_json::json!({ "type": "user.interrupt" }))
+            .collect::<Vec<_>>();
+        let req = serde_json::from_value(serde_json::json!({ "events": events })).unwrap();
+        state
+            .send_events(&id, req)
+            .await
+            .expect("batch of processed interrupts");
+    }
+    state_send_user(&state, &id, "after lag").await;
 
     let (frames, lagged) = drain(&mut rx);
-    assert!(lagged >= 1, "the receiver observed a Lagged gap");
+    assert!(
+        lagged >= 1,
+        "the receiver observed a Lagged gap; retained frames={}",
+        frames.len()
+    );
     assert!(
         committed_types(&frames).contains(&"session.status_idle"),
         "later committed frames (idle) still arrive despite the lag"

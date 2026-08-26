@@ -723,6 +723,10 @@ struct LifecycleRuntime {
             std::collections::HashMap<String, awaken_session_contract::CommittedOutcomeProjection>,
         >,
     >,
+    /// Causal test hook: expose one complete Outcome commit when its terminal
+    /// projection is observed, modeling a commit between the projection and
+    /// root-snapshot reads without manufacturing a partial transaction.
+    outcome_commit_on_read: Arc<Mutex<Vec<(awaken_agent_contract::agent::state::Command, u64)>>>,
     include_runs_in_snapshot: Arc<AtomicBool>,
     pending: Arc<Mutex<Option<Pending>>>,
     snapshot_reads: Arc<AtomicUsize>,
@@ -917,12 +921,19 @@ impl SessionRuntime for LifecycleRuntime {
         _thread: &str,
         outcome_id: &str,
     ) -> Result<Option<awaken_session_contract::CommittedOutcomeProjection>, RunError> {
-        Ok(self
+        let projection = self
             .outcome_projections
             .lock()
             .unwrap()
             .get(outcome_id)
-            .cloned())
+            .cloned();
+        if projection.is_some() {
+            let committed = std::mem::take(&mut *self.outcome_commit_on_read.lock().unwrap());
+            let (commands, cursors): (Vec<_>, Vec<_>) = committed.into_iter().unzip();
+            self.state.lock().unwrap().extend(commands);
+            self.state_cursors.lock().unwrap().extend(cursors);
+        }
+        Ok(projection)
     }
 
     async fn define_outcome(
@@ -2829,7 +2840,13 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         .await
         .unwrap();
     let first_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let first_run = RunId("canonical-turn-one".into());
+    let SessionEventCommand::UserMessage {
+        run_id: first_run, ..
+    } = &first_batch.events[0].event
+    else {
+        unreachable!("first batch owns a User Run")
+    };
+    let first_run = first_run.clone();
     let overlapping_batch = warm
         .application
         .append_session_event_batch(
@@ -2843,7 +2860,14 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         .await
         .unwrap();
     let overlapping_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let overlapping_run = RunId("canonical-turn-one-overlap".into());
+    let SessionEventCommand::UserMessage {
+        run_id: overlapping_run,
+        ..
+    } = &overlapping_batch.events[0].event
+    else {
+        unreachable!("overlapping batch owns a User Run")
+    };
+    let overlapping_run = overlapping_run.clone();
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             10,
@@ -2954,7 +2978,13 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
         .await
         .unwrap();
     let second_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let second_run = RunId("canonical-turn-two".into());
+    let SessionEventCommand::UserMessage {
+        run_id: second_run, ..
+    } = &second_batch.events[0].event
+    else {
+        unreachable!("second batch owns a User Run")
+    };
+    let second_run = second_run.clone();
     runtime.lifecycle.lock().unwrap().extend([
         lifecycle(
             20,
@@ -3169,15 +3199,113 @@ async fn late_compaction_uses_its_state_commit_and_preserves_an_issued_prefix() 
     );
 }
 
+#[test]
+fn outcome_projection_requires_a_terminal_fence_and_anchors_synthetic_interrupts() {
+    // Cause/effect graph: C1 a terminal state command has no same-commit active
+    // pointer removal; C2 an ordinary evaluation has its immutable command; C3
+    // cancellation synthesizes a final interrupted cycle with no Grade command;
+    // C4 a non-interrupted cycle lacks its evaluation command. Effects: E1 C1
+    // remains invisible; E2 C2 uses the evaluation cursor; E3 C3 uses the exact
+    // terminal cursor; E4 C4 fails closed. Decision table: R1=C1=>E1;
+    // R2=terminal+C2+C3=>E2+E3; R3=terminal+C4=>E4.
+    // Invariants: admission and ordering share one anchored value; no JSON state
+    // payload is decoded, and a prior non-terminal state update cannot anchor a
+    // newer terminal observation read through a different port.
+    use awaken_agent_contract::agent::state::{Command, MergePolicy, Scope};
+
+    let outcome_id = "outcome-anchor";
+    let set = |key: String| {
+        Command::set(
+            Scope::Thread,
+            MergePolicy::Disjoint,
+            key,
+            serde_json::json!({"opaque": true}),
+        )
+    };
+    let terminal_commands = || {
+        vec![
+            (set(format!("outcome/{outcome_id}/evaluation/0")), 10),
+            (set(format!("outcome/{outcome_id}/state")), 20),
+            (
+                Command::remove(Scope::Thread, MergePolicy::Disjoint, "outcome/active"),
+                20,
+            ),
+        ]
+    };
+    let snapshot = |entries: Vec<(Command, u64)>| {
+        let (state, state_commit_cursors) = entries.into_iter().unzip();
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: ThreadId("outcome-root".into()),
+            claimed_run_id: RunId("outcome-state".into()),
+            runs: Vec::new(),
+            latest_run_id: None,
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            state,
+            state_commit_cursors,
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 1,
+            store_cursor: 20,
+            next_commit_ordinal: 0,
+        }
+    };
+    let projection = |iterations: &[(u32, &str)]| DurableOutcomeProjection {
+        outcome_id: outcome_id.into(),
+        terminal: awaken_session_contract::CommittedOutcomeProjection::Completed(
+            awaken_session_contract::OutcomeReport {
+                iterations: iterations
+                    .iter()
+                    .map(
+                        |(iteration, result)| awaken_session_contract::OutcomeIteration {
+                            messages: Vec::new(),
+                            outcome_id: outcome_id.into(),
+                            description: "ship".into(),
+                            iteration: *iteration,
+                            result: (*result).into(),
+                            explanation: "test".into(),
+                        },
+                    )
+                    .collect(),
+            },
+        ),
+    };
+
+    let without_terminal = snapshot(vec![(set(format!("outcome/{outcome_id}/state")), 10)]);
+    assert!(
+        projection(&[(0, "satisfied")])
+            .anchor(Some(&without_terminal))
+            .is_none(),
+        "R1/E1"
+    );
+
+    let terminal = snapshot(terminal_commands());
+    let anchored = projection(&[(0, "needs_revision"), (1, "interrupted")])
+        .anchor(Some(&terminal))
+        .expect("R2 terminal projection");
+    assert_eq!(anchored.evaluation_commit_cursors.get(&0), Some(&10));
+    assert_eq!(anchored.evaluation_commit_cursors.get(&1), Some(&20));
+    assert_eq!(anchored.terminal_commit_cursor, 20, "R2/E2+E3");
+
+    assert!(
+        projection(&[(0, "needs_revision"), (1, "satisfied")])
+            .anchor(Some(&terminal))
+            .is_none(),
+        "R3/E4"
+    );
+}
+
 #[tokio::test]
 async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_prefix() {
     // Cause/effect graph: C1 the accepted DefineOutcome and an ordinary Run
-    // prefix are already listable; C2 the Outcome owner later commits its
-    // evaluation state at cursor 30; C3 a cold peer reads all final facts.
-    // E1 C1 remains an immutable prefix; E2 the evaluation trio appears only
-    // after the issued cursor; E3 warm/cold full order and old-cursor suffix
-    // match. Decision table: O1=C1=>E1; O2=C1+C2=>E1+E2;
-    // O3=C1+C2+C3=>E3. The existing state-command commit_sequence is the only
+    // prefix are already listable; C2 the Outcome terminal is visible before
+    // its recovery snapshot anchor; C3 the owner commits evaluation state at
+    // cursor 30 while the next terminal observation occurs; C4 a cold peer
+    // reads all final facts. E1 C1 remains an immutable prefix; E2 C2 is held
+    // outside the public projection; E3 the evaluation trio appears only after
+    // the issued cursor; E4 warm/cold full order and old-cursor suffix match.
+    // Decision table: O1=C1=>E1; O2=C1+C2=>E1+E2;
+    // O3=C1+C2+C3=>E1+E3; O4=C1+C3+C4=>E4. The state-command commit_sequence is the only
     // evaluation anchor; DefineOutcome admission is not reused as a fallback.
     let runtime = LifecycleRuntime::default();
     runtime
@@ -3246,17 +3374,6 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
         .data;
     let cursor = prefix.last().expect("O1 issued cursor").id.clone();
 
-    runtime
-        .state
-        .lock()
-        .unwrap()
-        .push(awaken_agent_contract::agent::state::Command::set(
-            awaken_agent_contract::agent::state::Scope::Thread,
-            awaken_agent_contract::agent::state::MergePolicy::Disjoint,
-            format!("outcome/{outcome_id}/evaluation/1"),
-            serde_json::json!({"committed": true}),
-        ));
-    runtime.state_cursors.lock().unwrap().push(30);
     runtime.outcome_projections.lock().unwrap().insert(
         outcome_id.clone(),
         awaken_session_contract::CommittedOutcomeProjection::Completed(
@@ -3273,11 +3390,43 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
         ),
     );
     warm.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        warm.list_events(&session.id, None, None, false)
+            .unwrap()
+            .data,
+        prefix,
+        "O2/E1-E2 unanchored terminal is not public"
+    );
+
+    let state_command = |key| {
+        awaken_agent_contract::agent::state::Command::set(
+            awaken_agent_contract::agent::state::Scope::Thread,
+            awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+            key,
+            serde_json::json!({"committed": true}),
+        )
+    };
+    *runtime.outcome_commit_on_read.lock().unwrap() = vec![
+        (
+            state_command(format!("outcome/{outcome_id}/evaluation/1")),
+            30,
+        ),
+        (state_command(format!("outcome/{outcome_id}/state")), 30),
+        (
+            awaken_agent_contract::agent::state::Command::remove(
+                awaken_agent_contract::agent::state::Scope::Thread,
+                awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                "outcome/active",
+            ),
+            30,
+        ),
+    ];
+    warm.refresh_committed_events(&session.id).await.unwrap();
     let final_warm = warm
         .list_events(&session.id, None, None, false)
         .unwrap()
         .data;
-    assert_eq!(&final_warm[..prefix.len()], prefix.as_slice(), "O2/E1");
+    assert_eq!(&final_warm[..prefix.len()], prefix.as_slice(), "O3/E1");
     let warm_suffix = warm
         .list_events(&session.id, Some(&cursor), None, false)
         .unwrap();
@@ -3288,7 +3437,7 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
             .filter(|event| event.type_str().starts_with("span.outcome_evaluation"))
             .count(),
         3,
-        "O2/E2"
+        "O3/E3"
     );
 
     let cold = ManagedState::new(runtime).with_session_repo(repository);
@@ -3298,13 +3447,13 @@ async fn late_outcome_terminal_uses_its_state_commit_and_preserves_an_issued_pre
             .unwrap()
             .data,
         final_warm,
-        "O3/E3 full order"
+        "O4/E4 full order"
     );
     assert_eq!(
         cold.list_events(&session.id, Some(&cursor), None, false)
             .unwrap(),
         warm_suffix,
-        "O3/E3 old cursor suffix"
+        "O4/E4 old cursor suffix"
     );
 }
 
@@ -7839,30 +7988,40 @@ async fn committed_lifecycle_closes_cross_protocol_managed_projection_once() {
         input: serde_json::json!({"manifest_path":"artifact-manifest.json"}),
         client_executed: true,
     };
+    // R4/C8 race partition: the resumed opening is consumed while the durable
+    // aggregate is still Idle, then the terminal/ticket prefix catches up in a
+    // later refresh. The terminal projector must recover the opening from the
+    // complete accepted lifecycle prefix; the process-local cursor may not make
+    // the second aggregate Running edge unconstructable.
+    *runtime.pending.lock().unwrap() = None;
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        70,
+        &thread,
+        &local_run,
+        RunLifecycleEventKind::Resumed,
+        RunState::Running,
+    ));
+    state.refresh_committed_events(&thread).await.unwrap();
     *runtime.pending.lock().unwrap() = Some(resumed_pending);
     runtime.push_committed_message(80, resumed_message);
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            70,
-            &thread,
-            &local_run,
-            RunLifecycleEventKind::Resumed,
-            RunState::Running,
-        ),
-        lifecycle(
-            80,
-            &thread,
-            &local_run,
-            RunLifecycleEventKind::Awaiting,
-            RunState::Awaiting,
-        ),
-    ]);
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        80,
+        &thread,
+        &local_run,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    ));
     state.refresh_committed_events(&thread).await.unwrap();
     state.refresh_committed_events(&thread).await.unwrap();
     let rendered =
         serde_json::to_string(&state.list_events(&thread, None, None, false).unwrap().data)
             .unwrap();
     assert_eq!(rendered.matches("session.status_idle").count(), 4, "R4/E7");
+    assert_eq!(
+        rendered.matches("session.status_running").count(),
+        4,
+        "R4/E7 every terminal bracket retains its exact opening across split refreshes"
+    );
     assert_eq!(
         rendered.matches(resumed_call_id).count(),
         3,
