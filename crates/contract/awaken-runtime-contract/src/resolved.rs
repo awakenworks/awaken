@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 pub use awaken_agent_contract::AcpSessionConfiguration;
 use serde::{Deserialize, Serialize};
 
+use crate::tool_discovery::ToolSearchLimit;
+
 fn is_default_delegation_limits(
     limits: &awaken_agent_contract::agent::delegation::DelegationLimits,
 ) -> bool {
@@ -230,7 +232,7 @@ pub struct ResolvedSpec {
     #[serde(default)]
     pub context_policy: ContextPolicy,
     /// How this agent's tools are presented to the model (ADR-0053): per-tool alias /
-    /// description override / defer, keyed by canonical id (catalog or MCP). Empty for
+    /// appearance/exposure override, keyed by canonical id (catalog or MCP). Empty for
     /// an agent with no overrides — the tool face is then byte-identical to before, so
     /// `#[serde(default)]` keeps the 40+ existing snapshot constructions loadable.
     #[serde(default)]
@@ -1013,14 +1015,131 @@ pub struct ToolDescriptor {
 }
 
 /// Exact provider-native server-tool projection selected during publication.
-/// `provider_kind` is deliberately explicit: speaking an OpenAI-compatible
-/// dialect does not imply support for another provider's server tools.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ProviderServerTool {
-    pub provider_kind: String,
-    pub tool_type: String,
-    #[serde(default)]
-    pub parameters: serde_json::Value,
+///
+/// This is deliberately a closed capability rather than three free strings and
+/// an arbitrary JSON object. Adding another provider-owned tool therefore
+/// requires an explicit domain variant and an adapter projection; a compatible
+/// endpoint can never acquire provider execution merely by choosing a spelling.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderServerTool {
+    OpenRouterToolSearch {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        max_results: Option<ToolSearchLimit>,
+    },
+    OpenRouterWebSearch {
+        #[serde(
+            default,
+            skip_serializing_if = "OpenRouterWebSearchParameters::is_empty"
+        )]
+        parameters: OpenRouterWebSearchParameters,
+    },
+    OpenRouterWebFetch {
+        #[serde(
+            default,
+            skip_serializing_if = "OpenRouterWebFetchParameters::is_empty"
+        )]
+        parameters: OpenRouterWebFetchParameters,
+    },
+}
+
+impl ProviderServerTool {
+    /// OpenRouter's provider-owned regex Tool Search. `None` preserves the
+    /// provider default (currently five results).
+    #[must_use]
+    pub const fn openrouter_tool_search(max_results: Option<ToolSearchLimit>) -> Self {
+        Self::OpenRouterToolSearch { max_results }
+    }
+
+    #[must_use]
+    pub const fn openrouter_web_search(parameters: OpenRouterWebSearchParameters) -> Self {
+        Self::OpenRouterWebSearch { parameters }
+    }
+
+    #[must_use]
+    pub const fn openrouter_web_fetch(parameters: OpenRouterWebFetchParameters) -> Self {
+        Self::OpenRouterWebFetch { parameters }
+    }
+
+    #[must_use]
+    pub const fn provider_kind(&self) -> &'static str {
+        match self {
+            Self::OpenRouterToolSearch { .. }
+            | Self::OpenRouterWebSearch { .. }
+            | Self::OpenRouterWebFetch { .. } => "openrouter",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenRouterSearchEngine {
+    Auto,
+    Native,
+    Exa,
+    Firecrawl,
+    Parallel,
+    Perplexity,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenRouterFetchEngine {
+    Auto,
+    Native,
+    Exa,
+    Openrouter,
+    Firecrawl,
+    Parallel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenRouterSearchContextSize {
+    Low,
+    Medium,
+    High,
+}
+
+/// Strongly typed OpenRouter Web Search configuration. Unknown extension keys
+/// fail at publication rather than crossing the domain as arbitrary JSON.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenRouterWebSearchParameters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<OpenRouterSearchEngine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_total_results: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_context_size: Option<OpenRouterSearchContextSize>,
+}
+
+impl OpenRouterWebSearchParameters {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+/// Strongly typed OpenRouter Web Fetch configuration.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenRouterWebFetchParameters {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine: Option<OpenRouterFetchEngine>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<std::num::NonZeroU32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_content_tokens: Option<std::num::NonZeroU32>,
+}
+
+impl OpenRouterWebFetchParameters {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 #[derive(Deserialize)]
@@ -1216,17 +1335,8 @@ impl ToolDescriptor {
 
     /// Bind this canonical builtin to one exact provider-server realization.
     #[must_use]
-    pub fn with_provider_server_tool(
-        mut self,
-        provider_kind: impl Into<String>,
-        tool_type: impl Into<String>,
-        parameters: serde_json::Value,
-    ) -> Self {
-        self.provider_server_tool = Some(ProviderServerTool {
-            provider_kind: provider_kind.into(),
-            tool_type: tool_type.into(),
-            parameters,
-        });
+    pub fn with_provider_server_tool(mut self, projection: ProviderServerTool) -> Self {
+        self.provider_server_tool = Some(projection);
         self
     }
 }
@@ -1370,10 +1480,16 @@ fn normalize_model_tool_schema_node(
     Ok(())
 }
 
-/// Reserved id of the meta-tool that loads a deferred tool (ADR-0053). Double-underscore
-/// namespaced so it cannot collide with a catalog id or an MCP `mcp__…` id; the compile
-/// alias-collision check keeps an author from minting the same facing id.
-pub const TOOL_OPEN_ID: &str = "tool__open";
+/// Reserved model-facing id of deferred-tool discovery (ADR-0053). The snake-case
+/// spelling follows the ordinary client-tool style used by Anthropic, OpenRouter,
+/// OpenAI-compatible, and Gemini-compatible APIs. The compiler prevents an author
+/// from shadowing it with a catalog id or alias.
+pub const TOOL_SEARCH_ID: &str = "tool_search";
+
+/// Default number of definitions returned by one client-side discovery call. It is
+/// deliberately small: discovery should expose the few tools needed for the next
+/// step, not recreate the full catalog in the transcript.
+pub const DEFAULT_TOOL_SEARCH_RESULTS: usize = 5;
 
 /// Reserved model-facing name of the advisor service tool.
 pub const ADVISOR_TOOL_ID: &str = "advisor";
@@ -1386,33 +1502,144 @@ pub const ADVISOR_UNAVAILABLE_NOTICE: &str = "Advisor consultation unavailable."
 /// only this generic text crosses back into the primary model transcript.
 pub const ADVISOR_FAILURE_NOTICE: &str = "Advisor consultation failed.";
 
-/// Build the reserved `tool_open` descriptor from the still-deferred tools: its
-/// description lists each deferred tool's model-facing name + description so the model
-/// knows what it can load, and its one argument is the `name` to load.
-fn tool_open_descriptor(deferred: &[ToolDescriptor]) -> ToolDescriptor {
-    let list = deferred
-        .iter()
-        .map(|d| format!("- {}: {}", d.id, d.description))
-        .collect::<Vec<_>>()
-        .join("\n");
+/// How deferred-tool guidance is added to the model request. This affects only the
+/// request view; it is never committed into the Thread transcript.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ToolPromptInjection {
+    /// Inject the runtime-owned provider-neutral discovery guidance.
+    #[default]
+    Automatic,
+    /// Publish `tool_search`, but do not inject an additional system message.
+    Disabled,
+    /// Inject composition-owned guidance instead of the default wording.
+    Custom { text: String },
+}
+
+/// Tool-discovery behavior compiled into an executable Agent revision. An absent
+/// `max_results` means [`DEFAULT_TOOL_SEARCH_RESULTS`]; the constrained value
+/// prevents zero and oversized limits from entering a resolved snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolDiscoverySettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<crate::tool_discovery::ToolSearchLimit>,
+    #[serde(default, skip_serializing_if = "ToolPromptInjection::is_automatic")]
+    pub prompt: ToolPromptInjection,
+}
+
+impl ToolPromptInjection {
+    #[must_use]
+    pub const fn is_automatic(&self) -> bool {
+        matches!(self, Self::Automatic)
+    }
+}
+
+impl ToolDiscoverySettings {
+    #[must_use]
+    pub fn effective_max_results(&self) -> usize {
+        self.max_results
+            .map_or(DEFAULT_TOOL_SEARCH_RESULTS, |limit| {
+                usize::from(limit.get())
+            })
+    }
+}
+
+/// Build the reserved client-side `tool_search` descriptor from the still-deferred
+/// tools. Only names and short descriptions are listed here; full schemas are returned
+/// by the search result and become visible on the following step.
+fn tool_search_descriptor(settings: &ToolDiscoverySettings) -> ToolDescriptor {
+    let mut parameters = model_tool_schema::<crate::tool_discovery::ToolSearchInput>();
+    if let Some(maximum) = parameters.pointer_mut("/properties/max_results/maximum") {
+        debug_assert_eq!(
+            maximum.as_u64(),
+            Some(u64::from(crate::tool_discovery::ToolSearchLimit::MAX))
+        );
+    }
+    parameters["properties"]["max_results"]["maximum"] =
+        serde_json::json!(settings.effective_max_results());
     ToolDescriptor::pinned(
         "builtin:presentation",
-        TOOL_OPEN_ID,
-        format!(
-            "Load a tool's full definition before you can call it. Call this with the \
-             `name` of the tool you need, then call that tool on the next step. Deferred \
-             tools:\n{list}"
-        ),
-        serde_json::json!({
-            "type": "object",
-            "properties": { "name": { "type": "string", "description": "The deferred tool to load." } },
-            "required": ["name"]
-        }),
+        TOOL_SEARCH_ID,
+        "Search tools whose definitions are available on demand. Search by capability, tool \
+         name, or argument purpose; use `select:name_a,name_b` for exact selection. Matching \
+         tools become callable on the next step.",
+        parameters,
     )
 }
 
+/// Whether one authorized tool definition is sent eagerly or exposed through
+/// provider-neutral discovery.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolExposure {
+    #[default]
+    Eager,
+    OnDemand,
+}
+
+/// Closed selector vocabulary for static and live tool ids. Exact ids cover one
+/// tool; prefixes cover dynamic namespaces such as `mcp__docs__`. Regex/glob text
+/// is deliberately excluded so malformed selectors cannot enter a snapshot and
+/// the contract need not depend on an extension-owned matcher.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum ToolSelector {
+    Exact(String),
+    Prefix(String),
+}
+
+impl ToolSelector {
+    #[must_use]
+    pub fn matches(&self, canonical_id: &str) -> bool {
+        match self {
+            Self::Exact(id) => canonical_id == id,
+            Self::Prefix(prefix) => canonical_id.starts_with(prefix),
+        }
+    }
+}
+
+/// One ordered selector rule over canonical tool ids. Rules are evaluated
+/// first-match wins; an exact presentation override has final precedence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExposureRule {
+    pub selector: ToolSelector,
+    pub exposure: ToolExposure,
+}
+
+/// Catalog-wide exposure policy. It contains selectors only, never descriptors,
+/// so dynamic MCP tools and static tools remain in one authoritative catalog.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolExposurePolicy {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rules: Vec<ToolExposureRule>,
+    #[serde(default, skip_serializing_if = "ToolExposure::is_eager")]
+    pub default: ToolExposure,
+}
+
+impl ToolExposure {
+    #[must_use]
+    pub const fn is_eager(&self) -> bool {
+        matches!(self, Self::Eager)
+    }
+}
+
+impl ToolExposurePolicy {
+    #[must_use]
+    pub fn resolve(&self, canonical_id: &str) -> ToolExposure {
+        self.rules
+            .iter()
+            .find(|rule| rule.selector.matches(canonical_id))
+            .map_or(self.default, |rule| rule.exposure)
+    }
+
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self.rules.is_empty() && self.default == ToolExposure::Eager
+    }
+}
+
 /// The model-facing presentation of an agent's tools (ADR-0053): a per-tool `alias`,
-/// `description` override, and `defer` flag, keyed by the tool's **canonical** id — a
+/// `description`, and optional exposure override, keyed by the tool's **canonical** id — a
 /// catalog id or an MCP `mcp__<server>__<tool>` id — so it applies uniformly to static
 /// and MCP tools alike.
 ///
@@ -1426,54 +1653,90 @@ fn tool_open_descriptor(deferred: &[ToolDescriptor]) -> ToolDescriptor {
 /// config with no overrides compiles to a byte-identical tool face.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ToolPresentation {
-    /// canonical tool id → its facet. `BTreeMap` keeps serialization deterministic.
+    /// Canonical tool id → its exact presentation override.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    facets: BTreeMap<String, ToolFacet>,
+    overrides: BTreeMap<String, ToolPresentationOverride>,
+    #[serde(default, skip_serializing_if = "ToolExposurePolicy::is_default")]
+    exposure: ToolExposurePolicy,
+    #[serde(default, skip_serializing_if = "ToolDiscoverySettings::is_default")]
+    discovery: ToolDiscoverySettings,
 }
 
-/// One tool's presentation facet: how it appears to the model, keyed in
-/// [`ToolPresentation`] by canonical id. All fields optional/false so an entry that
-/// only defers (no rename) is as valid as one that only renames.
+/// One exact tool's optional appearance and exposure override.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ToolFacet {
+pub struct ToolPresentationOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub defer: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<ToolExposure>,
 }
 
-/// The result of [`ToolPresentation::present`]: the descriptors the model sees this
-/// step (`face`) and the ones withheld until opened (`deferred`), both already renamed
-/// and re-described. `deferred` is empty unless some facet sets `defer`.
+/// Appearance/exposure projection before Run-scoped discovery is applied.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct PresentedTools {
-    pub face: Vec<ToolDescriptor>,
-    pub deferred: Vec<ToolDescriptor>,
+pub struct PresentedToolCatalog {
+    pub visible: Vec<ToolDescriptor>,
+    pub discoverable: Vec<ToolDescriptor>,
+}
+
+/// The one complete model projection for a Step. Tools and request-only guidance
+/// are derived from the same presented catalog so visibility cannot drift from
+/// the prompt and descriptors are traversed only once per request.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ToolModelProjection {
+    pub tools: Vec<ToolDescriptor>,
+    pub prompt: Option<String>,
+}
+
+impl ToolDiscoverySettings {
+    #[must_use]
+    pub fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl ToolPresentation {
-    /// Build from `(canonical_id, facet)` pairs; entries whose facet is entirely
-    /// default (no alias, no description, not deferred) are dropped so an all-default
+    /// Build from `(canonical_id, override)` pairs; entirely default entries
+    /// (no alias, description, or exposure change) are dropped so an all-default
     /// presentation is [`is_empty`](Self::is_empty) and stays byte-identical.
-    pub fn from_facets(facets: impl IntoIterator<Item = (String, ToolFacet)>) -> Self {
-        let facets = facets
+    pub fn from_overrides(
+        overrides: impl IntoIterator<Item = (String, ToolPresentationOverride)>,
+    ) -> Self {
+        let overrides = overrides
             .into_iter()
-            .filter(|(_, f)| f.alias.is_some() || f.description.is_some() || f.defer)
+            .filter(|(_, value)| {
+                value.alias.is_some() || value.description.is_some() || value.exposure.is_some()
+            })
             .collect();
-        Self { facets }
+        Self {
+            overrides,
+            exposure: ToolExposurePolicy::default(),
+            discovery: ToolDiscoverySettings::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_exposure_policy(mut self, policy: ToolExposurePolicy) -> Self {
+        self.exposure = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn with_discovery(mut self, settings: ToolDiscoverySettings) -> Self {
+        self.discovery = settings;
+        self
     }
 
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.facets.is_empty()
+        self.overrides.is_empty() && self.exposure.is_default()
     }
 
     /// The canonical ids this presentation overrides (used at compile to validate each
     /// targets a selected tool).
     pub fn targets(&self) -> impl Iterator<Item = &str> {
-        self.facets.keys().map(String::as_str)
+        self.overrides.keys().map(String::as_str)
     }
 
     /// Reverse a model-supplied tool id back to its canonical id (the identity when the
@@ -1481,70 +1744,92 @@ impl ToolPresentation {
     /// through, so the alias never leaks past the model-facing boundary.
     #[must_use]
     pub fn resolve<'a>(&'a self, model_id: &'a str) -> &'a str {
-        self.facets
+        self.overrides
             .iter()
             .find(|(_, f)| f.alias.as_deref() == Some(model_id))
             .map_or(model_id, |(canonical, _)| canonical.as_str())
     }
 
-    /// Whether the tool with this canonical id is deferred (lazy-loaded, ADR-0053).
+    /// Effective exposure for one canonical id. An exact override wins over the
+    /// ordered catalog-wide policy.
     #[must_use]
-    pub fn is_deferred(&self, canonical: &str) -> bool {
-        self.facets.get(canonical).is_some_and(|f| f.defer)
+    pub fn exposure(&self, canonical: &str) -> ToolExposure {
+        self.overrides
+            .get(canonical)
+            .and_then(|value| value.exposure)
+            .unwrap_or_else(|| self.exposure.resolve(canonical))
     }
 
-    /// The model-facing tool list for one step: [`present`](Self::present) applied, then
-    /// each deferred tool withheld *unless* its canonical id is in `opened` (the tools
-    /// the model has loaded via `tool_open` this run). When any deferred tool is still
-    /// withheld, the reserved [`tool_open`](TOOL_OPEN_ID) meta-tool is appended, listing
-    /// them — so the model can load a tool's full schema on demand instead of paying its
-    /// tokens every step. No deferred tools ⇒ the list is exactly `present().face`.
     #[must_use]
-    pub fn model_tools(
+    pub fn discovery(&self) -> &ToolDiscoverySettings {
+        &self.discovery
+    }
+
+    /// Project the complete model-facing view for one Step in one pass: appearance,
+    /// Run-scoped reveals, `tool_search`, and request-only guidance.
+    #[must_use]
+    pub fn model_projection(
         &self,
         descriptors: &[ToolDescriptor],
-        opened: &std::collections::BTreeSet<String>,
-    ) -> Vec<ToolDescriptor> {
+        is_revealed: impl Fn(&str, &str) -> bool,
+    ) -> ToolModelProjection {
         let presented = self.present(descriptors);
-        let mut face = presented.face;
-        let mut withheld: Vec<ToolDescriptor> = Vec::new();
-        for d in presented.deferred {
-            // `d.id` is the model-facing (possibly aliased) id; `opened` keys on canonical.
-            if opened.contains(self.resolve(&d.id)) {
-                face.push(d);
+        let mut tools = presented.visible;
+        let mut discoverable = Vec::new();
+        for descriptor in presented.discoverable {
+            if is_revealed(self.resolve(&descriptor.id), &descriptor.content_hash()) {
+                tools.push(descriptor);
             } else {
-                withheld.push(d);
+                discoverable.push(descriptor);
             }
         }
-        if !withheld.is_empty() {
-            face.push(tool_open_descriptor(&withheld));
+        if discoverable.is_empty() {
+            return ToolModelProjection {
+                tools,
+                prompt: None,
+            };
         }
-        face
+        tools.push(tool_search_descriptor(&self.discovery));
+        let prompt = match &self.discovery.prompt {
+            ToolPromptInjection::Disabled => None,
+            ToolPromptInjection::Custom { text } => Some(text.clone()),
+            ToolPromptInjection::Automatic => {
+                let names = discoverable
+                    .iter()
+                    .map(|descriptor| descriptor.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Some(format!(
+                    "Some tool definitions are available on demand to reduce context. Use `{TOOL_SEARCH_ID}` \
+                     when a needed capability is not visible; search by capability or exact name \
+                     with `select:name`. Returned tools become callable on the next step. \
+                     On-demand tool names: {names}."
+                ))
+            }
+        };
+        ToolModelProjection { tools, prompt }
     }
 
     /// Split canonical descriptors into the model face (alias + description applied) and
-    /// the deferred set (withheld until opened). A descriptor with no facet passes
+    /// the on-demand set (withheld until revealed). A descriptor with no override passes
     /// through to the face unchanged.
     #[must_use]
-    pub fn present(&self, descriptors: &[ToolDescriptor]) -> PresentedTools {
-        let mut out = PresentedTools::default();
+    pub fn present(&self, descriptors: &[ToolDescriptor]) -> PresentedToolCatalog {
+        let mut out = PresentedToolCatalog::default();
         for d in descriptors {
-            match self.facets.get(&d.id) {
-                None => out.face.push(d.clone()),
-                Some(f) => {
-                    let mut shown = d.clone();
-                    if let Some(alias) = &f.alias {
-                        shown.id = alias.clone();
-                    }
-                    if let Some(desc) = &f.description {
-                        shown.description = desc.clone();
-                    }
-                    if f.defer {
-                        out.deferred.push(shown);
-                    } else {
-                        out.face.push(shown);
-                    }
+            let mut shown = d.clone();
+            if let Some(override_) = self.overrides.get(&d.id) {
+                if let Some(alias) = &override_.alias {
+                    shown.id = alias.clone();
                 }
+                if let Some(desc) = &override_.description {
+                    shown.description = desc.clone();
+                }
+            }
+            if self.exposure(&d.id) == ToolExposure::OnDemand {
+                out.discoverable.push(shown);
+            } else {
+                out.visible.push(shown);
             }
         }
         out

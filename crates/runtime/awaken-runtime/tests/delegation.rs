@@ -40,7 +40,9 @@ use awaken_runtime_contract::runtime_context::{
 use awaken_runtime_contract::snapshot::{
     AgentId, ExecutableAgentSnapshot, ExecutableAgentSnapshotId,
 };
-use awaken_runtime_contract::tool::ToolRecoveryPolicy;
+use awaken_runtime_contract::tool::{
+    RawTool, ToolConcurrency, ToolError, ToolOutput, ToolRecoveryPolicy,
+};
 use awaken_runtime_contract::tool_batch::{ActiveToolBatch, ToolBatchPhase, ToolCallPhase};
 use awaken_store_inmem::MemoryCommitCoordinator;
 
@@ -74,6 +76,10 @@ struct ParallelDelegatesThenText {
     calls: AtomicUsize,
 }
 
+struct MixedCallsThenText {
+    calls: AtomicUsize,
+}
+
 #[async_trait::async_trait]
 impl LlmExecutor for ParallelDelegatesThenText {
     async fn infer(
@@ -91,6 +97,36 @@ impl LlmExecutor for ParallelDelegatesThenText {
                     call_id: "parallel-2".into(),
                     tool_id: DELEGATE_TOOL.into(),
                     arguments: serde_json::json!({"agent_id": "writer", "input": "b"}),
+                },
+            ])
+        } else {
+            AssistantOutput::text("parent done")
+        };
+        Ok(ChatResponse {
+            output,
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for MixedCallsThenText {
+    async fn infer(
+        &self,
+        _request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let output = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            AssistantOutput::from_tool_calls(vec![
+                ToolCall {
+                    call_id: "mixed-delegation".into(),
+                    tool_id: DELEGATE_TOOL.into(),
+                    arguments: serde_json::json!({"agent_id": "researcher", "input": "a"}),
+                },
+                ToolCall {
+                    call_id: "mixed-regular".into(),
+                    tool_id: "external_tool".into(),
+                    arguments: serde_json::json!({}),
                 },
             ])
         } else {
@@ -219,6 +255,31 @@ struct ConcurrentRunDelegationService {
     maximum_active: AtomicUsize,
 }
 
+#[derive(Default)]
+struct ConcurrencyProbe {
+    active: AtomicUsize,
+    maximum_active: AtomicUsize,
+}
+
+impl ConcurrencyProbe {
+    async fn observe(&self) {
+        let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.maximum_active.fetch_max(active, Ordering::SeqCst);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        self.active.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct ObservationRunDelegationService {
+    probe: Arc<ConcurrencyProbe>,
+    supports_parallel: bool,
+}
+
+struct ObservedRawTool {
+    probe: Arc<ConcurrencyProbe>,
+    concurrency: ToolConcurrency,
+}
+
 struct LateResultRunDelegationService {
     reached: tokio::sync::Notify,
     release: tokio::sync::Notify,
@@ -344,6 +405,60 @@ impl RunDelegationService for ConcurrentRunDelegationService {
     }
 }
 
+#[async_trait::async_trait]
+impl RunDelegationService for ObservationRunDelegationService {
+    fn tool_id(&self) -> &str {
+        DELEGATE_TOOL
+    }
+
+    fn supports_parallel_completion(&self, _arguments: &serde_json::Value) -> bool {
+        self.supports_parallel
+    }
+
+    fn target_agent_id(
+        &self,
+        _arguments: &serde_json::Value,
+    ) -> Result<awaken_runtime_contract::snapshot::AgentId, DelegationExecutionError> {
+        Ok(awaken_runtime_contract::snapshot::AgentId(
+            "serial-child".into(),
+        ))
+    }
+
+    async fn start(
+        &self,
+        request: DelegationRequest,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        self.probe.observe().await;
+        Ok(DelegationStep::Ended {
+            text: format!("{} done", request.origin.parent_call_id),
+            usage: ThreadUsage::default(),
+        })
+    }
+
+    async fn resume(
+        &self,
+        _request: DelegationResume,
+    ) -> Result<DelegationStep, DelegationExecutionError> {
+        unreachable!("terminal child never resumes")
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for ObservedRawTool {
+    fn id(&self) -> &str {
+        "external_tool"
+    }
+
+    fn concurrency(&self, _arguments: &serde_json::Value) -> ToolConcurrency {
+        self.concurrency.clone()
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.probe.observe().await;
+        Ok(ToolOutput::ok(call.call_id, "external tool done"))
+    }
+}
+
 impl MockRunDelegationService {
     fn new(run_step: Step, resume_step: Step) -> Self {
         Self {
@@ -463,6 +578,21 @@ fn activation() -> RunActivation {
         data_subject_id: None,
         tool_capability_narrowing: Default::default(),
     }
+}
+
+fn activation_with_regular_tool() -> RunActivation {
+    let mut activation = activation();
+    activation
+        .snapshot
+        .resolved_spec
+        .tool_descriptors
+        .push(ToolDescriptor::pinned(
+            "test:external",
+            "external_tool",
+            "An external-style regular tool",
+            serde_json::json!({"type": "object"}),
+        ));
+    activation
 }
 
 /// A resume command correlated to the `Delegation` ticket (its call id is the
@@ -634,6 +764,124 @@ async fn multiple_terminal_child_agents_execute_concurrently_with_distinct_run_i
             .all(|child| child.status == DelegationStatus::Completed)
     );
     assert_ne!(children[0].child_run_id, children[1].child_run_id);
+}
+
+/// Decision table:
+///
+/// | C1: multiple delegation calls | C2: executor opts into terminal parallelism | Effect |
+/// |--------------------------------|------------------------------------------------|--------|
+/// | true                           | false                                          | calls remain serial |
+///
+/// The runtime must never infer concurrency from `ToolKind::AgentDelegation`.
+#[tokio::test]
+async fn terminal_child_agents_without_parallel_capability_execute_serially() {
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let executor = Arc::new(ObservationRunDelegationService {
+        probe: probe.clone(),
+        supports_parallel: false,
+    });
+    let runtime =
+        configured_runtime(executor.clone()).with_llm(Arc::new(ParallelDelegatesThenText {
+            calls: AtomicUsize::new(0),
+        }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let outcome = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit),
+        )
+        .await
+        .expect("serial delegation batch completes");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(probe.maximum_active.load(Ordering::SeqCst), 1);
+}
+
+/// A delegation capability cannot override an unrelated regular tool's explicit
+/// serial restriction, so this mixed batch remains serial.
+#[tokio::test]
+async fn mixed_delegation_and_regular_tool_batch_executes_serially() {
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let executor = Arc::new(ObservationRunDelegationService {
+        probe: probe.clone(),
+        supports_parallel: true,
+    });
+    let runtime = configured_runtime(executor)
+        .with_llm(Arc::new(MixedCallsThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(ObservedRawTool {
+            probe: probe.clone(),
+            concurrency: ToolConcurrency::Serial,
+        }));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let outcome = runtime
+        .execute(
+            activation_with_regular_tool(),
+            RuntimeRunContext::new()
+                .with_commit(commit.clone())
+                .with_reader(commit),
+        )
+        .await
+        .expect("mixed tool batch completes");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(
+        probe.maximum_active.load(Ordering::SeqCst),
+        1,
+        "delegation parallel capability must not leak to a regular tool"
+    );
+}
+
+/// Composition rule: execution families do not create separate schedulers.
+/// A terminal-only delegation and an ordinary external tool may overlap when
+/// delegation supplies terminal-completion support and the ordinary tool allows
+/// parallel execution through the shared scheduler.
+#[tokio::test]
+async fn mixed_delegation_and_parallel_regular_tool_execute_concurrently() {
+    let probe = Arc::new(ConcurrencyProbe::default());
+    let executor = Arc::new(ObservationRunDelegationService {
+        probe: probe.clone(),
+        supports_parallel: true,
+    });
+    let runtime = configured_runtime(executor)
+        .with_llm(Arc::new(MixedCallsThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_tool(Arc::new(ObservedRawTool {
+            probe: probe.clone(),
+            concurrency: ToolConcurrency::Parallel,
+        }));
+    let outcome = runtime
+        .execute(activation_with_regular_tool(), RuntimeRunContext::new())
+        .await
+        .expect("mixed compatible batch completes");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(probe.maximum_active.load(Ordering::SeqCst), 2);
+}
+
+/// Cause/effect rule: if any call requires a durable permission wait, no future
+/// from an otherwise parallel-eligible batch may enter the delegation executor.
+#[tokio::test]
+async fn permission_wait_prevents_parallel_delegation_start() {
+    let executor = Arc::new(ConcurrentRunDelegationService::new(2));
+    let runtime = configured_runtime(executor.clone())
+        .with_llm(Arc::new(ParallelDelegatesThenText {
+            calls: AtomicUsize::new(0),
+        }))
+        .with_gate(Arc::new(SuspendGate));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let outcome = runtime
+        .execute(activation(), RuntimeRunContext::new().with_commit(commit))
+        .await
+        .expect("permission wait is durable");
+
+    assert_eq!(outcome, RunState::Awaiting);
+    assert_eq!(executor.active.load(Ordering::SeqCst), 0);
+    assert_eq!(executor.maximum_active.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]

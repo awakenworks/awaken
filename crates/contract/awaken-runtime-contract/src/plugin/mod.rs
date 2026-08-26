@@ -16,12 +16,14 @@
 //! registrar), and `env` (the merged per-run execution environment).
 
 mod capability;
+mod concurrency;
 mod contributions;
 mod env;
 mod guard;
 mod phase;
 
 pub use capability::{BoundViolation, CapabilityBound, IdBound, PluginManifest, enforce_bound};
+pub use concurrency::ToolConcurrencyConstraint;
 pub use contributions::{Contributions, DynamicTool, DynamicToolError, Plugin, PluginConfigError};
 pub use env::{
     MergeError, PluginActivationDecision, ResolvedExecutionEnv, exact_plugin_selection,
@@ -202,6 +204,18 @@ mod tests {
         }
     }
 
+    struct FakeConstraint(&'static str);
+
+    impl ToolConcurrencyConstraint for FakeConstraint {
+        fn id(&self) -> &str {
+            self.0
+        }
+
+        fn constrain(&self, _call: &crate::tool::ToolCall) -> crate::tool::ToolConcurrency {
+            crate::tool::ToolConcurrency::Parallel
+        }
+    }
+
     #[test]
     fn enforce_bound_rejects_high_privilege_gate_and_guard_ids_outside_the_bound() {
         // The tool-gate and run-end-guard axes are high-privilege (a gate can restrict
@@ -223,18 +237,30 @@ mod tests {
             Err(BoundViolation::RunEndGuard { id, .. }) if id == "my-guard"
         ));
 
+        let mut constraint = Contributions::new("p");
+        constraint
+            .tool_constraints
+            .push(Arc::new(FakeConstraint("my-constraint")));
+        assert!(matches!(
+            enforce_bound(&m, &constraint),
+            Err(BoundViolation::ToolConstraint { id, .. }) if id == "my-constraint"
+        ));
+
         // Declaring the id in the bound admits it.
         let allowed = manifest(
             "p",
             CapabilityBound {
                 tool_gates: IdBound::Exact(vec!["my-gate".into()]),
                 run_end_guards: IdBound::Exact(vec!["my-guard".into()]),
+                tool_constraints: IdBound::Exact(vec!["my-constraint".into()]),
                 ..Default::default()
             },
         );
         let mut both = Contributions::new("p");
         both.tool_gates.push(Arc::new(FakeGate("my-gate")));
         both.run_end_guards.push(Arc::new(FakeGuard("my-guard")));
+        both.tool_constraints
+            .push(Arc::new(FakeConstraint("my-constraint")));
         assert!(enforce_bound(&allowed, &both).is_ok());
     }
 

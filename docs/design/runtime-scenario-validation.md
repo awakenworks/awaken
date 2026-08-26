@@ -103,9 +103,13 @@ never mutate runtime state directly.
 Contract-crate tests own stable wire shapes, serde, descriptor fingerprints,
 capability values, command/result envelopes, and compatibility fixtures.
 
-Do not create a `background_task` test directory or scenario namespace. The
-runtime mechanism is `scheduled_work` or `deferred_work`; `BackgroundTask`
-remains a banned umbrella term outside negative tests.
+Do not create a `background_task` scenario namespace in neutral Runtime or
+contract tests. The core mechanism is `scheduled_work` or `deferred_work`;
+`BackgroundTask` remains a banned umbrella term there. The independently
+selectable `awaken-ext-background-task` extension owns its narrowly scoped
+detached-tool scenarios and tests under that extension, as specified by
+ADR-0076. Its Runtime integration test may prove only the generic State/commit
+boundary; it must not add task-specific branches to Runtime.
 
 ## Scenario File Contract
 
@@ -149,7 +153,7 @@ tests may reuse the same scenario ids later.
 | RS-SCH-003 | uncommitted scheduled request is not wakeable | a tool or hook produced a scheduled-action candidate but `ThreadCommit` failed | dispatch/server scans for wakeable work | no durable wake is created because only committed `ScheduledAction` records are dispatch truth |
 | RS-SCH-004 | unknown scheduled result rejected | a resume result arrives with no matching committed `ScheduledAction` request | ingress attempts to resume the run | runtime rejects the result before it can update awaiting state or committed facts |
 | RS-SCH-005 | scheduled action kind from selected plugin only | a plugin package is installed but not selected for the run | a tool/hook tries to stage a scheduled action kind owned by that plugin | validation fails closed because the action kind is absent from the resolved environment |
-| RS-SCH-006 | no BackgroundTask recovery object | an implementation wants to recover delayed work after crash | recovery scans runtime/server durable state | recovery uses committed `ScheduledAction`, resume ticket, pending input, dispatch lease, or outbox records; no `BackgroundTask` object or queue is required or accepted |
+| RS-SCH-006 | no core BackgroundTask recovery object | an implementation wants to recover delayed work after crash | recovery scans neutral runtime/server durable state | recovery uses committed `ScheduledAction`, resume ticket, pending input, dispatch lease, or outbox records; neutral Runtime does not introduce a `BackgroundTask` object or queue (the separately selected ADR-0076 extension is outside this scenario) |
 | RS-SCH-007 | uncommitted deferred effect is not recoverable | a hook/tool produced a deferred-work candidate but the thread commit failed before persistence | process restarts and recovery scans durable state | no work is recovered because no committed request, resume ticket, pending input, or outbox exists |
 | RS-CTRL-001 | cancel while waiting on scheduled work | a run is awaiting in `ResumeTicket` with a committed `ScheduledAction` request | cancel enters through `RunIngress.control` | runtime commits a typed terminal cancel result; a later scheduled result for the same correlation is rejected or ignored without mutating committed facts |
 | RS-CTRL-002 | stop policy wins before resumed result | a stop policy commits a terminal stop reason for a run that previously requested deferred work | the deferred result later arrives through ingress/resume | runtime observes the terminal run state and fails closed; no resumed outcome or extra thread messages are committed |

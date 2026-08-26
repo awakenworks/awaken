@@ -82,6 +82,9 @@ pub struct CapabilityBound {
     /// Tool-gate ids this plugin may contribute (a pre-execution decision that
     /// can only restrict, never grant — permission stays the sole grant, G21).
     pub tool_gates: IdBound,
+    /// Tool-concurrency constraint ids contributed by this plugin.
+    #[serde(default)]
+    pub tool_constraints: IdBound,
 }
 
 /// Declared plugin identity and bound. One `validate`-able home for config.
@@ -111,6 +114,8 @@ pub enum BoundViolation {
     RunEndGuard { plugin: String, id: String },
     #[error("plugin {plugin} contributes tool gate {id:?} outside its declared bound")]
     ToolGate { plugin: String, id: String },
+    #[error("plugin {plugin} contributes tool constraint {id:?} outside its declared bound")]
+    ToolConstraint { plugin: String, id: String },
 }
 
 /// Enforce that a plugin's actual contributions are a subset of its bound (G30).
@@ -179,6 +184,14 @@ pub fn enforce_bound(
             return Err(BoundViolation::ToolGate {
                 plugin: id.clone(),
                 id: gate.id().to_string(),
+            });
+        }
+    }
+    for constraint in &contributions.tool_constraints {
+        if !bound.tool_constraints.allows(constraint.id()) {
+            return Err(BoundViolation::ToolConstraint {
+                plugin: id.clone(),
+                id: constraint.id().to_string(),
             });
         }
     }

@@ -60,10 +60,10 @@ const TOPICS: &[Topic] = &[
     Topic {
         key: "tools",
         title: "Tools and tool presentation",
-        what: "The tools an agent may call (host built-ins + MCP tools), plus per-tool presentation: alias (rename for the model), description override, and defer (send its schema only when opened).",
-        why: "Presentation shapes how the model sees a tool without changing what it does — clearer names, tighter descriptions, cheaper context via defer.",
+        what: "The tools an agent may call (host built-ins + MCP tools), plus exact appearance overrides and eager/on-demand schema exposure.",
+        why: "Presentation shapes how the model sees a tool without changing what it does — clearer names, tighter descriptions, and smaller context through on-demand discovery.",
         location: "Agent editor ▸ Build ▸ Tools & permissions.",
-        how: "Pick tools from the catalog (or add an MCP tool id), then add an override to rename/redescribe/defer a specific tool.",
+        how: "Pick tools from the catalog (or add an MCP tool id), then add an exact override or an exact/prefix exposure rule.",
         gotcha: "An override's target is the tool's canonical id (a catalog id or mcp__server__tool) — it applies to static and MCP tools uniformly.",
     },
     Topic {

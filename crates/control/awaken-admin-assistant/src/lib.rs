@@ -361,7 +361,8 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             CREATE_DRAFT_TOOL,
             "Author a full agent configuration from the operator's intent and SAVE it \
              as an unpublished draft. Accepts the WHOLE config as flat fields: \
-             instructions, model, tools, tool_overrides, plugin_config, mcp_servers, \
+             instructions, model, tools, tool_overrides, tool_exposure, tool_discovery, \
+             plugin_config, mcp_servers, \
              skills, multiagent, metadata, and `resources` (data-plane bindings — \
              memory stores, files, git repos, skills — by resource_id). Validates \
              before saving; on a validation error nothing is saved. Never publishes.",
@@ -387,10 +388,21 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
                                 "target": { "type": "string" },
                                 "alias": { "type": "string" },
                                 "description": { "type": "string" },
-                                "defer": { "type": "boolean" }
+                                "exposure": {
+                                    "type": "string",
+                                    "enum": ["eager", "on_demand"]
+                                }
                             },
                             "required": ["target"]
                         }
+                    },
+                    "tool_exposure": {
+                        "type": "object",
+                        "description": "Ordered exact/prefix selectors controlling eager or on-demand schema exposure."
+                    },
+                    "tool_discovery": {
+                        "type": "object",
+                        "description": "Typed tool_search result limit and automatic/disabled/custom prompt policy."
                     },
                     "plugin_config": {
                         "type": "object",
@@ -490,7 +502,8 @@ pub fn admin_tool_descriptors() -> Vec<ToolDescriptor> {
             PATCH_TOOL,
             "Incrementally refine a SAVED draft: apply only the fields present in \
              `patch` (same flat field set as admin_draft_agent — instructions, model, \
-             tools, plugin_config, mcp_servers, skills, multiagent, metadata, resources) \
+             tools, tool_exposure, tool_discovery, plugin_config, mcp_servers, \
+             skills, multiagent, metadata, resources) \
              to the stored draft, re-validate, and save. plugin_config sections merge by \
              key; a present `resources` array REPLACES the whole binding set (an absent \
              one leaves bindings untouched). Never publishes.",
@@ -853,6 +866,10 @@ struct DraftArgs {
     #[serde(default)]
     tool_overrides: Vec<ToolOverride>,
     #[serde(default)]
+    tool_exposure: awaken_runtime_contract::resolved::ToolExposurePolicy,
+    #[serde(default)]
+    tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings,
+    #[serde(default)]
     plugin_config: BTreeMap<String, serde_json::Value>,
     #[serde(default)]
     context_policy: Option<ContextPolicy>,
@@ -926,6 +943,8 @@ impl RawTool for DraftAgent {
             name: args.name,
             description: args.description,
             tool_overrides: args.tool_overrides,
+            tool_exposure: args.tool_exposure,
+            tool_discovery: args.tool_discovery,
             recovery_policies: Default::default(),
             mcp_servers,
             skills,
@@ -980,6 +999,10 @@ struct PatchFields {
     tool_patterns: Option<Vec<String>>,
     #[serde(default)]
     tool_overrides: Option<Vec<ToolOverride>>,
+    #[serde(default)]
+    tool_exposure: Option<awaken_runtime_contract::resolved::ToolExposurePolicy>,
+    #[serde(default)]
+    tool_discovery: Option<awaken_runtime_contract::resolved::ToolDiscoverySettings>,
     #[serde(default)]
     plugin_config: Option<BTreeMap<String, serde_json::Value>>,
     #[serde(default)]
@@ -1065,6 +1088,12 @@ impl RawTool for PatchAgent {
         }
         if let Some(v) = patch.tool_overrides {
             config.tool_overrides = v;
+        }
+        if let Some(v) = patch.tool_exposure {
+            config.tool_exposure = v;
+        }
+        if let Some(v) = patch.tool_discovery {
+            config.tool_discovery = v;
         }
         if let Some(cp) = patch.context_policy {
             config.context_policy = cp;

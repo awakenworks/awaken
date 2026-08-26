@@ -749,11 +749,24 @@ pub struct AgentConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<String>,
     /// How this agent's tools are presented to the model (ADR-0053): per-tool alias /
-    /// description override / defer. Appended last with `skip_serializing_if`-empty so a
+    /// description override / exposure. Appended last with `skip_serializing_if`-empty so a
     /// config with no overrides serializes to nothing and keeps its prior fingerprint
     /// byte-identical; a non-empty set enters the content address like any other field.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_overrides: Vec<ToolOverride>,
+    /// Ordered exposure rules over canonical static or dynamic tool ids. This is
+    /// policy only; descriptors remain owned by the executable catalog.
+    #[serde(
+        default,
+        skip_serializing_if = "awaken_runtime_contract::resolved::ToolExposurePolicy::is_default"
+    )]
+    pub tool_exposure: awaken_runtime_contract::resolved::ToolExposurePolicy,
+    /// One discovery policy for every on-demand static or dynamic tool.
+    #[serde(
+        default,
+        skip_serializing_if = "awaken_runtime_contract::resolved::ToolDiscoverySettings::is_default"
+    )]
+    pub tool_discovery: awaken_runtime_contract::resolved::ToolDiscoverySettings,
     /// Per-tool crash recovery policy, keyed by canonical tool id. This selects
     /// behavior but never grants capability: the runtime checks it against the
     /// executable tool and fails closed if the configuration widens it.
@@ -1006,7 +1019,7 @@ impl CompactionStrategy {
 }
 
 /// A per-tool presentation override (ADR-0053): rename and/or re-describe a selected
-/// tool for the model, and/or `defer` sending its schema until the model opens it.
+/// tool for the model, and/or override whether its schema is eager or on-demand.
 /// `target` is the tool's **canonical** id — a catalog id or an MCP `mcp__<server>__<tool>`
 /// id — so overrides apply to static and MCP tools uniformly. Authoring-only: `compile`
 /// validates each target against the agent's selected tools and projects the set into
@@ -1018,8 +1031,8 @@ pub struct ToolOverride {
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub defer: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<awaken_runtime_contract::resolved::ToolExposure>,
 }
 
 #[cfg(test)]

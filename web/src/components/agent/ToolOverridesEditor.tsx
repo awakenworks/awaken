@@ -1,5 +1,5 @@
 // Per-tool presentation overrides (ADR-0053): a row per override — the target tool id,
-// an alias (rename for the model), a description override, and a defer toggle. `target`
+// an alias (rename for the model), a description override, and an exposure toggle. `target`
 // is an editable canonical id. Static tools are suggested, while runtime-discovered
 // MCP tools are entered as `mcp__<server>__<tool>` without pretending they belong to
 // the static tool catalog.
@@ -23,7 +23,7 @@ export default function ToolOverridesEditor({
   const set = (i: number, patch: Partial<ToolOverride>) =>
     onChange(value.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   const add = (target = tools[0] ?? "") =>
-    onChange([...value, { target, alias: "", description: "", defer: false }]);
+    onChange([...value, { target, alias: "", description: "" }]);
   return (
     <>
       <datalist id={suggestionsId}>
@@ -44,9 +44,13 @@ export default function ToolOverridesEditor({
             <TextField label={app.t("Alias", "别名")} mono style={{ width: 130 }} placeholder="rename" value={r.alias ?? ""} onChange={(e) => set(i, { alias: e.target.value })} />
             <TextField label={app.t("Description", "描述")} style={{ flex: 1, minWidth: 160 }} placeholder="override description" value={r.description ?? ""} onChange={(e) => set(i, { description: e.target.value })} />
             <div className="field">
-              <label>{app.t("Defer", "延迟")}</label>
+              <label>{app.t("On demand", "按需暴露")}</label>
               <div style={{ height: 30, display: "flex", alignItems: "center" }}>
-                <Switch aria-label={app.t("Defer this tool", "延迟此工具")} checked={!!r.defer} onChange={(e) => set(i, { defer: e.target.checked })} />
+                <Switch
+                  aria-label={app.t("Expose this tool on demand", "按需暴露此工具")}
+                  checked={r.exposure === "on_demand"}
+                  onChange={(e) => set(i, { exposure: e.target.checked ? "on_demand" : undefined })}
+                />
               </div>
             </div>
             <Button variant="ghost" style={{ height: 30 }} onClick={() => onChange(value.filter((_, j) => j !== i))}>

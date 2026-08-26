@@ -2,8 +2,9 @@ use std::collections::BTreeMap;
 
 use super::{
     AcpSpec, Backend, BackendModelSelection, ContextPolicy, InferencePlacementMechanism,
-    ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolFacet, ToolKind,
-    ToolPresentation, content_hash, normalize_model_tool_schema,
+    ModelBinding, ResolvedModelCandidate, ResolvedSpec, ToolDescriptor, ToolExposure,
+    ToolExposurePolicy, ToolExposureRule, ToolKind, ToolPresentation, ToolPresentationOverride,
+    ToolSelector, content_hash, normalize_model_tool_schema,
 };
 
 #[test]
@@ -44,87 +45,154 @@ fn empty_presentation_is_the_identity() {
     assert!(p.is_empty());
     let tools = vec![td("a"), td("mcp__x__y")];
     let out = p.present(&tools);
-    assert_eq!(out.face, tools, "no overrides ⇒ face unchanged");
-    assert!(out.deferred.is_empty());
+    assert_eq!(out.visible, tools, "no overrides ⇒ visible set unchanged");
+    assert!(out.discoverable.is_empty());
     assert_eq!(p.resolve("a"), "a", "no alias ⇒ resolve is identity");
 }
 
 #[test]
 fn present_renames_redescribes_and_defers_by_canonical_id() {
     // Works identically for a static id and an MCP id.
-    let p = ToolPresentation::from_facets([
+    let p = ToolPresentation::from_overrides([
         (
             "a".to_string(),
-            ToolFacet {
+            ToolPresentationOverride {
                 alias: Some("say".into()),
                 description: Some("Speak.".into()),
-                defer: false,
+                exposure: None,
             },
         ),
         (
             "mcp__x__y".to_string(),
-            ToolFacet {
+            ToolPresentationOverride {
                 alias: Some("y".into()),
                 description: None,
-                defer: true,
+                exposure: Some(ToolExposure::OnDemand),
             },
         ),
-        ("noop".to_string(), ToolFacet::default()), // all-default ⇒ dropped
+        ("noop".to_string(), ToolPresentationOverride::default()),
     ]);
     assert!(!p.is_empty());
     let out = p.present(&[td("a"), td("mcp__x__y"), td("keep")]);
     // `a` renamed + redescribed and stays in the face; `keep` passes through.
     assert!(
-        out.face
+        out.visible
             .iter()
             .any(|d| d.id == "say" && d.description == "Speak.")
     );
-    assert!(out.face.iter().any(|d| d.id == "keep"));
+    assert!(out.visible.iter().any(|d| d.id == "keep"));
     // The MCP tool is deferred (renamed) — withheld from the face.
-    assert!(out.face.iter().all(|d| d.id != "y"));
-    assert!(out.deferred.iter().any(|d| d.id == "y"));
+    assert!(out.visible.iter().all(|d| d.id != "y"));
+    assert!(out.discoverable.iter().any(|d| d.id == "y"));
 }
 
 #[test]
-fn model_tools_withholds_a_deferred_tool_until_opened_and_offers_tool_open() {
-    use super::TOOL_OPEN_ID;
-    let p = ToolPresentation::from_facets([(
+fn exposure_rules_use_a_closed_first_match_selector_algebra() {
+    // Causal graph / decision table:
+    // C1 exact selector matches one canonical id; C2 prefix selector matches a
+    // live namespace; C3 two rules match; C4 no rule matches; C5 an exact
+    // per-tool override exists. Effects: E1/E2 selected exposure applies; E3 the
+    // first rule wins; E4 default applies; E5 exact override has final priority.
+    // The selector enum has no raw regex/glob variant, so malformed patterns are
+    // unconstructable and the contract has no dependency on a matcher plugin.
+    let policy = ToolExposurePolicy {
+        rules: vec![
+            ToolExposureRule {
+                selector: ToolSelector::Exact("mcp__docs__search".into()),
+                exposure: ToolExposure::Eager,
+            },
+            ToolExposureRule {
+                selector: ToolSelector::Prefix("mcp__docs__".into()),
+                exposure: ToolExposure::OnDemand,
+            },
+        ],
+        default: ToolExposure::Eager,
+    };
+    let presentation = ToolPresentation::from_overrides([(
+        "mcp__docs__write".into(),
+        ToolPresentationOverride {
+            exposure: Some(ToolExposure::Eager),
+            ..Default::default()
+        },
+    )])
+    .with_exposure_policy(policy);
+
+    assert_eq!(
+        presentation.exposure("mcp__docs__search"),
+        ToolExposure::Eager,
+        "C1+C3=>E1+E3"
+    );
+    assert_eq!(
+        presentation.exposure("mcp__docs__read"),
+        ToolExposure::OnDemand,
+        "C2=>E2"
+    );
+    assert_eq!(presentation.exposure("bash"), ToolExposure::Eager, "C4=>E4");
+    assert_eq!(
+        presentation.exposure("mcp__docs__write"),
+        ToolExposure::Eager,
+        "C2+C5=>E5"
+    );
+}
+
+#[test]
+fn one_projection_keeps_tool_visibility_and_discovery_prompt_consistent() {
+    // Causal graph: C1 one descriptor is OnDemand; C2 no matching reveal exists;
+    // C3 its canonical fingerprint is revealed. Effects: E1 the first projection
+    // contains tool_search + guidance but not the schema; E2 the next projection
+    // contains the schema and neither search nor guidance. Tools and prompt come
+    // from one projection value, eliminating two independently-derived views.
+    use super::TOOL_SEARCH_ID;
+    let p = ToolPresentation::from_overrides([(
         "mcp__srv__a".to_string(),
-        ToolFacet {
+        ToolPresentationOverride {
             alias: Some("create_issue".into()),
             description: None,
-            defer: true,
+            exposure: Some(ToolExposure::OnDemand),
         },
     )]);
     let tools = [td("mcp__srv__a"), td("keep")];
 
-    // Nothing opened: the deferred tool is withheld; tool_open is offered.
-    let closed = std::collections::BTreeSet::new();
-    let face = p.model_tools(&tools, &closed);
-    let ids: Vec<&str> = face.iter().map(|d| d.id.as_str()).collect();
+    let closed_projection = p.model_projection(&tools, |_, _| false);
+    let ids: Vec<&str> = closed_projection
+        .tools
+        .iter()
+        .map(|d| d.id.as_str())
+        .collect();
     assert!(ids.contains(&"keep"));
-    assert!(ids.contains(&TOOL_OPEN_ID));
-    assert!(!ids.contains(&"create_issue"), "deferred tool withheld");
+    assert!(ids.contains(&TOOL_SEARCH_ID));
+    assert!(!ids.contains(&"create_issue"), "C1+C2=>E1");
+    assert!(closed_projection.prompt.is_some(), "C1+C2=>E1");
 
-    // Opened (by canonical id): the tool appears, and tool_open is gone.
-    let opened: std::collections::BTreeSet<String> = ["mcp__srv__a".to_string()].into();
-    let ids2: Vec<String> = p
-        .model_tools(&tools, &opened)
+    // Revealed (by canonical id): the tool appears, and tool_search is gone.
+    let revealed_descriptor = p
+        .present(&tools)
+        .discoverable
+        .into_iter()
+        .find(|descriptor| descriptor.id == "create_issue")
+        .unwrap();
+    let revealed_fingerprint = revealed_descriptor.content_hash();
+    let revealed_projection = p.model_projection(&tools, |canonical, fingerprint| {
+        canonical == "mcp__srv__a" && fingerprint == revealed_fingerprint
+    });
+    let ids2: Vec<String> = revealed_projection
+        .tools
         .iter()
         .map(|d| d.id.clone())
         .collect();
     assert!(ids2.contains(&"create_issue".to_string()));
     assert!(
-        !ids2.iter().any(|i| i == TOOL_OPEN_ID),
-        "no deferred left ⇒ no tool_open"
+        !ids2.iter().any(|i| i == TOOL_SEARCH_ID),
+        "no deferred left ⇒ no tool_search"
     );
+    assert!(revealed_projection.prompt.is_none(), "C3=>E2");
 }
 
 #[test]
 fn resolve_reverses_an_alias_to_its_canonical_id() {
-    let p = ToolPresentation::from_facets([(
+    let p = ToolPresentation::from_overrides([(
         "mcp__x__y".to_string(),
-        ToolFacet {
+        ToolPresentationOverride {
             alias: Some("y".into()),
             ..Default::default()
         },
@@ -602,5 +670,39 @@ fn content_hash_is_deterministic_sha256_hex() {
     assert!(
         tail.chars()
             .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+    );
+}
+
+#[test]
+fn openrouter_server_tool_parameters_reject_illegal_states_at_decode() {
+    // Cause/effect table: T1 Tool Search limit 1..=50 -> constructible; T2 zero
+    // or 51 -> rejected; W1 known typed Web option -> constructible; W2 unknown
+    // option or zero count -> rejected. Provider adapters therefore never need
+    // to reinterpret an arbitrary JSON bag or repair invalid publication state.
+    use super::{OpenRouterWebFetchParameters, OpenRouterWebSearchParameters};
+
+    let search: OpenRouterWebSearchParameters = serde_json::from_value(serde_json::json!({
+        "engine": "exa",
+        "max_results": 5,
+        "max_total_results": 15,
+        "search_context_size": "medium"
+    }))
+    .expect("known OpenRouter search parameters");
+    assert_eq!(search.max_results.unwrap().get(), 5);
+    assert!(
+        serde_json::from_value::<OpenRouterWebSearchParameters>(
+            serde_json::json!({"max_results": 0})
+        )
+        .is_err()
+    );
+    assert!(
+        serde_json::from_value::<OpenRouterWebSearchParameters>(serde_json::json!({"extra": true}))
+            .is_err()
+    );
+    assert!(
+        serde_json::from_value::<OpenRouterWebFetchParameters>(
+            serde_json::json!({"max_content_tokens": 0})
+        )
+        .is_err()
     );
 }

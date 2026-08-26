@@ -15,7 +15,7 @@ use awaken_runtime_contract::plugin::{
     AfterToolContext, HookReaction, PhaseContext, PhaseHook, PhaseKind, Plugin, RunEndContext,
     RunEndDecision, enforce_bound,
 };
-use awaken_runtime_contract::tool::ToolOutput;
+use awaken_runtime_contract::tool::{ToolConcurrency, ToolOutput, ToolResourceAccess};
 use serde_json::json;
 
 /// Drive the state-machine observer (now a `PhaseHook` at `AfterTool`, ADR-0055)
@@ -114,9 +114,72 @@ fn manifest_admits_resolved_contributions() {
     assert_eq!(manifest.id, "state_machine");
     assert!(enforce_bound(&manifest, &contributions).is_ok());
     assert_eq!(contributions.tool_gates.len(), 1);
+    assert_eq!(contributions.tool_constraints.len(), 1);
     assert_eq!(contributions.phase_hooks.len(), 5);
     assert_eq!(contributions.run_end_guards.len(), 1);
     assert_eq!(contributions.state_keys.len(), 6);
+}
+
+/// State-machine scheduling uses the already-authored machine instance as its
+/// resource identity. This table proves the intended partition: same
+/// machine/key conflicts, distinct keys remain parallel, and unrelated calls
+/// do not acquire an artificial resource.
+#[test]
+fn concurrency_constraint_is_derived_from_machine_and_rendered_key() {
+    let contributions = plugin(READ_BEFORE_WRITE).resolve();
+    let constraint = &contributions.tool_constraints[0];
+    let read_a = constraint.constrain(&ctx("Read", json!({"file_path": "a.rs"})));
+    let write_a = constraint.constrain(&ctx("Write", json!({"file_path": "a.rs"})));
+    let write_b = constraint.constrain(&ctx("Write", json!({"file_path": "b.rs"})));
+    let unrelated = constraint.constrain(&ctx("Search", json!({"query": "a.rs"})));
+
+    assert!(!read_a.compatible_with(&write_a));
+    assert!(read_a.compatible_with(&write_b));
+    assert_eq!(unrelated, ToolConcurrency::Parallel);
+    assert!(matches!(
+        read_a,
+        ToolConcurrency::Resources(ref accesses)
+            if matches!(accesses.as_slice(), [ToolResourceAccess::Write(resource)]
+                if resource.namespace == "state_machine:thread:rbw" && resource.key == "a.rs")
+    ));
+}
+
+/// One invocation may participate in several independent machines. It must
+/// acquire every matching instance resource, while overlapping transitions in
+/// one machine still produce only one claim for that machine instance.
+#[test]
+fn concurrency_constraint_composes_all_matching_machines_without_duplicates() {
+    let configured = r#"{"machines":[
+        {"name":"workflow","scope":"thread","key":"{path}","initial":"open",
+         "transitions":[
+           {"on":"mcp__git__write(path ~ \"*\")","from":"open","to":"open"},
+           {"on":"mcp__git__write(path ~ \"*\")","from":"closed","to":"open"}]},
+        {"name":"tenant-quota","scope":"run","key":"{tenant}","initial":"ready",
+         "transitions":[
+           {"on":"mcp__git__write(tenant ~ \"*\")","from":"ready","to":"ready"}]}
+    ]}"#;
+    let contributions = plugin(configured).resolve();
+    let claim = contributions.tool_constraints[0].constrain(&ctx(
+        "mcp__git__write",
+        json!({"path": "repo/a", "tenant": "acme"}),
+    ));
+
+    let ToolConcurrency::Resources(accesses) = claim else {
+        panic!("matching machines must produce resource claims");
+    };
+    assert_eq!(accesses.len(), 2, "one claim per matching machine");
+    assert!(accesses.iter().any(|access| matches!(
+        access,
+        ToolResourceAccess::Write(resource)
+            if resource.namespace == "state_machine:thread:workflow"
+                && resource.key == "repo/a"
+    )));
+    assert!(accesses.iter().any(|access| matches!(
+        access,
+        ToolResourceAccess::Write(resource)
+            if resource.namespace == "state_machine:run:tenant-quota"
+                && resource.key == "acme"
+    )));
 }
 
 #[test]

@@ -229,7 +229,7 @@ impl<ModelState> ExecutableAgentSnapshotBuilder<ModelState> {
     }
 
     /// Set the model-facing tool presentation (ADR-0053): per-tool alias / description
-    /// override / defer. Default is empty (byte-identical tool face).
+    /// appearance / exposure override. Default is empty (byte-identical tool view).
     #[must_use]
     pub fn tool_presentation(mut self, presentation: ToolPresentation) -> Self {
         self.tool_presentation = presentation;

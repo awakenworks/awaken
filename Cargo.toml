@@ -134,6 +134,7 @@ awaken-store-schema = { path = "crates/stores/awaken-store-schema" }
 awaken-store-sqlite = { path = "crates/stores/awaken-store-sqlite" }
 awaken-store-postgres = { path = "crates/stores/awaken-store-postgres" }
 awaken-work-store = { path = "crates/stores/awaken-work-store" }
+awaken-ext-background-task = { path = "crates/runtime/awaken-ext-background-task" }
 awaken-session-store = { path = "crates/stores/awaken-session-store" }
 awaken-resource-store = { path = "crates/stores/awaken-resource-store" }
 awaken-env-store = { path = "crates/stores/awaken-env-store" }
@@ -179,6 +180,7 @@ awaken-webhook = { path = "crates/server/awaken-webhook" }
 awaken-webhook-managed = { path = "crates/server/awaken-webhook-managed" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+jsonschema = { version = "0.33", default-features = false }
 toml = "0.8"
 thiserror = "2"
 async-trait = "0.1"

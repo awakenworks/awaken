@@ -31,7 +31,7 @@ export async function run({ page, goto, intro, beat, clearCaption, checkpoint, a
       system: "Translate concise goals into verified work. Use configured Skills for procedural detail.",
       metadata: { owner: "platform" },
       tools: ["read", "write"],
-      tool_overrides: [{ target: "mcp__issues__create_issue", alias: "file_issue", description: "Create a verified issue.", defer: true }],
+      tool_overrides: [{ target: "mcp__issues__create_issue", alias: "file_issue", description: "Create a verified issue.", exposure: "on_demand" }],
       mcp_servers: [{ type: "url", name: "issues", url: "https://mcp.example.test/issues" }],
       skills: [{ id: "release-review" }],
       max_steps: 12,

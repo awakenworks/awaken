@@ -9,7 +9,9 @@ use async_trait::async_trait;
 use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, IdBound, Plugin, PluginConfigError, PluginManifest,
 };
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::resolved::{
+    OpenRouterWebFetchParameters, OpenRouterWebSearchParameters, ProviderServerTool, ToolDescriptor,
+};
 use awaken_runtime_contract::tool::{RawTool, Tool, ToolError, ToolExecutionTarget};
 use awaken_runtime_contract::{CredentialMaterial, CredentialRef, CredentialUsage};
 use serde::{Deserialize, Serialize};
@@ -124,12 +126,10 @@ pub struct WebProviderTarget {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct WebServerToolProviderDescriptor {
-    pub id: String,
-    pub label: String,
-    pub provider_kind: String,
-    pub tool_type: String,
-    pub options_schema: Value,
+struct WebServerToolProviderDescriptor {
+    id: String,
+    label: String,
+    options_schema: Value,
 }
 
 /// How one provider authenticates. The provider receives already-resolved
@@ -357,7 +357,7 @@ impl WebSearchProviderRegistry {
         Ok(())
     }
 
-    pub fn register_server_search(
+    fn register_server_search(
         &mut self,
         descriptor: WebServerToolProviderDescriptor,
     ) -> Result<(), WebSearchRegistryError> {
@@ -376,7 +376,7 @@ impl WebSearchProviderRegistry {
         Ok(())
     }
 
-    pub fn register_server_fetch(
+    fn register_server_fetch(
         &mut self,
         descriptor: WebServerToolProviderDescriptor,
     ) -> Result<(), WebSearchRegistryError> {
@@ -725,7 +725,7 @@ pub struct WebSearchPlugin {
 
 enum ConfiguredWebRoute<T> {
     Host(Vec<T>),
-    ProviderServer(Box<(WebServerToolProviderDescriptor, Value)>),
+    ProviderServer(ProviderServerTool),
 }
 
 type ConfiguredSearchRoute = ConfiguredWebRoute<(RegisteredWebSearchProvider, WebProviderTarget)>;
@@ -761,10 +761,10 @@ impl WebSearchPlugin {
                 PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, "config is required")
             })?)
             .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?;
-        if let Some(provider) = self
+        if self
             .registry
             .server_search_providers
-            .get(&config.provider_id)
+            .contains_key(&config.provider_id)
         {
             if !config.fallbacks.is_empty() || config.credential.is_some() {
                 return Err(PluginConfigError::new(
@@ -782,12 +782,11 @@ impl WebSearchPlugin {
                     "provider-server realization cannot enforce the Agent WebSearch execution policy",
                 ));
             }
-            validate_object_options(&config.options)
-                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredWebRoute::ProviderServer(Box::new((
-                provider.clone(),
-                config.options,
-            ))));
+            let parameters: OpenRouterWebSearchParameters = serde_json::from_value(config.options)
+                .map_err(|error| PluginConfigError::new(WEB_SEARCH_PLUGIN_ID, error.to_string()))?;
+            return Ok(ConfiguredWebRoute::ProviderServer(
+                ProviderServerTool::openrouter_web_search(parameters),
+            ));
         }
         let mut targets = Vec::new();
         for target in config.targets() {
@@ -847,17 +846,10 @@ impl WebSearchPlugin {
                     ),
                 )
             }
-            ConfiguredWebRoute::ProviderServer(route) => {
-                let (provider, options) = *route;
-                (
-                    web_search_descriptor().with_provider_server_tool(
-                        provider.provider_kind,
-                        provider.tool_type,
-                        options,
-                    ),
-                    erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
-                )
-            }
+            ConfiguredWebRoute::ProviderServer(projection) => (
+                web_search_descriptor().with_provider_server_tool(projection),
+                erase_for(ProviderServerWebSearchTool, ToolExecutionTarget::Brain),
+            ),
         };
         Ok((descriptor, tool))
     }
@@ -979,10 +971,10 @@ impl WebFetchPlugin {
         let value = config.cloned().unwrap_or_else(Self::default_config);
         let config: WebFetchConfig = serde_json::from_value(value)
             .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string()))?;
-        if let Some(provider) = self
+        if self
             .registry
             .server_fetch_providers
-            .get(&config.provider_id)
+            .contains_key(&config.provider_id)
         {
             if !config.fallbacks.is_empty() || config.credential.is_some() {
                 return Err(PluginConfigError::new(
@@ -998,12 +990,13 @@ impl WebFetchPlugin {
                     "provider-server realization cannot enforce the Agent WebFetch execution policy",
                 ));
             }
-            validate_object_options(&config.options)
-                .map_err(|error| PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error))?;
-            return Ok(ConfiguredWebRoute::ProviderServer(Box::new((
-                provider.clone(),
-                config.options,
-            ))));
+            let parameters: OpenRouterWebFetchParameters = serde_json::from_value(config.options)
+                .map_err(|error| {
+                PluginConfigError::new(WEB_FETCH_PLUGIN_ID, error.to_string())
+            })?;
+            return Ok(ConfiguredWebRoute::ProviderServer(
+                ProviderServerTool::openrouter_web_fetch(parameters),
+            ));
         }
         let mut targets = Vec::new();
         for target in config.targets() {
@@ -1085,17 +1078,10 @@ impl WebFetchPlugin {
                     ),
                 ))
             }
-            ConfiguredWebRoute::ProviderServer(route) => {
-                let (provider, options) = *route;
-                Ok((
-                    web_fetch_descriptor().with_provider_server_tool(
-                        provider.provider_kind,
-                        provider.tool_type,
-                        options,
-                    ),
-                    erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
-                ))
-            }
+            ConfiguredWebRoute::ProviderServer(projection) => Ok((
+                web_fetch_descriptor().with_provider_server_tool(projection),
+                erase_for(ProviderServerWebFetchTool, ToolExecutionTarget::Brain),
+            )),
         }
     }
 }
@@ -1485,6 +1471,57 @@ mod tests {
 
     struct FakeFetchProvider {
         seen_requests: Mutex<Vec<WebFetchRequest>>,
+    }
+
+    #[test]
+    fn openrouter_server_configuration_is_typed_once_at_publication() {
+        // Cause/effect table: S1/F1 known non-zero options -> the exact closed
+        // provider projection; S2/F2 zero or unknown fields -> publication
+        // rejection. No Runtime/provider layer receives an open options object.
+        let registry = WebSearchProviderRegistry::server_builtins();
+        let search = WebSearchPlugin::new(registry.clone(), None);
+        let (descriptor, _) = search
+            .configured_tool(Some(&json!({
+                "provider_id": "openrouter",
+                "options": {
+                    "engine": "exa",
+                    "max_results": 3,
+                    "max_total_results": 9,
+                    "search_context_size": "medium"
+                }
+            })))
+            .expect("S1 typed search configuration");
+        assert!(matches!(
+            descriptor.provider_server_tool,
+            Some(ProviderServerTool::OpenRouterWebSearch { .. })
+        ));
+        for invalid in [
+            json!({"provider_id":"openrouter","options":{"max_results":0}}),
+            json!({"provider_id":"openrouter","options":{"extra":true}}),
+        ] {
+            assert!(search.validate_config(Some(&invalid)).is_err(), "S2");
+        }
+
+        let fetch = WebFetchPlugin::new(registry, None);
+        let (descriptor, _) = fetch
+            .configured_tool(Some(&json!({
+                "provider_id": "openrouter",
+                "options": {"engine":"openrouter","max_content_tokens":2048}
+            })))
+            .expect("F1 typed fetch configuration");
+        assert!(matches!(
+            descriptor.provider_server_tool,
+            Some(ProviderServerTool::OpenRouterWebFetch { .. })
+        ));
+        assert!(
+            fetch
+                .validate_config(Some(&json!({
+                    "provider_id":"openrouter",
+                    "options":{"max_content_tokens":0}
+                })))
+                .is_err(),
+            "F2"
+        );
     }
 
     #[async_trait]
