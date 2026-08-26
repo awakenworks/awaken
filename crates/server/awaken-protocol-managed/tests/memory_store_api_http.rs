@@ -390,7 +390,13 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(got_basic["content"], Value::Null, "R4");
 
-    // A stale content_sha256 precondition is a 409 CAS failure.
+    // Causes: C1 an older SDK uses POST; C2 a canonical client uses PATCH; C3
+    // the supplied content hash is stale or current. Constraint: both verbs
+    // enter one update handler and therefore one CAS/version-history authority.
+    // Effects: E1 stale hashes conflict without mutation; E2 a current hash
+    // commits exactly one new version. Decision rules: C1+C3(stale) -> E1;
+    // C2+C3(current) -> E2. Covering opposite verbs proves route aliases cannot
+    // fork aggregate semantics.
     let (status, conflict) = call(
         &router,
         "POST",
@@ -407,7 +413,7 @@ async fn memory_crud_with_precondition_and_version_log() {
     // The matching precondition (the live sha) succeeds and bumps the version id.
     let (status, updated) = call(
         &router,
-        "POST",
+        "PATCH",
         &format!("/v1/memory_stores/{store}/memories/{mid}?view=full"),
         Some(json!({ "content": "world", "precondition": { "type":"content_sha256", "content_sha256": sha } })),
     )

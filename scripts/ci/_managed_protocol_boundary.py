@@ -78,6 +78,7 @@ ANTHROPIC_MANAGED_ROUTES = frozenset(
         ("POST", "/v1/memory_stores/{}/memories"),
         ("GET", "/v1/memory_stores/{}/memories/{}"),
         ("POST", "/v1/memory_stores/{}/memories/{}"),
+        ("PATCH", "/v1/memory_stores/{}/memories/{}"),
         ("DELETE", "/v1/memory_stores/{}/memories/{}"),
         ("GET", "/v1/memory_stores/{}/memory_versions"),
         ("GET", "/v1/memory_stores/{}/memory_versions/{}"),
