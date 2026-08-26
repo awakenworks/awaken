@@ -161,14 +161,14 @@ impl FileContext {
 }
 
 fn canonicalize_or_absolute(path: &Path) -> Result<PathBuf, ToolError> {
-    std::fs::canonicalize(path)
-        .or_else(|_| {
-            if path.is_absolute() {
-                Ok(lexical_normalize(path))
-            } else {
-                std::env::current_dir().map(|cwd| lexical_normalize(&cwd.join(path)))
-            }
-        })
+    let absolute = if path.is_absolute() {
+        lexical_normalize(path)
+    } else {
+        std::env::current_dir()
+            .map(|cwd| lexical_normalize(&cwd.join(path)))
+            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))?
+    };
+    canonicalize_with_missing(&absolute)
         .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
 }
 
@@ -1475,6 +1475,49 @@ mod write_tests {
         assert!(out.contains("wrote"));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "artifact-bytes");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn missing_workdir_beneath_a_symlink_is_confined_by_its_real_root() {
+        use std::os::unix::fs::symlink;
+
+        // macOS exposes /var through /private/var. The same shape can occur in
+        // sandbox mount projections on Linux, so compare both the trusted root
+        // and candidate after resolving their longest existing prefix.
+        let directory = tempfile::tempdir().unwrap();
+        let real = directory.path().join("real");
+        let alias = directory.path().join("alias");
+        std::fs::create_dir(&real).unwrap();
+        symlink(&real, &alias).unwrap();
+        let workdir = alias.join("missing");
+        let context = HandToolContext::new(&workdir);
+        let inside = workdir.join("nested/result.txt");
+
+        WriteTool::new(&context)
+            .call(WriteArgs {
+                path: inside.to_string_lossy().into_owned(),
+                content: "inside".into(),
+            })
+            .await
+            .expect("symlinked missing workdir remains writable");
+        assert_eq!(
+            std::fs::read_to_string(real.join("missing/nested/result.txt")).unwrap(),
+            "inside"
+        );
+
+        let outside = directory.path().join("outside.txt");
+        assert!(
+            WriteTool::new(&context)
+                .call(WriteArgs {
+                    path: outside.to_string_lossy().into_owned(),
+                    content: "outside".into(),
+                })
+                .await
+                .is_err(),
+            "a canonical root must not broaden the trusted boundary"
+        );
+        assert!(!outside.exists());
     }
 
     #[tokio::test]
