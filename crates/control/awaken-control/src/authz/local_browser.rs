@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use awaken_iam_contract::{AccountId, PrincipalRef, ScopeRef, Timestamp, WorkspaceId};
-use awaken_iam_core::{RoleBinding, RoleBindingRepo};
+use awaken_iam_core::{RoleBinding, RoleBindingRepository};
 use awaken_iam_host::{AuthReject, LocalBrowserAuth, LocalBrowserAuthError, LocalSetupHandoff};
 use axum::http::HeaderMap;
 use axum::http::header::COOKIE;
@@ -38,7 +38,7 @@ impl ManagementAuthz {
                 org_id: self.org_id.clone(),
             },
         };
-        RoleBindingRepo::add(&self.store, binding.clone())
+        RoleBindingRepository::add(&self.store, binding.clone())
             .expect("persist local browser admin binding");
         self.state
             .lock()
