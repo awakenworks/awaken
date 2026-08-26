@@ -1,4 +1,5 @@
 use super::*;
+use crate::persist_material_exact;
 
 pub async fn ensure_worker_local(
     repo: &dyn CredentialRepo,
@@ -464,7 +465,7 @@ async fn execute_managed_mutation(
     fence_managed_material_refs(&mut pending, &mut materials)?;
     repo.begin_managed_mutation(pending.clone()).await?;
     for (reference, material) in materials {
-        if let Err(error) = store.put(&reference, material).await {
+        if let Err(error) = persist_material_exact(store, &reference, material).await {
             if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
             {
                 return Err(ManagedCredentialMutationError::Compensation {
@@ -748,7 +749,7 @@ async fn enter_prepared_credential(
     repo.begin_mutation(intent.clone()).await?;
 
     for (reference, secret) in materials {
-        if let Err(error) = store.put(&reference, secret).await {
+        if let Err(error) = persist_material_exact(store, &reference, secret).await {
             // A failed put may still have partially written. Only retire the
             // durable intent after every candidate ref is idempotently clean.
             if cleanup_unpublished_material(&intent, store).await.is_ok() {
@@ -859,7 +860,7 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
     };
     repo.begin_mutation(intent.clone()).await?;
     for (reference, material) in materials {
-        if let Err(error) = store.put(&reference, material).await {
+        if let Err(error) = persist_material_exact(store, &reference, material).await {
             if cleanup_unpublished_material(&intent, store).await.is_ok() {
                 repo.complete_mutation(id).await?;
             }

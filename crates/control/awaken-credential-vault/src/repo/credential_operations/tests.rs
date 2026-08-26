@@ -11,6 +11,46 @@ struct FaultyDeleteStore {
     lose_first_response: AtomicBool,
 }
 
+#[derive(Clone, Copy)]
+enum RotationReadbackFault {
+    Seal,
+    Mismatch,
+}
+
+struct RejectedRotationReadbackStore {
+    inner: InMemorySecretStore,
+    fault: RotationReadbackFault,
+}
+
+#[async_trait::async_trait]
+impl SecretStore for RejectedRotationReadbackStore {
+    async fn put(
+        &self,
+        r: &crate::SecretRef,
+        secret: RedactedString,
+    ) -> Result<(), CredentialError> {
+        self.inner.put(r, secret).await
+    }
+
+    async fn get(&self, r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
+        if r.0.ends_with(":r2:primary") {
+            return match self.fault {
+                RotationReadbackFault::Seal => Err(CredentialError::Seal),
+                RotationReadbackFault::Mismatch => Ok(RedactedString::new("different-material")),
+            };
+        }
+        self.inner.get(r).await
+    }
+
+    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
+        self.inner.delete(r).await
+    }
+
+    async fn inventory(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
+        self.inner.inventory().await
+    }
+}
+
 struct GatedCredentialRepo {
     inner: InMemoryCredentialRepo,
     gate_reads: AtomicBool,
@@ -345,6 +385,69 @@ async fn rotation_publishes_a_new_revision_and_reclaims_the_old_material() {
     );
     assert!(store.get(&old_ref).await.is_err());
     assert!(repo.pending_mutations().await.unwrap().is_empty());
+}
+
+/// Rotation material-publication cause/effect graph: C1 the exact active
+/// revision is current; C2 the replacement write returns success; C3 the same
+/// SecretStore can open the exact replacement before CAS. C1+C2+C3 publishes
+/// revision 2 and retires revision 1. C1+C2+!C3 returns the typed seal error,
+/// keeps revision 1 executable, and reclaims only the unpublished reference;
+/// the same holds when C3 opens bytes different from the submitted material.
+///
+/// | Rule | C1 current | C2 put | C3 exact open | Effect |
+/// |---|---|---|---|---|
+/// | V1 | T | success | exact | publish r2; retire r1 |
+/// | V2 | T | success | seal failure | keep r1; remove r2 material |
+/// | V3 | T | success | different bytes | keep r1; remove r2 material |
+#[tokio::test]
+async fn rotation_does_not_publish_material_without_exact_readback() {
+    for (rule, fault) in [
+        ("V2", RotationReadbackFault::Seal),
+        ("V3", RotationReadbackFault::Mismatch),
+    ] {
+        let store = RejectedRotationReadbackStore {
+            inner: InMemorySecretStore::new(),
+            fault,
+        };
+        let repo = InMemoryCredentialRepo::new();
+        let before = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "ws".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("github.com/api".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("old-token")),
+                oauth_command: None,
+            },
+            &store,
+            &repo,
+        )
+        .await
+        .unwrap();
+        let old_ref = before.material_ref.clone().unwrap();
+
+        let result = rotate_credential_materials_exact(
+            &before.id,
+            before.version,
+            CredentialMaterialPatch {
+                primary: Some(RedactedString::new("new-token")),
+                auxiliary: BTreeMap::new(),
+            },
+            &store,
+            &repo,
+        )
+        .await;
+
+        assert!(matches!(result, Err(CredentialError::Seal)), "{rule}");
+        assert_eq!(repo.get(&before.id).await.unwrap(), before, "{rule}");
+        assert_eq!(
+            store.get(&old_ref).await.unwrap().expose_secret(),
+            "old-token",
+            "{rule}"
+        );
+        assert_eq!(store.inventory().await.unwrap(), vec![old_ref], "{rule}");
+        assert!(repo.pending_mutations().await.unwrap().is_empty(), "{rule}");
+    }
 }
 
 #[tokio::test]
