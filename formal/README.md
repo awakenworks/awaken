@@ -270,17 +270,20 @@ production logic.
   `ManagedCredentialCreation.tla`, `RolloutEventIdentity.tla`, and
   `ResourceBindingEffect.tla` cover audit-before-write admission for stores that
   cannot share the config transaction, ownership-fenced orphan detection,
-  atomic Managed Source/child publication with abstract crash ownership
-  transfer, exact event-id replay/collision decisions, and the durable
+  atomic Managed Source/child publication with original-epoch publication and
+  abort-only expired-Writing takeover, exact event-id replay/collision
+  decisions, and the durable
   external-effect journal used for resource bindings.
   Current-format Managed production commands construct an attempt-suffixed
   physical SecretRef. The Kani harness proves the bounded admission selector
   requires a declared owner and namespace match; it does not prove suffix
-  uniqueness, UUID entropy, or SecretStore conditional writes. A takeover can
-  reject a stale durable transition. When attempt namespaces are distinct, a
-  delayed old write is isolated from later attempts and reported by inventory
-  inspection. Physical GC requires a backend-specific durable orphan claim
-  before deletion. The
+  uniqueness, UUID entropy, or SecretStore conditional writes. A takeover
+  rejects stale durable transitions and can move an expired `Writing` fact only
+  toward abort cleanup. The model admits a delayed old external write only as
+  an unreachable orphan, never as durable readiness or publication. When
+  attempt namespaces are distinct, that orphan is isolated from later attempts
+  and reported by inventory inspection. Physical GC requires a backend-specific
+  durable orphan claim before deletion. The
   bounded model proves publication ownership, not SecretStore conditional-write
   semantics, database clock accuracy, or an upper bound on external-call delay.
 - `AgentInputRevision.tla` covers the resource-plane revision protocol for an
@@ -405,7 +408,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ResourceReclamation | 11,156 | 2,514 | 17 |
 | ManagementAuditIntent | 15 | 8 | 5 |
 | CredentialInventory | 7 | 4 | 3 |
-| ManagedCredentialCreation | 8,918 | 1,298 | 11 |
+| ManagedCredentialCreation | 5,702 | 1,250 | 11 |
 | ManagedCredentialRollout | 234,903 | 28,492 | 20 |
 | RolloutEventIdentity | 42 | 17 | 6 |
 | ManagedVaultDeletion | 682,436 | 36,840 | 20 |
@@ -636,13 +639,17 @@ One stable intent identity admits duplicate replay and rejects a conflicting
 begin. A durable writer token plus monotonic epoch abstracts the Rust owner
 fence; within the model an unexpired live lease cannot be claimed, while
 cancellation/crash and deadline expiry enable one atomic recovery takeover.
-Stale abstract material/ready and commit transitions cannot mutate either half
-of the pair after that takeover.
-Ready work remains recoverable without changing its already-durable token, and
-an abort first enters durable `ReclaimingAbort`; crash/restart can interleave
-before retryable external deletion, and only exact cleanup completion reaches
-the clean `Aborted` state. An abandoned Writing intent eventually publishes or
-aborts under the explicit expiry, restart, claim, material, cleanup, and commit
+Only the original live epoch-1 owner may put material or mark `Ready`. A
+successful claim of expired `Writing` work moves `None`, `Partial`, and
+`Complete` material alike only to durable `ReclaimingAbort`; it can never put,
+mark ready, or publish. A `Ready` fact produced by the original owner remains
+recoverable without changing its already-durable token, and only that epoch-1
+fact may commit the Source/child pair. A late old external write after takeover
+can create only an unreachable orphan flag; stale ready/commit transitions
+cannot mutate durable material, phase, or either half of the pair. Crash/restart
+can interleave before retryable external deletion, and only exact cleanup
+completion reaches the clean `Aborted` state. An abandoned `Writing` intent
+eventually aborts under the explicit expiry, restart, claim, abort, and cleanup
 fairness assumptions. Source plus Vault child publish in one abstract commit.
 
 Create enters `Writing` and produces no rollout. An update enters `Writing`

@@ -48,7 +48,7 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
+use awaken_credential_contract::{CredentialDescriptor, CredentialRef, CredentialSourceId};
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;
@@ -243,6 +243,11 @@ pub enum CredentialStatus {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CredentialSource {
     pub id: CredentialSourceId,
+    /// Durable proof that this distinct source was published while fencing one
+    /// exact predecessor. Ordinary creates persist `None`; replacement replay
+    /// requires this exact provenance even after the predecessor is retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_of: Option<CredentialRef>,
     pub workspace_id: String,
     pub kind: CredentialKind,
     /// Canonical execution-relevant metadata for newly described credentials.
@@ -341,6 +346,15 @@ impl CredentialSource {
     /// also reject malformed legacy or externally written rows before access or
     /// plaintext materialization.
     pub fn validate_authority(&self) -> Result<(), CredentialError> {
+        if let Some(replacement_of) = &self.replacement_of
+            && (replacement_of.id.trim().is_empty()
+                || replacement_of.revision == 0
+                || replacement_of.id == self.id.0)
+        {
+            return Err(CredentialError::InvalidSource(
+                "credential replacement provenance requires a distinct exact predecessor".into(),
+            ));
+        }
         if let Some(descriptor) = &self.descriptor {
             descriptor
                 .validate()
@@ -992,6 +1006,7 @@ pub(crate) fn prepare_source_with_id(
     (
         CredentialSource {
             id,
+            replacement_of: None,
             workspace_id: params.workspace_id,
             kind: params.kind,
             descriptor: None,
@@ -1162,6 +1177,7 @@ mod tests {
     fn bare_source(kind: CredentialKind) -> CredentialSource {
         CredentialSource {
             id: CredentialSourceId("cred:ws1:test".into()),
+            replacement_of: None,
             workspace_id: "ws1".into(),
             kind,
             descriptor: None,

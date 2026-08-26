@@ -210,6 +210,7 @@ mod tests {
         .with_expiry(2_000);
         let source = CredentialSource {
             id: CredentialSourceId("credential-a".into()),
+            replacement_of: None,
             workspace_id: "workspace-a".into(),
             kind: CredentialKind::Vault,
             descriptor: Some(descriptor),

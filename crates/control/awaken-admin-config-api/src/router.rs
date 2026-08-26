@@ -23,7 +23,7 @@ use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialRepo, enter_credential, enter_credential_described,
     enter_credential_idempotent_described, enter_credential_idempotent_verified,
-    rotate_credential_materials_exact,
+    enter_credential_replacement_idempotent_described, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
@@ -1521,8 +1521,21 @@ async fn post_credential(
         secret,
         oauth_command,
     };
-    let source = match (idempotent_id, body.descriptor) {
-        (Some(id), Some(descriptor)) => enter_credential_idempotent_described(
+    let source = match (idempotent_id, body.descriptor, body.replacement_of) {
+        (Some(id), Some(descriptor), Some(replacement_of)) => {
+            enter_credential_replacement_idempotent_described(
+                &replacement_of,
+                id,
+                params,
+                None,
+                descriptor,
+                state.secrets.as_ref(),
+                state.credentials.as_ref(),
+            )
+            .await
+            .map(|entry| entry.source)
+        }
+        (Some(id), Some(descriptor), None) => enter_credential_idempotent_described(
             id,
             params,
             None,
@@ -1532,7 +1545,7 @@ async fn post_credential(
         )
         .await
         .map(|entry| entry.source),
-        (Some(id), None) => enter_credential_idempotent_verified(
+        (Some(id), None, None) => enter_credential_idempotent_verified(
             id,
             params,
             None,
@@ -1541,11 +1554,14 @@ async fn post_credential(
         )
         .await
         .map(|entry| entry.source),
-        (None, Some(descriptor)) => {
+        (None, Some(descriptor), None) => {
             enter_credential_described(params, descriptor, &*state.secrets, &*state.credentials)
                 .await
         }
-        (None, None) => enter_credential(params, &*state.secrets, &*state.credentials).await,
+        (None, None, None) => enter_credential(params, &*state.secrets, &*state.credentials).await,
+        (_, None, Some(_)) | (None, Some(_), Some(_)) => Err(CredentialError::InvalidSource(
+            "replacement_of requires a described idempotent hosted credential request".into(),
+        )),
     }
     .map_err(|e| cred_problem(&e, &rid))?;
     Ok((StatusCode::CREATED, Json(source.into())))

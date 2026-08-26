@@ -23,6 +23,7 @@ const KEY: [u8; 32] = [19; 32];
 fn source() -> CredentialSource {
     CredentialSource {
         id: CredentialSourceId("cred:ws:process-crash".into()),
+        replacement_of: None,
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
         descriptor: None,
@@ -53,15 +54,11 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
         let (repo, secrets) = stores(&db);
-        repo.begin_mutation(CredentialMutationIntent {
-            before: None,
-            after: source(),
-        })
-        .await
-        .unwrap();
+        let intent = CredentialMutationIntent::prepare(None, source()).unwrap();
+        repo.begin_mutation(intent.clone()).await.unwrap();
         secrets
             .put(
-                source().material_ref.as_ref().unwrap(),
+                intent.after.material_ref.as_ref().unwrap(),
                 RedactedString::new("process-crash-secret"),
             )
             .await
@@ -97,24 +94,23 @@ async fn secret_write_survives_kill_and_is_compensated_from_the_intent() {
     assert!(!child.wait().unwrap().success());
 
     let (repo, secrets) = stores(db.to_str().unwrap());
-    assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
-    assert!(
-        secrets
-            .get(source().material_ref.as_ref().unwrap())
-            .await
-            .is_ok()
-    );
+    let pending = repo.pending_mutations().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let attempted_ref = pending[0].after.material_ref.as_ref().unwrap();
+    assert!(secrets.get(attempted_ref).await.is_ok());
+    let claim_now = pending[0].material_fence.writer_lease_expires_at_unix_ms + 1;
+    let claimed = repo
+        .claim_expired_mutation(&pending[0], claim_now, claim_now + 120_000)
+        .await
+        .unwrap()
+        .expect("expired crash writer claim");
+    repo.abort_mutation(&claimed).await.unwrap();
     assert_eq!(
         recover_credential_mutations(&secrets, &repo).await.unwrap(),
         1
     );
     assert!(repo.pending_mutations().await.unwrap().is_empty());
-    assert!(
-        secrets
-            .get(source().material_ref.as_ref().unwrap())
-            .await
-            .is_err()
-    );
+    assert!(secrets.get(attempted_ref).await.is_err());
     assert_eq!(
         recover_credential_mutations(&secrets, &repo).await.unwrap(),
         0
