@@ -31,6 +31,7 @@ awaken-ext-skills = { workspace = true }
 awaken-ext-mcp = { workspace = true }
 awaken-ext-goal = { workspace = true }
 awaken-ext-state-machine = { workspace = true, features = ["schema"] }
+awaken-ext-background-task.workspace = true
 # Resource implementations are available only to test-support fixture builders;
 # product Runtime Host consumes the contract traits injected by startup.
 awaken-memory-store = { workspace = true, optional = true }

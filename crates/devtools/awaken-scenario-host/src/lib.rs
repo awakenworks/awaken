@@ -370,6 +370,17 @@ pub fn build_router_and_host(
     build_router_and_host_from(resource_host(llm, model_ref))
 }
 
+/// Build an unmounted Host for a test that owns the outer product composition.
+///
+/// Unlike [`build_router_and_host`], this function starts no lifecycle and binds
+/// no Session application authority. The caller must mount the Host exactly once.
+pub fn build_unmounted_host(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> Arc<SharedHost> {
+    build_unmounted_host_from(resource_host(llm, model_ref))
+}
+
 /// Scenario assembly whose Runtime and Managed adapters can share the exact
 /// immutable Agent publication authority. The catalog may be populated after
 /// construction once the generated local workspace id is known.
@@ -381,6 +392,24 @@ pub fn build_router_and_host_with_agent_publications(
     build_router_and_host_from(
         resource_host(llm, model_ref).map_host(|host| host.with_agent_publications(publications)),
     )
+}
+
+/// Build an unmounted Host with one immutable Agent publication authority.
+/// Cross-module product-composition tests use this seam to avoid mounting a
+/// disposable Session application before installing their real composition.
+pub fn build_unmounted_host_with_agent_publications(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+) -> Arc<SharedHost> {
+    build_unmounted_host_from(
+        resource_host(llm, model_ref).map_host(|host| host.with_agent_publications(publications)),
+    )
+}
+
+fn build_unmounted_host_from(platform: deployment::ScenarioPlatform) -> Arc<SharedHost> {
+    let (host, _resources) = platform.into_parts();
+    Arc::new(host)
 }
 
 fn build_router_and_host_from(platform: deployment::ScenarioPlatform) -> (Router, Arc<SharedHost>) {
