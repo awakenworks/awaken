@@ -664,6 +664,24 @@ pub trait SecretStore: Send + Sync {
     }
 }
 
+/// Persist one material value and prove that the same store can immediately
+/// open the exact bytes before any executable credential revision is
+/// published. This is deliberately material-only: usage/consumer shape remains
+/// owned by the later `CredentialAccess` admission and materializer path.
+pub(crate) async fn persist_material_exact(
+    store: &dyn SecretStore,
+    reference: &SecretRef,
+    material: RedactedString,
+) -> Result<(), CredentialError> {
+    let expected = material.clone();
+    store.put(reference, material).await?;
+    let persisted = store.get(reference).await?;
+    if persisted.expose_secret() != expected.expose_secret() {
+        return Err(CredentialError::Seal);
+    }
+    Ok(())
+}
+
 /// A credential-domain failure.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialError {
@@ -830,7 +848,7 @@ pub async fn create_source(
     validate_create_params(&params)?;
     let (source, secret) = prepare_source(params);
     if let (Some(material_ref), Some(secret)) = (&source.material_ref, secret) {
-        store.put(material_ref, secret).await?;
+        persist_material_exact(store, material_ref, secret).await?;
     }
     Ok(source)
 }
