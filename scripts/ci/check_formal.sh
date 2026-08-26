@@ -5,6 +5,19 @@ cd "$(dirname "$0")/../.."
 source scripts/ci/_cargo_target.sh
 awaken_configure_cargo_target "$PWD"
 
+# Prefer the repository-pinned source build when bootstrapped. The published
+# Kani 0.67 bundle embeds Rust 1.93 and cannot compile the workspace's Rust 1.96
+# IAM dependencies. Its setup still owns the CBMC/GOTO backend binaries.
+kani_cache_root="${AWAKEN_KANI_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/awaken-kani}"
+kani_source_dir="${AWAKEN_KANI_SOURCE_DIR:-$kani_cache_root/current}"
+if [ -x "$kani_source_dir/scripts/cargo-kani" ]; then
+  kani_backend_dir="${AWAKEN_KANI_BACKEND_DIR:-}"
+  if [ -z "$kani_backend_dir" ]; then
+    kani_backend_dir="$HOME/.kani/kani-0.67.0/bin"
+  fi
+  export PATH="$kani_source_dir/scripts${kani_backend_dir:+:$kani_backend_dir}:$PATH"
+fi
+
 require_tools=0
 if [ "${1:-}" = "--require-tools" ]; then
   require_tools=1
@@ -232,6 +245,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-ext-goal \
     --harness applying_a_grade_obeys_decision_and_budget \
     --harness terminal_outcomes_are_absorbing
+  run_kani awaken-ext-background-task \
+    --harness cancellation_is_monotone_and_terminal_states_are_absorbing
   run_kani awaken-runtime-contract \
     --harness terminal_calls_are_never_reentered \
     --harness only_the_matching_approval_ticket_enters_execution \
@@ -253,6 +268,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness permission_verdict_projects_to_exact_non_widening_gate_outcome \
     --harness every_gate_outcome_has_one_exact_audit_label \
     --harness retry_is_authorized_only_inside_the_exact_bounded_budget \
+    --harness every_u8_is_admitted_exactly_when_it_is_within_the_search_limit \
+    --harness same_resource_conflict_is_symmetric_and_exactly_one_write_or_more \
     --harness non_retryable_failure_is_immediately_terminal \
     --harness terminal_retry_state_never_reopens \
     --harness unknown_retry_state_fails_closed \
@@ -320,7 +337,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness worker_transport_selector_admits_only_three_exact_postures \
     --harness remote_transport_never_downgrades_or_widens_identity
 else
-  echo "skipped Kani: install with 'cargo install --locked kani-verifier && cargo kani setup'"
+  echo "skipped Kani: run scripts/ci/bootstrap_kani.sh"
   missing=1
 fi
 

@@ -78,7 +78,7 @@
     { "id": "PersistBatch", "operator": "PersistBatch" },
     { "id": "CommitNoop", "operator": "CommitNoop" },
     { "id": "StartOrRetry", "operator": "StartOrRetry" },
-    { "id": "StartParallelDelegations", "operator": "StartParallelDelegations" },
+    { "id": "StartParallelCalls", "operator": "StartParallelCalls" },
     { "id": "AwaitCall", "operator": "AwaitCall" },
     { "id": "ResumeExecuting", "operator": "ResumeExecuting" },
     { "id": "CompleteCall", "operator": "CompleteCall" },

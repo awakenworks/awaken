@@ -577,7 +577,7 @@ enum TransitionId {
     PersistBatch,
     CommitNoop,
     StartOrRetry,
-    StartParallelDelegations,
+    StartParallelCalls,
     AwaitCall,
     ResumeExecuting,
     CompleteCall,
@@ -678,15 +678,19 @@ fn classify_transition(
 
     let changed = changed_calls(calls, before, after);
     if changed.len() > 1
-        && changed.len() == agent_calls.len()
         && changed.iter().all(|call| {
-            agent_calls.contains(*call)
-                && before.call_state[*call] == "Requested"
+            before.call_state[*call] == "Requested"
                 && after.call_state[*call] == "Executing"
                 && after.attempts[*call] == before.attempts[*call] + 1
+                && after.link_state[*call]
+                    == if agent_calls.contains(*call) {
+                        "Open"
+                    } else {
+                        before.link_state[*call].as_str()
+                    }
         })
     {
-        return TransitionId::StartParallelDelegations;
+        return TransitionId::StartParallelCalls;
     }
     if changed.len() == 1 {
         let call = changed[0];
