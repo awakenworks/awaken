@@ -3,48 +3,31 @@ use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 pub const BUNDLE_ID: &str = "awaken.worker_registry";
 pub(crate) const NS: &str = "worker_registry";
 
-const NONNEGATIVE_AUTHORITY_POSTGRES: &str = "\
-    ALTER TABLE {prefix}_worker \
-    ADD CONSTRAINT {prefix}_worker_nonnegative_authority \
-    CHECK (generation >= 0 AND expires_at_ms >= 0)";
-
-const NONNEGATIVE_AUTHORITY_SQLITE: &str = "\
-    CREATE TRIGGER {prefix}_worker_nonnegative_authority_insert \
-    BEFORE INSERT ON {prefix}_worker \
-    WHEN NEW.generation < 0 OR NEW.expires_at_ms < 0 BEGIN \
-        SELECT RAISE(ABORT, 'worker authority values must be non-negative'); \
-    END; \
-    CREATE TRIGGER {prefix}_worker_nonnegative_authority_update \
-    BEFORE UPDATE OF generation, expires_at_ms ON {prefix}_worker \
-    WHEN NEW.generation < 0 OR NEW.expires_at_ms < 0 BEGIN \
-        SELECT RAISE(ABORT, 'worker authority values must be non-negative'); \
-    END; \
-    UPDATE {prefix}_worker \
-    SET generation = generation, expires_at_ms = expires_at_ms";
-
 pub fn registry_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         BUNDLE_ID,
-        vec![
-            Migration::new(
-                1,
-                "current worker incarnation with durable generation and heartbeat tombstone",
-                "CREATE TABLE {prefix}_worker (\
-                 worker_id TEXT PRIMARY KEY, \
-                 incarnation_id TEXT NOT NULL, \
-                 generation BIGINT NOT NULL, \
-                 state TEXT NOT NULL, \
-                 expires_at_ms BIGINT NOT NULL, \
-                 record_json TEXT NOT NULL);\
-                 CREATE INDEX {prefix}_expiry_idx ON {prefix}_worker (state, expires_at_ms)",
-            )?,
-            Migration::per_dialect(
-                2,
-                "enforce non-negative worker authority values",
-                NONNEGATIVE_AUTHORITY_POSTGRES,
-                NONNEGATIVE_AUTHORITY_SQLITE,
-            )?,
-        ],
+        vec![Migration::new(
+            1,
+            "current relational worker directory authority",
+            "CREATE TABLE {prefix}_worker (\
+             worker_id TEXT PRIMARY KEY CHECK (length(worker_id) > 0), \
+             incarnation_id TEXT NOT NULL CHECK (length(incarnation_id) > 0), \
+             generation BIGINT NOT NULL CHECK (generation >= 0), \
+             state TEXT NOT NULL CHECK (state IN ('starting', 'ready', 'draining', 'quiesced', 'dead')), \
+             manifest_json TEXT NOT NULL, \
+             capability_fingerprint TEXT NOT NULL, \
+             in_flight BIGINT NOT NULL CHECK (in_flight >= 0 AND in_flight <= 4294967295), \
+             warm_environment_shapes_json TEXT NOT NULL, \
+             credential_observations_json TEXT NOT NULL, \
+             acp_capability_observations_json TEXT NOT NULL, \
+             expires_at_ms BIGINT NOT NULL CHECK (expires_at_ms >= 0), \
+             heartbeat_sequence BIGINT NOT NULL CHECK (heartbeat_sequence >= 0), \
+             observation_sequence BIGINT NOT NULL CHECK (observation_sequence >= 0), \
+             registered_at_ms BIGINT NOT NULL CHECK (registered_at_ms >= 0), \
+             heartbeat_at_ms BIGINT NOT NULL CHECK (heartbeat_at_ms >= 0), \
+             drain_deadline_ms BIGINT CHECK (drain_deadline_ms IS NULL OR drain_deadline_ms >= 0));\
+             CREATE INDEX {prefix}_expiry_idx ON {prefix}_worker (state, expires_at_ms)",
+        )?],
     )
 }
 
@@ -59,7 +42,7 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_rejects_negative_worker_authority() {
+    fn sqlite_rejects_invalid_worker_authority() {
         use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
         use rusqlite::Connection;
 
@@ -71,16 +54,26 @@ mod tests {
         assert!(
             conn.execute(
                 "INSERT INTO worker_registry_worker
-                     (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
-                 VALUES ('negative', 'incarnation', -1, 'ready', 1, '{}')",
+                     (worker_id, incarnation_id, generation, state, manifest_json,
+                      capability_fingerprint, in_flight, warm_environment_shapes_json,
+                      credential_observations_json, acp_capability_observations_json,
+                      expires_at_ms, heartbeat_sequence, observation_sequence,
+                      registered_at_ms, heartbeat_at_ms)
+                 VALUES ('negative', 'incarnation', -1, 'ready', '{}', 'fingerprint', 0,
+                         '[]', '[]', '[]', 1, 0, 0, 0, 0)",
                 [],
             )
             .is_err()
         );
         conn.execute(
             "INSERT INTO worker_registry_worker
-                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
-             VALUES ('valid', 'incarnation', 1, 'ready', 1, '{}')",
+                 (worker_id, incarnation_id, generation, state, manifest_json,
+                  capability_fingerprint, in_flight, warm_environment_shapes_json,
+                  credential_observations_json, acp_capability_observations_json,
+                  expires_at_ms, heartbeat_sequence, observation_sequence,
+                  registered_at_ms, heartbeat_at_ms)
+             VALUES ('valid', 'incarnation', 1, 'ready', '{}', 'fingerprint', 0,
+                     '[]', '[]', '[]', 1, 0, 0, 0, 0)",
             [],
         )
         .unwrap();
@@ -91,33 +84,5 @@ mod tests {
             )
             .is_err()
         );
-    }
-
-    #[test]
-    fn sqlite_constraint_migration_rolls_back_on_corrupt_existing_rows() {
-        use awaken_scoped_migration::MigrationBundle;
-        use awaken_scoped_migration_sqlite::SqliteMigrationRunner;
-        use rusqlite::Connection;
-
-        let conn = Connection::open_in_memory().unwrap();
-        let full = registry_bundle().unwrap();
-        let v1 = MigrationBundle::new(BUNDLE_ID, full.migrations()[..1].to_vec()).unwrap();
-        let runner = SqliteMigrationRunner::with_prefix(NS).unwrap();
-        runner.run_bundle(&conn, &v1).unwrap();
-        conn.execute(
-            "INSERT INTO worker_registry_worker
-                 (worker_id, incarnation_id, generation, state, expires_at_ms, record_json)
-             VALUES ('corrupt', 'incarnation', -1, 'ready', 1, '{}')",
-            [],
-        )
-        .unwrap();
-
-        assert!(runner.run_bundle(&conn, &full).is_err());
-        conn.execute(
-            "UPDATE worker_registry_worker SET generation = 0 WHERE worker_id = 'corrupt'",
-            [],
-        )
-        .unwrap();
-        assert_eq!(runner.run_bundle(&conn, &full).unwrap().len(), 1);
     }
 }

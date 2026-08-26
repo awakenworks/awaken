@@ -8,6 +8,7 @@ use awaken_worker_contract::{
 };
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
+use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
 use crate::durable_i64;
 use crate::schema::{NS, registry_bundle};
 use crate::transition;
@@ -43,35 +44,72 @@ impl SqliteWorkerDirectory {
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
         let encoded = tx
             .query_row(
-                "SELECT record_json FROM worker_registry_worker WHERE worker_id = ?1",
+                &format!(
+                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = ?1"
+                ),
                 params![worker_id],
-                |row| row.get::<_, String>(0),
+                encoded_row,
             )
             .optional()
             .map_err(persist)?;
-        encoded
-            .map(|value| serde_json::from_str(&value).map_err(persist))
-            .transpose()
+        encoded.map(decode).transpose()
     }
 
     fn write(tx: &Transaction<'_>, record: &RegisteredWorker) -> Result<(), RegistryError> {
         let generation = durable_i64("generation", record.snapshot.identity.generation)?;
         let expires_at_ms = durable_i64("expires_at_ms", record.snapshot.expires_at_ms)?;
+        let in_flight = i64::from(record.snapshot.in_flight);
         tx.execute(
             "INSERT INTO worker_registry_worker \
-                (worker_id, incarnation_id, generation, state, expires_at_ms, record_json) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+                (worker_id, incarnation_id, generation, state, manifest_json, \
+                 capability_fingerprint, in_flight, warm_environment_shapes_json, \
+                 credential_observations_json, acp_capability_observations_json, \
+                 expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
+                 heartbeat_at_ms, drain_deadline_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
              ON CONFLICT(worker_id) DO UPDATE SET \
                 incarnation_id = excluded.incarnation_id, generation = excluded.generation, \
-                state = excluded.state, expires_at_ms = excluded.expires_at_ms, \
-                record_json = excluded.record_json",
+                state = excluded.state, manifest_json = excluded.manifest_json, \
+                capability_fingerprint = excluded.capability_fingerprint, \
+                in_flight = excluded.in_flight, \
+                warm_environment_shapes_json = excluded.warm_environment_shapes_json, \
+                credential_observations_json = excluded.credential_observations_json, \
+                acp_capability_observations_json = excluded.acp_capability_observations_json, \
+                expires_at_ms = excluded.expires_at_ms, \
+                heartbeat_sequence = excluded.heartbeat_sequence, \
+                observation_sequence = excluded.observation_sequence, \
+                registered_at_ms = excluded.registered_at_ms, \
+                heartbeat_at_ms = excluded.heartbeat_at_ms, \
+                drain_deadline_ms = excluded.drain_deadline_ms",
             params![
                 record.snapshot.identity.worker_id,
                 record.snapshot.identity.incarnation_id,
                 generation,
                 transition::state_name(record.snapshot.state),
+                encode_json("manifest_json", &record.snapshot.manifest)?,
+                record.snapshot.capability_fingerprint,
+                in_flight,
+                encode_json(
+                    "warm_environment_shapes_json",
+                    &record.snapshot.warm_environment_shapes
+                )?,
+                encode_json(
+                    "credential_observations_json",
+                    &record.snapshot.credential_observations
+                )?,
+                encode_json(
+                    "acp_capability_observations_json",
+                    &record.snapshot.acp_capability_observations
+                )?,
                 expires_at_ms,
-                serde_json::to_string(record).map_err(persist)?,
+                durable_i64("heartbeat_sequence", record.heartbeat_sequence)?,
+                durable_i64("observation_sequence", record.observation_sequence)?,
+                durable_i64("registered_at_ms", record.registered_at_ms)?,
+                durable_i64("heartbeat_at_ms", record.heartbeat_at_ms)?,
+                record
+                    .drain_deadline_ms
+                    .map(|value| durable_i64("drain_deadline_ms", value))
+                    .transpose()?,
             ],
         )
         .map_err(persist)?;
@@ -112,14 +150,14 @@ impl WorkerObservationSource for SqliteWorkerDirectory {
             .lock()
             .map_err(|_| RegistryError::Persistence("worker registry mutex poisoned".into()))?;
         let mut stmt = conn
-            .prepare("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
+            .prepare(&format!(
+                "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
+            ))
             .map_err(persist)?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(persist)?;
+        let rows = stmt.query_map([], encoded_row).map_err(persist)?;
         rows.map(|row| {
             let encoded = row.map_err(persist)?;
-            serde_json::from_str(&encoded).map_err(persist)
+            decode(encoded)
         })
         .collect()
     }
@@ -209,19 +247,19 @@ impl WorkerDirectory for SqliteWorkerDirectory {
             .map_err(persist)?;
         let encoded = {
             let mut stmt = tx
-                .prepare(
-                    "SELECT record_json FROM worker_registry_worker \
+                .prepare(&format!(
+                    "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
                      WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= ?1",
-                )
+                ))
                 .map_err(persist)?;
             let rows = stmt
-                .query_map(params![durable_now_ms], |row| row.get::<_, String>(0))
+                .query_map(params![durable_now_ms], encoded_row)
                 .map_err(persist)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(persist)?
         };
         let mut expired = Vec::new();
         for value in encoded {
-            let current: RegisteredWorker = serde_json::from_str(&value).map_err(persist)?;
+            let current = decode(value)?;
             if let Some(next) = transition::expire(&current, now_ms) {
                 expired.push(next.snapshot.identity.clone());
                 Self::write(&tx, &next)?;
@@ -230,4 +268,25 @@ impl WorkerDirectory for SqliteWorkerDirectory {
         tx.commit().map_err(persist)?;
         Ok(expired)
     }
+}
+
+fn encoded_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<EncodedWorkerRow> {
+    Ok(EncodedWorkerRow {
+        worker_id: row.get(0)?,
+        incarnation_id: row.get(1)?,
+        generation: row.get(2)?,
+        state: row.get(3)?,
+        manifest_json: row.get(4)?,
+        capability_fingerprint: row.get(5)?,
+        in_flight: row.get(6)?,
+        warm_environment_shapes_json: row.get(7)?,
+        credential_observations_json: row.get(8)?,
+        acp_capability_observations_json: row.get(9)?,
+        expires_at_ms: row.get(10)?,
+        heartbeat_sequence: row.get(11)?,
+        observation_sequence: row.get(12)?,
+        registered_at_ms: row.get(13)?,
+        heartbeat_at_ms: row.get(14)?,
+        drain_deadline_ms: row.get(15)?,
+    })
 }

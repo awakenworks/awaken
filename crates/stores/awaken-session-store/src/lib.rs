@@ -12,6 +12,7 @@
 //! aggregate"). Secrets never land here — only the wire-echo MCP `{name,type,url}`
 //! values, per the port's contract (G3).
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -40,9 +41,24 @@ use sqlx::postgres::PgPool;
 /// `managed_session`, the ledger `managed_schema_migrations`.
 const NS: &str = "managed";
 const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
+const RECOVERY_BATCH_SIZE: i64 = 256;
 
 fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepositoryError> {
     serde_json::to_string(session).map_err(corrupt)
+}
+
+fn referenced_vault_ids(session: &PersistedSession) -> BTreeSet<String> {
+    session
+        .frozen_baseline()
+        .map(|baseline| {
+            baseline
+                .mcp_authoring
+                .ordered_vault_ids
+                .iter()
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub(crate) fn lifecycle_str(fact: &ManagedLifecycleFact) -> String {

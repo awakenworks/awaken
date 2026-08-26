@@ -16,64 +16,42 @@ pub(super) const NS: &str = "work_queue";
 pub(super) fn work_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.work_queue",
-        vec![
-            Migration::new(
-                1,
-                "self-hosted environment work queue: one row per work item",
-                "CREATE TABLE {prefix}_item (\
+        vec![Migration::new(
+            1,
+            "current self-hosted work queue authority",
+            "CREATE TABLE {prefix}_item (\
              work_id             TEXT PRIMARY KEY, \
-             seq                 BIGINT NOT NULL, \
-             environment_id      TEXT NOT NULL, \
-             data_type           TEXT NOT NULL, \
-             data_id             TEXT NOT NULL, \
+             seq                 BIGINT NOT NULL CHECK (seq >= 0), \
+             environment_id      TEXT NOT NULL CHECK (length(environment_id) > 0), \
+             data_type           TEXT NOT NULL CHECK (data_type IN ('healthcheck', 'session')), \
+             data_id             TEXT NOT NULL CHECK (length(data_id) > 0), \
              metadata_json       TEXT NOT NULL, \
-             state               TEXT NOT NULL, \
+             state               TEXT NOT NULL CHECK (state IN ('queued', 'starting', 'active', 'stopping', 'stopped')), \
              acknowledged_at     TEXT, \
              latest_heartbeat_at TEXT, \
              started_at          TEXT, \
              stop_requested_at   TEXT, \
-             stopped_at          TEXT)",
-            )?,
-            Migration::new(
-                2,
-                "persist work ownership, fencing epoch, and lease expiry",
-                "ALTER TABLE {prefix}_item ADD COLUMN lease_owner TEXT; \
-                 ALTER TABLE {prefix}_item ADD COLUMN lease_epoch BIGINT NOT NULL DEFAULT 0; \
-                 ALTER TABLE {prefix}_item ADD COLUMN lease_expires_ms BIGINT",
-            )?,
-            Migration::new(
-                3,
-                "persist the lease refresh clock independently of its requested ttl",
-                "ALTER TABLE {prefix}_item ADD COLUMN lease_refreshed_ms BIGINT",
-            )?,
-            Migration::new(
-                4,
-                "one canonical work projection per Environment Session",
-                "DELETE FROM {prefix}_item \
-                 WHERE data_type = 'session' AND seq NOT IN (\
-                    SELECT MIN(seq) FROM {prefix}_item WHERE data_type = 'session' \
-                    GROUP BY environment_id, data_id); \
-                 CREATE UNIQUE INDEX {prefix}_session_projection_unique \
-                 ON {prefix}_item (environment_id, data_type, data_id)",
-            )?,
-            Migration::new(
-                5,
-                "bind a digest-only per-Session bearer to the current Work lease",
-                "ALTER TABLE {prefix}_item ADD COLUMN session_token_sha256 TEXT",
-            )?,
-        ],
+             stopped_at          TEXT, \
+             lease_owner         TEXT, \
+             lease_epoch         BIGINT NOT NULL DEFAULT 0 CHECK (lease_epoch >= 0), \
+             lease_expires_ms    BIGINT CHECK (lease_expires_ms IS NULL OR lease_expires_ms >= 0), \
+             lease_refreshed_ms  BIGINT CHECK (lease_refreshed_ms IS NULL OR lease_refreshed_ms >= 0), \
+             session_token_sha256 TEXT); \
+             CREATE UNIQUE INDEX {prefix}_session_projection_unique \
+             ON {prefix}_item (environment_id, data_type, data_id)",
+        )?],
     )
 }
 
-fn state_from_wire(state: &str) -> WorkState {
-    // Unknown persisted values fail closed instead of becoming claimable work.
-    WorkState::from_wire(state).unwrap_or(WorkState::Stopped)
+fn state_from_wire(state: &str) -> Result<WorkState, String> {
+    WorkState::from_wire(state).ok_or_else(|| format!("unknown persisted work state `{state}`"))
 }
 
-fn data_of(data_type: &str, data_id: String) -> WorkPayload {
+fn data_of(data_type: &str, data_id: String) -> Result<WorkPayload, String> {
     match data_type {
-        "healthcheck" => WorkPayload::HealthCheck { id: data_id },
-        _ => WorkPayload::Session { id: data_id },
+        "healthcheck" => Ok(WorkPayload::HealthCheck { id: data_id }),
+        "session" => Ok(WorkPayload::Session { id: data_id }),
+        _ => Err(format!("unknown persisted work payload type `{data_type}`")),
     }
 }
 
@@ -118,24 +96,26 @@ pub(super) fn build_item(
     started_at: Option<String>,
     stop_requested_at: Option<String>,
     stopped_at: Option<String>,
-) -> WorkItem {
-    WorkItem {
+) -> Result<WorkItem, String> {
+    let metadata = serde_json::from_str(metadata_json)
+        .map_err(|error| format!("invalid persisted work metadata: {error}"))?;
+    Ok(WorkItem {
         id,
         environment_id,
-        data: data_of(data_type, data_id),
-        metadata: serde_json::from_str(metadata_json).unwrap_or_default(),
-        state: state_from_wire(state),
+        data: data_of(data_type, data_id)?,
+        metadata,
+        state: state_from_wire(state)?,
         acknowledged_at,
         latest_heartbeat_at,
         started_at,
         stop_requested_at,
         stopped_at,
-    }
+    })
 }
 
 pub(super) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem> {
     let metadata_json: String = row.get(4)?;
-    Ok(build_item(
+    build_item(
         row.get(0)?,
         row.get(1)?,
         &row.get::<_, String>(2)?,
@@ -147,5 +127,12 @@ pub(super) fn row_to_item(row: &rusqlite::Row<'_>) -> rusqlite::Result<WorkItem>
         row.get(8)?,
         row.get(9)?,
         row.get(10)?,
-    ))
+    )
+    .map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
+    })
 }

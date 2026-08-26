@@ -221,6 +221,19 @@ pub(crate) const fn state_name(state: WorkerState) -> &'static str {
     }
 }
 
+pub(crate) fn state_from_name(state: &str) -> Result<WorkerState, RegistryError> {
+    match state {
+        "starting" => Ok(WorkerState::Starting),
+        "ready" => Ok(WorkerState::Ready),
+        "draining" => Ok(WorkerState::Draining),
+        "quiesced" => Ok(WorkerState::Quiesced),
+        "dead" => Ok(WorkerState::Dead),
+        _ => Err(RegistryError::Persistence(format!(
+            "unknown persisted worker state `{state}`"
+        ))),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

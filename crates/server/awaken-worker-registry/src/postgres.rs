@@ -3,9 +3,10 @@ use awaken_worker_contract::{
     RegisteredWorker, RegistryError, RegistryMutation, WorkerDirectory, WorkerHeartbeat,
     WorkerIdentity, WorkerObservationSource, WorkerRegistration,
 };
-use sqlx::PgConnection;
 use sqlx::postgres::{PgPool, PgPoolOptions};
+use sqlx::{PgConnection, Row};
 
+use crate::codec::{EncodedWorkerRow, WORKER_COLUMNS, decode, encode_json};
 use crate::durable_i64;
 use crate::schema::{NS, registry_bundle};
 use crate::transition;
@@ -89,16 +90,14 @@ impl PostgresWorkerDirectory {
         conn: &mut PgConnection,
         worker_id: &str,
     ) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let encoded: Option<String> = sqlx::query_scalar(
-            "SELECT record_json FROM worker_registry_worker WHERE worker_id = $1 FOR UPDATE",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1 FOR UPDATE"
+        ))
         .bind(worker_id)
         .fetch_optional(conn)
         .await
         .map_err(persist)?;
-        encoded
-            .map(|value| serde_json::from_str(&value).map_err(persist))
-            .transpose()
+        row.map(|row| decode(encoded_row(&row))).transpose()
     }
 
     async fn write(
@@ -107,21 +106,66 @@ impl PostgresWorkerDirectory {
     ) -> Result<(), RegistryError> {
         let generation = durable_i64("generation", record.snapshot.identity.generation)?;
         let expires_at_ms = durable_i64("expires_at_ms", record.snapshot.expires_at_ms)?;
+        let in_flight = i64::from(record.snapshot.in_flight);
         sqlx::query(
             "INSERT INTO worker_registry_worker \
-                (worker_id, incarnation_id, generation, state, expires_at_ms, record_json) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
+                (worker_id, incarnation_id, generation, state, manifest_json, \
+                 capability_fingerprint, in_flight, warm_environment_shapes_json, \
+                 credential_observations_json, acp_capability_observations_json, \
+                 expires_at_ms, heartbeat_sequence, observation_sequence, registered_at_ms, \
+                 heartbeat_at_ms, drain_deadline_ms) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) \
              ON CONFLICT(worker_id) DO UPDATE SET \
                 incarnation_id = excluded.incarnation_id, generation = excluded.generation, \
-                state = excluded.state, expires_at_ms = excluded.expires_at_ms, \
-                record_json = excluded.record_json",
+                state = excluded.state, manifest_json = excluded.manifest_json, \
+                capability_fingerprint = excluded.capability_fingerprint, \
+                in_flight = excluded.in_flight, \
+                warm_environment_shapes_json = excluded.warm_environment_shapes_json, \
+                credential_observations_json = excluded.credential_observations_json, \
+                acp_capability_observations_json = excluded.acp_capability_observations_json, \
+                expires_at_ms = excluded.expires_at_ms, \
+                heartbeat_sequence = excluded.heartbeat_sequence, \
+                observation_sequence = excluded.observation_sequence, \
+                registered_at_ms = excluded.registered_at_ms, \
+                heartbeat_at_ms = excluded.heartbeat_at_ms, \
+                drain_deadline_ms = excluded.drain_deadline_ms",
         )
         .bind(&record.snapshot.identity.worker_id)
         .bind(&record.snapshot.identity.incarnation_id)
         .bind(generation)
         .bind(transition::state_name(record.snapshot.state))
+        .bind(encode_json("manifest_json", &record.snapshot.manifest)?)
+        .bind(&record.snapshot.capability_fingerprint)
+        .bind(in_flight)
+        .bind(encode_json(
+            "warm_environment_shapes_json",
+            &record.snapshot.warm_environment_shapes,
+        )?)
+        .bind(encode_json(
+            "credential_observations_json",
+            &record.snapshot.credential_observations,
+        )?)
+        .bind(encode_json(
+            "acp_capability_observations_json",
+            &record.snapshot.acp_capability_observations,
+        )?)
         .bind(expires_at_ms)
-        .bind(serde_json::to_string(record).map_err(persist)?)
+        .bind(durable_i64(
+            "heartbeat_sequence",
+            record.heartbeat_sequence,
+        )?)
+        .bind(durable_i64(
+            "observation_sequence",
+            record.observation_sequence,
+        )?)
+        .bind(durable_i64("registered_at_ms", record.registered_at_ms)?)
+        .bind(durable_i64("heartbeat_at_ms", record.heartbeat_at_ms)?)
+        .bind(
+            record
+                .drain_deadline_ms
+                .map(|value| durable_i64("drain_deadline_ms", value))
+                .transpose()?,
+        )
         .execute(conn)
         .await
         .map_err(persist)?;
@@ -163,14 +207,14 @@ fn persist(error: impl std::fmt::Display) -> RegistryError {
 #[async_trait]
 impl WorkerObservationSource for PostgresWorkerDirectory {
     async fn list(&self) -> Result<Vec<RegisteredWorker>, RegistryError> {
-        let encoded: Vec<String> =
-            sqlx::query_scalar("SELECT record_json FROM worker_registry_worker ORDER BY worker_id")
-                .fetch_all(&self.pool)
-                .await
-                .map_err(persist)?;
-        encoded
-            .into_iter()
-            .map(|value| serde_json::from_str(&value).map_err(persist))
+        let rows = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker ORDER BY worker_id"
+        ))
+        .fetch_all(&self.pool)
+        .await
+        .map_err(persist)?;
+        rows.into_iter()
+            .map(|row| decode(encoded_row(&row)))
             .collect()
     }
 }
@@ -238,33 +282,31 @@ impl WorkerDirectory for PostgresWorkerDirectory {
     }
 
     async fn current(&self, worker_id: &str) -> Result<Option<RegisteredWorker>, RegistryError> {
-        let encoded: Option<String> = sqlx::query_scalar(
-            "SELECT record_json FROM worker_registry_worker WHERE worker_id = $1",
-        )
+        let row = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker WHERE worker_id = $1"
+        ))
         .bind(worker_id)
         .fetch_optional(&self.pool)
         .await
         .map_err(persist)?;
-        encoded
-            .map(|value| serde_json::from_str(&value).map_err(persist))
-            .transpose()
+        row.map(|row| decode(encoded_row(&row))).transpose()
     }
 
     async fn expire(&self, now_ms: u64) -> Result<Vec<WorkerIdentity>, RegistryError> {
         let durable_now_ms = durable_i64("now_ms", now_ms)?;
         let mut tx = self.pool.begin().await.map_err(persist)?;
-        let encoded: Vec<String> = sqlx::query_scalar(
-            "SELECT record_json FROM worker_registry_worker \
+        let rows = sqlx::query(&format!(
+            "SELECT {WORKER_COLUMNS} FROM worker_registry_worker \
              WHERE state IN ('starting', 'ready', 'draining') AND expires_at_ms <= $1 \
-             FOR UPDATE SKIP LOCKED",
-        )
+             FOR UPDATE SKIP LOCKED"
+        ))
         .bind(durable_now_ms)
         .fetch_all(&mut *tx)
         .await
         .map_err(persist)?;
         let mut expired = Vec::new();
-        for value in encoded {
-            let current: RegisteredWorker = serde_json::from_str(&value).map_err(persist)?;
+        for row in rows {
+            let current = decode(encoded_row(&row))?;
             if let Some(next) = transition::expire(&current, now_ms) {
                 expired.push(next.snapshot.identity.clone());
                 Self::write(&mut tx, &next).await?;
@@ -272,6 +314,27 @@ impl WorkerDirectory for PostgresWorkerDirectory {
         }
         tx.commit().await.map_err(persist)?;
         Ok(expired)
+    }
+}
+
+fn encoded_row(row: &sqlx::postgres::PgRow) -> EncodedWorkerRow {
+    EncodedWorkerRow {
+        worker_id: row.get("worker_id"),
+        incarnation_id: row.get("incarnation_id"),
+        generation: row.get("generation"),
+        state: row.get("state"),
+        manifest_json: row.get("manifest_json"),
+        capability_fingerprint: row.get("capability_fingerprint"),
+        in_flight: row.get("in_flight"),
+        warm_environment_shapes_json: row.get("warm_environment_shapes_json"),
+        credential_observations_json: row.get("credential_observations_json"),
+        acp_capability_observations_json: row.get("acp_capability_observations_json"),
+        expires_at_ms: row.get("expires_at_ms"),
+        heartbeat_sequence: row.get("heartbeat_sequence"),
+        observation_sequence: row.get("observation_sequence"),
+        registered_at_ms: row.get("registered_at_ms"),
+        heartbeat_at_ms: row.get("heartbeat_at_ms"),
+        drain_deadline_ms: row.get("drain_deadline_ms"),
     }
 }
 

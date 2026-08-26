@@ -625,7 +625,7 @@ impl WorkQueue for SqliteWorkQueue {
     }
 }
 
-fn pg_row_to_item(row: &PgRow) -> WorkItem {
+fn pg_row_to_item(row: &PgRow) -> Result<WorkItem, WorkQueueError> {
     let metadata_json: String = row.get("metadata_json");
     build_item(
         row.get("work_id"),
@@ -640,6 +640,7 @@ fn pg_row_to_item(row: &PgRow) -> WorkItem {
         row.get("stop_requested_at"),
         row.get("stopped_at"),
     )
+    .map_err(storage)
 }
 
 /// A Postgres-backed [`WorkQueue`] — the network-DB sibling over the same
@@ -744,7 +745,7 @@ impl PostgresWorkQueue {
         env_id: &str,
         wid: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError> {
-        Ok(sqlx::query(&format!(
+        sqlx::query(&format!(
             "SELECT {COLS} FROM work_queue_item WHERE work_id = $1 AND environment_id = $2"
         ))
         .bind(wid)
@@ -752,7 +753,8 @@ impl PostgresWorkQueue {
         .fetch_optional(&self.pool)
         .await
         .map_err(storage)?
-        .map(|r| pg_row_to_item(&r)))
+        .map(|row| pg_row_to_item(&row))
+        .transpose()
     }
 }
 
@@ -819,7 +821,7 @@ impl WorkQueue for PostgresWorkQueue {
     }
 
     async fn list(&self, env_id: &str) -> Result<Vec<WorkItem>, WorkQueueError> {
-        Ok(sqlx::query(&format!(
+        sqlx::query(&format!(
             "SELECT {COLS} FROM work_queue_item WHERE environment_id = $1 ORDER BY seq ASC"
         ))
         .bind(env_id)
@@ -828,7 +830,7 @@ impl WorkQueue for PostgresWorkQueue {
         .map_err(storage)?
         .iter()
         .map(pg_row_to_item)
-        .collect())
+        .collect()
     }
 
     async fn get(&self, env_id: &str, wid: &str) -> Result<Option<WorkItem>, WorkQueueError> {

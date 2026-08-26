@@ -4,6 +4,7 @@
 //! incarnation/generation/state decision is delegated to `transition`, preventing
 //! a backend-specific second implementation of worker replacement semantics.
 
+mod codec;
 #[cfg(any(test, feature = "test-support"))]
 mod memory;
 mod postgres;
