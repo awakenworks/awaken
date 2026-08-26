@@ -28,6 +28,10 @@ use std::sync::Mutex;
 
 mod ambient_environment;
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
+#[cfg(feature = "authority")]
+mod material_error;
+#[cfg(feature = "authority")]
+use material_error::classify_secret_store_error;
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential::CredentialRefresher;
@@ -787,7 +791,7 @@ impl PinnedCredentialMaterializer {
                     .ok_or(CredentialMaterialError::Unavailable)?
                     .get(&SecretRef(refresh.refresh_token_ref.clone()))
                     .await
-                    .map_err(|_| CredentialMaterialError::Unavailable)?;
+                    .map_err(classify_secret_store_error)?;
                 awaken_runtime_contract::CredentialMaterial::OAuth(
                     awaken_runtime_contract::OAuthCredentialMaterial {
                         access_token,
@@ -902,7 +906,7 @@ impl PinnedCredentialMaterializer {
             .ok_or(CredentialMaterialError::Unavailable)?;
         awaken_credential_vault::materialize(source, secrets.as_ref())
             .await
-            .map_err(|_| CredentialMaterialError::Unavailable)
+            .map_err(classify_secret_store_error)
     }
 
     #[cfg(feature = "authority")]

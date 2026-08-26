@@ -52,6 +52,11 @@ struct FailedPutAndCleanupStore {
     inner: InMemorySecretStore,
 }
 
+#[derive(Default)]
+struct UnopenableManagedWriteStore {
+    inner: InMemorySecretStore,
+}
+
 #[async_trait::async_trait]
 impl SecretStore for FaultyDeleteStore {
     async fn put(
@@ -146,6 +151,29 @@ impl SecretStore for FailedPutAndCleanupStore {
     }
 }
 
+#[async_trait::async_trait]
+impl SecretStore for UnopenableManagedWriteStore {
+    async fn put(
+        &self,
+        r: &crate::SecretRef,
+        secret: RedactedString,
+    ) -> Result<(), CredentialError> {
+        self.inner.put(r, secret).await
+    }
+
+    async fn get(&self, _r: &crate::SecretRef) -> Result<RedactedString, CredentialError> {
+        Err(CredentialError::Seal)
+    }
+
+    async fn delete(&self, r: &crate::SecretRef) -> Result<(), CredentialError> {
+        self.inner.delete(r).await
+    }
+
+    async fn inventory(&self) -> Result<Vec<crate::SecretRef>, CredentialError> {
+        self.inner.inventory().await
+    }
+}
+
 fn managed_vault() -> ManagedVault {
     ManagedVault {
         id: "vault-1".into(),
@@ -200,6 +228,55 @@ async fn managed_creation_publishes_source_and_child_in_one_repository_step() {
     );
     assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
     assert!(repo.pending_managed_rollouts().await.unwrap().is_empty());
+}
+
+/// Managed publication cause/effect graph: C1 parent admission succeeds; C2
+/// material put succeeds; C3 the same SecretStore opens the exact material.
+/// Only C1+C2+C3 may atomically publish the Source/child pair. A seal failure at
+/// C3 first enters abort-reclaim, deletes the unpublished material, and leaves
+/// neither executable aggregate nor pending mutation.
+///
+/// | Rule | C1 admitted | C2 put | C3 exact open | Effect |
+/// |---|---|---|---|---|
+/// | M1 | T | success | exact | publish pair |
+/// | M2 | T | success | seal failure | publish nothing; reclaim material |
+#[tokio::test]
+async fn managed_creation_does_not_publish_unopenable_material() {
+    let repo = InMemoryCredentialRepo::new();
+    let store = UnopenableManagedWriteStore::default();
+    repo.insert_vault("ws", managed_vault()).await.unwrap();
+
+    let result =
+        create_managed_credential(managed_command("https://mcp.example.com"), &store, &repo).await;
+
+    assert!(
+        matches!(
+            result,
+            Err(ManagedCredentialCreationError::Credential(
+                CredentialError::Seal
+            ))
+        ),
+        "M2"
+    );
+    assert!(
+        matches!(
+            repo.get(&CredentialSourceId("source-1".into())).await,
+            Err(CredentialError::SourceNotFound(_))
+        ),
+        "M2"
+    );
+    assert!(
+        repo.get_vault_credential("ws", "credential-1")
+            .await
+            .unwrap()
+            .is_none(),
+        "M2"
+    );
+    assert!(store.inventory().await.unwrap().is_empty(), "M2");
+    assert!(
+        repo.pending_managed_mutations().await.unwrap().is_empty(),
+        "M2"
+    );
 }
 
 #[tokio::test]
