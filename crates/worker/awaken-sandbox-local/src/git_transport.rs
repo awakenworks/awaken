@@ -276,7 +276,11 @@ fn validate_credentialed_git_transport(
 ) -> Result<AdmittedGitTransport, SandboxError> {
     let parsed = match url::Url::parse(url) {
         Ok(parsed) => parsed,
-        Err(_) if credential.is_none() && cfg!(test) && Path::new(url).is_absolute() => {
+        Err(_)
+            if credential.is_none()
+                && cfg!(any(test, feature = "test-support"))
+                && Path::new(url).is_absolute() =>
+        {
             return Ok(AdmittedGitTransport {
                 protocol: "file".into(),
                 credential_endpoint: None,
@@ -290,7 +294,7 @@ fn validate_credentialed_git_transport(
     };
     if credential.is_none() {
         if parsed.scheme() == "file"
-            && cfg!(test)
+            && cfg!(any(test, feature = "test-support"))
             && parsed.host().is_none()
             && parsed.username().is_empty()
             && parsed.password().is_none()

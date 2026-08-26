@@ -9,6 +9,12 @@ context = "worker"
 layer = "infrastructure"
 authority = "sandbox-local"
 
+[features]
+default = []
+# Allows deterministic local Git fixtures in downstream integration tests.
+# Product builds never enable this transport exception.
+test-support = []
+
 [dependencies]
 awaken-runtime-contract.workspace = true
 awaken-provisioning-contract.workspace = true
