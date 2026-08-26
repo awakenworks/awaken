@@ -56,6 +56,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
+const SQLITE_WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
 // Poll-liveness bookkeeping is shared by the durable stores. Lease authority remains
 // in their rows. The volatile executable specification is never part of a default
 // product build.
@@ -90,6 +92,10 @@ impl SqliteWorkQueue {
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
+        conn.busy_timeout(SQLITE_WRITE_WAIT)
+            .map_err(|e| e.to_string())?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(|e| e.to_string())?;
         let bundle = work_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?

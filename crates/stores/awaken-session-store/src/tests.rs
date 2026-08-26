@@ -191,6 +191,47 @@ fn sqlite_create_waits_for_a_competing_aggregate_writer() {
 }
 
 #[test]
+fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
+    // R1 another aggregate holds the writer reservation when recovery starts.
+    // R2 recovery must wait before taking its read snapshot, then atomically
+    // read the aggregate and repair quarantine evidence. A deferred read followed
+    // by DELETE/UPSERT would instead fail with SQLITE_BUSY_SNAPSHOT.
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shared-recovery.db");
+    let path = path.to_string_lossy().to_string();
+    let repo = Arc::new(SqliteManagedSessionRepository::open(&path).unwrap());
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(create_fixture(
+            repo.as_ref(),
+            "default",
+            sample("sesn_waiting_recovery"),
+            Vec::new(),
+        ));
+
+    let mut blocker = Connection::open(&path).unwrap();
+    let blocker_tx = blocker
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let recovery = {
+        let repo = repo.clone();
+        std::thread::spawn(move || {
+            started_tx.send(()).unwrap();
+            tokio::runtime::Runtime::new()
+                .unwrap()
+                .block_on(repo.reconcilable_sessions())
+        })
+    };
+    started_rx.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    blocker_tx.commit().unwrap();
+
+    let scan = recovery.join().unwrap().expect("R2 recovery scan");
+    assert!(scan.quarantined.is_empty(), "R2");
+}
+
+#[test]
 fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
     /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
      * C2 two simultaneous Session-store starters, C3 later replay. Effects:
