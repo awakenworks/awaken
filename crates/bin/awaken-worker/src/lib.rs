@@ -31,7 +31,7 @@ mod relay_hand;
 use credential_liveness::WorkerObservationCache;
 use lifecycle::{
     WorkerSupervisor, grace_window, new_incarnation_id, spawn_environment_warmup_reconciliation,
-    spawn_heartbeat, spawn_session_realization_reconciliation, wait_for_in_flight, wall_clock_ms,
+    spawn_heartbeat, spawn_session_realization_reconciliation, wall_clock_ms,
 };
 use manifest::{
     CredentialMaterializerSupport, ManifestSelection, ManifestSource, ResourceManifestSupport,
@@ -1309,7 +1309,7 @@ impl WorkerNode {
                 "awaken-worker draining: finishing in-flight runs (≤{}s)",
                 grace.as_secs()
             );
-            wait_for_in_flight(&host, grace).await;
+            let _ = host.drain_runtime(grace).await;
         }
         heartbeat.abort();
         credential_probe.abort();

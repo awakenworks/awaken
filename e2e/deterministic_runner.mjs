@@ -180,11 +180,23 @@ function snapshotExecutable(source, destination) {
   return destination;
 }
 
+// Remove only provider API-key variables rejected by the production process.
+// Deterministic scenarios inject their own fixture credentials at the exact
+// child boundary they exercise; a developer or CI runner's ambient secrets are
+// neither test inputs nor valid Awaken credential sources.
+export function withoutAmbientProviderKeys(environment) {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => {
+    const normalized = name.toUpperCase();
+    return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
+  }));
+}
+
 export function preparedEnvironment(environment, explicitDirectory) {
-  const inheritedAwaken = requirePrebuiltExecutable(AWAKEN_BIN_ENV, environment);
-  const inheritedScenarioHost = requirePrebuiltExecutable(SCENARIO_HOST_BIN_ENV, environment);
-  const inheritedWorker = requirePrebuiltExecutable(WORKER_BIN_ENV, environment);
-  if (inheritedAwaken && inheritedScenarioHost && inheritedWorker) return { ...environment };
+  const cleanEnvironment = withoutAmbientProviderKeys(environment);
+  const inheritedAwaken = requirePrebuiltExecutable(AWAKEN_BIN_ENV, cleanEnvironment);
+  const inheritedScenarioHost = requirePrebuiltExecutable(SCENARIO_HOST_BIN_ENV, cleanEnvironment);
+  const inheritedWorker = requirePrebuiltExecutable(WORKER_BIN_ENV, cleanEnvironment);
+  if (inheritedAwaken && inheritedScenarioHost && inheritedWorker) return { ...cleanEnvironment };
   if (inheritedAwaken || inheritedScenarioHost || inheritedWorker) {
     throw new Error(
       `${AWAKEN_BIN_ENV}, ${SCENARIO_HOST_BIN_ENV}, and ${WORKER_BIN_ENV} must be supplied together`,
@@ -199,7 +211,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
   const scenarioHostDestination = path.join(directory, `awaken-scenario-host${suffix}`);
   const workerDestination = path.join(directory, `awaken-worker${suffix}`);
   const manifestPath = path.join(directory, 'manifest.json');
-  const fingerprint = prebuildFingerprint(environment);
+  const fingerprint = prebuildFingerprint(cleanEnvironment);
   const dependencyLockDigest = fileDigest(path.join(E2E_ROOT, 'package-lock.json'));
   const existingAwaken = fs.statSync(awakenDestination, { throwIfNoEntry: false })?.isFile();
   const existingScenarioHost = fs.statSync(
@@ -226,7 +238,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
       workerDestination,
     )) {
       return {
-        ...environment,
+        ...cleanEnvironment,
         [AWAKEN_BIN_ENV]: awakenDestination,
         [SCENARIO_HOST_BIN_ENV]: scenarioHostDestination,
         [WORKER_BIN_ENV]: workerDestination,
@@ -256,7 +268,7 @@ export function preparedEnvironment(environment, explicitDirectory) {
     targetName: 'awaken-worker',
   });
   const prepared = {
-    ...environment,
+    ...cleanEnvironment,
     [AWAKEN_BIN_ENV]: snapshotExecutable(awaken, awakenDestination),
     [SCENARIO_HOST_BIN_ENV]: snapshotExecutable(
       scenarioHost,

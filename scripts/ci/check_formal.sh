@@ -42,8 +42,11 @@ if command -v cargo-kani >/dev/null 2>&1; then
   # Kani compiles every selected package once and verifies its named harnesses
   # with a bounded worker pool. The old one-process-per-harness path rebuilt the
   # same package 54 times. Two jobs is the conservative default because CBMC is
-  # memory-heavy; CI can raise AWAKEN_KANI_JOBS after observing peak RSS.
-  kani_jobs="${AWAKEN_KANI_JOBS:-2}"
+  # memory-heavy. A single job is also the reproducible default: Kani 0.67 can
+  # race while linking cached per-harness GOTO artifacts from one package.
+  # CI may raise AWAKEN_KANI_JOBS only after proving its toolchain/cache layout
+  # does not share those output paths.
+  kani_jobs="${AWAKEN_KANI_JOBS:-1}"
   run_kani() {
     local package="$1"; shift
     cargo kani -p "$package" --output-format terse -j "$kani_jobs" "$@"

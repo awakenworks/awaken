@@ -16,8 +16,34 @@ use awaken_runtime_contract::tool::{ToolError, ToolExecutor, ToolOutput, ToolRec
 use awaken_sandbox_local::NamespaceSandbox;
 use tokio::sync::Mutex;
 
-use super::HandExecutorFactory;
 use super::container_skills::ContainerSkillCache;
+
+/// Session environment service that binds a live hand channel to the runtime's tool
+/// executor. The framing implementation belongs to an outer startup crate;
+/// this host owns only the Session lifecycle and never imports the relay adapter.
+pub trait HandExecutorFactory: Send + Sync {
+    fn bind(
+        &self,
+        channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+        operation_scope: &str,
+        recovery: ToolRecoveryCapability,
+    ) -> Arc<dyn ToolExecutor>;
+}
+
+#[cfg(test)]
+pub(crate) struct UnusedHandExecutorFactory;
+
+#[cfg(test)]
+impl HandExecutorFactory for UnusedHandExecutorFactory {
+    fn bind(
+        &self,
+        _channel: Box<dyn awaken_run_executor_acp::AgentChannelType>,
+        _operation_scope: &str,
+        _recovery: ToolRecoveryCapability,
+    ) -> Arc<dyn ToolExecutor> {
+        panic!("this test does not dispatch a Session Hand tool")
+    }
+}
 
 pub(super) enum SessionAgentLauncher {
     Namespace(Arc<NamespaceSandbox>),

@@ -25,6 +25,8 @@ import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 import { alwaysAllowMcpAgent } from './fixtures/managed_mcp_session.ts';
 // @ts-expect-error The shared Cargo artifact resolver is intentionally JavaScript.
 import { cargoExecutable } from './cargo_binary.mjs';
+// @ts-expect-error shared host-capability probe intentionally has no declarations.
+import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = Number(process.env.E2E_PORT ?? 39852);
@@ -140,6 +142,7 @@ async function json(method: string, route: string, body?: unknown): Promise<any>
 
 async function main(): Promise<void> {
   assert.ok(['local', 'namespace', 'docker', 'podman'].includes(TIER), `supported remote Worker tier: ${TIER}`);
+  if (TIER === 'namespace' && !requireOrSkipBwrap()) return;
   if (!containerAvailable()) {
     if (process.env.AWAKEN_E2E_REQUIRE_CONTAINER === '1') {
       throw new Error(`required ${TIER} runtime is unavailable`);

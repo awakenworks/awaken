@@ -2345,7 +2345,7 @@ async fn memory_written_in_one_thread_is_recalled_and_used_in_another() {
     host.run(None, "thread-1", user("I really enjoy tea in the morning"))
         .await
         .expect("Thread 1 Run");
-    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     assert!(
         host.memory_stores
             .fs()
@@ -2421,7 +2421,7 @@ async fn reopening_a_direct_terminal_thread_recovers_a_missing_extraction_outbox
         .expect("terminal run record");
     assert!(
         second
-            .drain_memory(std::time::Duration::from_secs(10))
+            .drain_runtime(std::time::Duration::from_secs(10))
             .await
     );
 
@@ -2534,7 +2534,7 @@ async fn managed_memory_is_per_store_and_an_unbound_session_cannot_see_host_memo
         )
         .await
         .unwrap();
-    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     assert!(
         host.memory_stores
             .fs()
@@ -2803,7 +2803,7 @@ async fn published_agent_memory_config_can_disable_recall_and_extraction() {
         .map(|message| block_text(&message.content))
         .unwrap_or_default();
     assert_eq!(reply, "ok", "disabled recall does not inject store content");
-    assert!(host.drain_memory(std::time::Duration::from_secs(1)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(1)).await);
     assert!(
         host.memory_stores
             .fs()
@@ -2914,7 +2914,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
         "resume should end the Run"
     );
 
-    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     let saved = host
         .memory_stores
         .fs()
@@ -2995,9 +2995,9 @@ async fn extraction_cursor_only_processes_new_messages() {
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, t)];
 
     host.run(None, "t-cur", user("alpha")).await.expect("Run 1");
-    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
     host.run(None, "t-cur", user("beta")).await.expect("Run 2");
-    assert!(host.drain_memory(std::time::Duration::from_secs(10)).await);
+    assert!(host.drain_runtime(std::time::Duration::from_secs(10)).await);
 
     // The second extraction saw only "beta" — Run 1's "alpha" was past the cursor.
     let seen = host
@@ -3034,7 +3034,7 @@ async fn run_end_fires_background_memory_extraction() {
     let result = host.run(None, "t-mem", input).await.expect("Run");
     assert!(matches!(result.state, RunState::Ended(_)), "Run should end");
 
-    let drained = host.drain_memory(std::time::Duration::from_secs(10)).await;
+    let drained = host.drain_runtime(std::time::Duration::from_secs(10)).await;
     assert!(drained, "memory extraction should drain");
 
     let saved = host
