@@ -167,15 +167,17 @@ impl DispatchMaintenance {
         completion: Option<Arc<dyn CompletionSink>>,
     ) -> Self {
         let shutdown = CancellationToken::new();
-        let task = tokio::spawn(maintenance_loop(
+        let maintenance_wake = Arc::new(Notify::new());
+        let task = tokio::spawn(maintenance_loop(MaintenanceContext {
             store,
             clock,
-            wake.clone(),
-            shutdown.clone(),
+            wake: wake.clone(),
+            maintenance_wake,
+            shutdown: shutdown.clone(),
             config,
             resolver,
             completion,
-        ));
+        }));
         Self {
             shutdown,
             wake,
@@ -437,6 +439,7 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let owner = owner.into();
         let shutdown = CancellationToken::new();
         let admission = Arc::new(PoolAdmission::new(config.max_attempts));
+        let maintenance_wake = Arc::new(Notify::new());
         let drains = (0..concurrency.max(1))
             .map(|_| {
                 tokio::spawn(drain_loop(
@@ -455,18 +458,20 @@ impl<S: Dispatch + 'static> DispatchPool<S> {
         let wake_coordinator = tokio::spawn(wake_coordinator_loop(
             wake.clone(),
             admission.clone(),
+            maintenance_wake.clone(),
             shutdown.clone(),
             config.poll_interval,
         ));
-        let maintenance = tokio::spawn(maintenance_loop(
-            store.clone(),
-            clock.clone(),
-            wake.clone(),
-            shutdown.clone(),
+        let maintenance = tokio::spawn(maintenance_loop(MaintenanceContext {
+            store: store.clone(),
+            clock: clock.clone(),
+            wake: wake.clone(),
+            maintenance_wake,
+            shutdown: shutdown.clone(),
             config,
-            resolver.clone(),
-            completion.clone(),
-        ));
+            resolver: resolver.clone(),
+            completion: completion.clone(),
+        }));
         Self {
             store,
             wake,
@@ -656,16 +661,24 @@ fn drain_error_backoff(consecutive_errors: u32) -> Duration {
 async fn wake_coordinator_loop(
     wake: Arc<dyn WakeSignal>,
     admission: Arc<PoolAdmission>,
+    maintenance_wake: Arc<Notify>,
     shutdown: CancellationToken,
     poll_interval: Duration,
 ) {
     // One initial authoritative poll recovers work that predated this process.
     admission.wake.notify_one();
+    maintenance_wake.notify_one();
     loop {
         tokio::select! {
             _ = shutdown.cancelled() => break,
-            _ = wake.wait() => admission.wake.notify_one(),
-            _ = tokio::time::sleep(poll_interval) => admission.wake.notify_one(),
+            _ = wake.wait() => {
+                admission.wake.notify_one();
+                maintenance_wake.notify_one();
+            },
+            _ = tokio::time::sleep(poll_interval) => {
+                admission.wake.notify_one();
+                maintenance_wake.notify_one();
+            },
         }
     }
 }
@@ -815,15 +828,28 @@ impl Drop for InFlightGuard {
 /// GC aged manual quarantines, relay the cross-thread outbox, and repair
 /// already-committed terminals. Retry exhaustion belongs to the actual drainer,
 /// so coordinator-only maintenance never competes with a remote Worker.
-async fn maintenance_loop<S: Dispatch + 'static>(
+struct MaintenanceContext<S> {
     store: Arc<S>,
     clock: Arc<dyn Clock>,
     wake: Arc<dyn WakeSignal>,
+    maintenance_wake: Arc<Notify>,
     shutdown: CancellationToken,
     config: DispatchServiceConfig,
     resolver: Arc<dyn WorkerResolver<S>>,
     completion: Option<Arc<dyn CompletionSink>>,
-) {
+}
+
+async fn maintenance_loop<S: Dispatch + 'static>(context: MaintenanceContext<S>) {
+    let MaintenanceContext {
+        store,
+        clock,
+        wake,
+        maintenance_wake,
+        shutdown,
+        config,
+        resolver,
+        completion,
+    } = context;
     let mut next_terminal_reconciliation = tokio::time::Instant::now();
     loop {
         if shutdown.is_cancelled() {
@@ -837,7 +863,8 @@ async fn maintenance_loop<S: Dispatch + 'static>(
         // A relay that moved staged deliveries into a thread's pending input made a
         // awaiting run wakeable — nudge the drain tasks so they pick it up now rather
         // than at the next poll.
-        if store.relay().await.unwrap_or(0) > 0 {
+        let relayed = store.relay().await.unwrap_or(0);
+        if relayed > 0 {
             let _ = wake.publish().await;
         }
         if let Some(interval) = config.terminal_reconciliation_interval
@@ -862,6 +889,7 @@ async fn maintenance_loop<S: Dispatch + 'static>(
         }
         tokio::select! {
             _ = shutdown.cancelled() => break,
+            _ = maintenance_wake.notified() => {},
             _ = tokio::time::sleep(config.poll_interval) => {}
         }
     }
@@ -1029,19 +1057,20 @@ mod in_flight_tests {
             fail_first: false,
         });
         let disabled_shutdown = CancellationToken::new();
-        let disabled = tokio::spawn(maintenance_loop(
-            store.clone(),
-            clock.clone(),
-            wake.clone(),
-            disabled_shutdown.clone(),
-            DispatchServiceConfig {
+        let disabled = tokio::spawn(maintenance_loop(MaintenanceContext {
+            store: store.clone(),
+            clock: clock.clone(),
+            wake: wake.clone(),
+            maintenance_wake: Arc::new(Notify::new()),
+            shutdown: disabled_shutdown.clone(),
+            config: DispatchServiceConfig {
                 poll_interval: Duration::from_millis(2),
                 terminal_reconciliation_interval: None,
                 ..Default::default()
             },
-            disabled_resolver.clone(),
-            None,
-        ));
+            resolver: disabled_resolver.clone(),
+            completion: None,
+        }));
         tokio::time::sleep(Duration::from_millis(10)).await;
         disabled_shutdown.cancel();
         disabled.await.expect("disabled maintenance exits");
@@ -1053,19 +1082,20 @@ mod in_flight_tests {
         });
         let completion = Arc::new(RecordingCompletion::default());
         let enabled_shutdown = CancellationToken::new();
-        let enabled = tokio::spawn(maintenance_loop(
+        let enabled = tokio::spawn(maintenance_loop(MaintenanceContext {
             store,
             clock,
             wake,
-            enabled_shutdown.clone(),
-            DispatchServiceConfig {
+            maintenance_wake: Arc::new(Notify::new()),
+            shutdown: enabled_shutdown.clone(),
+            config: DispatchServiceConfig {
                 poll_interval: Duration::from_millis(2),
                 terminal_reconciliation_interval: Some(Duration::from_millis(2)),
                 ..Default::default()
             },
-            retrying_resolver.clone(),
-            Some(completion.clone()),
-        ));
+            resolver: retrying_resolver.clone(),
+            completion: Some(completion.clone()),
+        }));
         tokio::time::timeout(Duration::from_secs(1), completion.notified.notified())
             .await
             .expect("R2 retry reaches R3 completion");

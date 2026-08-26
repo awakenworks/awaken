@@ -364,6 +364,7 @@ pub fn awaken_runtime_host::SharedHost::environment_snapshot_capacity_shape(&sel
 pub fn awaken_runtime_host::SharedHost::environment_warmup_limits(&self) -> (usize, usize)
 pub fn awaken_runtime_host::SharedHost::hub(&self) -> &alloc::sync::Arc<awaken_runtime_host::ThreadEventHub>
 pub fn awaken_runtime_host::SharedHost::install_capture_sink(&self, alloc::sync::Arc<dyn awaken_runtime_contract::data_subject::CaptureSink>)
+pub fn awaken_runtime_host::SharedHost::install_committed_progress_wakeup(&self, alloc::sync::Arc<(dyn core::ops::function::Fn() + core::marker::Send + core::marker::Sync)>) -> core::result::Result<(), &'static str>
 pub fn awaken_runtime_host::SharedHost::local_workspace(&self) -> &str
 pub fn awaken_runtime_host::SharedHost::model(&self) -> alloc::string::String
 pub fn awaken_runtime_host::SharedHost::model_for_thread(&self, &str) -> alloc::string::String

@@ -23,6 +23,7 @@ mod agent_runner;
 mod application;
 mod authority;
 mod background;
+mod background_task;
 mod cache_volume;
 mod capabilities;
 mod commit_ingest;

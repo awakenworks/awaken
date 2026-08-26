@@ -177,10 +177,10 @@ fn inference_plaintext_holder_decision(
                 "one execution candidate set has no common credential plaintext holder",
             ));
         }
-        if common_holders.len() == 1 {
-            if let Some(holder) = common_holders.into_iter().next() {
-                return Ok(InferencePlaintextHolderDecision::Exact(holder));
-            }
+        if common_holders.len() == 1
+            && let Some(holder) = common_holders.into_iter().next()
+        {
+            return Ok(InferencePlaintextHolderDecision::Exact(holder));
         }
     }
     Ok(boundary.map_or(
@@ -865,6 +865,7 @@ pub(crate) struct CompletionRegistry {
     waiters: std::sync::Mutex<HashMap<String, Vec<ForegroundRegistration>>>,
     next_registration_id: std::sync::atomic::AtomicU64,
     hub: Arc<crate::ThreadEventHub>,
+    committed_progress: std::sync::OnceLock<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for CompletionRegistry {
@@ -885,7 +886,17 @@ impl CompletionRegistry {
             waiters: Default::default(),
             next_registration_id: std::sync::atomic::AtomicU64::new(1),
             hub,
+            committed_progress: std::sync::OnceLock::new(),
         }
+    }
+
+    pub(crate) fn install_committed_progress_wakeup(
+        &self,
+        wakeup: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), &'static str> {
+        self.committed_progress
+            .set(wakeup)
+            .map_err(|_| "committed Runtime progress wakeup is already installed")
     }
 
     /// Register interest in `run_id` BEFORE it is enqueued, so the pool cannot
@@ -1012,6 +1023,9 @@ impl CompletionSink for CompletionRegistry {
                 // A receiver may have already gone — a dropped send is fine.
                 let _ = registration.settled.send(state.clone());
             }
+        }
+        if let Some(wakeup) = self.committed_progress.get() {
+            wakeup();
         }
     }
 }
@@ -1358,6 +1372,36 @@ mod completion_tests {
             .expect_err("an unconfigured model must never enter durable dispatch");
         assert!(error.to_string().contains("No model is configured"));
         assert!(error.to_string().contains("Author > Quickstart"));
+    }
+
+    #[test]
+    fn committed_completion_wakes_the_single_installed_convergence_owner() {
+        // Cause/effect graph: C1 no foreground waiter exists; C2 an internal or
+        // foreground Run settles; C3 one convergence owner is installed.
+        // Effects: E1 C2 wakes C3 exactly once despite C1; E2 a parallel owner
+        // cannot replace it. Both local and remote Workers publish through this
+        // same CompletionSink, so deployment mode is not another cause.
+        let registry = CompletionRegistry::default();
+        let wakes = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let observed = wakes.clone();
+        registry
+            .install_committed_progress_wakeup(std::sync::Arc::new(move || {
+                observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }))
+            .expect("C3 installs the sole wakeup");
+
+        awaken_run_ingress::CompletionSink::settled(
+            &registry,
+            &RunId("completion-wakeup".into()),
+            &RunState::Ended(awaken_agent_contract::agent::run::EndCause::NaturalEnd),
+        );
+        assert_eq!(wakes.load(std::sync::atomic::Ordering::SeqCst), 1, "E1");
+        assert!(
+            registry
+                .install_committed_progress_wakeup(std::sync::Arc::new(|| {}))
+                .is_err(),
+            "E2"
+        );
     }
 
     /// A3: dropping the guard (caller future dropped / timed out) removes the

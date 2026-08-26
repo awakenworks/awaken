@@ -299,6 +299,7 @@ impl LlmExecutor for ToolUntilResult {
 /// lease has lapsed reclaims and re-drives the same run.
 struct BlockingEcho {
     ran: Arc<AtomicUsize>,
+    entered: Arc<tokio::sync::Notify>,
     release: Arc<tokio::sync::Semaphore>,
     first_seen: std::sync::atomic::AtomicBool,
 }
@@ -309,6 +310,7 @@ impl RawTool for BlockingEcho {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         self.ran.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_one();
         // Only the first-ever invocation blocks; a later re-drive runs straight
         // through, so the test observes the second (double) execution.
         if !self
@@ -328,17 +330,30 @@ impl RawTool for BlockingEcho {
 pub fn blocking_tool_runtime(
     release: Arc<tokio::sync::Semaphore>,
 ) -> (Arc<Runtime>, Arc<AtomicUsize>) {
+    let (runtime, ran, _entered) = blocking_tool_runtime_with_entry_signal(release);
+    (runtime, ran)
+}
+
+/// The observable form of [`blocking_tool_runtime`]. The entry signal is a
+/// causal synchronization point for tests that must inspect state while the
+/// first tool invocation is blocked; unlike polling the counter, it is not
+/// sensitive to executor scheduling under a fully loaded workspace test run.
+pub fn blocking_tool_runtime_with_entry_signal(
+    release: Arc<tokio::sync::Semaphore>,
+) -> (Arc<Runtime>, Arc<AtomicUsize>, Arc<tokio::sync::Notify>) {
     let ran = Arc::new(AtomicUsize::new(0));
+    let entered = Arc::new(tokio::sync::Notify::new());
     let runtime = Arc::new(
         Runtime::new()
             .with_llm(Arc::new(ToolUntilResult))
             .with_tool(Arc::new(BlockingEcho {
                 ran: ran.clone(),
+                entered: entered.clone(),
                 release,
                 first_seen: std::sync::atomic::AtomicBool::new(false),
             })),
     );
-    (runtime, ran)
+    (runtime, ran, entered)
 }
 
 /// Build a pending input for the test thread. The one place the `PendingInput`

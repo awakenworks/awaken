@@ -92,8 +92,8 @@ type rather than duplicate schemas, state machines, or role catalogs.
   — the two canonical lookup/materialization roles (`AgentSnapshotResolver` and
   `RunResolver`) and their boundaries.
 - [adr/0003-deferred-work-mechanism-selection.md](adr/0003-deferred-work-mechanism-selection.md)
-  — which deferred-work mechanism to use (`ScheduledAction`, resume ticket, or
-  `RunDispatch`); why no `BackgroundTask` umbrella.
+  — which deferred-work mechanism to use; why there is no generic
+  BackgroundTask umbrella, with the narrow detached-tool amendment in ADR-0076.
 - [adr/0004-plugin-factory-contributions-and-capability-bound.md](adr/0004-plugin-factory-contributions-and-capability-bound.md)
   — the `Plugin` factory, config-aware `resolve` to `Contributions`, the
   `ResolvedExecutionEnv` aggregate, and `CapabilityBound` as a fail-closed

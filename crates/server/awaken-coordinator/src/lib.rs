@@ -302,7 +302,7 @@ pub fn local_managed_state(
     host: Arc<SharedHost>,
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, None, None)
+    local_managed_state_over(host, catalog, None, None, None, None)
 }
 
 /// Scenario variant with the same Session model-publication resolver used by
@@ -314,7 +314,7 @@ pub fn local_managed_state_with_model_publication_resolver(
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, None, Some(resolver))
+    local_managed_state_over(host, catalog, None, None, Some(resolver), None)
 }
 
 /// Scenario variant that freezes both the immutable Agent publication and the
@@ -327,7 +327,14 @@ pub fn local_managed_state_with_agent_source_and_model_publication_resolver(
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
     resolver: Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, Some(agent_source), Some(resolver))
+    local_managed_state_over(
+        host,
+        catalog,
+        None,
+        Some(agent_source),
+        Some(resolver),
+        None,
+    )
 }
 
 /// [`local_managed_state`] with one immutable Agent projection source. Embedded
@@ -339,7 +346,27 @@ pub fn local_managed_state_with_agent_source(
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, None, Some(agent_source), None)
+    local_managed_state_over(host, catalog, None, Some(agent_source), None, None)
+}
+
+/// [`local_managed_state_with_agent_source`] with the exact list-price
+/// authority needed by budgeted Managed Session fixtures. The authority is
+/// installed before sharing, so callers never unwrap or mutate an `Arc`.
+#[cfg(feature = "test-support")]
+pub fn local_managed_state_with_agent_source_and_list_prices(
+    host: Arc<SharedHost>,
+    catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
+    list_prices: Arc<dyn awaken_session_contract::ManagedListPriceProvider>,
+) -> Arc<ManagedState> {
+    local_managed_state_over(
+        host,
+        catalog,
+        None,
+        Some(agent_source),
+        None,
+        Some(list_prices),
+    )
 }
 
 /// [`local_managed_state`] with the Environment registry/work queue installed on
@@ -352,7 +379,7 @@ pub fn local_managed_state_with_environments(
     catalog: Arc<dyn awaken_resource_contract::ResourceRegistry>,
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, Some(environments), None, None)
+    local_managed_state_over(host, catalog, Some(environments), None, None, None)
 }
 
 /// Scenario/local variant that installs the same Agent projection
@@ -364,7 +391,14 @@ pub fn local_managed_state_with_environments_and_agent_source(
     environments: Arc<awaken_environment_execution_application::EnvironmentExecutionApplication>,
     agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
 ) -> Arc<ManagedState> {
-    local_managed_state_over(host, catalog, Some(environments), Some(agent_source), None)
+    local_managed_state_over(
+        host,
+        catalog,
+        Some(environments),
+        Some(agent_source),
+        None,
+        None,
+    )
 }
 
 #[cfg(feature = "test-support")]
@@ -378,6 +412,7 @@ fn local_managed_state_over(
     model_publication_resolver: Option<
         Arc<dyn awaken_session_contract::SessionModelPublicationResolver>,
     >,
+    managed_list_price_provider: Option<Arc<dyn awaken_session_contract::ManagedListPriceProvider>>,
 ) -> Arc<ManagedState> {
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
@@ -448,6 +483,9 @@ fn local_managed_state_over(
     }
     if let Some(resolver) = model_publication_resolver {
         application.set_model_publication_resolver(resolver);
+    }
+    if let Some(provider) = managed_list_price_provider {
+        application.set_managed_list_price_provider(provider);
     }
     let application = Arc::new(application);
     install_managed_agent_coordination(&runtime, &application)
@@ -1085,6 +1123,17 @@ fn mount_with_managed_over_and_models(
         repository_transport_authorizer,
         worker_directory,
     } = routing;
+    let weak_session_application = Arc::downgrade(&session_application);
+    host.install_committed_progress_wakeup(Arc::new(move || {
+        if let Some(application) = weak_session_application.upgrade() {
+            application.request_lifecycle_reconciliation();
+        }
+    }))
+    .map_err(|error| {
+        WorkerTransportBuildError::Dispatch(format!(
+            "bind committed Runtime progress wakeup: {error}"
+        ))
+    })?;
     // The Worker warmup projection is part of the same private transport in
     // production and Scenario compositions. Its source is the exact Environment
     // execution application already used by Session admission; this adapter owns

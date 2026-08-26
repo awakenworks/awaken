@@ -204,6 +204,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0073-session-environment-owned-hand-and-worker-capability-placement.md` | Implemented decision record | Not required | n/a |
 | `adr/0074-session-environment-suspension-and-checkpointed-continuation.md` | Proposed Session Environment continuation decision | Not required | n/a |
 | `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker consolidation decision | Not required | n/a |
+| `adr/0076-session-owned-background-tool-execution.md` | Implemented Native BackgroundTask decision | Not required | n/a |
 
 ## Implementation Context
 

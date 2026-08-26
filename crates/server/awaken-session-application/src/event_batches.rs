@@ -705,6 +705,13 @@ impl SessionApplication {
                     if let Some(error) = first_error {
                         return Err(error);
                     }
+                    // Cancellation is accepted independently of the in-flight
+                    // Runtime future. It can make a retained Outcome
+                    // terminalizable without producing a dispatch completion
+                    // event (for example an in-process grader), so nudge the
+                    // sole reconciler now; Notify retains the permit until the
+                    // currently blocked drive yields.
+                    self.wake_lifecycle_supervisor();
                     let mut source_commit_cursor = session
                         .event_batches
                         .iter()

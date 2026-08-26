@@ -202,7 +202,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 }
 
 impl SessionApplication {
-    async fn reconcile_pending_session_state(&self) -> SessionRecoveryCycle {
+    async fn reconcile_pending_session_state(self: std::sync::Arc<Self>) -> SessionRecoveryCycle {
         let resources = self.reconcile_resource_activations().await;
         let resource_failure_count = resources.failures.len();
         let pending = resources.pending;
@@ -245,7 +245,33 @@ impl SessionApplication {
                 "reconciled durable Session Runtime projections"
             );
         }
-        let event_batches = self.reconcile_event_batches().await;
+        // Event reconciliation may enter the complete Runtime Run state machine.
+        // Start that phase at a scheduler boundary instead of nesting it below
+        // Resource, continuation, and realization recovery. The `JoinSet` keeps
+        // the child structurally owned and aborts it if this recovery cycle is
+        // cancelled; only its polling stack changes.
+        let application = std::sync::Arc::clone(&self);
+        let mut event_task = tokio::task::JoinSet::new();
+        event_task.spawn(async move { application.reconcile_event_batches().await });
+        let event_batches = match event_task.join_next().await {
+            Some(Ok(report)) => report,
+            Some(Err(error)) => {
+                let mut report = crate::event_batches::EventBatchReconciliation::default();
+                report.failures.push((
+                    "<supervisor>".to_string(),
+                    format!("Session Event recovery task failed: {error}"),
+                ));
+                report
+            }
+            None => {
+                let mut report = crate::event_batches::EventBatchReconciliation::default();
+                report.failures.push((
+                    "<supervisor>".to_string(),
+                    "Session Event recovery task disappeared".to_string(),
+                ));
+                report
+            }
+        };
         let event_batch_failure_count = event_batches.failures.len();
         for (session_id, error) in event_batches.failures {
             tracing::warn!(

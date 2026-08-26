@@ -1577,12 +1577,19 @@ async fn tool_bearing_snapshot_can_be_restricted_at_the_run_boundary() {
         user("grade"),
     )
     .without_tools();
+    // Cause graph: C1 the snapshot has a colliding model-facing tool catalog;
+    // C2 this attempt narrows authority to DenyAll. E1 no tool or discovery
+    // prompt is projected, E2 the model can answer normally, and E3 a recovered
+    // or injected call remains blocked by the same closed narrowing enum.
     let state = BoundRunExecutor::new(&host, ctx)
         .execute(activation, RuntimeRunContext::new())
         .await
         .expect("declared tools do not bypass a per-Run deny-all restriction");
 
-    assert!(matches!(state, RunState::Ended(EndCause::NaturalEnd)));
+    assert!(
+        matches!(state, RunState::Ended(EndCause::NaturalEnd)),
+        "unexpected restricted Run state: {state:?}"
+    );
 }
 
 /// A model that blocks on its first inference until released, so a concurrent

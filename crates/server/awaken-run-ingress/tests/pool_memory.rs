@@ -29,8 +29,8 @@ use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_inmem::MemoryCommitCoordinator;
 
 use harness::{
-    FlakyDispatchStore, activation, activation_on, blocking_tool_runtime, text_runtime,
-    tool_runtime,
+    FlakyDispatchStore, activation, activation_on, blocking_tool_runtime,
+    blocking_tool_runtime_with_entry_signal, text_runtime, tool_runtime,
 };
 
 type MemWorker = DispatchWorker<MemoryDispatchStore>;
@@ -1116,11 +1116,12 @@ async fn crashed_lease_is_recovered_and_redriven() {
 /// target thread's pending input by the pool's maintenance loop, exactly once.
 #[tokio::test]
 async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
-    // Test design. Causes: C1 a cross-Thread message is staged; C2 the Pool
-    // maintenance loop polls at least once. Effects: E1 C2 relays it into target
-    // pending input; E2 repeated polls do not duplicate the stable message id.
+    // Test design. Causes: C1 a cross-Thread message is staged; C2 `send` publishes
+    // the Pool's one external wake. Effects: E1 C2 fans out to maintenance and
+    // relays before the deliberately distant fallback poll; E2 repeated relay
+    // attempts do not duplicate the stable message id.
     // Constraint/Invariant: the Outbox row is the sole relay authority. Decision rule:
-    // wait through multiple polls and require one pending delivery.
+    // make the timer unusable as an explanation, then require prompt delivery.
     let store = Arc::new(MemoryDispatchStore::new());
     let resolver = Arc::new(MapResolver {
         workers: HashMap::new(),
@@ -1131,7 +1132,7 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
         "pool",
         DEFAULT_LEASE_MS,
         DispatchServiceConfig {
-            poll_interval: Duration::from_millis(20),
+            poll_interval: Duration::from_secs(30),
             ..Default::default()
         },
         resolver,
@@ -1150,20 +1151,18 @@ async fn staged_cross_thread_delivery_is_relayed_at_least_once() {
     };
     pool.send(staged).await.unwrap();
 
-    // The maintenance loop relays the outbox into the thread's pending inbox.
-    let mut relayed = false;
-    for _ in 0..600 {
-        let records = store.list(&thread).await.unwrap();
-        if records.iter().any(|r| r.input.message_id == "xthread-1") {
-            relayed = true;
-            break;
+    // The published wake, not the 30-second fallback, relays the outbox.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let records = store.list(&thread).await.unwrap();
+            if records.iter().any(|r| r.input.message_id == "xthread-1") {
+                break;
+            }
+            tokio::task::yield_now().await;
         }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    assert!(
-        relayed,
-        "the pool relayed the staged delivery into pending input"
-    );
+    })
+    .await
+    .expect("the external wake promptly relays staged input");
 
     // Idempotent: it appears exactly once, never duplicated by repeated relays.
     let records = store.list(&thread).await.unwrap();
@@ -1443,10 +1442,8 @@ async fn completion_sink_is_signalled_for_an_awaiting_run() {
 /// every pool/service/foreground drive follow this one rule.
 #[tokio::test]
 async fn every_drive_renews_its_exact_claim_until_settlement() {
-    use std::sync::atomic::Ordering;
-
     let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let (runtime, ran) = blocking_tool_runtime(release.clone());
+    let (runtime, _ran, entered) = blocking_tool_runtime_with_entry_signal(release.clone());
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
     let worker = Arc::new(
@@ -1473,10 +1470,9 @@ async fn every_drive_renews_its_exact_claim_until_settlement() {
     );
 
     pool.submit(activation("run-1")).await.unwrap();
-    assert!(
-        wait_for(|| ran.load(Ordering::SeqCst) >= 1).await,
-        "the drive is in-flight, holding the pool's lease"
-    );
+    tokio::time::timeout(Duration::from_secs(10), entered.notified())
+        .await
+        .expect("the drive entered the blocked tool while holding the pool's lease");
 
     // Across a window far beyond the base lease, a thief owner can never reclaim it —
     // the renewal loop keeps the lease from expiring.

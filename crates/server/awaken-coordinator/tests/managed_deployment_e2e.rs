@@ -13,15 +13,14 @@ use awaken_executable_agent_catalog::{ExecutableAgentCatalog, LocalExecutableAge
 use awaken_executable_agent_contract::{
     ExecutableAgentRegistrar, ExecutableAgentRegistration, ExecutableAgentSessionProfile,
 };
-use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, ManagedState, deployments_router};
+use awaken_protocol_managed::{ManagedDeploymentSessionLauncher, deployments_router};
 use awaken_runtime_contract::snapshot::AgentId;
 use awaken_runtime_contract::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,
     AgentSnapshotMetadata, ExecutableAgentSnapshot, ModelBinding,
 };
-use awaken_runtime_host::ManagedHost;
 use awaken_scenario_host::{
-    EchoModel, build_router_and_host, build_router_and_host_with_agent_publications,
+    EchoModel, build_unmounted_host, build_unmounted_host_with_agent_publications,
 };
 use awaken_tenancy::WorkspaceScope;
 use axum::Router;
@@ -32,6 +31,13 @@ use serde_json::{Value, json};
 use tower::ServiceExt;
 
 use support::wait_for_session_events;
+
+fn resource_registry() -> Arc<dyn awaken_resource_contract::ResourceRegistry> {
+    awaken_resource_persistence::ephemeral()
+        .expect("open the Deployment test Resource application")
+        .authorities()
+        .resource_registry()
+}
 
 struct DeploymentPriceProvider;
 
@@ -115,10 +121,14 @@ async fn initial_event_failure_preserves_the_committed_deployment_session() {
     // launch executor or compensating delete exists. Rules: D1 C1 -> E1;
     // D2 C1+C2 -> E2; D3 C1+C2+C3 -> E3.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let (_, host) = build_router_and_host(Arc::new(EchoModel), "claude-sonnet-5");
+    let host = build_unmounted_host(Arc::new(EchoModel), "claude-sonnet-5");
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_config_source(catalog));
+    let managed = awaken_coordinator::local_managed_state_with_agent_source(
+        host,
+        resource_registry(),
+        catalog,
+    );
     let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_failed_initial".into(),
@@ -222,20 +232,28 @@ async fn deployment_run_identity_replays_one_session_and_rejects_payload_reuse()
     // Constraints/invariants: DeploymentRun identity and launch fingerprint are
     // the sole replay fence; the receipt-aware observer never drives execution.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let (_, host) = build_router_and_host_with_agent_publications(
+    let host = build_unmounted_host_with_agent_publications(
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
     );
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed =
-        Arc::new(ManagedState::new(ManagedHost::new(host.clone())).with_config_source(catalog));
+    let resources = resource_registry();
+    let managed = awaken_coordinator::local_managed_state_with_agent_source(
+        host.clone(),
+        resources.clone(),
+        catalog,
+    );
     // The public Session scope guard must observe the same trusted Workspace as
     // the internal Deployment launcher. Omitting this edge stamp proves only a
     // cross-tenant 404, not the launch or initial-Event contract.
-    let app = awaken_coordinator::mount_with_managed(host, managed.clone())
-        .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
+    let app = awaken_coordinator::mount_with_managed_and_resource_registry(
+        host,
+        managed.clone(),
+        resources,
+    )
+    .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
     let launcher = ManagedDeploymentSessionLauncher::new(managed.clone());
     let request = DeploymentLaunch {
         deployment_id: "depl_retry".into(),
@@ -317,17 +335,19 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     // D5 C5 -> E5, then unpause advances the future-only cursor;
     // D6 C1+C6 -> E6.
     let catalog = Arc::new(ExecutableAgentCatalog::new());
-    let (_, host) = build_router_and_host_with_agent_publications(
+    let host = build_unmounted_host_with_agent_publications(
         Arc::new(EchoModel),
         "claude-sonnet-5",
         catalog.clone(),
     );
     let workspace_id = host.local_workspace().to_string();
     publish_assistant(catalog.clone(), &workspace_id, "claude-sonnet-5").await;
-    let managed = Arc::new(
-        ManagedState::new(ManagedHost::new(host.clone()))
-            .with_config_source(catalog)
-            .with_managed_list_price_provider(Arc::new(DeploymentPriceProvider)),
+    let resources = resource_registry();
+    let managed = awaken_coordinator::local_managed_state_with_agent_source_and_list_prices(
+        host.clone(),
+        resources.clone(),
+        catalog,
+        Arc::new(DeploymentPriceProvider),
     );
     let deployments = Arc::new(DeploymentApplication::new());
     deployments.bind_launcher(Arc::new(ManagedDeploymentSessionLauncher::new(
@@ -335,9 +355,13 @@ async fn deployment_manual_and_cron_runs_create_ordinary_sessions_with_initial_e
     )));
     let deployment_api = deployments_router(deployments.clone())
         .layer(axum::Extension(WorkspaceScope(workspace_id.clone())));
-    let app = awaken_coordinator::mount_with_managed(host, managed.clone())
-        .merge(deployment_api)
-        .layer(axum::Extension(WorkspaceScope(workspace_id)));
+    let app = awaken_coordinator::mount_with_managed_and_resource_registry(
+        host,
+        managed.clone(),
+        resources,
+    )
+    .merge(deployment_api)
+    .layer(axum::Extension(WorkspaceScope(workspace_id)));
 
     let (status, deployment) = call(
         &app,

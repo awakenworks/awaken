@@ -342,7 +342,7 @@ Use this split:
 |---|---|---|---|
 | Multi-agent delegation | tool-call, permission, child-run correlation, `RunIngress` / backend handoff | `agent_run` descriptor/tool, delegate roster config, local/remote execution adapter | core enables delegation safely; installed tools and target choices change agent behavior |
 | Message delivery | committed message write intent, append fence, resume snapshot, frozen input consumption | internal `send_message` tool/effect, external message adapter, durable pending queue, recovery tool | core commits messages; adapters/tools decide how pending input arrives |
-| Scheduled/background work | `ScheduledAction`, `ResumeTicket`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no `BackgroundTask` umbrella; durable work is a committed request plus validated resume |
+| Scheduled/background work | `ScheduledAction`, `ResumeTicket`, correlation/idempotency key, resume validation | action kinds, timers, concrete task tools, result adapters | no core `BackgroundTask` umbrella; ADR-0076 owns only detached ordinary-tool execution |
 | Plugin mechanism | `Plugin` factory, `PluginManifest`, `CapabilityBound`, resolved `Contributions` (hook slots, tool gates, transform slots, key registry, output validation) | plugin packages, first-party extension bundles, product-selected active plugin scope | core resolves and bound-checks contributions; plugins decide behavior |
 | Client-executed tools | pending `ResumeTicket` (client-tool await reason), descriptor fingerprint, neutral resume command validated by the shared `ResumeValidator` | public wait/result projection and client adapter | public result ids are projections; runtime validates the pending call before resume |
 | State-machine workflows | typed state/effect/action/guard mechanism and replay-safe commit path | plugin or first-party extension workflow semantics | workflow state lives in runtime state/facts, not a parallel workflow store |
@@ -452,7 +452,7 @@ an outbox plus idempotent target pending append.
 
 ### Scheduled And Background Extension
 
-The runtime may wait on background-like work, but the mechanism is not a generic
+Runtime core may wait on background-like work, but it does not own a generic
 `BackgroundTask` object. Use these names by authority:
 
 | Need | Model it as |
@@ -515,23 +515,30 @@ delivery may share the sender checkpoint only when one commit source is proven.
 Cross-thread delivery uses a sender outbox plus idempotent target pending append;
 it must not require two-phase commit.
 
-Scheduled/background-like work is the deferred-work path. A selected plugin or
-tool may request future work only by staging a `ScheduledAction` with a
+Scheduled/background-like work that must resume the current run uses the
+deferred-work path. A selected plugin or tool stages a `ScheduledAction` with a
 correlation/idempotency key, run/thread binding, snapshot, and descriptor
 fingerprint. The same commit may also await the run in `ResumeTicket`.
-Dispatch/server owns timers, retries, and wake delivery. The
-runtime accepts a later result only through ingress/resume and only after it
-matches the committed request. Do not add a `BackgroundTask` aggregate or a
-background-task tool family; model-visible task tools, if any, belong to the
-builtin extension and produce ordinary runtime effects.
+Dispatch/server owns timers, retries, and wake delivery. Runtime accepts a later
+result only through ingress/resume and only after it matches the committed
+request.
 
-There is no `BackgroundTask` recovery capability. Recoverability comes from the
-specific committed mechanism: `ScheduledAction` request records, resume tickets
-and pending external results, durable pending input, dispatch leases, outboxes,
-and committed facts/events. An uncommitted candidate effect is not recoverable.
-A committed request can be recovered only by validating its correlation,
-idempotency key, run/thread binding, snapshot/catalog fingerprint, deadline, and
-current run lifecycle before accepting any result.
+Detached execution of an ordinary tool is a separate, opt-in extension defined
+by ADR-0076. `awaken-ext-background-task` owns its task aggregate and
+model-visible management tools; it persists the aggregate only as namespaced
+ordinary Runtime State commands. Runtime core owns neither that aggregate nor a
+background-task repository, service, table, scheduler, or tool id. Product
+composition may observe committed state and drive external work, but it may not
+inject a product service dependency back into Runtime.
+
+There is no generic Runtime `BackgroundTask` recovery capability. Recoverability
+comes from the specific committed mechanism: `ScheduledAction` request records,
+resume tickets and pending external results, durable pending input, dispatch
+leases, outboxes, committed facts/events, or the ADR-0076 extension's committed
+namespaced task state. An uncommitted candidate effect is not recoverable. A
+committed request can be recovered only by validating the identity, binding,
+policy, deadline, fence, and current lifecycle required by its owning mechanism
+before accepting any result.
 
 For extensions such as `awaken-ext-goal`, cancellation cancels the run's ability
 to consume an outstanding asynchronous result; it does not make the runtime own a
