@@ -6,7 +6,8 @@
 
 use awaken_agent_config::{AgentConfig, ModelSelection, MultiagentConfig, ToolOverride};
 use awaken_runtime_contract::agent_bindings::AgentMcpServerBinding;
-use awaken_runtime_contract::resolved::ToolDescriptor;
+use awaken_runtime_contract::agent_bindings::InferenceOptions;
+use awaken_runtime_contract::resolved::{ModelBinding, ToolDescriptor};
 use serde_json::{Value, json};
 
 use crate::{parse_managed_model_id, render_managed_model_id};
@@ -77,6 +78,30 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         Some(value) => serde_json::from_value(value).map_err(|error| error.to_string())?,
         None => Default::default(),
     };
+    let inference: InferenceOptions = body
+        .get("inference")
+        .filter(|value| !value.is_null())
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| format!("invalid inference options: {error}"))?
+        .unwrap_or_default();
+    let tool_patterns = array("tool_patterns")
+        .into_iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .ok_or_else(|| "tool_patterns entries must be strings".to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let model_fallbacks = array("model_candidates")
+        .into_iter()
+        .map(|value| {
+            serde_json::from_value::<ModelBinding>(value)
+                .map_err(|error| format!("invalid model candidate: {error}"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let tool_overrides: Vec<ToolOverride> = match body.get("tool_overrides").cloned() {
         Some(value) => serde_json::from_value(value).map_err(|error| error.to_string())?,
         None => Vec::new(),
@@ -147,7 +172,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             }),
         delegation_limits,
         model_binding,
-        inference: Default::default(),
+        inference,
         tool_ids: tools.iter().filter_map(managed_tool_id).collect(),
         toolsets: awaken_session_contract::toolset_policies(&authored_toolsets),
         client_tools,
@@ -166,8 +191,8 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             })
             .unwrap_or_default(),
         context_policy,
-        tool_patterns: Vec::new(),
-        model_fallbacks: Vec::new(),
+        tool_patterns,
+        model_fallbacks,
         name: string("name"),
         description: string("description"),
         metadata,
@@ -375,9 +400,12 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "name": config.name,
         "description": config.description,
         "model": model,
+        "inference": config.inference,
+        "model_candidates": config.model_fallbacks,
         "system": config.instructions,
         "metadata": config.metadata,
         "tools": tools,
+        "tool_patterns": config.tool_patterns,
         "recovery_policies": config.recovery_policies,
         "mcp_servers": config.mcp_servers,
         "skills": config.skills,
@@ -684,6 +712,48 @@ mod tests {
         let projected = managed_from_agent_config(&config, false);
         assert_eq!(projected["compaction"]["window"], json!(32000));
         assert_eq!(projected["compaction"]["keep_recent"], json!(12));
+    }
+
+    #[test]
+    fn advanced_model_and_tool_controls_round_trip_without_silent_reset() {
+        // Cause/effect matrix:
+        // C1 inference placement/effort/speed -> E1 exact options survive;
+        // C2 tool patterns -> E2 exact ordered patterns survive;
+        // C3 fallback candidates -> E3 exact provider/model/backend identities survive;
+        // C4 malformed values on any axis -> E4 authoring fails closed.
+        let body = json!({
+            "model": "deepseek-v4-flash",
+            "inference": {
+                "effort": "high",
+                "speed": "fast",
+                "inference_geo": "cn"
+            },
+            "tool_patterns": ["mcp__release__*", "read"],
+            "model_candidates": [{
+                "provider_identity_ref": "provider-backup",
+                "model_ref": "backup-model",
+                "backend_ref": "genai"
+            }]
+        });
+        let config = agent_config_from_managed("reviewer".into(), &body).expect("C1-C3");
+        let projected = managed_from_agent_config(&config, false);
+        assert_eq!(projected["inference"], body["inference"], "E1");
+        assert_eq!(projected["tool_patterns"], body["tool_patterns"], "E2");
+        assert_eq!(
+            projected["model_candidates"], body["model_candidates"],
+            "E3"
+        );
+
+        for malformed in [
+            json!({ "inference": { "effort": "unbounded" } }),
+            json!({ "tool_patterns": [7] }),
+            json!({ "model_candidates": [{ "model_ref": "missing-identities" }] }),
+        ] {
+            assert!(
+                agent_config_from_managed("invalid".into(), &malformed).is_err(),
+                "E4"
+            );
+        }
     }
 
     #[test]

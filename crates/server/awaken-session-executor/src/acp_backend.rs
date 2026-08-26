@@ -6,6 +6,48 @@ use std::sync::Arc;
 
 use awaken_run_executor_acp::{AcpRunExecutor, LaunchObserver, SessionHomeProvider};
 
+async fn validate_namespace_hand_bin(path: &std::path::Path) -> Result<(), String> {
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        format!(
+            "namespace Session environments require the release companion at {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "namespace Session environment companion is not a file: {}",
+            path.display()
+        ));
+    }
+
+    let child = tokio::process::Command::new(path)
+        .args(["hand", "--check"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("start namespace hand companion {}: {error}", path.display()))?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), child.wait_with_output())
+        .await
+        .map_err(|_| {
+            format!(
+                "namespace hand companion check timed out after 5s: {}",
+                path.display()
+            )
+        })?
+        .map_err(|error| format!("check namespace hand companion {}: {error}", path.display()))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+    Err(if detail.is_empty() {
+        format!("namespace hand companion check failed: {}", path.display())
+    } else {
+        format!("namespace hand companion check failed: {detail}")
+    })
+}
+
 enum AcpExecutorSource {
     Static(Arc<AcpRunExecutor>),
     Bound {
@@ -252,12 +294,20 @@ impl crate::host::SharedHost {
         // installation rather than from the image filesystem. Production bundles
         // install both executables as siblings; keeping this resolution at the
         // composition root prevents provider-specific host paths crossing inward.
-        let namespace_hand_bin = std::env::current_exe()
+        let namespace_hand_path = std::env::current_exe()
             .ok()
-            .map(|path| path.with_file_name("awaken-sandbox"))
-            .unwrap_or_else(|| std::path::PathBuf::from("awaken-sandbox"))
-            .to_string_lossy()
-            .into_owned();
+            .map(|path| {
+                path.with_file_name(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
+            })
+            .unwrap_or_else(|| {
+                std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
+            });
+        if tier == crate::SandboxTier::Namespace {
+            validate_namespace_hand_bin(&namespace_hand_path)
+                .await
+                .unwrap_or_else(|error| panic!("configure the Session sandbox tier: {error}"));
+        }
+        let namespace_hand_bin = namespace_hand_path.to_string_lossy().into_owned();
         host.session_provider = if let Some(provider) =
             crate::session_environment::SessionEnvironmentProvider::for_host_tier(
                 tier,

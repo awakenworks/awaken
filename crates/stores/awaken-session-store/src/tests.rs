@@ -30,9 +30,10 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
      * typed outage/error; E2 preserve durable rows; E3 durably quarantine only
      * the corrupt Session; E4 continue healthy recovery. Rules: healthy scans
      * are covered by repository conformance; R1 C1=>E1; R2 C2=>E1+E2;
-     * R3 C3=>E2+E3+E4. A storage-wide outage fails the scan; row-local decode
-     * corruption is isolated because returning neither row would silently lose
-     * unrelated durable work. */
+     * R3 C3=>E2+E3+E4; R4 a later codec recognizes the isolated row=>clear
+     * stale quarantine and resume reconciliation. A storage-wide outage fails
+     * the scan; row-local decode corruption is isolated because returning
+     * neither row would silently lose unrelated durable work. */
     let pool = sqlx::postgres::PgPoolOptions::new()
         .acquire_timeout(Duration::from_millis(10))
         .connect_lazy("postgres://localhost/awaken")
@@ -66,7 +67,8 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         .unwrap();
     assert!(sqlite.pending_lifecycle().await.is_err(), "R2 typed error");
 
-    create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
+    let recoverable =
+        create_fixture(&sqlite, "workspace", sample("sesn_corrupt"), Vec::new()).await;
     create_fixture(&sqlite, "workspace", sample("sesn_healthy"), Vec::new()).await;
     sqlite
         .conn
@@ -102,6 +104,45 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
         )
         .unwrap();
     assert_eq!(quarantined_rows, 1, "R3 durable quarantine");
+
+    let mut recognized_legacy = serde_json::to_value(recoverable).unwrap();
+    recognized_legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("event_batches");
+    recognized_legacy
+        .as_object_mut()
+        .unwrap()
+        .remove("active_activity_epochs");
+    sqlite
+        .conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+            params![recognized_legacy.to_string(), "sesn_corrupt"],
+        )
+        .unwrap();
+    let healed = sqlite.reconcilable_sessions().await.unwrap();
+    assert!(healed.quarantined.is_empty(), "R4 stale quarantine cleared");
+    assert!(
+        healed
+            .sessions
+            .iter()
+            .any(|row| row.session.session_id == "sesn_corrupt"),
+        "R4 recognized historical row resumes recovery"
+    );
+    let quarantined_rows: i64 = sqlite
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT COUNT(*) FROM managed_session_quarantine WHERE session_id = ?1",
+            params!["sesn_corrupt"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(quarantined_rows, 0, "R4 durable stale evidence removed");
 }
 
 /// Shared-file write-admission causal graph:

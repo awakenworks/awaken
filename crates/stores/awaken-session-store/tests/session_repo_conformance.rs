@@ -1047,6 +1047,78 @@ fn sqlite_backend_conforms() {
     });
 }
 
+#[test]
+fn sqlite_restores_and_canonically_rewrites_the_pre_typed_deployment_record() {
+    block(async {
+        // This fixture is frozen old-release output, not JSON produced by the
+        // current Rust types. It covers the upgrade edge that ordinary
+        // write-then-read repository tests cannot exercise.
+        let directory = tempfile::tempdir().expect("temporary compatibility database");
+        let database = directory.path().join("managed.db");
+        let database_path = database.to_str().expect("UTF-8 test path");
+        let repo = SqliteManagedSessionRepository::open(database_path)
+            .expect("initialize old-record compatibility database");
+        let old_record = include_str!("fixtures/deployment-record-v0-managed-wire.json");
+
+        rusqlite::Connection::open(&database)
+            .expect("open fixture database")
+            .execute(
+                "INSERT INTO managed_deployment \
+                 (deployment_id, workspace_id, revision, data) VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params![
+                    "depl_upgrade_fixture",
+                    "workspace_upgrade_fixture",
+                    1_i64,
+                    old_record
+                ],
+            )
+            .expect("insert exact old-release Deployment document");
+
+        let mut restored = repo
+            .deployments()
+            .await
+            .expect("old official Managed event spelling must restore")
+            .pop()
+            .expect("fixture Deployment");
+        assert_eq!(restored.record.revision, 1);
+        assert_eq!(restored.record.initial_events.len(), 1);
+
+        restored.record.revision = 2;
+        restored.record.updated_at = "2026-08-25T00:00:00Z".into();
+        assert_eq!(
+            repo.write_deployment(restored, Some(1), 10, None)
+                .await
+                .expect("rewrite restored Deployment"),
+            DeploymentWriteOutcome::Applied
+        );
+        drop(repo);
+
+        let stored: String = rusqlite::Connection::open(&database)
+            .expect("inspect rewritten database")
+            .query_row(
+                "SELECT data FROM managed_deployment WHERE deployment_id=?1",
+                ["depl_upgrade_fixture"],
+                |row| row.get(0),
+            )
+            .expect("rewritten Deployment document");
+        let stored: serde_json::Value =
+            serde_json::from_str(&stored).expect("valid rewritten Deployment JSON");
+        assert_eq!(stored["initial_events"][0]["type"], "user_message");
+
+        let reopened = SqliteManagedSessionRepository::open(database_path)
+            .expect("reopen compatibility database");
+        assert_eq!(
+            reopened
+                .deployments()
+                .await
+                .expect("rewritten Deployment survives restart")[0]
+                .record
+                .revision,
+            2
+        );
+    });
+}
+
 #[tokio::test]
 async fn postgres_root_cas_conforms_to_the_same_decision_table() {
     use awaken_session_store::PostgresManagedSessionRepository;

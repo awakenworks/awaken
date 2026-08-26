@@ -200,8 +200,13 @@ async function main() {
     // local environment effect, so clear that orthogonal physical phase inside
     // the aggregate while preserving its authoritative public configuration.
     const canonicalAggregate = JSON.parse(canonicalRows[0].aggregate_json);
-    canonicalAggregate.environment = { phase: 'unmaterialized' };
-    canonicalAggregate.realization = null;
+    assert.equal(
+      canonicalAggregate.format,
+      'awaken.session.v1',
+      'Q4 current aggregates carry an explicit storage format',
+    );
+    canonicalAggregate.aggregate.environment = { phase: 'unmaterialized' };
+    canonicalAggregate.aggregate.realization = null;
     sqlite(
       database,
       `UPDATE managed_session
