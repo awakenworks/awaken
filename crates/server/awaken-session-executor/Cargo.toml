@@ -108,6 +108,7 @@ container-podman = ["awaken-sandbox-container/podman"]
 container-k8s = ["awaken-sandbox-container/k8s"]
 
 [dev-dependencies]
+awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 awaken-resource-application.workspace = true
 awaken-credential-vault = { workspace = true, features = ["test-support"] }
 awaken-file-store = { workspace = true, features = ["test-support"] }
