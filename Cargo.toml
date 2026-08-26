@@ -106,10 +106,10 @@ awaken-admin-config-api = { path = "crates/control/awaken-admin-config-api" }
 awaken-control = { path = "crates/control/awaken-control" }
 # Foundation contract half (ADR-0043): RFC-9457 ApiError, pagination, and the
 # allowlisted ListQuery/QuerySchema the admin config API serves its CRUD on.
-awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "bc863fd83935b24ce73ca27014f35440321ff906" }
-awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "bc863fd83935b24ce73ca27014f35440321ff906" }
-awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "bc863fd83935b24ce73ca27014f35440321ff906" }
-awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "bc863fd83935b24ce73ca27014f35440321ff906" }
+awaken-api-contract = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
+awaken-connection = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
+awaken-scoped-migration = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
+awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-foundation.git", rev = "248ca11e94e6ad8aa39bcf43699c725e2a96da70" }
 # Embedded IAM for the management plane (ADR-0042/0043 P1): bearer ApiToken
 # authn (argon2id at rest) + grant-based authz gating /v1/config/* and
 # /v1/vaults/* in awaken-coordinator, opt-in via AWAKEN_MGMT_IAM=embedded.
@@ -117,15 +117,15 @@ awaken-scoped-migration-sqlite = { git = "https://github.com/awakenworks/awaken-
 # became consumable once iam adopted foundation ADR-0005 (rusqlite as a
 # links-safe *range*, >=0.32 <0.41), so its SqlStore/migrations now back the
 # embedded authz rows instead of a hand-rolled schema.
-awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
-awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
-awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
-awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
-awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
+awaken-iam-contract = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
+awaken-iam-server = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
+awaken-iam-core = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
+awaken-iam-preset = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
+awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
 # The assembly layer (ADR-0048): one IamGate (authn+authz PDP) + auth_layer PEP,
 # three modes (Open/Local/Remote). Local mode is the single-machine embed over
 # migrated <data_dir>/iam.sqlite, seeded roles, and one-time browser setup.
-awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "b0883e991aa45de211da9b660d49522968f09c9f", version = "=0.1.2-dev" }
+awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
