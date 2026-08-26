@@ -167,14 +167,20 @@ function writeCatalogRaw(database, kind, id, data) {
   );
 }
 
-function sessionAggregate(database, sessionId) {
+function sessionEnvelope(database, sessionId) {
   const rows = sqliteRows(
     database,
     `SELECT aggregate_json FROM managed_session WHERE session_id=${sqlQuote(sessionId)}`,
   );
   assert.equal(rows.length, 1, `missing Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  return JSON.parse(rows[0].aggregate_json);
+  const envelope = JSON.parse(rows[0].aggregate_json);
+  assert.equal(envelope.format, 'awaken.session.v1');
+  return envelope;
+}
+
+function sessionAggregate(database, sessionId) {
+  return sessionEnvelope(database, sessionId).aggregate;
 }
 
 function sessionResources(database, sessionId) {
@@ -182,7 +188,8 @@ function sessionResources(database, sessionId) {
 }
 
 function persistPreparedGeneration(database, sessionId) {
-  const aggregate = sessionAggregate(database, sessionId);
+  const envelope = sessionEnvelope(database, sessionId);
+  const aggregate = envelope.aggregate;
   const state = aggregate.resources;
   const revision = state.revision + 1;
   const previous = state.activations.map((activation) => ({
@@ -208,8 +215,11 @@ function persistPreparedGeneration(database, sessionId) {
   sqliteExec(
     database,
     `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
-      ...aggregate,
-      resources: next,
+      ...envelope,
+      aggregate: {
+        ...aggregate,
+        resources: next,
+      },
     }))} WHERE session_id=${sqlQuote(sessionId)}`,
   );
 }

@@ -17,7 +17,7 @@ use std::os::unix::fs::PermissionsExt;
 use awaken_connection_plan::{
     ConnectionPlan, TokioChannelFactory, bind_tcp, bind_unix, connect_with_retry,
 };
-use awaken_ext_builtin_tools::all_hand_tools;
+use awaken_ext_builtin_tools::{HandToolContext, all_hand_tools_in};
 use std::sync::Arc;
 
 use awaken_tool_relay::{FsOperationLedger, HandOperationLedger, HandSession, serve_hand};
@@ -86,6 +86,34 @@ const HAND_LEDGER_DIR: &str = "AWAKEN_HAND_LEDGER_DIR";
 const HAND_LEDGER_MAX_ENTRIES: &str = "AWAKEN_HAND_LEDGER_MAX_ENTRIES";
 const HAND_MAX_CONNECTIONS: &str = "AWAKEN_HAND_MAX_CONNECTIONS";
 const DEFAULT_HAND_MAX_CONNECTIONS: usize = 16;
+const SESSION_MOUNT_ROOT: &str = "/mnt";
+
+/// Build the filesystem toolset inside the sandbox's two trusted roots.
+///
+/// `/workspace` remains the writable working directory. Managed Files, Memory,
+/// and run outputs are projected below `/mnt`; the Namespace/Container boundary
+/// owns that tree, so allowing it here does not widen access to host paths.
+fn sandbox_hand_tools() -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    let logical = std::path::PathBuf::from(SESSION_MOUNT_ROOT);
+    let physical = if logical.exists() {
+        logical.clone()
+    } else {
+        std::env::current_dir()
+            .ok()
+            .and_then(|workdir| workdir.parent().map(|root| root.join("mnt")))
+            .filter(|candidate| candidate.exists())
+            .unwrap_or_else(|| logical.clone())
+    };
+    sandbox_hand_tools_at(physical)
+}
+
+fn sandbox_hand_tools_at(
+    physical_mount_root: impl Into<std::path::PathBuf>,
+) -> Vec<Arc<dyn awaken_runtime_contract::tool::RawTool>> {
+    all_hand_tools_in(
+        HandToolContext::default().with_path_projection(SESSION_MOUNT_ROOT, physical_mount_root),
+    )
+}
 
 fn operation_ledger_root(configured: Option<std::ffi::OsString>) -> std::path::PathBuf {
     configured.map_or_else(
@@ -166,7 +194,7 @@ pub async fn serve_with_operation_ledger(
                 read: tokio::io::stdin(),
                 write: tokio::io::stdout(),
             };
-            let session = HandSession::new(all_hand_tools(), ledger);
+            let session = HandSession::new(sandbox_hand_tools(), ledger);
             serve_hand(channel, session)
                 .await
                 .map_err(|error| format!("hand stdio: {error}"))
@@ -203,7 +231,7 @@ pub async fn serve_with_operation_ledger(
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let session = HandSession::new(all_hand_tools(), ledger);
+                    let session = HandSession::new(sandbox_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -231,7 +259,7 @@ pub async fn serve_with_operation_ledger(
                 let ledger = ledger.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let session = HandSession::new(all_hand_tools(), ledger);
+                    let session = HandSession::new(sandbox_hand_tools(), ledger);
                     let _ = serve_hand(channel, session).await;
                 });
             }
@@ -253,7 +281,7 @@ pub async fn serve_with_operation_ledger(
                 .await
                 {
                     Ok(channel) => {
-                        let session = HandSession::new(all_hand_tools(), ledger.clone());
+                        let session = HandSession::new(sandbox_hand_tools(), ledger.clone());
                         let _ = serve_hand(channel, session).await;
                         eprintln!("awaken-sandbox hand: brain link closed; re-dialing");
                     }
@@ -291,7 +319,7 @@ async fn run_nats(
         .subscribe(subject.to_string())
         .await
         .map_err(|e| format!("hand NATS subscribe {subject}: {e}"))?;
-    let mut session = HandSession::new(all_hand_tools(), ledger);
+    let mut session = HandSession::new(sandbox_hand_tools(), ledger);
     eprintln!(
         "awaken-sandbox hand: serving the executor channel over NATS {url} subject '{subject}'"
     );
@@ -318,6 +346,8 @@ async fn run_nats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_runtime_contract::llm::ToolCall;
+    use awaken_runtime_contract::tool::ToolError;
 
     #[tokio::test]
     async fn stdio_channel_forwards_flush_and_shutdown_to_its_writer() {
@@ -492,5 +522,46 @@ mod tests {
             }
             other => panic!("expected the NATS hand to run bash, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn sandbox_hand_reads_only_the_explicit_managed_mount_root() {
+        // Cause/effect graph: C1 the Session projects a Managed File under the
+        // trusted mount root; C2 read receives its absolute Managed path; C3 a
+        // different absolute root is requested. C1+C2 must return the mounted
+        // bytes, while C3 must remain denied by the tool's lexical jail.
+        let mount = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let evidence = mount.path().join("session/uploads/evidence.txt");
+        std::fs::create_dir_all(evidence.parent().unwrap()).unwrap();
+        std::fs::write(&evidence, "HOLD: INV-204").unwrap();
+        let outside_file = outside.path().join("private.txt");
+        std::fs::write(&outside_file, "must stay hidden").unwrap();
+
+        let read = sandbox_hand_tools_at(mount.path())
+            .into_iter()
+            .find(|tool| tool.id() == "read")
+            .expect("read tool");
+        let output = read
+            .invoke(ToolCall {
+                call_id: "managed-read".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({ "file_path": "/mnt/session/uploads/evidence.txt" }),
+            })
+            .await
+            .expect("managed mount is readable");
+        assert!(output.text().contains("HOLD: INV-204"));
+
+        let denied = read
+            .invoke(ToolCall {
+                call_id: "outside-read".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({ "file_path": outside_file }),
+            })
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(denied, ToolError::Execution(message) if message.contains("escapes workdir"))
+        );
     }
 }

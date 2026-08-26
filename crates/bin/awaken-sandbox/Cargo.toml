@@ -31,6 +31,7 @@ hand = [
     "dep:awaken-tool-relay",
     "dep:awaken-ext-builtin-tools",
     "dep:awaken-connection-plan",
+    "dep:awaken-runtime-contract",
     "dep:async-nats",
     "dep:futures",
     "dep:serde_json",
@@ -55,6 +56,7 @@ tokio = { workspace = true, features = [
 awaken-tool-relay = { workspace = true, optional = true }
 awaken-ext-builtin-tools = { workspace = true, optional = true }
 awaken-connection-plan = { workspace = true, optional = true }
+awaken-runtime-contract = { workspace = true, optional = true }
 async-nats = { version = "0.50", optional = true }
 futures = { version = "0.3", optional = true }
 serde_json = { workspace = true, optional = true }
@@ -64,7 +66,6 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
 awaken-tool-relay = { workspace = true, features = ["test-support"] }
 # hand-role integration test: drive the real hand with a real ToolCall over a socket.
-awaken-runtime-contract = { workspace = true }
 awaken-provisioning-contract = { workspace = true }
 awaken-sandbox-local = { workspace = true }
 tempfile = "3"

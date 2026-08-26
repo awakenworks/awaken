@@ -51,7 +51,9 @@ function sessionAggregate(root: string, sessionId: string): Aggregate {
     { encoding: 'utf8' },
   ).trim();
   assert.ok(json, `durable aggregate exists for ${sessionId}`);
-  return JSON.parse(json) as Aggregate;
+  const envelope = JSON.parse(json) as { format: string; aggregate: Aggregate };
+  assert.equal(envelope.format, 'awaken.session.v1');
+  return envelope.aggregate;
 }
 
 async function events(client: Anthropic, sessionId: string): Promise<Event[]> {

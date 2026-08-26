@@ -956,6 +956,18 @@ pub trait ManagedSessionRepository: Send + Sync {
     /// [`SessionRepositoryError::NotFound`] case, never a storage fallback.
     async fn get(&self, session_id: &str) -> Result<PersistedSession, SessionRepositoryError>;
 
+    /// Every visible aggregate owned by one Workspace. Collection reads must
+    /// come from durable truth so a process restart cannot make existing
+    /// Sessions disappear merely because the protocol projection cache is cold.
+    async fn list_by_owner(
+        &self,
+        _owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        Err(SessionRepositoryError::Unavailable(
+            "Session repository does not support Workspace listing".into(),
+        ))
+    }
+
     /// Sessions carrying any durable Resource, MCP, environment, or WorkQueue
     /// projection reconciliation work.
     /// Implementations preserve the intrinsic Workspace partition in the same

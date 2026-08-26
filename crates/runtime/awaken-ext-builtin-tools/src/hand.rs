@@ -36,6 +36,7 @@ const WALK_MAX_ENTRIES: usize = 50_000;
 pub struct HandToolContext {
     workdir: PathBuf,
     allowed_roots: Vec<PathBuf>,
+    path_projections: Vec<(PathBuf, PathBuf)>,
     max_file_bytes: Option<u64>,
     bash_env: Option<BTreeMap<String, String>>,
     /// Trusted launcher for the persistent shell. Providers use this to enter a
@@ -49,6 +50,7 @@ impl HandToolContext {
         Self {
             workdir: workdir.into(),
             allowed_roots: Vec::new(),
+            path_projections: Vec::new(),
             max_file_bytes: Some(DEFAULT_MAX_FILE_BYTES),
             bash_env: None,
             bash_launcher: None,
@@ -59,6 +61,25 @@ impl HandToolContext {
     #[must_use]
     pub fn with_allowed_root(mut self, root: impl Into<PathBuf>) -> Self {
         self.allowed_roots.push(root.into());
+        self
+    }
+
+    /// Map one runtime-owned logical mount root to its provider-specific path.
+    ///
+    /// Linux namespaces and containers normally use identity projections such
+    /// as `/mnt` to `/mnt`. macOS Seatbelt has no mount namespace, so the same
+    /// logical path maps to the Session's private host projection. Only trusted
+    /// composition code can install this mapping; model-authored paths cannot.
+    #[must_use]
+    pub fn with_path_projection(
+        mut self,
+        logical_root: impl Into<PathBuf>,
+        physical_root: impl Into<PathBuf>,
+    ) -> Self {
+        let physical_root = physical_root.into();
+        self.allowed_roots.push(physical_root.clone());
+        self.path_projections
+            .push((logical_root.into(), physical_root));
         self
     }
 
@@ -102,10 +123,21 @@ impl FileContext {
             return Err(ToolError::InvalidArguments("file path is required".into()));
         }
         let root = canonicalize_or_absolute(&self.0.workdir)?;
-        let candidate = if Path::new(input).is_absolute() {
-            lexical_normalize(Path::new(input))
+        let input_path = lexical_normalize(Path::new(input));
+        let candidate = if input_path.is_absolute() {
+            self.0
+                .path_projections
+                .iter()
+                .filter_map(|(logical, physical)| {
+                    input_path
+                        .strip_prefix(logical)
+                        .ok()
+                        .map(|suffix| (logical.components().count(), physical.join(suffix)))
+                })
+                .max_by_key(|(specificity, _)| *specificity)
+                .map_or(input_path, |(_, projected)| lexical_normalize(&projected))
         } else {
-            lexical_normalize(&root.join(input))
+            lexical_normalize(&root.join(input_path))
         };
         let resolved = canonicalize_with_missing(&candidate)
             .map_err(|error| file_error("path", input, &error))?;

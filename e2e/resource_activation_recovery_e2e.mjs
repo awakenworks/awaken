@@ -155,8 +155,11 @@ function sessionRow(database, sessionId) {
   );
   assert.equal(rows.length, 1, `missing durable Session ${sessionId}`);
   assert.ok(rows[0].aggregate_json, `Session ${sessionId} has no canonical aggregate`);
-  const aggregate = JSON.parse(rows[0].aggregate_json);
+  const envelope = JSON.parse(rows[0].aggregate_json);
+  assert.equal(envelope.format, 'awaken.session.v1');
+  const aggregate = envelope.aggregate;
   return {
+    envelope,
     aggregate,
     status: aggregate.status,
     resources: aggregate.resources,
@@ -189,7 +192,10 @@ function updateSessionRow(database, sessionId, status, resources) {
   };
   sqliteExec(
     database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify(aggregate))}
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+      ...row.envelope,
+      aggregate,
+    }))}
        WHERE session_id=${sqlQuote(sessionId)}`,
   );
 }
@@ -246,7 +252,10 @@ function persistTerminalRelease(database, sessionId) {
   };
   sqliteExec(
     database,
-    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify(aggregate))}
+    `UPDATE managed_session SET aggregate_json=${sqlQuote(JSON.stringify({
+      ...row.envelope,
+      aggregate,
+    }))}
        WHERE session_id=${sqlQuote(sessionId)}`,
   );
 }

@@ -112,6 +112,13 @@ impl SessionApplication {
         self.sessions_repo.get(session_id).await
     }
 
+    pub async fn sessions_by_owner(
+        &self,
+        owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        self.sessions_repo.list_by_owner(owner_scope).await
+    }
+
     #[must_use]
     pub fn session_profile(
         &self,

@@ -101,6 +101,88 @@ async fn make_deployment(app: &Router) -> String {
 }
 
 #[tokio::test]
+async fn deployment_initial_events_match_the_managed_agents_wire_contract() {
+    // API compatibility cause/effect graph:
+    // C1 official user.message; C2 official user.define_outcome; C3 paired
+    // user.message + system.message; C4 internal snake_case spelling leaks into
+    // a request. Effects E1 accept and echo the exact official discriminant;
+    // E2 reject the internal spelling. These rules keep protocol projection
+    // independent from the Deployment storage codec.
+    //
+    // | Rule | Input event(s)                           | HTTP | Response type(s) |
+    // | A1   | user.message                             | 200  | user.message     |
+    // | A2   | user.define_outcome                      | 200  | user.define_outcome |
+    // | A3   | user.message, system.message             | 200  | exact ordered pair |
+    // | A4   | user_message (internal storage spelling) | 400  | none             |
+    let app = app();
+    let cases = [
+        (
+            "A1",
+            json!([{"type":"user.message","content":[{"type":"text","text":"go"}]}]),
+            vec!["user.message"],
+        ),
+        (
+            "A2",
+            json!([{
+                "type":"user.define_outcome",
+                "description":"Produce the verified release brief",
+                "rubric":{"type":"text","content":"All claims cite supplied evidence"},
+                "max_iterations":3
+            }]),
+            vec!["user.define_outcome"],
+        ),
+        (
+            "A3",
+            json!([
+                {"type":"user.message","content":[{"type":"text","text":"go"}]},
+                {"type":"system.message","content":[{"type":"text","text":"Use only supplied facts"}]}
+            ]),
+            vec!["user.message", "system.message"],
+        ),
+    ];
+
+    for (rule, initial_events, expected_types) in cases {
+        let (status, deployment) = call(
+            &app,
+            "POST",
+            "/v1/deployments",
+            Some(json!({
+                "agent":"agent_x",
+                "environment_id":"env_1",
+                "name":format!("wire-{rule}"),
+                "initial_events":initial_events
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{rule}");
+        assert_eq!(
+            deployment["initial_events"]
+                .as_array()
+                .expect("initial_events response")
+                .iter()
+                .map(|event| event["type"].as_str().expect("event type"))
+                .collect::<Vec<_>>(),
+            expected_types,
+            "{rule}"
+        );
+    }
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/deployments",
+        Some(json!({
+            "agent":"agent_x",
+            "environment_id":"env_1",
+            "name":"wire-A4",
+            "initial_events":[{"type":"user_message","content":[{"type":"text","text":"go"}]}]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "A4");
+}
+
+#[tokio::test]
 async fn deployment_lifecycle_and_runs() {
     // Lifecycle cause/effect graph: C1 active Deployment; C2 manually paused;
     // C3 archived. Effects: E1 create/update commit; E2 C2 suppresses only
