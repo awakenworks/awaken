@@ -146,7 +146,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness managed_creation_pair_requires_every_binding_axis \
     --harness managed_creation_begin_rejects_every_published_identity \
     --harness managed_mutation_operation_shape_is_closed_and_delete_is_absorbing \
-    --harness managed_material_attempt_requires_owner_and_exact_physical_namespace \
+    --harness credential_material_attempt_requires_owner_and_exact_physical_namespace \
     --harness managed_rollout_never_precedes_exact_pair_publication \
     --harness managed_rollout_ack_requires_converged_progress
   run_kani awaken-tool-relay \
@@ -160,7 +160,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-credential-contract \
     --harness credential_envelope_issuance_accepts_exactly_the_complete_claim \
     --harness environment_credential_custody_selects_exactly_one_authorized_profile \
-    --harness http_effect_material_shape_is_exact_and_non_widening \
+    --harness named_material_shape_is_exact_and_non_widening \
     --harness mcp_delivery_selection_has_only_the_explicit_pair_classes \
     --harness mcp_delivery_receipt_requires_exact_binding_holder_and_mechanism \
     --harness worker_plaintext_holder_projection_is_exact_and_non_widening

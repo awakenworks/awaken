@@ -376,20 +376,26 @@ async fn recovery_reconciles_the_complete_named_material_set() {
             OAUTH_REFRESH_TOKEN_SLOT.into(),
             SecretRef(format!("sec:{}:r2:{OAUTH_REFRESH_TOKEN_SLOT}", after.id.0)),
         );
-        let new_refs = after.material_refs().cloned().collect::<Vec<_>>();
+        let intent = CredentialMutationIntent::prepare(Some(before), after).unwrap();
+        let new_refs = intent.after.material_refs().cloned().collect::<Vec<_>>();
+        repo.begin_mutation(intent.clone()).await.unwrap();
         for reference in &new_refs {
             store
                 .put(reference, RedactedString::new("new"))
                 .await
                 .unwrap();
         }
-        let intent = CredentialMutationIntent {
-            before: Some(before),
-            after,
-        };
-        repo.begin_mutation(intent.clone()).await.unwrap();
         if committed {
-            repo.apply_mutation(&intent).await.unwrap();
+            let ready = repo.mark_mutation_ready(&intent).await.unwrap();
+            repo.apply_mutation(&ready).await.unwrap();
+        } else {
+            let claim_now = intent.material_fence.writer_lease_expires_at_unix_ms + 1;
+            let claimed = repo
+                .claim_expired_mutation(&intent, claim_now, claim_now + 120_000)
+                .await
+                .unwrap()
+                .expect("expired Writing claim");
+            repo.abort_mutation(&claimed).await.unwrap();
         }
 
         assert_eq!(

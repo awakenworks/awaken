@@ -267,6 +267,7 @@ mod tests {
                       status: CredentialStatus,
                       env_key: Option<&str>| CredentialSource {
             id: awaken_credential_contract::CredentialSourceId(id.into()),
+            replacement_of: None,
             workspace_id: workspace.into(),
             kind,
             descriptor: None,
@@ -390,6 +391,7 @@ mod tests {
         // deriving dialect or credential-delivery policy from the endpoint.
         let source = |provider: &str, endpoint: Option<&str>| CredentialSource {
             id: awaken_credential_contract::CredentialSourceId("credential".into()),
+            replacement_of: None,
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
             descriptor: None,
@@ -450,6 +452,7 @@ mod tests {
          * membership; E2=exclude. Rules A1 C1+C2=>E1; A2 !C1+C2=>E2. */
         let scoped = CredentialSource {
             id: awaken_credential_contract::CredentialSourceId("cred:z-provider".into()),
+            replacement_of: None,
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             descriptor: None,

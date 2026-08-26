@@ -824,7 +824,8 @@ async fn provider_and_dialect_are_the_only_authored_endpoint_identity() {
 }
 
 // Provider-command identity decision table:
-// R1 same Workspace/provider/dialect/name/key replay -> same credential source.
+// R1 same Workspace/provider/dialect/name/key replay after the successful
+// command advanced the source lifecycle revision -> same credential source.
 // R2 same connection with a different key -> distinct credential source.
 // R3 blank key -> reject before discovery or persistence.
 #[tokio::test]
@@ -871,7 +872,7 @@ async fn provider_connection_command_is_idempotent_and_requires_an_explicit_key(
     .await;
 
     assert_eq!(first_status, StatusCode::CREATED);
-    assert_eq!(replay_status, StatusCode::CREATED);
+    assert_eq!(replay_status, StatusCode::CREATED, "R1 replay: {replay}");
     assert_eq!(second_status, StatusCode::CREATED);
     assert_eq!(blank_status, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(first["credential"]["id"], replay["credential"]["id"]);
@@ -1039,6 +1040,7 @@ async fn non_provider_credentials_cannot_drive_connection_or_readiness() {
         .credentials
         .put(CredentialSource {
             id: env_id.clone(),
+            replacement_of: None,
             workspace_id: "workspace-a".into(),
             kind: awaken_credential_vault::CredentialKind::Env,
             descriptor: None,

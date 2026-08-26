@@ -110,6 +110,7 @@ mod tests {
     ) -> CredentialSource {
         CredentialSource {
             id: CredentialSourceId(id.into()),
+            replacement_of: None,
             workspace_id: "workspace".into(),
             kind,
             descriptor: None,

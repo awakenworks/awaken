@@ -198,21 +198,45 @@ Wire facts to match exactly:
 Every Managed credential create/update/archive/delete is one Credential
 bounded-context command, not an HTTP-layer dual write. A secret-free
 `PendingManagedCredentialMutation` freezes the exact Source and child before/
-after pair around material IO. Create always begins in `Writing`; update begins
-in `Writing` only when it introduces new material. Metadata-only update,
-archive, and delete introduce no material and begin in `Ready`. The exact live
-writer may advance `Writing` to `Ready` after its material writes; recovery may
-claim only a repository-CAS-matched `Writing` fact whose recorded lease is
-expired. This lease test uses the injected process time and has no renewal
-heartbeat, so it fences durable transitions but does not prove that a slow
-external write is no longer executing.
+after pair around material IO. It and the source-only
+`CredentialMutationIntent` flatten the same `CredentialMaterialMutationFence`;
+their two existing JSON tables remain separate only because one publishes a
+Source and the other publishes the wider Source+child pair. Create begins in
+`Writing`; update begins there only when it introduces new material.
+Metadata-only update, archive, and delete introduce no material and begin in
+`Ready`. New-command admission accepts only the constructor's canonical fresh
+shape: material-writing work is original-owner epoch 1 with token equal to its
+attempt id and a live lease, while material-free work has no owner/attempt and
+is already `Ready`. Serde fields cannot submit a forged `Ready` new-material
+command.
+
+`begin` returns physical-attempt ownership. An exact or logically identical
+fresh retry finds the source-keyed durable pending row, reports non-ownership,
+and returns a transient pending conflict before any SecretStore write; it never
+creates a second WAL/ref or writes through the durable owner's token. Plaintext
+is intentionally absent from this comparison, so a same-projection retry with
+different bytes receives the same transient result while the winner is pending.
+After publication, a source-only idempotent command's stable identity compares
+logical metadata/material slots, reads the
+actual durable refs, and verifies exact bytes, so retry converges without a
+second WAL or physical ref.
+
+Only the exact original writer may advance `Writing` to `Ready`, after every
+material put has returned. Recovery may repository-CAS claim an expired
+`Writing` fact, but the claimed epoch can only advance to `ReclaimingAbort`.
+Recovery never inspects those bytes and promotes them: SecretStore has no
+conditional-put CAS against the writer epoch, so a late old writer could still
+overwrite that attempt ref. Only a durable `Ready` fact is eligible to publish.
+The lease test uses injected process time and has no renewal heartbeat, so a
+slow external write may be fenced; attempt-specific refs ensure its late write
+can create only an unreachable orphan.
 
 One `ManagedCredentialRepository` transaction locks the parent Vault, checks
 both revision fences, publishes `CredentialSource` plus
 `ManagedVaultCredential`, and advances the fact to `Reclaiming`. A non-create
 commit writes its exact-revision rollout outbox event in that same transaction;
-create has no rollout event. Periodic reconciliation claims expired `Writing`,
-commits `Ready`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
+create has no rollout event. Periodic reconciliation publishes `Ready`, aborts
+expired `Writing`, and completes `Reclaiming`/`ReclaimingAbort` cleanup work.
 
 The child lifecycle is the closed `Active | Archived | Deleted` value;
 `Deleted` is absorbing and physical purge is separate GC. The configured
@@ -251,12 +275,14 @@ purge of root and child tombstones is separate GC.
 
 The repository transaction cannot include an external KMS or SecretStore.
 Material may therefore exist while its durable pending fact owns it, but an
-executable Source cannot exist without its exact Managed child. Recovery either
-publishes the pair or reclaims only that pending fact's references. This uses a
-local transaction plus idempotent recovery, never distributed two-phase commit.
+executable Source cannot exist without its exact Managed child. Recovery
+publishes only a pair already fenced as `Ready`; it reclaims an expired
+`Writing` attempt instead of inferring readiness from SecretStore bytes. This
+uses a local transaction plus idempotent recovery, never distributed two-phase commit.
 Every current-format Managed material reference admitted by the command is
 namespaced with that command's stable attempt identity. Writer takeover changes
-the lease owner but not that physical namespace. The Kani harness proves only
+the lease owner but not that physical namespace and cannot enter `Ready`. The
+Kani harness proves only
 the bounded admission predicate: a current-format new-material path requires a
 declared owner and a matching namespace flag. Constructor/validation tests
 cover suffix construction; UUID entropy and arbitrary SecretStore behavior are
@@ -273,11 +299,21 @@ heartbeat during a long external call, and backend conditional effects remain
 adapter improvements needed to eliminate premature takeover and potentially
 unbounded orphan retention before an exact collector exists.
 
-Recovery enumeration treats each durable mutation or rollout row as an
-independent work item. An undecodable row or a mutation with an unsupported
-future format is retained and logged for operator migration or repair; it
-cannot prevent current, well-formed rows in the same scan from reconciling.
-Isolation does not reinterpret, acknowledge, or delete the unknown record.
+Legacy format-0 pending rows are recovery-only; every new begin rejects them.
+A rolling deployment must first stop or drain old-format writers, wait at least
+their maximum writer lease plus the platform's external-write grace, and only
+then enable the new recovery owner. That drain is required because legacy refs
+have neither the attempt namespace nor owner proof that makes a late current-
+format write harmless. Recovery may claim and abort a legacy row after the
+grace, but never admits it as a new command or promotes it to `Ready`.
+
+Recovery validates each decoded mutation before any SecretStore effect. An
+unsupported future-format mutation is retained without reinterpretation or
+deletion. The current SQLite/Postgres enumerators decode the batch as one
+`Result`, however, so one undecodable JSON row retains the whole batch and
+blocks that reconciliation pass. Per-row decode isolation plus an operator
+repair signal is deferred; it requires extending the existing repository scan
+contract rather than inventing a second recovery path in this change.
 
 ### Hosted application static-bearer admission
 
@@ -333,6 +369,25 @@ idempotency_key)` tuple, where exactly one provider comes from the descriptor or
 the legacy `provider_id`; new described writes reject the legacy field. Create seals material through
 the existing Credential repository and SecretStore, exact replay returns the
 same secret-free source, and reuse with different material fails closed.
+
+The same POST accepts `replacement_of: {id, revision}` only for a described,
+idempotent hosted create. The existing tuple derives a deterministic distinct
+new source id; the existing mutation WAL atomically requires the predecessor's
+full row to equal that exact reference and the new id to be absent, then inserts
+the new version-1 source without changing the predecessor. Exact new-source
+replay wins after publication, including after later predecessor retirement.
+The new `CredentialSource` durably records secret-free
+`replacement_of: {id, revision}` provenance; ordinary create records `None`, so
+a pre-existing ordinary row with identical metadata and bytes cannot
+impersonate a replacement replay.
+Crash recovery deletes only unpublished replacement material or retains both
+published generations; it never reclaims predecessor material for a cross-id
+intent. Relinking consumers and retiring the old exact revision remain separate
+consumer/application commands. This extends the existing repository intent and
+POST route; it adds no successor store, lease, route, or parallel credential
+authority. Concurrent attempts with different new ids may both satisfy the same
+unchanged predecessor revision, so the business owner must serialize one
+Credential Resource replacement when successor uniqueness is required.
 
 Each descriptor declaration is one exact target identity (purpose + audience)
 paired with `CredentialUsage`. Executable access serializes that target identity

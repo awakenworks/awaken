@@ -230,6 +230,7 @@ mod tests {
     fn credential(provider: &str) -> CredentialSource {
         CredentialSource {
             id: CredentialSourceId(format!("cred:workspace:{provider}")),
+            replacement_of: None,
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
             descriptor: None,

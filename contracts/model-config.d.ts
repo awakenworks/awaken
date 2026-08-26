@@ -545,6 +545,17 @@ export interface CredentialTarget {
   purpose: CredentialPurpose;
 }
 /**
+ * A stable reference to one credential source revision.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "CredentialRef".
+ */
+export interface CredentialRef {
+  id: string;
+  revision: number;
+  [k: string]: unknown;
+}
+/**
  * This interface was referenced by the generated JSON Schema
  * via the `definition` "CredentialMaterialInput".
  */
@@ -768,6 +779,7 @@ export interface CredentialSourceView {
   oauth_helper?: OAuthHelper | null;
   protocol_endpoint_id?: string | null;
   provider_id?: string | null;
+  replacement_of?: CredentialRef | null;
   status: CredentialStatus;
   version: number;
   workspace_id: string;
@@ -1007,6 +1019,11 @@ export interface EnterCredentialRequest {
    */
   oauth_helper?: OAuthHelper | null;
   provider_id?: string | null;
+  /**
+   * Exact active predecessor fenced while this request publishes a distinct
+   * deterministic source. The predecessor is not mutated or retired.
+   */
+  replacement_of?: CredentialRef | null;
   /**
    * The secret to seal — required for `vault`. Environment-backed credentials
    * are not accepted; environment discovery is exposed only as proposals.

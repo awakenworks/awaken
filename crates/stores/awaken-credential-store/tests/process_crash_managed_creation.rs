@@ -29,6 +29,7 @@ const KEY: [u8; 32] = [23; 32];
 fn source() -> CredentialSource {
     CredentialSource {
         id: CredentialSourceId("cred:ws:managed-process-crash".into()),
+        replacement_of: None,
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
         descriptor: None,
@@ -67,7 +68,7 @@ fn stores(path: &str) -> (SqliteCredentialRepo, SealedAeadSecretStore) {
 }
 
 #[tokio::test]
-async fn complete_material_survives_kill_and_recovers_one_atomic_managed_pair() {
+async fn writing_material_survives_kill_but_expired_owner_is_aborted() {
     if std::env::var_os(CHILD_MODE).is_some() {
         let db = std::env::var(DB_PATH).unwrap();
         let marker = std::env::var(MARKER_PATH).unwrap();
@@ -86,11 +87,8 @@ async fn complete_material_survives_kill_and_recovers_one_atomic_managed_pair() 
         )
         .await
         .unwrap();
-        let mut pending = PendingManagedCredentialMutation::create(source(), child()).unwrap();
+        let pending = PendingManagedCredentialMutation::create(source(), child()).unwrap();
         let material_ref = pending.after_source.material_ref.clone().unwrap();
-        // Deterministically model a process that is killed after its lease has
-        // expired; recovery must not depend on sleeping for the lease duration.
-        pending.writer_lease_expires_at_unix_ms = 1;
         repo.begin_managed_mutation(pending).await.unwrap();
         secrets
             .put(&material_ref, RedactedString::new("process-crash-secret"))
@@ -106,7 +104,7 @@ async fn complete_material_survives_kill_and_recovers_one_atomic_managed_pair() 
     let marker = dir.path().join("material-ready.marker");
     let mut process = Command::new(std::env::current_exe().unwrap())
         .arg("--exact")
-        .arg("complete_material_survives_kill_and_recovers_one_atomic_managed_pair")
+        .arg("writing_material_survives_kill_but_expired_owner_is_aborted")
         .arg("--nocapture")
         .env(CHILD_MODE, "1")
         .env(DB_PATH, &db)
@@ -127,7 +125,9 @@ async fn complete_material_survives_kill_and_recovers_one_atomic_managed_pair() 
     assert!(!process.wait().unwrap().success());
 
     let (repo, secrets) = stores(db.to_str().unwrap());
-    assert_eq!(repo.pending_managed_mutations().await.unwrap().len(), 1);
+    let pending = repo.pending_managed_mutations().await.unwrap();
+    assert_eq!(pending.len(), 1);
+    let attempted_ref = pending[0].after_source.material_ref.clone().unwrap();
     assert!(matches!(
         repo.get(&source().id).await,
         Err(awaken_credential_vault::CredentialError::SourceNotFound(_))
@@ -136,50 +136,41 @@ async fn complete_material_survives_kill_and_recovers_one_atomic_managed_pair() 
         repo.get_vault_credential("ws", &child().id).await.unwrap(),
         None
     );
+    let claim_now = pending[0].material_fence.writer_lease_expires_at_unix_ms + 1;
+    let claimed = repo
+        .claim_expired_managed_mutation(&pending[0], claim_now, claim_now + 120_000)
+        .await
+        .unwrap()
+        .expect("expired crash writer claim");
+    repo.abort_managed_mutation(&claimed).await.unwrap();
     assert_eq!(
         recover_managed_credential_mutations(&secrets, &repo)
             .await
             .unwrap(),
         1
     );
-    let published = repo.get(&source().id).await.unwrap();
-    let mut expected = source();
-    expected.material_ref = published.material_ref.clone();
-    assert_eq!(published, expected);
-    assert!(
-        published
-            .material_ref
-            .as_ref()
-            .is_some_and(|reference| reference.0.contains(":attempt:"))
-    );
-    assert_eq!(
-        secrets
-            .get(published.material_ref.as_ref().unwrap())
-            .await
-            .unwrap()
-            .expose_secret(),
-        "process-crash-secret"
-    );
+    assert!(matches!(
+        repo.get(&source().id).await,
+        Err(awaken_credential_vault::CredentialError::SourceNotFound(_))
+    ));
+    assert!(secrets.get(&attempted_ref).await.is_err());
     assert_eq!(
         repo.get_vault_credential("ws", &child().id).await.unwrap(),
-        Some(child())
+        None
     );
     assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
-    assert!(matches!(
-        repo.begin_managed_mutation(
-            PendingManagedCredentialMutation::create(source(), child()).unwrap()
-        )
-        .await,
-        Err(awaken_credential_vault::CredentialError::MutationConflict(
-            _
-        ))
-    ));
-    assert!(repo.pending_managed_mutations().await.unwrap().is_empty());
+    repo.begin_managed_mutation(
+        PendingManagedCredentialMutation::create(source(), child()).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(repo.pending_managed_mutations().await.unwrap().len(), 1);
     assert_eq!(
         recover_managed_credential_mutations(&secrets, &repo)
             .await
             .unwrap(),
-        0
+        0,
+        "the fresh retry remains live Writing and cannot be stolen"
     );
 }
 
@@ -202,30 +193,37 @@ async fn sqlite_writing_lease_fences_live_and_stale_owners() {
     )
     .await
     .unwrap();
-    let mut stale = PendingManagedCredentialMutation::create(source(), child()).unwrap();
-    stale.writer_lease_expires_at_unix_ms = 100;
-    repo.begin_managed_mutation(stale.clone()).await.unwrap();
+    let stale = PendingManagedCredentialMutation::create(source(), child()).unwrap();
+    let lease_expires_at = stale.material_fence.writer_lease_expires_at_unix_ms;
+    assert!(repo.begin_managed_mutation(stale.clone()).await.unwrap());
+    assert!(!repo.begin_managed_mutation(stale.clone()).await.unwrap());
 
     assert!(
-        repo.claim_expired_managed_mutation(&stale, 99, 200)
+        repo.claim_expired_managed_mutation(&stale, lease_expires_at - 1, lease_expires_at + 100)
             .await
             .unwrap()
             .is_none(),
         "a live writer lease must not be stolen"
     );
     let claimed = repo
-        .claim_expired_managed_mutation(&stale, 100, 200)
+        .claim_expired_managed_mutation(&stale, lease_expires_at, lease_expires_at + 100)
         .await
         .unwrap()
         .expect("expired writer must be atomically fenced");
-    assert_eq!(claimed.writer_epoch, stale.writer_epoch + 1);
-    assert_ne!(claimed.writer_token, stale.writer_token);
+    assert_eq!(
+        claimed.material_fence.writer_epoch,
+        stale.material_fence.writer_epoch + 1
+    );
+    assert_ne!(
+        claimed.material_fence.writer_token,
+        stale.material_fence.writer_token
+    );
     assert!(repo.mark_managed_mutation_ready(&stale).await.is_err());
 
-    let mut stale_ready = stale;
-    stale_ready.phase = awaken_credential_vault::repo::ManagedCredentialMutationPhase::Ready;
+    let stale_ready = stale.with_material_ready().unwrap();
     assert!(repo.commit_managed_mutation(&stale_ready).await.is_err());
 
-    let ready = repo.mark_managed_mutation_ready(&claimed).await.unwrap();
-    repo.commit_managed_mutation(&ready).await.unwrap();
+    assert!(repo.mark_managed_mutation_ready(&claimed).await.is_err());
+    let abort = repo.abort_managed_mutation(&claimed).await.unwrap();
+    repo.complete_managed_mutation(&abort).await.unwrap();
 }

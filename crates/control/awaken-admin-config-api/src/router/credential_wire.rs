@@ -5,7 +5,7 @@
 //! request or response shapes.
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
+use awaken_credential_contract::{CredentialDescriptor, CredentialRef, CredentialSourceId};
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialSource, CredentialStatus, OAuthHelper,
 };
@@ -23,6 +23,10 @@ pub struct EnterCredentialRequest {
     /// writes reject `provider_id` so that tuple has one provider truth.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) idempotency_key: Option<String>,
+    /// Exact active predecessor fenced while this request publishes a distinct
+    /// deterministic source. The predecessor is not mutated or retired.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) replacement_of: Option<CredentialRef>,
     pub(super) kind: CredentialKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) provider_id: Option<String>,
@@ -114,6 +118,8 @@ pub(super) fn credential_material(
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CredentialSourceView {
     pub id: CredentialSourceId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_of: Option<CredentialRef>,
     pub workspace_id: String,
     pub kind: CredentialKind,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -193,6 +199,7 @@ impl From<CredentialSource> for CredentialSourceView {
             .and_then(OAuthHelper::from_command);
         Self {
             id: source.id,
+            replacement_of: source.replacement_of,
             workspace_id: source.workspace_id,
             kind: source.kind,
             descriptor: source.descriptor,

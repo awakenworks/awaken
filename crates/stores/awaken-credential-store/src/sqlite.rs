@@ -25,7 +25,7 @@ use awaken_credential_vault::catalog::{
     admit_managed_vault_replacement,
 };
 use awaken_credential_vault::repo::{
-    CredentialMutationIntent, CredentialRepo, ManagedCredentialMutationPhase,
+    CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialRepo,
     ManagedCredentialOperation, ManagedCredentialRepository, ManagedCredentialRollout,
     PendingManagedCredentialMutation, managed_retirement_parent_admitted,
     managed_rollout_from_committed,
@@ -518,29 +518,138 @@ impl CredentialRepo for SqliteCredentialRepo {
         &self,
         intent: CredentialMutationIntent,
     ) -> Result<bool, CredentialError> {
-        let id = intent.after.id.0.clone();
-        let data = serde_json::to_string(&intent).map_err(storage)?;
+        intent.validate_for_begin()?;
         with_conn(&self.conn, move |conn, p| {
-            let inserted = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let durable_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            if let Some(data) = durable_data {
+                let durable: CredentialMutationIntent =
+                    serde_json::from_str(&data).map_err(storage)?;
+                if !durable.matches_logical_command(&intent) {
+                    return Err(CredentialError::MutationConflict(
+                        "another credential mutation is pending".into(),
+                    ));
+                }
+                tx.commit().map_err(storage)?;
+                return Ok(false);
+            }
+
+            let current_after_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let current_after: Option<CredentialSource> = current_after_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?;
+            let before_matches = if intent.is_distinct_replacement() {
+                let before = intent.before.as_ref().ok_or_else(|| {
+                    CredentialError::InvalidSource(
+                        "distinct replacement requires an exact predecessor".into(),
+                    )
+                })?;
+                let current_before_data: Option<String> = tx
+                    .query_row(
+                        &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                        params![before.id.0],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(storage)?;
+                let current_before: Option<CredentialSource> = current_before_data
+                    .map(|data| serde_json::from_str(&data).map_err(storage))
+                    .transpose()?;
+                current_after.is_none() && current_before.as_ref() == Some(before)
+            } else {
+                current_after.as_ref() == intent.before.as_ref()
+            };
+            if !before_matches {
+                return Err(CredentialError::MutationConflict(
+                    "credential changed before its material mutation was prepared".into(),
+                ));
+            }
+            let data = serde_json::to_string(&intent).map_err(storage)?;
+            let inserted = tx
                 .execute(
                     &format!(
                         "INSERT OR IGNORE INTO {p}_creation_intent (source_id, data) VALUES (?1, ?2)"
                     ),
-                    params![id, data],
+                    params![intent.after.id.0, data],
                 )
                 .map_err(storage)?;
-            let durable: CredentialMutationIntent = get_row(
-                conn,
-                &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
-                &id,
-                CredentialError::SourceNotFound,
-            )?;
-            if durable != intent {
+            let durable_data: String = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .map_err(storage)?;
+            let durable: CredentialMutationIntent =
+                serde_json::from_str(&durable_data).map_err(storage)?;
+            if !durable.matches_logical_command(&intent) {
                 return Err(CredentialError::MutationConflict(
                     "another credential mutation is pending".into(),
                 ));
             }
+            tx.commit().map_err(storage)?;
             Ok(inserted == 1)
+        })
+        .await
+    }
+
+    async fn mark_mutation_ready(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        let ready = intent.with_material_ready()?;
+        let intent = intent.clone();
+        let ready_for_store = ready.clone();
+        with_conn(&self.conn, move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let durable_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let durable: CredentialMutationIntent = durable_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "credential material mutation has no durable pending fact".into(),
+                    )
+                })?;
+            if durable != intent {
+                return Err(CredentialError::MutationConflict(
+                    "credential ready transition does not match its durable Writing owner".into(),
+                ));
+            }
+            let data = serde_json::to_string(&ready_for_store).map_err(storage)?;
+            tx.execute(
+                &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
+                params![intent.after.id.0, data],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            Ok(ready_for_store)
         })
         .await
     }
@@ -548,8 +657,11 @@ impl CredentialRepo for SqliteCredentialRepo {
     async fn apply_mutation(
         &self,
         intent: &CredentialMutationIntent,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        let reclaiming = intent.with_material_reclaiming()?;
         let intent = intent.clone();
+        let reclaiming_for_store = reclaiming.clone();
         with_conn(&self.conn, move |conn, p| {
             // This mutation reads its durable intent/current revision before it
             // writes. In WAL mode a deferred transaction cannot upgrade an old
@@ -576,11 +688,6 @@ impl CredentialRepo for SqliteCredentialRepo {
                         "credential mutation has no matching durable intent".into(),
                     )
                 })?;
-            if durable != intent {
-                return Err(CredentialError::MutationConflict(
-                    "credential mutation does not match durable intent".into(),
-                ));
-            }
             let current_data: Option<String> = tx
                 .query_row(
                     &format!("SELECT data FROM {p}_source WHERE id = ?1"),
@@ -592,27 +699,78 @@ impl CredentialRepo for SqliteCredentialRepo {
             let current: Option<CredentialSource> = current_data
                 .map(|data| serde_json::from_str(&data).map_err(storage))
                 .transpose()?;
-            if current.as_ref() == Some(&intent.after) {
+            if durable == reclaiming_for_store && current.as_ref() == Some(&intent.after) {
                 tx.commit().map_err(storage)?;
-                return Ok(());
+                return Ok(reclaiming_for_store);
             }
-            if current != intent.before {
+            if durable != intent {
                 return Err(CredentialError::MutationConflict(
-                    "credential revision changed during mutation".into(),
+                    "credential mutation does not match durable Ready intent".into(),
                 ));
             }
-            let id = intent.after.id.0.clone();
-            let workspace_id = intent.after.workspace_id.clone();
-            let data = serde_json::to_string(&intent.after).map_err(storage)?;
+            if intent.is_distinct_replacement() {
+                if current.is_some() {
+                    return Err(CredentialError::MutationConflict(
+                        "credential replacement id is already occupied".into(),
+                    ));
+                }
+                let before = intent.before.as_ref().ok_or_else(|| {
+                    CredentialError::InvalidSource(
+                        "distinct replacement requires an exact predecessor".into(),
+                    )
+                })?;
+                let current_before_data: Option<String> = tx
+                    .query_row(
+                        &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                        params![before.id.0],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(storage)?;
+                let current_before: Option<CredentialSource> = current_before_data
+                    .map(|data| serde_json::from_str(&data).map_err(storage))
+                    .transpose()?;
+                if current_before.as_ref() != Some(before) {
+                    return Err(CredentialError::MutationConflict(
+                        "credential replacement precondition changed during mutation".into(),
+                    ));
+                }
+                let id = intent.after.id.0.clone();
+                let workspace_id = intent.after.workspace_id.clone();
+                let data = serde_json::to_string(&intent.after).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3)"
+                    ),
+                    params![id, workspace_id, data],
+                )
+                .map_err(storage)?;
+            } else {
+                if current != intent.before {
+                    return Err(CredentialError::MutationConflict(
+                        "credential revision changed during mutation".into(),
+                    ));
+                }
+                let id = intent.after.id.0.clone();
+                let workspace_id = intent.after.workspace_id.clone();
+                let data = serde_json::to_string(&intent.after).map_err(storage)?;
+                tx.execute(
+                    &format!(
+                        "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
+                         ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
+                    ),
+                    params![id, workspace_id, data],
+                )
+                .map_err(storage)?;
+            }
+            let reclaiming_data = serde_json::to_string(&reclaiming_for_store).map_err(storage)?;
             tx.execute(
-                &format!(
-                    "INSERT INTO {p}_source (id, workspace_id, data) VALUES (?1, ?2, ?3) \
-                     ON CONFLICT(id) DO UPDATE SET workspace_id = excluded.workspace_id, data = excluded.data"
-                ),
-                params![id, workspace_id, data],
+                &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
+                params![intent.after.id.0, reclaiming_data],
             )
             .map_err(storage)?;
-            tx.commit().map_err(storage)
+            tx.commit().map_err(storage)?;
+            Ok(reclaiming_for_store)
         })
         .await
     }
@@ -621,27 +779,197 @@ impl CredentialRepo for SqliteCredentialRepo {
         with_conn(&self.conn, move |conn, p| {
             let mut statement = conn
                 .prepare(&format!(
-                    "SELECT data FROM {p}_creation_intent ORDER BY created_at, source_id"
+                    "SELECT source_id, data FROM {p}_creation_intent ORDER BY created_at, source_id"
                 ))
                 .map_err(storage)?;
             let rows = statement
-                .query_map([], |row| row.get::<_, String>(0))
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
                 .map_err(storage)?;
-            rows.map(|row| serde_json::from_str(&row.map_err(storage)?).map_err(storage))
-                .collect()
+            rows.map(|row| {
+                let (source_id, data) = row.map_err(storage)?;
+                let intent =
+                    serde_json::from_str::<CredentialMutationIntent>(&data).map_err(storage)?;
+                intent.validate_durable_key(&source_id)?;
+                Ok(intent)
+            })
+            .collect()
         })
         .await
     }
 
-    async fn complete_mutation(&self, id: &CredentialSourceId) -> Result<(), CredentialError> {
-        let id = id.0.clone();
+    async fn claim_expired_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+        now_unix_ms: u64,
+        lease_expires_at_unix_ms: u64,
+    ) -> Result<Option<CredentialMutationIntent>, CredentialError> {
+        let Some(claimed) = intent.claim_after_expiry(now_unix_ms, lease_expires_at_unix_ms)?
+        else {
+            return Ok(None);
+        };
+        let intent = intent.clone();
+        let claimed_for_store = claimed.clone();
         with_conn(&self.conn, move |conn, p| {
-            conn.execute(
-                &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
-                params![id],
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let durable_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some(data) = durable_data else {
+                tx.commit().map_err(storage)?;
+                return Ok(None);
+            };
+            let durable: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
+            if durable != intent
+                || durable.material_fence.phase != CredentialMaterialMutationPhase::Writing
+            {
+                tx.commit().map_err(storage)?;
+                return Ok(None);
+            }
+            let data = serde_json::to_string(&claimed_for_store).map_err(storage)?;
+            tx.execute(
+                &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
+                params![intent.after.id.0, data],
             )
             .map_err(storage)?;
-            Ok(())
+            tx.commit().map_err(storage)?;
+            Ok(Some(claimed_for_store))
+        })
+        .await
+    }
+
+    async fn abort_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<CredentialMutationIntent, CredentialError> {
+        intent.validate()?;
+        let abort = intent.with_material_reclaiming_abort()?;
+        let intent = intent.clone();
+        let abort_for_store = abort.clone();
+        with_conn(&self.conn, move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let durable_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let durable: CredentialMutationIntent = durable_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "credential abort has no durable pending fact".into(),
+                    )
+                })?;
+            let current_after_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let current_after: Option<CredentialSource> = current_after_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?;
+            let unpublished = if intent.is_distinct_replacement() {
+                current_after.is_none()
+            } else {
+                current_after.as_ref() == intent.before.as_ref()
+            };
+            if durable == abort_for_store && unpublished {
+                tx.commit().map_err(storage)?;
+                return Ok(abort_for_store);
+            }
+            if durable != intent || !unpublished {
+                return Err(CredentialError::MutationConflict(
+                    "credential abort does not match exact unpublished truth".into(),
+                ));
+            }
+            let data = serde_json::to_string(&abort_for_store).map_err(storage)?;
+            tx.execute(
+                &format!("UPDATE {p}_creation_intent SET data = ?2 WHERE source_id = ?1"),
+                params![intent.after.id.0, data],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)?;
+            Ok(abort_for_store)
+        })
+        .await
+    }
+
+    async fn complete_mutation(
+        &self,
+        intent: &CredentialMutationIntent,
+    ) -> Result<(), CredentialError> {
+        intent.validate()?;
+        let intent = intent.clone();
+        with_conn(&self.conn, move |conn, p| {
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(storage)?;
+            let durable_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let Some(data) = durable_data else {
+                tx.commit().map_err(storage)?;
+                return Ok(());
+            };
+            let durable: CredentialMutationIntent = serde_json::from_str(&data).map_err(storage)?;
+            let current_after_data: Option<String> = tx
+                .query_row(
+                    &format!("SELECT data FROM {p}_source WHERE id = ?1"),
+                    params![intent.after.id.0],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(storage)?;
+            let current_after: Option<CredentialSource> = current_after_data
+                .map(|data| serde_json::from_str(&data).map_err(storage))
+                .transpose()?;
+            let truth_matches_phase = match intent.material_fence.phase {
+                CredentialMaterialMutationPhase::Reclaiming => {
+                    current_after.as_ref() == Some(&intent.after)
+                }
+                CredentialMaterialMutationPhase::ReclaimingAbort => {
+                    if intent.is_distinct_replacement() {
+                        current_after.is_none()
+                    } else {
+                        current_after.as_ref() == intent.before.as_ref()
+                    }
+                }
+                CredentialMaterialMutationPhase::Writing
+                | CredentialMaterialMutationPhase::Ready => false,
+            };
+            if durable != intent || !truth_matches_phase {
+                return Err(CredentialError::MutationConflict(
+                    "credential completion does not match durable cleanup truth".into(),
+                ));
+            }
+            tx.execute(
+                &format!("DELETE FROM {p}_creation_intent WHERE source_id = ?1"),
+                params![intent.after.id.0],
+            )
+            .map_err(storage)?;
+            tx.commit().map_err(storage)
         })
         .await
     }
@@ -833,6 +1161,7 @@ mod tests {
     fn source(id: &str) -> CredentialSource {
         CredentialSource {
             id: CredentialSourceId(id.into()),
+            replacement_of: None,
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
             descriptor: None,
@@ -913,10 +1242,7 @@ mod tests {
         let mut updated = contended.clone();
         updated.provider_id = Some("provider-after".into());
         updated.version += 1;
-        let intent = CredentialMutationIntent {
-            before: Some(contended),
-            after: updated.clone(),
-        };
+        let intent = CredentialMutationIntent::prepare(Some(contended), updated.clone()).unwrap();
         repo.begin_mutation(intent.clone()).await.unwrap();
         let blocker_path = path.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
@@ -1153,16 +1479,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_or_future_recovery_rows_do_not_block_healthy_work() {
+    async fn mutation_decode_failure_blocks_the_batch_but_rollout_decode_is_isolated() {
         use awaken_credential_vault::repo::ManagedCredentialRepository;
 
+        // Cause/effect decision table:
+        // R1 decoded current + decoded future mutation rows -> both are returned so the
+        //    recovery owner can reject the future row before SecretStore I/O;
+        // R2 any undecodable mutation row -> the whole mutation scan fails and every row
+        //    remains durable for operator repair;
+        // R3 an undecodable rollout row -> that independent rollout is isolated while a
+        //    healthy rollout remains visible to its existing recovery owner.
         let repo = SqliteCredentialRepo::open_in_memory().unwrap();
         let healthy_source = source("cred:healthy-pending");
         let healthy_child = managed_credential(&healthy_source.id.0, "crd-healthy-pending");
         let healthy_pending =
             PendingManagedCredentialMutation::create(healthy_source, healthy_child).unwrap();
-        let mut future_pending = serde_json::to_value(&healthy_pending).unwrap();
-        future_pending["format_version"] = serde_json::json!(u64::MAX);
+        let future_source = source("cred:future");
+        let future_child = managed_credential(&future_source.id.0, "crd-future");
+        let mut future_pending = serde_json::to_value(
+            PendingManagedCredentialMutation::create(future_source, future_child).unwrap(),
+        )
+        .unwrap();
+        future_pending["format_version"] = serde_json::json!(2);
         let healthy_rollout = ManagedCredentialRollout {
             id: "managed-update:healthy-rollout".into(),
             workspace_id: "ws".into(),
@@ -1185,8 +1523,6 @@ mod tests {
                 ],
             )
             .unwrap();
-            conn.execute(pending_sql, params!["cred:malformed", "{not-json"])
-                .unwrap();
             conn.execute(
                 pending_sql,
                 params![
@@ -1212,10 +1548,24 @@ mod tests {
             .unwrap();
         }
 
-        assert_eq!(
-            repo.pending_managed_mutations().await.unwrap(),
-            vec![healthy_pending]
-        );
+        let decoded = repo.pending_managed_mutations().await.unwrap();
+        assert_eq!(decoded.len(), 2);
+        assert!(decoded.contains(&healthy_pending));
+        assert!(decoded.iter().any(|pending| pending.validate().is_err()));
+
+        {
+            let conn = repo.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO credential_managed_credential_mutation (source_id, data) \
+                 VALUES (?1, ?2)",
+                params!["cred:malformed", "{not-json"],
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            repo.pending_managed_mutations().await,
+            Err(CredentialError::Storage(_))
+        ));
         assert_eq!(
             repo.pending_managed_rollouts().await.unwrap(),
             vec![healthy_rollout]
@@ -1248,8 +1598,8 @@ mod tests {
 
         let reclaiming = repo.abort_managed_mutation(&pending).await.unwrap();
         assert_eq!(
-            reclaiming.phase,
-            ManagedCredentialMutationPhase::ReclaimingAbort
+            reclaiming.material_fence.phase,
+            CredentialMaterialMutationPhase::ReclaimingAbort
         );
         assert_eq!(
             repo.pending_managed_mutations().await.unwrap(),

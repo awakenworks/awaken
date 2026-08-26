@@ -47,7 +47,9 @@ pub const SELF_HOSTED_WORKER_TRUST_DOMAIN: &str = "awaken.worker";
 pub const SELF_HOSTED_ACP_TRUST_DOMAIN: &str = "awaken.workload.acp";
 
 /// A stable reference to one credential source revision.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct CredentialRef {
     pub id: String,
     pub revision: u64,

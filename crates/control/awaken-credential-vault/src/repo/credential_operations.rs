@@ -24,6 +24,7 @@ pub async fn ensure_worker_local(
     ));
     let expected = CredentialSource {
         id,
+        replacement_of: None,
         workspace_id: workspace_id.to_string(),
         kind: CredentialKind::WorkerLocal,
         descriptor: None,
@@ -40,6 +41,7 @@ pub async fn ensure_worker_local(
     let durable = repo.put_if_absent(expected.clone()).await?;
     if durable.workspace_id != expected.workspace_id
         || durable.kind != CredentialKind::WorkerLocal
+        || durable.replacement_of != expected.replacement_of
         || durable.provider_id != expected.provider_id
         || durable.worker_local_binding != expected.worker_local_binding
         || durable.env_key.is_some()
@@ -174,6 +176,105 @@ pub async fn enter_credential_idempotent_described(
     verify_idempotent_material(entry, expected_material.as_ref(), store).await
 }
 
+/// Create a distinct described source while atomically fencing the exact active
+/// source revision it replaces. The predecessor remains unchanged so already
+/// pinned consumers can be relinked before a separate exact retirement command.
+/// A stable replacement id makes a lost-response retry return the same source
+/// and verify the same sealed material.
+pub async fn enter_credential_replacement_idempotent_described(
+    replacement_of: &awaken_credential_contract::CredentialRef,
+    replacement_id: CredentialSourceId,
+    params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
+    descriptor: awaken_credential_contract::CredentialDescriptor,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
+    if replacement_of.id.trim().is_empty() || replacement_of.revision == 0 {
+        return Err(CredentialError::InvalidSource(
+            "replacement_of requires a source id and positive revision".into(),
+        ));
+    }
+    if replacement_of.id == replacement_id.0 {
+        return Err(CredentialError::InvalidSource(
+            "credential replacement requires a distinct source id".into(),
+        ));
+    }
+    let (mut expected, secret) = prepare_described_source(
+        Some(replacement_id),
+        params,
+        protocol_endpoint_id,
+        descriptor,
+    )?;
+    expected.replacement_of = Some(replacement_of.clone());
+    expected.validate_authority()?;
+    let expected_material = secret.clone();
+
+    // Exact durable replay wins even if the predecessor was retired after this
+    // replacement committed. The stable id plus public source projection and
+    // sealed-byte verification remain the idempotency authority.
+    match repo.get(&expected.id).await {
+        Ok(source) => {
+            validate_idempotent_source(&source, &expected)?;
+            return verify_idempotent_material(
+                CredentialEntry {
+                    source,
+                    created: false,
+                },
+                expected_material.as_ref(),
+                store,
+            )
+            .await;
+        }
+        Err(CredentialError::SourceNotFound(_)) => {}
+        Err(error) => return Err(error),
+    }
+
+    let predecessor_id = CredentialSourceId(replacement_of.id.clone());
+    let before = repo.get(&predecessor_id).await?;
+    if before.workspace_id != expected.workspace_id {
+        return Err(CredentialError::SourceNotFound(replacement_of.id.clone()));
+    }
+    let expected_version = i64::try_from(replacement_of.revision).map_err(|_| {
+        CredentialError::InvalidSource("replacement_of revision exceeds i64".into())
+    })?;
+    if before.version != expected_version {
+        return Err(CredentialError::MutationConflict(
+            "credential revision changed before replacement creation".into(),
+        ));
+    }
+    if before.status != CredentialStatus::Active {
+        return Err(CredentialError::NotActive(before.id.0.clone()));
+    }
+    let before_descriptor = before.descriptor.as_ref().ok_or_else(|| {
+        CredentialError::InvalidSource(
+            "described replacement requires a described predecessor".into(),
+        )
+    })?;
+    let replacement_descriptor = expected.descriptor.as_ref().ok_or_else(|| {
+        CredentialError::InvalidSource("replacement source must remain described".into())
+    })?;
+    if before_descriptor.provider != replacement_descriptor.provider {
+        return Err(CredentialError::InvalidSource(
+            "described replacement cannot change the canonical provider".into(),
+        ));
+    }
+    if !before.auxiliary_material_refs.is_empty() {
+        return Err(CredentialError::InvalidSource(
+            "primary-only described replacement does not admit auxiliary material slots".into(),
+        ));
+    }
+    let entry = enter_prepared_credential_idempotent_with_before(
+        expected,
+        secret,
+        Some(before),
+        store,
+        repo,
+    )
+    .await?;
+    verify_idempotent_material(entry, expected_material.as_ref(), store).await
+}
+
 /// Enter one stable Vault credential and verify that every replay names the
 /// same sealed material. The operation identity remains caller-owned; the
 /// credential aggregate owns the create WAL, source CAS, and material check.
@@ -216,6 +317,16 @@ pub(super) async fn enter_prepared_credential_idempotent(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialEntry, CredentialError> {
+    enter_prepared_credential_idempotent_with_before(expected, secret, None, store, repo).await
+}
+
+async fn enter_prepared_credential_idempotent_with_before(
+    expected: CredentialSource,
+    secret: Option<awaken_agent_contract::RedactedString>,
+    before: Option<CredentialSource>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
     match repo.get(&expected.id).await {
         Ok(source) => {
             validate_idempotent_source(&source, &expected)?;
@@ -232,7 +343,7 @@ pub(super) async fn enter_prepared_credential_idempotent(
         expected.clone(),
         secret,
         BTreeMap::new(),
-        true,
+        before,
         store,
         repo,
     )
@@ -260,18 +371,7 @@ fn validate_idempotent_source(
     actual: &CredentialSource,
     expected: &CredentialSource,
 ) -> Result<(), CredentialError> {
-    if actual.id != expected.id
-        || actual.workspace_id != expected.workspace_id
-        || actual.kind != expected.kind
-        || actual.descriptor != expected.descriptor
-        || actual.provider_id != expected.provider_id
-        || actual.protocol_endpoint_id != expected.protocol_endpoint_id
-        || actual.env_key != expected.env_key
-        || actual.material_ref != expected.material_ref
-        || actual.oauth_command != expected.oauth_command
-        || actual.worker_local_binding.is_some()
-        || !actual.auxiliary_material_refs.is_empty()
-    {
+    if !idempotent_credential_source_matches(actual, expected) {
         return Err(CredentialError::InvalidSource(format!(
             "idempotent credential identity conflicts with existing source {}",
             actual.id.0
@@ -395,17 +495,18 @@ pub async fn recover_managed_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<usize, ManagedCredentialCreationError> {
-    recover_managed_credential_mutations_at(store, repo, managed_credential_now_unix_ms()?).await
+    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
 }
 
 /// Periodic reconciliation never races a live writer. It resumes `Ready` and
-/// `Reclaiming` work immediately, but must atomically fence an expired
-/// `Writing` lease before inspecting or reclaiming its material.
+/// `Reclaiming` work immediately. An expired `Writing` owner is fenced and
+/// durably aborted; it is never promoted from inspected bytes because the
+/// SecretStore has no conditional-put CAS against the writer epoch.
 pub async fn reconcile_ready_managed_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<usize, ManagedCredentialCreationError> {
-    recover_managed_credential_mutations_at(store, repo, managed_credential_now_unix_ms()?).await
+    recover_managed_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
 }
 
 async fn recover_managed_credential_mutations_at(
@@ -433,35 +534,38 @@ async fn recover_managed_credential_mutation(
     repo: &dyn ManagedCredentialRepository,
     now_unix_ms: u64,
 ) -> Result<bool, ManagedCredentialCreationError> {
-    let mut mutation = pending.clone();
-    if mutation.phase == ManagedCredentialMutationPhase::Writing {
-        let lease_expires_at_unix_ms = now_unix_ms
-            .checked_add(MANAGED_CREDENTIAL_WRITER_LEASE_MS)
-            .ok_or_else(|| {
-                CredentialError::MutationConflict(
-                    "Managed credential recovery lease deadline overflowed".into(),
-                )
-            })?;
-        let Some(claimed) = repo
-            .claim_expired_managed_mutation(&mutation, now_unix_ms, lease_expires_at_unix_ms)
-            .await?
-        else {
-            return Ok(false);
-        };
-        mutation = claimed;
-    }
-    match mutation.phase {
-        ManagedCredentialMutationPhase::Reclaiming => {
+    let mutation = pending.clone();
+    mutation.validate()?;
+    match credential_material_recovery_action(&mutation.material_fence, now_unix_ms) {
+        CredentialMaterialRecoveryAction::SkipLiveWriting => return Ok(false),
+        CredentialMaterialRecoveryAction::AbortExpiredWriting => {
+            let lease_expires_at_unix_ms = now_unix_ms
+                .checked_add(CREDENTIAL_MATERIAL_WRITER_LEASE_MS)
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "Managed credential recovery lease deadline overflowed".into(),
+                    )
+                })?;
+            let Some(claimed) = repo
+                .claim_expired_managed_mutation(&mutation, now_unix_ms, lease_expires_at_unix_ms)
+                .await?
+            else {
+                return Ok(false);
+            };
+            abort_managed_mutation_before_cleanup(&claimed, store, repo).await?;
+            return Ok(true);
+        }
+        CredentialMaterialRecoveryAction::CleanupPublished => {
             cleanup_retired_managed_material(&mutation, store).await?;
             repo.complete_managed_mutation(&mutation).await?;
             return Ok(true);
         }
-        ManagedCredentialMutationPhase::ReclaimingAbort => {
+        CredentialMaterialRecoveryAction::CleanupAborted => {
             cleanup_unpublished_managed_material(&mutation, store).await?;
             repo.complete_managed_mutation(&mutation).await?;
             return Ok(true);
         }
-        ManagedCredentialMutationPhase::Writing | ManagedCredentialMutationPhase::Ready => {}
+        CredentialMaterialRecoveryAction::PublishReady => {}
     }
     let mut material_complete = true;
     let before = mutation
@@ -480,9 +584,6 @@ async fn recover_managed_credential_mutation(
         }
     }
     if material_complete {
-        if mutation.phase == ManagedCredentialMutationPhase::Writing {
-            mutation = repo.mark_managed_mutation_ready(&mutation).await?;
-        }
         match repo.commit_managed_mutation(&mutation).await {
             Ok(reclaiming) => {
                 cleanup_retired_managed_material(&reclaiming, store).await?;
@@ -499,47 +600,6 @@ async fn recover_managed_credential_mutation(
     Ok(true)
 }
 
-fn fence_managed_material_refs(
-    pending: &mut PendingManagedCredentialMutation,
-    materials: &mut [(crate::SecretRef, awaken_agent_contract::RedactedString)],
-) -> Result<(), ManagedCredentialMutationError> {
-    if materials.is_empty() {
-        return Ok(());
-    }
-    if !pending.has_valid_writer_owner() {
-        return Err(ManagedCredentialMutationError::RevisionConflict);
-    }
-    for (reference, _) in materials {
-        let old = reference.clone();
-        let fenced = crate::SecretRef(format!("{}:attempt:{}", old.0, pending.attempt_id));
-        let mut replaced = false;
-        if pending.after_source.material_ref.as_ref() == Some(&old) {
-            pending.after_source.material_ref = Some(fenced.clone());
-            replaced = true;
-        }
-        for candidate in pending.after_source.auxiliary_material_refs.values_mut() {
-            if *candidate == old {
-                *candidate = fenced.clone();
-                replaced = true;
-            }
-        }
-        if pending.after_source.material_ref.as_ref() == Some(&fenced)
-            || pending
-                .after_source
-                .auxiliary_material_refs
-                .values()
-                .any(|candidate| candidate == &fenced)
-        {
-            replaced = true;
-        }
-        if !replaced {
-            return Err(ManagedCredentialMutationError::RevisionConflict);
-        }
-        *reference = fenced;
-    }
-    Ok(())
-}
-
 async fn execute_managed_mutation(
     mut pending: PendingManagedCredentialMutation,
     mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
@@ -549,8 +609,21 @@ async fn execute_managed_mutation(
     // A late effect from a fenced writer may leave an orphan, but it can never
     // overwrite a later attempt's material. Inventory reconciliation reports
     // such unowned material for a backend-specific exact collector.
-    fence_managed_material_refs(&mut pending, &mut materials)?;
-    repo.begin_managed_mutation(pending.clone()).await?;
+    fence_material_writes(
+        &pending.material_fence,
+        pending.before_source.as_ref(),
+        &pending.after_source,
+        &mut materials,
+    )
+    .map_err(ManagedCredentialMutationError::Store)?;
+    if !repo.begin_managed_mutation(pending.clone()).await? {
+        return Err(ManagedCredentialMutationError::Store(
+            CredentialError::MutationConflict(
+                "Managed credential command is pending under its durable material attempt; retry after publication or recovery"
+                    .into(),
+            ),
+        ));
+    }
     for (reference, material) in materials {
         if let Err(error) = persist_material_exact(store, &reference, material).await {
             if let Err(cleanup) = abort_managed_mutation_before_cleanup(&pending, store, repo).await
@@ -563,7 +636,7 @@ async fn execute_managed_mutation(
             return Err(error.into());
         }
     }
-    if pending.phase == ManagedCredentialMutationPhase::Writing {
+    if pending.material_fence.phase == CredentialMaterialMutationPhase::Writing {
         pending = repo.mark_managed_mutation_ready(&pending).await?;
     }
     let reclaiming = match repo.commit_managed_mutation(&pending).await {
@@ -817,7 +890,7 @@ async fn enter_prepared_credential(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
-    enter_prepared_credential_inner(source, secret, auxiliary, false, store, repo)
+    enter_prepared_credential_inner(source, secret, auxiliary, None, store, repo)
         .await
         .map(|entry| entry.source)
 }
@@ -826,7 +899,7 @@ async fn enter_prepared_credential_inner(
     mut source: CredentialSource,
     secret: Option<awaken_agent_contract::RedactedString>,
     auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
-    fence_published_replay: bool,
+    before: Option<CredentialSource>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialEntry, CredentialError> {
@@ -842,65 +915,76 @@ async fn enter_prepared_credential_inner(
             .insert(slot, reference.clone());
         materials.push((reference, secret));
     }
-    let intent = CredentialMutationIntent {
-        before: None,
-        after: source.clone(),
-    };
-    let owns_intent = repo.begin_mutation(intent.clone()).await?;
+    let committed = execute_source_mutation(before, source, materials, Some(store), repo).await?;
+    Ok(CredentialEntry {
+        source: committed.after,
+        created: true,
+    })
+}
 
-    // The first read in the idempotent command can race a sibling that
-    // publishes and completes the same identity before this caller claims the
-    // WAL. Re-check after the claim so that a redundant intent never causes a
-    // second material write. Only the caller that inserted that redundant
-    // intent may retire it.
-    if fence_published_replay {
-        match repo.get(&source.id).await {
-            Ok(current) if current == source => {
-                if owns_intent {
-                    repo.complete_mutation(&source.id).await?;
-                }
-                return Ok(CredentialEntry {
-                    source: current,
-                    created: false,
-                });
-            }
-            Ok(_) => {
-                if owns_intent {
-                    repo.complete_mutation(&source.id).await?;
-                }
-                return Err(CredentialError::MutationConflict(
-                    "credential source was published by another create command".into(),
-                ));
-            }
-            Err(CredentialError::SourceNotFound(_)) if owns_intent => {}
-            Err(CredentialError::SourceNotFound(_)) => {
-                return Err(CredentialError::MutationConflict(
-                    "credential creation with this identity is still pending".into(),
-                ));
-            }
-            Err(error) => return Err(error),
-        }
+/// Execute the source-only publication envelope through the same durable
+/// writer/lease/attempt kernel as Managed source+child publication. The two
+/// envelopes retain distinct repository transactions, but there is only one
+/// external SecretStore process and one transition vocabulary.
+async fn execute_source_mutation(
+    before: Option<CredentialSource>,
+    after: CredentialSource,
+    mut materials: Vec<(crate::SecretRef, awaken_agent_contract::RedactedString)>,
+    store: Option<&dyn SecretStore>,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialMutationIntent, CredentialError> {
+    if !materials.is_empty() && store.is_none() {
+        return Err(CredentialError::MutationConflict(
+            "credential material mutation requires its SecretStore participant".into(),
+        ));
+    }
+    let mut intent = CredentialMutationIntent::prepare(before, after)?;
+    fence_material_writes(
+        &intent.material_fence,
+        intent.before.as_ref(),
+        &intent.after,
+        &mut materials,
+    )?;
+    if !repo.begin_mutation(intent.clone()).await? {
+        return Err(CredentialError::MutationConflict(
+            "credential command is pending under its durable material attempt; retry after publication or recovery"
+                .into(),
+        ));
     }
 
-    for (reference, secret) in materials {
-        if let Err(error) = persist_material_exact(store, &reference, secret).await {
-            // Only the WAL owner reaches material persistence. A failed put may
-            // still have partially written, so retire the durable intent only
-            // after every candidate ref is idempotently clean.
-            if cleanup_unpublished_material(&intent, store).await.is_ok() {
-                repo.complete_mutation(&source.id).await?;
+    for (reference, material) in materials {
+        let store = store.expect("material store checked before durable begin");
+        if let Err(error) = persist_material_exact(store, &reference, material).await {
+            // A failed put may have written bytes. External cleanup starts only
+            // after exact repository CAS has made ReclaimingAbort durable. If
+            // fencing or cleanup fails, retain the WAL and attempt-owned refs
+            // for supervised recovery.
+            if let Ok(abort) = repo.abort_mutation(&intent).await
+                && cleanup_unpublished_material(&abort, store).await.is_ok()
+            {
+                let _completion = repo.complete_mutation(&abort).await;
             }
             return Err(error);
         }
     }
-    // Never compensate an ambiguous apply error inline: the intent remains the
-    // recovery authority, preventing deletion of a source that actually committed.
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(&source.id).await?;
-    Ok(CredentialEntry {
-        source,
-        created: owns_intent,
-    })
+    if intent.material_fence.phase == CredentialMaterialMutationPhase::Writing {
+        intent = repo.mark_mutation_ready(&intent).await?;
+    }
+
+    // Any apply error keeps the exact WAL and candidate material. Publication
+    // and WAL advancement are one repository transaction, so recovery alone
+    // may classify a deterministic conflict and durably enter abort cleanup.
+    let reclaiming = repo.apply_mutation(&intent).await?;
+    // Publication already committed. Cleanup is a retryable terminal phase;
+    // returning an error would invite a duplicate logical command.
+    if let Some(store) = store {
+        if cleanup_retired_material(&reclaiming, store).await.is_ok() {
+            let _completion = repo.complete_mutation(&reclaiming).await;
+        }
+    } else {
+        let _completion = repo.complete_mutation(&reclaiming).await;
+    }
+    Ok(reclaiming)
 }
 
 fn validate_material_slots<'a>(
@@ -1041,33 +1125,9 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
             }
         }
     }
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    for (reference, material) in materials {
-        if let Err(error) = persist_material_exact(store, &reference, material).await {
-            if cleanup_unpublished_material(&intent, store).await.is_ok() {
-                repo.complete_mutation(id).await?;
-            }
-            return Err(error);
-        }
-    }
-    if let Err(error) = repo.apply_mutation(&intent).await {
-        // A CAS conflict proves this intent was not published, so its newly
-        // sealed refs can be reclaimed immediately. Storage errors remain
-        // ambiguous and deliberately retain the WAL for recovery.
-        if matches!(error, CredentialError::MutationConflict(_))
-            && cleanup_unpublished_material(&intent, store).await.is_ok()
-        {
-            repo.complete_mutation(id).await?;
-        }
-        return Err(error);
-    }
-    cleanup_retired_material(&intent, store).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
+    execute_source_mutation(Some(before), after, materials, Some(store), repo)
+        .await
+        .map(|committed| committed.after)
 }
 
 /// Publish a higher exact revision for executable, secret-free configuration
@@ -1085,14 +1145,9 @@ pub async fn advance_credential_revision(
         .version
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+        .await
+        .map(|committed| committed.after)
 }
 
 /// Explicitly widen one active, provider-bound credential from an exact
@@ -1126,14 +1181,9 @@ pub async fn widen_credential_to_provider_scope_exact(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.protocol_endpoint_id = None;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+        .await
+        .map(|committed| committed.after)
 }
 
 /// Change only lifecycle availability while retaining material. This is the
@@ -1154,14 +1204,9 @@ pub async fn transition_credential_status(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after.status = status;
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
+    execute_source_mutation(Some(before), after, Vec::new(), None, repo)
+        .await
+        .map(|committed| committed.after)
 }
 
 /// Terminally revoke one exact source revision: reject a stale command before
@@ -1192,21 +1237,21 @@ pub async fn revoke_credential_exact(
     };
     after.material_ref = None;
     after.auxiliary_material_refs.clear();
-    let intent = CredentialMutationIntent {
-        before: Some(before),
-        after: after.clone(),
-    };
-    repo.begin_mutation(intent.clone()).await?;
-    repo.apply_mutation(&intent).await?;
-    cleanup_retired_material(&intent, store).await?;
-    repo.complete_mutation(id).await?;
-    Ok(after)
+    execute_source_mutation(Some(before), after, Vec::new(), Some(store), repo)
+        .await
+        .map(|committed| committed.after)
 }
 
 async fn cleanup_retired_material(
     intent: &CredentialMutationIntent,
     store: &dyn SecretStore,
 ) -> Result<(), CredentialError> {
+    // A distinct replacement publishes a second source and deliberately keeps
+    // every predecessor ref alive for consumers still pinned to the old id.
+    // Only a later exact retirement command may reclaim predecessor material.
+    if intent.is_distinct_replacement() {
+        return Ok(());
+    }
     let before = intent
         .before
         .iter()
@@ -1235,34 +1280,118 @@ async fn cleanup_unpublished_material(
     Ok(())
 }
 
-/// Reconcile every interrupted create/rotate/revoke after restart. The exact
-/// durable source decides whether old or new material is retained.
+/// Reconcile every interrupted source-only mutation through the shared
+/// material fence. A live `Writing` owner is skipped. An expired owner is
+/// atomically fenced and aborted, never promoted by inspecting its bytes: a
+/// late non-CAS SecretStore put can then create only an unreachable
+/// attempt-specific orphan. Only durable `Ready` may publish.
 pub async fn recover_credential_mutations(
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<usize, CredentialError> {
+    recover_credential_mutations_at(store, repo, credential_material_now_unix_ms()?).await
+}
+
+async fn recover_credential_mutations_at(
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+    now_unix_ms: u64,
+) -> Result<usize, CredentialError> {
     let intents = repo.pending_mutations().await?;
     let mut recovered = 0;
+    let mut first_error = None;
     for intent in intents {
-        let current = match repo.get(&intent.after.id).await {
-            Ok(source) => Some(source),
-            Err(CredentialError::SourceNotFound(_)) => None,
-            Err(error) => return Err(error),
-        };
-        if current.as_ref() == Some(&intent.after) {
-            cleanup_retired_material(&intent, store).await?;
-        } else if current == intent.before {
-            cleanup_unpublished_material(&intent, store).await?;
-        } else {
-            return Err(CredentialError::MutationConflict(format!(
-                "credential {} no longer matches its pending mutation",
-                intent.after.id.0
-            )));
+        match recover_credential_mutation(&intent, store, repo, now_unix_ms).await {
+            Ok(true) => recovered += 1,
+            Ok(false) => {}
+            Err(error) if first_error.is_none() => first_error = Some(error),
+            Err(_) => {}
         }
-        repo.complete_mutation(&intent.after.id).await?;
-        recovered += 1;
     }
-    Ok(recovered)
+    first_error.map_or(Ok(recovered), Err)
+}
+
+async fn recover_credential_mutation(
+    pending: &CredentialMutationIntent,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+    now_unix_ms: u64,
+) -> Result<bool, CredentialError> {
+    pending.validate()?;
+    let mutation = match credential_material_recovery_action(&pending.material_fence, now_unix_ms) {
+        CredentialMaterialRecoveryAction::SkipLiveWriting => return Ok(false),
+        CredentialMaterialRecoveryAction::AbortExpiredWriting => {
+            let lease_expires_at_unix_ms = now_unix_ms
+                .checked_add(CREDENTIAL_MATERIAL_WRITER_LEASE_MS)
+                .ok_or_else(|| {
+                    CredentialError::MutationConflict(
+                        "credential recovery lease deadline overflowed".into(),
+                    )
+                })?;
+            let Some(claimed) = repo
+                .claim_expired_mutation(pending, now_unix_ms, lease_expires_at_unix_ms)
+                .await?
+            else {
+                return Ok(false);
+            };
+            let abort = repo.abort_mutation(&claimed).await?;
+            cleanup_unpublished_material(&abort, store).await?;
+            repo.complete_mutation(&abort).await?;
+            return Ok(true);
+        }
+        CredentialMaterialRecoveryAction::PublishReady => pending.clone(),
+        CredentialMaterialRecoveryAction::CleanupPublished => {
+            cleanup_retired_material(pending, store).await?;
+            repo.complete_mutation(pending).await?;
+            return Ok(true);
+        }
+        CredentialMaterialRecoveryAction::CleanupAborted => {
+            cleanup_unpublished_material(pending, store).await?;
+            repo.complete_mutation(pending).await?;
+            return Ok(true);
+        }
+    };
+
+    let before_refs = mutation
+        .before
+        .iter()
+        .flat_map(CredentialSource::material_refs)
+        .collect::<HashSet<_>>();
+    let mut material_complete = true;
+    for reference in mutation.after.material_refs() {
+        if before_refs.contains(reference) {
+            continue;
+        }
+        match store.get(reference).await {
+            Ok(_) => {}
+            Err(CredentialError::SecretNotFound(_)) => material_complete = false,
+            Err(error) => return Err(error),
+        }
+    }
+    if !material_complete {
+        let abort = repo.abort_mutation(&mutation).await?;
+        cleanup_unpublished_material(&abort, store).await?;
+        repo.complete_mutation(&abort).await?;
+        return Ok(true);
+    }
+
+    match repo.apply_mutation(&mutation).await {
+        Ok(reclaiming) => {
+            cleanup_retired_material(&reclaiming, store).await?;
+            repo.complete_mutation(&reclaiming).await?;
+            Ok(true)
+        }
+        Err(CredentialError::MutationConflict(_)) => {
+            // Exact abort CAS distinguishes an unpublished deterministic
+            // conflict from a foreign row. A foreign row rejects this
+            // transition, retaining both WAL and attempt-owned material.
+            let abort = repo.abort_mutation(&mutation).await?;
+            cleanup_unpublished_material(&abort, store).await?;
+            repo.complete_mutation(&abort).await?;
+            Ok(true)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]
