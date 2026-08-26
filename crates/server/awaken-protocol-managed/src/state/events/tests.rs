@@ -1853,7 +1853,7 @@ async fn qualified_event_id_routes_every_child_tool_reply_variant() {
 }
 
 #[tokio::test]
-async fn legacy_tool_reply_ids_require_one_pending_owner() {
+async fn legacy_tool_reply_id_routes_one_pending_owner() {
     // Causes: the fixtures below establish `legacy tool reply ids require one pending owner` with
     // the concrete inputs, state, dependencies, and failure triggers used by this case.
     // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
@@ -1890,7 +1890,14 @@ async fn legacy_tool_reply_ids_require_one_pending_owner() {
         SessionThreadTarget::Child(ThreadId(child_id)),
         "L1/E1"
     );
+}
 
+#[tokio::test]
+async fn legacy_tool_reply_id_rejects_ambiguous_pending_owners() {
+    // L2 from the legacy-id ownership decision table above is intentionally a
+    // separate async fixture. Keeping both full ManagedState fixtures alive in
+    // one test future exceeded the default libtest thread stack after runtime
+    // profiles grew, even though neither production path recursed.
     let (runtime, state, session_id, _child_id, _) =
         pending_child_reply_fixture("legacy-ambiguous", true, true).await;
     *runtime.pending.lock().unwrap() = Some(Pending {
