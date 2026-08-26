@@ -22,6 +22,7 @@ serde.workspace = true
 
 [dev-dependencies]
 awaken-env-store = { workspace = true, features = ["test-support"] }
+awaken-environment-contract.workspace = true
 awaken-executable-environment-catalog.workspace = true
 awaken-sandbox-policy-store = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
