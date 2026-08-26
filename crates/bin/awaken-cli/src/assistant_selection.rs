@@ -21,15 +21,18 @@ pub(crate) fn select(
     let active = |source: &&CredentialSource| source.status == CredentialStatus::Active;
 
     if detected("claude")
-        && credentials.iter().filter(active).any(|source| {
-            source.is_claude_code_setup_token()
-                && source
-                    .authorization_scope()
-                    .belongs_to_provider("anthropic")
-        })
         && let Some(offering) = catalog.offerings.iter().find(|offering| {
             offering.status == OfferingStatus::Active
                 && offering.provider_id.as_str() == "anthropic"
+        })
+        && credentials.iter().any(|source| {
+            source.is_claude_code_setup_token()
+                && awaken_config_resolver::credential_is_executable_supply(
+                    offering.provider_id.as_str(),
+                    Some(offering.protocol_endpoint_id.as_str()),
+                    "acp:claude",
+                    source,
+                )
         })
     {
         return Some(ModelSelection::pinned(
@@ -41,12 +44,12 @@ pub(crate) fn select(
 
     if catalog.offerings.iter().any(|offering| {
         offering.status == OfferingStatus::Active
-            && credentials.iter().filter(active).any(|source| {
-                !source.is_claude_code_setup_token()
-                    && source.kind != CredentialKind::WorkerLocal
-                    && awaken_config_resolver::can_consume(
+            && credentials.iter().any(|source| {
+                source.kind != CredentialKind::WorkerLocal
+                    && awaken_config_resolver::credential_is_executable_supply(
                         offering.provider_id.as_str(),
                         Some(offering.protocol_endpoint_id.as_str()),
+                        "genai",
                         source,
                     )
             })
@@ -90,7 +93,11 @@ pub(crate) fn select(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use awaken_credential_contract::CredentialSourceId;
+    use awaken_credential_contract::{
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
+        CredentialTarget, CredentialTargetContract, CredentialUsage, HttpEffectPlacement,
+        OPAQUE_SECRET_MATERIAL_TYPE,
+    };
     use awaken_credential_vault::WorkerLocalBinding;
     use awaken_model_catalog::{ApiDialect, Offering, ProtocolEndpointId, ProviderId};
 
@@ -105,6 +112,7 @@ mod tests {
             id: CredentialSourceId(id.into()),
             workspace_id: "workspace".into(),
             kind,
+            descriptor: None,
             provider_id: provider.map(str::to_string),
             protocol_endpoint_id: None,
             env_key: env_key.map(str::to_string),
@@ -149,10 +157,18 @@ mod tests {
 
     #[test]
     fn one_existing_executable_path_is_selected() {
-        // | Provider API | setup token + Claude | Worker-local ACP | Choice |
-        // | yes | no | any | Auto provider |
-        // | any | yes | any | pinned acp:claude |
-        // | no | no | yes | ACP backend default |
+        // Cause/effect graph: C1 canonical provider API credential exists; C2
+        // legacy setup token plus detected Claude exists; C3 Worker-local ACP is
+        // uniquely ready; C4 a described non-Provider credential spoofs the
+        // legacy setup-token env key. Effects: E1 Auto; E2 pinned acp:claude;
+        // E3 backend default; E4 no selection from the spoofed source.
+        //
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | S1 | Y | N | - | N | E1 |
+        // | S2 | - | Y | - | N | E2 |
+        // | S3 | N | N | Y | N | E3 |
+        // | S4 | N | env-key only | N | Y | E4 |
         let catalog = anthropic_catalog();
         let api_key = credential("api", CredentialKind::Vault, Some("anthropic"), None, None);
         assert_eq!(
@@ -174,6 +190,37 @@ mod tests {
                 "claude-sonnet",
                 "acp:claude"
             ))
+        );
+
+        let mut described_spoof = credential(
+            "described-spoof",
+            CredentialKind::Vault,
+            None,
+            Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
+            None,
+        );
+        described_spoof.descriptor = Some(CredentialDescriptor::new(
+            "anthropic",
+            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+            [CredentialTargetContract::new(
+                CredentialTarget::new(
+                    CredentialPurpose::HttpEffect,
+                    "https://connector.example.test/invoke",
+                ),
+                CredentialUsage::HttpEffect {
+                    fields: std::collections::BTreeMap::from([(
+                        "token".into(),
+                        std::collections::BTreeSet::from([HttpEffectPlacement::Header {
+                            name: "authorization".into(),
+                        }]),
+                    )]),
+                },
+            )],
+        ));
+        assert_eq!(
+            select(&catalog, &[described_spoof], &[observation("claude")]),
+            None,
+            "S4/E4"
         );
 
         let worker = credential(

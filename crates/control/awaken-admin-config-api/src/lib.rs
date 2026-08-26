@@ -30,11 +30,11 @@ pub use provider_connection::{
     ProviderConnectionService,
 };
 pub use router::{
-    AdminState, BrokeredCatalogDiscovery, CloudLoginApplication, CloudLoginState,
-    CloudLoginStatusView, ConfigCapabilitiesSource, ConfigCapabilitiesView, CooldownRequest,
-    CredentialProbe, CredentialSourceView, CredentialValidation, EnterCredentialRequest,
-    IdentityCapabilityView, ModelSupplyCapabilityView, PoolEligibleView, ProbeStatus,
-    ProductSurfaceCapabilityView, ProviderConnectionStatus, ProviderConnectionSummary,
+    AdminState, ArchiveCredentialRequest, BrokeredCatalogDiscovery, CloudLoginApplication,
+    CloudLoginState, CloudLoginStatusView, ConfigCapabilitiesSource, ConfigCapabilitiesView,
+    CooldownRequest, CredentialProbe, CredentialSourceView, CredentialValidation,
+    EnterCredentialRequest, IdentityCapabilityView, ModelSupplyCapabilityView, PoolEligibleView,
+    ProbeStatus, ProductSurfaceCapabilityView, ProviderConnectionStatus, ProviderConnectionSummary,
     ProviderConnectionView, PutModelAttributesRequest, ResolveProfileRequest, ResolveRequest,
     ResolvedCandidatesView, ResolvedInferenceView, RotateCredentialRequest,
     SaveProviderConnectionRequest, ValidateCredentialRequest, admin_router,

@@ -5,12 +5,12 @@ use awaken_config_resolver::{
 };
 use awaken_config_service::PublicationResolutionError;
 use awaken_credential_vault::{
-    CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
+    CredentialBinding, CredentialHolderAdmission, CredentialKind, CredentialSource,
+    CredentialStatus, DeferredCredentialHolderSelection, ExactCredentialAccessRequest,
+    compile_exact_credential_access,
 };
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
-use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-};
+use awaken_runtime_contract::{CredentialExecutionPolicy, CredentialMaterialBinding};
 use awaken_tenancy::ScopeId;
 
 use super::{CatalogModelPublicationResolver, PublicationCredentialLookup};
@@ -129,19 +129,28 @@ impl CatalogModelPublicationResolver {
                     ));
                 }
             };
-            let revision = u64::try_from(source.version)
-                .ok()
-                .filter(|revision| *revision > 0)
-                .ok_or_else(|| unavailable("A2A credential has an invalid revision".into()))?;
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: source.id.0.clone(),
-                    revision,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                usage,
-                CredentialExecutionPolicy::self_hosted_provider(),
-            ))
+            let material_binding = CredentialMaterialBinding::for_target(
+                workspace.as_str(),
+                &(&binding.backend_ref, &security.fingerprint),
+                &usage,
+            );
+            Some(
+                compile_exact_credential_access(
+                    source,
+                    ExactCredentialAccessRequest {
+                        workspace_id: Some(workspace.as_str()),
+                        target: None,
+                        usage,
+                        policy: CredentialExecutionPolicy::self_hosted_provider(),
+                        holder_admission: CredentialHolderAdmission::Deferred(
+                            DeferredCredentialHolderSelection::A2aPublication,
+                        ),
+                        binding: &material_binding,
+                        now_unix_ms: super::wall_clock_ms(),
+                    },
+                )
+                .map_err(|error| unavailable(error.to_string()))?,
+            )
         };
         ResolvedModelCandidate::try_remote(
             binding.clone(),
@@ -159,7 +168,11 @@ mod tests {
     use awaken_agent_config::ModelSelection;
     use awaken_agent_contract::RedactedString;
     use awaken_config_service::ModelPublicationResolver;
-    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_contract::{
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
+        CredentialTargetContract, HttpEffectPlacement, OPAQUE_SECRET_MATERIAL_TYPE,
+    };
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::ProviderCatalog;
     use awaken_runtime_contract::CredentialUsage;
@@ -190,14 +203,18 @@ mod tests {
     async fn publication_freezes_card_security_and_exact_counterparty_credential() {
         // Cause graph: C1 the Agent Card permits anonymous access; C2 it
         // instead requires one supported HTTP header; C3 the Workspace has an
-        // active origin-tagged credential. Effects: E1 publish Remote without
+        // active origin-tagged legacy credential; C4 that source has a zero
+        // revision; C5 the matching source is described while A2A target
+        // compilation remains unsupported. Effects: E1 publish Remote without
         // material; E2 publish Remote with an exact revision/usage; E3 required
-        // auth with no credential fails closed.
+        // auth fails closed without a valid admitted legacy source.
         //
-        // | Rule | C1 | C2 | C3 | Effect |
-        // | A1   | Y  | N  | -  | E1     |
-        // | A2   | N  | Y  | Y  | E2     |
-        // | A3   | N  | Y  | N  | E3     |
+        // | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+        // | A1   | Y  | N  | -  | -  | -  | E1     |
+        // | A2   | N  | Y  | Y  | N  | N  | E2     |
+        // | A3   | N  | Y  | N  | -  | -  | E3     |
+        // | A4   | N  | Y  | Y  | Y  | N  | E3     |
+        // | A5   | N  | Y  | Y  | N  | Y  | E3     |
         let anonymous_repo = Arc::new(InMemoryCredentialRepo::new());
         let mut anonymous_card = awaken_protocol_a2a::agent_card("remote");
         anonymous_card.url = "https://agent.example/a2a".into();
@@ -253,8 +270,8 @@ mod tests {
         .await
         .unwrap();
         let authenticated =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials)
-                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
+            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
+                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
                 .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
                 .await
                 .expect("A2");
@@ -275,5 +292,44 @@ mod tests {
             }
         );
         assert!(security_fingerprint.starts_with("sha256:"));
+
+        let mut zero_revision = entered.clone();
+        zero_revision.version = 0;
+        credentials.put(zero_revision).await.unwrap();
+        let error =
+            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
+                .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+                .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+                .await
+                .expect_err("A4");
+        assert!(error.to_string().contains("requires authentication"), "A4");
+
+        let mut described = entered;
+        described.provider_id = None;
+        described.descriptor = Some(CredentialDescriptor::new(
+            "https://agent.example",
+            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+            [CredentialTargetContract::new(
+                CredentialTarget::new(
+                    CredentialPurpose::HttpEffect,
+                    "https://connector.example.test/invoke",
+                ),
+                CredentialUsage::HttpEffect {
+                    fields: std::collections::BTreeMap::from([(
+                        "token".into(),
+                        std::collections::BTreeSet::from([HttpEffectPlacement::Header {
+                            name: "authorization".into(),
+                        }]),
+                    )]),
+                },
+            )],
+        ));
+        credentials.put(described).await.unwrap();
+        let error = CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials)
+            .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
+            .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
+            .await
+            .expect_err("A5");
+        assert!(error.to_string().contains("requires authentication"), "A5");
     }
 }

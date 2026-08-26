@@ -10,7 +10,7 @@ use std::time::Duration;
 use awaken_agent_config::{AuditedConfigWrite, ManagementAuditEntry, ManagementAuditRecord};
 use awaken_config_service::{ManagementAuditPlane, ManagementAuditRepository};
 use awaken_credential_contract::CredentialSourceId;
-use awaken_session_application::SessionCredentialSource;
+use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
 use awaken_session_contract::ManagedLifecycleFact;
 use awaken_tenancy::ScopeId;
 use axum::extract::{Request, State};
@@ -85,6 +85,7 @@ struct SourceCommand {
 struct CredentialAccessCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
+    target: awaken_runtime_contract::CredentialTarget,
     usage: awaken_runtime_contract::CredentialUsage,
     policy: awaken_runtime_contract::CredentialExecutionPolicy,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
@@ -284,10 +285,13 @@ async fn credential_access(
         .credential_access_for_source(
             &command.source_id,
             &command.workspace_id,
-            command.usage,
-            command.policy,
-            &command.selected_holder,
-            &command.binding,
+            SessionCredentialAccessRequest {
+                target: command.target,
+                usage: command.usage,
+                policy: command.policy,
+                selected_holder: command.selected_holder,
+                binding: command.binding,
+            },
         )
         .await;
     response(result)
@@ -556,20 +560,25 @@ impl SessionCredentialSource for HttpControlServiceClient {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        usage: awaken_runtime_contract::CredentialUsage,
-        policy: awaken_runtime_contract::CredentialExecutionPolicy,
-        selected_holder: &awaken_runtime_contract::PlaintextHolder,
-        binding: &awaken_runtime_contract::CredentialMaterialBinding,
+        request: SessionCredentialAccessRequest,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
+        let SessionCredentialAccessRequest {
+            target,
+            usage,
+            policy,
+            selected_holder,
+            binding,
+        } = request;
         self.post(
             CREDENTIAL_ACCESS_PATH,
             &CredentialAccessCommand {
                 source_id: source_id.clone(),
                 workspace_id: workspace_id.to_owned(),
+                target,
                 usage,
                 policy,
-                selected_holder: selected_holder.clone(),
-                binding: binding.clone(),
+                selected_holder,
+                binding,
             },
         )
         .await

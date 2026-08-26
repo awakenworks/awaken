@@ -47,6 +47,7 @@ pub awaken_admin_config_api::AdminState::probe: core::option::Option<alloc::sync
 pub awaken_admin_config_api::AdminState::profiles: alloc::sync::Arc<dyn awaken_config_resolver::stores::InferenceProfileStore>
 pub awaken_admin_config_api::AdminState::resources: alloc::sync::Arc<dyn awaken_config_resolver::stores::AgentInputBindingRepository>
 pub awaken_admin_config_api::AdminState::secrets: alloc::sync::Arc<dyn awaken_credential_vault::SecretStore>
+pub struct awaken_admin_config_api::ArchiveCredentialRequest
 pub struct awaken_admin_config_api::CloudLoginStatusView
 pub awaken_admin_config_api::CloudLoginStatusView::authorize_url: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::CloudLoginStatusView::error_code: core::option::Option<alloc::string::String>
@@ -71,6 +72,7 @@ pub awaken_admin_config_api::ConnectProviderCommand::timeout_secs: u64
 pub awaken_admin_config_api::ConnectProviderCommand::workspace_id: alloc::string::String
 pub struct awaken_admin_config_api::CooldownRequest
 pub struct awaken_admin_config_api::CredentialSourceView
+pub awaken_admin_config_api::CredentialSourceView::descriptor: core::option::Option<awaken_credential_contract::descriptor::CredentialDescriptor>
 pub awaken_admin_config_api::CredentialSourceView::env_key: core::option::Option<alloc::string::String>
 pub awaken_admin_config_api::CredentialSourceView::id: awaken_credential_contract::CredentialSourceId
 pub awaken_admin_config_api::CredentialSourceView::kind: awaken_credential_vault::CredentialKind
@@ -88,7 +90,8 @@ pub awaken_admin_config_api::CredentialValidation::credential_version: core::opt
 pub awaken_admin_config_api::CredentialValidation::status: awaken_admin_config_api::ProbeStatus
 pub struct awaken_admin_config_api::EnterCredentialRequest
 impl awaken_admin_config_api::EnterCredentialRequest
-pub fn awaken_admin_config_api::EnterCredentialRequest::hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
+pub fn awaken_admin_config_api::EnterCredentialRequest::compat_hosted_vault(alloc::string::String, alloc::string::String, alloc::string::String, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
+pub fn awaken_admin_config_api::EnterCredentialRequest::described_hosted_vault(alloc::string::String, alloc::string::String, awaken_credential_contract::descriptor::CredentialDescriptor, awaken_credential_contract::CredentialMaterial) -> core::result::Result<Self, awaken_credential_vault::CredentialError>
 pub fn awaken_admin_config_api::EnterCredentialRequest::provider_id(&self) -> core::option::Option<&str>
 pub fn awaken_admin_config_api::EnterCredentialRequest::workspace_id(&self) -> &str
 pub struct awaken_admin_config_api::IdentityCapabilityView

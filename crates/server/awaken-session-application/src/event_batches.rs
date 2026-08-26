@@ -691,7 +691,7 @@ impl SessionApplication {
                                 SessionAgentCoordination::interrupt_session_thread(
                                     self,
                                     &session.session_id,
-                                    &child_thread_id,
+                                    child_thread_id,
                                 )
                                 .await
                             }

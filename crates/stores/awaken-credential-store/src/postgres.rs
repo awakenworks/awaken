@@ -1198,8 +1198,8 @@ impl CredentialRepo for PostgresCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
-    ) -> Result<(), CredentialError> {
-        sqlx::query(&format!(
+    ) -> Result<bool, CredentialError> {
+        let inserted = sqlx::query(&format!(
             "INSERT INTO {NS}_creation_intent (source_id, data) VALUES ($1, $2) \
              ON CONFLICT (source_id) DO NOTHING"
         ))
@@ -1221,7 +1221,7 @@ impl CredentialRepo for PostgresCredentialRepo {
                 "another credential mutation is pending".into(),
             ));
         }
-        Ok(())
+        Ok(inserted.rows_affected() == 1)
     }
 
     async fn apply_mutation(

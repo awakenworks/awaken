@@ -1143,6 +1143,9 @@ impl WorkerNode {
         if let Some(store) = self.environment_checkpoint_store {
             host = host.with_environment_checkpoint_store(store);
         }
+        if let Some(credentials) = managed_credential_materializer.clone() {
+            host = host.with_credential_materializer(credentials);
+        }
         // Serve only the ACP CLI capability this worker advertises. The run's snapshot
         // selects the matching backend and supplies its published provider access.
         host = host

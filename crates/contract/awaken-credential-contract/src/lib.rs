@@ -5,7 +5,7 @@
 //! kernel shared by model, MCP and resource adapters; adapters realize an exact
 //! admitted plan and never choose a different holder after failure.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use async_trait::async_trait;
 use awaken_agent_contract::RedactedString;
@@ -20,12 +20,17 @@ pub use http_effect::{
 };
 mod http_basic;
 pub use http_basic::{HTTP_BASIC_MATERIAL_TYPE, http_basic_material};
+mod descriptor;
+pub use descriptor::*;
 mod custody;
 pub use custody::{
-    CredentialCustodyPublication, CredentialMaterialCustodian, CredentialMaterialDelivery,
+    CredentialCustodyPublication, CredentialMaterialBinding, CredentialMaterialCustodian,
+    CredentialMaterialDelivery, credential_envelope_payload_fingerprint,
 };
 mod managed_rollout;
 pub use managed_rollout::{ManagedCredentialOperation, ManagedCredentialRollout};
+mod usage;
+pub use usage::{CredentialUsage, SignatureVerificationAlgorithm};
 #[cfg(kani)]
 mod formal;
 mod realization_capabilities;
@@ -89,46 +94,6 @@ impl CredentialObservation {
 pub enum CredentialMaterialSource {
     ControlPlaneReference,
     WorkerReference,
-}
-
-/// How the resolved endpoint consumes injected material.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum CredentialUsage {
-    ProviderAdapter,
-    HttpHeader {
-        name: String,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        scheme: Option<String>,
-    },
-    /// RFC 7617 HTTP Basic authentication. This consumes the built-in typed
-    /// material id [`HTTP_BASIC_MATERIAL_TYPE`].
-    HttpBasicAuth,
-    /// An externally owned consumer. Core transports never interpret `public_config`;
-    /// the exact target adapter named by `consumer_id` validates it and consumes
-    /// only material whose type matches `material_type`.
-    Extension {
-        consumer_id: String,
-        material_type: String,
-        #[serde(default)]
-        public_config: serde_json::Value,
-    },
-    QueryParameter {
-        name: String,
-    },
-    /// A platform-held HTTP effect whose complete material-field destinations
-    /// are frozen before materialization. The Gateway must compare the actual
-    /// effect references with this exact field/placement map before I/O.
-    HttpEffect {
-        fields: BTreeMap<String, BTreeSet<HttpEffectPlacement>>,
-    },
-    ClientCertificate,
-    EnvironmentVariable {
-        name: String,
-    },
-    File {
-        path: String,
-    },
 }
 
 /// The process/trust boundary permitted to hold plaintext.
@@ -545,6 +510,10 @@ pub struct CredentialAccess {
     pub material_source: CredentialMaterialSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope: Option<CredentialEnvelope>,
+    /// Exact provider-neutral purpose/audience selected by the consumer. Legacy
+    /// rows may omit it; a described source requires it at materialization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<CredentialTarget>,
     pub usage: CredentialUsage,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh: Option<CredentialRefreshAccess>,
@@ -566,6 +535,8 @@ struct CredentialAccessWire {
     injection: Option<LegacyCredentialInjection>,
     #[serde(default)]
     envelope: Option<CredentialEnvelope>,
+    #[serde(default)]
+    target: Option<CredentialTarget>,
     usage: CredentialUsage,
     #[serde(default)]
     refresh: Option<CredentialRefreshAccess>,
@@ -613,6 +584,7 @@ impl<'de> Deserialize<'de> for CredentialAccess {
             credential: wire.credential,
             material_source,
             envelope: wire.envelope,
+            target: wire.target,
             usage: wire.usage,
             refresh: wire.refresh,
             policy,
@@ -633,6 +605,7 @@ impl CredentialAccess {
             credential,
             material_source,
             envelope: None,
+            target: None,
             usage,
             refresh: None,
             policy,
@@ -643,6 +616,13 @@ impl CredentialAccess {
     #[must_use]
     pub fn with_envelope(mut self, envelope: CredentialEnvelope) -> Self {
         self.envelope = Some(envelope);
+        self
+    }
+
+    /// Bind this access to one exact source-declared purpose/audience.
+    #[must_use]
+    pub fn with_target(mut self, target: CredentialTarget) -> Self {
+        self.target = Some(target);
         self
     }
 
@@ -666,6 +646,8 @@ impl CredentialAccess {
         self.usage
             .validate()
             .map_err(|_| CredentialAdmissionError::InvalidCredentialUsage)?;
+        validate_credential_target_usage(self.target.as_ref(), &self.usage)
+            .map_err(|_| CredentialAdmissionError::InvalidCredentialTarget)?;
         if self.policy.allowed_plaintext_holders.is_empty() {
             return Err(CredentialAdmissionError::EmptyAllowedHolders);
         }
@@ -785,6 +767,8 @@ pub enum CredentialAdmissionError {
     ExtensionConsumerUnsupported,
     #[error("credential usage is invalid")]
     InvalidCredentialUsage,
+    #[error("credential target is missing or incompatible with its usage")]
+    InvalidCredentialTarget,
     #[error("recipient-bound credential envelopes are unsupported")]
     EnvelopeUnsupported,
     #[error("sealed credential envelope reference is empty")]
@@ -895,6 +879,7 @@ impl CredentialMaterial {
         let valid = match (self, usage) {
             (Self::Structured(material), CredentialUsage::HttpBasicAuth) => {
                 material.type_id == HTTP_BASIC_MATERIAL_TYPE
+                    && material.fields.len() == 2
                     && material.fields.contains_key("username")
                     && material.fields.contains_key("password")
             }
@@ -920,15 +905,29 @@ impl CredentialMaterial {
             )
             | (Self::OAuth(_), CredentialUsage::ProviderAdapter) => true,
             (Self::Secret(_), CredentialUsage::HttpEffect { fields }) => {
-                http_effect::http_effect_material_shape_is_exact(
-                    http_effect::HttpEffectMaterialShape::Secret,
+                http_effect::named_material_shape_is_exact(
+                    http_effect::NamedMaterialShape::Secret,
                     fields.len(),
                     false,
                 )
             }
             (Self::Structured(material), CredentialUsage::HttpEffect { fields }) => {
-                http_effect::http_effect_material_shape_is_exact(
-                    http_effect::HttpEffectMaterialShape::Structured,
+                http_effect::named_material_shape_is_exact(
+                    http_effect::NamedMaterialShape::Structured,
+                    fields.len(),
+                    material.fields.keys().eq(fields.keys()),
+                )
+            }
+            (Self::Secret(_), CredentialUsage::SignatureVerification { fields }) => {
+                http_effect::named_material_shape_is_exact(
+                    http_effect::NamedMaterialShape::Secret,
+                    fields.len(),
+                    false,
+                )
+            }
+            (Self::Structured(material), CredentialUsage::SignatureVerification { fields }) => {
+                http_effect::named_material_shape_is_exact(
+                    http_effect::NamedMaterialShape::Structured,
                     fields.len(),
                     material.fields.keys().eq(fields.keys()),
                 )
@@ -947,56 +946,6 @@ pub struct ResolvedCredentialMaterial {
     pub credential: CredentialRef,
     pub holder: PlaintextHolder,
     pub material: CredentialMaterial,
-}
-
-/// Exact non-secret execution binding supplied to the material-source adapter.
-/// The fingerprint is computed from the authoritative consumer target together
-/// with its [`CredentialUsage`]; adapters compare it with recipient-bound sealed
-/// claims and never infer or enumerate a target.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CredentialMaterialBinding {
-    pub workspace_id: String,
-    pub target_use_fingerprint: String,
-}
-
-impl CredentialMaterialBinding {
-    #[must_use]
-    pub fn for_target<T: Serialize>(
-        workspace_id: impl Into<String>,
-        target: &T,
-        usage: &CredentialUsage,
-    ) -> Self {
-        Self {
-            workspace_id: workspace_id.into(),
-            target_use_fingerprint: awaken_agent_contract::stable_fingerprint(&(target, usage)),
-        }
-    }
-
-    pub fn validate(&self) -> Result<(), CredentialMaterialError> {
-        if self.workspace_id.trim().is_empty() || self.target_use_fingerprint.trim().is_empty() {
-            return Err(CredentialMaterialError::BindingMismatch);
-        }
-        Ok(())
-    }
-}
-
-/// Stable authenticated-data identity for one recipient-bound credential
-/// payload. Both an issuer and the exact material resolver call this helper;
-/// deployments must not invent another fingerprint over the same authority.
-#[must_use]
-pub fn credential_envelope_payload_fingerprint(
-    access: &CredentialAccess,
-    selected_holder: &PlaintextHolder,
-    binding: &CredentialMaterialBinding,
-) -> String {
-    awaken_agent_contract::stable_fingerprint(&(
-        &access.credential,
-        access.material_source,
-        &access.usage,
-        &access.policy,
-        selected_holder,
-        binding,
-    ))
 }
 
 /// Heap-free issuance decision shared by the production envelope adapter and
@@ -1931,7 +1880,11 @@ mod tests {
                 public_config: serde_json::Value::Null,
             },
             CredentialExecutionPolicy::exact(selected.clone(), ModelExposurePolicy::Forbidden),
-        );
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::Extension,
+            "extension://acme.ssh-agent/v1",
+        ));
         let mut installed = capabilities(&selected);
         installed.extension_consumers.insert(
             "acme.ssh-agent/v1".into(),

@@ -106,14 +106,17 @@ pub(crate) fn sandbox_dir(base: &Path, id: &str) -> PathBuf {
 /// The `awaken-provisioning-contract` seam realized locally (ADR-0041).
 mod artifacts;
 mod blob_cache;
+mod git_transport;
 mod namespace;
 mod provider;
+mod read_only_tree;
 mod repo_bundle;
 // The provider resolves mount bytes from an injected [`pc::BlobSource`] port
 // (ADR-0038 D6, dependency-inverted) — this worker-tier crate links no durable
 // store; the composition root adapts the content-addressed store to the port.
 pub use awaken_local_process::LocalProcess;
 pub use blob_cache::{BlobLru, WorkspaceBlobCache};
+pub(crate) use git_transport::{git_bytes, provision_repo_at, push_repo_to_at, run_git};
 pub use namespace::{NamespaceProvider, NamespaceSandbox, bubblewrap_argv, sandbox_exec_argv};
 pub use provider::{LocalProvider, LocalSandbox};
 pub use repo_bundle::{clone_repo_bundle, push_repo_bundle};
@@ -448,172 +451,6 @@ pub(crate) fn jailed_at(root: &IsolatedRoot, logical: &str) -> Result<PathBuf, S
     Ok(root.root().join(logical))
 }
 
-/// Clone a git repository into `<root>/<logical>` **host-side** (ADR-0038). The
-/// credential never enters the jail: git runs as a host process, Basic auth is used
-/// only for the clone transport, and the persisted `origin` is rewritten tokenless.
-/// Fail-closed: a bad `logical` or non-zero git exit is an error. Shared by the
-/// legacy `Environment` and the `pc::Sandbox` Workdir tier.
-pub(crate) fn provision_repo_at(
-    root: &IsolatedRoot,
-    logical: &str,
-    url: &str,
-    initial_branch: Option<&str>,
-    initial_commit: Option<&str>,
-    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<(), SandboxError> {
-    let dest = jailed_at(root, logical)?;
-    match std::fs::symlink_metadata(&dest) {
-        Ok(_) if realized_repository_matches(&dest, url, initial_branch, initial_commit) => {
-            return Ok(());
-        }
-        Ok(_) => {
-            return Err(SandboxError(format!(
-                "repository destination `{}` already exists with a different realization",
-                dest.display()
-            )));
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(SandboxError(error.to_string())),
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| SandboxError(e.to_string()))?;
-    }
-    let mut args = vec!["clone".to_string()];
-    if let Some(branch) = initial_branch {
-        args.push("--branch".into());
-        args.push(branch.to_string());
-    }
-    args.push(authed_url(url, credential)?);
-    args.push(dest.to_string_lossy().into_owned());
-    run_git(None, &args)?;
-    if let Some(commit) = initial_commit {
-        run_git(Some(&dest), &["checkout", "--detach", commit])?;
-    }
-    if credential.is_some() {
-        // Scrub the credential from the jail's origin: the agent inside never sees it
-        // (the host re-injects it only on the harvest push transport).
-        run_git(Some(&dest), &["remote", "set-url", "origin", url])?;
-    }
-    // The committer identity is the AGENT's to set (its own name/email on its own commits),
-    // not provision's — a harvest can neither author a meaningful message nor a real user.
-    Ok(())
-}
-
-fn realized_repository_matches(
-    destination: &Path,
-    url: &str,
-    initial_branch: Option<&str>,
-    initial_commit: Option<&str>,
-) -> bool {
-    if !git_stdout(Some(destination), &["remote", "get-url", "origin"])
-        .is_ok_and(|actual| actual.trim() == url)
-    {
-        return false;
-    }
-    if initial_branch.is_some_and(|expected| {
-        !git_stdout(Some(destination), &["symbolic-ref", "--short", "HEAD"])
-            .is_ok_and(|actual| actual.trim() == expected)
-    }) {
-        return false;
-    }
-    if let Some(expected) = initial_commit {
-        let Ok(actual) = git_stdout(Some(destination), &["rev-parse", "HEAD"]) else {
-            return false;
-        };
-        let Ok(expected) = git_stdout(Some(destination), &["rev-parse", expected]) else {
-            return false;
-        };
-        if actual.trim() != expected.trim() {
-            return false;
-        }
-    }
-    true
-}
-
-/// Push the repo at `<root>/<logical>` to its origin **host-side** (ADR-0038 write-back).
-///
-/// Commit is the AGENT's job — it authors its own commits (message + identity) in the jail;
-/// the host only pushes, because it alone holds the token (injected on the push transport,
-/// never persisted). A harvest never fabricates a commit: it would have no meaningful message
-/// and no real committer. So this pushes whatever the agent committed and pushes NOTHING when
-/// the agent authored nothing (uncommitted working-tree changes are the agent's to commit).
-///
-/// `Ok(true)` when the agent's branch was ahead of its upstream and was pushed; `Ok(false)`
-/// when it was already up to date. Shared with the Workdir tier.
-///
-/// The branch is not guessed: `HEAD` pushes the agent's *current* branch to the same-named
-/// branch on origin, and `@{u}..HEAD` counts commits ahead of *that* branch's upstream. So
-/// the agent owns the branch too — whichever branch it checked out or created is what ships.
-/// A branch the agent newly created has no upstream; that reads as "ahead", so the push
-/// creates it on the remote. A detached HEAD (a commit checkout) has no branch to push — the
-/// push fails loudly rather than inventing a target.
-pub(crate) fn push_repo_at(
-    root: &IsolatedRoot,
-    logical: &str,
-    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<bool, SandboxError> {
-    let dest = jailed_at(root, logical)?;
-    // Push only when the agent's branch has commits ahead of its upstream — so an agent that
-    // committed cleanly (empty working tree, real commits) IS pushed, and a re-harvest of an
-    // already up-to-date branch is a cheap no-op. No upstream (a new branch) → treat as ahead.
-    let ahead = git_stdout(Some(&dest), &["rev-list", "--count", "@{u}..HEAD"])
-        .map(|c| c.trim() != "0")
-        .unwrap_or(true);
-    if !ahead {
-        return Ok(false);
-    }
-    let url = git_stdout(Some(&dest), &["remote", "get-url", "origin"])?;
-    run_git(
-        Some(&dest),
-        &["push", &authed_url(url.trim(), credential)?, "HEAD"],
-    )?;
-    // Advance the remote-tracking ref ourselves: the push targets origin's URL (not the named
-    // remote — so the credential can ride the transport), which does NOT move
-    // `refs/remotes/origin/*`.
-    // Syncing it makes a re-harvest of an already-pushed branch a true no-op (`@{u}..HEAD` == 0).
-    let branch =
-        git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
-    let branch = branch.trim();
-    if !branch.is_empty() && branch != "HEAD" {
-        let _ = run_git(
-            Some(&dest),
-            &[
-                "update-ref",
-                &format!("refs/remotes/origin/{branch}"),
-                "HEAD",
-            ],
-        );
-    }
-    Ok(true)
-}
-
-/// Push to an explicit host-known remote, comparing the branch tip against the
-/// actual remote rather than a possibly bundled/stale tracking ref.
-pub(crate) fn push_repo_to_at(
-    root: &IsolatedRoot,
-    logical: &str,
-    remote_url: &str,
-    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<bool, SandboxError> {
-    let dest = jailed_at(root, logical)?;
-    let branch = git_stdout(Some(&dest), &["rev-parse", "--abbrev-ref", "HEAD"])?;
-    let branch = branch.trim();
-    if branch.is_empty() || branch == "HEAD" {
-        return Err(SandboxError(
-            "cannot push a repository with detached HEAD".into(),
-        ));
-    }
-    let head = git_stdout(Some(&dest), &["rev-parse", "HEAD"])?;
-    let remote_ref = format!("refs/heads/{branch}");
-    let authed = authed_url(remote_url, credential)?;
-    let remote = git_stdout(None, &["ls-remote", &authed, &remote_ref])?;
-    if remote.split_whitespace().next() == Some(head.trim()) {
-        return Ok(false);
-    }
-    run_git(Some(&dest), &["push", &authed, "HEAD"])?;
-    Ok(true)
-}
-
 /// List regular files under `<root>/<subdir>` (recursively) as `(logical_path, bytes)`
 /// sorted by path — a session's output artifacts / memory harvest. Paths are logical
 /// (never a host path, G3). Shared with the Workdir tier.
@@ -710,179 +547,12 @@ pub struct DiscoveredSkillFile {
 #[error("sandbox provisioning failed: {0}")]
 pub struct SandboxError(pub String);
 
-/// Inject typed Basic credentials into one transient Git URL. Upstream secrets
-/// require HTTPS. A short-lived Gateway capability may use the deployment's
-/// in-cluster HTTP endpoint. Every byte outside the RFC 3986 unreserved set is
-/// percent-encoded; malformed or already-authenticated targets fail closed.
-fn authed_url(
-    url: &str,
-    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<String, SandboxError> {
-    let Some(credential) = credential else {
-        return Ok(url.to_string());
-    };
-    let (scheme, target) = if let Some(target) = url.strip_prefix("https://") {
-        ("https", target)
-    } else if credential.is_gateway_capability() {
-        let Some(target) = url.strip_prefix("http://") else {
-            return Err(SandboxError(
-                "credentialed repository URL must use its admitted HTTP transport without embedded user info".into(),
-            ));
-        };
-        ("http", target)
-    } else {
-        return Err(SandboxError(
-            "credentialed repository URL must be HTTPS without embedded user info".into(),
-        ));
-    };
-    let authority_end = target.find(['/', '?', '#']).unwrap_or(target.len());
-    let authority = &target[..authority_end];
-    if authority.is_empty()
-        || authority.contains('@')
-        || authority.bytes().any(|byte| byte.is_ascii_whitespace())
-    {
-        return Err(SandboxError(
-            "credentialed repository URL must be HTTPS without embedded user info".into(),
-        ));
-    }
-    Ok(format!(
-        "{scheme}://{}:{}@{target}",
-        percent_encode_userinfo(credential.expose_username()),
-        percent_encode_userinfo(credential.expose_password()),
-    ))
-}
-
-fn percent_encode_userinfo(value: &str) -> String {
-    use std::fmt::Write as _;
-
-    value.bytes().fold(String::new(), |mut encoded, byte| {
-        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
-            encoded.push(char::from(byte));
-        } else {
-            write!(encoded, "%{byte:02X}").expect("write to String");
-        }
-        encoded
-    })
-}
-
-/// Run `git <args>` (optionally in `cwd`) with prompts disabled, returning its
-/// captured output. Any spawn failure or non-zero exit is a fail-closed
-/// [`SandboxError`] carrying stderr — never a silent partial success.
-fn git_run(cwd: Option<&Path>, args: &[&str]) -> Result<std::process::Output, SandboxError> {
-    let mut cmd = std::process::Command::new("git");
-    cmd.env("GIT_TERMINAL_PROMPT", "0").args(args);
-    if let Some(dir) = cwd {
-        cmd.current_dir(dir);
-    }
-    let out = cmd
-        .output()
-        .map_err(|e| SandboxError(format!("git {}: {e}", args.first().unwrap_or(&""))))?;
-    if !out.status.success() {
-        return Err(SandboxError(format!(
-            "git {} failed: {}",
-            args.first().unwrap_or(&""),
-            String::from_utf8_lossy(&out.stderr).trim()
-        )));
-    }
-    Ok(out)
-}
-
-/// [`git_run`] with owned-string args (for the transient authed URL).
-fn run_git(cwd: Option<&Path>, args: &[impl AsRef<str>]) -> Result<(), SandboxError> {
-    let borrowed: Vec<&str> = args.iter().map(AsRef::as_ref).collect();
-    git_run(cwd, &borrowed).map(|_| ())
-}
-
-/// Run a git command and return its trimmed stdout.
-fn git_stdout(cwd: Option<&Path>, args: &[&str]) -> Result<String, SandboxError> {
-    Ok(String::from_utf8_lossy(&git_run(cwd, args)?.stdout).into_owned())
-}
-
-fn git_bytes(cwd: Option<&Path>, args: &[&str]) -> Result<Vec<u8>, SandboxError> {
-    let mut command = std::process::Command::new("git");
-    command.args(args);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let output = command
-        .output()
-        .map_err(|error| SandboxError(error.to_string()))?;
-    if output.status.success() {
-        Ok(output.stdout)
-    } else {
-        Err(SandboxError(format!(
-            "git {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn test_outputs() -> &'static Path {
         Path::new("/env/mnt/session/outputs")
-    }
-
-    #[test]
-    fn repository_basic_auth_url_follows_the_transport_decision_table() {
-        // Cause/effect decision table:
-        // R1 no credential                     -> target is unchanged;
-        // R2 typed credential + clean HTTPS    -> escaped transient user info;
-        // R3 typed credential + non-HTTPS      -> fail closed;
-        // R4 typed credential + existing login -> fail closed, never combine.
-        // R5 Gateway capability + clean HTTP   -> admitted transient user info;
-        // R6 Gateway capability + clean HTTPS  -> admitted transient user info;
-        // R7 Gateway capability + other scheme -> fail closed.
-        let credential = awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
-            "git user".to_string(),
-            "p@ss".to_string(),
-        );
-        assert_eq!(
-            authed_url("file:///repo", None).expect("R1"),
-            "file:///repo",
-            "R1"
-        );
-        let injected = authed_url("https://example.test/repo.git", Some(&credential))
-            .expect("R2 valid Basic transport");
-        assert!(
-            injected.starts_with("https://git%20user:p%40ss@example.test/"),
-            "R2"
-        );
-        assert!(
-            !injected.contains("p@ss"),
-            "R2 escapes delimiter characters"
-        );
-        assert!(
-            authed_url("http://example.test/repo.git", Some(&credential)).is_err(),
-            "R3"
-        );
-        assert!(
-            authed_url("https://already@example.test/repo.git", Some(&credential)).is_err(),
-            "R4"
-        );
-        let gateway =
-            awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(
-                "short-lived-capability".to_owned(),
-            );
-        assert!(
-            authed_url("http://gateway.internal/repo.git", Some(&gateway))
-                .expect("R5")
-                .starts_with("http://git:short-lived-capability@gateway.internal/"),
-            "R5"
-        );
-        assert!(
-            authed_url("https://gateway.internal/repo.git", Some(&gateway))
-                .expect("R6")
-                .starts_with("https://git:short-lived-capability@gateway.internal/"),
-            "R6"
-        );
-        assert!(
-            authed_url("ssh://gateway.internal/repo.git", Some(&gateway)).is_err(),
-            "R7"
-        );
     }
 
     #[test]
@@ -928,60 +598,6 @@ mod tests {
         let root = IsolatedRoot::new("/env");
         assert_eq!(root.resolve("./a").unwrap(), PathBuf::from("/env/a"));
         assert_eq!(root.resolve("").unwrap(), PathBuf::from("/env"));
-    }
-
-    #[test]
-    fn explicit_remote_push_rejects_a_detached_head_before_network_access() {
-        let tmp = tempfile::tempdir().unwrap();
-        let repo = tmp.path().join("repo");
-        let run = |args: &[&str]| {
-            let status = std::process::Command::new("git")
-                .current_dir(tmp.path())
-                .args(args)
-                .status()
-                .unwrap();
-            assert!(status.success(), "git {args:?}");
-        };
-        run(&["init", "repo"]);
-        std::fs::write(repo.join("README.md"), "seed").unwrap();
-        let status = std::process::Command::new("git")
-            .current_dir(&repo)
-            .args([
-                "-c",
-                "user.name=Awaken Test",
-                "-c",
-                "user.email=test@awaken.local",
-                "add",
-                "README.md",
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let status = std::process::Command::new("git")
-            .current_dir(&repo)
-            .args([
-                "-c",
-                "user.name=Awaken Test",
-                "-c",
-                "user.email=test@awaken.local",
-                "commit",
-                "-m",
-                "seed",
-            ])
-            .status()
-            .unwrap();
-        assert!(status.success());
-        let status = std::process::Command::new("git")
-            .current_dir(&repo)
-            .args(["checkout", "--detach"])
-            .status()
-            .unwrap();
-        assert!(status.success());
-
-        let root = IsolatedRoot::new(tmp.path());
-        let error = push_repo_to_at(&root, "repo", "https://invalid.example/repo", None)
-            .expect_err("detached HEAD is rejected before contacting the remote");
-        assert!(error.0.contains("detached HEAD"));
     }
 
     // ---- helpers ----

@@ -223,7 +223,7 @@ mod tests {
             (4, "child-only", 8_000, 8),
         ] {
             assert_eq!(value.begin_activity_epoch(), Some(epoch), "R4 setup");
-            assert!(value.begin_runtime_interval(u64::from(epoch) * 1_000));
+            assert!(value.begin_runtime_interval(epoch * 1_000));
             value.revision = SessionRevision(value.revision.0 + 1);
             assert!(
                 value.observe_runtime_interval(crate::SessionRuntimeIntervalObservation {
@@ -236,7 +236,7 @@ mod tests {
             );
             assert_eq!(value.settle_activity_epoch(epoch), Some(true));
             let next = value
-                .close_runtime_interval(u64::from(epoch) * 1_000 + 500)
+                .close_runtime_interval(epoch * 1_000 + 500)
                 .expect("R4 close");
             assert_ne!(next.interval_id, closed.interval_id, "R4/E5");
             assert_eq!(next.observations[0].thread_id.0, thread, "R4/E5");

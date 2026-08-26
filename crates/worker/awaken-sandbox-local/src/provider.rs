@@ -15,10 +15,8 @@
 //! scanning) the runtime host composes into each session.
 
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::PathBuf;
 use std::process::Stdio as ProcStdio;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use awaken_agent_channel::{AgentChannel, SplitChannel};
@@ -30,107 +28,16 @@ use std::sync::Arc;
 
 use awaken_runtime_contract::tool::RawTool;
 
+use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
-    provision_repo_at, push_repo_at, rooted_raw_tools, scan_skill_dir_at,
+    provision_repo_at, push_repo_to_at, rooted_raw_tools, scan_skill_dir_at,
 };
 
 mod checkpoint;
 
 fn err(e: impl ToString) -> pc::SandboxError {
     pc::SandboxError::new(e.to_string())
-}
-
-static READ_ONLY_TREE_WRITE_SEQ: AtomicU64 = AtomicU64::new(0);
-
-pub(crate) fn materialize_read_only_tree_at(
-    root: &IsolatedRoot,
-    subdir: &str,
-    files: &[(String, Vec<u8>, bool)],
-) -> Result<(), pc::SandboxError> {
-    let base = root.resolve(subdir).map_err(err)?;
-    if let Ok(metadata) = std::fs::symlink_metadata(&base) {
-        if metadata.file_type().is_symlink() || !metadata.is_dir() {
-            return Err(err(format!("read-only tree root `{subdir}` is unsafe")));
-        }
-    } else {
-        std::fs::create_dir_all(&base).map_err(err)?;
-    }
-
-    for (relative, bytes, executable) in files {
-        if relative.is_empty()
-            || relative.contains('\\')
-            || std::path::Path::new(relative).is_absolute()
-            || std::path::Path::new(relative)
-                .components()
-                .any(|component| !matches!(component, std::path::Component::Normal(_)))
-        {
-            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
-        }
-        let logical = format!(
-            "{}/{}",
-            subdir.trim_matches('/'),
-            relative.trim_start_matches('/')
-        );
-        let destination = root.resolve(&logical).map_err(err)?;
-        if !destination.starts_with(&base) || relative.is_empty() {
-            return Err(err(format!("read-only tree path `{relative}` is unsafe")));
-        }
-        let parent = destination
-            .parent()
-            .ok_or_else(|| err(format!("read-only tree path `{relative}` has no parent")))?;
-        std::fs::create_dir_all(parent).map_err(err)?;
-        let mut cursor = parent.to_path_buf();
-        while cursor.starts_with(&base) {
-            if let Ok(metadata) = std::fs::symlink_metadata(&cursor)
-                && metadata.file_type().is_symlink()
-            {
-                return Err(err(format!(
-                    "read-only tree path `{relative}` crosses a symlink"
-                )));
-            }
-            if cursor == base || !cursor.pop() {
-                break;
-            }
-        }
-        if let Ok(metadata) = std::fs::symlink_metadata(&destination)
-            && (metadata.file_type().is_symlink() || !metadata.is_file())
-        {
-            return Err(err(format!("read-only tree file `{relative}` is unsafe")));
-        }
-        if !std::fs::read(&destination).is_ok_and(|current| current == *bytes) {
-            let sequence = READ_ONLY_TREE_WRITE_SEQ.fetch_add(1, Ordering::Relaxed);
-            let temporary = parent.join(format!(".awaken-tree-{}-{sequence}", std::process::id()));
-            let write = (|| -> std::io::Result<()> {
-                let mut file = std::fs::OpenOptions::new()
-                    .create_new(true)
-                    .write(true)
-                    .open(&temporary)?;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-                drop(file);
-                std::fs::rename(&temporary, &destination)
-            })();
-            if let Err(error) = write {
-                let _ = std::fs::remove_file(&temporary);
-                return Err(err(error));
-            }
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = if *executable { 0o500 } else { 0o400 };
-            std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(mode))
-                .map_err(err)?;
-        }
-        #[cfg(not(unix))]
-        let mut permissions = std::fs::metadata(&destination).map_err(err)?.permissions();
-        #[cfg(not(unix))]
-        permissions.set_readonly(true);
-        #[cfg(not(unix))]
-        std::fs::set_permissions(&destination, permissions).map_err(err)?;
-    }
-    Ok(())
 }
 
 /// Resolve a mount's bytes: an in-memory seed map first, then an optional
@@ -838,7 +745,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
         plan: &pc::RepositoryRealizationPlan,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<bool, pc::SandboxError> {
-        push_repo_at(&self.root, &plan.mount_path, credential).map_err(err)
+        push_repo_to_at(&self.root, &plan.mount_path, &plan.remote_url, credential).map_err(err)
     }
 }
 
@@ -1467,11 +1374,13 @@ mod workdir_helper_tests {
     }
 
     /// Repository realization cause/effect decision table:
-    /// | Rule | Destination | Frozen plan | Effect |
+    /// | Rule | Destination / Agent Git config | Frozen plan | Effect |
     /// |---|---|---|---|
     /// | R1 | absent | valid | clone the exact repository |
     /// | R2 | already realized | exact replay | succeed without replacing Agent state |
     /// | R3 | occupied | different remote/checkout | reject without modifying the tree |
+    /// | R4 | origin and `url.*.insteadOf` target attacker | exact authored remote | push only the exact remote; attacker ref unchanged |
+    /// | R5 | R4 after successful push | same plan/commit | idempotent no-op |
     #[tokio::test]
     async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1497,6 +1406,26 @@ mod workdir_helper_tests {
                 bare.to_str().unwrap(),
             ],
         );
+        let attacker = base.join("attacker.git");
+        git(
+            base,
+            &[
+                "clone",
+                "-q",
+                "--bare",
+                seed.to_str().unwrap(),
+                attacker.to_str().unwrap(),
+            ],
+        );
+        let seed_head = std::process::Command::new("git")
+            .current_dir(&seed)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .unwrap();
+        let seed_head = String::from_utf8(seed_head.stdout)
+            .unwrap()
+            .trim()
+            .to_owned();
 
         let provider = LocalProvider::new(base.join("envs"));
         let sandbox = provider
@@ -1572,16 +1501,43 @@ mod workdir_helper_tests {
         git(&repo_dir, &["add", "-A"]);
         git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
 
-        // Host push reports true (the branch was ahead) and re-pushing is an idempotent no-op.
+        // The Agent owns this config and may point both the named remote and an
+        // `insteadOf` rewrite at an attacker. Publication must ignore both and
+        // consume only the immutable plan URL passed by the host.
+        let attacker_url = attacker.to_string_lossy().into_owned();
+        let frozen_url = plan.remote_url.clone();
+        git(&repo_dir, &["remote", "set-url", "origin", &attacker_url]);
+        let rewrite_key = format!("url.{attacker_url}.insteadOf");
+        git(&repo_dir, &["config", &rewrite_key, &frozen_url]);
+
+        // R4 pushes the frozen target even though both Agent-authored mechanisms
+        // select the attacker. R5 compares the exact target and becomes a no-op.
         assert!(
             pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
                 .await
-                .unwrap()
+                .unwrap(),
+            "R4"
         );
         assert!(
             !pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
                 .await
-                .unwrap()
+                .unwrap(),
+            "R5"
+        );
+
+        let attacker_head = std::process::Command::new("git")
+            .args([
+                "--git-dir",
+                attacker.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/main",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8(attacker_head.stdout).unwrap().trim(),
+            seed_head,
+            "R4 attacker ref must remain unchanged"
         );
 
         // The bare remote carries the AGENT's commit — its own message and author, not a
@@ -1689,137 +1645,6 @@ mod workdir_helper_tests {
                 .await
                 .is_err()
         );
-    }
-
-    // Materialization cause/effect rules: C1 binary regular file + non-executable
-    // flag -> E1 exact bytes and no write/execute permission; C2 script + executable
-    // flag -> E2 owner execute but no write permission; C3 unsafe lexical/symlink
-    // paths -> E3 rejection. One test keeps these permission and jail effects at
-    // the IO boundary that actually enforces them.
-    #[tokio::test]
-    async fn read_only_tree_preserves_binary_files_and_rejects_traversal() {
-        let tmp = tempfile::tempdir().unwrap();
-        let sandbox = LocalProvider::new(tmp.path())
-            .create_sandbox(&workdir_spec("skill-tree", false))
-            .await
-            .unwrap();
-        let binary = vec![0, 159, 146, 150, 255];
-        sandbox
-            .materialize_read_only_tree(
-                ".skills/greet",
-                &[
-                    ("SKILL.md".into(), b"# greet".to_vec(), false),
-                    ("assets/data.bin".into(), binary.clone(), false),
-                    ("scripts/run.sh".into(), b"#!/bin/sh\n".to_vec(), true),
-                ],
-            )
-            .unwrap();
-        assert_eq!(
-            std::fs::read(tmp.path().join("skill-tree/.skills/greet/assets/data.bin")).unwrap(),
-            binary
-        );
-        assert!(
-            std::fs::metadata(tmp.path().join("skill-tree/.skills/greet/SKILL.md"))
-                .unwrap()
-                .permissions()
-                .readonly()
-        );
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let root = tmp.path().join("skill-tree/.skills/greet");
-            let data_mode = std::fs::metadata(root.join("assets/data.bin"))
-                .unwrap()
-                .permissions()
-                .mode();
-            let script_mode = std::fs::metadata(root.join("scripts/run.sh"))
-                .unwrap()
-                .permissions()
-                .mode();
-            assert_eq!(
-                data_mode & 0o333,
-                0,
-                "ordinary files are read-only and non-executable"
-            );
-            assert_eq!(script_mode & 0o222, 0, "scripts remain read-only");
-            assert_ne!(
-                script_mode & 0o100,
-                0,
-                "executable scripts retain owner execute"
-            );
-        }
-        // Rehydrating identical bytes is idempotent even though the target is
-        // read-only; a changed immutable version is atomically replaced and ends
-        // read-only as well.
-        sandbox
-            .materialize_read_only_tree(
-                ".skills/greet",
-                &[("SKILL.md".into(), b"# greet".to_vec(), false)],
-            )
-            .unwrap();
-        sandbox
-            .materialize_read_only_tree(
-                ".skills/greet",
-                &[("SKILL.md".into(), b"# greet v2".to_vec(), false)],
-            )
-            .unwrap();
-        let skill_md = tmp.path().join("skill-tree/.skills/greet/SKILL.md");
-        assert_eq!(std::fs::read(&skill_md).unwrap(), b"# greet v2");
-        assert!(
-            std::fs::metadata(skill_md)
-                .unwrap()
-                .permissions()
-                .readonly()
-        );
-        assert!(
-            sandbox
-                .materialize_read_only_tree(".skills/bad", &[("../escape".into(), vec![], false)])
-                .is_err()
-        );
-        assert!(
-            sandbox
-                .materialize_read_only_tree(".skills/bad", &[("bad\\path".into(), vec![], false)])
-                .is_err()
-        );
-        assert!(
-            sandbox
-                .materialize_read_only_tree(".skills/bad", &[("/absolute".into(), vec![], false)])
-                .is_err()
-        );
-
-        let root = tmp.path().join("skill-tree");
-        std::fs::write(root.join("unsafe-root"), b"file").unwrap();
-        assert!(
-            sandbox
-                .materialize_read_only_tree("unsafe-root", &[("value".into(), vec![], false)])
-                .is_err()
-        );
-
-        std::fs::create_dir_all(root.join("unsafe-destination/dir")).unwrap();
-        assert!(
-            sandbox
-                .materialize_read_only_tree(
-                    "unsafe-destination",
-                    &[("dir".into(), b"not-a-directory".to_vec(), false)],
-                )
-                .is_err()
-        );
-
-        #[cfg(unix)]
-        {
-            let outside = tmp.path().join("outside");
-            std::fs::create_dir_all(&outside).unwrap();
-            std::fs::create_dir_all(root.join("unsafe-parent")).unwrap();
-            std::os::unix::fs::symlink(&outside, root.join("unsafe-parent/link")).unwrap();
-            assert!(
-                sandbox
-                    .materialize_read_only_tree(
-                        "unsafe-parent",
-                        &[("link/value".into(), vec![], false)],
-                    )
-                    .is_err()
-            );
-        }
     }
 
     #[tokio::test]

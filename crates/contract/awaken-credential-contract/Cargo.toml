@@ -16,6 +16,7 @@ serde.workspace = true
 schemars = "1"
 serde_json.workspace = true
 thiserror.workspace = true
+url.workspace = true
 
 [lints]
 workspace = true

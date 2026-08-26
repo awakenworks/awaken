@@ -216,6 +216,7 @@ impl CredentialRefresher for VaultRefresher {
             CredentialMaterialPatch {
                 primary: Some(RedactedString::new(access_token.clone())),
                 auxiliary,
+                descriptor: None,
             },
             self.secrets.as_ref(),
             self.credentials.as_ref(),
@@ -311,6 +312,7 @@ mod tests {
             id: CredentialSourceId("cred:run-mcp".into()),
             workspace_id: "workspace".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some("awaken-flow/run-mcp".into()),
             protocol_endpoint_id: None,
             env_key: None,

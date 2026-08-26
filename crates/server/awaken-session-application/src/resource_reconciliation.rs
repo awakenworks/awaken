@@ -728,14 +728,26 @@ impl SessionApplication {
             .get(session_id)
             .await
             .map_err(repository_preparation)?;
-        let credential_source = persisted
+        let (credential_source, credential_revision, remote_url) = persisted
             .resources
             .active
             .inputs()
             .iter()
             .find(|input| input.binding_id == *binding_id)
             .and_then(|input| match &input.source {
-                ResolvedInputSource::Repository { config, .. } => config.credential_binding.clone(),
+                ResolvedInputSource::Repository {
+                    config, credential, ..
+                } => config
+                    .credential_binding
+                    .clone()
+                    .zip(credential.as_ref())
+                    .map(|(binding, credential)| {
+                        (
+                            binding,
+                            credential.access.credential.revision,
+                            config.remote_url.clone(),
+                        )
+                    }),
                 _ => None,
             })
             .ok_or_else(|| {
@@ -743,10 +755,16 @@ impl SessionApplication {
                     "repository credential update requires an authenticated Repository resource",
                 ))
             })?;
-        ingress
+        let credential_target =
+            awaken_session_contract::repository_transport_credential_target(&remote_url).map_err(
+                |error| SessionPreparationError::Rejected(RunError::bad_request(error.to_string())),
+            )?;
+        let completed_credential_revision = ingress
             .rotate_repository_token(
                 &awaken_credential_contract::CredentialSourceId(credential_source),
+                credential_revision,
                 owner_scope,
+                credential_target,
                 token,
             )
             .await
@@ -772,6 +790,20 @@ impl SessionApplication {
             *credential = None;
             self.pin_repository_credential(owner_scope, &holder, &mut input)
                 .await?;
+            let ResolvedInputSource::Repository {
+                credential: Some(credential),
+                ..
+            } = &input.source
+            else {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "repository credential rotation did not produce an exact execution pin",
+                )));
+            };
+            if credential.access.credential.revision != completed_credential_revision {
+                return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                    "repository credential revision changed before Session repin",
+                )));
+            }
             persisted.resources.active = persisted
                 .resources
                 .active

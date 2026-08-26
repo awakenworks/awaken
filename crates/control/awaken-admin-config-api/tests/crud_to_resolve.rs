@@ -155,7 +155,7 @@ async fn author_catalog_and_credential_then_resolve_a_run() {
         &h.app,
         "POST",
         &format!("/v1/config/credentials/{cred_id}/archive"),
-        None,
+        Some(json!({ "expected_version": 1 })),
     )
     .await;
     assert_eq!(status, StatusCode::OK);

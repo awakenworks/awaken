@@ -255,74 +255,84 @@ impl SessionApplication {
         &self,
         input: SessionRepositoryResourceInput,
     ) -> Result<awaken_resource_contract::RepositoryId, RunError> {
-        let catalog = self.resource_registry.as_ref().ok_or_else(|| {
-            RunError::bad_request("repository resources require a configured Resource Registry")
-        })?;
-        let credential_binding = match input.authorization_token {
-            Some(token) => {
-                let ingress = self.repository_credential_ingress.as_ref().ok_or_else(|| {
+        let SessionRepositoryResourceInput {
+            id,
+            workspace_id,
+            name,
+            description,
+            remote_url,
+            authorization_token,
+            credential,
+            mount_path: _,
+            initial_branch,
+            initial_commit,
+        } = input;
+        if authorization_token.is_some() && credential.is_some() {
+            return Err(RunError::bad_request(
+                "repository cannot carry both an authorization token and credential reference",
+            ));
+        }
+        let repository_id = awaken_resource_contract::RepositoryId::from(id);
+        let token_ingress = if let Some(token) = authorization_token {
+            let credential_target =
+                awaken_session_contract::repository_transport_credential_target(&remote_url)
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+            let ingress = self
+                .repository_credential_ingress
+                .as_deref()
+                .ok_or_else(|| {
                     RunError::bad_request(
                         "repository authorization requires a configured credential Vault",
                     )
                 })?;
-                Some(
-                    ingress
-                        .enter_repository_token(
-                            awaken_credential_contract::CredentialSourceId(format!(
-                                "{}:credential",
-                                input.id
-                            )),
-                            &input.workspace_id,
-                            token,
-                        )
-                        .await
-                        .map_err(|error| {
-                            RunError::bad_request(format!(
-                                "repository authorization could not be sealed: {error}"
-                            ))
-                        })?
-                        .0,
-                )
-            }
-            None => None,
+            let source_id = awaken_credential_contract::CredentialSourceId(format!(
+                "{}:credential",
+                repository_id.as_str()
+            ));
+            Some((ingress, source_id, credential_target, token))
+        } else {
+            None
         };
-        let credential_binding = match (credential_binding, input.credential) {
-            (Some(_), Some(_)) => {
-                return Err(RunError::bad_request(
-                    "repository cannot carry both an authorization token and credential reference",
-                ));
+        let credential_binding = if let Some((_, source_id, _, _)) = &token_ingress {
+            Some(source_id.0.clone())
+        } else {
+            match credential {
+                Some(credential) if !credential.id.trim().is_empty() && credential.revision > 0 => {
+                    Some(credential.id)
+                }
+                Some(_) => {
+                    return Err(RunError::bad_request(
+                        "repository credential reference is invalid",
+                    ));
+                }
+                None => None,
             }
-            (Some(binding), None) => Some(binding),
-            (None, Some(credential))
-                if !credential.id.trim().is_empty() && credential.revision > 0 =>
-            {
-                Some(credential.id)
-            }
-            (None, Some(_)) => {
-                return Err(RunError::bad_request(
-                    "repository credential reference is invalid",
-                ));
-            }
-            (None, None) => None,
         };
-        let repository_id = awaken_resource_contract::RepositoryId::from(input.id);
+        let catalog = self.resource_registry.as_ref().ok_or_else(|| {
+            RunError::bad_request("repository resources require a configured Resource Registry")
+        })?;
+        let initial_state = if token_ingress.is_some() {
+            awaken_resource_contract::ResourceState::Suspended
+        } else {
+            awaken_resource_contract::ResourceState::Active
+        };
         let definition = awaken_resource_contract::RepositoryDefinition {
             id: repository_id.clone(),
-            workspace_id: input.workspace_id,
-            name: input.name,
-            description: input.description,
+            workspace_id,
+            name,
+            description,
             metadata: Default::default(),
-            state: awaken_resource_contract::ResourceState::Active,
+            state: initial_state,
             current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
             timestamps: Default::default(),
         };
         let initial_config = awaken_resource_contract::RepositoryConfigVersion {
             repository_id: repository_id.clone(),
             version: awaken_resource_contract::ConfigVersion::INITIAL,
-            remote_url: input.remote_url,
+            remote_url,
             credential_binding,
-            initial_branch: input.initial_branch,
-            initial_commit: input.initial_commit,
+            initial_branch,
+            initial_commit,
             clone_policy: awaken_resource_contract::ClonePolicy::default(),
         };
         let map_registry_error = |error| {
@@ -330,32 +340,95 @@ impl SessionApplication {
                 "repository resource could not be configured: {error}"
             ))
         };
-        match catalog.register_repository(awaken_resource_contract::RegisterRepository {
-            definition: definition.clone(),
-            initial_config: initial_config.clone(),
-        }) {
-            Ok(()) => {}
+        // The aggregate is the canonical validation owner. Run that pure
+        // admission before either durable participant so invalid Repository
+        // configuration cannot create a Vault row or a Registry aggregate.
+        awaken_resource_contract::RepositoryAggregate::register(
+            definition.clone(),
+            initial_config.clone(),
+        )
+        .map_err(&map_registry_error)?;
+        let registered_state = match catalog.register_repository(
+            awaken_resource_contract::RegisterRepository {
+                definition: definition.clone(),
+                initial_config: initial_config.clone(),
+            },
+        ) {
+            Ok(()) => initial_state,
             Err(awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(_)) => {
                 let stored_definition = catalog
                     .find_repository(&definition.workspace_id, definition.id.as_str())
-                    .map_err(map_registry_error)?;
+                    .map_err(&map_registry_error)?;
                 let stored_config = catalog
                     .find_repository_config(
                         &definition.workspace_id,
                         definition.id.as_str(),
                         awaken_resource_contract::ConfigVersion::INITIAL,
                     )
-                    .map_err(map_registry_error)?;
-                if stored_definition.as_ref() != Some(&definition)
+                    .map_err(&map_registry_error)?;
+                let Some(stored_definition) = stored_definition else {
+                    return Err(RunError::bad_request(
+                        "repository resource could not be configured: registered Repository is unavailable in this Workspace",
+                    ));
+                };
+                let lifecycle_is_exact = if token_ingress.is_some() {
+                    matches!(
+                        stored_definition.state,
+                        awaken_resource_contract::ResourceState::Suspended
+                            | awaken_resource_contract::ResourceState::Active
+                    )
+                } else {
+                    stored_definition.state == awaken_resource_contract::ResourceState::Active
+                };
+                // State and timestamps are lifecycle progress owned by this
+                // Registry saga, not request identity. Normalize only those
+                // fields, then retain whole-definition equality for replay.
+                let mut stored_registration = stored_definition.clone();
+                stored_registration.state = definition.state;
+                stored_registration.timestamps = definition.timestamps;
+                if !lifecycle_is_exact
+                    || stored_registration != definition
                     || stored_config.as_ref() != Some(&initial_config)
                 {
                     return Err(RunError::bad_request(
                         "repository resource could not be configured: existing Repository does not exactly match the requested definition and initial config",
                     ));
                 }
+                stored_definition.state
             }
             Err(error) => return Err(map_registry_error(error)),
+        };
+        let Some((ingress, source_id, credential_target, token)) = token_ingress else {
+            return Ok(repository_id);
+        };
+        let entered_source = ingress
+            .enter_repository_token(
+                source_id.clone(),
+                &definition.workspace_id,
+                credential_target,
+                token,
+            )
+            .await
+            .map_err(|error| {
+                RunError::bad_request(format!(
+                    "repository authorization could not be sealed: {error}"
+                ))
+            })?;
+        if entered_source != source_id {
+            return Err(RunError::bad_request(
+                "repository authorization returned another credential binding",
+            ));
         }
+        if registered_state == awaken_resource_contract::ResourceState::Active {
+            return Ok(repository_id);
+        }
+        catalog
+            .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
+                workspace_id: definition.workspace_id.clone(),
+                id: repository_id.clone(),
+                state: awaken_resource_contract::ResourceState::Active,
+            })
+            .map_err(map_registry_error)?;
         Ok(repository_id)
     }
 

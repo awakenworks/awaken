@@ -191,6 +191,7 @@ async function main() {
       assert.equal(r.json.sync.discovered, 2);
       assert.ok(!JSON.stringify(r.json).includes(connection.secret), 'connection response is secret-free');
       const credId = r.json.credential.id;
+      const credVersion = r.json.credential.version;
       r = await req(base, 'GET', '/v1/config/provider-connections?workspace_id=ws');
       const readyConnection = r.json.find((item) => item.provider_id === 'anthropic');
       checkContract('ProviderConnectionSummary', readyConnection);
@@ -326,7 +327,10 @@ async function main() {
       });
       assert.equal(r.status, 201);
       const badCredId = r.json.id;
-      r = await req(base, 'POST', `/v1/config/credentials/${badCredId}/archive`);
+      const badCredVersion = r.json.version;
+      r = await req(base, 'POST', `/v1/config/credentials/${badCredId}/archive`, {
+        expected_version: badCredVersion,
+      });
       assert.equal(r.status, 200);
 
       // Author a pool: A (ordinal 0, will fail) then the good vault credential B.
@@ -443,7 +447,9 @@ async function main() {
       pass('resolve of an unknown profile -> 404');
 
       // --- archive a credential -> it fails closed at resolution -------------------
-      r = await req(base, 'POST', `/v1/config/credentials/${credId}/archive`, {});
+      r = await req(base, 'POST', `/v1/config/credentials/${credId}/archive`, {
+        expected_version: credVersion,
+      });
       assert.equal(r.status, 200);
       checkContract('CredentialSource', r.json);
       assert.equal(r.json.status, 'disabled');
