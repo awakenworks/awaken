@@ -138,12 +138,13 @@ fn handle(mut stream: TcpStream, context: HandleContext<'_>) {
         heartbeat_count,
         environment_warmups,
     } = context;
-    let request = read_request(&mut stream);
-    let header_end = request
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .map(|index| index + 4)
-        .unwrap();
+    let RequestRead::Complete(CompleteRequest {
+        bytes: request,
+        header_end,
+    }) = read_request(&mut stream)
+    else {
+        return;
+    };
     let request_line = std::str::from_utf8(&request[..header_end])
         .unwrap()
         .lines()
@@ -256,23 +257,34 @@ fn json_object_field<'a>(body: &'a str, field: &str) -> &'a str {
     panic!("registration manifest is not a JSON object")
 }
 
-fn read_request(stream: &mut TcpStream) -> Vec<u8> {
+struct CompleteRequest {
+    bytes: Vec<u8>,
+    header_end: usize,
+}
+
+enum RequestRead {
+    Complete(CompleteRequest),
+    PeerClosedBeforeCompleteRequest,
+}
+
+fn read_request(stream: &mut TcpStream) -> RequestRead {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
         .unwrap();
     let mut request = Vec::new();
     let mut chunk = [0_u8; 4096];
-    let mut expected = None;
+    let mut complete_shape = None;
     loop {
         let read = stream.read(&mut chunk).unwrap();
         if read == 0 {
-            break;
+            return RequestRead::PeerClosedBeforeCompleteRequest;
         }
         request.extend_from_slice(&chunk[..read]);
-        if expected.is_none()
-            && let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+        if complete_shape.is_none()
+            && let Some(header_start) = request.windows(4).position(|window| window == b"\r\n\r\n")
         {
-            let headers = std::str::from_utf8(&request[..header_end]).unwrap();
+            let complete_header_end = header_start + 4;
+            let headers = std::str::from_utf8(&request[..header_start]).unwrap();
             let content_length = headers
                 .lines()
                 .find_map(|line| {
@@ -281,11 +293,33 @@ fn read_request(stream: &mut TcpStream) -> Vec<u8> {
                         .then(|| value.trim().parse::<usize>().unwrap())
                 })
                 .unwrap_or(0);
-            expected = Some(header_end + 4 + content_length);
+            complete_shape = Some((complete_header_end, complete_header_end + content_length));
         }
-        if expected.is_some_and(|length| request.len() >= length) {
-            break;
+        if let Some((header_end, expected_length)) = complete_shape
+            && request.len() >= expected_length
+        {
+            return RequestRead::Complete(CompleteRequest {
+                bytes: request,
+                header_end,
+            });
         }
     }
-    request
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_close_before_http_headers_is_not_a_fixture_failure() {
+        let upstream = FakeWorkerUpstream::start();
+        let address = upstream
+            .url()
+            .strip_prefix("http://")
+            .expect("fake worker upstream uses HTTP");
+        let stream = TcpStream::connect(address).expect("connect to fake worker upstream");
+        drop(stream);
+        std::thread::sleep(Duration::from_millis(20));
+        drop(upstream);
+    }
 }
