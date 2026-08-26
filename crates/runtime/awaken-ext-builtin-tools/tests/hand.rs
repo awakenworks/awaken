@@ -476,7 +476,12 @@ async fn bash_persists_cwd_and_environment_and_restart_clears_both() {
         ))
         .await
         .unwrap();
-    assert_eq!(restarted.text(), format!("{}:", dir.path().display()));
+    let canonical_workdir = std::fs::canonicalize(dir.path()).unwrap();
+    assert_eq!(
+        restarted.text(),
+        format!("{}:", canonical_workdir.display()),
+        "restart returns to the same physical workdir and clears shell state"
+    );
 }
 
 #[tokio::test]
