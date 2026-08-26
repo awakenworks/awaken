@@ -148,6 +148,7 @@ async function startHostLoginProfile() {
     // separate live gate and must not become an implicit prerequisite.
     'identity_mode = "self-managed"',
     `control_seal_key = ${JSON.stringify(randomBytes(32).toString('hex'))}`,
+    'identity_mode = "no-login"',
     // Host-login is the trusted local-process gate. Container isolation has its
     // own profile below, and native sandbox availability is host-specific.
     'sandbox_tier = "local"',

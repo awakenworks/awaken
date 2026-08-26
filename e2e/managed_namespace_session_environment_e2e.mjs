@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
@@ -21,6 +21,7 @@ import {
   waitForSessionEventReceipt,
   waitForValue,
 } from './harness.mjs';
+import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38172);
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -36,12 +37,6 @@ async function waitUntil(predicate, message, attempts = 200) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   assert.fail(message);
-}
-
-function bwrapAvailable() {
-  return spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
-    stdio: 'ignore',
-  }).status === 0;
 }
 
 function git(args, cwd) {
@@ -189,8 +184,7 @@ async function main() {
   // N0 unavailable Namespace=>skip; N1 C1+C2=>E1; N2 N1+C3=>E1+E2;
   // N3 N2+C4=>E3; N4 terminal delete=>E4; N5=C5=>E5.
   assert.ok(['local', 'namespace'].includes(TIER), `unsupported Session environment tier: ${TIER}`);
-  if (TIER === 'namespace' && !bwrapAvailable()) {
-    console.log('E2E SKIP: bwrap/unprivileged userns unavailable on this host.');
+  if (TIER === 'namespace' && !requireOrSkipBwrap()) {
     return;
   }
   fs.rmSync(TMP, { recursive: true, force: true });

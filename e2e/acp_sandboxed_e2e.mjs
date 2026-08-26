@@ -11,19 +11,12 @@
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { spawnSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import { spawnServer, stopServer, waitForPort, pass, waitForSessionEventReceipt } from './harness.mjs';
+import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = 38171;
-
-function bwrapAvailable() {
-  const r = spawnSync('bwrap', ['--unshare-user', '--ro-bind', '/', '/', '--', 'true'], {
-    stdio: 'ignore',
-  });
-  return r.status === 0;
-}
 
 function agentTexts(events) {
   return events
@@ -62,8 +55,7 @@ async function acpReply(client, environmentId, prompt) {
 }
 
 async function main() {
-  if (!bwrapAvailable()) {
-    console.log('E2E SKIP: bwrap/unprivileged userns unavailable on this host.');
+  if (!requireOrSkipBwrap()) {
     process.exitCode = 0;
     return;
   }

@@ -22,35 +22,10 @@ mod session_hand;
 pub(crate) use agent_sandbox::AgentSandbox;
 use container_skills::ContainerSkillCache;
 pub(crate) use provider::SessionEnvironmentProvider;
-use session_hand::HandProjectionUpdate;
-use session_hand::SessionHandExecutor;
-
-/// Session environment service that binds a live hand channel to the runtime's tool
-/// executor. The framing implementation belongs to an outer startup crate;
-/// this host owns only the Session lifecycle and never imports the relay adapter.
-pub trait HandExecutorFactory: Send + Sync {
-    fn bind(
-        &self,
-        channel: Box<dyn AgentChannelType>,
-        operation_scope: &str,
-        recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor>;
-}
-
+pub use session_hand::HandExecutorFactory;
 #[cfg(test)]
-pub(crate) struct UnusedHandExecutorFactory;
-
-#[cfg(test)]
-impl HandExecutorFactory for UnusedHandExecutorFactory {
-    fn bind(
-        &self,
-        _channel: Box<dyn AgentChannelType>,
-        _operation_scope: &str,
-        _recovery: awaken_runtime_contract::tool::ToolRecoveryCapability,
-    ) -> Arc<dyn ToolExecutor> {
-        panic!("this test does not dispatch a Session Hand tool")
-    }
-}
+pub(crate) use session_hand::UnusedHandExecutorFactory;
+use session_hand::{HandProjectionUpdate, SessionHandExecutor};
 
 /// One realized sandbox shared by every Run attempt in a Session.
 pub(crate) enum SessionEnvironment {

@@ -65,7 +65,7 @@ BIN=$(resolve_cargo_executable awaken-scenario-host awaken-scenario-host)
 cp "$BIN" "$DEPLOY_DIR/awaken-server"
 
 log "2/5 build the topology image (copy-in, no in-container rust build)"
-docker build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
+k3d_docker_build --load -q -t "$IMAGE" -f "$DEPLOY_DIR/Dockerfile.server" "$DEPLOY_DIR" >/dev/null
 
 log "3/5 create MULTI-node k3d cluster $CLUSTER (server + $AGENTS agent(s))"
 # Relax the kubelet disk-eviction thresholds: on a busy dev host (docker images +
