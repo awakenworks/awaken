@@ -228,15 +228,6 @@ fn append_version(
     tx: &rusqlite::Transaction<'_>,
     append: VersionAppend<'_>,
 ) -> Result<MemoryVersion, MemErr> {
-    let VersionAppend {
-        store,
-        memory_id,
-        operation,
-        path,
-        content,
-        created,
-        actor,
-    } = append;
     let ordinal = next_counter(
         tx,
         "memory_version",
@@ -244,12 +235,12 @@ fn append_version(
     )?;
     let version = MemoryVersion {
         id: format!("memver_{ordinal:016}"),
-        memory_id: memory_id.to_string(),
-        operation,
-        path: path.to_string(),
-        content: content.map(str::to_string),
-        created_unix_nanos: created as u128,
-        created_by: actor.cloned(),
+        memory_id: append.memory_id.to_string(),
+        operation: append.operation,
+        path: append.path.to_string(),
+        content: append.content.map(str::to_string),
+        created_unix_nanos: append.created as u128,
+        created_by: append.actor.cloned(),
         redacted_unix_nanos: None,
         redacted_by: None,
     };
@@ -260,15 +251,19 @@ fn append_version(
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL)"
         ),
         params![
-            store,
+            append.store,
             ordinal,
             version.id,
-            memory_id,
-            operation_name(operation),
-            path,
-            content.map(str::as_bytes),
-            created,
-            actor.map(serde_json::to_string).transpose().map_err(mem_err)?,
+            append.memory_id,
+            operation_name(append.operation),
+            append.path,
+            append.content.map(str::as_bytes),
+            append.created,
+            append
+                .actor
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(mem_err)?,
         ],
     )
     .map_err(mem_err)?;

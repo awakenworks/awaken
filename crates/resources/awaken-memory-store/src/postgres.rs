@@ -206,15 +206,6 @@ async fn append_version(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     append: VersionAppend<'_>,
 ) -> Result<(), MemErr> {
-    let VersionAppend {
-        store,
-        memory_id,
-        operation,
-        path,
-        content,
-        created,
-        actor,
-    } = append;
     let ordinal = next_counter(
         tx,
         "memory_version",
@@ -226,15 +217,21 @@ async fn append_version(
          (store_id, ordinal, id, memory_id, operation, path, content, created, redacted, created_by_json, redacted_by_json) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NULL, $9, NULL)"
     ))
-    .bind(store)
+    .bind(append.store)
     .bind(ordinal)
     .bind(format!("memver_{ordinal:016}"))
-    .bind(memory_id)
-    .bind(operation_name(operation))
-    .bind(path)
-    .bind(content.map(str::as_bytes))
-    .bind(created)
-    .bind(actor.map(serde_json::to_string).transpose().map_err(mem_err)?)
+    .bind(append.memory_id)
+    .bind(operation_name(append.operation))
+    .bind(append.path)
+    .bind(append.content.map(str::as_bytes))
+    .bind(append.created)
+    .bind(
+        append
+            .actor
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(mem_err)?,
+    )
     .execute(&mut **tx)
     .await
     .map_err(mem_err)?;
