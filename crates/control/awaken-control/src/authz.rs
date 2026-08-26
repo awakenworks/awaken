@@ -150,11 +150,12 @@ use credentials::{
 pub(crate) use managed_context::fixed_workspace_header_guard;
 use managed_context::{memory_actor, with_workspace_header};
 mod remote;
+use remote::{RemoteAuthenticationFailure, authenticate_off_event_loop};
 
 use bootstrap::bootstrap_admin_token;
 #[cfg(test)]
 use clock::civil_from_days;
-use clock::{now_rfc3339, now_unix};
+use clock::{canonical_timestamp_shape, now_rfc3339, now_unix};
 use hosted_route_profile::HostedRuntimeRouteDescriptor;
 pub use hosted_route_profile::{
     HostedRuntimePathMatch, HostedRuntimeRouteProfile, hosted_runtime_route_profile,
@@ -1415,11 +1416,20 @@ pub async fn cloud_management_guard(
     } else {
         bearer_token(req.headers())
     };
-    let authenticated = match authz.authenticate(presented) {
+    let authenticated = match authenticate_off_event_loop(authz.clone(), presented).await {
         Ok(authenticated) => authenticated,
-        Err(AuthReject::Expired) => return unauthorized("cloud access token is expired"),
-        Err(AuthReject::Revoked) => return unauthorized("cloud access token is revoked"),
-        Err(AuthReject::Invalid) => return unauthorized("invalid cloud access token"),
+        Err(RemoteAuthenticationFailure::Expired) => {
+            return unauthorized("cloud access token is expired");
+        }
+        Err(RemoteAuthenticationFailure::Revoked) => {
+            return unauthorized("cloud access token is revoked");
+        }
+        Err(RemoteAuthenticationFailure::Invalid) => {
+            return unauthorized("invalid cloud access token");
+        }
+        Err(RemoteAuthenticationFailure::Transport) => {
+            return unauthorized("cloud authentication transport failed");
+        }
     };
     if tunnel_route && !authenticated.is_managed_tunnel_workload() {
         return forbidden(
@@ -1685,19 +1695,6 @@ fn preset_role_ids() -> String {
         .map(|def| def.id.0.clone())
         .collect::<Vec<_>>()
         .join(", ")
-}
-
-/// Whether `value` has the contract's canonical RFC 3339 UTC shape
-/// (`YYYY-MM-DDTHH:MM:SSZ`), so lexical comparison is chronological. The mint
-/// engine additionally enforces `expires_at` strictly after `created_at`.
-fn canonical_timestamp_shape(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    bytes.len() == 20
-        && bytes[19] == b'Z'
-        && [4usize, 7].iter().all(|&i| bytes[i] == b'-')
-        && bytes[10] == b'T'
-        && [13usize, 16].iter().all(|&i| bytes[i] == b':')
-        && (0..19).all(|i| [4, 7, 10, 13, 16].contains(&i) || bytes[i].is_ascii_digit())
 }
 
 /// A fresh `tok_<hex>` row id from OS entropy (64 bits — collision-free at

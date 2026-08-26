@@ -10,6 +10,21 @@ use awaken_runtime_host::SharedHost;
 
 use crate::config;
 
+fn desktop_oauth_client(
+    config: awaken_iam_client::DesktopOAuthConfig,
+    cache: awaken_iam_client::CredentialCache,
+) -> Result<awaken_iam_client::DesktopOAuthClient, String> {
+    // reqwest's blocking client creates and tears down a private Tokio runtime
+    // while it is built. Construct it on a dedicated blocking thread so this
+    // synchronous IAM adapter is safe no matter whether composition is entered
+    // from a service runtime or a CLI command.
+    std::thread::spawn(move || {
+        awaken_iam_client::DesktopOAuthClient::new(config, cache).map_err(|error| error.to_string())
+    })
+    .join()
+    .map_err(|_| "desktop OAuth client construction panicked".to_owned())?
+}
+
 pub(crate) fn ensure_cloud_login<F>(
     config: &config::CloudIamConfig,
     cache: awaken_iam_client::CredentialCache,
@@ -24,7 +39,7 @@ where
     {
         return Ok(());
     }
-    let oauth = awaken_iam_client::DesktopOAuthClient::new(
+    let oauth = desktop_oauth_client(
         awaken_iam_client::DesktopOAuthConfig::new(
             config.issuer.clone(),
             config.oauth_client_id.clone(),
@@ -160,7 +175,7 @@ impl DesktopCloudLogin {
         config: &config::CloudIamConfig,
         cache: awaken_iam_client::CredentialCache,
     ) -> Result<Self, String> {
-        let oauth = awaken_iam_client::DesktopOAuthClient::new(
+        let oauth = desktop_oauth_client(
             awaken_iam_client::DesktopOAuthConfig::new(
                 config.issuer.clone(),
                 config.oauth_client_id.clone(),

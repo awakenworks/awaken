@@ -2,11 +2,14 @@
 
 use std::sync::Arc;
 
+use awaken_api_contract::ApiError;
 use axum::extract::{FromRef, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+
+use super::{Problem, req_id};
 
 /// Secret-free state of the one product-coordinated Cloud login operation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -55,26 +58,47 @@ where
     )
 }
 
-async fn get_cloud_login(State(handle): State<CloudLoginHandle>) -> Response {
+fn cloud_login_unavailable(headers: &HeaderMap) -> Response {
+    Problem(ApiError::new(
+        404,
+        "cloud_login_unavailable",
+        "Cloud login unavailable",
+        "this deployment does not expose the Cloud login operation",
+        req_id(headers),
+    ))
+    .into_response()
+}
+
+async fn get_cloud_login(State(handle): State<CloudLoginHandle>, headers: HeaderMap) -> Response {
     match handle.0 {
         Some(application) => Json(application.status().await).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => cloud_login_unavailable(&headers),
     }
 }
 
-async fn start_cloud_login(State(handle): State<CloudLoginHandle>) -> Response {
+async fn start_cloud_login(State(handle): State<CloudLoginHandle>, headers: HeaderMap) -> Response {
     match handle.0 {
         Some(application) => Json(application.start().await).into_response(),
-        None => StatusCode::NOT_FOUND.into_response(),
+        None => cloud_login_unavailable(&headers),
     }
 }
 
-async fn logout_cloud_login(State(handle): State<CloudLoginHandle>) -> Response {
+async fn logout_cloud_login(
+    State(handle): State<CloudLoginHandle>,
+    headers: HeaderMap,
+) -> Response {
     let Some(application) = handle.0 else {
-        return StatusCode::NOT_FOUND.into_response();
+        return cloud_login_unavailable(&headers);
     };
     match application.logout().await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
+        Err(_) => Problem(ApiError::new(
+            503,
+            "cloud_logout_failed",
+            "Cloud logout failed",
+            "the canonical Cloud credential owner could not complete logout",
+            req_id(&headers),
+        ))
+        .into_response(),
     }
 }
