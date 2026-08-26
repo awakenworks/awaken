@@ -102,7 +102,7 @@ if [ "${ADR71_REUSE_IMAGE:-0}" = "1" ]; then
   docker image inspect "$IMAGE" >/dev/null 2>&1 \
     || { err "ADR71_REUSE_IMAGE requires an existing $IMAGE"; exit 1; }
 else
-  docker build --load -q -t "$IMAGE" \
+  k3d_docker_build --load -q -t "$IMAGE" \
     --build-arg AUXILIARY_EXECUTABLE=awaken-control \
     -f "$DEPLOY_DIR/Dockerfile" "$DEPLOY_DIR" >/dev/null
 fi

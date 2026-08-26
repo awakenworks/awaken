@@ -38,6 +38,7 @@ import {
   waitForSessionEventReceipt,
   waitForValue,
 } from './harness.mjs';
+import { requireOrSkipBwrap } from './bwrap_capability.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const PORT = Number(process.env.E2E_PORT ?? 38341);
@@ -556,6 +557,9 @@ async function main() {
 if (process.env.AWAKEN_WORKER_MANAGED_MOUNT_NAMESPACE === '1') {
   main();
 } else {
+  if (!requireOrSkipBwrap()) {
+    process.exit(0);
+  }
   const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const targetDir = join(repositoryRoot, 'target');
   const result = spawnSync('bwrap', [

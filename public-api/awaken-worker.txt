@@ -83,7 +83,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_deployment_config(self, awaken_run
 pub fn awaken_worker::WorkerNodeBuilder::with_enclosing_sandbox_boundary(self, impl core::convert::Into<alloc::string::String>, awaken_provisioning_contract::sandbox::SandboxCapabilities) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_environment_checkpoint_store(self, alloc::sync::Arc<dyn awaken_provisioning_contract::sandbox::SandboxCheckpointStore>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_graceful_drain(self, core::time::Duration) -> Self
-pub fn awaken_worker::WorkerNodeBuilder::with_hand_executor_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::session_environment::HandExecutorFactory>) -> Self
+pub fn awaken_worker::WorkerNodeBuilder::with_hand_executor_factory(self, alloc::sync::Arc<dyn awaken_runtime_host::session_environment::session_hand::HandExecutorFactory>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_inference_materializer(self, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_manifest(self, awaken_worker_contract::WorkerManifest) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
@@ -99,7 +99,7 @@ pub fn awaken_worker::WorkerNodeBuilder::with_tool_gate(self, alloc::sync::Arc<d
 pub fn awaken_worker::WorkerNodeBuilder::with_web_search_provider_registry(self, awaken_ext_builtin_tools::web::WebSearchProviderRegistry) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::with_worker_local_credential_resolver(self, alloc::sync::Arc<dyn awaken_credential_contract::WorkerLocalCredentialResolver>) -> Self
 pub fn awaken_worker::WorkerNodeBuilder::without_admin_surface(self) -> Self
-pub fn awaken_worker::relay_hand_executor_factory() -> alloc::sync::Arc<dyn awaken_runtime_host::session_environment::HandExecutorFactory>
+pub fn awaken_worker::relay_hand_executor_factory() -> alloc::sync::Arc<dyn awaken_runtime_host::session_environment::session_hand::HandExecutorFactory>
 pub async fn awaken_worker::run_with_inference_and_credential_resolver<R>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, alloc::sync::Arc<R>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where R: awaken_credential_contract::CredentialMaterialResolver + awaken_credential_contract::WorkerLocalCredentialResolver + 'static
 pub async fn awaken_worker::run_with_inference_materializer(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>
 pub async fn awaken_worker::run_with_inference_materializer_until<F>(&str, alloc::sync::Arc<dyn awaken_runtime_contract::inference::InferenceExecutorMaterializer>, F) -> core::result::Result<(), alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>> where F: core::future::future::Future<Output = core::result::Result<awaken_worker::WorkerShutdown, alloc::boxed::Box<(dyn core::error::Error + core::marker::Send + core::marker::Sync)>>>

@@ -157,7 +157,7 @@ pub(crate) fn register_runtime_background_drain(
         "coordinator-runtime-background-drain",
         move |cancel| async move {
             cancel.cancelled().await;
-            while !host.drain_memory(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
+            while !host.drain_runtime(RUNTIME_BACKGROUND_DRAIN_SLICE).await {
                 tokio::task::yield_now().await;
             }
             Ok(())

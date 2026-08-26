@@ -55,8 +55,17 @@ function startAwaken(bin, port, configPath, extraEnv = {}) {
   // This is a process-lifecycle test, not a browser-launch test. Keeping the
   // product opener enabled can leave a desktop/browser descendant holding the
   // harness PTY after Awaken itself has shut down and make a passing run hang.
+  // This production-composition test authors its credential through the
+  // provider-connections boundary below.  Do not let a developer/CI runner's
+  // unrelated provider keys trip the product's intentional ambient-key guard.
+  const childEnv = Object.fromEntries(
+    Object.entries({ ...process.env, ...extraEnv }).filter(([name]) => {
+      const normalized = name.toUpperCase();
+      return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
+    }),
+  );
   const server = spawn(bin, automatedAllInOneArgs('--config', configPath, '--port', String(port)), {
-    env: { ...process.env, ...extraEnv },
+    env: childEnv,
     stdio: ['ignore', 'inherit', 'pipe'],
   });
   readline.createInterface({ input: server.stderr }).on('line', (line) => {

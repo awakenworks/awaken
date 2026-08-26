@@ -403,16 +403,12 @@ async fn revoke_worker_session_authority(lifecycle: &WorkerSupervisor) {
     // containers), and the bounded drain lets those futures release their
     // workspace handles before the directories are reaped below.
     lifecycle.host.interrupt_all_session_runs().await;
-    wait_for_in_flight(&lifecycle.host, std::time::Duration::from_secs(20)).await;
+    let _ = lifecycle
+        .host
+        .drain_runtime(std::time::Duration::from_secs(20))
+        .await;
     if let Err(error) = lifecycle.host.revoke_all_session_realizations().await {
         eprintln!("Session realization revocation remains incomplete: {error}");
-    }
-}
-
-pub(crate) async fn wait_for_in_flight(host: &SharedHost, grace: std::time::Duration) {
-    let deadline = tokio::time::Instant::now() + grace;
-    while host.pool_in_flight() > 0 && tokio::time::Instant::now() < deadline {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 }
 

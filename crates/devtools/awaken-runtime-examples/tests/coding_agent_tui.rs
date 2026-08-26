@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use awaken_ext_builtin_tools::HandToolContext;
 use awaken_runtime_examples::coding_agent::model::build_executor;
 use awaken_runtime_examples::coding_agent::{
     Approval, CodingSession, ScriptedCoder, build_runtime, coding_config, tui,
@@ -48,7 +49,11 @@ async fn tui_session_pieces_run_one_turn_without_a_terminal() {
     // The same assembly the example builds: scripted model → runtime → session
     // on a `coding_config` (the model ref the TUI passes through).
     let llm = Arc::new(ScriptedCoder::new(path.clone(), "TODO", "DONE"));
-    let session = CodingSession::new(build_runtime(llm), coding_config("scripted-model"));
+    let session = CodingSession::new_with_hand_context(
+        build_runtime(llm),
+        coding_config("scripted-model"),
+        HandToolContext::new(&dir),
+    );
 
     // Drive one turn, approving the mutating tool — the same `session.turn` call
     // the TUI issues on Enter, minus the terminal draw.

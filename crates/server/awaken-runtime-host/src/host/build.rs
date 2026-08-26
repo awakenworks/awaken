@@ -880,10 +880,22 @@ impl SharedHost {
         self
     }
 
-    /// Await in-flight background auxiliary work (Memory extraction and Compact
-    /// prefetch) up to `timeout` during shutdown. Returns `true` if all finished.
-    pub async fn drain_memory(&self, timeout: std::time::Duration) -> bool {
-        self.memory.drain(timeout).await
+    /// Stop local durable admission, await every already-claimed Run, then join
+    /// auxiliary work created by those Runs.  The ordering is significant: a
+    /// terminal Run may enqueue Memory extraction immediately before releasing
+    /// its pool capacity, so draining auxiliary work first can miss that task.
+    pub async fn drain_runtime(&self, timeout: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + timeout;
+        self.begin_pool_drain().await;
+        while self.pool_in_flight() != 0 {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            tokio::time::sleep(remaining.min(std::time::Duration::from_millis(5))).await;
+        }
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        !remaining.is_zero() && self.memory.drain(remaining).await
     }
 
     /// Replace the default authorization gate on every thread with `gate` (slice

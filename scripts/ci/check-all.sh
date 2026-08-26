@@ -45,8 +45,14 @@ esac
 failed=()   # labels of checks that failed
 repro=()    # standalone reproduce command, parallel to `failed`
 timing_file="${AWAKEN_TEST_TIMINGS_FILE:-target/test-timings/check-all-${requested_group}.tsv}"
-mkdir -p "$(dirname "$timing_file")"
-printf 'group\tcheck\tstatus\tduration_seconds\n' > "$timing_file"
+initialize_timing_file() {
+  mkdir -p "$(dirname "$timing_file")"
+  if [ ! -e "$timing_file" ]; then
+    printf 'group\tcheck\tstatus\tduration_seconds\n' > "$timing_file"
+  fi
+}
+rm -f "$timing_file"
+initialize_timing_file
 
 # run "<group>" "<label>" <command...> — runs the check; on failure records its label and
 # a reproduce command. Never aborts early, so one run surfaces every failure.
@@ -65,6 +71,9 @@ run() {
     status=passed
   fi
   duration=$((SECONDS - started))
+  # A substrate runner may rotate its Cargo target directory. Timing telemetry
+  # must never turn a completed release gate into an orchestration failure.
+  initialize_timing_file
   printf '%s\t%s\t%s\t%s\n' "$group" "$label" "$status" "$duration" >> "$timing_file"
 }
 

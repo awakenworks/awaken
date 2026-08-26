@@ -22,6 +22,21 @@ k3d_require_tools() {
   docker info >/dev/null 2>&1
 }
 
+# k3d_docker_build <docker build arguments...>
+#
+# Repository k3d scenarios build images on the host before importing them into
+# the cluster. Some CI and developer Docker bridges do not have working DNS,
+# even though the host does. Keep that environment concern out of individual
+# scenarios while preserving Docker's default network unless the caller
+# explicitly selects another one (for example, `host`).
+k3d_docker_build() {
+  if [[ -n "${AWAKEN_K3D_BUILD_NETWORK:-}" ]]; then
+    docker build --network "$AWAKEN_K3D_BUILD_NETWORK" "$@"
+  else
+    docker build "$@"
+  fi
+}
+
 # k3d_admit_or_exit <scenario-label> [required: 0|1]
 #
 # This is the single process-level admission policy for repository k3d tests.
@@ -223,8 +238,10 @@ k3d_harness_selftest() (
   # cluster mutation; H9 tools available -> continue in optional and strict mode;
   # H10 tools unavailable + optional mode -> successful explicit skip; H11 tools
   # unavailable + strict mode -> failure; H12 malformed strictness -> configuration
-  # failure. The scenario tests own network and topology effects.
-  local k3d_calls=() docker_saves=() docker_execs=()
+  # failure; H13 no build-network override -> Docker's default build network;
+  # H14 explicit override -> exactly one typed Docker build network option.
+  # The scenario tests own network and topology effects.
+  local k3d_calls=() docker_saves=() docker_execs=() docker_builds=()
   k3d() { k3d_calls+=("$*"); }
 
   k3d_validate_name "awaken-test-1"
@@ -297,6 +314,8 @@ k3d_harness_selftest() (
       return 0
     elif [[ "$1" = save ]]; then
       docker_saves+=("$*")
+    elif [[ "$1 $2" = "build --network" || "$1" = build ]]; then
+      docker_builds+=("$*")
     fi
   }
   kubectl() {
@@ -310,6 +329,12 @@ k3d_harness_selftest() (
   [[ "${docker_saves[*]}" = *"--platform $K3D_PLATFORM"* ]]
   [[ "${k3d_calls[0]}" = image\ import* ]]
   [[ "${docker_execs[-1]}" = "exec k3d-awaken-test-server-0 find /k3d/images -mindepth 1 -maxdepth 1 -type f -delete" ]]
+
+  unset AWAKEN_K3D_BUILD_NETWORK
+  k3d_docker_build --load -t fixture:latest .
+  [[ "${docker_builds[-1]}" = "build --load -t fixture:latest ." ]]
+  AWAKEN_K3D_BUILD_NETWORK=host k3d_docker_build --load -t fixture:latest .
+  [[ "${docker_builds[-1]}" = "build --network host --load -t fixture:latest ." ]]
 )
 
 if [[ "${BASH_SOURCE[0]}" = "$0" ]]; then

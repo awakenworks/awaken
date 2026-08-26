@@ -1878,7 +1878,7 @@ mod tests {
             "R2/R3/R4 E3,E6,E7 next wake schedules one matching writable binding"
         );
         assert!(
-            recovered_host.drain_memory(Duration::from_secs(10)).await,
+            recovered_host.drain_runtime(Duration::from_secs(10)).await,
             "R2/E3 recovery drained"
         );
         assert!(

@@ -117,7 +117,13 @@ kubectl -n kube-system rollout status deploy/local-path-provisioner --timeout=12
 
 log "running the k8s e2e test"
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_it -- --nocapture
-AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s --test k8s_e2e -- --nocapture
+# These scenarios deliberately share one small, offline cluster and exercise
+# retained PVC deletion. Running all of them concurrently turns local-path's
+# single-node cleanup queue into the subject under test and can leave Pods in
+# Terminating long enough to mask the Sandbox lifecycle contract. Keep the
+# product assertions strict, but serialize this substrate fixture.
+AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
+  --test k8s_e2e -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-sandbox-container --features k8s \
   --test k8s_policy_drift -- --nocapture --test-threads=1
 AWAKEN_K8S_E2E=1 cargo test -p awaken-runtime-host --features container-k8s --lib \

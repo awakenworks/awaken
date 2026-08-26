@@ -358,7 +358,7 @@ pub async fn awaken_runtime_host::SharedHost::discard_environment_snapshot_capac
 pub fn awaken_runtime_host::SharedHost::dispatch_completion_sink(&self) -> alloc::sync::Arc<dyn awaken_run_ingress::pool::CompletionSink>
 pub fn awaken_runtime_host::SharedHost::dispatch_owner(&self) -> &str
 pub fn awaken_runtime_host::SharedHost::dispatch_store(&self) -> core::result::Result<alloc::sync::Arc<awaken_run_ingress::any::AnyDispatchStore>, awaken_runtime_host::HostError>
-pub async fn awaken_runtime_host::SharedHost::drain_memory(&self, core::time::Duration) -> bool
+pub async fn awaken_runtime_host::SharedHost::drain_runtime(&self, core::time::Duration) -> bool
 pub fn awaken_runtime_host::SharedHost::ensure_dispatch_pool(&alloc::sync::Arc<Self>)
 pub fn awaken_runtime_host::SharedHost::environment_snapshot_capacity_shape(&self, &awaken_session_contract::baseline::EnvironmentSnapshot) -> awaken_provisioning_contract::spec::SandboxCapacityShapeId
 pub fn awaken_runtime_host::SharedHost::environment_warmup_limits(&self) -> (usize, usize)

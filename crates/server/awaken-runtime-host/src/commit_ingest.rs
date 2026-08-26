@@ -206,7 +206,7 @@ mod tests {
         rule: &str,
     ) {
         assert!(
-            host.drain_memory(std::time::Duration::from_secs(10)).await,
+            host.drain_runtime(std::time::Duration::from_secs(10)).await,
             "{rule}: Memory extraction did not drain"
         );
         let intent = host

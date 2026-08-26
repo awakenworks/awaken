@@ -431,7 +431,12 @@ async function main() {
     // | T2 | same command | yes | archive 200; terminal cleanup complete |
     // Constraints/invariant: only the owning Worker's exact idempotent Runtime
     // receipt closes terminal cleanup and unlocks reclamation.
-    let sawCleanupPending = false;
+    // T1 is an admissible intermediate state, not an observation requirement:
+    // the owning Worker may record the exact receipt between freezing the
+    // command and this caller observing the response. In that race the first
+    // response is already the valid T2 replay. Any observed 503 must still be
+    // the canonical missing-receipt state, and the receipt assertion below
+    // independently proves that a 200 never bypassed physical cleanup.
     const archive = await waitForValue(
       async () => {
         const response = await json(
@@ -444,7 +449,6 @@ async function main() {
             /remote Session terminal cleanup remains pending: Session terminal cleanup has no Runtime receipt/,
             'T1 exposes only the canonical missing-receipt state',
           );
-          sawCleanupPending = true;
         } else {
           assert.equal(response.status, 200, JSON.stringify(response.body));
         }
@@ -454,7 +458,6 @@ async function main() {
       'the owning Worker did not settle the exact terminal cleanup receipt',
       { timeoutMs: 45_000, pollMs: 200 },
     );
-    assert.equal(sawCleanupPending, true, 'T1 precedes the completed replay');
     assert.equal(archive.body.status, 'terminated', JSON.stringify(archive.body));
     const boundReceipt = await waitReceipt(directory, 'file', boundFile, { workspace: WS_A });
     assert.equal(boundReceipt.receipt.evidence.blob_deleted, true);

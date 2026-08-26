@@ -533,6 +533,28 @@ pub(super) async fn prepare_runtime_routers(
         None => host_builder,
     };
     let host = Arc::new(host_builder);
+    // Auxiliary runs are not ordinary service loops: they finish the durable
+    // intent already admitted by a Session commit.  Still, their task/span
+    // lifetime belongs to this process.  Join them after shutdown cancellation
+    // and before the process-level observability provider is flushed; otherwise
+    // an in-flight extraction can be aborted with a committed Memory effect but
+    // an orphaned `runtime.run` span.  The outer ServiceLifecycle deadline is
+    // the shutdown authority, so this local bound is deliberately longer than
+    // the process's normal ten-second drain window.
+    let background_host = host.clone();
+    process
+        .service_lifecycle
+        .spawn("runtime-background-drain", move |cancel| async move {
+            cancel.cancelled().await;
+            if background_host
+                .drain_runtime(std::time::Duration::from_secs(30))
+                .await
+            {
+                Ok(())
+            } else {
+                Err("runtime background work exceeded its drain deadline".into())
+            }
+        });
     let resource_reclaimer = Arc::new(
         awaken_resource_reclaimer::ResourceReclaimer::new(
             format!("awaken-resource-reclaimer:{}", std::process::id()),
