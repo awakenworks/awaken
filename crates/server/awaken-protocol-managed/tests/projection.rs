@@ -115,6 +115,11 @@ async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
     // then settles the exact application-owned activity epoch through the same
     // canonical API. Box the application future like the production supervisor.
     support::drive_retained_session_events(state, session_id).await;
+    // The first scan owns external-effect admission and deliberately returns
+    // Pending even when this synchronous fake has already committed terminal
+    // truth. The next supervisor scan observes that durable result, settles the
+    // exact wake epoch, and anchors the retained input.
+    support::drive_retained_session_events(state, session_id).await;
     let application = state.session_application();
     let session = Box::pin(application.session(session_id)).await.unwrap();
     for epoch in session.active_activity_epochs {
@@ -213,13 +218,30 @@ impl CommittedEvidence {
         self,
         thread_id: &str,
         run_id: RunId,
+        command: &awaken_session_contract::SessionUserRunCommand,
         outcome: StepOutcome,
     ) -> awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
         let terminal_state = outcome.state().clone();
-        // The recovery snapshot owns committed Run output only. Root User input
-        // is retained by the Session event batch and must never be fabricated by
-        // a Runtime fixture, otherwise provenance and idempotency are untestable.
-        let messages = outcome.new_messages;
+        // The Thread commit owns the exact input Message and its coordinate even
+        // though Managed reconstructs the public DTO from Session-root
+        // provenance. This keeps the fake faithful to production without using
+        // the transcript as the public payload authority.
+        let mut messages = vec![Message::new(
+            Id::session_event_input(thread_id, &command.operation_id),
+            Role::User,
+            command.content.clone(),
+        )];
+        let mut message_commit_cursors = vec![1];
+        if let Some(system) = &command.accompanying_system {
+            messages.push(Message::new(
+                Id::session_system(thread_id, &system.operation_id),
+                Role::System,
+                system.content.clone(),
+            ));
+            message_commit_cursors.push(1);
+        }
+        message_commit_cursors.extend(std::iter::repeat_n(3, outcome.new_messages.len()));
+        messages.extend(outcome.new_messages);
         let state = if matches!(self, Self::Compaction) {
             vec![
                 awaken_runtime_contract::compaction::RunCompactionMarker::command("other-run"),
@@ -239,7 +261,7 @@ impl CommittedEvidence {
             }],
             latest_run_id: Some(run_id),
             messages,
-            message_commit_cursors: Vec::new(),
+            message_commit_cursors,
             state,
             state_commit_cursors: if matches!(self, Self::Compaction) {
                 vec![3, 3]
@@ -432,6 +454,7 @@ impl SessionRuntime for ScriptFake {
         let command = durable
             .reservations
             .get(&delivery.run_id.0)
+            .cloned()
             .ok_or_else(|| RunError::internal("scripted activation has no reservation"))?;
         if command.session_id != delivery.session_id {
             return Err(RunError::bad_request(
@@ -448,6 +471,7 @@ impl SessionRuntime for ScriptFake {
                 snapshot: profile.snapshot(
                     &delivery.session_id,
                     delivery.run_id.clone(),
+                    &command,
                     outcome.clone(),
                 ),
                 lifecycle: profile.lifecycle(
@@ -650,6 +674,14 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     reconcile_published_run(&state, &id).await;
+    let persisted = state.session_application().session(&id).await.unwrap();
+    assert_eq!(
+        persisted.event_batches[0].events[0]
+            .projection_anchor
+            .map(|anchor| anchor.source_commit_cursor),
+        Some(1),
+        "R3/C1 the retained input owns the exact pre-opening commit anchor"
+    );
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
@@ -665,7 +697,7 @@ async fn a_rescheduled_run_projects_the_complete_thread_status_sequence() {
             "session.usage",
             "session.status_idle",
         ],
-        "R3/E1-E3"
+        "R3/E1-E3: {list}"
     );
     let primary = json_call(
         &app,

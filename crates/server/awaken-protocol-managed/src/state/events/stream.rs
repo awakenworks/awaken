@@ -2,6 +2,11 @@
 
 use super::*;
 
+#[cfg(feature = "test-support")]
+const LIVE_CHANNEL_CAPACITY: usize = 64;
+#[cfg(not(feature = "test-support"))]
+const LIVE_CHANNEL_CAPACITY: usize = 1024;
+
 impl ManagedState {
     pub(in crate::state) fn next_event_id(&self) -> String {
         format!("evt_{}", self.event_seq.fetch_add(1, Ordering::SeqCst))
@@ -13,7 +18,7 @@ impl ManagedState {
     fn live_sender(&self, session_id: &str) -> broadcast::Sender<Event> {
         let mut live = self.live.lock().unwrap();
         live.entry(session_id.to_string())
-            .or_insert_with(|| broadcast::channel(1024).0)
+            .or_insert_with(|| broadcast::channel(LIVE_CHANNEL_CAPACITY).0)
             .clone()
     }
 

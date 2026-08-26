@@ -131,33 +131,80 @@ pub(super) fn interval_close_cursor(
 /// Its opaque lifecycle cursor owns the public Running identity, while the
 /// source commit cursor owns canonical ordering.
 pub(super) fn interval_lifecycle_open_event<'a>(
+    session_id: &str,
     interval: &awaken_session_contract::SessionRuntimeInterval,
     prior_close: u64,
+    batches: &[awaken_session_contract::SessionEventBatch],
     lifecycle_events: &'a [RunLifecycleEvent],
 ) -> Option<&'a RunLifecycleEvent> {
-    interval
-        .observations
+    let owners = interval_owner_openings(interval.opened_revision, batches);
+    let candidates = lifecycle_events
         .iter()
-        .filter_map(|observation| {
-            lifecycle_events
-                .iter()
-                .filter(|event| {
+        .filter(|event| {
+            matches!(
+                event.kind,
+                RunLifecycleEventKind::Running
+                    | RunLifecycleEventKind::Resumed
+                    | RunLifecycleEventKind::Rescheduled
+            ) && if interval.observations.is_empty() {
+                owners.iter().any(|owner| &event.run_id == owner.run_id)
+            } else {
+                interval.observations.iter().any(|observation| {
                     event.thread_id == observation.thread_id
                         && event.run_id == observation.run_id
                         && event.source_commit_cursor > prior_close
                         && event.source_commit_cursor <= observation.source_commit_cursor
-                        && matches!(
-                            event.kind,
-                            RunLifecycleEventKind::Running
-                                | RunLifecycleEventKind::Resumed
-                                | RunLifecycleEventKind::Rescheduled
-                        )
                 })
-                .max_by(|left, right| {
-                    left.source_commit_cursor
-                        .cmp(&right.source_commit_cursor)
-                        .then_with(|| left.cursor.cmp(&right.cursor))
-                })
+            }
+        })
+        .collect::<Vec<_>>();
+    if let Some(observation) = interval
+        .observations
+        .iter()
+        .find(|observation| observation.activity_epoch == interval.activity_epoch)
+    {
+        return candidates
+            .into_iter()
+            .filter(|event| {
+                event.thread_id == observation.thread_id && event.run_id == observation.run_id
+            })
+            .max_by(lifecycle_opening_order);
+    }
+
+    if prior_close != 0 {
+        return candidates.into_iter().min_by(|left, right| {
+            left.source_commit_cursor
+                .cmp(&right.source_commit_cursor)
+                .then_with(|| left.cursor.cmp(&right.cursor))
+        });
+    }
+
+    if owners.is_empty() {
+        // Pre-cutover first intervals have no retained admission revision. Their
+        // latest matching reopen is the only safe boundary; choosing an older
+        // legacy Running would rewrite an already-issued prefix.
+        return candidates.into_iter().max_by(|left, right| {
+            left.source_commit_cursor
+                .cmp(&right.source_commit_cursor)
+                .then_with(|| left.cursor.cmp(&right.cursor))
+        });
+    }
+    owners
+        .into_iter()
+        .filter_map(|owner| {
+            let matching = candidates
+                .iter()
+                .copied()
+                .filter(|event| owner.matches(session_id, event));
+            match owner.anchor {
+                Some(IntervalOwnerAnchor::InputAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor >= anchor)
+                    .min_by(lifecycle_opening_order),
+                Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor <= anchor)
+                    .max_by(lifecycle_opening_order),
+                None => matching.min_by(lifecycle_opening_order),
+            }
         })
         .min_by(|left, right| {
             left.source_commit_cursor
@@ -166,10 +213,95 @@ pub(super) fn interval_lifecycle_open_event<'a>(
         })
 }
 
+#[derive(Clone, Copy)]
+struct IntervalOwnerOpening<'a> {
+    run_id: &'a awaken_agent_contract::agent::run::Id,
+    target: IntervalOwnerTarget<'a>,
+    anchor: Option<IntervalOwnerAnchor>,
+}
+
+impl IntervalOwnerOpening<'_> {
+    fn matches(&self, session_id: &str, event: &RunLifecycleEvent) -> bool {
+        &event.run_id == self.run_id
+            && match self.target {
+                IntervalOwnerTarget::Primary => event.thread_id.0 == session_id,
+                IntervalOwnerTarget::Child(thread_id) => event.thread_id == *thread_id,
+            }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum IntervalOwnerTarget<'a> {
+    Primary,
+    Child(&'a awaken_agent_contract::agent::thread::Id),
+}
+
+#[derive(Clone, Copy)]
+enum IntervalOwnerAnchor {
+    /// The retained User input is committed before or with its Run opening.
+    InputAt(u64),
+    /// A ToolReply projection anchor observes the resumed Run's complete reply
+    /// prefix, so its opening is the latest one no later than that fence.
+    ReplyTerminalAt(u64),
+}
+
+fn lifecycle_opening_order(
+    left: &&RunLifecycleEvent,
+    right: &&RunLifecycleEvent,
+) -> std::cmp::Ordering {
+    left.source_commit_cursor
+        .cmp(&right.source_commit_cursor)
+        .then_with(|| left.cursor.cmp(&right.cursor))
+}
+
+fn interval_owner_openings(
+    opened_revision: awaken_session_contract::SessionRevision,
+    batches: &[awaken_session_contract::SessionEventBatch],
+) -> Vec<IntervalOwnerOpening<'_>> {
+    let Some(owning_revision) = batches
+        .iter()
+        .filter(|batch| batch.admitted_revision <= opened_revision)
+        .map(|batch| batch.admitted_revision)
+        .max()
+    else {
+        return Vec::new();
+    };
+    batches
+        .iter()
+        .filter(|batch| batch.admitted_revision == owning_revision)
+        .flat_map(|batch| &batch.events)
+        .filter_map(|entry| match &entry.event {
+            SessionEventCommand::UserMessage { run_id, .. } => Some(IntervalOwnerOpening {
+                run_id,
+                target: IntervalOwnerTarget::Primary,
+                anchor: entry
+                    .projection_anchor
+                    .map(|anchor| IntervalOwnerAnchor::InputAt(anchor.source_commit_cursor)),
+            }),
+            SessionEventCommand::ToolReply { reply, .. } => Some(IntervalOwnerOpening {
+                run_id: &reply.expected_run_id,
+                target: match &reply.target {
+                    awaken_session_contract::SessionThreadTarget::Primary => {
+                        IntervalOwnerTarget::Primary
+                    }
+                    awaken_session_contract::SessionThreadTarget::Child(thread_id) => {
+                        IntervalOwnerTarget::Child(thread_id)
+                    }
+                },
+                anchor: entry.projection_anchor.map(|anchor| {
+                    IntervalOwnerAnchor::ReplyTerminalAt(anchor.source_commit_cursor)
+                }),
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Resolve the exact lifecycle event already proven to open a live Session
 /// interval. At the first-lineage cutover, a retained batch is still required
 /// so a cold replica never mistakes an older lifecycle for the new opening.
 pub(super) fn running_interval_lifecycle_open_event<'a>(
+    session_id: &str,
     interval: &awaken_session_contract::SessionRuntimeIntervalStart,
     prior_close: u64,
     batches: &[awaken_session_contract::SessionEventBatch],
@@ -183,6 +315,21 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
                 | RunLifecycleEventKind::Rescheduled
         )
     };
+    if let Some(observation) = interval
+        .observations
+        .iter()
+        .find(|observation| observation.activity_epoch == interval.activity_epoch)
+    {
+        return lifecycle_events
+            .iter()
+            .filter(is_opening)
+            .filter(|event| event.source_commit_cursor > prior_close)
+            .filter(|event| {
+                event.thread_id == observation.thread_id && event.run_id == observation.run_id
+            })
+            .filter(|event| event.source_commit_cursor <= observation.source_commit_cursor)
+            .max_by(lifecycle_opening_order);
+    }
     if prior_close != 0 {
         return lifecycle_events
             .iter()
@@ -194,30 +341,22 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
                     .then_with(|| left.cursor.cmp(&right.cursor))
             });
     }
-    let owning_revision = batches
-        .iter()
-        .filter(|batch| batch.admitted_revision <= interval.opened_revision)
-        .map(|batch| batch.admitted_revision)
-        .max()?;
-    batches
-        .iter()
-        .filter(|batch| batch.admitted_revision == owning_revision)
-        .flat_map(|batch| batch.events.iter())
-        .filter_map(|entry| match &entry.event {
-            SessionEventCommand::UserMessage { run_id, .. } => Some(run_id),
-            SessionEventCommand::ToolReply { reply, .. } => Some(&reply.expected_run_id),
-            _ => None,
-        })
-        .filter_map(|run_id| {
-            lifecycle_events
+    interval_owner_openings(interval.opened_revision, batches)
+        .into_iter()
+        .filter_map(|owner| {
+            let matching = lifecycle_events
                 .iter()
                 .filter(is_opening)
-                .filter(|event| event.run_id == *run_id)
-                .max_by(|left, right| {
-                    left.source_commit_cursor
-                        .cmp(&right.source_commit_cursor)
-                        .then_with(|| left.cursor.cmp(&right.cursor))
-                })
+                .filter(|event| owner.matches(session_id, event));
+            match owner.anchor {
+                Some(IntervalOwnerAnchor::InputAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor >= anchor)
+                    .min_by(lifecycle_opening_order),
+                Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor <= anchor)
+                    .max_by(lifecycle_opening_order),
+                None => matching.min_by(lifecycle_opening_order),
+            }
         })
         .min_by(|left, right| {
             left.source_commit_cursor

@@ -530,15 +530,23 @@ impl SessionRuntime for RehydrateFake {
                         ));
                     }
                 }
-                awaken_session_contract::CommittedOutcomeProjection::Errored(_) => {
-                    state.push(awaken_agent_contract::agent::state::Command::set(
-                        awaken_agent_contract::agent::state::Scope::Thread,
-                        awaken_agent_contract::agent::state::MergePolicy::Disjoint,
-                        format!("outcome/{outcome_id}/state"),
-                        serde_json::json!({"fixture": "errored"}),
-                    ));
-                }
+                awaken_session_contract::CommittedOutcomeProjection::Errored(_) => {}
             }
+            // A terminal Outcome commit always updates its owned state and
+            // removes the active pointer at the same commit coordinate. Keep
+            // the fake structurally faithful so projector tests cannot accept a
+            // partial transaction that no production coordinator emits.
+            state.push(awaken_agent_contract::agent::state::Command::set(
+                awaken_agent_contract::agent::state::Scope::Thread,
+                awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                format!("outcome/{outcome_id}/state"),
+                serde_json::json!({"fixture": "terminal"}),
+            ));
+            state.push(awaken_agent_contract::agent::state::Command::remove(
+                awaken_agent_contract::agent::state::Scope::Thread,
+                awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                "outcome/active",
+            ));
         }
         let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
         for event in lifecycle

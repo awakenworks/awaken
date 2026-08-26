@@ -1626,6 +1626,21 @@ impl SessionRuntime for OutcomeFake {
                 ));
                 state_commit_cursors.push(source_commit_cursor + u64::try_from(offset).unwrap());
             }
+            let terminal_cursor = source_commit_cursor
+                .saturating_add(u64::try_from(report.iterations.len()).unwrap());
+            state.push(awaken_agent_contract::agent::state::Command::set(
+                awaken_agent_contract::agent::state::Scope::Thread,
+                awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                format!("outcome/{outcome_id}/state"),
+                serde_json::json!({"fixture": "terminal"}),
+            ));
+            state_commit_cursors.push(terminal_cursor);
+            state.push(awaken_agent_contract::agent::state::Command::remove(
+                awaken_agent_contract::agent::state::Scope::Thread,
+                awaken_agent_contract::agent::state::MergePolicy::Disjoint,
+                "outcome/active",
+            ));
+            state_commit_cursors.push(terminal_cursor);
         }
         let store_cursor = state_commit_cursors.iter().copied().max().unwrap_or(0);
         Ok(Some(

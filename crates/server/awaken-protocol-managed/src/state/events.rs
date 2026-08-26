@@ -177,6 +177,17 @@ struct DurableOutcomeProjection {
     terminal: CommittedOutcomeProjection,
 }
 
+/// A terminal Outcome paired with the exact root-Thread commit coordinates
+/// that make each projected fact public. Keeping the evidence with the value
+/// prevents admission and canonical ordering from independently rediscovering
+/// (and potentially disagreeing about) the same anchors.
+struct AnchoredOutcomeProjection {
+    outcome_id: String,
+    terminal: CommittedOutcomeProjection,
+    terminal_commit_cursor: u64,
+    evaluation_commit_cursors: std::collections::HashMap<u32, u64>,
+}
+
 /// Borrowed committed evidence for one child transcript fold. This is only a
 /// call-bound view over the existing transcript/lifecycle authorities; it owns
 /// no cursor, cache, or projection state.
@@ -213,13 +224,74 @@ struct DelegationProjectionEvidence<'a> {
     usage: &'a std::collections::HashMap<String, Option<crate::types::SessionThreadUsage>>,
 }
 
-impl DurableOutcomeProjection {
+impl AnchoredOutcomeProjection {
     fn owns_failure_run(&self, run_id: &awaken_agent_contract::agent::run::Id) -> bool {
         matches!(
             &self.terminal,
             CommittedOutcomeProjection::Errored(failure)
                 if failure.source_run_id.as_ref() == Some(run_id)
         )
+    }
+}
+
+impl DurableOutcomeProjection {
+    /// Pair the terminal query with its exact Outcome-owned root commit. The
+    /// terminal state update and removal of the active pointer are emitted by
+    /// one commit, so their shared cursor is a typed terminal fence without
+    /// decoding extension-private JSON. A cancellation can synthesize its last
+    /// public `interrupted` cycle without a Grade; that cycle is ordered by the
+    /// terminal fence, while every ordinary cycle still requires its immutable
+    /// evaluation command.
+    fn anchor(
+        self,
+        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Option<AnchoredOutcomeProjection> {
+        let snapshot = snapshot?;
+        if snapshot.state.len() != snapshot.state_commit_cursors.len() {
+            return None;
+        }
+        let commands = snapshot
+            .state
+            .iter()
+            .zip(snapshot.state_commit_cursors.iter().copied())
+            .collect::<Vec<_>>();
+        let state_key = format!("outcome/{}/state", self.outcome_id);
+        let terminal_commit_cursor = commands
+            .iter()
+            .rev()
+            .find_map(|(command, cursor)| (command.key.0 == state_key).then_some(*cursor))?;
+        let has_terminal_pointer_removal = commands.iter().any(|(command, cursor)| {
+            command.key.0 == "outcome/active"
+                && matches!(
+                    command.action,
+                    awaken_agent_contract::agent::state::Action::Remove
+                )
+                && *cursor == terminal_commit_cursor
+        });
+        if !has_terminal_pointer_removal {
+            return None;
+        }
+
+        let mut evaluation_commit_cursors = std::collections::HashMap::new();
+        if let CommittedOutcomeProjection::Completed(report) = &self.terminal {
+            for (index, item) in report.iterations.iter().enumerate() {
+                let key = format!("outcome/{}/evaluation/{}", self.outcome_id, item.iteration);
+                let cursor = commands
+                    .iter()
+                    .find_map(|(command, cursor)| (command.key.0 == key).then_some(*cursor))
+                    .or_else(|| {
+                        (index + 1 == report.iterations.len() && item.result == "interrupted")
+                            .then_some(terminal_commit_cursor)
+                    })?;
+                evaluation_commit_cursors.insert(item.iteration, cursor);
+            }
+        }
+        Some(AnchoredOutcomeProjection {
+            outcome_id: self.outcome_id,
+            terminal: self.terminal,
+            terminal_commit_cursor,
+            evaluation_commit_cursors,
+        })
     }
 }
 
@@ -271,7 +343,7 @@ fn validate_durable_outcome_projection(
 /// idempotent without a cursor, receipt, or protocol-side registry.
 fn append_durable_outcome_projections(
     record: &mut SessionRecord,
-    projections: &[DurableOutcomeProjection],
+    projections: &[AnchoredOutcomeProjection],
 ) {
     let mut event_ids = record
         .events
