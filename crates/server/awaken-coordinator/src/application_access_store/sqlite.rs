@@ -32,6 +32,9 @@ impl SqliteApplicationAccessRepository {
         connection
             .busy_timeout(SQLITE_WRITE_WAIT)
             .map_err(unavailable)?;
+        connection
+            .execute_batch("PRAGMA journal_mode = WAL;")
+            .map_err(unavailable)?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NAMESPACE)
             .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?
             .run_bundle(
