@@ -423,13 +423,22 @@ async fn path_id_overrides_body_id_on_pool() {
 #[tokio::test]
 async fn archive_missing_credential_is_404() {
     let h = harness();
-    let (s, err) = call(&h.app, "POST", "/v1/config/credentials/ghost/archive", None).await;
+    let (s, err) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials/ghost/archive",
+        Some(json!({ "expected_version": 1 })),
+    )
+    .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
     assert_eq!(err["code"], "not_found");
 }
 
-/// archive (b): an existing credential → status Disabled + version bumped, and it now
-/// fails closed on materialization (a disabled source is `NotActive` → 409).
+/// Archive cause/effect decision table:
+/// A0 invalid zero expected version => 422 before lookup/mutation;
+/// A1 active source + stale expected version => 409, source stays active/current;
+/// A2 active source + exact expected version => disabled next revision, material
+/// reclaimed, and later materialization fails closed.
 #[tokio::test]
 async fn archive_disables_credential_and_bumps_version() {
     let h = harness();
@@ -448,11 +457,40 @@ async fn archive_disables_credential_and_bumps_version() {
     assert_eq!(before["status"], "active");
     assert_eq!(before["version"], 1);
 
+    let (s, invalid) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{cred}/archive"),
+        Some(json!({ "expected_version": 0 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(invalid["code"], "credential_invalid");
+
+    let (s, conflict) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{cred}/archive"),
+        Some(json!({ "expected_version": 2 })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT);
+    assert_eq!(conflict["code"], "credential_version_conflict");
+    let (_, unchanged) = call(
+        &h.app,
+        "GET",
+        &format!("/v1/config/credentials/{cred}"),
+        None,
+    )
+    .await;
+    assert_eq!(unchanged["status"], "active");
+    assert_eq!(unchanged["version"], 1);
+
     let (s, archived) = call(
         &h.app,
         "POST",
         &format!("/v1/config/credentials/{cred}/archive"),
-        None,
+        Some(json!({ "expected_version": 1 })),
     )
     .await;
     assert_eq!(s, StatusCode::OK);
@@ -572,6 +610,85 @@ async fn rotate_credential_replaces_material_without_leaking_and_rejects_stale_v
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "R4: {problem}");
 }
 
+/// Cause/effect graph: C1 create carries one descriptor whose exact target also
+/// freezes HTTP Basic usage; C2 material shape matches; C3 rotate supplies the
+/// current revision and the same material shape with changed subject/expiry;
+/// C4 no legacy provider_id is supplied. Effects: E1 the existing create route
+/// persists and returns the descriptor without material; E2 the existing CAS
+/// rotate route advances one revision without rewriting material; E3 exact read
+/// returns the new descriptor; E4 descriptor provider remains the sole provider
+/// authority rather than requiring a second compatibility field.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | D1 | T | T | - | T | E1+E4 |
+/// | D2 | T | T | T | T | E2+E3+E4 |
+#[tokio::test]
+async fn described_create_and_descriptor_only_rotation_use_existing_authority_routes() {
+    let h = harness();
+    let target = json!({
+        "target": {
+            "purpose": {"type": "repository_transport"},
+            "audience": "https://github.com/git"
+        },
+        "usage": {"type": "http_basic_auth"}
+    });
+    let descriptor = json!({
+        "provider": "github",
+        "material": {
+            "kind": "structured",
+            "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            "fields": ["password", "username"]
+        },
+        "targets": [target],
+        "subject": "installation-1",
+        "expires_at_unix_ms": 4_102_444_800_000_u64
+    });
+    let password = ["github", "described", "token"].join("-");
+    let (status, created) = call(
+        &h.app,
+        "POST",
+        "/v1/config/credentials",
+        Some(json!({
+            "workspace_id": "ws",
+            "kind": "vault",
+            "material": {
+                "type_id": awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                "fields": {"username": "x-access-token", "password": &password}
+            },
+            "descriptor": descriptor
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "D1: {created}");
+    assert_eq!(created["descriptor"]["provider"], "github", "D1/E1");
+    assert!(created.get("provider_id").is_none(), "D1/E4");
+    assert!(!created.to_string().contains(&password), "D1/E1");
+
+    let id = created["id"].as_str().expect("D1 source id");
+    let mut rotated_descriptor = created["descriptor"].clone();
+    rotated_descriptor["subject"] = json!("installation-2");
+    rotated_descriptor["expires_at_unix_ms"] = json!(4_102_444_900_000_u64);
+    let (status, rotated) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/config/credentials/{id}/rotate"),
+        Some(json!({
+            "expected_version": 1,
+            "descriptor": rotated_descriptor
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "D2: {rotated}");
+    assert_eq!(rotated["version"], 2, "D2/E2");
+    assert_eq!(rotated["descriptor"]["subject"], "installation-2", "D2/E2");
+
+    let (status, read) = call(&h.app, "GET", &format!("/v1/config/credentials/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK, "D2: {read}");
+    assert_eq!(read["descriptor"], rotated["descriptor"], "D2/E3");
+    assert!(read.get("provider_id").is_none(), "D2/E4");
+}
+
 // ---------------------------------------------------------------------------
 // post_credential: secret-in / secret-free-out
 // ---------------------------------------------------------------------------
@@ -639,7 +756,7 @@ async fn post_credential_is_201_and_never_echoes_the_secret() {
 async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
     let h = harness();
     assert!(
-        EnterCredentialRequest::hosted_vault(
+        EnterCredentialRequest::compat_hosted_vault(
             "workspace-a".into(),
             "domain-pack/provider".into(),
             "oauth-operation".into(),
@@ -655,7 +772,7 @@ async fn hosted_credential_operation_is_idempotent_exact_and_secret_free() {
         "H0"
     );
     let request = serde_json::to_value(
-        EnterCredentialRequest::hosted_vault(
+        EnterCredentialRequest::compat_hosted_vault(
             "workspace-a".into(),
             "domain-pack/provider".into(),
             "credential-resource:create:42".into(),

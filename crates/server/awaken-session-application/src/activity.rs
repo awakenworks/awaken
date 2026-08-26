@@ -611,10 +611,10 @@ impl SessionApplication {
                 // Older rows may have settled before exact observation
                 // provenance existed. Keep that replay a no-op and never attach
                 // its late boundary to a successor interval.
-                if !session.active_activity_epochs.contains(&expected_epoch)
-                    && !(session.active_activity_epochs.is_empty()
+                if !(session.active_activity_epochs.contains(&expected_epoch)
+                    || (session.active_activity_epochs.is_empty()
                         && session.execution == SessionExecutionState::Running
-                        && session.activity_epoch == expected_epoch)
+                        && session.activity_epoch == expected_epoch))
                 {
                     return Ok(session);
                 }

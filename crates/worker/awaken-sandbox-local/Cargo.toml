@@ -27,6 +27,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["process", "rt", "sync", "io-util"] }
 tempfile = "3"
 tar = "0.4"
+url.workspace = true
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "io-util"] }

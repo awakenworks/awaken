@@ -31,7 +31,7 @@ mod executable_models;
 mod reference_stores;
 pub use credential_selection::{
     CredentialCandidateSet, CredentialSelectionContext, can_consume, credential_can_supply,
-    credential_candidates, derive_vendor_pool,
+    credential_candidates, credential_is_executable_supply, derive_vendor_pool,
 };
 pub use executable_models::{
     ExecutableModelOption, ExecutableModelReadiness, ExecutorModelCapability,
@@ -1211,6 +1211,7 @@ mod tests {
             id: CredentialSourceId(id.into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some("anthropic".into()),
             protocol_endpoint_id: None,
             env_key: None,

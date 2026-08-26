@@ -18,7 +18,7 @@ pub fn can_consume(
     offering_endpoint_id: Option<&str>,
     source: &CredentialSource,
 ) -> bool {
-    if source.is_claude_code_setup_token() {
+    if source.descriptor.is_some() || source.is_claude_code_setup_token() {
         return false;
     }
     source
@@ -38,13 +38,37 @@ pub fn credential_can_supply(
     source: &CredentialSource,
 ) -> bool {
     if source.is_claude_code_setup_token() {
-        return offering_provider_id == "anthropic"
+        return source.descriptor.is_none()
+            && offering_provider_id == "anthropic"
             && backend_ref == "acp:claude"
             && source
                 .authorization_scope()
                 .authorizes("anthropic", offering_endpoint_id);
     }
     can_consume(offering_provider_id, offering_endpoint_id, source)
+}
+
+/// Whether this persisted source is executable now and compatible with one
+/// exact provider/backend demand. This is the sole lifecycle + positive-source-
+/// revision + material-origin + provider-compatibility predicate used by
+/// selection and readiness views; callers may add Workspace or
+/// consumer-specific constraints but must not reconstruct these gates.
+#[must_use]
+pub fn credential_is_executable_supply(
+    offering_provider_id: &str,
+    offering_endpoint_id: Option<&str>,
+    backend_ref: &str,
+    source: &CredentialSource,
+) -> bool {
+    source.status == CredentialStatus::Active
+        && source.version > 0
+        && source.is_executable_origin()
+        && credential_can_supply(
+            offering_provider_id,
+            offering_endpoint_id,
+            backend_ref,
+            source,
+        )
 }
 
 /// Derive the default, non-persisted vendor pool for one Workspace and
@@ -61,9 +85,7 @@ pub fn derive_vendor_pool(
         .iter()
         .filter(|source| {
             source.workspace_id == workspace_id
-                && source.status == CredentialStatus::Active
-                && source.is_executable_origin()
-                && credential_can_supply(
+                && credential_is_executable_supply(
                     offering_provider_id,
                     offering_endpoint_id,
                     backend_ref,
@@ -231,7 +253,9 @@ mod tests {
 
     // Cause/effect decision table for D5 default vendor-pool derivation:
     // R1 same Workspace + Active persisted material + matching provider -> member;
-    // R2 wrong Workspace/provider, inactive, or legacy Env -> excluded;
+    // R2 wrong Workspace/provider, inactive/nonpositive revision, legacy Env,
+    // or a described source whose Provider/A2A target compiler is intentionally
+    // unsupported -> excluded;
     // R3 Claude setup token + acp:claude -> eligible and ordered before API key;
     // R4 Claude setup token + native/other ACP -> excluded.
     #[test]
@@ -245,6 +269,7 @@ mod tests {
             id: awaken_credential_contract::CredentialSourceId(id.into()),
             workspace_id: workspace.into(),
             kind,
+            descriptor: None,
             provider_id: Some(provider.into()),
             protocol_endpoint_id: None,
             env_key: env_key.map(str::to_string),
@@ -255,6 +280,41 @@ mod tests {
             status,
             version: 1,
         };
+        let mut described = source(
+            "cred:described",
+            "ws",
+            "anthropic",
+            CredentialKind::Vault,
+            CredentialStatus::Active,
+            Some(awaken_credential_vault::CLAUDE_CODE_SETUP_TOKEN_ENV),
+        );
+        described.provider_id = None;
+        described.descriptor = Some(awaken_credential_contract::CredentialDescriptor::new(
+            "anthropic",
+            awaken_credential_contract::CredentialMaterialDescriptor::structured(
+                awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                ["password", "username"],
+            ),
+            [awaken_credential_contract::CredentialTargetContract::new(
+                awaken_credential_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+                    awaken_credential_contract::repository_transport_audience(
+                        "https://github.com/awaken/example.git",
+                    )
+                    .expect("described target"),
+                ),
+                awaken_credential_contract::CredentialUsage::HttpBasicAuth,
+            )],
+        ));
+        let mut zero_revision = source(
+            "cred:zero",
+            "ws",
+            "anthropic",
+            CredentialKind::Vault,
+            CredentialStatus::Active,
+            None,
+        );
+        zero_revision.version = 0;
         let sources = vec![
             source(
                 "cred:api",
@@ -304,6 +364,8 @@ mod tests {
                 CredentialStatus::Active,
                 None,
             ),
+            zero_revision,
+            described,
         ];
         let ids = |backend_ref| {
             derive_vendor_pool("ws", "anthropic", None, backend_ref, &sources)
@@ -330,6 +392,7 @@ mod tests {
             id: awaken_credential_contract::CredentialSourceId("credential".into()),
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some(provider.into()),
             protocol_endpoint_id: endpoint.map(str::to_string),
             env_key: None,
@@ -389,6 +452,7 @@ mod tests {
             id: awaken_credential_contract::CredentialSourceId("cred:z-provider".into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some("anthropic".into()),
             protocol_endpoint_id: None,
             env_key: None,

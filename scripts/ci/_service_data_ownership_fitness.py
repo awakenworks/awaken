@@ -92,6 +92,7 @@ CREDENTIAL_INFERENCE_SOURCE = (
 CONTROL_MODEL_PUBLICATION = "crates/control/awaken-control/src/model_publication.rs"
 CREDENTIAL_REFRESH_SOURCES = (
     "crates/server/awaken-credential-materializer/src/lib.rs",
+    "crates/server/awaken-credential-materializer/src/refresh.rs",
     "crates/server/awaken-credential-materializer/src/oauth_refresh.rs",
 )
 

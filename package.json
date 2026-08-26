@@ -12,7 +12,6 @@
     "test": "pnpm --filter @awaken/managed-session-projection test && pnpm -C web test && pnpm test:e2e-process-policy"
   },
   "devDependencies": {
-    "json-schema-to-typescript": "15.0.4",
-    "quicktype": "26.0.0"
+    "json-schema-to-typescript": "15.0.4"
   }
 }

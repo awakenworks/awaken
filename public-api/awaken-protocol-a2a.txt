@@ -357,7 +357,7 @@ pub awaken_protocol_a2a::TaskState::Working
 impl awaken_protocol_a2a::types::TaskState
 pub fn awaken_protocol_a2a::types::TaskState::is_terminal(self) -> bool
 pub struct awaken_protocol_a2a::A2aSecurityProfile
-pub awaken_protocol_a2a::A2aSecurityProfile::accepted_headers: alloc::vec::Vec<awaken_credential_contract::CredentialUsage>
+pub awaken_protocol_a2a::A2aSecurityProfile::accepted_headers: alloc::vec::Vec<awaken_credential_contract::usage::CredentialUsage>
 pub awaken_protocol_a2a::A2aSecurityProfile::anonymous: bool
 pub awaken_protocol_a2a::A2aSecurityProfile::fingerprint: alloc::string::String
 pub struct awaken_protocol_a2a::AgentCard

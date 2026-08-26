@@ -32,7 +32,9 @@ function SourceRow({ source, probeModel }: { source: CredentialSource; probeMode
     },
   });
   const archive = useMutation({
-    mutationFn: () => api.post(ws(`/v1/config/credentials/${source.id}/archive`)),
+    mutationFn: () => api.post(ws(`/v1/config/credentials/${source.id}/archive`), {
+      expected_version: source.version,
+    }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["credentials"] });
       toast.ok(app.t("Credential archived.", "凭证已归档。"));

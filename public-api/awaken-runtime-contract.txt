@@ -35,6 +35,7 @@ pub use awaken_runtime_contract::CredentialRealizationPlan
 pub use awaken_runtime_contract::CredentialRealizationProfile
 pub use awaken_runtime_contract::CredentialRef
 pub use awaken_runtime_contract::CredentialRefreshAccess
+pub use awaken_runtime_contract::CredentialTarget
 pub use awaken_runtime_contract::CredentialUsage
 pub use awaken_runtime_contract::CredentialUsageError
 pub use awaken_runtime_contract::DelegationLimits

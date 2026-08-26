@@ -51,8 +51,6 @@ pub fn push_repo_bundle(
     let repo_arg = repo.to_string_lossy().into_owned();
     run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg])
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
-    run_git(Some(&repo), &["remote", "set-url", "origin", remote_url])
-        .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let root = IsolatedRoot::new(temp.path());
     push_repo_to_at(&root, "repo", remote_url, credential)
         .map_err(|error| pc::SandboxError::new(error.to_string()))
@@ -61,7 +59,7 @@ pub fn push_repo_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git_stdout;
+    use crate::git_transport::git_stdout;
 
     fn git(cwd: &std::path::Path, args: &[&str]) {
         let status = std::process::Command::new("git")

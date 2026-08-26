@@ -207,7 +207,7 @@ pub fn awaken_runtime_host::ManagedHost::install_agent_coordination_application(
 pub fn awaken_runtime_host::ManagedHost::install_dispatch_session_runtime(self) -> Self
 pub fn awaken_runtime_host::ManagedHost::new(alloc::sync::Arc<awaken_runtime_host::SharedHost>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_credential_materializer(self, awaken_credential_materializer::PinnedCredentialMaterializer) -> Self
-pub fn awaken_runtime_host::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::CredentialRefreshFactory>) -> Self
+pub fn awaken_runtime_host::ManagedHost::with_credential_refresh_factory(self, alloc::sync::Arc<dyn awaken_credential_materializer::refresh::CredentialRefreshFactory>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_mcp_attachment_realizer(self, alloc::sync::Arc<dyn awaken_session_contract::session::McpAttachmentRealizer>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_repository_binding_verifier(self, alloc::sync::Arc<dyn awaken_resource_contract::execution::RepositoryBindingVerifier<awaken_run_ingress_contract::dispatch::RunClaim>>) -> Self
 pub fn awaken_runtime_host::ManagedHost::with_resource_validator(self, alloc::sync::Arc<dyn awaken_resource_contract::registry::LiveResourceBindingVerifier>) -> Self

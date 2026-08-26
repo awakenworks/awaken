@@ -463,6 +463,7 @@ impl PendingManagedCredentialMutation {
         let immutable_source_axes_match = before_source.id == self.after_source.id
             && before_source.workspace_id == self.after_source.workspace_id
             && before_source.kind == self.after_source.kind
+            && before_source.descriptor == self.after_source.descriptor
             && before_source.provider_id == self.after_source.provider_id
             && before_source.protocol_endpoint_id == self.after_source.protocol_endpoint_id
             && before_source.env_key == self.after_source.env_key
@@ -1028,6 +1029,9 @@ pub enum CredentialRetirement {
 pub struct CredentialMaterialPatch {
     pub primary: Option<awaken_agent_contract::RedactedString>,
     pub auxiliary: BTreeMap<String, Option<awaken_agent_contract::RedactedString>>,
+    /// Optional replacement metadata published by the same exact-revision CAS.
+    /// Omission preserves the current descriptor, including for legacy rows.
+    pub descriptor: Option<awaken_credential_contract::CredentialDescriptor>,
 }
 
 /// The credential-source store port. Secret-free rows only. Pools are stored here
@@ -1044,8 +1048,12 @@ pub trait CredentialRepo: Send + Sync {
     async fn get(&self, id: &CredentialSourceId) -> Result<CredentialSource, CredentialError>;
     async fn list(&self, workspace_id: &str) -> Result<Vec<CredentialSource>, CredentialError>;
 
-    async fn begin_mutation(&self, intent: CredentialMutationIntent)
-    -> Result<(), CredentialError>;
+    /// Claim this source-keyed WAL intent. `true` means this caller inserted
+    /// the intent; `false` means an identical durable intent already existed.
+    async fn begin_mutation(
+        &self,
+        intent: CredentialMutationIntent,
+    ) -> Result<bool, CredentialError>;
     /// Atomically compare/publish the source while retaining the WAL intent until
     /// material cleanup completes.
     async fn apply_mutation(
@@ -1142,14 +1150,16 @@ impl CredentialRepo for InMemoryCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<bool, CredentialError> {
         let mut state = self.state.lock().expect("credential repo");
         match state.intents.entry(intent.after.id.0.clone()) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(intent);
-                Ok(())
+                Ok(true)
             }
-            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &intent => Ok(()),
+            std::collections::hash_map::Entry::Occupied(entry) if entry.get() == &intent => {
+                Ok(false)
+            }
             std::collections::hash_map::Entry::Occupied(_) => Err(
                 CredentialError::MutationConflict("another credential mutation is pending".into()),
             ),

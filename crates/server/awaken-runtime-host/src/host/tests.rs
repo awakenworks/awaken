@@ -494,6 +494,10 @@ fn effective_repository(
                     holder.clone(),
                     awaken_runtime_contract::ModelExposurePolicy::Forbidden,
                 ),
+            )
+            .with_target(
+                awaken_session_contract::repository_transport_credential_target(url)
+                    .expect("HTTPS Repository target"),
             ),
             selected_plaintext_holder: holder,
         })
@@ -566,6 +570,37 @@ impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim>
                 ))?,
             },
         )
+    }
+}
+
+struct GatewayThenDirectRepositoryTransport(AtomicUsize);
+
+#[async_trait::async_trait]
+impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim>
+    for GatewayThenDirectRepositoryTransport
+{
+    async fn verify(
+        &self,
+        _workspace_id: &str,
+        _repository_id: &str,
+        _config_version: awaken_resource_contract::ConfigVersion,
+        _claim: Option<&awaken_run_ingress::RunClaim>,
+    ) -> Result<
+        awaken_resource_contract::RepositoryTransport,
+        awaken_resource_contract::RepositoryBindingVerifierError,
+    > {
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(
+                awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                    remote_url: "https://gateway.internal/git/repo-platform".into(),
+                    capability: awaken_resource_contract::RepositoryGatewayCapability::new(
+                        "repository-capability-initial",
+                    )?,
+                },
+            )
+        } else {
+            Ok(awaken_resource_contract::RepositoryTransport::Direct)
+        }
     }
 }
 
@@ -7349,7 +7384,7 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
                     "repo-1",
                     "https://github.com/awaken/example.git",
                     "/workspace/repo",
-                    Some(credential.id.0),
+                    Some(credential.id.0.clone()),
                 ),
                 model: None,
                 runtime: None,
@@ -7369,13 +7404,15 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
         "repo staged for cloning"
     );
 
+    let activations = host.thread_repository_activations("t-gh");
+    let activation = &activations[0];
     assert_eq!(
-        host.thread_repository_activations("t-gh")[0]
-            .credential
+        activation
+            .credential_pin
             .as_ref()
-            .map(|credential| credential.expose_password().to_string()),
-        Some("ghp_secret_token".to_string()),
-        "the exact Resource realization still receives its credential"
+            .map(|pin| pin.access.credential.id.as_str()),
+        Some(credential.id.0.as_str()),
+        "the activation retains only the exact secret-free source pin"
     );
     assert!(
         host.active_mcp_projections("t-gh").is_empty(),
@@ -7383,24 +7420,26 @@ async fn a_github_repository_resource_does_not_create_a_parallel_mcp_projection(
     );
 }
 
-/// Worker startup cause graph: C1 dispatch Session Runtime installed from
-/// the Managed adapter -> C2 outer builder released -> C3 validator present ->
-/// C4 exact credential materializer present -> E1 Repository material stages.
-/// Missing C4 rejects through the same runtime rather than a fallback path.
+/// Worker Repository effect cause graph: C1 dispatch Session Runtime installed
+/// from the Managed adapter -> C2 exact secret-free pin stages -> C3 the Host
+/// owns the canonical materializer at the Git edge -> E1 one operation-scoped
+/// HTTP Basic value reaches the realizer. Missing C3 preserves E2 (the pin may
+/// stage) but terminates before Git without another credential path.
 ///
-/// | Rule | C1 | C2 | C3 | C4 | Result |
+/// | Rule | C1 | C2 | C3 | Stage result | Git effect |
 /// |---|---|---|---|---|---|
-/// | D1 | T | T | T | T | exact material staged |
-/// | D2 | T | T | T | F | reject, no activation |
+/// | D1 | T | T | T | secret-free activation | exact transient material |
+/// | D2 | T | T | F | same secret-free activation | reject, zero realizer calls |
 #[tokio::test]
 async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
     for (rule, install_credentials) in [("D1", true), ("D2", false)] {
-        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let host = SharedHost::new(Arc::new(OkModel), "stub");
+        let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
         let source = awaken_credential_vault::repo::enter_credential(
             awaken_credential_vault::CredentialCreateParams {
-                workspace_id: host.local_workspace().into(),
+                workspace_id: workspace.clone(),
                 kind: awaken_credential_vault::CredentialKind::Vault,
                 provider_id: Some("git".into()),
                 env_key: None,
@@ -7412,9 +7451,16 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         )
         .await
         .expect("author dispatch Repository credential");
+        let materializer =
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets);
+        let host = Arc::new(if install_credentials {
+            host.with_credential_materializer(materializer.clone())
+        } else {
+            host
+        });
         let managed = managed_with_resource_source(host.clone());
         let managed = if install_credentials {
-            managed.with_credentials(credentials, secrets)
+            managed.with_credential_materializer(materializer)
         } else {
             managed
         };
@@ -7433,30 +7479,38 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         let result = host
             .install_dispatched_resources(&thread, &manifest, None)
             .await;
+        result.unwrap_or_else(|error| panic!("{rule}: {error}"));
+        assert_eq!(
+            host.thread_repository_activations(&thread).len(),
+            1,
+            "{rule}"
+        );
+        assert!(
+            host.thread_repository_activations(&thread)[0]
+                .credential_pin
+                .is_some(),
+            "{rule}: staging retains only the exact pin"
+        );
+        let realizer = RecordingRepositoryRealizer::default();
+        let effect = host.realize_thread_repositories(&thread, &realizer).await;
         if install_credentials {
-            result.unwrap_or_else(|error| panic!("{rule}: {error}"));
+            effect.unwrap_or_else(|error| panic!("{rule}: {error}"));
             assert_eq!(
-                host.thread_repository_activations(&thread).len(),
-                1,
-                "{rule}"
-            );
-            assert_eq!(
-                host.thread_repository_activations(&thread)[0]
-                    .credential
-                    .as_ref()
-                    .map(|material| material.expose_password()),
-                Some("dispatch-repository-secret"),
+                *realizer.0.lock().unwrap(),
+                vec!["dispatch-repository-secret".to_owned()],
                 "{rule}"
             );
         } else {
-            let error = result.expect_err("D2 must reject").to_string();
+            let error = effect
+                .expect_err("D2 must reject at the Git edge")
+                .to_string();
             assert!(
-                error.contains("configured credential vault"),
+                error.contains("configured credential materializer"),
                 "{rule}: {error}"
             );
             assert!(
-                host.thread_repository_activations(&thread).is_empty(),
-                "{rule}"
+                realizer.0.lock().unwrap().is_empty(),
+                "{rule}: no Git realizer call after materialization failure"
             );
         }
     }
@@ -7466,10 +7520,12 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 ///
 /// | Rule | dispatch claim | verifier transport | local materializer | Effect |
 /// |---|---|---|---|---|
-/// | P1 | exact | Gateway mediated | absent | stage rewritten URL + short capability |
+/// | P1 | exact | Gateway mediated | absent | stage rewritten URL + secret-free pin |
 /// | P2 | exact | Direct | any | reject; never fall back to Worker plaintext |
-/// | P3 | absent Coordinator staging | Direct | absent | stage secret-free plan without opening material |
+/// | P3 | absent Coordinator staging | Direct | absent | reject; never erase the Platform pin into anonymous Git |
 /// | P4 | exact, delayed use | Gateway mediated again | absent | refresh capability at Git operation edge |
+/// | P5 | exact, tampered source or target before use | Gateway mediated | absent | reject before verifier/I/O |
+/// | P6 | exact, delayed use | changes to Direct | any | reject; zero direct fallback |
 #[tokio::test]
 async fn platform_repository_credentials_are_gateway_mediated_without_fallback() {
     fn platform_resources() -> awaken_session_contract::ResolvedSessionResources {
@@ -7520,26 +7576,71 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     host.install_dispatched_resources("platform-mediated", &manifest, Some(&claim))
         .await
         .expect("P1 Gateway mediation needs no Worker materializer");
-    let activation = &host.thread_repository_activations("platform-mediated")[0];
+    let activations = host.thread_repository_activations("platform-mediated");
+    let activation = &activations[0];
     assert_eq!(
         activation.plan.remote_url, "https://gateway.internal/git/repo-platform",
         "P1"
     );
     assert_eq!(
         activation
-            .credential
+            .credential_pin
             .as_ref()
-            .map(|credential| credential.expose_password()),
-        Some("repository-capability-1"),
-        "P1"
+            .map(|pin| pin.access.credential.id.as_str()),
+        Some("credential-platform"),
+        "P1 retains the secret-free pin, never the staged capability"
     );
+    let resources = host.thread_resources_snapshot("platform-mediated");
+    let mut wrong_target = activation.clone();
+    wrong_target
+        .credential_pin
+        .as_mut()
+        .expect("P5 protected activation")
+        .access
+        .target = Some(
+        awaken_session_contract::repository_transport_credential_target(
+            "https://gitlab.example.test/awaken/example.git",
+        )
+        .expect("P5 alternate HTTPS target"),
+    );
+    let invalid_realizer = RecordingRepositoryRealizer::default();
+    let invalid = host
+        .realize_repository_activation(
+            "platform-mediated",
+            &wrong_target,
+            &resources.binding_checks,
+            &invalid_realizer,
+        )
+        .await
+        .expect_err("P5 target mismatch rejects before Gateway refresh");
+    assert!(invalid.message.contains("another HTTPS origin"), "P5");
+    assert_eq!(sequenced.0.load(Ordering::SeqCst), 1, "P5");
+    assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
+
+    let mut wrong_source = activation.clone();
+    wrong_source
+        .credential_pin
+        .as_mut()
+        .expect("P5 protected activation")
+        .access
+        .credential
+        .id = "another-source".into();
+    let invalid_source = host
+        .realize_repository_activation(
+            "platform-mediated",
+            &wrong_source,
+            &resources.binding_checks,
+            &invalid_realizer,
+        )
+        .await
+        .expect_err("P5 source mismatch rejects against the authored binding");
     assert!(
-        activation
-            .credential
-            .as_ref()
-            .is_some_and(|credential| credential.is_gateway_capability()),
-        "P1 preserves the admitted Gateway transport at the target boundary"
+        invalid_source.message.contains("selects another source"),
+        "P5"
     );
+    assert_eq!(sequenced.0.load(Ordering::SeqCst), 1, "P5");
+    assert!(invalid_realizer.0.lock().unwrap().is_empty(), "P5");
+
     let realizer = RecordingRepositoryRealizer::default();
     host.realize_thread_repositories("platform-mediated", &realizer)
         .await
@@ -7550,6 +7651,33 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         vec!["repository-capability-2".to_owned()],
         "P4 never reuses the capability staged before package or Sandbox preparation"
     );
+
+    let downgrade_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let downgrade = Arc::new(GatewayThenDirectRepositoryTransport(AtomicUsize::new(0)));
+    let _downgrade_runtime = crate::ManagedHost::new(downgrade_host.clone())
+        .with_repository_binding_verifier(downgrade.clone())
+        .install_dispatch_session_runtime();
+    let downgrade_manifest = awaken_session_contract::SessionResourceManifest::new(
+        downgrade_host.local_workspace(),
+        platform_resources(),
+    );
+    downgrade_host
+        .install_dispatched_resources("platform-downgrade", &downgrade_manifest, Some(&claim))
+        .await
+        .expect("P6 initial Gateway route stages");
+    let downgrade_realizer = RecordingRepositoryRealizer::default();
+    let downgrade_error = downgrade_host
+        .realize_thread_repositories("platform-downgrade", &downgrade_realizer)
+        .await
+        .expect_err("P6 refreshed Direct transport must not fall back");
+    assert!(
+        downgrade_error
+            .message
+            .contains("cannot fall back to direct credentials"),
+        "P6"
+    );
+    assert_eq!(downgrade.0.load(Ordering::SeqCst), 2, "P6");
+    assert!(downgrade_realizer.0.lock().unwrap().is_empty(), "P6");
 
     let direct_host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let _direct_runtime = crate::ManagedHost::new(direct_host.clone())
@@ -7573,29 +7701,36 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
         "P2"
     );
 
-    direct_host
+    let coordinator_denied = direct_host
         .install_dispatched_resources("platform-coordinator-stage", &direct_manifest, None)
         .await
-        .expect("P3 Coordinator staging remains secret-free");
+        .expect_err("P3 Coordinator staging cannot erase a Platform credential pin");
     assert!(
-        direct_host.thread_repository_activations("platform-coordinator-stage")[0]
-            .credential
-            .is_none(),
+        coordinator_denied
+            .message
+            .contains("requires Gateway mediation"),
+        "P3"
+    );
+    assert!(
+        direct_host
+            .thread_repository_activations("platform-coordinator-stage")
+            .is_empty(),
         "P3"
     );
 }
 
 /// Repository realization cause graph:
 /// C1 binding/pin cardinality exact -> C2 source id/usage exact -> C3 holder
-/// allowed and model exposure forbidden -> C4 Worker holder exact -> C5 source
-/// revision active in the exact Workspace -> E1 ephemeral material staged.
-/// Anonymous input bypasses C2-C5; the first failed cause
-/// terminates without another credential or holder selection.
+/// allowed and model exposure forbidden -> C4 Worker holder exact -> C5 Git
+/// effect opens the pinned active revision in the exact Workspace -> E1 one
+/// ephemeral operation material reaches the realizer. C1-C4 reject at staging;
+/// C5 rejects at each effect edge. Anonymous input bypasses C2-C5; the first
+/// failed cause terminates without another credential or holder selection.
 ///
 /// | Rule | Credential | C1 | C2 | C3 | C4 | C5 | Result |
 /// |---|---|---|---|---|---|---|---|
 /// | H1 | absent | T | - | - | - | - | anonymous |
-/// | H2 | present | T | T | T | T | T | exact material |
+/// | H2 | present | T | T | T | T | T | secret-free stage, exact effect material |
 /// | H3 | present | F | - | - | - | - | reject missing pin |
 /// | H4 | present | T | F | - | - | - | reject source mismatch |
 /// | H5 | present | T | T | F | - | - | reject usage mismatch |
@@ -7603,10 +7738,11 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
 /// | H7 | present | T | T | F | - | - | reject unauthorized holder |
 /// | H8 | present | T | T | F | - | - | reject virtual exposure |
 /// | H9 | present | T | T | T | F | - | reject unsupported holder |
-/// | H10 | present | T | T | T | T | F | reject stale revision |
-/// | H11 | present | T | T | T | T | F | reject inactive source |
-/// | H12 | present | T | T | T | T | F | reject cross-Workspace source |
-/// | H13 | present | T | T | T | T | scalar | reject material kind |
+/// | H10 | present | T | T | T | T | F | stage pin, reject stale revision at effect |
+/// | H11 | present | T | T | T | T | F | stage pin, reject inactive source at effect |
+/// | H12 | present | T | T | T | T | F | stage pin, reject cross-Workspace at effect |
+/// | H13 | present | T | T | T | T | scalar | stage pin, reject material kind at effect |
+/// | H14 | present | T | T | T | T | active then disabled | first effect only; retry rejects |
 #[tokio::test]
 async fn repository_credential_realization_follows_the_decision_table() {
     use awaken_session_contract::{SessionInit, SessionRuntime};
@@ -7701,7 +7837,8 @@ async fn repository_credential_realization_follows_the_decision_table() {
     ];
 
     for rule in rules {
-        let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+        let host = SharedHost::new(Arc::new(OkModel), "stub");
+        let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
         let mut source = awaken_credential_vault::repo::enter_credential(
@@ -7709,7 +7846,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
                 workspace_id: if matches!(rule.case, Case::CrossWorkspace) {
                     "another-workspace".into()
                 } else {
-                    host.local_workspace().into()
+                    workspace.clone()
                 },
                 kind: awaken_credential_vault::CredentialKind::Vault,
                 provider_id: Some("git".into()),
@@ -7735,8 +7872,13 @@ async fn repository_credential_realization_follows_the_decision_table() {
             .await
             .expect("disable exact Repository credential");
         }
+        let materializer = awaken_credential_materializer::PinnedCredentialMaterializer::new(
+            credentials.clone(),
+            secrets,
+        );
+        let host = Arc::new(host.with_credential_materializer(materializer.clone()));
         let managed =
-            managed_with_resource_source(host.clone()).with_credentials(credentials, secrets);
+            managed_with_resource_source(host.clone()).with_credential_materializer(materializer);
         let binding = (!matches!(rule.case, Case::Anonymous)).then(|| source.id.0.clone());
         let resources = effective_repository(
             "repo-1",
@@ -7827,22 +7969,54 @@ async fn repository_credential_realization_follows_the_decision_table() {
                 },
             )
             .await;
-        match rule.expected_error {
-            None => {
-                result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
-                let staged = host.thread_repository_activations(&thread);
-                assert_eq!(staged.len(), 1, "{}", rule.id);
-                assert_eq!(
-                    staged[0].credential.is_some(),
-                    matches!(rule.case, Case::Exact),
-                    "{}",
-                    rule.id
-                );
+        let rejects_at_effect = matches!(
+            rule.case,
+            Case::StaleRevision | Case::InactiveSource | Case::CrossWorkspace | Case::WrongMaterial
+        );
+        if rule.expected_error.is_none() || rejects_at_effect {
+            result.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
+            let staged = host.thread_repository_activations(&thread);
+            assert_eq!(staged.len(), 1, "{}", rule.id);
+            assert_eq!(
+                staged[0].credential_pin.is_some(),
+                !matches!(rule.case, Case::Anonymous),
+                "{}",
+                rule.id
+            );
+            let realizer = RecordingRepositoryRealizer::default();
+            let effect = host.realize_thread_repositories(&thread, &realizer).await;
+            match rule.expected_error {
+                None => {
+                    effect.unwrap_or_else(|error| panic!("{}: {error}", rule.id));
+                    assert_eq!(realizer.0.lock().unwrap().len(), 1, "{}", rule.id);
+                    if matches!(rule.case, Case::Exact) {
+                        source.status = awaken_credential_vault::CredentialStatus::Disabled;
+                        awaken_credential_vault::repo::CredentialRepo::put(
+                            credentials.as_ref(),
+                            source.clone(),
+                        )
+                        .await
+                        .expect("H14 disable the exact source between Git effects");
+                        let retry = host
+                            .realize_thread_repositories(&thread, &realizer)
+                            .await
+                            .expect_err("H14 second Git effect revalidates liveness");
+                        assert!(
+                            retry.message.contains("credential material unavailable"),
+                            "H14"
+                        );
+                        assert_eq!(realizer.0.lock().unwrap().len(), 1, "H14");
+                    }
+                }
+                Some(fragment) => {
+                    let error = effect.expect_err("effect row must reject").to_string();
+                    assert!(error.contains(fragment), "{}: {error}", rule.id);
+                    assert!(realizer.0.lock().unwrap().is_empty(), "{}", rule.id);
+                }
             }
-            Some(fragment) => {
-                let error = result.expect_err("decision row must reject").to_string();
-                assert!(error.contains(fragment), "{}: {error}", rule.id);
-            }
+        } else if let Some(fragment) = rule.expected_error {
+            let error = result.expect_err("decision row must reject").to_string();
+            assert!(error.contains(fragment), "{}: {error}", rule.id);
         }
     }
 }
@@ -7884,7 +8058,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
                     "repo-1",
                     "https://github.com/awaken/example.git",
                     "/workspace/repo",
-                    Some(credential.id.0),
+                    Some(credential.id.0.clone()),
                 ),
                 model: None,
                 runtime: None,
@@ -7897,13 +8071,16 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .await
         .unwrap();
 
-    let clone_password = |h: &SharedHost| {
+    let clone_credential_id = |h: &SharedHost| {
         h.thread_repository_activations("t-rot")[0]
-            .credential
+            .credential_pin
             .as_ref()
-            .map(|t| t.expose_password().to_string())
+            .map(|pin| pin.access.credential.id.clone())
     };
-    assert_eq!(clone_password(&host).as_deref(), Some("ghp_old"));
+    assert_eq!(
+        clone_credential_id(&host).as_deref(),
+        Some(credential.id.0.as_str())
+    );
 
     let next_credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
@@ -7923,7 +8100,7 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         "repo-1",
         "https://github.com/awaken/example.git",
         "/workspace/repo",
-        Some(next_credential.id.0),
+        Some(next_credential.id.0.clone()),
     );
 
     // The Managed adapter stores the supplied credential in the Vault and publishes a
@@ -7934,9 +8111,9 @@ async fn rotating_a_github_repository_credential_re_keys_only_the_clone() {
         .unwrap();
 
     assert_eq!(
-        clone_password(&host).as_deref(),
-        Some("ghp_new"),
-        "clone credential rotated"
+        clone_credential_id(&host).as_deref(),
+        Some(next_credential.id.0.as_str()),
+        "clone credential pin rotated without retaining either secret"
     );
     assert!(host.active_mcp_projections("t-rot").is_empty());
 }
@@ -11086,6 +11263,35 @@ async fn terminal_quiescence_never_materializes_a_cold_environment() {
     );
 }
 
+async fn settle_cancelled_dispatch_rows(
+    dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
+    expected_rows: usize,
+    worker: &'static str,
+) -> Vec<RunId> {
+    use awaken_run_ingress::{DispatchOutcome, DispatchQueue as _};
+
+    loop {
+        let rows = dispatch.list_dispatches().await.unwrap();
+        if rows.len() == expected_rows && rows.iter().all(|row| row.cancellation_requested) {
+            let mut settled = Vec::with_capacity(rows.len());
+            for row in rows {
+                let claimed = dispatch
+                    .claim_run(&row.run_id, worker, 30_000, 1, &Default::default())
+                    .await
+                    .unwrap()
+                    .expect("cancelled dispatch remains claimable for exact settlement");
+                dispatch
+                    .settle(&row.run_id, claimed.lease.epoch, DispatchOutcome::Done, &[])
+                    .await
+                    .unwrap();
+                settled.push(row.run_id);
+            }
+            return settled;
+        }
+        tokio::task::yield_now().await;
+    }
+}
+
 #[tokio::test]
 async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichment() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
@@ -11095,12 +11301,14 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
     // Cause/effect graph: C1 the Session has no resident Runtime or recoverable
     // current publication; C2 an ephemeral runtime authority owns a parent-affined
     // child row; C3 deployment.durable is false; C4 terminal quiescence starts.
-    // E1 the authority-backed queue cancellation fence is recorded; E2 the logical
-    // child Thread is frozen into cleanup; E3 no Environment is built. Decision
-    // table: R1(C1+C2+C3+C4)->E1+E2+E3. The durable store case is exercised by the
-    // terminal cleanup integration tests, while the sibling cold-empty test owns
-    // !C2. This rule prevents persistence mode from masquerading as dispatch
-    // authority ownership.
+    // C5 the child Worker observes the cancellation bit and settles its exact
+    // epoch. E1 the authority-backed queue cancellation fence precedes settlement;
+    // E2 the logical child Thread is frozen into cleanup after its row disappears;
+    // E3 no Environment is built; E4 quiescence returns only after settlement.
+    // Decision table: R1(C1+C2+C3+C4+C5)->E1+E2+E3+E4. The durable store case is
+    // exercised by the terminal cleanup integration tests, while the sibling
+    // cold-empty test owns !C2. This rule prevents persistence mode from
+    // masquerading as dispatch authority ownership.
     let host = SharedHost::new(Arc::new(OkModel), "stub");
     assert!(!host.deployment.durable, "R1/C3");
     let dispatch = host
@@ -11118,15 +11326,21 @@ async fn terminal_quiescence_fences_ephemeral_children_before_cold_link_enrichme
         )
         .await
         .expect("R1 durable child admission");
+    let worker = tokio::spawn(settle_cancelled_dispatch_rows(
+        dispatch.clone(),
+        1,
+        "ephemeral-terminal-worker",
+    ));
     let snapshot = host
         .quiesce_terminal_delegations(&parent.0)
         .await
-        .expect("R1 terminal fence does not require a current publication");
+        .expect("R1 terminal fence waits for exact child settlement");
+    let settled = worker.await.unwrap();
 
     assert_eq!(snapshot.coordinated_thread_ids, vec![child], "R1/E2");
+    assert_eq!(settled, vec![child_run], "R1/E1+E4");
     let rows = dispatch.list_dispatches().await.expect("R1 inspect fence");
-    assert_eq!(rows.len(), 1);
-    assert!(rows[0].cancellation_requested, "R1/E1");
+    assert!(rows.is_empty(), "R1/E4");
     assert!(
         host.session_slots
             .read(&parent.0, |slot| slot.runtime.is_none()
@@ -11152,8 +11366,7 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
     // | Rule | topology | cancellation | settlement | Effect |
     // | Q1 | coordinator-only | requested | pending | E1 + E2 |
     // | Q2 | coordinator-only | requested | exact Done | E3 + E4 |
-    use awaken_run_ingress::{DispatchOutcome, DispatchQueue, RunDispatch};
-    use std::sync::atomic::AtomicBool;
+    use awaken_run_ingress::{DispatchQueue, RunDispatch};
 
     let dispatch = Arc::new(
         awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
@@ -11179,39 +11392,17 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
             .await
             .expect("Q1 active dispatch");
     }
-    let remotely_settled = Arc::new(AtomicBool::new(false));
-    let remote = {
-        let dispatch = dispatch.clone();
-        let remotely_settled = remotely_settled.clone();
-        tokio::spawn(async move {
-            loop {
-                let rows = dispatch.list_dispatches().await.unwrap();
-                if rows.len() == 2 && rows.iter().all(|row| row.cancellation_requested) {
-                    for row in rows {
-                        let claimed = dispatch
-                            .claim_run(&row.run_id, "remote-worker", 30_000, 1, &Default::default())
-                            .await
-                            .unwrap()
-                            .expect("Q2 remote cancellation claim");
-                        dispatch
-                            .settle(&row.run_id, claimed.lease.epoch, DispatchOutcome::Done, &[])
-                            .await
-                            .unwrap();
-                    }
-                    remotely_settled.store(true, Ordering::SeqCst);
-                    break;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-    };
+    let remote = tokio::spawn(settle_cancelled_dispatch_rows(
+        dispatch.clone(),
+        2,
+        "remote-worker",
+    ));
 
     let snapshot = host
         .quiesce_terminal_delegations(&parent.0)
         .await
         .expect("Q2 remote settlement proves quiescence");
-    remote.await.unwrap();
-    assert!(remotely_settled.load(Ordering::SeqCst), "Q1/E1");
+    assert_eq!(remote.await.unwrap().len(), 2, "Q1/E1");
     assert_eq!(snapshot.coordinated_thread_ids, vec![child], "Q2/E3");
     assert!(
         dispatch.list_dispatches().await.unwrap().is_empty(),

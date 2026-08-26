@@ -46,7 +46,9 @@ impl pc::RepositoryRealizer for SessionEnvironment {
             Self::Workdir(sandbox) => {
                 pc::RepositoryRealizer::publish_repository(sandbox.as_ref(), plan, credential).await
             }
-            Self::Namespace { sandbox, .. } => sandbox.push_repo(&plan.mount_path, credential),
+            Self::Namespace { sandbox, .. } => {
+                sandbox.push_repo(&plan.mount_path, &plan.remote_url, credential)
+            }
             Self::Container { sandbox, .. } => {
                 container_repositories::push(
                     sandbox.as_ref(),

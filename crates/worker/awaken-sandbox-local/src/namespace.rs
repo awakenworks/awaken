@@ -21,10 +21,11 @@ use tokio::process::Command as TokioCommand;
 
 use std::sync::Arc;
 
-use crate::provider::{materialize_read_only_tree_at, resolve_source, restrict_to_owner, verify};
+use crate::provider::{resolve_source, restrict_to_owner, verify};
+use crate::read_only_tree::materialize_read_only_tree_at;
 use crate::{
     DiscoveredSkillFile, IsolatedRoot, content_fingerprint, jailed_at, list_files_at,
-    provision_repo_at, push_repo_at, scan_skill_dir_at,
+    provision_repo_at, push_repo_to_at, scan_skill_dir_at,
 };
 
 fn err(e: impl ToString) -> pc::SandboxError {
@@ -902,11 +903,13 @@ impl NamespaceSandbox {
     pub fn push_repo(
         &self,
         logical: &str,
+        remote_url: &str,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
     ) -> Result<bool, pc::SandboxError> {
-        push_repo_at(
+        push_repo_to_at(
             &self.workspace_root(),
             workspace_relative(logical),
+            remote_url,
             credential,
         )
         .map_err(err)

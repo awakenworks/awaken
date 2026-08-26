@@ -116,35 +116,35 @@ impl ManagedState {
                 ));
                 prior_close = close;
             }
-            if let Some(interval) = persisted.running_interval.as_ref() {
-                if let Some(opening) = running_interval_lifecycle_open_event(
+            if let Some(interval) = persisted.running_interval.as_ref()
+                && let Some(opening) = running_interval_lifecycle_open_event(
                     interval,
                     prior_close,
                     &persisted.event_batches,
                     lifecycle_events,
-                ) {
-                    for lifecycle in lifecycle_events.iter().filter(|event| {
-                        event.source_commit_cursor >= opening.source_commit_cursor
-                            && event.cursor != opening.cursor
-                    }) {
-                        replaced_ids.insert(managed_multiagent_event_id(
-                            &record.session.id,
-                            &record.session.id,
-                            "aggregate-status-running",
-                            ManagedMultiagentEventProvenance::Lifecycle {
-                                cursor: lifecycle.cursor.0,
-                            },
-                        ));
-                    }
+                )
+            {
+                for lifecycle in lifecycle_events.iter().filter(|event| {
+                    event.source_commit_cursor >= opening.source_commit_cursor
+                        && event.cursor != opening.cursor
+                }) {
                     replaced_ids.insert(managed_multiagent_event_id(
                         &record.session.id,
                         &record.session.id,
                         "aggregate-status-running",
-                        ManagedMultiagentEventProvenance::RuntimeInterval {
-                            interval_id: &interval.interval_id,
+                        ManagedMultiagentEventProvenance::Lifecycle {
+                            cursor: lifecycle.cursor.0,
                         },
                     ));
                 }
+                replaced_ids.insert(managed_multiagent_event_id(
+                    &record.session.id,
+                    &record.session.id,
+                    "aggregate-status-running",
+                    ManagedMultiagentEventProvenance::RuntimeInterval {
+                        interval_id: &interval.interval_id,
+                    },
+                ));
             }
             record
                 .events
@@ -585,7 +585,7 @@ impl ManagedState {
                         awaken_runtime_contract::tool_batch::ToolBatch::operation_id_for_step(
                             &awaken_agent_contract::agent::run::Id(run_id.clone()),
                             *step,
-                            &identity.call_id,
+                            identity.call_id,
                         ),
                     );
                 }

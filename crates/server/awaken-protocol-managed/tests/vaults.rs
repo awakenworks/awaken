@@ -1946,7 +1946,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     // | R3 | no | yes | yes | reject before the issuer and attach nothing |
     // | R4 | yes | source-only | no | reject a cross-Workspace material binding before opening |
     // | R5 | yes | yes | no | reject a holder outside the exact policy before opening |
-    // | R6 | yes | yes | Platform holder | return the exact reference without opening or issuing an envelope |
+    // | R6 | legacy undescribed | yes | caller-selected target | reject before opening or issuing an envelope |
     //
     // Holder/target integrity is cryptographically represented by the payload
     // fingerprint returned by the issuer; the contract admission decision table
@@ -1988,21 +1988,47 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         awaken_credential_contract::PlaintextBoundary::Platform,
         "awaken.platform.egress-gateway",
     );
-    let platform_access = state
+    let platform_usage = awaken_credential_contract::CredentialUsage::HttpEffect {
+        fields: std::collections::BTreeMap::from([(
+            "token".into(),
+            std::collections::BTreeSet::from([
+                awaken_credential_contract::HttpEffectPlacement::Header {
+                    name: "authorization".into(),
+                },
+            ]),
+        )]),
+    };
+    let platform_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        &source_workspace,
+        &"https://mcp.example.com/sse",
+        &platform_usage,
+    );
+    let platform_error = state
         .credential_access_for_source(
             &source_id,
             &source_workspace,
-            usage.clone(),
-            awaken_credential_contract::CredentialExecutionPolicy::exact(
-                platform_holder.clone(),
-                awaken_credential_contract::ModelExposurePolicy::Forbidden,
-            ),
-            &platform_holder,
-            &binding,
+            awaken_session_application::SessionCredentialAccessRequest {
+                target: awaken_credential_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::HttpEffect,
+                    "https://mcp.example.com/sse",
+                ),
+                usage: platform_usage,
+                policy: awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    platform_holder.clone(),
+                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                ),
+                selected_holder: platform_holder,
+                binding: platform_binding,
+            },
         )
         .await
-        .expect("R6 Platform holder keeps a secret-free reference");
-    assert!(platform_access.envelope.is_none(), "R6");
+        .expect_err("R6 legacy source cannot be rebound to an HTTP-effect target");
+    assert!(
+        platform_error
+            .to_string()
+            .contains("legacy undescribed credentials cannot be rebound"),
+        "R6"
+    );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1, "R6");
 
     let cross_workspace_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(

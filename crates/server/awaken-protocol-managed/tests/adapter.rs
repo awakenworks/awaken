@@ -1612,7 +1612,7 @@ impl SessionRuntime for OutcomeFake {
             return Ok(None);
         }
         let mut reports = reports.iter().collect::<Vec<_>>();
-        reports.sort_by(|(left, _), (right, _)| left.cmp(right));
+        reports.sort_by_key(|(left, _)| *left);
         let thread_version = u64::try_from(reports.len()).unwrap();
         let mut state = Vec::new();
         let mut state_commit_cursors = Vec::new();

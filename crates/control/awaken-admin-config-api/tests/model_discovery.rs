@@ -966,6 +966,131 @@ async fn existing_credential_connection_reuses_the_source_without_creating_a_dup
     );
 }
 
+/// Existing-credential Provider admission cause/effect graph: C1 an active
+/// legacy Provider API credential matches the requested provider; C2 an active
+/// described HTTP-effect credential carries the same provider metadata; C3 an
+/// active legacy Env row carries provider metadata but has no executable
+/// material origin; C4 the connection/readiness paths use the canonical
+/// executable Provider-supply predicate.
+/// Effects: E1 legacy connection remains admissible (covered above); E2 the
+/// described and Env sources are rejected before discovery/materialization; E3
+/// neither contributes Connected/Ready status or an active-credential count.
+///
+/// | Rule | C1 | C2 | C3 | C4 | Effect |
+/// |---|---|---|---|---|---|
+/// | X1 | T | F | F | T | E1 |
+/// | X2 | F | T | F | T | E2+E3 |
+/// | X3 | F | F | T | T | E2+E3 |
+#[tokio::test]
+async fn non_provider_credentials_cannot_drive_connection_or_readiness() {
+    let harness = harness();
+    let (status, entered) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/credentials",
+        json!({
+            "workspace_id": "workspace-a",
+            "kind": "vault",
+            "secret": "extension-only-secret", // awaken-allow: secret -- inert fixture
+            "descriptor": {
+                "provider": "anthropic",
+                "material": {
+                    "kind": "secret",
+                    "type_id": awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE
+                },
+                "targets": [{
+                    "target": {
+                        "purpose": {"type": "http_effect"},
+                        "audience": "https://connector.example.test/invoke"
+                    },
+                    "usage": {
+                        "type": "http_effect",
+                        "fields": {
+                            "token": [{"type": "header", "name": "authorization"}]
+                        }
+                    }
+                }]
+            }
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "X2 fixture: {entered}");
+
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "idempotency_key": "described-existing-command",
+            "workspace_id": "workspace-a",
+            "provider_id": "anthropic",
+            "display_name": "Anthropic",
+            "dialect": "anthropic_messages",
+            "credential_source_id": entered["id"]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "X2/E2: {problem}");
+    assert_eq!(problem["code"], "no_credential", "X2/E2");
+    assert!(harness.discovery.calls.lock().unwrap().is_empty(), "X2/E2");
+
+    let env_id = awaken_credential_contract::CredentialSourceId("cred:legacy-env".into());
+    harness
+        .credentials
+        .put(CredentialSource {
+            id: env_id.clone(),
+            workspace_id: "workspace-a".into(),
+            kind: awaken_credential_vault::CredentialKind::Env,
+            descriptor: None,
+            provider_id: Some("anthropic".into()),
+            protocol_endpoint_id: None,
+            env_key: Some("ANTHROPIC_API_KEY".into()),
+            material_ref: None,
+            auxiliary_material_refs: Default::default(),
+            oauth_command: None,
+            worker_local_binding: None,
+            status: awaken_credential_vault::CredentialStatus::Active,
+            version: 1,
+        })
+        .await
+        .unwrap();
+    let (status, problem) = call(
+        &harness.app,
+        "POST",
+        "/v1/config/provider-connections",
+        json!({
+            "idempotency_key": "legacy-env-existing-command",
+            "workspace_id": "workspace-a",
+            "provider_id": "anthropic",
+            "display_name": "Anthropic",
+            "dialect": "anthropic_messages",
+            "credential_source_id": env_id
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "X3/E2: {problem}");
+    assert_eq!(problem["code"], "no_credential", "X3/E2");
+    assert!(harness.discovery.calls.lock().unwrap().is_empty(), "X3/E2");
+
+    let (_, summaries) = call(
+        &harness.app,
+        "GET",
+        "/v1/config/provider-connections?workspace_id=workspace-a",
+        json!({}),
+    )
+    .await;
+    assert_eq!(
+        summary(&summaries, "anthropic")["status"],
+        "not_configured",
+        "X2+X3/E3"
+    );
+    assert_eq!(
+        summary(&summaries, "anthropic")["active_credentials"],
+        0,
+        "X2+X3/E3"
+    );
+}
+
 #[tokio::test]
 async fn endpoint_scoped_connection_credential_can_widen_for_the_same_provider() {
     // FMECA / cause-effect decision table: an endpoint pin combined with a

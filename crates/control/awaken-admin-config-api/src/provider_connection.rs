@@ -233,10 +233,18 @@ impl ProviderConnectionService {
                 if credential.status != CredentialStatus::Active {
                     return Err(CredentialError::NotActive(credential.id.0).into());
                 }
-                if !credential
-                    .authorization_scope()
-                    .belongs_to_provider(&command.provider_id)
-                {
+                if credential.is_claude_code_setup_token() {
+                    return Err(ProviderConnectionError::UnsupportedAuthentication {
+                        provider: command.provider_id,
+                        method: "a Claude Code setup token",
+                    });
+                }
+                if !awaken_config_resolver::credential_is_executable_supply(
+                    &command.provider_id,
+                    credential.protocol_endpoint_id.as_deref(),
+                    "genai",
+                    &credential,
+                ) {
                     return Err(CredentialError::NoCredential.into());
                 }
                 if let Some(current_endpoint_id) = credential.protocol_endpoint_id.clone()
@@ -252,11 +260,13 @@ impl ProviderConnectionService {
                         )
                         .await?;
                 }
-                if credential.is_claude_code_setup_token() {
-                    return Err(ProviderConnectionError::UnsupportedAuthentication {
-                        provider: command.provider_id,
-                        method: "a Claude Code setup token",
-                    });
+                if !awaken_config_resolver::credential_is_executable_supply(
+                    &command.provider_id,
+                    Some(endpoint.id.as_str()),
+                    "genai",
+                    &credential,
+                ) {
+                    return Err(CredentialError::NoCredential.into());
                 }
                 let existing_method = match credential.kind {
                     CredentialKind::Oauth => awaken_model_catalog::ProviderAuthMethod::OAuth,
@@ -289,6 +299,7 @@ impl ProviderConnectionService {
                     id: CredentialSourceId("cred:provider-connection-probe".into()),
                     workspace_id: command.workspace_id.clone(),
                     kind: CredentialKind::Oauth,
+                    descriptor: None,
                     provider_id: Some(command.provider_id.clone()),
                     protocol_endpoint_id: Some(endpoint.id.0.clone()),
                     env_key: None,

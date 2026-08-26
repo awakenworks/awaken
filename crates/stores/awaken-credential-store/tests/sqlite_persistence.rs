@@ -22,6 +22,7 @@ fn source(id: &str, ws: &str) -> CredentialSource {
         id: CredentialSourceId(id.into()),
         workspace_id: ws.into(),
         kind: CredentialKind::Vault,
+        descriptor: None,
         provider_id: Some("anthropic".into()),
         protocol_endpoint_id: None,
         env_key: Some("ANTHROPIC_API_KEY".into()),

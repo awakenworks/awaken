@@ -896,3 +896,97 @@ sealing and Worker-private unsealing behind this port, but it may not add a
 plaintext material API, copied Vault, independent credential selector, or a
 second access contract. Issuance failure fails the compilation operation; it
 never falls back to an unsealed hosted reference or a different holder.
+
+## 2026-08-26 amendment: source descriptors bind exact target and usage
+
+`CredentialSource` remains the sole secret-free source row. A newly described
+source stores one optional `CredentialDescriptor` on that row; legacy rows omit
+it. The descriptor owns the provider, material kind/type and complete structured
+field set, optional subject/permissions/static expiry, and a list of exact
+target contracts. Every declaration is one indivisible target identity
+`(purpose, audience)` plus `CredentialUsage`. Separate purpose/audience sets and purpose-to-usage inference are
+forbidden: they would respectively authorize an undeclared Cartesian product or
+create a second usage authority. Executable `CredentialAccess` carries the
+target identity and its existing `usage` field once; it does not serialize a
+second usage inside the target.
+
+For a described source, access compilation requires one exact declared target
+and freezes it in `CredentialAccess`; the target's declared usage must equal the
+access usage. The materializer repeats that comparison at the plaintext edge,
+checks static expiry, opens only the pinned active revision, then proves the
+opened material kind/type/complete field set equals the same descriptor. The
+canonical Git transport remains `awaken.http-basic/v1` with exactly `username`
+and `password`; a Connector API credential remains a scalar secret under its
+exact HTTP-effect target. Core does not introduce a dual-use HTTP token shape or
+reinterpret a structured field as an ordinary header secret.
+
+The existing admin create, exact read, expected-version rotate, and
+expected-version retirement routes carry the optional descriptor or revision
+fence. They reuse the existing Credential WAL, repository, SecretStore, and
+source revision CAS. Create or material replacement validates
+descriptor/material equality and proves the opened material supports every
+declared target usage before any storage effect. A descriptor-only
+rotation may change subject, permissions, expiry, or targets only while
+retaining the material descriptor; changing material shape requires replacement
+material in that same CAS. `provider_id` remains legacy compatibility metadata
+only for rows without a descriptor. New described writes reject that field, and
+a deserialized row containing both provider representations is invalid; there is
+never a dual-provider source requiring equality checks or synchronization. Once
+a descriptor is published, its provider is immutable because it participates in
+source/idempotency identity; rotation may change subject, permissions, expiry,
+targets, and compatible material, but never reassign the source to a provider.
+
+Repository Session compilation derives its exact target audience through the
+shared HTTPS-origin normalizer (`https://<normalized-origin>/git`) plus canonical
+HTTP-Basic usage, includes the repository id/version separately in the existing
+material binding, and passes both through the existing Control credential-access
+port. Repository paths on one origin can reuse a credential; another origin,
+userinfo, or a non-HTTPS transport fails closed. Newly entered Repository
+credentials are always described. An undescribed legacy source cannot be
+rebound to a caller-selected Repository or HTTP-effect target; it requires an
+explicit migration and remains executable only through the already targetless
+Provider/MCP compatibility paths. No issuer, live-probe contract, GitHub App
+adapter, credential catalog, or second store is introduced by this amendment.
+Provider-managed acquisition and per-issuance expiry remain deferred until a
+production caller and adapter can close that port; a short-lived issued expiry
+must not be frozen into static source metadata.
+
+The descriptor support matrix is closed. `RepositoryTransport` admits only
+`HttpBasicAuth`, `HttpEffect` admits only the existing typed HTTP-effect usage,
+`SignatureVerification` admits only an exact material-field to
+provider-neutral-algorithm map, and `Extension` admits only the existing
+extension usage (whose `consumer_id` remains the sole extension-consumer
+identity). Described `ProviderAdapter` and
+`McpAuthorization` sources are rejected until their existing publication
+compilers carry an exact target; legacy undescribed Provider and MCP sources
+remain unchanged. Repository, HTTP-effect, signature-verification, and extension
+access therefore requires a target. The same target/usage rule runs at
+descriptor validation, access admission, and before either local or external
+material resolution.
+
+The Credential Vault owns one pure source-to-access compiler for active status,
+Workspace, positive revision, expiry, holder policy, binding, descriptor
+admission, and target attachment. Exact-target consumers supply the already
+selected holder. The retained undescribed, targetless Provider and A2A
+publication paths instead supply one typed deferred-selection owner because the
+dispatch claim selects their exact Worker or Workload holder; deferral is
+rejected for every described/target-bearing source, empty holder policy, or
+usage owned by another consumer. Protocol and hosted adapters may add custody
+delivery only after that compiler succeeds; they do not reimplement source-row
+admission. Runtime
+Repository activation retains only the secret-free exact pin. Direct clone,
+hot replacement, and terminal publish each reopen that same pinned revision at
+the Git effect edge and drop HTTP Basic material when the operation returns.
+Rotation, revocation, expiry, target drift, or Workspace drift therefore stops
+the next Git effect before I/O; Gateway-mediated access refreshes only its exact
+capability and never changes to Direct.
+
+Every material rotation and terminal retirement consumes an expected source
+revision and enters the same Vault WAL/CAS. There is no read-latest mutation
+helper: a stale Session, write-back, refresh, archive, or admin command
+conflicts before material is written or erased. Generic Secret mounts have no
+target/usage wire, so they reject every
+described source for both read and write-back; they remain an explicitly
+targetless legacy compatibility surface rather than a bypass around the exact
+access compiler. Likewise, Provider and A2A selection excludes described
+sources until those existing consumers own canonical target compilers.

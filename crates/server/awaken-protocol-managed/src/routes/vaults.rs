@@ -37,8 +37,8 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
+use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_contract::{CredentialCustodyPublication, CredentialEnvelopeIssuance};
-use awaken_credential_contract::{CredentialSourceId, http_basic_material};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialMutationError, ManagedCredentialNetworking,
@@ -51,16 +51,15 @@ use awaken_credential_vault::repo::{
     ManagedCredentialAdoptionProgress, ManagedCredentialCreateCommand,
     ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
     application_mcp_material_ref, application_mcp_operation_id, create_managed_credential,
-    enter_credential, prepare_application_mcp_bearer_rotation,
-    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
-    retire_managed_credential, rotate_credential_materials, update_managed_credential,
+    prepare_application_mcp_bearer_rotation, reconcile_managed_credential_rollout,
+    reconcile_managed_vault_deletion, retire_managed_credential, update_managed_credential,
     update_managed_credential_prepared,
 };
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
     OAUTH_CLIENT_SECRET_SLOT, OAUTH_REFRESH_TOKEN_SLOT, SecretStore,
 };
-use awaken_session_application::{RepositoryCredentialIngress, SessionCredentialSource};
+use awaken_session_application::{SessionCredentialAccessRequest, SessionCredentialSource};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -77,10 +76,26 @@ use crate::types::vault::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
 
+mod repository_credentials;
+
 /// Deterministic timestamp stamped on every vault/credential object, matching the
 /// session surface's `PROCESSED_AT` convention (no wall-clock/uuid dependency, so
 /// the wire is reproducible under test).
 const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
+
+fn credential_clock_unix_ms() -> Result<u64, awaken_credential_vault::CredentialError> {
+    let now_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| {
+            awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
+        })?
+        .as_millis();
+    u64::try_from(now_unix_ms).map_err(|_| {
+        awaken_credential_vault::CredentialError::InvalidSource(
+            "credential clock exceeds supported range".into(),
+        )
+    })
+}
 
 fn application_mcp_target_fingerprint(
     url: &str,
@@ -483,31 +498,6 @@ impl VaultState {
             .is_some_and(|vault| vault.accepts_child_mutation()))
     }
 
-    /// Seal a write-only compatibility token and return only its neutral source
-    /// id. Used when a Managed repository resource carries an inline token; the
-    /// Session manifest and Resource Registry never receive the token value.
-    pub async fn enter_session_bearer(
-        &self,
-        workspace_id: &str,
-        token: String,
-    ) -> Result<CredentialSourceId, awaken_credential_vault::CredentialError> {
-        let material = repository_http_basic_material(RedactedString::from(token))?;
-        enter_credential(
-            DomainCredentialCreateParams {
-                workspace_id: workspace_id.to_string(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("git".into()),
-                env_key: None,
-                secret: Some(material),
-                oauth_command: None,
-            },
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-        )
-        .await
-        .map(|source| source.id)
-    }
-
     /// The neutral credential-domain row id for a wire credential id, if it lives
     /// in `vault_id`. This is the seam a session uses to bind a vault credential to
     /// a run: the resolver takes this `CredentialSourceId`, never the wire id.
@@ -585,11 +575,7 @@ impl VaultState {
     async fn exact_access_for_source(
         &self,
         source_id: &CredentialSourceId,
-        workspace_id: Option<&str>,
-        usage: awaken_credential_contract::CredentialUsage,
-        policy: awaken_credential_contract::CredentialExecutionPolicy,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
+        request: awaken_credential_vault::ExactCredentialAccessRequest<'_>,
     ) -> Result<
         (
             awaken_credential_vault::CredentialSource,
@@ -597,54 +583,27 @@ impl VaultState {
         ),
         awaken_credential_vault::CredentialError,
     > {
-        use awaken_credential_contract::{
-            CredentialAccess, CredentialMaterialSource, CredentialRef,
-        };
-
         let source = self.repository.get(source_id).await?;
-        if source.status != awaken_credential_vault::CredentialStatus::Active {
-            return Err(awaken_credential_vault::CredentialError::NotActive(
-                source_id.0.clone(),
-            ));
-        }
-        if workspace_id.is_some_and(|workspace_id| source.workspace_id != workspace_id) {
-            return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                "credential source belongs to another Workspace".into(),
-            ));
-        }
-        binding.validate().map_err(|error| {
-            awaken_credential_vault::CredentialError::InvalidSource(error.to_string())
-        })?;
-        if workspace_id.is_some_and(|workspace_id| binding.workspace_id != workspace_id) {
-            return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                "credential material binding belongs to another Workspace".into(),
-            ));
-        }
-        if !policy.allowed_plaintext_holders.contains(selected_holder) {
-            return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                "selected plaintext holder is not authorized by credential policy".into(),
-            ));
-        }
-        let revision = u64::try_from(source.version).map_err(|_| {
-            awaken_credential_vault::CredentialError::InvalidSource(
-                "credential revision is negative".into(),
-            )
-        })?;
-        let mut access = CredentialAccess::new(
-            CredentialRef {
-                id: source_id.0.clone(),
-                revision,
-            },
-            CredentialMaterialSource::ControlPlaneReference,
-            usage,
-            policy,
-        );
+        let selected_holder = match request.holder_admission {
+            awaken_credential_vault::CredentialHolderAdmission::Selected(holder) => holder,
+            awaken_credential_vault::CredentialHolderAdmission::Deferred(_) => {
+                return Err(awaken_credential_vault::CredentialError::InvalidSource(
+                    "material delivery requires an exact plaintext holder".into(),
+                ));
+            }
+        };
+        let binding = request.binding;
+        let mut access =
+            awaken_credential_vault::compile_exact_credential_access(&source, request)?;
         match &self.material_delivery {
             Some(awaken_credential_contract::CredentialMaterialDelivery::ExternalCustody(
                 custodian,
             )) if custodian.handles(selected_holder, &access.usage) => {
                 let material =
                     awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+                if let Some(descriptor) = &source.descriptor {
+                    awaken_credential_vault::validate_described_material(descriptor, &material)?;
+                }
                 custodian
                     .publish(CredentialCustodyPublication {
                         access: access.clone(),
@@ -662,6 +621,9 @@ impl VaultState {
             {
                 let material =
                     awaken_credential_vault::materialize(&source, self.secrets.as_ref()).await?;
+                if let Some(descriptor) = &source.descriptor {
+                    awaken_credential_vault::validate_described_material(descriptor, &material)?;
+                }
                 let envelope = issuer
                     .issue(CredentialEnvelopeIssuance {
                         access: access.clone(),
@@ -691,21 +653,32 @@ impl VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        usage: awaken_credential_contract::CredentialUsage,
-        policy: awaken_credential_contract::CredentialExecutionPolicy,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
+        request: SessionCredentialAccessRequest,
     ) -> Result<
         awaken_credential_contract::CredentialAccess,
         awaken_credential_vault::CredentialError,
     > {
-        self.exact_access_for_source(
-            source_id,
-            Some(workspace_id),
+        let SessionCredentialAccessRequest {
+            target,
             usage,
             policy,
             selected_holder,
             binding,
+        } = request;
+        let now_unix_ms = credential_clock_unix_ms()?;
+        self.exact_access_for_source(
+            source_id,
+            awaken_credential_vault::ExactCredentialAccessRequest {
+                workspace_id: Some(workspace_id),
+                target: Some(target),
+                usage,
+                policy,
+                holder_admission: awaken_credential_vault::CredentialHolderAdmission::Selected(
+                    &selected_holder,
+                ),
+                binding: &binding,
+                now_unix_ms,
+            },
         )
         .await
         .map(|(_, access)| access)
@@ -756,14 +729,20 @@ impl VaultState {
         let (source, mut access) = self
             .exact_access_for_source(
                 source_id,
-                workspace_id,
-                CredentialUsage::HttpHeader {
-                    name: "authorization".into(),
-                    scheme: Some("Bearer".into()),
+                awaken_credential_vault::ExactCredentialAccessRequest {
+                    workspace_id,
+                    target: None,
+                    usage: CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    policy: CredentialExecutionPolicy::self_hosted_mcp(),
+                    holder_admission: awaken_credential_vault::CredentialHolderAdmission::Selected(
+                        selected_holder,
+                    ),
+                    binding,
+                    now_unix_ms: credential_clock_unix_ms()?,
                 },
-                CredentialExecutionPolicy::self_hosted_mcp(),
-                selected_holder,
-                binding,
             )
             .await?;
         let revision = access.credential.revision;
@@ -933,94 +912,12 @@ impl SessionCredentialSource for VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        usage: awaken_credential_contract::CredentialUsage,
-        policy: awaken_credential_contract::CredentialExecutionPolicy,
-        selected_holder: &awaken_credential_contract::PlaintextHolder,
-        binding: &awaken_credential_contract::CredentialMaterialBinding,
+        request: SessionCredentialAccessRequest,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        VaultState::credential_access_for_source(
-            self,
-            source_id,
-            workspace_id,
-            usage,
-            policy,
-            selected_holder,
-            binding,
-        )
-        .await
-        .map_err(|error| error.to_string())
-    }
-}
-
-#[async_trait::async_trait]
-impl RepositoryCredentialIngress for VaultState {
-    async fn enter_repository_token(
-        &self,
-        source_id: CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<CredentialSourceId, String> {
-        let material = repository_http_basic_material(token).map_err(|error| error.to_string())?;
-        let entry = awaken_credential_vault::repo::enter_credential_idempotent(
-            source_id,
-            DomainCredentialCreateParams {
-                workspace_id: workspace_id.to_string(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("github_repository".into()),
-                env_key: None,
-                secret: Some(material),
-                oauth_command: None,
-            },
-            None,
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        Ok(entry.source.id)
-    }
-
-    async fn rotate_repository_token(
-        &self,
-        source_id: &CredentialSourceId,
-        workspace_id: &str,
-        token: RedactedString,
-    ) -> Result<(), String> {
-        let current = self
-            .repository
-            .get(source_id)
+        VaultState::credential_access_for_source(self, source_id, workspace_id, request)
             .await
-            .map_err(|error| error.to_string())?;
-        if current.workspace_id != workspace_id
-            || !current
-                .authorization_scope()
-                .belongs_to_provider("github_repository")
-        {
-            return Err("repository credential binding is unavailable in this Workspace".into());
-        }
-        let material = repository_http_basic_material(token).map_err(|error| error.to_string())?;
-        rotate_credential_materials(
-            source_id,
-            CredentialMaterialPatch {
-                primary: Some(material),
-                auxiliary: BTreeMap::new(),
-            },
-            self.secrets.as_ref(),
-            self.repository.as_ref(),
-        )
-        .await
-        .map_err(|error| error.to_string())?;
-        Ok(())
+            .map_err(|error| error.to_string())
     }
-}
-
-fn repository_http_basic_material(
-    token: RedactedString,
-) -> Result<RedactedString, awaken_credential_vault::CredentialError> {
-    awaken_credential_vault::encode_structured_material(http_basic_material(
-        RedactedString::new("x-access-token"),
-        token,
-    ))
 }
 
 // ---- Router -----------------------------------------------------------------
@@ -1726,6 +1623,7 @@ async fn update_credential(
             }
             .map(RedactedString::new),
             auxiliary: BTreeMap::new(),
+            descriptor: None,
         };
         if let CredentialUpdateAuth::McpOauth {
             refresh: Some(update),

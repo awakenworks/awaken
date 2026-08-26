@@ -230,8 +230,10 @@ pub(crate) struct StagedResources {
     /// a second store or mutable source of truth.
     pub memory_prompts: Vec<MemoryPromptProjection>,
     /// Resource-domain liveness checks repeated at each Session operation. These
-    /// carry only Workspace-owned resource identity and frozen config versions;
-    /// authorization was completed before staging.
+    /// carry only Workspace-owned resource identity and frozen, secret-free config
+    /// facts; authorization was completed before staging. Repository effect edges
+    /// reuse its authored remote/binding to revalidate the Session pin instead of
+    /// accepting the pin's own source id as self-authorization.
     pub binding_checks: Vec<ResourceBindingCheck>,
     /// Mutable Repository inputs, realized after the environment is created (not a
     /// byte mount). The plan is secret-free; its transport credential is transient.
@@ -253,18 +255,41 @@ pub(crate) enum ResourceBindingCheck {
     Repository {
         repository_id: String,
         config_version: awaken_resource_contract::ConfigVersion,
+        remote_url: String,
+        credential_binding: Option<String>,
         claim: Option<awaken_run_ingress::RunClaim>,
     },
 }
 
 /// Runtime-only activation material for one already-resolved Repository config.
-/// The plan is the neutral environment port; the credential is materialized at the
-/// injection seam, used only for a transport operation, and never persisted in the
-/// plan, origin URL, Session manifest, or sandbox.
-#[derive(Clone)]
+/// The plan is the neutral environment port and the credential pin is the exact,
+/// secret-free Session decision. Plaintext is materialized only at a Git effect
+/// edge, used for that one call, and never retained by this activation, the plan,
+/// origin URL, Session manifest, or sandbox.
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct RepositoryActivation {
     pub plan: pc::RepositoryRealizationPlan,
-    pub credential: Option<pc::RepositoryHttpBasicCredential>,
+    pub credential_pin: Option<awaken_session_contract::ResolvedRepositoryCredential>,
+}
+
+fn repository_http_basic_credential(
+    material: awaken_runtime_contract::CredentialMaterial,
+) -> Result<pc::RepositoryHttpBasicCredential, &'static str> {
+    let awaken_runtime_contract::CredentialMaterial::Structured(mut material) = material else {
+        return Err("HTTP Basic requires structured credential material");
+    };
+    if material.type_id != awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE {
+        return Err("HTTP Basic credential material has the wrong type");
+    }
+    let username = material
+        .fields
+        .remove("username")
+        .ok_or("HTTP Basic credential material has no username")?;
+    let password = material
+        .fields
+        .remove("password")
+        .ok_or("HTTP Basic credential material has no password")?;
+    Ok(pc::RepositoryHttpBasicCredential::new(username, password))
 }
 
 impl SharedHost {
@@ -367,107 +392,160 @@ impl SharedHost {
         thread: &str,
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host::HostError> {
-        let repositories = self
-            .session_slots
-            .read(thread, |slot| slot.resources.repositories.clone())
-            .unwrap_or_default();
-        for repository in repositories {
-            let credential = self
-                .repository_operation_credential(thread, &repository)
-                .await?;
-            realizer
-                .realize_repository(&repository.plan, credential.as_deref())
-                .await
-                .map_err(|e| crate::host::HostError::internal(e.to_string()))?;
+        let resources = self.thread_resources_snapshot(thread);
+        for repository in &resources.repositories {
+            self.realize_repository_activation(
+                thread,
+                repository,
+                &resources.binding_checks,
+                realizer,
+            )
+            .await?;
         }
         Ok(())
     }
 
-    /// Refresh a short Gateway capability at the actual Git operation edge.
-    /// Package image resolution and Sandbox creation may outlive the capability
-    /// staged with the immutable Repository plan; direct credentials retain the
-    /// existing injection path.
-    async fn repository_operation_credential<'a>(
+    /// Execute one Repository clone edge through the same operation-scoped
+    /// credential path used by initial activation and hot Resource replacement.
+    pub(crate) async fn realize_repository_activation(
         &self,
         thread: &str,
-        repository: &'a RepositoryActivation,
-    ) -> Result<
-        Option<std::borrow::Cow<'a, pc::RepositoryHttpBasicCredential>>,
-        crate::host::HostError,
-    > {
-        if !repository
-            .credential
-            .as_ref()
-            .is_some_and(|credential| credential.is_gateway_capability())
-        {
-            return Ok(repository
-                .credential
-                .as_ref()
-                .map(std::borrow::Cow::Borrowed));
-        }
-        let checks = self
-            .session_slots
-            .read(thread, |slot| slot.resources.binding_checks.clone())
-            .unwrap_or_default();
-        let mut matching = checks.iter().filter_map(|check| match check {
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+        realizer: &dyn pc::RepositoryRealizer,
+    ) -> Result<(), crate::host::HostError> {
+        let credential = self
+            .repository_operation_credential(thread, repository, binding_checks)
+            .await?;
+        realizer
+            .realize_repository(&repository.plan, credential.as_ref())
+            .await
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))
+    }
+
+    /// Materialize only the credential required by this Git effect. A direct
+    /// Worker-held pin repeats exact source revision, Workspace, descriptor
+    /// expiry/target/material, holder, and Repository id/version binding checks.
+    /// A Platform-held pin refreshes its short Gateway capability and cannot
+    /// downgrade to direct material. The returned owned value is dropped after
+    /// the realizer call and is never written back to `RepositoryActivation`.
+    async fn repository_operation_credential(
+        &self,
+        thread: &str,
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+    ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host::HostError> {
+        let Some(pin) = repository.credential_pin.as_ref() else {
+            return Ok(None);
+        };
+        let mut matching = binding_checks.iter().filter_map(|check| match check {
             ResourceBindingCheck::Repository {
                 repository_id,
                 config_version,
+                remote_url,
+                credential_binding,
                 claim,
-            } if repository_id == &repository.plan.repository_id => {
-                Some((*config_version, claim.as_ref()))
-            }
+            } if repository_id == &repository.plan.repository_id => Some((
+                *config_version,
+                remote_url.as_str(),
+                credential_binding.as_deref(),
+                claim.as_ref(),
+            )),
             _ => None,
         });
-        let Some((config_version, claim)) = matching.next() else {
+        let Some((config_version, remote_url, credential_binding, claim)) = matching.next() else {
             return Err(crate::host::HostError::internal(
-                "Gateway-mediated Repository has no exact binding check",
+                "protected Repository has no exact binding check",
             ));
         };
         if matching.next().is_some() {
             return Err(crate::host::HostError::internal(
-                "Gateway-mediated Repository has ambiguous binding checks",
+                "protected Repository has ambiguous binding checks",
             ));
         }
-        let verifier = self
-            .dispatch_session_runtime
-            .read()
-            .map_err(|_| {
-                crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
-            })?
-            .as_ref()
-            .and_then(|runtime| runtime.repository_binding_verifier.clone())
-            .ok_or_else(|| {
-                crate::host::HostError::internal(
-                    "Gateway-mediated Repository has no binding verifier",
-                )
-            })?;
-        let transport = verifier
-            .verify(
-                &self.thread_workspace(thread),
-                &repository.plan.repository_id,
-                config_version,
-                claim,
+        let credential_binding = credential_binding.ok_or_else(|| {
+            crate::host::HostError::internal(
+                "protected Repository credential pin has no authored binding",
             )
-            .await
+        })?;
+        pin.validate_for_repository(credential_binding, remote_url)
             .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
-        match transport {
-            awaken_resource_contract::RepositoryTransport::GatewayMediated {
-                remote_url,
-                capability,
-            } if remote_url == repository.plan.remote_url => Ok(Some(std::borrow::Cow::Owned(
-                pc::RepositoryHttpBasicCredential::gateway_capability(
-                    capability.expose().to_owned(),
-                ),
-            ))),
-            awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
-                Err(crate::host::HostError::internal(
-                    "Gateway-mediated Repository changed its frozen remote URL",
-                ))
+        match pin.selected_plaintext_holder.boundary {
+            awaken_runtime_contract::PlaintextBoundary::Worker => {
+                if repository.plan.remote_url != remote_url {
+                    return Err(crate::host::HostError::internal(
+                        "direct Repository changed its frozen upstream URL",
+                    ));
+                }
+                let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
+                    crate::host::HostError::internal(
+                        "repository credential requires a configured credential materializer",
+                    )
+                })?;
+                let workspace = self.thread_workspace(thread);
+                let material = materializer
+                    .resolve_for_workspace(
+                        &pin.access,
+                        &pin.selected_plaintext_holder,
+                        awaken_runtime_contract::CredentialRealizationKind::WorkerRelay,
+                        &workspace,
+                        &(&repository.plan.repository_id, config_version),
+                    )
+                    .await
+                    .map_err(|error| crate::host::HostError::internal(error.to_string()))?
+                    .material;
+                repository_http_basic_credential(material)
+                    .map(Some)
+                    .map_err(crate::host::HostError::internal)
             }
-            awaken_resource_contract::RepositoryTransport::Direct => {
+            awaken_runtime_contract::PlaintextBoundary::Platform => {
+                let workspace = self.thread_workspace(thread);
+                let verifier = self
+                    .dispatch_session_runtime
+                    .read()
+                    .map_err(|_| {
+                        crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
+                    })?
+                    .as_ref()
+                    .and_then(|runtime| runtime.repository_binding_verifier.clone())
+                    .ok_or_else(|| {
+                        crate::host::HostError::internal(
+                            "Gateway-mediated Repository has no binding verifier",
+                        )
+                    })?;
+                let transport = verifier
+                    .verify(
+                        &workspace,
+                        &repository.plan.repository_id,
+                        config_version,
+                        claim,
+                    )
+                    .await
+                    .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+                match transport {
+                    awaken_resource_contract::RepositoryTransport::GatewayMediated {
+                        remote_url,
+                        capability,
+                    } if remote_url == repository.plan.remote_url => {
+                        Ok(Some(pc::RepositoryHttpBasicCredential::gateway_capability(
+                            capability.expose().to_owned(),
+                        )))
+                    }
+                    awaken_resource_contract::RepositoryTransport::GatewayMediated { .. } => {
+                        Err(crate::host::HostError::internal(
+                            "Gateway-mediated Repository changed its frozen remote URL",
+                        ))
+                    }
+                    awaken_resource_contract::RepositoryTransport::Direct => {
+                        Err(crate::host::HostError::internal(
+                            "Gateway-mediated Repository cannot fall back to direct credentials",
+                        ))
+                    }
+                }
+            }
+            awaken_runtime_contract::PlaintextBoundary::Workload => {
                 Err(crate::host::HostError::internal(
-                    "Gateway-mediated Repository cannot fall back to direct credentials",
+                    "Repository credential selected an unsupported plaintext holder",
                 ))
             }
         }
@@ -477,11 +555,9 @@ impl SharedHost {
     /// The host never fabricates a commit or resolves another config; it only applies
     /// the already-selected activation and its ephemeral transport credential.
     ///
-    /// A repo whose remote ops the agent owns through an injected GitHub MCP server (the
-    /// Managed Agents model — branch/commit/push/PR via MCP tools) is SKIPPED here: pushing
-    /// host-side too would double-write or conflict with the agent's own pushes. Host-push
-    /// remains only the fallback for a repo with no GitHub MCP (e.g. a non-MCP CLI). A no-op
-    /// for a thread with no repos, no live env, or nothing the agent committed.
+    /// This is the sole publication path for a runtime-staged Repository. Agents
+    /// never receive the Git credential or perform a competing push. A no-op for
+    /// a thread with no repositories, no live environment, or no authored commit.
     /// A transport failure keeps terminal cleanup pending so the live checkout
     /// remains available for the same idempotent Git publication retry.
     pub async fn publish_thread_repositories(
@@ -489,25 +565,22 @@ impl SharedHost {
         thread: &str,
     ) -> Result<(), ResourcePurgeError> {
         let env = self.session_environment(thread).await;
-        let repositories = self
-            .session_slots
-            .read(thread, |slot| slot.resources.repositories.clone())
-            .unwrap_or_default();
+        let resources = self.thread_resources_snapshot(thread);
         let Some(env) = env else {
             return Ok(());
         };
-        for repository in repositories {
+        for repository in &resources.repositories {
             if repository.plan.access == pc::MountAccess::ReadOnly {
                 continue;
             }
             let credential = self
-                .repository_operation_credential(thread, &repository)
+                .repository_operation_credential(thread, repository, &resources.binding_checks)
                 .await
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
             pc::RepositoryRealizer::publish_repository(
                 env.as_ref(),
                 &repository.plan,
-                credential.as_deref(),
+                credential.as_ref(),
             )
             .await
             .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
@@ -808,7 +881,7 @@ mod provisioning_registry_tests {
                 initial_commit: None,
                 access: pc::MountAccess::ReadWrite,
             },
-            credential: None,
+            credential_pin: None,
         }
     }
 
@@ -923,7 +996,7 @@ mod provisioning_registry_tests {
                         initial_commit: None,
                         access: pc::MountAccess::ReadWrite,
                     },
-                    credential: None,
+                    credential_pin: None,
                 }],
                 ..Default::default()
             },

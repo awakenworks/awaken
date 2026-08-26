@@ -26,6 +26,7 @@ fn source(id: &str, ws: &str) -> CredentialSource {
         id: CredentialSourceId(id.into()),
         workspace_id: ws.into(),
         kind: CredentialKind::Vault,
+        descriptor: None,
         provider_id: Some("anthropic".into()),
         protocol_endpoint_id: None,
         env_key: Some("ANTHROPIC_API_KEY".into()),
@@ -201,10 +202,11 @@ async fn worker_local_registration_is_atomic_idempotent_and_secret_free(repo: &d
 }
 
 /// Cause/effect decision table for the mutation WAL:
-/// R1 same pending intent => begin is idempotent; R2 current==before => publish
-/// after while retaining WAL; R3 current==after => apply is idempotent; R4
-/// completion => WAL is removed idempotently. Cleanup deliberately sits between
-/// R3 and R4, so a process crash cannot hide unreclaimed material.
+/// R1 first intent => begin returns the single-writer claim; R2 same pending
+/// intent => begin reports replay without a second claim; R3 current==before =>
+/// publish after while retaining WAL; R4 current==after => apply is idempotent;
+/// R5 completion => WAL is removed idempotently. Cleanup deliberately sits
+/// between R4 and R5, so a process crash cannot hide unreclaimed material.
 async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn CredentialRepo) {
     let source = source("cred:intent", "ws");
     let intent = CredentialMutationIntent {
@@ -212,8 +214,8 @@ async fn mutation_wal_publish_and_completion_are_idempotent(repo: &dyn Credentia
         after: source.clone(),
     };
 
-    repo.begin_mutation(intent.clone()).await.unwrap();
-    repo.begin_mutation(intent.clone()).await.unwrap();
+    assert!(repo.begin_mutation(intent.clone()).await.unwrap(), "R1");
+    assert!(!repo.begin_mutation(intent.clone()).await.unwrap(), "R2");
     assert_eq!(repo.pending_mutations().await.unwrap().len(), 1);
     assert!(matches!(
         repo.get(&source.id).await,
@@ -416,6 +418,7 @@ mod postgres {
             id: CredentialSourceId(id.into()),
             workspace_id: workspace_id.into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: None,
             protocol_endpoint_id: None,
             env_key: None,

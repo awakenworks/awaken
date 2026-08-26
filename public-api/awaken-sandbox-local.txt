@@ -99,7 +99,7 @@ pub fn awaken_sandbox_local::NamespaceSandbox::list_files(&self, &str) -> alloc:
 pub fn awaken_sandbox_local::NamespaceSandbox::materialize_inline(&self, &str, &[u8]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::materialize_read_only_tree(&self, &str, &[(alloc::string::String, alloc::vec::Vec<u8>, bool)]) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::provision_repo(&self, &str, &str, core::option::Option<&str>, core::option::Option<&str>, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
-pub fn awaken_sandbox_local::NamespaceSandbox::push_repo(&self, &str, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
+pub fn awaken_sandbox_local::NamespaceSandbox::push_repo(&self, &str, &str, core::option::Option<&awaken_provisioning_contract::sandbox::RepositoryHttpBasicCredential>) -> core::result::Result<bool, awaken_provisioning_contract::sandbox::SandboxError>
 pub async fn awaken_sandbox_local::NamespaceSandbox::release_memory_mounts(&self)
 pub fn awaken_sandbox_local::NamespaceSandbox::remove_inline(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>
 pub fn awaken_sandbox_local::NamespaceSandbox::remove_mount(&self, &str) -> core::result::Result<(), awaken_provisioning_contract::sandbox::SandboxError>

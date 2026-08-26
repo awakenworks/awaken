@@ -567,7 +567,6 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                         restart_policy: Some("Never".into()),
                         ..Default::default()
                     }),
-                    ..Default::default()
                 },
                 ..Default::default()
             }),

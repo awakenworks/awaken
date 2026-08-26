@@ -1118,7 +1118,7 @@ pub struct awaken_session_contract::ResolvedRepositoryCredential
 pub awaken_session_contract::ResolvedRepositoryCredential::access: awaken_credential_contract::CredentialAccess
 pub awaken_session_contract::ResolvedRepositoryCredential::selected_plaintext_holder: awaken_credential_contract::PlaintextHolder
 impl awaken_session_contract::ResolvedRepositoryCredential
-pub fn awaken_session_contract::ResolvedRepositoryCredential::validate_for_binding(&self, &str) -> core::result::Result<(), awaken_session_contract::SessionInputError>
+pub fn awaken_session_contract::ResolvedRepositoryCredential::validate_for_repository(&self, &str, &str) -> core::result::Result<(), awaken_session_contract::SessionInputError>
 pub struct awaken_session_contract::ResolvedSessionResources
 impl awaken_session_contract::ResolvedSessionResources
 pub fn awaken_session_contract::ResolvedSessionResources::attach(&self, awaken_session_contract::ResolvedInput) -> core::result::Result<Self, awaken_session_contract::SessionInputError>
@@ -1775,7 +1775,8 @@ pub fn awaken_session_contract::paginate_history<'a>(&'a [awaken_agent_contract:
 pub fn awaken_session_contract::realization_generation_authorizes(&awaken_session_contract::McpGenerationRef, &awaken_session_contract::McpGenerationRef) -> bool
 pub fn awaken_session_contract::realization_lease_authorizes(&awaken_session_contract::SessionRealizationLease, &awaken_session_contract::SessionRealizationLease, u64) -> bool
 pub const fn awaken_session_contract::realization_lease_is_live_at(u64, u64) -> bool
-pub fn awaken_session_contract::repository_transport_credential_usage() -> awaken_credential_contract::CredentialUsage
+pub fn awaken_session_contract::repository_transport_credential_target(&str) -> core::result::Result<awaken_credential_contract::descriptor::CredentialTarget, awaken_credential_contract::descriptor::CredentialDescriptorError>
+pub fn awaken_session_contract::repository_transport_credential_usage() -> awaken_credential_contract::usage::CredentialUsage
 pub const fn awaken_session_contract::resolved_environment_snapshot_is_exact(bool, u64, core::option::Option<u64>) -> bool
 pub fn awaken_session_contract::resolved_toolsets(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> alloc::vec::Vec<awaken_session_contract::AgentTool>
 pub fn awaken_session_contract::session_agent_report_messages<'a>(&'a [awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Id) -> alloc::vec::Vec<&'a awaken_agent_contract::agent::message::Message>

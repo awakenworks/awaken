@@ -5,32 +5,34 @@ use serde::{Deserialize, Deserializer, Serialize};
 use crate::CredentialUsage;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum HttpEffectMaterialShape {
+pub(crate) enum NamedMaterialShape {
     Secret,
     Structured,
 }
 
-/// Exact material-shape kernel shared by the concrete material validator and
-/// its bounded proof. A scalar secret can bind one and only one declared field;
-/// structured material must have the complete, equal key set. Empty effects are
-/// rejected here as well as by [`CredentialUsage::validate`], keeping the kernel
-/// fail closed when reused independently.
+/// Exact named-material kernel shared by HTTP effects, signature verification,
+/// the concrete material validator, and its bounded proof. A scalar secret can
+/// bind one and only one declared field; structured material must have the
+/// complete, equal key set. Empty declarations remain fail closed when this
+/// kernel is reused independently.
 #[must_use]
-pub(crate) const fn http_effect_material_shape_is_exact(
-    shape: HttpEffectMaterialShape,
+pub(crate) const fn named_material_shape_is_exact(
+    shape: NamedMaterialShape,
     declared_fields: usize,
     structured_keys_exact: bool,
 ) -> bool {
     declared_fields != 0
         && match shape {
-            HttpEffectMaterialShape::Secret => declared_fields == 1,
-            HttpEffectMaterialShape::Structured => structured_keys_exact,
+            NamedMaterialShape::Secret => declared_fields == 1,
+            NamedMaterialShape::Structured => structured_keys_exact,
         }
 }
 
 /// One exact destination at which a hosted HTTP effect may render a material
 /// field. JSON pointers are rooted at the effect's `json` or `body` value.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HttpEffectPlacement {
     Header { name: String },
@@ -269,22 +271,33 @@ pub enum HttpEffectMaterialReferenceError {
 impl CredentialUsage {
     /// Validate canonical, secret-free usage facts before material is opened.
     pub fn validate(&self) -> Result<(), CredentialUsageError> {
-        let Self::HttpEffect { fields } = self else {
-            return Ok(());
-        };
-        if fields.is_empty() {
-            return Err(CredentialUsageError::EmptyHttpEffectFields);
-        }
-        for (field, placements) in fields {
-            if field.trim().is_empty() || field.trim() != field {
-                return Err(CredentialUsageError::InvalidMaterialField);
+        match self {
+            Self::HttpEffect { fields } => {
+                if fields.is_empty() {
+                    return Err(CredentialUsageError::EmptyHttpEffectFields);
+                }
+                for (field, placements) in fields {
+                    validate_material_field(field)?;
+                    if placements.is_empty() {
+                        return Err(CredentialUsageError::EmptyHttpEffectPlacements);
+                    }
+                    for placement in placements {
+                        validate_http_effect_placement(placement)?;
+                    }
+                }
             }
-            if placements.is_empty() {
-                return Err(CredentialUsageError::EmptyHttpEffectPlacements);
+            Self::SignatureVerification { fields } => {
+                if fields.is_empty() {
+                    return Err(CredentialUsageError::EmptySignatureFields);
+                }
+                for (field, algorithms) in fields {
+                    validate_material_field(field)?;
+                    if algorithms.is_empty() {
+                        return Err(CredentialUsageError::EmptySignatureAlgorithms);
+                    }
+                }
             }
-            for placement in placements {
-                validate_http_effect_placement(placement)?;
-            }
+            _ => {}
         }
         Ok(())
     }
@@ -305,6 +318,13 @@ impl CredentialUsage {
                 .as_str()
         }))
     }
+}
+
+fn validate_material_field(field: &str) -> Result<(), CredentialUsageError> {
+    if field.trim().is_empty() || field.trim() != field || field.chars().any(char::is_control) {
+        return Err(CredentialUsageError::InvalidMaterialField);
+    }
+    Ok(())
 }
 
 fn validate_http_effect_placement(
@@ -377,10 +397,14 @@ fn is_valid_json_pointer(pointer: &str) -> bool {
 pub enum CredentialUsageError {
     #[error("HTTP-effect credential usage declares no material fields")]
     EmptyHttpEffectFields,
-    #[error("HTTP-effect credential usage has an invalid material field")]
+    #[error("named credential usage has an invalid material field")]
     InvalidMaterialField,
     #[error("HTTP-effect credential usage declares a field with no placements")]
     EmptyHttpEffectPlacements,
+    #[error("signature-verification credential usage declares no material fields")]
+    EmptySignatureFields,
+    #[error("signature-verification credential usage declares a field with no algorithms")]
+    EmptySignatureAlgorithms,
     #[error("HTTP-effect credential usage has a non-canonical header name")]
     InvalidHeaderName,
     #[error("HTTP-effect credential usage has an invalid query name")]
@@ -391,28 +415,27 @@ pub enum CredentialUsageError {
 
 #[cfg(kani)]
 mod verification {
-    use super::{HttpEffectMaterialShape, http_effect_material_shape_is_exact};
+    use super::{NamedMaterialShape, named_material_shape_is_exact};
 
-    /// Exhaustively proves the HTTP effect material shape cannot silently drop,
-    /// add, or merge fields: scalar material binds exactly one declared field,
-    /// while structured material requires non-empty exact key equality.
+    /// Exhaustively proves a named-material usage cannot silently drop, add, or
+    /// merge fields: scalar material binds exactly one declared field, while
+    /// structured material requires non-empty exact key equality.
     #[kani::proof]
-    fn http_effect_material_shape_is_exact_and_non_widening() {
+    fn named_material_shape_is_exact_and_non_widening() {
         let declared_fields = kani::any::<usize>();
         let structured_keys_exact = kani::any::<bool>();
         let shape = if kani::any::<bool>() {
-            HttpEffectMaterialShape::Secret
+            NamedMaterialShape::Secret
         } else {
-            HttpEffectMaterialShape::Structured
+            NamedMaterialShape::Structured
         };
-        let admitted =
-            http_effect_material_shape_is_exact(shape, declared_fields, structured_keys_exact);
+        let admitted = named_material_shape_is_exact(shape, declared_fields, structured_keys_exact);
 
         match shape {
-            HttpEffectMaterialShape::Secret => {
+            NamedMaterialShape::Secret => {
                 assert_eq!(admitted, declared_fields == 1);
             }
-            HttpEffectMaterialShape::Structured => {
+            NamedMaterialShape::Structured => {
                 assert_eq!(admitted, declared_fields != 0 && structured_keys_exact);
             }
         }
@@ -753,6 +776,71 @@ mod tests {
             malformed.validate(),
             Err(CredentialUsageError::InvalidJsonPointer),
             "H6"
+        );
+    }
+
+    /// Signature-verification cause/effect decision table:
+    /// S1 one scalar field + at least one exact algorithm => admit;
+    /// S2 more than one scalar field => material mismatch;
+    /// S3 structured material with the exact complete field set => admit;
+    /// S4 empty fields/algorithm set or malformed field => reject before open;
+    /// S5 OAuth material => reject. No algorithm or field fallback is allowed.
+    #[test]
+    fn signature_usage_freezes_exact_fields_and_algorithms() {
+        use crate::SignatureVerificationAlgorithm::{ConstantTime, HmacSha256};
+
+        let sole = CredentialUsage::SignatureVerification {
+            fields: BTreeMap::from([("webhook_secret".into(), BTreeSet::from([HmacSha256]))]),
+        };
+        let multiple = CredentialUsage::SignatureVerification {
+            fields: BTreeMap::from([
+                ("token".into(), BTreeSet::from([ConstantTime])),
+                ("webhook_secret".into(), BTreeSet::from([HmacSha256])),
+            ]),
+        };
+        assert_eq!(sole.validate(), Ok(()), "S1");
+        assert_eq!(
+            CredentialMaterial::secret(RedactedString::new("secret")).validate_usage(&sole),
+            Ok(()),
+            "S1"
+        );
+        assert_eq!(
+            CredentialMaterial::secret(RedactedString::new("secret")).validate_usage(&multiple),
+            Err(CredentialMaterialError::MaterialKindMismatch),
+            "S2"
+        );
+        let structured = CredentialMaterial::Structured(StructuredCredentialMaterial {
+            type_id: "example.signature/v1".into(),
+            fields: BTreeMap::from([
+                ("token".into(), RedactedString::new("token")),
+                ("webhook_secret".into(), RedactedString::new("secret")),
+            ]),
+        });
+        assert_eq!(structured.validate_usage(&multiple), Ok(()), "S3");
+        for malformed in [
+            CredentialUsage::SignatureVerification {
+                fields: BTreeMap::new(),
+            },
+            CredentialUsage::SignatureVerification {
+                fields: BTreeMap::from([("webhook_secret".into(), BTreeSet::new())]),
+            },
+            CredentialUsage::SignatureVerification {
+                fields: BTreeMap::from([(" webhook_secret".into(), BTreeSet::from([HmacSha256]))]),
+            },
+        ] {
+            assert!(malformed.validate().is_err(), "S4: {malformed:?}");
+        }
+        let oauth = CredentialMaterial::OAuth(OAuthCredentialMaterial {
+            access_token: RedactedString::new("access"),
+            refresh_token: RedactedString::new("refresh"),
+            expires_at_unix_ms: None,
+            account_id: None,
+            account_plan: None,
+        });
+        assert_eq!(
+            oauth.validate_usage(&sole),
+            Err(CredentialMaterialError::MaterialKindMismatch),
+            "S5"
         );
     }
 

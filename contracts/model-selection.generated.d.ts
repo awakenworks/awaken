@@ -27,7 +27,7 @@ export type ModelSelection =
     }
   | {
       backend_ref: string;
-      configuration?: AcpSessionConfiguration2;
+      configuration?: AcpSessionConfiguration;
       mode: "backend_exact";
       model_ref: string;
     }
@@ -71,17 +71,4 @@ export interface ModelTarget {
   protocol_endpoint_id?: string | null;
   provider_id?: string | null;
   [k: string]: unknown;
-}
-/**
- * Adapter-native ACP Session intent attached to an Agent model selection.
- *
- * Values remain strings because the selected ACP runtime's negotiated
- * capability descriptor is the authority that validates supported modes and
- * option values at publication time.
- */
-export interface AcpSessionConfiguration2 {
-  mode?: string | null;
-  options?: {
-    [k: string]: string;
-  };
 }

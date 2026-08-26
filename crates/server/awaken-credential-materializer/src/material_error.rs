@@ -97,7 +97,11 @@ mod tests {
                 )]),
             },
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        );
+        )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::HttpEffect,
+            "https://api.github.com",
+        ));
 
         let error = PinnedCredentialMaterializer::new(credentials, Arc::new(SealErrorSecretStore))
             .resolve_for_workspace(

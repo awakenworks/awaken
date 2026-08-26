@@ -98,7 +98,8 @@ Environment inspection may produce a secret-free UI proposal only. The runtime s
 struct CredentialSource {                     // supersedes this page's earlier `CredentialRecord`
     id, workspace_id,
     kind: CredentialKind,                     // Vault | Oauth (`Env` decodes legacy rows but cannot execute)
-    provider_id: Option<String>,
+    descriptor: Option<CredentialDescriptor>, // canonical provider + material + exact target/usage declarations
+    provider_id: Option<String>,               // legacy-only; forbidden when descriptor is present
     protocol_endpoint_id: Option<String>,     // optional exact endpoint proof/scope
     adapter_registration_id: Option<String>,
     auth: CredentialAuth,                     // neutral; ACL maps the managed wire tags
@@ -326,10 +327,74 @@ mapping table or second receipt is introduced.
 Flow Domain Packs describe Credential Resources and their provider-specific
 presentation, but Awaken remains the only material authority. The existing
 `/v1/config/credentials` collection therefore accepts an optional stable
-`idempotency_key` for hosted governance callers. Its identity is the exact
-`(Workspace, provider_id, idempotency_key)` tuple: create seals material through
+`idempotency_key` and optional secret-free `CredentialDescriptor` for hosted
+governance callers. Its identity is the exact `(Workspace, canonical provider,
+idempotency_key)` tuple, where exactly one provider comes from the descriptor or
+the legacy `provider_id`; new described writes reject the legacy field. Create seals material through
 the existing Credential repository and SecretStore, exact replay returns the
 same secret-free source, and reuse with different material fails closed.
+
+Each descriptor declaration is one exact target identity (purpose + audience)
+paired with `CredentialUsage`. Executable access serializes that target identity
+and its existing usage field once. This prevents both purpose/audience Cartesian
+expansion and an independent usage from passing beside a matching target. Create and material
+rotation validate the material kind/type/complete field set and each declared
+usage against that opened material before storage;
+exact read returns the descriptor but never material. The existing
+expected-version rotation publishes descriptor changes in the same Source CAS;
+terminal retirement likewise requires the exact observed source revision before
+it publishes disabled/archived state or reclaims material.
+Subject/permission/static-expiry or target changes may retain an unchanged
+material descriptor, while a material-shape change requires replacement
+material in that operation. The descriptor provider is immutable after create;
+changing it requires a distinct source identity. Git transport uses only canonical typed HTTP Basic;
+Connector API use remains a separate scalar credential rather than a platform
+invented dual-use token document.
+
+Repository transport audiences use the credential contract's sole HTTPS-origin
+normalizer: any repository under `https://github.com/...` maps to
+`https://github.com/git`. The repository id/version remains in the existing
+material-binding fingerprint, so reuse is host-scoped without weakening exact
+repository execution binding. Different origins, userinfo, and non-HTTPS remotes
+do not normalize to the declared audience.
+
+Descriptor purpose is a closed compatibility matrix, not a free label. The
+implemented pairs are Repository transport with HTTP Basic, platform HTTP
+effect with the typed field-placement usage, signature verification with an
+exact field-to-algorithm map, and an Extension target with the existing
+Extension usage. The latter's `consumer_id` is the only consumer identity;
+purpose does not duplicate it. Described Provider and MCP sources are
+rejected until their existing compilers can derive and freeze exact targets.
+Legacy undescribed Provider/MCP rows continue through their existing paths.
+Target-dependent access without a target is rejected before local or external
+material resolution.
+
+The targetless Secret mount/write-back adapter is legacy-only. A described
+source is rejected before material is opened or changed because that wire does
+not carry its exact target and usage. All material replacement, including
+legacy write-back and Repository authorization updates, and every terminal
+source retirement call an expected-revision Vault CAS; no read-latest rotation
+or revocation wrapper remains. Provider
+and A2A candidate selection also excludes described sources until their
+existing compilers can publish an exact target.
+
+The pure `compile_exact_credential_access` domain function is the only source
+row-to-access projection. It validates source authority, active status,
+Workspace, positive revision, expiry, target+usage, holder policy and material
+binding. Exact-target consumers supply one selected holder. Legacy Provider and
+A2A publication use typed deferred holder selection because the dispatch claim
+owns that choice; only undescribed, targetless rows with the matching
+Provider/A2A usage may defer, and an empty holder policy fails closed. HTTP and
+Managed protocol adapters retain their existing row reads and envelope/custody
+effects but delegate that decision instead of copying it.
+
+Repository activation stores the exact secret-free pin, never opened HTTP Basic
+material or a short Gateway capability. Initial clone, hot replacement and
+terminal publish all pass through the same Git-effect function. A Worker-held
+pin is materialized against the exact Repository id/config version for that one
+operation; a Platform-held pin refreshes one Gateway capability. Any intervening
+disable, rotation, expiry, Workspace/target mismatch, or transport downgrade
+terminates before Git I/O and cannot select another credential or holder.
 
 The same collection performs operation lookup and idempotent-source listing;
 the reference-validation subresource consumes the durable source id plus its

@@ -1,7 +1,7 @@
 use awaken_credential_vault::CredentialSource;
 use awaken_model_catalog::ProviderCatalog;
 
-use crate::credential_can_supply;
+use crate::credential_is_executable_supply;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -146,14 +146,12 @@ pub fn project_executable_models(
                     false
                 } else {
                     credentials.iter().any(|credential| {
-                        credential.status == awaken_credential_vault::CredentialStatus::Active
-                            && credential.is_executable_origin()
-                            && credential_can_supply(
-                                offering.provider_id.as_str(),
-                                Some(offering.protocol_endpoint_id.as_str()),
-                                &executor.backend_ref,
-                                credential,
-                            )
+                        credential_is_executable_supply(
+                            offering.provider_id.as_str(),
+                            Some(offering.protocol_endpoint_id.as_str()),
+                            &executor.backend_ref,
+                            credential,
+                        )
                     })
                 };
                 let readiness = executable_model_readiness(
@@ -319,6 +317,7 @@ mod tests {
             id: awaken_credential_contract::CredentialSourceId("credential".into()),
             workspace_id: "workspace".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some("provider".into()),
             protocol_endpoint_id: None,
             env_key: None,

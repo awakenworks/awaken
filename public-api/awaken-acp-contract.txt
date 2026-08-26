@@ -32,7 +32,7 @@ pub awaken_acp_contract::AcpPublicationCapability::model_api_dialects: alloc::ve
 pub awaken_acp_contract::AcpPublicationCapability::model_delivery_credential_environments: core::option::Option<alloc::vec::Vec<alloc::string::String>>
 pub awaken_acp_contract::AcpPublicationCapability::model_selection: awaken_acp_contract::AcpModelSelectionSupport
 impl awaken_acp_contract::AcpPublicationCapability
-pub fn awaken_acp_contract::AcpPublicationCapability::credential_usage(&self, core::option::Option<&str>) -> core::result::Result<awaken_credential_contract::CredentialUsage, alloc::string::String>
+pub fn awaken_acp_contract::AcpPublicationCapability::credential_usage(&self, core::option::Option<&str>) -> core::result::Result<awaken_credential_contract::usage::CredentialUsage, alloc::string::String>
 pub struct awaken_acp_contract::AcpSessionConfigChoice
 pub awaken_acp_contract::AcpSessionConfigChoice::description: core::option::Option<alloc::string::String>
 pub awaken_acp_contract::AcpSessionConfigChoice::group_id: core::option::Option<alloc::string::String>

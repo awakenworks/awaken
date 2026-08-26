@@ -21,8 +21,8 @@ mod mutation;
 pub use mutation::SessionMutationError;
 mod session_services;
 pub use session_services::{
-    RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialSource,
-    SessionEnvironmentSource,
+    RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialAccessRequest,
+    SessionCredentialSource, SessionEnvironmentSource,
 };
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{

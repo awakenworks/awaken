@@ -34,13 +34,14 @@ pub async fn drive_retained_session_events(
 /// Shared integration-test decorator for deterministic root-CAS races.
 ///
 /// It delegates every real read/write to the SQLite adapter; only selected
-/// commit call numbers return `Conflict`. A selected conflict may first commit
-/// another valid aggregate mutation to prove that callers rebase only the
-/// sub-aggregate they own and never overwrite a concurrent fact.
+/// commit call numbers return `Conflict` or `Unavailable`. A selected conflict
+/// may first commit another valid aggregate mutation to prove that callers
+/// rebase only the sub-aggregate they own and never overwrite a concurrent fact.
 pub struct ScheduledConflictRepository {
     inner: Arc<SqliteManagedSessionRepository>,
     commit_calls: AtomicUsize,
     conflicts: Mutex<BTreeSet<usize>>,
+    unavailable: Mutex<BTreeSet<usize>>,
     resource_changes: Mutex<BTreeSet<usize>>,
     metadata_changes: Mutex<BTreeMap<usize, (String, String)>>,
 }
@@ -52,6 +53,7 @@ impl ScheduledConflictRepository {
             inner,
             commit_calls: AtomicUsize::new(0),
             conflicts: Mutex::new(BTreeSet::new()),
+            unavailable: Mutex::new(BTreeSet::new()),
             resource_changes: Mutex::new(BTreeSet::new()),
             metadata_changes: Mutex::new(BTreeMap::new()),
         }
@@ -68,6 +70,12 @@ impl ScheduledConflictRepository {
         for offset in offsets {
             self.conflict_on_next(*offset);
         }
+    }
+
+    /// Make the `offset`th subsequent commit fail before the Session mutation.
+    pub fn unavailable_on_next(&self, offset: usize) {
+        let call = self.commit_calls.load(Ordering::SeqCst) + offset;
+        self.unavailable.lock().unwrap().insert(call);
     }
 
     /// Before reporting the selected conflict, commit another valid Resource
@@ -147,6 +155,11 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         mutation: SessionMutation,
     ) -> Result<SessionMutationResult, SessionRepositoryError> {
         let call = self.commit_calls.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.unavailable.lock().unwrap().contains(&call) {
+            return Err(SessionRepositoryError::Unavailable(
+                "injected root-CAS outage".into(),
+            ));
+        }
         if self.conflicts.lock().unwrap().contains(&call) {
             let metadata_change = { self.metadata_changes.lock().unwrap().get(&call).cloned() };
             if let Some((key, value)) = metadata_change {

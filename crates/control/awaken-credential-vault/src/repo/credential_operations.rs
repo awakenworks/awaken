@@ -26,6 +26,7 @@ pub async fn ensure_worker_local(
         id,
         workspace_id: workspace_id.to_string(),
         kind: CredentialKind::WorkerLocal,
+        descriptor: None,
         provider_id,
         protocol_endpoint_id: None,
         env_key: None,
@@ -102,6 +103,77 @@ pub async fn enter_credential_idempotent(
     enter_prepared_credential_idempotent(expected, secret, store, repo).await
 }
 
+fn prepare_described_source(
+    id: Option<CredentialSourceId>,
+    params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
+    descriptor: awaken_credential_contract::CredentialDescriptor,
+) -> Result<
+    (
+        CredentialSource,
+        Option<awaken_agent_contract::RedactedString>,
+    ),
+    CredentialError,
+> {
+    validate_create_params(&params)?;
+    descriptor
+        .validate()
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+    if params.provider_id.is_some() {
+        return Err(CredentialError::InvalidSource(
+            "a described credential cannot also persist legacy provider_id".into(),
+        ));
+    }
+    if protocol_endpoint_id
+        .as_deref()
+        .is_some_and(|endpoint| endpoint.trim().is_empty())
+    {
+        return Err(CredentialError::InvalidSource(
+            "credential endpoint scope must not be empty".into(),
+        ));
+    }
+    let material = params.secret.as_ref().ok_or_else(|| {
+        CredentialError::InvalidSource("a described credential requires primary material".into())
+    })?;
+    crate::validate_described_material(&descriptor, material)?;
+    let (mut source, secret) = match id {
+        Some(id) => prepare_source_with_id(id, params),
+        None => crate::prepare_source(params),
+    };
+    source.protocol_endpoint_id = protocol_endpoint_id;
+    source.descriptor = Some(descriptor);
+    Ok((source, secret))
+}
+
+/// Enter one described source through the canonical create WAL/store path.
+pub async fn enter_credential_described(
+    params: CredentialCreateParams,
+    descriptor: awaken_credential_contract::CredentialDescriptor,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let (source, secret) = prepare_described_source(None, params, None, descriptor)?;
+    enter_prepared_credential(source, secret, BTreeMap::new(), store, repo).await
+}
+
+/// Enter one described source at a stable command identity. This is the same
+/// idempotent create authority as legacy entry, with descriptor validation added
+/// before any WAL or SecretStore effect.
+pub async fn enter_credential_idempotent_described(
+    id: CredentialSourceId,
+    params: CredentialCreateParams,
+    protocol_endpoint_id: Option<String>,
+    descriptor: awaken_credential_contract::CredentialDescriptor,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
+    let (source, secret) =
+        prepare_described_source(Some(id), params, protocol_endpoint_id, descriptor)?;
+    let expected_material = secret.clone();
+    let entry = enter_prepared_credential_idempotent(source, secret, store, repo).await?;
+    verify_idempotent_material(entry, expected_material.as_ref(), store).await
+}
+
 /// Enter one stable Vault credential and verify that every replay names the
 /// same sealed material. The operation identity remains caller-owned; the
 /// credential aggregate owns the create WAL, source CAS, and material check.
@@ -114,6 +186,14 @@ pub async fn enter_credential_idempotent_verified(
 ) -> Result<CredentialEntry, CredentialError> {
     let expected_material = params.secret.clone();
     let entry = enter_credential_idempotent(id, params, protocol_endpoint_id, store, repo).await?;
+    verify_idempotent_material(entry, expected_material.as_ref(), store).await
+}
+
+async fn verify_idempotent_material(
+    entry: CredentialEntry,
+    expected_material: Option<&awaken_agent_contract::RedactedString>,
+    store: &dyn SecretStore,
+) -> Result<CredentialEntry, CredentialError> {
     if let Some(expected) = expected_material {
         let reference = entry
             .source
@@ -148,11 +228,17 @@ pub(super) async fn enter_prepared_credential_idempotent(
         Err(error) => return Err(error),
     }
 
-    match enter_prepared_credential(expected.clone(), secret, BTreeMap::new(), store, repo).await {
-        Ok(source) => Ok(CredentialEntry {
-            source,
-            created: true,
-        }),
+    match enter_prepared_credential_inner(
+        expected.clone(),
+        secret,
+        BTreeMap::new(),
+        true,
+        store,
+        repo,
+    )
+    .await
+    {
+        Ok(entry) => Ok(entry),
         Err(conflict @ CredentialError::MutationConflict(_)) => {
             match repo.get(&expected.id).await {
                 Ok(source) => {
@@ -177,6 +263,7 @@ fn validate_idempotent_source(
     if actual.id != expected.id
         || actual.workspace_id != expected.workspace_id
         || actual.kind != expected.kind
+        || actual.descriptor != expected.descriptor
         || actual.provider_id != expected.provider_id
         || actual.protocol_endpoint_id != expected.protocol_endpoint_id
         || actual.env_key != expected.env_key
@@ -724,12 +811,25 @@ pub async fn retire_managed_credential(
 }
 
 async fn enter_prepared_credential(
-    mut source: CredentialSource,
+    source: CredentialSource,
     secret: Option<awaken_agent_contract::RedactedString>,
     auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
+    enter_prepared_credential_inner(source, secret, auxiliary, false, store, repo)
+        .await
+        .map(|entry| entry.source)
+}
+
+async fn enter_prepared_credential_inner(
+    mut source: CredentialSource,
+    secret: Option<awaken_agent_contract::RedactedString>,
+    auxiliary: BTreeMap<String, awaken_agent_contract::RedactedString>,
+    fence_published_replay: bool,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialEntry, CredentialError> {
     validate_material_slots(auxiliary.keys().map(String::as_str))?;
     let mut materials = Vec::new();
     if let (Some(reference), Some(secret)) = (source.material_ref.clone(), secret) {
@@ -746,12 +846,47 @@ async fn enter_prepared_credential(
         before: None,
         after: source.clone(),
     };
-    repo.begin_mutation(intent.clone()).await?;
+    let owns_intent = repo.begin_mutation(intent.clone()).await?;
+
+    // The first read in the idempotent command can race a sibling that
+    // publishes and completes the same identity before this caller claims the
+    // WAL. Re-check after the claim so that a redundant intent never causes a
+    // second material write. Only the caller that inserted that redundant
+    // intent may retire it.
+    if fence_published_replay {
+        match repo.get(&source.id).await {
+            Ok(current) if current == source => {
+                if owns_intent {
+                    repo.complete_mutation(&source.id).await?;
+                }
+                return Ok(CredentialEntry {
+                    source: current,
+                    created: false,
+                });
+            }
+            Ok(_) => {
+                if owns_intent {
+                    repo.complete_mutation(&source.id).await?;
+                }
+                return Err(CredentialError::MutationConflict(
+                    "credential source was published by another create command".into(),
+                ));
+            }
+            Err(CredentialError::SourceNotFound(_)) if owns_intent => {}
+            Err(CredentialError::SourceNotFound(_)) => {
+                return Err(CredentialError::MutationConflict(
+                    "credential creation with this identity is still pending".into(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+    }
 
     for (reference, secret) in materials {
         if let Err(error) = persist_material_exact(store, &reference, secret).await {
-            // A failed put may still have partially written. Only retire the
-            // durable intent after every candidate ref is idempotently clean.
+            // Only the WAL owner reaches material persistence. A failed put may
+            // still have partially written, so retire the durable intent only
+            // after every candidate ref is idempotently clean.
             if cleanup_unpublished_material(&intent, store).await.is_ok() {
                 repo.complete_mutation(&source.id).await?;
             }
@@ -762,7 +897,10 @@ async fn enter_prepared_credential(
     // recovery authority, preventing deletion of a source that actually committed.
     repo.apply_mutation(&intent).await?;
     repo.complete_mutation(&source.id).await?;
-    Ok(source)
+    Ok(CredentialEntry {
+        source,
+        created: owns_intent,
+    })
 }
 
 fn validate_material_slots<'a>(
@@ -825,7 +963,53 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
     if before.kind != CredentialKind::Vault || before.status != CredentialStatus::Active {
         return Err(CredentialError::NotActive(id.0.clone()));
     }
-    if patch.primary.is_none() && patch.auxiliary.is_empty() {
+    let effective_descriptor = patch.descriptor.as_ref().or(before.descriptor.as_ref());
+    if let Some(descriptor) = effective_descriptor {
+        descriptor
+            .validate()
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+        if before.provider_id.is_some() {
+            return Err(CredentialError::InvalidSource(
+                "a described credential cannot also persist legacy provider_id".into(),
+            ));
+        }
+        if before
+            .descriptor
+            .as_ref()
+            .zip(patch.descriptor.as_ref())
+            .is_some_and(|(current, replacement)| current.provider != replacement.provider)
+        {
+            return Err(CredentialError::InvalidSource(
+                "credential descriptor provider is immutable".into(),
+            ));
+        }
+        if let Some(primary) = patch.primary.as_ref() {
+            crate::validate_described_material(descriptor, primary)?;
+        }
+    }
+    if let Some(descriptor) = patch.descriptor.as_ref()
+        && patch.primary.is_none()
+        && before
+            .descriptor
+            .as_ref()
+            .is_none_or(|current| current.material != descriptor.material)
+    {
+        return Err(CredentialError::InvalidSource(
+            "changing a credential material descriptor requires replacement primary material"
+                .into(),
+        ));
+    }
+    if let Some(descriptor) = patch.descriptor.as_ref()
+        && patch.primary.is_none()
+    {
+        let current_ref = before
+            .material_ref
+            .as_ref()
+            .ok_or_else(|| CredentialError::MissingMaterialRef(id.0.clone()))?;
+        let current_material = store.get(current_ref).await?;
+        crate::validate_described_material(descriptor, &current_material)?;
+    }
+    if patch.primary.is_none() && patch.auxiliary.is_empty() && patch.descriptor.is_none() {
         return Ok(before);
     }
     let version = before
@@ -834,6 +1018,9 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     let mut after = before.clone();
     after.version = version;
+    if let Some(descriptor) = patch.descriptor {
+        after.descriptor = Some(descriptor);
+    }
     let mut materials = Vec::new();
     if let Some(material) = patch.primary {
         let reference = primary_ref.unwrap_or_else(|| material_ref_for(id, version, "primary"));
@@ -881,38 +1068,6 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
     cleanup_retired_material(&intent, store).await?;
     repo.complete_mutation(id).await?;
     Ok(after)
-}
-
-/// Rotate material from the currently committed revision. Callers that retain
-/// an execution pin should use [`rotate_credential_materials_exact`] instead.
-pub async fn rotate_credential_materials(
-    id: &CredentialSourceId,
-    patch: CredentialMaterialPatch,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    let version = repo.get(id).await?.version;
-    rotate_credential_materials_exact(id, version, patch, store, repo).await
-}
-
-/// Rotate the material of one active Vault source without ever overwriting the
-/// reference used by an older exact revision.
-pub async fn rotate_credential(
-    id: &CredentialSourceId,
-    material: awaken_agent_contract::RedactedString,
-    store: &dyn SecretStore,
-    repo: &dyn CredentialRepo,
-) -> Result<CredentialSource, CredentialError> {
-    rotate_credential_materials(
-        id,
-        CredentialMaterialPatch {
-            primary: Some(material),
-            auxiliary: BTreeMap::new(),
-        },
-        store,
-        repo,
-    )
-    .await
 }
 
 /// Publish a higher exact revision for executable, secret-free configuration
@@ -1009,15 +1164,23 @@ pub async fn transition_credential_status(
     Ok(after)
 }
 
-/// Terminally revoke one source: publish a higher disabled/archived revision
-/// first, then erase its material while the WAL intent remains recoverable.
-pub async fn revoke_credential(
+/// Terminally revoke one exact source revision: reject a stale command before
+/// publishing lifecycle state or erasing any material, then publish a higher
+/// disabled/archived revision and reclaim its material while the WAL intent
+/// remains recoverable.
+pub async fn revoke_credential_exact(
     id: &CredentialSourceId,
+    expected_version: i64,
     retirement: CredentialRetirement,
     store: &dyn SecretStore,
     repo: &dyn CredentialRepo,
 ) -> Result<CredentialSource, CredentialError> {
     let before = repo.get(id).await?;
+    if before.version != expected_version {
+        return Err(CredentialError::MutationConflict(
+            "credential revision changed before retirement".into(),
+        ));
+    }
     let mut after = before.clone();
     after.version = before
         .version

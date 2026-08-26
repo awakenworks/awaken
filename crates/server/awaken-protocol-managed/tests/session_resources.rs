@@ -677,6 +677,7 @@ impl awaken_session_application::RepositoryCredentialIngress
         &self,
         source_id: awaken_credential_contract::CredentialSourceId,
         _workspace_id: &str,
+        _target: awaken_credential_contract::CredentialTarget,
         _token: awaken_agent_contract::RedactedString,
     ) -> Result<awaken_credential_contract::CredentialSourceId, String> {
         self.writes
@@ -687,12 +688,16 @@ impl awaken_session_application::RepositoryCredentialIngress
     async fn rotate_repository_token(
         &self,
         _source_id: &awaken_credential_contract::CredentialSourceId,
+        expected_revision: u64,
         _workspace_id: &str,
+        _target: awaken_credential_contract::CredentialTarget,
         _token: awaken_agent_contract::RedactedString,
-    ) -> Result<(), String> {
+    ) -> Result<u64, String> {
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
+        expected_revision
+            .checked_add(1)
+            .ok_or_else(|| "repository credential revision overflow".into())
     }
 }
 
@@ -2534,16 +2539,23 @@ async fn resource_config_publication_only_affects_later_sessions() {
 
 #[tokio::test]
 /// Access-compiler cause graph:
-/// C1 source exists -> C2 source active -> C3 Workspace exact -> E1 immutable
-/// id/revision/usage/policy access pin. The first failed cause terminates without
-/// opening material.
+/// C1 source exists -> C2 source active -> C3 Workspace exact -> C4 descriptor
+/// declares the exact Repository target -> C5 target-declared usage equals the
+/// requested usage -> C6 static descriptor expiry is live -> E1 immutable
+/// id/revision/target/usage/policy access pin.
+/// The first failed cause terminates without opening material.
+/// Request-shape invariant: C4/C5 plus the selected policy, holder, and binding
+/// move as one Session request; C1/C3 remain source-row lookup admission.
 ///
-/// | Rule | C1 | C2 | C3 | Result |
-/// |---|---|---|---|---|
-/// | A1 | T | T | T | exact access |
-/// | A2 | F | - | - | source not found |
-/// | A3 | T | F | - | not active |
-/// | A4 | T | T | F | cross-Workspace rejected |
+/// | Rule | C1 | C2 | C3 | C4 | C5 | C6 | Result |
+/// |---|---|---|---|---|---|---|---|
+/// | A1 | T | T | T | T | T | T | exact access |
+/// | A2 | F | - | - | - | - | - | source not found |
+/// | A3 | T | F | - | - | - | - | not active |
+/// | A4 | T | T | F | - | - | - | cross-Workspace rejected |
+/// | A5 | T | T | T | F | - | - | undeclared audience rejected |
+/// | A6 | T | T | T | T | F | - | independent usage rejected |
+/// | A7 | T | T | T | T | T | F | expired descriptor rejected |
 async fn repository_access_compiler_follows_the_decision_table() {
     #[derive(Clone)]
     struct Rule {
@@ -2551,6 +2563,9 @@ async fn repository_access_compiler_follows_the_decision_table() {
         exists: bool,
         active: bool,
         workspace_exact: bool,
+        target_exact: bool,
+        usage_exact: bool,
+        not_expired: bool,
         expected: Result<(), awaken_credential_vault::CredentialError>,
     }
     let valid = Rule {
@@ -2558,6 +2573,9 @@ async fn repository_access_compiler_follows_the_decision_table() {
         exists: true,
         active: true,
         workspace_exact: true,
+        target_exact: true,
+        usage_exact: true,
+        not_expired: true,
         expected: Ok(()),
     };
     let rules = [
@@ -2584,6 +2602,31 @@ async fn repository_access_compiler_follows_the_decision_table() {
             expected: Err(awaken_credential_vault::CredentialError::InvalidSource(
                 "credential source belongs to another Workspace".into(),
             )),
+            ..valid.clone()
+        },
+        Rule {
+            id: "A5",
+            target_exact: false,
+            expected: Err(awaken_credential_vault::CredentialError::InvalidSource(
+                awaken_credential_contract::CredentialDescriptorError::TargetMismatch.to_string(),
+            )),
+            ..valid.clone()
+        },
+        Rule {
+            id: "A6",
+            usage_exact: false,
+            expected: Err(awaken_credential_vault::CredentialError::InvalidSource(
+                awaken_credential_contract::CredentialDescriptorError::InvalidTargetUsage
+                    .to_string(),
+            )),
+            ..valid.clone()
+        },
+        Rule {
+            id: "A7",
+            not_expired: false,
+            expected: Err(awaken_credential_vault::CredentialError::InvalidSource(
+                awaken_credential_contract::CredentialDescriptorError::Expired.to_string(),
+            )),
             ..valid
         },
     ];
@@ -2592,8 +2635,23 @@ async fn repository_access_compiler_follows_the_decision_table() {
         let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
         let credentials =
             std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let declared_usage = awaken_session_contract::repository_transport_credential_usage();
+        let declared_target = awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+            awaken_credential_contract::repository_transport_audience(
+                "https://github.com/awaken/example.git",
+            )
+            .expect("canonical repository transport audience"),
+        );
         let source_id = if rule.exists {
-            let mut source = awaken_credential_vault::repo::enter_credential(
+            let material = awaken_credential_vault::encode_structured_material(
+                awaken_credential_contract::http_basic_material(
+                    awaken_agent_contract::RedactedString::new("x-access-token"),
+                    awaken_agent_contract::RedactedString::new("compiler-secret"),
+                ),
+            )
+            .expect("encode decision-table material");
+            let mut source = awaken_credential_vault::repo::enter_credential_described(
                 awaken_credential_vault::CredentialCreateParams {
                     workspace_id: if rule.workspace_exact {
                         "workspace-a".into()
@@ -2601,13 +2659,23 @@ async fn repository_access_compiler_follows_the_decision_table() {
                         "workspace-b".into()
                     },
                     kind: awaken_credential_vault::CredentialKind::Vault,
-                    provider_id: Some("git".into()),
+                    provider_id: None,
                     env_key: None,
-                    secret: Some(awaken_agent_contract::RedactedString::from(
-                        "compiler-secret".to_string(),
-                    )),
+                    secret: Some(material),
                     oauth_command: None,
                 },
+                awaken_credential_contract::CredentialDescriptor::new(
+                    "github",
+                    awaken_credential_contract::CredentialMaterialDescriptor::structured(
+                        awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                        ["password", "username"],
+                    ),
+                    [awaken_credential_contract::CredentialTargetContract::new(
+                        declared_target.clone(),
+                        declared_usage.clone(),
+                    )],
+                )
+                .with_expiry(if rule.not_expired { u64::MAX } else { 1 }),
                 secrets.as_ref(),
                 credentials.as_ref(),
             )
@@ -2627,10 +2695,28 @@ async fn repository_access_compiler_follows_the_decision_table() {
         };
         let holder = awaken_credential_contract::CredentialRealizationProfile::self_hosted_native()
             .resource_holder;
-        let usage = awaken_session_contract::repository_transport_credential_usage();
+        let usage = if rule.usage_exact {
+            declared_usage.clone()
+        } else {
+            awaken_credential_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            }
+        };
+        let target = if rule.target_exact {
+            declared_target.clone()
+        } else {
+            awaken_credential_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+                awaken_credential_contract::repository_transport_audience(
+                    "https://github.example/awaken/other.git",
+                )
+                .expect("different repository transport host"),
+            )
+        };
         let binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
             "workspace-a",
-            &("repository-a", 1_u64),
+            &("repository-a", 1_u64, &target),
             &usage,
         );
         let vaults = awaken_protocol_managed::VaultState::new(secrets, credentials);
@@ -2638,19 +2724,23 @@ async fn repository_access_compiler_follows_the_decision_table() {
             .credential_access_for_source(
                 &source_id,
                 "workspace-a",
-                usage,
-                awaken_credential_contract::CredentialExecutionPolicy::exact(
-                    holder.clone(),
-                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
-                ),
-                &holder,
-                &binding,
+                awaken_session_application::SessionCredentialAccessRequest {
+                    target: target.clone(),
+                    usage,
+                    policy: awaken_credential_contract::CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                    ),
+                    selected_holder: holder.clone(),
+                    binding,
+                },
             )
             .await;
         match (rule.expected, actual) {
             (Ok(()), Ok(access)) => {
                 assert_eq!(access.credential.id, source_id.0, "{}", rule.id);
                 assert_eq!(access.credential.revision, 1, "{}", rule.id);
+                assert_eq!(access.target, Some(target), "{}", rule.id);
                 assert_eq!(
                     access.usage,
                     awaken_session_contract::repository_transport_credential_usage(),
@@ -3451,24 +3541,30 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     // Cause graph:
     // write-only token -> canonical Vault sealing -> create-time Repository config
     // -> exact access@revision -> frozen Session manifest -> Runtime apply;
-    // update token -> canonical material rotation -> Session pin CAS. Raw material
-    // and the internal binding identifier never enter the wire projection.
+    // update token -> canonical material rotation -> Session pin CAS. If the Vault
+    // commits N+1 and that Session CAS is unavailable, only an exact replay of the
+    // same material may recover the frozen pin; different material cannot adopt
+    // N+1. Raw material and the internal binding identifier never enter the wire
+    // projection.
     //
     // Decision table:
-    // | Rule | Binding | Workspace/status | Result | Runtime | Durable pin |
-    // | B1 | absent | n/a | public Repository | once | none |
-    // | B2 | supplied | exact/active | seal/create | once | revision 1 |
-    // | B3 | replacement | exact/active | rotate/update | unchanged | revision 2 |
+    // | Rule | Frozen pin | Vault | Incoming material | Session CAS | Result |
+    // | B1 | absent | absent | absent | available | public Repository |
+    // | B2 | absent | absent | supplied | available | seal and pin revision 1 |
+    // | B3 | revision 1 | revision 1 | replacement | unavailable | Vault 2, Session 1 |
+    // | B4 | revision 1 | revision 2 | different | available | reject, Session unchanged |
+    // | B5 | revision 1 | revision 2 | byte-identical | available | recover pin revision 2 |
     let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
     let credentials =
         std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
         secrets,
-        credentials,
+        credentials.clone(),
     ));
-    let sessions = std::sync::Arc::new(
+    let session_store = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
+    let sessions = std::sync::Arc::new(ScheduledConflictRepository::new(session_store));
     let runtime = AcceptingFake::default();
     let prepared = runtime.prepared.clone();
     let applied = runtime.applied.clone();
@@ -3521,9 +3617,114 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         format!("managed:{session_id}:repository:0:credential")
     );
     assert_eq!(credential.access.credential.revision, 1);
+    let source = credentials
+        .get(&awaken_credential_contract::CredentialSourceId(
+            credential.access.credential.id.clone(),
+        ))
+        .await
+        .expect("B2 source");
+    assert!(source.provider_id.is_none(), "B2 one provider authority");
+    let descriptor = source.descriptor.as_ref().expect("B2 descriptor");
+    assert_eq!(descriptor.provider.0, "github", "B2 provider");
+    assert_eq!(
+        descriptor.material,
+        awaken_credential_contract::CredentialMaterialDescriptor::structured(
+            awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+            ["password", "username"],
+        ),
+        "B2 material shape"
+    );
+    assert!(
+        descriptor
+            .admit(
+                credential.access.target.as_ref().expect("B2 target"),
+                &awaken_session_contract::repository_transport_credential_usage(),
+            )
+            .is_ok(),
+        "B2 exact target/usage"
+    );
 
     let resource_id = session["resources"][0]["id"].as_str().unwrap();
     let applied_before = applied.lock().unwrap().len();
+    sessions.unavailable_on_next(1);
+    let (crash_status, crash) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(
+        crash_status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "B3: {crash}"
+    );
+    assert!(!crash.to_string().contains("rotated-secret"), "B3 no echo");
+    assert_eq!(
+        applied.lock().unwrap().len(),
+        applied_before,
+        "B3 changes no Runtime effect"
+    );
+    let stranded = sessions.get(session_id).await.unwrap();
+    let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
+        &stranded.resources.active.inputs()[0].source
+    else {
+        panic!("B3 must retain one Repository input")
+    };
+    assert_eq!(
+        credential
+            .as_ref()
+            .expect("B3 frozen pin")
+            .access
+            .credential
+            .revision,
+        1,
+        "B3 Session CAS did not commit"
+    );
+    let source_id = awaken_credential_contract::CredentialSourceId(
+        credential
+            .as_ref()
+            .expect("B3 frozen pin")
+            .access
+            .credential
+            .id
+            .clone(),
+    );
+    assert_eq!(
+        credentials.get(&source_id).await.unwrap().version,
+        2,
+        "B3 Vault"
+    );
+
+    let stranded_revision = stranded.revision;
+    let stranded_resources = stranded.resources.clone();
+    let (different_status, different) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        Some(json!({"authorization_token": "different-secret"})), // awaken-allow: secret
+    )
+    .await;
+    assert_eq!(different_status, StatusCode::BAD_REQUEST, "B4: {different}");
+    assert!(
+        !different.to_string().contains("different-secret"),
+        "B4 no echo"
+    );
+    let after_different = sessions.get(session_id).await.unwrap();
+    assert_eq!(
+        after_different.revision, stranded_revision,
+        "B4 Session revision"
+    );
+    assert_eq!(
+        after_different.resources, stranded_resources,
+        "B4 Session state"
+    );
+    assert_eq!(
+        credentials.get(&source_id).await.unwrap().version,
+        2,
+        "B4 Vault"
+    );
+
     let (rotate_status, rotated) = call(
         &app,
         "POST",
@@ -3531,26 +3732,30 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
         Some(json!({"authorization_token": "rotated-secret"})), // awaken-allow: secret
     )
     .await;
-    assert_eq!(rotate_status, StatusCode::OK, "{rotated}");
-    assert!(!rotated.to_string().contains("rotated-secret"));
+    assert_eq!(rotate_status, StatusCode::OK, "B5: {rotated}");
+    assert!(
+        !rotated.to_string().contains("rotated-secret"),
+        "B5 no echo"
+    );
     assert_eq!(
         applied.lock().unwrap().len(),
         applied_before,
-        "B3 changes the execution pin without remounting the working tree"
+        "B5 repins without remounting the working tree"
     );
     let durable = sessions.get(session_id).await.unwrap();
     let awaken_session_contract::ResolvedInputSource::Repository { credential, .. } =
         &durable.resources.active.inputs()[0].source
     else {
-        panic!("B3 must retain one Repository input")
+        panic!("B5 must retain one Repository input")
     };
     assert_eq!(
         credential
             .as_ref()
-            .expect("B3 rotated pin")
+            .expect("B5 recovered pin")
             .access
             .credential
             .revision,
-        2
+        2,
+        "B5 exact crash replay"
     );
 }
