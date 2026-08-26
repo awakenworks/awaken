@@ -610,6 +610,6 @@ async fn out_of_bound_plugin_fails_the_run_closed() {
             .map(|message| message.id.0.as_str())
             .collect::<Vec<_>>(),
         vec!["m1"],
-        "P1"
+        "a pre-inference capability failure durably identifies its accepted input"
     );
 }

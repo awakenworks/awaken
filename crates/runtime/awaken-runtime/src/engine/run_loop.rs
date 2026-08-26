@@ -25,14 +25,30 @@ pub(crate) async fn run_agent_loop(
     let thread_id = activation.thread_id.clone();
     let delegation_origin = activation.delegation_origin.clone();
 
+    // Admission owns the input before any model-side capability is realized.
+    // A cancellation or fail-closed plugin resolve still commits that accepted
+    // input atomically with the terminal state, so recovery can prove the exact
+    // request that produced the outcome instead of masking it as missing history.
+    let committed = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_messages(&thread_id))
+        .unwrap_or_default();
+    let committed_ids: std::collections::HashSet<_> =
+        committed.iter().map(|message| message.id.clone()).collect();
+    let mut transcript = model_transcript(&context, committed);
+    let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
+    let fresh_input: Vec<Message> = activation
+        .input
+        .into_iter()
+        .filter(|message| !committed_ids.contains(&message.id))
+        .collect();
+
     // Cancellation observed before any model call: commit a terminal Cancelled
     // outcome instead of starting work.
     if context.is_cancelled() {
-        let step = RunStepResult::ended_with_messages(
-            run_id.clone(),
-            EndCause::Cancelled,
-            activation.input,
-        );
+        let step =
+            RunStepResult::ended_with_messages(run_id.clone(), EndCause::Cancelled, fresh_input);
         return finish(runtime, &context, &thread_id, run_id, step).await;
     }
 
@@ -50,7 +66,7 @@ pub(crate) async fn run_agent_loop(
             let step = RunStepResult::ended_with_messages(
                 run_id.clone(),
                 EndCause::Error(Failure::CapabilityBound),
-                activation.input,
+                fresh_input,
             );
             return finish(runtime, &context, &thread_id, run_id, step).await;
         }
@@ -67,20 +83,6 @@ pub(crate) async fn run_agent_loop(
     // watermark resets per attempt, so it cannot tell). Keyed on the stable
     // message id, a fresh run's uncommitted input passes through unchanged while a
     // reclaimed or redelivered input is dropped — input delivery is idempotent.
-    let committed = context
-        .reader
-        .as_ref()
-        .map(|reader| reader.committed_messages(&thread_id))
-        .unwrap_or_default();
-    let committed_ids: std::collections::HashSet<_> =
-        committed.iter().map(|message| message.id.clone()).collect();
-    let mut transcript = model_transcript(&context, committed);
-    let run_input: std::sync::Arc<[Message]> = activation.input.clone().into();
-    let fresh_input: Vec<Message> = activation
-        .input
-        .into_iter()
-        .filter(|message| !committed_ids.contains(&message.id))
-        .collect();
     transcript.extend(fresh_input.iter().cloned());
     let store = store_from_commands(
         context

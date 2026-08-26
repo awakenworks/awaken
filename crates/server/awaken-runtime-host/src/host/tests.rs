@@ -2271,6 +2271,46 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     );
 }
 
+#[tokio::test]
+async fn published_compact_plugin_is_installed_from_the_immutable_agent() {
+    // Cause/effect graph: C1 an immutable publication selects `compact`; C2 the
+    // process has no ambient compaction override. C1+C2 must install the exact
+    // publication-selected plugin before inference. Otherwise authoring accepts
+    // a capability that the product runtime can never execute.
+    let snapshot = crate::config::server_config(
+        "published-compact",
+        "stub",
+        &HashSet::new(),
+        &HashSet::new(),
+        &[awaken_ext_compact::COMPACT_PLUGIN_ID.to_string()],
+        &std::collections::BTreeMap::from([(
+            awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
+            serde_json::json!({}),
+        )]),
+        &[],
+        awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
+    );
+    let publications = awaken_runtime_contract::StaticPublishedAgentSnapshots::try_new([snapshot])
+        .expect("one immutable published Agent");
+    let host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
+
+    let outcome = host
+        .run(
+            Some("published-compact"),
+            "published-compact-thread",
+            vec![Message::text(
+                MessageId("published-compact-input".into()),
+                Role::User,
+                "prepare the handoff",
+            )],
+        )
+        .await
+        .expect("publication-selected compact plugin runs without ambient enablement");
+
+    assert_eq!(outcome.state, RunState::Ended(EndCause::NaturalEnd));
+}
+
 /// The extractor saves "the user prefers tea"; the main agent answers "tea"
 /// only when that memory is present in its system context (recalled).
 struct MemLoopModel;

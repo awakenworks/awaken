@@ -31,6 +31,9 @@ async fn main() -> ExitCode {
 #[cfg(feature = "hand")]
 async fn run_hand(args: &[String]) -> ExitCode {
     use awaken_sandbox::hand::{parse_hand_args, serve};
+    if args == ["--check"] {
+        return ExitCode::SUCCESS;
+    }
     let bind = match parse_hand_args(args) {
         Ok(bind) => bind,
         Err(msg) => {

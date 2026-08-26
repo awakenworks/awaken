@@ -1246,18 +1246,37 @@ impl SharedHost {
         // Compaction is a plugin too: a BeforeInference hook that folds the older
         // slice into a summary and injects it request-only. A successful fold
         // activates its matching Run-scoped window; before that history stays whole.
-        let context_policy = match &self.compaction {
-            Some(compaction) => {
-                let compact_config = installed
-                    .as_ref()
-                    .and_then(|snapshot| {
-                        snapshot
-                            .resolved_spec
-                            .plugin_config
-                            .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
-                    })
-                    .and_then(|value| serde_json::from_value(value.clone()).ok())
-                    .unwrap_or_else(|| compaction.config.clone());
+        let published_compact = installed.as_ref().and_then(|snapshot| {
+            snapshot
+                .resolved_spec
+                .plugin_ids
+                .iter()
+                .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
+                .then_some(snapshot)
+        });
+        let compact_config = match published_compact {
+            Some(snapshot) => Some(
+                snapshot
+                    .resolved_spec
+                    .plugin_config
+                    .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| {
+                        HostError::bad_request(format!(
+                            "invalid published compact plugin config: {error}"
+                        ))
+                    })?
+                    .unwrap_or_default(),
+            ),
+            None => self
+                .compaction
+                .as_ref()
+                .map(|compaction| compaction.config.clone()),
+        };
+        let context_policy = match compact_config {
+            Some(compact_config) => {
                 let fallback = awaken_ext_compact::default_compact_agent(
                     &fallback_model_ref,
                     compact_config
