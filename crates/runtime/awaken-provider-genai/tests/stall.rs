@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
-use awaken_provider_genai::GenaiExecutor;
+use awaken_provider_genai::{AdapterKind, GenaiExecutor};
 use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, DeltaSink, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -89,6 +89,41 @@ async fn spawn_heartbeating_server() -> String {
     format!("http://{addr}/")
 }
 
+/// An OpenAI-compatible endpoint that sends a complete turn and `[DONE]`, then
+/// intentionally retains the TCP connection. The protocol is complete even
+/// though the transport remains reusable.
+async fn spawn_completed_keep_alive_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
+    let addr = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut socket, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                let _ = socket.read(&mut buf).await;
+                let head = "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n";
+                let events = concat!(
+                    "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",",
+                    "\"created\":1,\"model\":\"model-test\",\"choices\":[{\"index\":0,",
+                    "\"delta\":{\"role\":\"assistant\",\"content\":\"complete\"},",
+                    "\"finish_reason\":null}]}\n\n",
+                    "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",",
+                    "\"created\":1,\"model\":\"model-test\",\"choices\":[{\"index\":0,",
+                    "\"delta\":{},\"finish_reason\":\"stop\"}],",
+                    "\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n",
+                    "data: [DONE]\n\n",
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(events.as_bytes()).await;
+                let _ = socket.flush().await;
+                std::future::pending::<()>().await;
+            });
+        }
+    });
+    format!("http://{addr}/v1")
+}
+
 struct NullSink;
 
 #[async_trait::async_trait]
@@ -169,4 +204,22 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
         err.is_retryable(),
         "a total stream timeout is worth retrying"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protocol_end_completes_without_waiting_for_transport_eof() {
+    // Causal rule: terminal protocol event + retained HTTP connection => commit
+    // the complete turn promptly. Transport EOF is neither required nor awaited.
+    let base_url = spawn_completed_keep_alive_server().await;
+    let executor = GenaiExecutor::from_resolved(AdapterKind::OpenAI, Some(base_url), "test-key")
+        .with_idle_timeout(Duration::from_secs(5));
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        executor.infer_streaming(request(), &NullSink),
+    )
+    .await
+    .expect("the protocol terminal event completes the turn")
+    .expect("a complete stream is successful");
+    assert_eq!(result.output.text_content(), "complete");
 }

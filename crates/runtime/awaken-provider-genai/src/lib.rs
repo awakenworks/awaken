@@ -250,6 +250,11 @@ fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -
 pub struct GenaiExecutor {
     client: Client,
     adapter: Option<AdapterKind>,
+    /// Provider defaults that cannot be represented by the neutral inference
+    /// vocabulary. DeepSeek V4 enables high-effort thinking by default; when an
+    /// Agent did not request reasoning, disable it explicitly so an ordinary
+    /// chat turn does not spend most of its latency on hidden reasoning chunks.
+    default_extra_body: Option<serde_json::Value>,
     timeout: Duration,
     idle_timeout: Duration,
 }
@@ -307,6 +312,7 @@ impl GenaiExecutor {
         Self {
             client,
             adapter,
+            default_extra_body: None,
             timeout: DEFAULT_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
@@ -345,6 +351,7 @@ impl GenaiExecutor {
         use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
         use genai::{ModelIden, ServiceTarget};
 
+        let default_extra_body = deepseek_default_extra_body(adapter, base_url.as_deref());
         let key = key.into();
         let base_url = normalize_provider_base_url(adapter, base_url);
         let resolver = ServiceTargetResolver::from_resolver_fn(
@@ -360,7 +367,9 @@ impl GenaiExecutor {
         let client = Client::builder()
             .with_service_target_resolver(resolver)
             .build();
-        Self::with_client_for_adapter(client, adapter)
+        let mut executor = Self::with_client_for_adapter(client, adapter);
+        executor.default_extra_body = default_extra_body;
+        executor
     }
 
     /// An executor pointed at a custom **Anthropic-compatible** endpoint (e.g.
@@ -423,7 +432,7 @@ impl LlmExecutor for GenaiExecutor {
     async fn infer(&self, request: ChatRequest) -> Result<ChatResponse> {
         let model = request.model_binding.model_ref.clone();
         let genai_request = to_genai_request_with_adapter(&request, self.adapter)?;
-        let options = to_genai_options(&request, false)?;
+        let options = self.chat_options(&request, false)?;
 
         let response = tokio::time::timeout(
             self.timeout,
@@ -454,7 +463,8 @@ impl LlmExecutor for GenaiExecutor {
         // streams tool arguments as `input_json_delta` text that is only valid
         // JSON once the block ends. Without `capture_*` the `End` event carries
         // no content and we'd be stuck with the raw, string-encoded deltas.
-        let options = to_genai_options(&request, true)?
+        let options = self
+            .chat_options(&request, true)?
             .with_capture_content(true)
             .with_capture_tool_calls(true)
             .with_capture_usage(true)
@@ -558,6 +568,13 @@ impl LlmExecutor for GenaiExecutor {
                     if let Some(r) = end.captured_reasoning_content {
                         reasoning = r;
                     }
+                    // `End` is the model protocol's authoritative turn boundary.
+                    // OpenAI-compatible gateways may keep the HTTP connection
+                    // alive after `[DONE]`; waiting for transport EOF in that
+                    // case leaves an otherwise complete run stuck until the
+                    // idle timeout. Do not let connection reuse redefine model
+                    // completion.
+                    break;
                 }
                 _ => {}
             }
@@ -592,6 +609,30 @@ impl LlmExecutor for GenaiExecutor {
             stop_reason,
         })
     }
+}
+
+impl GenaiExecutor {
+    fn chat_options(&self, request: &ChatRequest, streaming: bool) -> Result<ChatOptions> {
+        let mut options = to_genai_options(request, streaming)?;
+        if request.inference.effort.is_none()
+            && let Some(extra_body) = &self.default_extra_body
+        {
+            options = options.with_extra_body(extra_body.clone());
+        }
+        Ok(options)
+    }
+}
+
+fn deepseek_default_extra_body(
+    adapter: AdapterKind,
+    base_url: Option<&str>,
+) -> Option<serde_json::Value> {
+    if adapter != AdapterKind::OpenAI {
+        return None;
+    }
+    let url = reqwest::Url::parse(base_url?).ok()?;
+    matches!(url.host_str(), Some("api.deepseek.com"))
+        .then(|| serde_json::json!({ "thinking": { "type": "disabled" } }))
 }
 
 /// Materialize the snapshot's typed inference controls into genai's per-call
@@ -1571,6 +1612,58 @@ mod hermetic_tests {
         let error = to_genai_options(&geo, false).unwrap_err();
         assert_eq!(error.code(), "invalid_request");
         assert!(error.to_string().contains("inference_geo `us`"));
+    }
+
+    #[test]
+    fn deepseek_default_thinking_is_disabled_unless_the_agent_requests_reasoning() {
+        // Cause/effect decision table:
+        // D1 DeepSeek endpoint + no authored effort -> disable provider-default
+        //    thinking so ordinary chat returns visible content promptly.
+        // D2 DeepSeek endpoint + authored effort -> do not override the provider;
+        //    the explicit reasoning request remains authoritative.
+        // D3 another OpenAI-compatible endpoint -> never inject DeepSeek fields.
+        let deepseek = GenaiExecutor::from_resolved(
+            AdapterKind::OpenAI,
+            Some("https://api.deepseek.com".into()),
+            "fixture-key",
+        );
+        let defaults = deepseek
+            .chat_options(&controlled_request(Default::default()), true)
+            .unwrap();
+        assert_eq!(
+            defaults.extra_body,
+            Some(serde_json::json!({ "thinking": { "type": "disabled" } })),
+            "D1",
+        );
+
+        let reasoned = deepseek
+            .chat_options(
+                &controlled_request(InferenceOptions {
+                    effort: Some(ReasoningEffort::High),
+                    ..Default::default()
+                }),
+                true,
+            )
+            .unwrap();
+        assert!(reasoned.extra_body.is_none(), "D2");
+        assert!(matches!(
+            reasoned.reasoning_effort,
+            Some(GenaiReasoningEffort::High)
+        ));
+
+        let compatible = GenaiExecutor::from_resolved(
+            AdapterKind::OpenAI,
+            Some("https://example.test/v1".into()),
+            "fixture-key",
+        );
+        assert!(
+            compatible
+                .chat_options(&controlled_request(Default::default()), true)
+                .unwrap()
+                .extra_body
+                .is_none(),
+            "D3",
+        );
     }
 
     /// One SSE frame: `event:`/`data:` lines terminated by a blank line. The
