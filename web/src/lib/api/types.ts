@@ -255,8 +255,8 @@ export interface SandboxExecutionPolicy {
 }
 export interface SandboxPolicyBinding {
   environment_id: string;
-  policy_id: string;
-  version: number;
+  policy_id?: string;
+  version?: number;
   provisioning: SandboxProvisioning;
 }
 
