@@ -40,6 +40,13 @@ pub enum ContentBlock {
         content: Vec<SearchResultContent>,
         citations: SearchResultCitations,
     },
+    /// A deferred tool definition discovered by a client-side tool search.
+    /// Anthropic projects this as its standard `tool_reference` result block;
+    /// providers without that block receive a deterministic text projection.
+    /// The full schema remains owned by the request's tool-descriptor catalog.
+    ToolReference {
+        tool_name: String,
+    },
     /// Content withheld by model policy. It is intentionally payloadless so
     /// secret or encrypted provider data cannot leak through neutral replay.
     Redacted,
@@ -189,6 +196,12 @@ impl ContentBlock {
         }
     }
 
+    pub fn tool_reference(tool_name: impl Into<String>) -> Self {
+        Self::ToolReference {
+            tool_name: tool_name.into(),
+        }
+    }
+
     pub fn thinking(text: impl Into<String>) -> Self {
         Self::Thinking {
             text: text.into(),
@@ -216,6 +229,7 @@ pub fn extract_text(blocks: &[ContentBlock]) -> String {
             ContentBlock::Image { .. }
             | ContentBlock::Document { .. }
             | ContentBlock::SearchResult { .. }
+            | ContentBlock::ToolReference { .. }
             | ContentBlock::Redacted
             | ContentBlock::ToolUse { .. }
             | ContentBlock::Thinking { .. } => {}
@@ -230,11 +244,11 @@ mod tests {
 
     #[test]
     fn blocks_round_trip_with_a_tagged_shape() {
-        // Cause/effect decision rule T1: signed thinking is committed as neutral
-        // message data (C1) -> preserve text and opaque signature through serde
-        // (E1), while unsigned thinking (C2) -> omit the optional wire field and
-        // deserialize it as None (E2). This keeps the message log as the one
-        // replay authority without forcing provider metadata onto other models.
+        // Cause/effect decision rules: signed thinking (C1) -> preserve text and
+        // opaque signature (E1); unsigned thinking (C2) -> omit the optional wire
+        // field and decode it as None (E2); a discovered tool identity (C3) ->
+        // preserve the closed `tool_reference` shape (E3). This keeps the message
+        // log as the one replay authority without persisting provider wire JSON.
         let blocks = vec![
             ContentBlock::text("look:"),
             ContentBlock::image_base64("image/png", "iVBORw0KGgo="),
@@ -246,6 +260,7 @@ mod tests {
                 content: vec![SearchResultContent::text("answer")],
                 citations: SearchResultCitations { enabled: true },
             },
+            ContentBlock::tool_reference("create_issue"),
             ContentBlock::Redacted,
             ContentBlock::signed_thinking("check", Some("proof".to_string())),
             ContentBlock::thinking("unsigned"),
@@ -259,9 +274,11 @@ mod tests {
         assert_eq!(json[3]["source"]["type"], "file");
         assert_eq!(json[4]["type"], "search_result");
         assert_eq!(json[4]["content"][0]["type"], "text");
-        assert_eq!(json[5]["type"], "redacted");
-        assert_eq!(json[6]["signature"], "proof", "T1/E1");
-        assert!(json[7].get("signature").is_none(), "T1/E2");
+        assert_eq!(json[5]["type"], "tool_reference", "T1/E3");
+        assert_eq!(json[5]["tool_name"], "create_issue", "T1/E3");
+        assert_eq!(json[6]["type"], "redacted");
+        assert_eq!(json[7]["signature"], "proof", "T1/E1");
+        assert!(json[8].get("signature").is_none(), "T1/E2");
 
         let back: Vec<ContentBlock> = serde_json::from_value(json).expect("deserialize");
         assert_eq!(back, blocks);

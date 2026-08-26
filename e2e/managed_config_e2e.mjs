@@ -39,7 +39,7 @@ const agentConfig = {
     target: 'mcp__future__lookup',
     alias: 'lookup',
     description: 'Look up a future MCP value.',
-    defer: true,
+    exposure: "on_demand",
   }],
   recovery_policies: {},
   metadata: { owner: 'e2e', ignored_non_string: 7 },

@@ -174,7 +174,7 @@ async fn infer_step(
     ledger: &mut StepLedger,
     store: &mut Store,
     prelude: &[Message],
-    opened: &std::collections::BTreeSet<String>,
+    discovery: &ToolDiscoveryState,
     checkpoint_ref: Option<&CheckpointCtx<'_>>,
     step_resume: Option<StreamCheckpoint>,
     context: &RuntimeRunContext,
@@ -189,20 +189,22 @@ async fn infer_step(
     let mut cand_idx = 0usize;
     let mut pending_resume = step_resume;
     loop {
-        let mut request = build_chat_request(
+        let mut request = build_chat_request_checked(
             &resolved.spec,
             prelude,
             &ledger.transcript,
             &env.dynamic_descriptors(),
-            opened,
-        );
+            discovery,
+            !final_step
+                && context.tool_capability_narrowing
+                    == awaken_runtime_contract::permission::ToolCapabilityNarrowing::Configured,
+        )?;
         if final_step {
             // `max_steps` is a runaway bound, but a run that spends its last
             // allowance on another tool call cannot report the evidence it has
             // already gathered. Reserve the last inference for a natural final
             // response: hide every tool and make the boundary explicit without
             // mutating the durable transcript.
-            request.tools.clear();
             request.messages.push(ChatMessage {
                 role: Role::System,
                 content: vec![ContentBlock::text(
@@ -445,9 +447,10 @@ pub(super) async fn drive(
     // Failed inference steps in a row (post-retry). The runtime's tolerance
     // decides when the streak is terminal; a success resets it.
     let mut consecutive_inference_failures = 0usize;
-    // Deferred tools (ADR-0053) the model has opened via `tool_open` this run, by
-    // canonical id: once opened, a tool's full schema is sent on subsequent steps.
-    let mut opened: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    // Deferred tools (ADR-0053) the model has discovered via `tool_search` this run, by
+    // canonical id: once revealed, a tool's full schema is sent on subsequent steps.
+    let mut discovery =
+        ToolDiscoveryStateKey::load(&store).map_err(|error| Error::Execution(error.to_string()))?;
 
     // A reclaimed Running run may have died after committing a Requested/Executing
     // tool batch. Recover that explicit Run-scoped entity before asking the model
@@ -467,7 +470,7 @@ pub(super) async fn drive(
             batch,
             &mut ledger,
             &mut store,
-            &mut opened,
+            &mut discovery,
         )
         .await
         {
@@ -571,7 +574,7 @@ pub(super) async fn drive(
             &mut ledger,
             &mut store,
             &prelude,
-            &opened,
+            &discovery,
             checkpoint_ref,
             step_resume,
             context,
@@ -816,7 +819,7 @@ pub(super) async fn drive(
             calls,
             &mut ledger,
             &mut store,
-            &mut opened,
+            &mut discovery,
         );
         // Cancellation must also preempt an executing tool. Waiting until the
         // next step boundary leaves a hung shell, package download, or nested

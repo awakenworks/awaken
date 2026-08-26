@@ -347,6 +347,7 @@ fn blocks_reference_file(blocks: &[ContentBlock], file_id: &str) -> bool {
         | ContentBlock::Image { .. }
         | ContentBlock::Document { .. }
         | ContentBlock::SearchResult { .. }
+        | ContentBlock::ToolReference { .. }
         | ContentBlock::Redacted
         | ContentBlock::ToolUse { .. }
         | ContentBlock::Thinking { .. } => false,

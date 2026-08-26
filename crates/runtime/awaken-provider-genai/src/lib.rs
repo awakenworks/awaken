@@ -913,6 +913,9 @@ fn to_genai_part(block: &ContentBlock, dialect: TranscriptDialect) -> Result<Opt
                 .collect::<Vec<_>>()
                 .join("\n")
         )))),
+        (ProviderPartKind::Text, ContentBlock::ToolReference { tool_name }) => Ok(Some(
+            ContentPart::Text(format!("Deferred tool `{tool_name}` is now available.")),
+        )),
         (ProviderPartKind::Binary, ContentBlock::Image { source }) => {
             Ok(Some(ContentPart::Binary(to_genai_binary(source)?)))
         }
@@ -1017,6 +1020,7 @@ const fn neutral_part_kind(block: &ContentBlock) -> NeutralPartKind {
         ContentBlock::Image { .. } => NeutralPartKind::Image,
         ContentBlock::Document { .. } => NeutralPartKind::Document,
         ContentBlock::SearchResult { .. } => NeutralPartKind::SearchResult,
+        ContentBlock::ToolReference { .. } => NeutralPartKind::ToolReference,
         ContentBlock::Redacted => NeutralPartKind::Redacted,
         ContentBlock::ToolUse { .. } => NeutralPartKind::ToolUse,
         ContentBlock::ToolResult { .. } => NeutralPartKind::ToolResult,
@@ -1809,9 +1813,7 @@ mod hermetic_tests {
             inference: Default::default(),
             messages: Vec::new(),
             tools: vec![weather_tool().with_provider_server_tool(
-                "openrouter",
-                "openrouter:web_search",
-                serde_json::json!({}),
+                awaken_runtime_contract::resolved::ProviderServerTool::openrouter_tool_search(None),
             )],
         };
         assert!(

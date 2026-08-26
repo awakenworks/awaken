@@ -196,6 +196,11 @@ mod tests {
             tool.execution_target(),
             awaken_runtime_contract::tool::ToolExecutionTarget::Brain
         );
+        assert_eq!(
+            tool.concurrency(&serde_json::json!({"q": "hi"})),
+            awaken_runtime_contract::tool::ToolConcurrency::Parallel,
+            "MCP tools use maximum parallelism unless host configuration narrows it"
+        );
         let out = tool.invoke(call()).await.expect("invokes");
         assert!(!out.is_error);
         assert_eq!(out.text(), "pong");

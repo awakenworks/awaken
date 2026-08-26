@@ -2,7 +2,7 @@
 
 use awaken_runtime_contract::agent_bindings::AgentBindings;
 use awaken_runtime_contract::resolved::ResolvedModelCandidate;
-use awaken_runtime_contract::resolved::{ToolDescriptor, ToolFacet, ToolKind, ToolPresentation};
+use awaken_runtime_contract::resolved::{ToolDescriptor, ToolKind};
 use awaken_runtime_contract::snapshot::AgentSnapshotMetadata;
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshot;
 use awaken_tool_pattern::tool_id_match;
@@ -11,6 +11,7 @@ use crate::config::{AgentConfig, AgentKind, MultiagentTarget};
 
 mod fingerprint;
 mod processing_geography;
+mod tool_presentation;
 
 use fingerprint::fingerprint_of;
 
@@ -35,6 +36,10 @@ pub enum CompileError {
     /// tool is rejected at compile, not silently dropped.
     #[error("agent {agent} has an invalid tool override: {reason}")]
     InvalidToolOverride { agent: String, reason: String },
+    #[error("agent {agent} has an invalid tool-exposure policy: {reason}")]
+    InvalidToolExposure { agent: String, reason: String },
+    #[error("agent {agent} has invalid tool-discovery settings: {reason}")]
+    InvalidToolDiscovery { agent: String, reason: String },
     #[error("agent {agent} has an invalid tool recovery policy: {reason}")]
     InvalidToolRecovery { agent: String, reason: String },
     /// A Managed-Agents integration union cannot be normalized into an executable
@@ -65,6 +70,8 @@ impl CompileError {
             CompileError::UnknownTool { .. } => "tools",
             CompileError::UnresolvedModel { .. } => "model",
             CompileError::InvalidToolOverride { .. } => "tool_overrides",
+            CompileError::InvalidToolExposure { .. } => "tool_exposure",
+            CompileError::InvalidToolDiscovery { .. } => "tool_discovery",
             CompileError::InvalidToolRecovery { .. } => "recovery_policies",
             CompileError::InvalidBinding { axis, .. } => axis,
             CompileError::UnsupportedCapability { axis, .. } => axis,
@@ -266,65 +273,7 @@ fn compile_with_models(
         descriptors[index] = descriptors[index].clone().with_recovery(policy.clone());
     }
 
-    // Tool presentation (ADR-0053): validate each override and project it into the
-    // runtime `ToolPresentation`. A non-MCP `target` must name a selected tool; MCP
-    // targets (`mcp__…`) are resolved at runtime, so they pass here (an override for an
-    // MCP tool that never appears is inert). Empty overrides ⇒ empty presentation ⇒
-    // byte-identical tool face.
-    let alias_of: std::collections::BTreeMap<&str, &str> = config
-        .tool_overrides
-        .iter()
-        .filter_map(|o| o.alias.as_deref().map(|a| (o.target.as_str(), a)))
-        .collect();
-    for ov in &config.tool_overrides {
-        if ov.target == awaken_runtime_contract::resolved::ADVISOR_TOOL_ID {
-            return Err(CompileError::InvalidToolOverride {
-                agent: config.id.clone(),
-                reason:
-                    "the reserved advisor service tool cannot be aliased, deferred, or rewritten"
-                        .to_string(),
-            });
-        }
-        if !ov.target.starts_with("mcp__") && !descriptors.iter().any(|d| d.id == ov.target) {
-            return Err(CompileError::InvalidToolOverride {
-                agent: config.id.clone(),
-                reason: format!("target {:?} is not a selected tool", ov.target),
-            });
-        }
-        // The reserved `tool_open` id is minted by the runtime for deferred tools; an
-        // alias must not shadow it.
-        if ov.alias.as_deref() == Some(awaken_runtime_contract::resolved::TOOL_OPEN_ID) {
-            return Err(CompileError::InvalidToolOverride {
-                agent: config.id.clone(),
-                reason: "alias uses the reserved tool_open id".to_string(),
-            });
-        }
-    }
-    // No two selected tools may share a model-facing id (a tool's alias if overridden,
-    // else its id) — that would show the model two tools under one name.
-    let mut facing: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
-    for d in &descriptors {
-        let facing_id = alias_of
-            .get(d.id.as_str())
-            .copied()
-            .unwrap_or(d.id.as_str());
-        if !facing.insert(facing_id) {
-            return Err(CompileError::InvalidToolOverride {
-                agent: config.id.clone(),
-                reason: format!("model-facing tool id {facing_id:?} is not unique"),
-            });
-        }
-    }
-    let presentation = ToolPresentation::from_facets(config.tool_overrides.iter().map(|ov| {
-        (
-            ov.target.clone(),
-            ToolFacet {
-                alias: ov.alias.clone(),
-                description: ov.description.clone(),
-                defer: ov.defer,
-            },
-        )
-    }));
+    let presentation = tool_presentation::compile(config, &descriptors)?;
 
     // The model must be concrete by now: `Auto` is resolved to a first-offering in
     // `ConfigService::publish` before compile (ADR-0052 D5). A bare compile of an
@@ -958,13 +907,13 @@ mod tests {
                 target: "echo".into(),
                 alias: Some("say".into()),
                 description: Some("Speak.".into()),
-                defer: false,
+                exposure: None,
             },
             ToolOverride {
                 target: "mcp__gh__create_issue".into(),
                 alias: None,
                 description: None,
-                defer: true,
+                exposure: Some(awaken_runtime_contract::resolved::ToolExposure::OnDemand),
             },
         ];
         let compiled = compile(&cfg, &tools).unwrap();
@@ -975,13 +924,13 @@ mod tests {
         let presented = pres.present(&tools);
         assert!(
             presented
-                .face
+                .visible
                 .iter()
                 .any(|d| d.id == "say" && d.description == "Speak.")
         );
         assert!(
             presented
-                .deferred
+                .discoverable
                 .iter()
                 .any(|d| d.id == "mcp__gh__create_issue")
         );
@@ -990,6 +939,37 @@ mod tests {
         let bare = compile(&config(&["echo", "mcp__gh__create_issue"]), &tools).unwrap();
         assert_ne!(compiled.fingerprint.0, bare.fingerprint.0);
         assert!(bare.resolved_spec.tool_presentation.is_empty());
+    }
+
+    #[test]
+    fn empty_exposure_selectors_fail_at_the_authoring_boundary() {
+        // Causal graph / boundary-value partition: C1 Exact(""), C2
+        // Prefix(whitespace), C3 policy default expresses the all-tools case.
+        // E1 C1/C2 fail with a field-addressable exposure error; E2 C3 remains
+        // valid. The closed selector enum eliminates regex syntax errors, while
+        // compilation owns the remaining non-empty authoring invariant.
+        use awaken_runtime_contract::resolved::{
+            ToolExposure, ToolExposurePolicy, ToolExposureRule, ToolSelector,
+        };
+        for selector in [
+            ToolSelector::Exact(String::new()),
+            ToolSelector::Prefix(" ".into()),
+        ] {
+            let mut cfg = config(&["echo"]);
+            cfg.tool_exposure = ToolExposurePolicy {
+                rules: vec![ToolExposureRule {
+                    selector,
+                    exposure: ToolExposure::OnDemand,
+                }],
+                default: ToolExposure::Eager,
+            };
+            let error = compile(&cfg, &[tool("echo")]).expect_err("C1/C2=>E1");
+            assert_eq!(error.field_path(), "tool_exposure");
+            assert!(matches!(error, CompileError::InvalidToolExposure { .. }));
+        }
+        let mut all = config(&["echo"]);
+        all.tool_exposure.default = ToolExposure::OnDemand;
+        compile(&all, &[tool("echo")]).expect("C3=>E2");
     }
 
     #[test]
@@ -1406,22 +1386,22 @@ mod tests {
     // --- CEG 03 / B1 (compile priority + override masks) ---------------------
 
     #[test]
-    fn c3_an_alias_equal_to_the_reserved_tool_open_id_is_rejected() {
-        // C3: the runtime mints `tool_open` for deferred tools; an override alias must
+    fn c3_an_alias_equal_to_the_reserved_tool_search_id_is_rejected() {
+        // C3: the runtime mints `tool_search` for deferred tools; an override alias must
         // not shadow that reserved id, else the model sees two tools under one face.
         use crate::config::ToolOverride;
-        use awaken_runtime_contract::resolved::TOOL_OPEN_ID;
+        use awaken_runtime_contract::resolved::TOOL_SEARCH_ID;
         let tools = vec![tool("echo")];
         let mut cfg = config(&["echo"]);
         cfg.tool_overrides = vec![ToolOverride {
             target: "echo".into(),
-            alias: Some(TOOL_OPEN_ID.to_string()),
+            alias: Some(TOOL_SEARCH_ID.to_string()),
             ..Default::default()
         }];
         let err = compile(&cfg, &tools).unwrap_err();
         assert!(
             matches!(err, CompileError::InvalidToolOverride { .. }),
-            "reserved tool_open alias must be rejected, got {err:?}"
+            "reserved tool_search alias must be rejected, got {err:?}"
         );
     }
 
@@ -1482,7 +1462,7 @@ mod tests {
             target: "mcp__gh__create_issue".into(),
             alias: Some("file_issue".into()),
             description: Some("Open a GitHub issue.".into()),
-            defer: true,
+            exposure: Some(awaken_runtime_contract::resolved::ToolExposure::OnDemand),
         }];
         let compiled = compile(&cfg, &tools).expect("missing MCP target must compile");
         // The override still projects into the presentation (applied at runtime).

@@ -8,12 +8,91 @@
 use super::delegation::is_resolved_advisor_call;
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExecutionWave {
+    start: usize,
+    end: usize,
+}
+
+impl ExecutionWave {
+    fn len(self) -> usize {
+        self.end - self.start
+    }
+}
+
+/// Build stable, contiguous waves. A later call never jumps over a conflicting
+/// predecessor, so concurrency changes elapsed time but not observable ordering.
+fn execution_waves(claims: &[ToolConcurrency], max_parallel_tools: usize) -> Vec<ExecutionWave> {
+    let limit = max_parallel_tools.max(1);
+    let mut waves = Vec::new();
+    let mut start = 0;
+    while start < claims.len() {
+        let mut end = start + 1;
+        if !matches!(claims[start], ToolConcurrency::Serial) {
+            while end < claims.len()
+                && end - start < limit
+                && claims[start..end]
+                    .iter()
+                    .all(|existing| existing.compatible_with(&claims[end]))
+            {
+                end += 1;
+            }
+        }
+        waves.push(ExecutionWave { start, end });
+        start = end;
+    }
+    waves
+}
+
+fn call_concurrency(
+    runtime: &Runtime,
+    context: &RuntimeRunContext,
+    delegation_origin: Option<&DelegationOrigin>,
+    resolved: &ResolvedRun,
+    env: &ResolvedExecutionEnv,
+    call: &ToolCall,
+) -> ToolConcurrency {
+    let intrinsic = if is_resolved_delegation_call(runtime, resolved, delegation_origin, call) {
+        runtime
+            .run_delegation()
+            .map_or(ToolConcurrency::Serial, |executor| {
+                if executor.supports_parallel_completion_for(&call.tool_id, &call.arguments) {
+                    ToolConcurrency::Parallel
+                } else {
+                    ToolConcurrency::Serial
+                }
+            })
+    } else if RuntimeToolOperation::classify(&call.tool_id).is_some()
+        || is_resolved_advisor_call(resolved, call)
+        || resolved.spec.tool_descriptors.iter().any(|descriptor| {
+            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
+        })
+    {
+        ToolConcurrency::Serial
+    } else {
+        tool_execution::tool_concurrency(runtime, env, context, call)
+    };
+    env.tool_constraints()
+        .iter()
+        .fold(intrinsic, |claim, constraint| {
+            claim.narrowed_with(constraint.constrain(call))
+        })
+}
+
+fn requires_sequential_dispatch(resolved: &ResolvedRun, call: &ToolCall) -> bool {
+    RuntimeToolOperation::classify(&call.tool_id) == Some(RuntimeToolOperation::ToolSearch)
+        || is_resolved_advisor_call(resolved, call)
+        || resolved.spec.tool_descriptors.iter().any(|descriptor| {
+            descriptor.id == call.tool_id && descriptor.kind == ToolKind::ClientExecuted
+        })
+}
+
 /// Run each requested tool call for one step, feeding each result back into the
 /// transcript and folding tool-outcome reactions into state and reminders. Returns
 /// `Some(RunDisposition)` when a call awaits input (delegation/permission/scheduled) or fails
 /// it closed (an unpermitted scheduled-action kind) — the caller ends the step loop
 /// with it; `None` when every call produced a result and the loop continues. The
-/// reserved `tool_open` meta-tool bypasses the gate and only mutates `opened`.
+/// reserved `tool_search` meta-tool bypasses the gate and only mutates durable discovery state.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn run_tool_calls(
     runtime: &Runtime,
@@ -27,8 +106,10 @@ pub(super) async fn run_tool_calls(
     calls: Vec<ToolCall>,
     ledger: &mut StepLedger,
     store: &mut Store,
-    opened: &mut std::collections::BTreeSet<String>,
+    discovery: &mut ToolDiscoveryState,
 ) -> Result<Option<RunDisposition>> {
+    let dynamic_descriptors = env.dynamic_descriptors();
+    let executable_descriptors = executable_tool_descriptors(&resolved.spec, &dynamic_descriptors);
     let policies = calls.iter().cloned().map(|call| {
         let policy = if is_resolved_delegation_call(runtime, resolved, delegation_origin, &call) {
             // A delegated child is addressed by its stable RunId. Recovery
@@ -36,7 +117,9 @@ pub(super) async fn run_tool_calls(
             // generic non-replayable side effect would strand an Open child
             // relationship after an owner crash.
             ToolRecoveryPolicy::durable_request()
-        } else if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
+        } else if RuntimeToolOperation::classify(&call.tool_id)
+            == Some(RuntimeToolOperation::ToolSearch)
+        {
             ToolRecoveryPolicy::replay_safe()
         } else {
             resolved
@@ -57,47 +140,38 @@ pub(super) async fn run_tool_calls(
     // unknown in-flight external effect.
     persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
-    let parallel_delegations = calls.len() > 1
-        && runtime.run_delegation().is_some_and(|executor| {
-            calls.iter().all(|call| {
-                is_resolved_delegation_call(runtime, resolved, delegation_origin, call)
-                    && executor.supports_parallel_completion_for(&call.tool_id, &call.arguments)
-            })
-        });
-    let mut precomputed_gates = std::collections::VecDeque::new();
-    if parallel_delegations {
-        for call in &calls {
-            let outcome = gate_decision(runtime, call, env, store, context).await;
-            if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
-                ledger.audit.push(permission_audit(call, &outcome));
-            }
-            precomputed_gates.push_back(outcome);
-        }
-        if precomputed_gates
-            .iter()
-            .all(|outcome| matches!(outcome, GateOutcome::Allow))
-        {
-            return run_parallel_delegation_calls(
-                runtime,
-                context,
-                delegation_origin,
-                resolved,
-                env,
-                run_id,
-                thread_id,
-                step,
-                calls,
-                batch,
-                ledger,
-                store,
-            )
-            .await;
-        }
+    let claims = calls
+        .iter()
+        .map(|call| call_concurrency(runtime, context, delegation_origin, resolved, env, call))
+        .collect::<Vec<_>>();
+    let waves = execution_waves(&claims, context.max_parallel_tools());
+    let has_parallel_wave = waves.iter().any(|wave| wave.len() > 1);
+    let supports_concurrent_path = calls
+        .iter()
+        .all(|call| !requires_sequential_dispatch(resolved, call));
+    if has_parallel_wave && supports_concurrent_path {
+        return run_concurrent_tool_calls(
+            runtime,
+            context,
+            delegation_origin,
+            resolved,
+            env,
+            run_id,
+            thread_id,
+            step,
+            calls,
+            waves,
+            batch,
+            ledger,
+            store,
+        )
+        .await;
     }
 
     for call in calls {
-        // The reserved `tool_open` meta-tool (ADR-0053) loads a deferred tool for
-        // later steps: it mutates this run's `opened` set and returns a result, so it
+        // The reserved `tool_search` meta-tool (ADR-0053) discovers deferred tools for
+        // later steps: its ToolOutput carries the Run-scoped state command committed
+        // atomically with the result, so it
         // bypasses the gate and never reaches an executor.
         let mut entered_executor = false;
         let mut delegation_started = false;
@@ -131,20 +205,20 @@ pub(super) async fn run_tool_calls(
             stage_batch(&batch, ledger, store);
             return Ok(Some(RunDisposition::awaiting(ticket)));
         }
-        let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
-            open_deferred_tool(&resolved.spec.tool_presentation, &call, opened)
+        let reaction_call = call.clone();
+        let output = if RuntimeToolOperation::classify(&call.tool_id)
+            == Some(RuntimeToolOperation::ToolSearch)
+        {
+            execute_tool_search(
+                &resolved.spec.tool_presentation,
+                &executable_descriptors,
+                &call,
+                discovery,
+            )
         } else {
-            let (outcome, already_audited) = match precomputed_gates.pop_front() {
-                Some(outcome) => (outcome, true),
-                None => (
-                    gate_decision(runtime, &call, env, store, context).await,
-                    false,
-                ),
-            };
+            let outcome = gate_decision(runtime, &call, env, store, context).await;
             // Audit the decision of a real (policy-backed) gate (ADR-0030).
-            if !already_audited
-                && (runtime.gate().is_some() || context.tool_permission_policy.is_some())
-            {
+            if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
                 ledger.audit.push(permission_audit(&call, &outcome));
             }
             match outcome {
@@ -246,7 +320,7 @@ pub(super) async fn run_tool_calls(
                             None => {
                                 execute_regular_or_unavailable_advisor(
                                     runtime, resolved, env, &call, context, run_id, thread_id,
-                                    &batch,
+                                    &batch, store,
                                 )
                                 .await?
                             }
@@ -342,6 +416,7 @@ pub(super) async fn run_tool_calls(
             context,
             step,
             &call,
+            &reaction_call,
             output,
             entered_executor,
             delegation_started,
@@ -368,7 +443,7 @@ pub(super) async fn run_tool_calls(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn run_parallel_delegation_calls(
+async fn run_concurrent_tool_calls(
     runtime: &Runtime,
     context: &RuntimeRunContext,
     delegation_origin: Option<&DelegationOrigin>,
@@ -378,116 +453,279 @@ async fn run_parallel_delegation_calls(
     thread_id: &ThreadId,
     step: usize,
     calls: Vec<ToolCall>,
+    waves: Vec<ExecutionWave>,
     mut batch: ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
 ) -> Result<Option<RunDisposition>> {
-    let delegation_started = stage_delegation_requests(
-        runtime,
-        resolved,
-        delegation_origin,
-        run_id,
-        &calls,
-        store,
-        &mut ledger.staged_state,
-    )?;
-    if !delegation_started {
-        return Err(Error::Execution(
-            "parallel delegation batch lost its configured executor".to_string(),
-        ));
-    }
-    for call in &calls {
-        let capability =
-            recovery_capability(runtime, context, delegation_origin, resolved, env, call);
-        let policy = batch
-            .calls()
-            .iter()
-            .find(|entry| entry.call.call_id == call.call_id)
-            .expect("batch was built from calls")
-            .recovery_policy
-            .clone();
-        policy
-            .validate(capability)
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        batch
-            .mark_executing(&call.call_id)
-            .map_err(|error| Error::Execution(error.to_string()))?;
-    }
-    // Every relationship and executor-entry fact is durable before any child
-    // future starts. A crash can therefore reconnect each stable child Run id.
-    persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+    for wave in waves {
+        let wave_calls = &calls[wave.start..wave.end];
+        let mut immediate_outputs = (0..wave_calls.len())
+            .map(|_| None)
+            .collect::<Vec<Option<ToolOutput>>>();
+        let mut delegation_started = vec![false; wave_calls.len()];
+        let mut entered_executor = vec![false; wave_calls.len()];
 
-    let committed_view = store.clone();
-    let parent = DelegationParent {
-        context,
-        origin: delegation_origin,
-        agent_id: &resolved.agent_id.0,
-        run_id,
-        thread_id,
-    };
-    let invocations = futures_util::future::join_all(
-        calls
-            .iter()
-            .map(|call| invoke_delegation(runtime, resolved, parent, call, &committed_view)),
-    )
-    .await;
+        let mut gates = Vec::with_capacity(wave_calls.len());
+        for call in wave_calls {
+            let outcome = gate_decision(runtime, call, env, store, context).await;
+            if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
+                ledger.audit.push(permission_audit(call, &outcome));
+            }
+            gates.push(outcome);
+        }
 
-    for (call, invocation) in calls.iter().zip(invocations) {
-        let output = match invocation {
-            Some(Ok(DelegationInvocation {
-                id,
-                step: DelegationStep::Ended { text, usage },
-            })) => {
-                let result = persist_child_run_result(
-                    context,
-                    thread_id,
-                    RunDisposition::running(run_id.clone()),
-                    &id,
-                    store,
-                    ChildRunResult {
-                        child_run_id: id.child_run_id(),
-                        text,
-                        usage,
-                    },
-                )
-                .await
+        // A wait applies before any executor in this wave starts. Earlier waves
+        // are already durably complete; the remaining Requested calls stay in
+        // the open batch and recovery resumes them after this exact ticket.
+        for (call, gate) in wave_calls.iter().zip(&gates) {
+            match gate {
+                GateOutcome::RequireConfirmation { correlation_id } => {
+                    let ticket = resume_ticket(
+                        context,
+                        resolved,
+                        run_id,
+                        delegation_origin,
+                        correlation_id,
+                        call,
+                        ToolAwaitReason::Permission,
+                    );
+                    emit(
+                        context,
+                        run_id,
+                        AgentEvent::Fact(Fact::Awaiting {
+                            pending_tool_use_id: ticket.call_id().map(str::to_owned),
+                        }),
+                    )
+                    .await;
+                    batch
+                        .mark_awaiting(
+                            &call.call_id,
+                            ToolWaitKind::ToolPermission,
+                            ticket.correlation_id.clone(),
+                        )
+                        .map_err(|error| Error::Execution(error.to_string()))?;
+                    stage_batch(&batch, ledger, store);
+                    return Ok(Some(RunDisposition::awaiting(ticket)));
+                }
+                GateOutcome::Schedule {
+                    correlation_id,
+                    action_kind,
+                } => {
+                    if let Some(kind) = action_kind
+                        && !env.permits_action_kind(kind)
+                    {
+                        return Ok(Some(RunDisposition::ended(
+                            run_id.clone(),
+                            EndCause::Error(Failure::CapabilityBound),
+                        )));
+                    }
+                    let ticket = resume_ticket(
+                        context,
+                        resolved,
+                        run_id,
+                        delegation_origin,
+                        correlation_id,
+                        call,
+                        ToolAwaitReason::ScheduledAction,
+                    );
+                    emit(
+                        context,
+                        run_id,
+                        AgentEvent::Fact(Fact::Awaiting {
+                            pending_tool_use_id: ticket.call_id().map(str::to_owned),
+                        }),
+                    )
+                    .await;
+                    batch
+                        .mark_awaiting(
+                            &call.call_id,
+                            ToolWaitKind::ScheduledAction,
+                            ticket.correlation_id.clone(),
+                        )
+                        .map_err(|error| Error::Execution(error.to_string()))?;
+                    stage_batch(&batch, ledger, store);
+                    return Ok(Some(RunDisposition::awaiting(ticket)));
+                }
+                GateOutcome::Allow | GateOutcome::Block { .. } | GateOutcome::SetResult(_) => {}
+            }
+        }
+
+        for (position, (call, gate)) in wave_calls.iter().zip(gates).enumerate() {
+            match gate {
+                GateOutcome::Block { reason } => {
+                    immediate_outputs[position] = Some(ToolOutput::error(
+                        &call.call_id,
+                        format!("blocked: {reason}"),
+                    ));
+                    continue;
+                }
+                GateOutcome::SetResult(output) => {
+                    immediate_outputs[position] = Some(output);
+                    continue;
+                }
+                GateOutcome::Allow => {}
+                GateOutcome::RequireConfirmation { .. } | GateOutcome::Schedule { .. } => {
+                    unreachable!("wait gates return before executor entry")
+                }
+            }
+            let capability =
+                recovery_capability(runtime, context, delegation_origin, resolved, env, call);
+            let policy = &batch
+                .calls()
+                .iter()
+                .find(|entry| entry.call.call_id == call.call_id)
+                .expect("batch was built from calls")
+                .recovery_policy;
+            if let Err(error) = policy.validate(capability) {
+                immediate_outputs[position] =
+                    Some(ToolOutput::error(&call.call_id, error.to_string()));
+                continue;
+            }
+            delegation_started[position] = stage_delegation_request(
+                runtime,
+                resolved,
+                delegation_origin,
+                run_id,
+                call,
+                store,
+                &mut ledger.staged_state,
+            )?;
+            batch
+                .mark_executing(&call.call_id)
                 .map_err(|error| Error::Execution(error.to_string()))?;
-                merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
-                ToolOutput::ok(&call.call_id, result.text)
-            }
-            Some(Ok(DelegationInvocation {
-                step: DelegationStep::Awaiting { continuation },
-                ..
-            })) => {
-                // The executor promised a terminal-only child. Persist the
-                // cancellation address and end fail-closed; representing several
-                // simultaneous human-input waits as one ticket would lose identity.
-                stage_delegation_awaiting(
-                    runtime,
-                    run_id,
-                    call,
-                    &continuation,
-                    store,
-                    &mut ledger.staged_state,
-                )?;
-                stage_batch(&batch, ledger, store);
-                return Ok(Some(RunDisposition::ended(
-                    run_id.clone(),
-                    EndCause::Indeterminate,
-                )));
-            }
-            Some(Err(error)) => delegation_error_output(resolved, call, error)?,
-            None => {
-                return Err(Error::Execution(
-                    "parallel delegation call was not handled by its executor".to_string(),
-                ));
-            }
+            entered_executor[position] = true;
+        }
+
+        // Persist only this wave's executor-entry facts. Later conflicting waves
+        // remain Requested, so recovery never mistakes an unstarted call for an
+        // unknown in-flight side effect.
+        if entered_executor.iter().any(|entered| *entered) {
+            persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
+        }
+        let committed_view: &Store = store;
+        let parent = DelegationParent {
+            context,
+            origin: delegation_origin,
+            agent_id: &resolved.agent_id.0,
+            run_id,
+            thread_id,
         };
-        record_fresh_output(
-            runtime, env, run_id, thread_id, context, step, call, output, true, true, &mut batch,
-            ledger, store,
+        let executing_batch = &batch;
+        let invocations = futures_util::future::join_all(
+            wave_calls
+                .iter()
+                .zip(&entered_executor)
+                .filter(|(_, entered)| **entered)
+                .map(|(call, _)| async move {
+                    if is_resolved_delegation_call(runtime, resolved, delegation_origin, call) {
+                        ConcurrentInvocation::Delegation(
+                            invoke_delegation(runtime, resolved, parent, call, committed_view)
+                                .await,
+                        )
+                    } else {
+                        ConcurrentInvocation::Regular(
+                            execute_regular_or_unavailable_advisor(
+                                runtime,
+                                resolved,
+                                env,
+                                call,
+                                context,
+                                run_id,
+                                thread_id,
+                                executing_batch,
+                                committed_view,
+                            )
+                            .await,
+                        )
+                    }
+                }),
         )
-        .await?;
+        .await;
+        let mut invocations = invocations.into_iter();
+
+        // Consume results in model order. Hooks and state application therefore
+        // remain deterministic even when executor completion order differs.
+        for (position, call) in wave_calls.iter().enumerate() {
+            let output = if let Some(output) = immediate_outputs[position].take() {
+                output
+            } else {
+                match invocations
+                    .next()
+                    .expect("every entered call produced one invocation result")
+                {
+                    ConcurrentInvocation::Regular(result) => result?,
+                    ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
+                        id,
+                        step: DelegationStep::Ended { text, usage },
+                    }))) => {
+                        let result = persist_child_run_result(
+                            context,
+                            thread_id,
+                            RunDisposition::running(run_id.clone()),
+                            &id,
+                            store,
+                            ChildRunResult {
+                                child_run_id: id.child_run_id(),
+                                text,
+                                usage,
+                            },
+                        )
+                        .await
+                        .map_err(|error| Error::Execution(error.to_string()))?;
+                        merge_thread_usage(store, &mut ledger.staged_state, &result.usage);
+                        ToolOutput::ok(&call.call_id, result.text)
+                    }
+                    ConcurrentInvocation::Delegation(Some(Ok(DelegationInvocation {
+                        step: DelegationStep::Awaiting { continuation },
+                        ..
+                    }))) => {
+                        // Terminal-only capability was overstated. The child is
+                        // addressable, but several waits cannot be represented by
+                        // one parent ticket; end fail closed.
+                        stage_delegation_awaiting(
+                            runtime,
+                            run_id,
+                            call,
+                            &continuation,
+                            store,
+                            &mut ledger.staged_state,
+                        )?;
+                        stage_batch(&batch, ledger, store);
+                        return Ok(Some(RunDisposition::ended(
+                            run_id.clone(),
+                            EndCause::Indeterminate,
+                        )));
+                    }
+                    ConcurrentInvocation::Delegation(Some(Err(error))) => {
+                        delegation_error_output(resolved, call, error)?
+                    }
+                    ConcurrentInvocation::Delegation(None) => {
+                        return Err(Error::Execution(
+                            "concurrent delegation call was not handled by its executor"
+                                .to_string(),
+                        ));
+                    }
+                }
+            };
+            record_fresh_output(
+                runtime,
+                env,
+                run_id,
+                thread_id,
+                context,
+                step,
+                call,
+                call,
+                output,
+                entered_executor[position],
+                delegation_started[position],
+                &mut batch,
+                ledger,
+                store,
+            )
+            .await?;
+        }
     }
 
     batch
@@ -503,6 +741,11 @@ async fn run_parallel_delegation_calls(
     Ok(None)
 }
 
+enum ConcurrentInvocation {
+    Regular(Result<ToolOutput>),
+    Delegation(Option<std::result::Result<DelegationInvocation, DelegationExecutionError>>),
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn record_fresh_output(
     runtime: &Runtime,
@@ -512,6 +755,7 @@ async fn record_fresh_output(
     context: &RuntimeRunContext,
     step: usize,
     call: &ToolCall,
+    reaction_call: &ToolCall,
     output: ToolOutput,
     entered_executor: bool,
     delegation_started: bool,
@@ -536,7 +780,7 @@ async fn record_fresh_output(
         store.apply(command);
     }
     let (reactions, reminders) =
-        collect_tool_reactions(env, run_id, step, call, &output, store).await;
+        collect_tool_reactions(env, run_id, step, reaction_call, &output, store).await;
     for command in &reactions {
         store.apply(command);
     }
@@ -571,8 +815,10 @@ pub(super) async fn recover_tool_batch(
     mut batch: ToolBatch,
     ledger: &mut StepLedger,
     store: &mut Store,
-    opened: &mut std::collections::BTreeSet<String>,
+    discovery: &mut ToolDiscoveryState,
 ) -> Result<Option<RunDisposition>> {
+    let dynamic_descriptors = env.dynamic_descriptors();
+    let executable_descriptors = executable_tool_descriptors(&resolved.spec, &dynamic_descriptors);
     // Rehydrate terminal per-call effects into the attempt's live state. They
     // remain unpublished StateCommands until Finalized, but later gates/hooks in
     // this recovery must observe the same state as the original attempt.
@@ -583,6 +829,8 @@ pub(super) async fn recover_tool_batch(
             }
         }
     }
+    *discovery =
+        ToolDiscoveryStateKey::load(store).map_err(|error| Error::Execution(error.to_string()))?;
     for index in 0..batch.calls().len() {
         let durable = batch.calls()[index].clone();
         let call = durable.call;
@@ -675,7 +923,10 @@ pub(super) async fn recover_tool_batch(
         // committed its allow decision with the transition and goes directly to
         // capability-governed recovery.
         let was_requested = matches!(&durable.phase, ToolCallPhase::Requested);
-        if was_requested && call.tool_id != awaken_runtime_contract::resolved::TOOL_OPEN_ID {
+        if was_requested
+            && RuntimeToolOperation::classify(&call.tool_id)
+                != Some(RuntimeToolOperation::ToolSearch)
+        {
             let gate = gate_decision(runtime, &call, env, store, context).await;
             if runtime.gate().is_some() || context.tool_permission_policy.is_some() {
                 ledger.audit.push(permission_audit(&call, &gate));
@@ -685,6 +936,7 @@ pub(super) async fn recover_tool_batch(
                     record_recovered_output(
                         env,
                         run_id,
+                        &call,
                         &call,
                         ToolOutput::error(&call.call_id, format!("blocked: {reason}")),
                         false,
@@ -699,8 +951,8 @@ pub(super) async fn recover_tool_batch(
                 }
                 GateOutcome::SetResult(output) => {
                     record_recovered_output(
-                        env, run_id, &call, output, false, &mut batch, ledger, store, context,
-                        thread_id,
+                        env, run_id, &call, &call, output, false, &mut batch, ledger, store,
+                        context, thread_id,
                     )
                     .await?;
                     continue;
@@ -797,8 +1049,16 @@ pub(super) async fn recover_tool_batch(
         }
         persist_batch(&batch, ledger, store, context, thread_id, run_id).await?;
 
-        let output = if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
-            open_deferred_tool(&resolved.spec.tool_presentation, &call, opened)
+        let reaction_call = call.clone();
+        let output = if RuntimeToolOperation::classify(&call.tool_id)
+            == Some(RuntimeToolOperation::ToolSearch)
+        {
+            execute_tool_search(
+                &resolved.spec.tool_presentation,
+                &executable_descriptors,
+                &call,
+                discovery,
+            )
         } else {
             match run_delegation(
                 runtime,
@@ -850,7 +1110,7 @@ pub(super) async fn recover_tool_batch(
                 Some(Err(error)) => delegation_error_output(resolved, &call, error)?,
                 None => {
                     execute_regular_or_unavailable_advisor(
-                        runtime, resolved, env, &call, context, run_id, thread_id, &batch,
+                        runtime, resolved, env, &call, context, run_id, thread_id, &batch, store,
                     )
                     .await?
                 }
@@ -860,7 +1120,17 @@ pub(super) async fn recover_tool_batch(
             stage_delegation_completed(runtime, run_id, &call, store, &mut ledger.staged_state)?;
         }
         record_recovered_output(
-            env, run_id, &call, output, true, &mut batch, ledger, store, context, thread_id,
+            env,
+            run_id,
+            &call,
+            &reaction_call,
+            output,
+            true,
+            &mut batch,
+            ledger,
+            store,
+            context,
+            thread_id,
         )
         .await?;
     }
@@ -891,6 +1161,7 @@ async fn execute_regular_or_unavailable_advisor(
     run_id: &RunId,
     thread_id: &ThreadId,
     batch: &ToolBatch,
+    state: &Store,
 ) -> Result<ToolOutput> {
     if is_resolved_advisor_call(resolved, call) {
         return Ok(ToolOutput::error(
@@ -902,11 +1173,15 @@ async fn execute_regular_or_unavailable_advisor(
     execute_tool(
         runtime,
         Some(env),
+        Some(resolved),
         call,
         context,
-        run_id,
-        thread_id,
-        operation_id,
+        ToolExecutionOrigin {
+            run_id,
+            thread_id,
+            operation_id,
+        },
+        state,
     )
     .await
 }
@@ -916,6 +1191,7 @@ async fn record_recovered_output(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     call: &ToolCall,
+    reaction_call: &ToolCall,
     output: ToolOutput,
     entered_executor: bool,
     batch: &mut ToolBatch,
@@ -937,7 +1213,8 @@ async fn record_recovered_output(
     for command in &output.state {
         store.apply(command);
     }
-    let (reactions, reminders) = collect_tool_reactions(env, run_id, 0, call, &output, store).await;
+    let (reactions, reminders) =
+        collect_tool_reactions(env, run_id, 0, reaction_call, &output, store).await;
     for command in &reactions {
         store.apply(command);
     }
@@ -965,7 +1242,7 @@ fn recovery_capability(
     if is_resolved_delegation_call(runtime, resolved, delegation_origin, call) {
         return ToolRecoveryCapability::DurableRequest;
     }
-    if call.tool_id == awaken_runtime_contract::resolved::TOOL_OPEN_ID {
+    if RuntimeToolOperation::classify(&call.tool_id) == Some(RuntimeToolOperation::ToolSearch) {
         return ToolRecoveryCapability::ReplaySafe;
     }
     if is_resolved_advisor_call(resolved, call) {
@@ -976,23 +1253,10 @@ fn recovery_capability(
         // indeterminate parent Run.
         return ToolRecoveryCapability::DurableRequest;
     }
-    let tool = env
-        .dynamic_tool(&call.tool_id)
-        .or_else(|| runtime.tool(&call.tool_id).cloned())
-        .map(|tool| (tool.execution_target(), tool));
-    let target = tool.as_ref().map(|(target, _)| *target);
-    let tool_capability = tool
-        .as_ref()
-        .map_or(ToolRecoveryCapability::NonRecoverable, |(_, tool)| {
-            tool.recovery_capability()
-        });
-    let executor_capability = context
-        .tool_executor
-        .as_deref()
-        .map(|executor| executor.recovery_capability(&call.tool_id));
-    routed_recovery_capability(target, tool_capability, executor_capability)
+    tool_execution::tool_recovery_capability(runtime, env, context, &call.tool_id)
 }
 
+#[cfg(test)]
 fn routed_recovery_capability(
     target: Option<awaken_runtime_contract::tool::ToolExecutionTarget>,
     tool: ToolRecoveryCapability,

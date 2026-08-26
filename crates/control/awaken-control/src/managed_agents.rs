@@ -377,6 +377,8 @@ fn config_from_create(
         disabled_at: None,
         archived_at: None,
         tool_overrides: Vec::new(),
+        tool_exposure: Default::default(),
+        tool_discovery: Default::default(),
         recovery_policies: BTreeMap::new(),
         compaction: None,
     };
