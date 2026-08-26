@@ -836,28 +836,26 @@ impl SessionRuntime for LifecycleRuntime {
             )
             .into_iter()
             .collect();
-        let runs = self
-            .include_runs_in_snapshot
-            .load(Ordering::SeqCst)
-            .then(|| {
-                let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
-                for event in lifecycle
-                    .iter()
-                    .filter(|event| event.thread_id.0 == thread_id)
-                {
-                    if let Some(run) = runs.iter_mut().find(|run| run.id == event.run_id) {
-                        run.state = event.state.clone();
-                    } else {
-                        runs.push(awaken_agent_contract::agent::run::Record {
-                            id: event.run_id.clone(),
-                            thread_id: event.thread_id.clone(),
-                            state: event.state.clone(),
-                        });
-                    }
+        let runs = if self.include_runs_in_snapshot.load(Ordering::SeqCst) {
+            let mut runs = Vec::<awaken_agent_contract::agent::run::Record>::new();
+            for event in lifecycle
+                .iter()
+                .filter(|event| event.thread_id.0 == thread_id)
+            {
+                if let Some(run) = runs.iter_mut().find(|run| run.id == event.run_id) {
+                    run.state = event.state.clone();
+                } else {
+                    runs.push(awaken_agent_contract::agent::run::Record {
+                        id: event.run_id.clone(),
+                        thread_id: event.thread_id.clone(),
+                        state: event.state.clone(),
+                    });
                 }
-                runs
-            })
-            .unwrap_or_default();
+            }
+            runs
+        } else {
+            Vec::new()
+        };
         let messages = self.messages.lock().unwrap().clone();
         let message_commit_cursors = self.message_cursors.lock().unwrap().clone();
         let state = self.state.lock().unwrap().clone();

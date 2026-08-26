@@ -1408,18 +1408,22 @@ async fn hot_mcp_replacement_tests_are_generated_from_decision_table() {
 /// Thread recovery authority therefore reports `None` throughout R1-R6.
 #[tokio::test]
 async fn mcp_recovery_tests_are_generated_from_decision_table() {
-    // Test-execution graph: C1 rules R1-R6 compose one integration future; C2
-    // bare `tokio::test` uses the default current-thread runtime; C3 every rule
-    // calls the canonical Managed-to-Session recovery path. E1 all durable and
-    // Runtime-effect assertions complete on the default stack. K1 the test-only
-    // scheduler boundary owns no domain state: no second production recovery
-    // owner and no stack-size override. Decision D1: C1+C2+C3 -> E1.
-    tokio::spawn(mcp_recovery_decision_table_case())
+    // Test-execution graph: C1 rules R1-R4 and R5-R6 have independent durable
+    // fixtures; C2 bare `tokio::test` uses the default current-thread runtime;
+    // C3 every rule calls the canonical Managed-to-Session recovery path. E1
+    // both rule groups complete on the default stack. K1 the test-only scheduler
+    // boundary owns no domain state: it splits independent decision-table rows
+    // instead of adding a second recovery owner or a stack-size override.
+    // Decision D1: C1+C2+C3 -> E1.
+    tokio::spawn(mcp_recovery_lifecycle_decision_table_case())
         .await
-        .expect("MCP recovery decision table task");
+        .expect("MCP recovery lifecycle decision table task");
+    tokio::spawn(mcp_recovery_retry_decision_table_case())
+        .await
+        .expect("MCP recovery retry decision table task");
 }
 
-async fn mcp_recovery_decision_table_case() {
+async fn mcp_recovery_lifecycle_decision_table_case() {
     let h = hot_harness();
     let (status, created) = call(
         &h.app,
@@ -1528,6 +1532,10 @@ async fn mcp_recovery_decision_table_case() {
             "R4"
         );
     }
+}
+
+async fn mcp_recovery_retry_decision_table_case() {
+    let h = hot_harness();
 
     let (status, created) = call(
         &h.app,

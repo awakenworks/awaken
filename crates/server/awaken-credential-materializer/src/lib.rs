@@ -13,6 +13,7 @@ mod inference;
 #[cfg(feature = "authority")]
 mod oauth_refresh;
 mod platform_relay;
+mod refresh;
 mod secret_broker;
 
 pub use inference::{
@@ -21,6 +22,7 @@ pub use inference::{
 };
 #[cfg(feature = "authority")]
 pub use oauth_refresh::{VaultRefreshFactory, VaultRefresher};
+pub use refresh::CredentialRefreshFactory;
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
@@ -34,7 +36,6 @@ mod material_error;
 use material_error::classify_secret_store_error;
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential::CredentialRefresher;
 use awaken_credential_contract::CredentialSourceId;
 #[cfg(feature = "authority")]
 use awaken_credential_vault::repo::CredentialRepo;
@@ -45,45 +46,8 @@ use awaken_runtime_contract::{
     AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError,
     CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
     CredentialMaterialResolver, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, CredentialRefreshAccess, CredentialUsage, PlaintextHolder,
-    ResolvedCredentialMaterial,
+    CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
 };
-
-const PROCESS_SECRET_REFERENCE_PREFIX: &str = "awaken-process-secret://";
-const CREDENTIAL_ARTIFACT_REFERENCE_PREFIX: &str = "awaken-credential-artifact://";
-const PROCESS_SECRET_TTL_MS: u64 = 60_000;
-
-/// Factory for one exact credential revision's challenge recovery. Runtime
-/// carries only the resulting transport refresher and never receives a
-/// Credential repository or Secret Store.
-pub trait CredentialRefreshFactory: Send + Sync {
-    fn refresher(
-        &self,
-        credential_id: CredentialSourceId,
-        access: CredentialRefreshAccess,
-    ) -> Arc<dyn CredentialRefresher>;
-
-    fn bearer_reloader(
-        &self,
-        credential_id: CredentialSourceId,
-        credential_revision: u64,
-    ) -> Arc<dyn CredentialRefresher>;
-}
-
-#[derive(Clone)]
-struct PendingProcessSecret {
-    candidate: ResolvedModelCandidate,
-    context: awaken_runtime_contract::RuntimeRunContext,
-    expires_at_unix_ms: u64,
-}
-
-#[derive(Clone)]
-struct PendingCredentialArtifact {
-    candidate: ResolvedModelCandidate,
-    context: awaken_runtime_contract::RuntimeRunContext,
-    codec: awaken_run_executor_acp::CredentialArtifactCodec,
-    expires_at_unix_ms: u64,
-}
 
 #[derive(Clone)]
 struct RegisteredExtensionConsumer {
@@ -100,8 +64,9 @@ pub struct PinnedCredentialMaterializer {
     secrets: Option<Arc<dyn SecretStore>>,
     external_material_resolver: Option<Arc<dyn CredentialMaterialResolver>>,
     extension_consumers: Arc<BTreeMap<String, RegisteredExtensionConsumer>>,
-    pending_process_secrets: Arc<Mutex<HashMap<String, PendingProcessSecret>>>,
-    pending_credential_artifacts: Arc<Mutex<HashMap<String, PendingCredentialArtifact>>>,
+    pending_process_secrets: Arc<Mutex<HashMap<String, secret_broker::PendingProcessSecret>>>,
+    pending_credential_artifacts:
+        Arc<Mutex<HashMap<String, secret_broker::PendingCredentialArtifact>>>,
 }
 
 impl PinnedCredentialMaterializer {
@@ -386,85 +351,6 @@ impl PinnedCredentialMaterializer {
         Ok(Some((access, binding)))
     }
 
-    /// Issue a short-lived, one-shot process-secret reference for the exact
-    /// credential decision already frozen in the current claim. No material is
-    /// opened here; the provider's `SecretBroker` call performs ownership,
-    /// revision, policy, material, and receipt checks immediately before spawn.
-    pub fn plan_claimed_process_secret(
-        &self,
-        candidate: &ResolvedModelCandidate,
-        context: &awaken_runtime_contract::RuntimeRunContext,
-    ) -> Result<Option<String>, String> {
-        let Some((_, binding)) = Self::claimed_provider_binding(candidate, context)? else {
-            return Ok(None);
-        };
-        if binding.selected_realization_kind != CredentialRealizationKind::ProcessSecretEnvironment
-        {
-            return Ok(None);
-        }
-        let now = unix_time_ms();
-        let mut pending = self
-            .pending_process_secrets
-            .lock()
-            .map_err(|_| "process-secret registry lock is poisoned".to_string())?;
-        pending.retain(|_, requirement| requirement.expires_at_unix_ms > now);
-        let reference = format!("{PROCESS_SECRET_REFERENCE_PREFIX}{}", uuid::Uuid::new_v4());
-        pending.insert(
-            reference.clone(),
-            PendingProcessSecret {
-                candidate: candidate.clone(),
-                context: context.clone(),
-                expires_at_unix_ms: now.saturating_add(PROCESS_SECRET_TTL_MS),
-            },
-        );
-        Ok(Some(reference))
-    }
-
-    /// Issue a one-shot reference for a provider-owned credential artifact. The
-    /// same claim/revision checks as direct provider execution are repeated when
-    /// the sandbox broker consumes it immediately before spawn.
-    pub fn plan_claimed_credential_artifact(
-        &self,
-        candidate: &ResolvedModelCandidate,
-        context: &awaken_runtime_contract::RuntimeRunContext,
-        delivery: awaken_run_executor_acp::ManagedCredentialDelivery,
-    ) -> Result<Option<awaken_run_executor_acp::CredentialArtifactRequirement>, String> {
-        let Some((access, binding)) = Self::claimed_provider_binding(candidate, context)? else {
-            return Ok(None);
-        };
-        if binding.selected_realization_kind != CredentialRealizationKind::PrivateSecretFile {
-            return Ok(None);
-        }
-        let Some(artifact) = delivery.credential_artifact(access.refresh.is_some()) else {
-            return Ok(None);
-        };
-        let now = unix_time_ms();
-        let mut pending = self
-            .pending_credential_artifacts
-            .lock()
-            .map_err(|_| "credential-artifact registry lock is poisoned".to_string())?;
-        pending.retain(|_, requirement| requirement.expires_at_unix_ms > now);
-        let reference = format!(
-            "{CREDENTIAL_ARTIFACT_REFERENCE_PREFIX}{}",
-            uuid::Uuid::new_v4()
-        );
-        pending.insert(
-            reference.clone(),
-            PendingCredentialArtifact {
-                candidate: candidate.clone(),
-                context: context.clone(),
-                codec: artifact.codec,
-                expires_at_unix_ms: now.saturating_add(PROCESS_SECRET_TTL_MS),
-            },
-        );
-        Ok(Some(
-            awaken_run_executor_acp::CredentialArtifactRequirement::new(
-                reference,
-                artifact.relative_path,
-            ),
-        ))
-    }
-
     /// Materialize the provider credential selected by the current durable claim.
     ///
     /// This is the sole inference/ACP realization path: exact binding, mechanism,
@@ -711,6 +597,11 @@ impl PinnedCredentialMaterializer {
         if let Some(envelope) = &access.envelope {
             envelope.validate_for_holder(selected_holder, unix_time_ms())?;
         }
+        awaken_credential_contract::validate_credential_target_usage(
+            access.target.as_ref(),
+            &access.usage,
+        )
+        .map_err(|_| CredentialMaterialError::BindingMismatch)?;
         let external_supports_source =
             self.external_material_resolver
                 .as_ref()
@@ -766,13 +657,36 @@ impl PinnedCredentialMaterializer {
             if source.workspace_id != binding.workspace_id {
                 return Err(CredentialMaterialError::RecipientMismatch);
             }
-            if expected_provider.is_some_and(|provider| {
-                source
+            if expected_provider.is_some_and(|provider| match &source.descriptor {
+                Some(_) => !source.authorization_scope().belongs_to_provider(provider),
+                // Preserve the accepted legacy compatibility boundary: an
+                // undescribed generic row did not claim a provider, while an
+                // explicit legacy provider must still match exactly.
+                None => source
                     .provider_id
                     .as_deref()
-                    .is_some_and(|configured| configured != provider)
+                    .is_some_and(|configured| configured != provider),
             }) {
                 return Err(CredentialMaterialError::RecipientMismatch);
+            }
+            if let Some(descriptor) = &source.descriptor {
+                descriptor
+                    .validate_expiry(unix_time_ms())
+                    .map_err(|error| match error {
+                        awaken_credential_contract::CredentialDescriptorError::Expired => {
+                            CredentialMaterialError::Expired
+                        }
+                        _ => CredentialMaterialError::Invalid,
+                    })?;
+                descriptor
+                    .admit(
+                        access
+                            .target
+                            .as_ref()
+                            .ok_or(CredentialMaterialError::BindingMismatch)?,
+                        &access.usage,
+                    )
+                    .map_err(|_| CredentialMaterialError::BindingMismatch)?;
             }
             let access_token = self.materialize_source(&source).await?;
             let material = if access.usage == CredentialUsage::ProviderAdapter
@@ -812,6 +726,11 @@ impl PinnedCredentialMaterializer {
                 }
             };
             material.validate_usage(&access.usage)?;
+            if let Some(descriptor) = &source.descriptor {
+                descriptor
+                    .validate_material(&material)
+                    .map_err(|_| CredentialMaterialError::MaterialKindMismatch)?;
+            }
             Ok(ResolvedCredentialMaterial {
                 credential: access.credential.clone(),
                 holder: selected_holder.clone(),
@@ -889,6 +808,9 @@ impl PinnedCredentialMaterializer {
             .get(&CredentialSourceId(reference.to_string()))
             .await
             .map_err(|_| CredentialMaterialError::Unavailable)?;
+        source
+            .validate_authority()
+            .map_err(|_| CredentialMaterialError::Invalid)?;
         if source.status != CredentialStatus::Active {
             return Err(CredentialMaterialError::Unavailable);
         }
@@ -990,7 +912,6 @@ mod tests {
     use super::*;
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
-    use awaken_provisioning_contract::SecretBroker;
     use awaken_runtime_contract::{
         CredentialEnvelope, CredentialExecutionPolicy, CredentialMaterial, CredentialRef,
         CredentialRefreshAccess, CredentialUsage, InferenceEndpoint, ModelBinding,
@@ -1348,43 +1269,6 @@ mod tests {
         assert_eq!(bundle.expires_at_unix_ms, Some(u64::MAX));
     }
 
-    #[tokio::test]
-    async fn sandbox_secret_broker_accepts_and_fences_exact_vault_references() {
-        let credentials = Arc::new(InMemoryCredentialRepo::new());
-        let secrets = Arc::new(InMemorySecretStore::new());
-        let source = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "workspace-a".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("github.com".into()),
-                env_key: None,
-                secret: Some(RedactedString::new("repository-token")),
-                oauth_command: None,
-            },
-            secrets.as_ref(),
-            credentials.as_ref(),
-        )
-        .await
-        .expect("repository credential");
-        let reference = format!("{}@{}", source.id.0, source.version);
-        let broker = PinnedCredentialMaterializer::new(credentials, secrets);
-
-        assert_eq!(
-            broker.materialize(&reference).await.unwrap(),
-            b"repository-token",
-            "the exact Resource backing reference reaches the sandbox"
-        );
-        assert_eq!(
-            broker
-                .materialize(&format!("{}@2", source.id.0))
-                .await
-                .unwrap_err()
-                .to_string(),
-            "sandbox error: credential material revision mismatch",
-            "a rotated or stale exact reference fails closed"
-        );
-    }
-
     /// Cause-effect graph for the one external material-source path:
     ///
     /// C1 external resolver installed -> C2 envelope recipient/live
@@ -1690,38 +1574,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn credential_file_broker_reuses_the_persisted_vault() {
-        let credentials = Arc::new(InMemoryCredentialRepo::new());
-        let secrets = Arc::new(InMemorySecretStore::new());
-        let source = enter_credential(
-            CredentialCreateParams {
-                workspace_id: "workspace-a".into(),
-                kind: CredentialKind::Vault,
-                provider_id: Some("tool".into()),
-                env_key: None,
-                secret: Some(RedactedString::new("before")),
-                oauth_command: None,
-            },
-            secrets.as_ref(),
-            credentials.as_ref(),
-        )
-        .await
-        .unwrap();
-        let broker = PinnedCredentialMaterializer::new(credentials, secrets);
-
-        assert_eq!(broker.materialize(&source.id.0).await.unwrap(), b"before");
-        assert!(
-            broker.materialize_process(&source.id.0).await.is_err(),
-            "a durable file credential id is never a process capability"
-        );
-        broker
-            .write_back(&source.id.0, b"after".to_vec())
-            .await
-            .unwrap();
-        assert_eq!(broker.materialize(&source.id.0).await.unwrap(), b"after");
-    }
-
     struct CurrentAttempt;
 
     #[async_trait::async_trait]
@@ -1912,7 +1764,11 @@ mod tests {
                 public_config: serde_json::json!({"socket": "agent.sock"}),
             },
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        );
+        )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::Extension,
+            "extension://example.ssh-agent",
+        ));
         let materializer = PinnedCredentialMaterializer::new(credentials, secrets)
             .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
             .unwrap();

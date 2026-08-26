@@ -77,6 +77,7 @@ async fn exact_vault_refresher(
         id: id.clone(),
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
+        descriptor: None,
         provider_id: Some("mcp".into()),
         protocol_endpoint_id: None,
         env_key: None,

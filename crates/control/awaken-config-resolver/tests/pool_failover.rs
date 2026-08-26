@@ -85,6 +85,7 @@ fn disabled_source(id: &str) -> CredentialSource {
         id: CredentialSourceId(id.into()),
         workspace_id: "ws".into(),
         kind: CredentialKind::Vault,
+        descriptor: None,
         provider_id: None,
         protocol_endpoint_id: None,
         env_key: None,

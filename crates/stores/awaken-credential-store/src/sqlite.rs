@@ -517,17 +517,18 @@ impl CredentialRepo for SqliteCredentialRepo {
     async fn begin_mutation(
         &self,
         intent: CredentialMutationIntent,
-    ) -> Result<(), CredentialError> {
+    ) -> Result<bool, CredentialError> {
         let id = intent.after.id.0.clone();
         let data = serde_json::to_string(&intent).map_err(storage)?;
         with_conn(&self.conn, move |conn, p| {
-            conn.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO {p}_creation_intent (source_id, data) VALUES (?1, ?2)"
-                ),
-                params![id, data],
-            )
-            .map_err(storage)?;
+            let inserted = conn
+                .execute(
+                    &format!(
+                        "INSERT OR IGNORE INTO {p}_creation_intent (source_id, data) VALUES (?1, ?2)"
+                    ),
+                    params![id, data],
+                )
+                .map_err(storage)?;
             let durable: CredentialMutationIntent = get_row(
                 conn,
                 &format!("SELECT data FROM {p}_creation_intent WHERE source_id = ?1"),
@@ -539,7 +540,7 @@ impl CredentialRepo for SqliteCredentialRepo {
                     "another credential mutation is pending".into(),
                 ));
             }
-            Ok(())
+            Ok(inserted == 1)
         })
         .await
     }
@@ -834,6 +835,7 @@ mod tests {
             id: CredentialSourceId(id.into()),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some("anthropic".into()),
             protocol_endpoint_id: None,
             env_key: Some("ANTHROPIC_API_KEY".into()),

@@ -1,5 +1,33 @@
 # Wiki Update Log
 
+## 2026-08-26 — Bind credential source metadata to exact target and usage
+
+- Extended the existing Credential source row and admin create/read/CAS-rotate
+  authority with one optional secret-free descriptor; no store, catalog, or
+  provider-specific credential aggregate was added.
+- Made each descriptor declaration an exact target identity plus canonical
+  usage without duplicating usage in executable access, normalized Repository
+  audiences to one exact HTTPS Git origin, and repeated descriptor/material/
+  expiry validation at the existing pinned materialization edge.
+- Closed descriptor support to Repository, HTTP-effect, signature-verification,
+  and Extension consumers; Provider/MCP remain legacy-only until their existing
+  compilers carry targets.
+- Kept Git on typed HTTP Basic and Connector API credentials scalar; one pure
+  Vault compiler owns source-to-access admission, and each clone/publish effect
+  reopens the exact pin rather than retaining plaintext or an old capability.
+- Required positive revisions and expected-revision rotation/retirement;
+  targetless mounts and unsupported Provider/A2A selection reject described
+  sources instead of treating metadata as ambient authority.
+- Consolidated legacy Provider and A2A source-row publication through the same
+  Vault compiler with typed claim-time holder deferral; startup selection,
+  Existing-provider discovery, and readiness reuse the canonical executable
+  Provider-supply predicate, so described Extension/HTTP-effect credentials and
+  legacy environment rows cannot be reinterpreted as model-provider material.
+- Removed the read-latest material rotation wrappers and legacy Repository token
+  ingress, leaving the existing Vault WAL/CAS as the sole replacement owner.
+- Removed speculative dual-use token, issuer, and probe contracts until a
+  production caller closes those ports.
+
 ## 2026-08-25 — Reuse the Session activity fence for every public Run protocol
 
 - Consolidated AI SDK, AG-UI, and A2A Run/resume execution into the existing

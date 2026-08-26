@@ -41,14 +41,40 @@ pub fn repository_transport_credential_usage() -> awaken_credential_contract::Cr
     awaken_credential_contract::CredentialUsage::HttpBasicAuth
 }
 
+/// Derive the one provider-neutral credential target for an HTTPS Repository
+/// remote. Session compilation, retained-pin validation, and credential ingress
+/// all call this owner instead of independently interpreting the URL.
+pub fn repository_transport_credential_target(
+    remote_url: &str,
+) -> Result<
+    awaken_credential_contract::CredentialTarget,
+    awaken_credential_contract::CredentialDescriptorError,
+> {
+    Ok(awaken_credential_contract::CredentialTarget::new(
+        awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+        awaken_credential_contract::repository_transport_audience(remote_url)?,
+    ))
+}
+
 impl ResolvedRepositoryCredential {
     /// Validate the cross-context pin without opening material. This is consumed
     /// both before persistence and at Runtime activation, so malformed retained
     /// rows fail closed through the same rule.
-    pub fn validate_for_binding(&self, binding: &str) -> Result<(), SessionInputError> {
+    pub fn validate_for_repository(
+        &self,
+        binding: &str,
+        remote_url: &str,
+    ) -> Result<(), SessionInputError> {
         if self.access.credential.id != binding {
             return Err(SessionInputError::InvalidCredentialPin(
                 "Repository credential pin selects another source".into(),
+            ));
+        }
+        let expected_target = repository_transport_credential_target(remote_url)
+            .map_err(|error| SessionInputError::InvalidCredentialPin(error.to_string()))?;
+        if self.access.target.as_ref() != Some(&expected_target) {
+            return Err(SessionInputError::InvalidCredentialPin(
+                "Repository credential pin targets another HTTPS origin".into(),
             ));
         }
         if self.access.usage != repository_transport_credential_usage() {
@@ -587,6 +613,120 @@ mod tests {
                 clone_policy: ClonePolicy::default(),
             })
         }
+    }
+
+    /// Repository pin cause/effect graph: C1 source id matches; C2 the pin has
+    /// one target equal to the normalized HTTPS remote origin; C3 usage is HTTP
+    /// Basic; C4 selected holder is allowed; C5 model exposure is forbidden.
+    /// E1 exact pins and same-origin repository paths are admitted; E2 any
+    /// missing/mismatched/unsafe authority fact is rejected before material or
+    /// Git I/O.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
+    /// |---|---|---|---|---|---|---|
+    /// | P1 | T | T | T | T | T | E1 |
+    /// | P2 | F | - | - | - | - | E2 |
+    /// | P3 | T | F | - | - | - | E2 |
+    /// | P4 | T | T | F | - | - | E2 |
+    /// | P5 | T | T | T | F | - | E2 |
+    /// | P6 | T | T | T | T | F | E2 |
+    #[test]
+    fn repository_credential_pin_is_bound_to_one_https_origin() {
+        let holder = awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "spiffe://example.test/worker",
+        );
+        let exact_target =
+            repository_transport_credential_target("https://github.com/awaken/first.git")
+                .expect("P1 target");
+        let access = awaken_credential_contract::CredentialAccess::new(
+            awaken_credential_contract::CredentialRef {
+                id: "credential-1".into(),
+                revision: 1,
+            },
+            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+            repository_transport_credential_usage(),
+            awaken_credential_contract::CredentialExecutionPolicy::exact(
+                holder.clone(),
+                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+            ),
+        )
+        .with_target(exact_target.clone());
+        let exact = ResolvedRepositoryCredential {
+            access,
+            selected_plaintext_holder: holder.clone(),
+        };
+
+        assert!(
+            exact
+                .validate_for_repository("credential-1", "https://github.com/awaken/second.git",)
+                .is_ok(),
+            "P1/E1 same origin"
+        );
+        assert!(
+            exact
+                .validate_for_repository("credential-2", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P2/E2"
+        );
+
+        let mut missing_target = exact.clone();
+        missing_target.access.target = None;
+        assert!(
+            missing_target
+                .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P3/E2 missing target"
+        );
+        assert!(
+            exact
+                .validate_for_repository(
+                    "credential-1",
+                    "https://git.example.test/awaken/first.git",
+                )
+                .is_err(),
+            "P3/E2 other origin"
+        );
+        assert!(
+            exact
+                .validate_for_repository("credential-1", "http://github.com/awaken/first.git")
+                .is_err(),
+            "P3/E2 insecure remote"
+        );
+
+        let mut wrong_usage = exact.clone();
+        wrong_usage.access.usage = awaken_credential_contract::CredentialUsage::HttpHeader {
+            name: "authorization".into(),
+            scheme: Some("Bearer".into()),
+        };
+        assert!(
+            wrong_usage
+                .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P4/E2"
+        );
+
+        let mut wrong_holder = exact.clone();
+        wrong_holder.selected_plaintext_holder = awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "spiffe://example.test/other-worker",
+        );
+        assert!(
+            wrong_holder
+                .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P5/E2"
+        );
+
+        let mut exposed = exact;
+        exposed.access.policy.model_exposure =
+            awaken_credential_contract::ModelExposurePolicy::VirtualOnly;
+        assert!(
+            exposed
+                .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
+                .is_err(),
+            "P6/E2"
+        );
     }
 
     fn binding(

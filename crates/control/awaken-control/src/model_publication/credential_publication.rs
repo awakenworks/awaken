@@ -2,18 +2,19 @@
 
 use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, SourceLookup, credential_candidates,
+    credential_is_executable_supply,
 };
 use awaken_config_service::PublicationResolutionError;
 use awaken_credential_vault::{
-    CredentialBinding, CredentialMaterialOrigin, CredentialPool, CredentialSource,
-    CredentialStatus, SelectionPolicy,
+    CredentialBinding, CredentialHolderAdmission, CredentialPool, CredentialSource,
+    DeferredCredentialHolderSelection, ExactCredentialAccessRequest, SelectionPolicy,
+    compile_exact_credential_access,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource, CredentialRef,
-    CredentialUsage, InferenceEndpoint,
+    CredentialExecutionPolicy, CredentialMaterialBinding, CredentialUsage, InferenceEndpoint,
 };
 use awaken_tenancy::ScopeId;
 
@@ -112,9 +113,12 @@ impl CatalogModelPublicationResolver {
             CredentialCandidateSet::Brokered => Ok(PublicationAccess::Brokered),
             direct @ CredentialCandidateSet::Direct { .. } => direct
                 .first_eligible(|source| {
-                    source.status == CredentialStatus::Active
-                        && source.is_executable_origin()
-                        && self.credential_usage(binding, source).is_ok()
+                    credential_is_executable_supply(
+                        offering.provider_id.as_str(),
+                        Some(offering.protocol_endpoint_id.as_str()),
+                        &binding.backend_ref,
+                        source,
+                    ) && self.credential_usage(binding, source).is_ok()
                 })
                 .map(|source| PublicationAccess::Direct(Some(source)))
                 .ok_or_else(|| match credential_binding {
@@ -183,45 +187,6 @@ impl CatalogModelPublicationResolver {
                     offering.protocol_endpoint_id
                 ))
             })?;
-        let credential = match access {
-            PublicationAccess::Direct(credential) => credential
-                .map(|credential| {
-                    let revision = u64::try_from(credential.version).map_err(|_| {
-                        unavailable(format!(
-                            "credential {} has a negative version",
-                            credential.id.0
-                        ))
-                    })?;
-                    let usage = self
-                        .credential_usage(&binding, credential)
-                        .map_err(unavailable)?;
-                    Ok(CredentialAccess::new(
-                        CredentialRef {
-                            id: credential.id.0.clone(),
-                            revision,
-                        },
-                        match credential.material_origin() {
-                            CredentialMaterialOrigin::WorkerLocal => {
-                                CredentialMaterialSource::WorkerReference
-                            }
-                            CredentialMaterialOrigin::Vault
-                            | CredentialMaterialOrigin::ExternalHelper => {
-                                CredentialMaterialSource::ControlPlaneReference
-                            }
-                            CredentialMaterialOrigin::LegacyEnvironment => {
-                                return Err(unavailable(
-                                    "environment credentials cannot be frozen into a publication"
-                                        .into(),
-                                ));
-                            }
-                        },
-                        usage,
-                        CredentialExecutionPolicy::self_hosted_provider(),
-                    ))
-                })
-                .transpose()?,
-            PublicationAccess::Brokered => None,
-        };
         let base_url = endpoint
             .base_url
             .clone()
@@ -245,6 +210,36 @@ impl CatalogModelPublicationResolver {
             processing_placement: None,
         };
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
+        let credential = match access {
+            PublicationAccess::Direct(credential) => credential
+                .map(|credential| {
+                    let usage = self
+                        .credential_usage(&binding, credential)
+                        .map_err(unavailable)?;
+                    let material_binding = CredentialMaterialBinding::for_target(
+                        workspace.as_str(),
+                        &(&provider_ref, &endpoint),
+                        &usage,
+                    );
+                    compile_exact_credential_access(
+                        credential,
+                        ExactCredentialAccessRequest {
+                            workspace_id: Some(workspace.as_str()),
+                            target: None,
+                            usage,
+                            policy: CredentialExecutionPolicy::self_hosted_provider(),
+                            holder_admission: CredentialHolderAdmission::Deferred(
+                                DeferredCredentialHolderSelection::ProviderPublication,
+                            ),
+                            binding: &material_binding,
+                            now_unix_ms: super::wall_clock_ms(),
+                        },
+                    )
+                    .map_err(|error| unavailable(error.to_string()))
+                })
+                .transpose()?,
+            PublicationAccess::Brokered => None,
+        };
         let error_binding = binding.clone();
         match acp {
             Some(acp) => ResolvedModelCandidate::try_provider_with_acp(

@@ -9,8 +9,8 @@ use awaken_session_contract::{
 };
 
 use super::{
-    SessionApplication, SessionMutationError, mutation::repository_failure,
-    resource_reconciliation::mutation_failure,
+    SessionApplication, SessionCredentialAccessRequest, SessionMutationError,
+    mutation::repository_failure, resource_reconciliation::mutation_failure,
 };
 
 /// Failure from compiling or migrating exact Session credential pins.
@@ -73,9 +73,11 @@ impl SessionApplication {
             return Ok(());
         };
         if let Some(existing) = credential {
-            existing.validate_for_binding(binding).map_err(|error| {
-                SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
-            })?;
+            existing
+                .validate_for_repository(binding, &config.remote_url)
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
             if &existing.selected_plaintext_holder != selected_holder {
                 return Err(SessionPreparationError::Rejected(RunError::bad_request(
                     "Repository credential pin selects another Environment holder",
@@ -89,6 +91,11 @@ impl SessionApplication {
             ))
         })?;
         let usage = awaken_session_contract::repository_transport_credential_usage();
+        let target =
+            awaken_session_contract::repository_transport_credential_target(&config.remote_url)
+                .map_err(|error| {
+                    SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
+                })?;
         let material_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
             owner_scope,
             &(repository_id, config.version),
@@ -98,13 +105,16 @@ impl SessionApplication {
             .credential_access_for_source(
                 &CredentialSourceId(binding.to_string()),
                 owner_scope,
-                usage,
-                CredentialExecutionPolicy::exact(
-                    selected_holder.clone(),
-                    ModelExposurePolicy::Forbidden,
-                ),
-                selected_holder,
-                &material_binding,
+                SessionCredentialAccessRequest {
+                    target,
+                    usage,
+                    policy: CredentialExecutionPolicy::exact(
+                        selected_holder.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                    selected_holder: selected_holder.clone(),
+                    binding: material_binding,
+                },
             )
             .await
             .map_err(|error| {

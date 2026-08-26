@@ -398,7 +398,11 @@ mod tests {
     use super::*;
     use awaken_agent_contract::RedactedString;
     use awaken_config_resolver::{InMemoryProfileStore, ProfileCandidate};
-    use awaken_credential_contract::CredentialSourceId;
+    use awaken_credential_contract::{
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
+        CredentialTarget, CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE,
+        repository_transport_audience,
+    };
     use awaken_credential_vault::repo::{
         InMemoryCredentialRepo, ensure_worker_local, enter_credential, enter_credential_idempotent,
     };
@@ -1656,7 +1660,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_local_source_publishes_an_exact_worker_reference() {
+    async fn provider_publication_uses_the_canonical_source_admission() {
+        // Cause/effect graph: C1 legacy Provider source is active and has a
+        // positive revision; C2 revision is zero; C3 source is described even
+        // though Provider target compilation remains unsupported. Effects: E1
+        // publish the exact source-owned Worker reference; E2 the Vault compiler
+        // rejects the publication; E3 selection excludes described material
+        // rather than reinterpreting its target as ProviderAdapter.
+        //
+        // | Rule | C1 | C2 | C3 | Effect |
+        // |---|---|---|---|---|
+        // | P1 | T | F | F | E1 |
+        // | P2 | - | T | F | E2 |
+        // | P3 | - | F | T | E3 |
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let source = ensure_worker_local(
             credentials.as_ref(),
@@ -1666,11 +1682,12 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials);
+        let resolver =
+            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone());
         let resolved = resolver
             .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
-            .unwrap();
+            .expect("P1/E1");
         let ModelProvisioning::Provider {
             credential: Some(access),
             ..
@@ -1683,6 +1700,51 @@ mod tests {
         assert_eq!(
             access.material_source,
             CredentialMaterialSource::WorkerReference
+        );
+
+        let mut zero_revision = source.clone();
+        zero_revision.version = 0;
+        credentials.put(zero_revision).await.unwrap();
+        let error =
+            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone())
+                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+                .await
+                .expect_err("P2/E2");
+        assert!(
+            error.to_string().contains("no active persisted credential"),
+            "P2/E2"
+        );
+
+        let mut described = source;
+        described.kind = CredentialKind::Vault;
+        described.worker_local_binding = None;
+        described.material_ref = Some(awaken_credential_vault::SecretRef(
+            "sec:described-provider-fixture".into(),
+        ));
+        described.provider_id = None;
+        described.descriptor = Some(CredentialDescriptor::new(
+            "openai",
+            CredentialMaterialDescriptor::structured(
+                HTTP_BASIC_MATERIAL_TYPE,
+                ["password", "username"],
+            ),
+            [CredentialTargetContract::new(
+                CredentialTarget::new(
+                    CredentialPurpose::RepositoryTransport,
+                    repository_transport_audience("https://github.com/awaken/example.git")
+                        .expect("canonical Repository audience"),
+                ),
+                CredentialUsage::HttpBasicAuth,
+            )],
+        ));
+        credentials.put(described).await.unwrap();
+        let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .expect_err("P3/E3");
+        assert!(
+            error.to_string().contains("no active persisted credential"),
+            "P3/E3"
         );
     }
 

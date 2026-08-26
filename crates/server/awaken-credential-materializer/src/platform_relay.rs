@@ -167,7 +167,11 @@ mod tests {
                 )]),
             },
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        );
+        )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::HttpEffect,
+            "https://api.example.test",
+        ));
 
         let capabilities = materializer.platform_relay_capabilities("gateway.beta");
         assert!(capabilities.holders.contains(&holder));

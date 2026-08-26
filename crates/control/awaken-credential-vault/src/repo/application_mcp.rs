@@ -109,6 +109,7 @@ fn expected_source(
         id: command.source_id.clone(),
         workspace_id: command.workspace_id.clone(),
         kind: CredentialKind::Vault,
+        descriptor: None,
         provider_id: Some(APPLICATION_MCP_PROVIDER_ID.to_owned()),
         protocol_endpoint_id: Some(command.target_fingerprint.clone()),
         env_key: None,
@@ -233,6 +234,7 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         CredentialMaterialPatch {
             primary: Some(bearer),
             auxiliary: BTreeMap::new(),
+            descriptor: None,
         },
         Some(material_ref),
         store,

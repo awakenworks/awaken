@@ -21,13 +21,14 @@ use awaken_config_resolver::{
 };
 use awaken_credential_contract::CredentialSourceId;
 use awaken_credential_vault::repo::{
-    CredentialMaterialPatch, CredentialRepo, enter_credential,
-    enter_credential_idempotent_verified, rotate_credential_materials_exact,
+    CredentialMaterialPatch, CredentialRepo, enter_credential, enter_credential_described,
+    enter_credential_idempotent_described, enter_credential_idempotent_verified,
+    rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     AvailabilityLedger, AvailabilityState, CredentialBinding, CredentialCreateParams,
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialSource,
-    CredentialStatus, OAuthHelper, SecretStore,
+    OAuthHelper, SecretStore,
 };
 use awaken_model_catalog::repo::{CatalogRepo, RepoError};
 use awaken_model_catalog::{
@@ -40,7 +41,6 @@ use axum::http::{HeaderMap, StatusCode, header::CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use sha2::{Digest, Sha256};
 
 use crate::provider_connection::{
     ConnectProviderCommand, ModelCatalogDiscovery, ModelCatalogDiscoveryError,
@@ -52,6 +52,15 @@ pub use provider_connections::{
     ProviderConnectionStatus, ProviderConnectionSummary, ProviderConnectionView,
 };
 use provider_connections::{list_executable_models, list_provider_connections};
+
+mod credential_wire;
+pub use credential_wire::{
+    ArchiveCredentialRequest, CredentialSourceView, EnterCredentialRequest, RotateCredentialRequest,
+};
+use credential_wire::{
+    CredentialMaterialInput, credential_material, hosted_credential_matches,
+    hosted_credential_source_id, is_hosted_credential, validate_hosted_credential_identity,
+};
 
 mod cloud_login;
 pub use cloud_login::{CloudLoginApplication, CloudLoginState, CloudLoginStatusView};
@@ -1306,11 +1315,19 @@ async fn archive_credential(
     scope: Option<Extension<ResourceWorkspace>>,
     Path(id): Path<String>,
     headers: HeaderMap,
+    Json(body): Json<ArchiveCredentialRequest>,
 ) -> Result<Json<CredentialSourceView>, Problem> {
     let rid = req_id(&headers);
+    if body.expected_version < 1 {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource("expected_version must be greater than zero".into()),
+            &rid,
+        ));
+    }
     let source = credential_in_scope(&state, &CredentialSourceId(id), scope.as_ref(), &rid).await?;
-    let source = awaken_credential_vault::repo::revoke_credential(
+    let source = awaken_credential_vault::repo::revoke_credential_exact(
         &source.id,
+        body.expected_version,
         awaken_credential_vault::repo::CredentialRetirement::Disable,
         state.secrets.as_ref(),
         state.credentials.as_ref(),
@@ -1432,185 +1449,6 @@ async fn validate_credential(
     }))
 }
 
-/// The credential-entry wire body. `secret` is write-only: it is sealed into the
-/// [`SecretStore`] and never appears on any response (the returned row is
-/// secret-free). `RedactedString` is intentionally not `Deserialize`, so the raw
-/// secret crosses the wire exactly once, here.
-#[derive(serde::Deserialize, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct EnterCredentialRequest {
-    workspace_id: String,
-    /// Stable hosted-governance operation identity. When present, `provider_id`
-    /// is required and the exact tuple is the idempotent credential identity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    idempotency_key: Option<String>,
-    kind: CredentialKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    provider_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    env_key: Option<String>,
-    /// The secret to seal — required for `vault`. Environment-backed credentials
-    /// are not accepted; environment discovery is exposed only as proposals.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    secret: Option<String>,
-    /// Structured material sealed as one versioned Vault document. Mutually
-    /// exclusive with the legacy `secret` field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    material: Option<CredentialMaterialInput>,
-    /// A server-owned OAuth refresh helper. This is an allowlisted identifier,
-    /// never an operator-supplied command line.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    oauth_helper: Option<OAuthHelper>,
-}
-
-/// Rotate the primary material of one exact active Vault credential revision.
-/// Scalar or typed material is write-only and the response remains a
-/// secret-free source view.
-#[derive(serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct RotateCredentialRequest {
-    expected_version: i64,
-    #[serde(default)]
-    secret: Option<String>,
-    #[serde(default)]
-    material: Option<CredentialMaterialInput>,
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-struct CredentialMaterialInput {
-    /// Namespaced, versioned type owned by the installed consumer extension,
-    /// for example `acme.ssh-key/v1`.
-    type_id: String,
-    /// Opaque named secret fields. Core stores and transports them but never
-    /// assign protocol meaning; the matching consumer owns validation.
-    fields: std::collections::BTreeMap<String, String>,
-}
-
-impl CredentialMaterialInput {
-    fn encode(self) -> Result<RedactedString, CredentialError> {
-        let material = awaken_credential_vault::StructuredCredentialMaterial {
-            type_id: self.type_id,
-            fields: self
-                .fields
-                .into_iter()
-                .map(|(name, value)| (name, RedactedString::new(value)))
-                .collect(),
-        };
-        awaken_credential_vault::encode_structured_material(material)
-    }
-}
-
-fn credential_material(
-    secret: Option<String>,
-    material: Option<CredentialMaterialInput>,
-) -> Result<Option<RedactedString>, CredentialError> {
-    let secret = secret.filter(|secret| !secret.is_empty());
-    match (secret, material) {
-        (Some(_), Some(_)) => Err(CredentialError::InvalidSource(
-            "secret and structured material are mutually exclusive".into(),
-        )),
-        (Some(secret), None) => Ok(Some(RedactedString::new(secret))),
-        (None, Some(material)) => material.encode().map(Some),
-        (None, None) => Ok(None),
-    }
-}
-
-/// Secret-free credential projection. Internal token-source argv and vault refs
-/// never cross the admin boundary; consumers bind this stable source id.
-#[derive(serde::Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CredentialSourceView {
-    pub id: CredentialSourceId,
-    pub workspace_id: String,
-    pub kind: CredentialKind,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub protocol_endpoint_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub env_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub oauth_helper: Option<OAuthHelper>,
-    pub status: CredentialStatus,
-    pub version: i64,
-}
-
-fn hosted_credential_source_id(
-    workspace_id: &str,
-    provider_ref: &str,
-    idempotency_key: &str,
-) -> CredentialSourceId {
-    let mut digest = Sha256::new();
-    for part in [
-        "hosted-governance-credential-v1",
-        workspace_id,
-        provider_ref,
-        idempotency_key,
-    ] {
-        digest.update(part.len().to_be_bytes());
-        digest.update(part.as_bytes());
-    }
-    CredentialSourceId(format!("cred:hosted-business:{:x}", digest.finalize()))
-}
-
-fn validate_hosted_credential_identity(
-    workspace_id: &str,
-    provider_ref: &str,
-    idempotency_key: &str,
-) -> Result<(), CredentialError> {
-    if workspace_id.trim().is_empty()
-        || provider_ref.trim().is_empty()
-        || idempotency_key.trim().is_empty()
-        || idempotency_key.len() > 200
-    {
-        return Err(CredentialError::InvalidSource(
-            "hosted credential identity requires a Workspace, provider_ref, and 1..200 character idempotency_key"
-                .into(),
-        ));
-    }
-    Ok(())
-}
-
-fn is_hosted_credential(source: &CredentialSource) -> bool {
-    source.id.0.starts_with("cred:hosted-business:")
-}
-
-fn hosted_credential_matches(
-    source: &CredentialSource,
-    workspace_id: &str,
-    provider_ref: &str,
-) -> bool {
-    source.workspace_id == workspace_id
-        && source
-            .authorization_scope()
-            .belongs_to_provider(provider_ref)
-        && source.kind == CredentialKind::Vault
-        && source.status == CredentialStatus::Active
-        && source.material_ref.is_some()
-        && source.worker_local_binding.is_none()
-}
-
-impl From<CredentialSource> for CredentialSourceView {
-    fn from(source: CredentialSource) -> Self {
-        let oauth_helper = source
-            .oauth_command
-            .as_deref()
-            .and_then(OAuthHelper::from_command);
-        Self {
-            id: source.id,
-            workspace_id: source.workspace_id,
-            kind: source.kind,
-            provider_id: source.provider_id,
-            protocol_endpoint_id: source.protocol_endpoint_id,
-            env_key: source.env_key,
-            oauth_helper,
-            status: source.status,
-            version: source.version,
-        }
-    }
-}
-
 async fn post_credential(
     State(state): State<AdminState>,
     State(capabilities): State<ConfigCapabilitiesView>,
@@ -1621,6 +1459,7 @@ async fn post_credential(
     let rid = req_id(&headers);
     if body.idempotency_key.is_none()
         && !capabilities.models.byok_enabled
+        && body.descriptor.is_none()
         && body.provider_id.is_some()
     {
         return Err(model_supply_managed(&rid));
@@ -1644,7 +1483,12 @@ async fn post_credential(
         (_, None) => None,
     };
     let workspace_id = scope.map_or(body.workspace_id, |Extension(scope)| scope.0);
-    let idempotent_id = match (body.idempotency_key.as_deref(), body.provider_id.as_deref()) {
+    let canonical_provider = body
+        .descriptor
+        .as_ref()
+        .map(|descriptor| descriptor.provider.0.as_str())
+        .or(body.provider_id.as_deref());
+    let idempotent_id = match (body.idempotency_key.as_deref(), canonical_provider) {
         (Some(key), Some(provider_ref))
             if body.kind == CredentialKind::Vault
                 && secret.is_some()
@@ -1661,7 +1505,7 @@ async fn post_credential(
         (Some(_), _) => {
             return Err(cred_problem(
                 &CredentialError::InvalidSource(
-                    "idempotent hosted credentials require a provider_id, Vault kind, and material"
+                    "idempotent hosted credentials require a canonical provider, Vault kind, and material"
                         .into(),
                 ),
                 &rid,
@@ -1677,8 +1521,18 @@ async fn post_credential(
         secret,
         oauth_command,
     };
-    let source = match idempotent_id {
-        Some(id) => enter_credential_idempotent_verified(
+    let source = match (idempotent_id, body.descriptor) {
+        (Some(id), Some(descriptor)) => enter_credential_idempotent_described(
+            id,
+            params,
+            None,
+            descriptor,
+            state.secrets.as_ref(),
+            state.credentials.as_ref(),
+        )
+        .await
+        .map(|entry| entry.source),
+        (Some(id), None) => enter_credential_idempotent_verified(
             id,
             params,
             None,
@@ -1687,7 +1541,11 @@ async fn post_credential(
         )
         .await
         .map(|entry| entry.source),
-        None => enter_credential(params, &*state.secrets, &*state.credentials).await,
+        (None, Some(descriptor)) => {
+            enter_credential_described(params, descriptor, &*state.secrets, &*state.credentials)
+                .await
+        }
+        (None, None) => enter_credential(params, &*state.secrets, &*state.credentials).await,
     }
     .map_err(|e| cred_problem(&e, &rid))?;
     Ok((StatusCode::CREATED, Json(source.into())))
@@ -1708,21 +1566,22 @@ async fn rotate_credential(
         ));
     }
     let replacement = credential_material(body.secret, body.material)
-        .map_err(|error| cred_problem(&error, &rid))?
-        .ok_or_else(|| {
-            cred_problem(
-                &CredentialError::InvalidSource("rotation material is required".into()),
-                &rid,
-            )
-        })?;
+        .map_err(|error| cred_problem(&error, &rid))?;
+    if replacement.is_none() && body.descriptor.is_none() {
+        return Err(cred_problem(
+            &CredentialError::InvalidSource("rotation material or descriptor is required".into()),
+            &rid,
+        ));
+    }
     let id = CredentialSourceId(id);
     credential_in_scope(&state, &id, scope.as_ref(), &rid).await?;
     let source = rotate_credential_materials_exact(
         &id,
         body.expected_version,
         CredentialMaterialPatch {
-            primary: Some(replacement),
+            primary: replacement,
             auxiliary: Default::default(),
+            descriptor: body.descriptor,
         },
         state.secrets.as_ref(),
         state.credentials.as_ref(),

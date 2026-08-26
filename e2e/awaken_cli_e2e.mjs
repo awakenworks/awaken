@@ -161,6 +161,7 @@ async function main() {
     });
     assert.equal(r.status, 201, `provider connection: ${JSON.stringify(r.json)}`);
     const providerCredentialId = r.json.credential.id;
+    const providerCredentialVersion = r.json.credential.version;
     r = await req(base, 'PUT', `/v1/config/model-attributes/${MODEL}`, {
       context_window: 4096,
       max_output_tokens: 1024,
@@ -538,7 +539,9 @@ async function main() {
     console.log('ok: create-time repository configuration publishes and retires through SQLite');
 
     const callsBeforeRevocation = upstream.requests.length;
-    r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, undefined);
+    r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, {
+      expected_version: providerCredentialVersion,
+    });
     assert.equal(r.status, 200, `archive credential: ${JSON.stringify(r.json)}`);
     const rejected = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local', betas: BETAS,

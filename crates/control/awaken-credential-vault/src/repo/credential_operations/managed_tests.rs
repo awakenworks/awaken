@@ -390,6 +390,7 @@ async fn managed_update_atomically_publishes_exact_rollout_until_service_acknowl
         CredentialMaterialPatch {
             primary: Some(RedactedString::new("rotated")),
             auxiliary: BTreeMap::new(),
+            descriptor: None,
         },
         false,
         &secrets,
@@ -915,6 +916,7 @@ async fn managed_mutation_batch_continues_after_its_first_item_fails() {
             id: CredentialSourceId(format!("source-batch-{suffix}")),
             workspace_id: "ws".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: None,
             protocol_endpoint_id: None,
             env_key: None,
@@ -1175,6 +1177,7 @@ async fn committed_managed_pair_returns_success_and_retries_failed_cleanup() {
         CredentialMaterialPatch {
             primary: Some(RedactedString::new("replacement")),
             auxiliary: BTreeMap::new(),
+            descriptor: None,
         },
         false,
         &store,

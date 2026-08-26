@@ -5,7 +5,7 @@ use awaken_agent_contract::RedactedString;
 use awaken_credential_vault::repo::{
     CredentialMaterialPatch, CredentialMutationIntent, CredentialRepo, CredentialRetirement,
     InMemoryCredentialRepo, enter_credential_with_materials, recover_credential_mutations,
-    revoke_credential, rotate_credential_materials_exact,
+    revoke_credential_exact, rotate_credential_materials_exact,
 };
 use awaken_credential_vault::{
     CredentialCreateParams, CredentialError, CredentialKind, InMemorySecretStore,
@@ -112,6 +112,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
                 OAUTH_REFRESH_TOKEN_SLOT.into(),
                 Some(RedactedString::new("refresh-2")),
             )]),
+            descriptor: None,
         },
         &store,
         &repo,
@@ -143,6 +144,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
             CredentialMaterialPatch {
                 primary: Some(RedactedString::new("must-not-write")),
                 auxiliary: BTreeMap::new(),
+                descriptor: None,
             },
             &store,
             &repo,
@@ -158,6 +160,7 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
         CredentialMaterialPatch {
             primary: None,
             auxiliary: BTreeMap::from([(OAUTH_CLIENT_SECRET_SLOT.into(), None)]),
+            descriptor: None,
         },
         &store,
         &repo,
@@ -171,8 +174,9 @@ async fn named_material_set_rotates_and_reclaims_as_one_exact_aggregate() {
     );
     assert_eq!(store.inventory().await.unwrap().len(), 2);
 
-    let archived = revoke_credential(
+    let archived = revoke_credential_exact(
         &without_client.id,
+        without_client.version,
         CredentialRetirement::Archive,
         &store,
         &repo,
@@ -251,6 +255,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 "../escape".into(),
                 Some(RedactedString::new("must-not-write")),
             )]),
+            descriptor: None,
         },
         &store,
         &repo,
@@ -272,6 +277,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 OAUTH_REFRESH_TOKEN_SLOT.into(),
                 Some(RedactedString::new("refresh-new")),
             )]),
+            descriptor: None,
         },
         &store,
         &repo,
@@ -298,6 +304,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 CredentialMaterialPatch {
                     primary: Some(RedactedString::new("must-not-write")),
                     auxiliary: BTreeMap::new(),
+                    descriptor: None,
                 },
                 &store,
                 &repo,
@@ -321,6 +328,7 @@ async fn rotation_failures_preserve_one_committed_revision_and_material_set() {
                 CredentialMaterialPatch {
                     primary: Some(RedactedString::new("must-not-write")),
                     auxiliary: BTreeMap::new(),
+                    descriptor: None,
                 },
                 &store,
                 &repo,

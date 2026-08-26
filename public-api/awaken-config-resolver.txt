@@ -255,6 +255,7 @@ pub fn awaken_config_resolver::can_consume(&str, core::option::Option<&str>, &aw
 pub fn awaken_config_resolver::cooldown_deadline(awaken_runtime_contract::resilience::Disposition, u64) -> core::option::Option<u64>
 pub fn awaken_config_resolver::credential_can_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool
 pub fn awaken_config_resolver::credential_candidates<'a>(&awaken_credential_vault::CredentialBinding, &'a dyn awaken_config_resolver::SourceLookup, awaken_config_resolver::CredentialSelectionContext<'_>) -> core::result::Result<awaken_config_resolver::CredentialCandidateSet<'a>, awaken_config_resolver::ResolveError>
+pub fn awaken_config_resolver::credential_is_executable_supply(&str, core::option::Option<&str>, &str, &awaken_credential_vault::CredentialSource) -> bool
 pub fn awaken_config_resolver::derive_vendor_pool(&str, &str, core::option::Option<&str>, &str, &[awaken_credential_vault::CredentialSource]) -> awaken_credential_vault::CredentialPool
 pub fn awaken_config_resolver::get_workspace_profile(&dyn awaken_config_resolver::stores::InferenceProfileStore, &str, &str) -> core::result::Result<core::option::Option<awaken_config_resolver::InferenceProfile>, awaken_config_resolver::stores::ConfigRepositoryError>
 pub fn awaken_config_resolver::project_executable_models(&awaken_model_catalog::ProviderCatalog, &[awaken_credential_vault::CredentialSource], &[awaken_config_resolver::ExecutorModelCapability], bool) -> alloc::vec::Vec<awaken_config_resolver::ExecutableModelOption>

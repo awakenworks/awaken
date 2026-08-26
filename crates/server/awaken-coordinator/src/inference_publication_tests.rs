@@ -373,6 +373,10 @@ mod tests {
 
         for rule in rules {
             let (materializer, candidate, secrets) = realization_fixture().await;
+            // Fixture publication performs the canonical seal write/readback
+            // preflight. The decision table measures only effect-edge opens,
+            // so establish a zero counter after that independent writer cause.
+            secrets.gets.store(0, Ordering::SeqCst);
             secrets
                 .fail_get
                 .store(!rule.secret_available, Ordering::SeqCst);

@@ -815,7 +815,12 @@ mod tests {
     /// consumption; ownership failure precedes secret access and receipt failure
     /// prevents material from reaching the process.
     ///
-    /// | Rule | binding | mechanism | ownership | material | receipt | planned | gets | records | process |
+    /// Credential publication first proves its sealed material by read-back;
+    /// `gets` below counts only opens after launch planning begins. The material
+    /// cause is therefore its current launch-time availability, including loss
+    /// after a valid publication.
+    ///
+    /// | Rule | binding | mechanism | ownership | launch material | receipt | planned | gets | records | process |
     /// |---|---|---|---|---|---|---|---:|---:|---|
     /// | A1 | missing | exact | current | present | accept | no | 0 | 0 | reject |
     /// | A2 | exact | wrong | current | present | accept | no | 0 | 0 | reject |
@@ -916,7 +921,7 @@ mod tests {
 
         for rule in rules {
             let repo = Arc::new(InMemoryCredentialRepo::new());
-            let secrets = Arc::new(CountingSecrets::new(!rule.material_available));
+            let secrets = Arc::new(CountingSecrets::new(false));
             let source = enter_credential(
                 CredentialCreateParams {
                     workspace_id: "ws".into(),
@@ -931,6 +936,10 @@ mod tests {
             )
             .await
             .unwrap_or_else(|error| panic!("{} fixture: {error}", rule.id));
+            let launch_get_baseline = secrets.gets.load(Ordering::SeqCst);
+            secrets
+                .fail_get
+                .store(!rule.material_available, Ordering::SeqCst);
             let candidate =
                 awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(
                     ModelBinding::new("anthropic", "published-model", "acp:claude"),
@@ -977,7 +986,7 @@ mod tests {
             assert_eq!(plan.is_ok(), rule.plans, "{} planning verdict", rule.id);
             assert_eq!(
                 secrets.gets.load(Ordering::SeqCst),
-                0,
+                launch_get_baseline,
                 "{} planning never opens material",
                 rule.id
             );
@@ -1006,9 +1015,9 @@ mod tests {
                 assert_eq!(material, b"decision-key", "{} exact material", rule.id);
             }
             assert_eq!(
-                secrets.gets.load(Ordering::SeqCst),
+                secrets.gets.load(Ordering::SeqCst) - launch_get_baseline,
                 rule.expected_gets,
-                "{} secret opens",
+                "{} launch-time secret opens",
                 rule.id
             );
             assert_eq!(

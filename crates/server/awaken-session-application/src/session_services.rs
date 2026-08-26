@@ -10,6 +10,19 @@ use awaken_environment_realization_contract::EnvironmentImageBuildError;
 use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationError;
 use awaken_session_contract::McpTarget;
 
+/// Exact credential execution decision already selected by Session.
+///
+/// Source-row lookup, Workspace admission, compiler time, and deferred holder
+/// selection stay with the credential authority; this request owns only the
+/// exact consumer decision passed through the Session credential port.
+pub struct SessionCredentialAccessRequest {
+    pub target: awaken_credential_contract::CredentialTarget,
+    pub usage: CredentialUsage,
+    pub policy: CredentialExecutionPolicy,
+    pub selected_holder: PlaintextHolder,
+    pub binding: CredentialMaterialBinding,
+}
+
 /// Secret-free credential selection used while compiling a Session.
 #[async_trait::async_trait]
 pub trait SessionCredentialSource: Send + Sync {
@@ -34,10 +47,7 @@ pub trait SessionCredentialSource: Send + Sync {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
-        usage: CredentialUsage,
-        policy: CredentialExecutionPolicy,
-        selected_holder: &PlaintextHolder,
-        binding: &CredentialMaterialBinding,
+        request: SessionCredentialAccessRequest,
     ) -> Result<CredentialAccess, String>;
 }
 
@@ -49,15 +59,18 @@ pub trait RepositoryCredentialIngress: Send + Sync {
         &self,
         source_id: CredentialSourceId,
         workspace_id: &str,
+        target: awaken_credential_contract::CredentialTarget,
         token: RedactedString,
     ) -> Result<CredentialSourceId, String>;
 
     async fn rotate_repository_token(
         &self,
         source_id: &CredentialSourceId,
+        expected_revision: u64,
         workspace_id: &str,
+        target: awaken_credential_contract::CredentialTarget,
         token: RedactedString,
-    ) -> Result<(), String>;
+    ) -> Result<u64, String>;
 }
 
 /// Exact executable Environment projection resolved for one Session creation.

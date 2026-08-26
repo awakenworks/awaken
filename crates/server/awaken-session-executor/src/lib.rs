@@ -661,6 +661,7 @@ impl ManagedHost {
                     repository_id,
                     config_version,
                     claim,
+                    ..
                 } => self
                     .repository_binding_verifier
                     .as_ref()
@@ -897,15 +898,17 @@ impl ManagedHost {
                 if !old
                     .repositories
                     .iter()
-                    .any(|candidate| candidate.plan == repository.plan)
+                    .any(|candidate| candidate == repository)
                 {
-                    awaken_provisioning_contract::RepositoryRealizer::realize_repository(
-                        environment.as_ref(),
-                        &repository.plan,
-                        repository.credential.as_ref(),
-                    )
-                    .await
-                    .map_err(|error| RunError::internal(error.to_string()))?;
+                    self.host
+                        .realize_repository_activation(
+                            thread,
+                            repository,
+                            &new.binding_checks,
+                            environment.as_ref(),
+                        )
+                        .await
+                        .map_err(|error| RunError::internal(error.to_string()))?;
                 }
             }
         }

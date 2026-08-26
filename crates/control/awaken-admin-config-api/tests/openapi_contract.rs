@@ -13,7 +13,10 @@
 use std::sync::Arc;
 
 use awaken_admin_config_api::openapi::openapi_document;
-use awaken_admin_config_api::{AdminState, admin_router};
+use awaken_admin_config_api::{
+    AdminState, CloudLoginApplication, CloudLoginState, CloudLoginStatusView,
+    ConfigCapabilitiesSource, ConfigCapabilitiesView, admin_router_with_runtime_capabilities,
+};
 use awaken_config_resolver::{InMemoryAgentInputBindingRepository, InMemoryProfileStore};
 use awaken_credential_vault::InMemorySecretStore;
 use awaken_credential_vault::repo::InMemoryCredentialRepo;
@@ -34,6 +37,43 @@ fn state() -> AdminState {
         brokered_catalog: None,
         availability: Default::default(),
     }
+}
+
+struct ProbeCapabilities;
+
+impl ConfigCapabilitiesSource for ProbeCapabilities {
+    fn current(&self) -> ConfigCapabilitiesView {
+        ConfigCapabilitiesView::default()
+    }
+}
+
+struct ProbeCloudLogin;
+
+#[async_trait::async_trait]
+impl CloudLoginApplication for ProbeCloudLogin {
+    async fn status(&self) -> CloudLoginStatusView {
+        CloudLoginStatusView {
+            state: CloudLoginState::SignInRequired,
+            authorize_url: None,
+            error_code: None,
+        }
+    }
+
+    async fn start(&self) -> CloudLoginStatusView {
+        self.status().await
+    }
+
+    async fn logout(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+fn route_probe_app() -> axum::Router {
+    admin_router_with_runtime_capabilities(
+        state(),
+        Arc::new(ProbeCapabilities),
+        Some(Arc::new(ProbeCloudLogin)),
+    )
 }
 
 #[test]
@@ -118,7 +158,7 @@ async fn every_documented_operation_is_mounted() {
                 .header(CONTENT_TYPE, "application/json")
                 .body(Body::from("{}"))
                 .expect("request builds");
-            let response = admin_router(state())
+            let response = route_probe_app()
                 .oneshot(request)
                 .await
                 .expect("router responds");
@@ -155,6 +195,9 @@ fn every_mounted_route_is_documented() {
     // (METHOD, path-template) for every route `admin_router` mounts.
     const MOUNTED: &[(&str, &str)] = &[
         ("get", "/v1/config/capabilities"),
+        ("get", "/v1/config/cloud-login"),
+        ("post", "/v1/config/cloud-login"),
+        ("delete", "/v1/config/cloud-login"),
         ("get", "/v1/config/provider-descriptors"),
         ("post", "/v1/config/provider-connections"),
         ("get", "/v1/config/provider-connections"),

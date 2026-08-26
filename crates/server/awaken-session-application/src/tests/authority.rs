@@ -123,6 +123,280 @@ fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceIn
     }
 }
 
+fn token_repository_input(id: &str, name: &str) -> SessionRepositoryResourceInput {
+    let mut input = repository_input(name, "https://github.com/awaken/example.git");
+    input.id = id.into();
+    input.authorization_token = Some(awaken_agent_contract::RedactedString::new("x"));
+    input
+}
+
+/// Fault-only decorator; the composed Resource Registry remains the sole state
+/// and validation authority used by every test rule below.
+struct FaultInjectingResourceRegistry {
+    inner: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    registration_calls: AtomicUsize,
+    activation_calls: AtomicUsize,
+    registration_failures: AtomicUsize,
+    activation_failures: AtomicUsize,
+}
+
+impl FaultInjectingResourceRegistry {
+    fn new(inner: Arc<dyn awaken_resource_contract::ResourceRegistry>) -> Self {
+        Self {
+            inner,
+            registration_calls: AtomicUsize::new(0),
+            activation_calls: AtomicUsize::new(0),
+            registration_failures: AtomicUsize::new(0),
+            activation_failures: AtomicUsize::new(0),
+        }
+    }
+
+    fn fail_next_registration(&self) {
+        self.registration_failures.store(1, Ordering::SeqCst);
+    }
+
+    fn fail_next_activation(&self) {
+        self.activation_failures.store(1, Ordering::SeqCst);
+    }
+
+    fn consume_failure(counter: &AtomicUsize) -> bool {
+        counter
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                remaining.checked_sub(1)
+            })
+            .is_ok()
+    }
+}
+
+impl awaken_resource_contract::ResourceInventory for FaultInjectingResourceRegistry {
+    fn find_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        Option<awaken_resource_contract::MemoryStoreDefinition>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.find_memory_store(workspace_id, id)
+    }
+
+    fn list_memory_stores(
+        &self,
+        workspace_id: &str,
+    ) -> Result<
+        Vec<awaken_resource_contract::MemoryStoreDefinition>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.list_memory_stores(workspace_id)
+    }
+
+    fn find_memory_store_config(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<
+        Option<awaken_resource_contract::MemoryStoreConfigVersion>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner
+            .find_memory_store_config(workspace_id, id, version)
+    }
+
+    fn find_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        Option<awaken_resource_contract::RepositoryDefinition>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.find_repository(workspace_id, id)
+    }
+
+    fn find_repository_config(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<
+        Option<awaken_resource_contract::RepositoryConfigVersion>,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.find_repository_config(workspace_id, id, version)
+    }
+}
+
+impl awaken_resource_contract::ResourceAdministration for FaultInjectingResourceRegistry {
+    fn register_memory_store(
+        &self,
+        command: awaken_resource_contract::RegisterMemoryStore,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.register_memory_store(command)
+    }
+
+    fn update_memory_store_profile(
+        &self,
+        command: awaken_resource_contract::UpdateMemoryStoreProfile,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.update_memory_store_profile(command)
+    }
+
+    fn publish_memory_store_config(
+        &self,
+        command: awaken_resource_contract::PublishMemoryStoreConfig,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.publish_memory_store_config(command)
+    }
+
+    fn change_memory_store_state(
+        &self,
+        command: awaken_resource_contract::ChangeMemoryStoreState,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.change_memory_store_state(command)
+    }
+
+    fn register_repository(
+        &self,
+        command: awaken_resource_contract::RegisterRepository,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.registration_calls.fetch_add(1, Ordering::SeqCst);
+        if Self::consume_failure(&self.registration_failures) {
+            return Err(
+                awaken_resource_contract::ResourceRegistryError::Unavailable(
+                    "injected registration failure".into(),
+                ),
+            );
+        }
+        self.inner.register_repository(command)
+    }
+
+    fn publish_repository_config(
+        &self,
+        command: awaken_resource_contract::PublishRepositoryConfig,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.publish_repository_config(command)
+    }
+
+    fn change_repository_state(
+        &self,
+        command: awaken_resource_contract::ChangeRepositoryState,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        if command.state == awaken_resource_contract::ResourceState::Active {
+            self.activation_calls.fetch_add(1, Ordering::SeqCst);
+            if Self::consume_failure(&self.activation_failures) {
+                return Err(
+                    awaken_resource_contract::ResourceRegistryError::Unavailable(
+                        "injected activation failure".into(),
+                    ),
+                );
+            }
+        }
+        self.inner.change_repository_state(command)
+    }
+}
+
+impl awaken_resource_contract::ExecutionResourceResolver for FaultInjectingResourceRegistry {
+    fn resolve_memory_store(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        awaken_resource_contract::MemoryStoreConfigVersion,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.resolve_memory_store(workspace_id, id)
+    }
+
+    fn resolve_repository(
+        &self,
+        workspace_id: &str,
+        id: &str,
+    ) -> Result<
+        awaken_resource_contract::RepositoryConfigVersion,
+        awaken_resource_contract::ResourceRegistryError,
+    > {
+        self.inner.resolve_repository(workspace_id, id)
+    }
+}
+
+impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingResourceRegistry {
+    fn verify_memory_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner.verify_memory_binding(workspace_id, id, version)
+    }
+
+    fn verify_repository_binding(
+        &self,
+        workspace_id: &str,
+        id: &str,
+        version: awaken_resource_contract::ConfigVersion,
+    ) -> Result<(), awaken_resource_contract::ResourceRegistryError> {
+        self.inner
+            .verify_repository_binding(workspace_id, id, version)
+    }
+}
+
+/// Fault-only ingress port; it owns no credential state or replay ledger.
+#[derive(Default)]
+struct FaultInjectingRepositoryCredentialIngress {
+    calls: AtomicUsize,
+    failures: AtomicUsize,
+}
+
+impl FaultInjectingRepositoryCredentialIngress {
+    fn fail_next(&self) {
+        self.failures.store(1, Ordering::SeqCst);
+    }
+}
+
+#[async_trait::async_trait]
+impl RepositoryCredentialIngress for FaultInjectingRepositoryCredentialIngress {
+    async fn enter_repository_token(
+        &self,
+        source_id: awaken_credential_contract::CredentialSourceId,
+        _workspace_id: &str,
+        _target: awaken_credential_contract::CredentialTarget,
+        _token: awaken_agent_contract::RedactedString,
+    ) -> Result<awaken_credential_contract::CredentialSourceId, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if FaultInjectingResourceRegistry::consume_failure(&self.failures) {
+            Err("injected credential ingress failure".into())
+        } else {
+            Ok(source_id)
+        }
+    }
+
+    async fn rotate_repository_token(
+        &self,
+        _source_id: &awaken_credential_contract::CredentialSourceId,
+        _expected_revision: u64,
+        _workspace_id: &str,
+        _target: awaken_credential_contract::CredentialTarget,
+        _token: awaken_agent_contract::RedactedString,
+    ) -> Result<u64, String> {
+        Err("rotation is outside this registration test".into())
+    }
+}
+
+fn repository_saga_application(
+    registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    ingress: Arc<dyn RepositoryCredentialIngress>,
+) -> SessionApplication {
+    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+    let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
+    app.set_resource_registry(registry);
+    app.set_repository_credential_ingress(ingress);
+    app
+}
+
 #[tokio::test]
 async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
@@ -220,6 +494,208 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
             .remote_url,
         "https://example.test/source.git",
         "R3-R4 preserve original Registry truth"
+    );
+}
+
+#[tokio::test]
+async fn token_repository_registration_is_one_recoverable_registry_vault_saga() {
+    // Cause/effect graph: C1 token and credential ref are mutually exclusive;
+    // C2 the Repository aggregate validates; C3 Suspended registration commits;
+    // C4 an existing aggregate is an exact Suspended/Active replay; C5 Vault
+    // ingress seals the deterministic binding; C6 Registry activation commits.
+    // Effects: E1 pre-admission failure writes neither participant; E2 register
+    // failure never reaches Vault; E3 ingress/activation failure retains a
+    // non-executable Suspended aggregate; E4 exact retry resumes the same saga
+    // and reaches Active; E5 conflicting replay never reaches Vault.
+    //
+    // | Rule | C1 | C2 | C3/C4 | C5 | C6 | Effect |
+    // |---|---|---|---|---|---|---|
+    // | S1 dual token+ref | F | - | - | - | - | E1 |
+    // | S2 invalid config | T | F | - | - | - | E1 |
+    // | S3 register failure | T | T | F | - | - | E2 |
+    // | S4 ingress failure | T | T | T | F | - | E3 |
+    // | S5 exact retry | T | T | T | T | T | E4 |
+    // | S6 conflicting replay | T | T | F | - | - | E5 |
+    // | S7 activation failure | T | T | T | T | F | E3 |
+    // | S8 activation retry | T | T | T | T | T | E4 |
+    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
+    let inner = resources.authorities().resource_registry();
+    let registry = Arc::new(FaultInjectingResourceRegistry::new(inner.clone()));
+    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let app = repository_saga_application(registry.clone(), ingress.clone());
+
+    let mut dual = token_repository_input("repo-dual", "Dual");
+    dual.credential = Some(awaken_credential_contract::CredentialRef {
+        id: "credential-existing".into(),
+        revision: 1,
+    });
+    assert!(
+        app.configure_session_repository(dual).await.is_err(),
+        "S1/E1 dual credential admission"
+    );
+    assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0, "S1");
+    assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S1");
+    assert!(
+        inner
+            .find_repository("workspace", "repo-dual")
+            .unwrap()
+            .is_none(),
+        "S1/E1 zero Registry write"
+    );
+
+    let mut invalid = token_repository_input("repo-invalid", "Invalid");
+    invalid.initial_commit = Some("0123456789abcdef".into());
+    assert!(
+        app.configure_session_repository(invalid).await.is_err(),
+        "S2/E1 aggregate validation"
+    );
+    assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 0, "S2");
+    assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S2");
+    assert!(
+        inner
+            .find_repository("workspace", "repo-invalid")
+            .unwrap()
+            .is_none(),
+        "S2/E1 zero Registry write"
+    );
+
+    registry.fail_next_registration();
+    assert!(
+        app.configure_session_repository(token_repository_input("repo-register", "Register"))
+            .await
+            .is_err(),
+        "S3/E2 register failure"
+    );
+    assert_eq!(registry.registration_calls.load(Ordering::SeqCst), 1, "S3");
+    assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S3/E2");
+    assert!(
+        inner
+            .find_repository("workspace", "repo-register")
+            .unwrap()
+            .is_none(),
+        "S3 register failure does not persist"
+    );
+
+    ingress.fail_next();
+    assert!(
+        app.configure_session_repository(token_repository_input("repo-ingress", "Ingress"))
+            .await
+            .is_err(),
+        "S4/E3 ingress failure"
+    );
+    let suspended = inner
+        .find_repository("workspace", "repo-ingress")
+        .unwrap()
+        .expect("S4 Suspended receipt");
+    assert_eq!(
+        suspended.state,
+        awaken_resource_contract::ResourceState::Suspended,
+        "S4/E3"
+    );
+    assert!(matches!(
+        inner.resolve_repository("workspace", "repo-ingress"),
+        Err(awaken_resource_contract::ResourceRegistryError::NotActive {
+            state: awaken_resource_contract::ResourceState::Suspended,
+            ..
+        })
+    ));
+    assert_eq!(
+        inner
+            .find_repository_config(
+                "workspace",
+                "repo-ingress",
+                awaken_resource_contract::ConfigVersion::INITIAL,
+            )
+            .unwrap()
+            .expect("S4 config")
+            .credential_binding
+            .as_deref(),
+        Some("repo-ingress:credential"),
+        "S4 deterministic saga binding"
+    );
+
+    assert_eq!(
+        app.configure_session_repository(token_repository_input("repo-ingress", "Ingress"))
+            .await
+            .expect("S5/E4 exact retry"),
+        awaken_resource_contract::RepositoryId::from("repo-ingress")
+    );
+    assert_eq!(ingress.calls.load(Ordering::SeqCst), 2, "S4-S5");
+    assert_eq!(
+        inner
+            .find_repository("workspace", "repo-ingress")
+            .unwrap()
+            .expect("S5 Active receipt")
+            .state,
+        awaken_resource_contract::ResourceState::Active,
+        "S5/E4"
+    );
+
+    let ingress_before_conflict = ingress.calls.load(Ordering::SeqCst);
+    assert!(
+        app.configure_session_repository(token_repository_input(
+            "repo-ingress",
+            "Conflicting Ingress",
+        ))
+        .await
+        .is_err(),
+        "S6/E5 conflicting replay"
+    );
+    assert_eq!(
+        ingress.calls.load(Ordering::SeqCst),
+        ingress_before_conflict,
+        "S6/E5 zero Vault ingress"
+    );
+
+    let ingress_before_activation = ingress.calls.load(Ordering::SeqCst);
+    let activations_before = registry.activation_calls.load(Ordering::SeqCst);
+    registry.fail_next_activation();
+    assert!(
+        app.configure_session_repository(token_repository_input("repo-activate", "Activate"))
+            .await
+            .is_err(),
+        "S7/E3 activation failure"
+    );
+    assert_eq!(
+        ingress.calls.load(Ordering::SeqCst),
+        ingress_before_activation + 1,
+        "S7 ingress precedes activation"
+    );
+    assert_eq!(
+        inner
+            .find_repository("workspace", "repo-activate")
+            .unwrap()
+            .expect("S7 Suspended receipt")
+            .state,
+        awaken_resource_contract::ResourceState::Suspended,
+        "S7/E3"
+    );
+    assert!(matches!(
+        inner.resolve_repository("workspace", "repo-activate"),
+        Err(awaken_resource_contract::ResourceRegistryError::NotActive { .. })
+    ));
+
+    app.configure_session_repository(token_repository_input("repo-activate", "Activate"))
+        .await
+        .expect("S8/E4 activation retry");
+    assert_eq!(
+        ingress.calls.load(Ordering::SeqCst),
+        ingress_before_activation + 2,
+        "S8 exact ingress replay"
+    );
+    assert_eq!(
+        registry.activation_calls.load(Ordering::SeqCst),
+        activations_before + 2,
+        "S7-S8 one failed and one successful activation"
+    );
+    assert_eq!(
+        inner
+            .find_repository("workspace", "repo-activate")
+            .unwrap()
+            .expect("S8 Active receipt")
+            .state,
+        awaken_resource_contract::ResourceState::Active,
+        "S8/E4"
     );
 }
 

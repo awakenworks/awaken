@@ -7,6 +7,7 @@
 #[cfg(test)]
 use awaken_config_resolver::ExecutableModelReadiness;
 use awaken_config_resolver::{ExecutableModelOption, project_executable_models};
+#[cfg(test)]
 use awaken_credential_vault::CredentialStatus;
 use awaken_model_catalog::{CatalogSyncResult, OfferingStatus, ProtocolEndpoint, Provider};
 use awaken_tenancy::WorkspaceScope as ResourceWorkspace;
@@ -109,15 +110,15 @@ pub(super) async fn list_provider_connections(
             let provider_credentials = credentials
                 .iter()
                 .filter(|credential| {
-                    credential
-                        .authorization_scope()
-                        .belongs_to_provider(provider_id.as_str())
+                    awaken_config_resolver::credential_is_executable_supply(
+                        provider_id.as_str(),
+                        credential.protocol_endpoint_id.as_deref(),
+                        "genai",
+                        credential,
+                    )
                 })
                 .collect::<Vec<_>>();
-            let active_credentials = provider_credentials
-                .iter()
-                .filter(|credential| credential.status == CredentialStatus::Active)
-                .count();
+            let active_credentials = provider_credentials.len();
             let offerings = catalog
                 .offerings
                 .iter()
@@ -231,6 +232,7 @@ mod tests {
             id: CredentialSourceId(format!("cred:workspace:{provider}")),
             workspace_id: "workspace".into(),
             kind: CredentialKind::Vault,
+            descriptor: None,
             provider_id: Some(provider.into()),
             protocol_endpoint_id: None,
             env_key: None,

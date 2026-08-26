@@ -413,7 +413,7 @@
           "type": "string"
         },
         "WorkState": {
-          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npopulated only by the claim/poll projection and remains null on list/retrieve.",
+          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npresent only on the one Session poll response that acquired the lease;\nlist/retrieve and HealthCheck projections keep it `null`.",
           "enum": [
             "queued",
             "starting",
@@ -520,7 +520,7 @@
           "type": "string"
         },
         "WorkState": {
-          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npopulated only by the claim/poll projection and remains null on list/retrieve.",
+          "description": "`BetaSelfHostedWork` — a work item on an environment's queue. `secret` is\npresent only on the one Session poll response that acquired the lease;\nlist/retrieve and HealthCheck projections keep it `null`.",
           "enum": [
             "queued",
             "starting",

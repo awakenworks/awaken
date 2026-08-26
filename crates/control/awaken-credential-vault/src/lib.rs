@@ -15,11 +15,16 @@
 
 pub mod availability;
 pub mod catalog;
+mod credential_access;
 #[cfg(feature = "oauth-command")]
 pub mod oauth;
 pub mod repo;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
+pub use credential_access::{
+    CredentialHolderAdmission, DeferredCredentialHolderSelection, ExactCredentialAccessRequest,
+    compile_exact_credential_access,
+};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 
@@ -43,7 +48,7 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_contract::{CredentialDescriptor, CredentialSourceId};
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;
@@ -172,6 +177,27 @@ pub fn decode_structured_material(
     }))
 }
 
+/// Validate one write-only material value against the source row's public
+/// descriptor before the value is sealed or a new revision is published.
+pub fn validate_described_material(
+    descriptor: &CredentialDescriptor,
+    value: &RedactedString,
+) -> Result<(), CredentialError> {
+    let material = match decode_structured_material(value.clone())? {
+        Ok(material) => awaken_credential_contract::CredentialMaterial::Structured(material),
+        Err(secret) => awaken_credential_contract::CredentialMaterial::secret(secret),
+    };
+    descriptor
+        .validate_material(&material)
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+    for contract in &descriptor.targets {
+        material
+            .validate_usage(&contract.usage)
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+    }
+    Ok(())
+}
+
 /// Server-owned OAuth token helper. The API carries this allowlisted id, never
 /// an operator-supplied command line; the credential bounded context owns how
 /// it becomes a token source for model, MCP, and A2A consumers alike.
@@ -219,7 +245,13 @@ pub struct CredentialSource {
     pub id: CredentialSourceId,
     pub workspace_id: String,
     pub kind: CredentialKind,
-    /// Provider namespace this credential authenticates (`anthropic`, `openai`).
+    /// Canonical execution-relevant metadata for newly described credentials.
+    /// `None` is retained only for legacy rows; no second metadata store exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<CredentialDescriptor>,
+    /// Legacy-only provider identity (`anthropic`, `openai`). A described
+    /// source owns provider identity in `descriptor`; rows containing both
+    /// representations are invalid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
     /// Optional exact Provider protocol endpoint this credential may
@@ -304,14 +336,42 @@ impl CredentialAuthorizationScope<'_> {
 }
 
 impl CredentialSource {
+    /// Validate the one credential-source authority projection after loading a
+    /// persisted row. Constructors enforce the same rules, but adapters must
+    /// also reject malformed legacy or externally written rows before access or
+    /// plaintext materialization.
+    pub fn validate_authority(&self) -> Result<(), CredentialError> {
+        if let Some(descriptor) = &self.descriptor {
+            descriptor
+                .validate()
+                .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+            if self.provider_id.is_some() {
+                return Err(CredentialError::InvalidSource(
+                    "a described credential cannot also persist legacy provider_id".into(),
+                ));
+            }
+        }
+        if matches!(
+            self.authorization_scope(),
+            CredentialAuthorizationScope::Invalid
+        ) {
+            return Err(CredentialError::InvalidSource(
+                "credential source has conflicting provider authority".into(),
+            ));
+        }
+        Ok(())
+    }
+
     /// Project compatibility fields into their authoritative authorization
     /// meaning. Provider authorization decisions must use this method.
     #[must_use]
     pub fn authorization_scope(&self) -> CredentialAuthorizationScope<'_> {
-        match (
-            self.provider_id.as_deref(),
-            self.protocol_endpoint_id.as_deref(),
-        ) {
+        let descriptor_provider = match (&self.descriptor, self.provider_id.as_deref()) {
+            (Some(_), Some(_)) => return CredentialAuthorizationScope::Invalid,
+            (Some(descriptor), None) => Some(descriptor.provider.0.as_str()),
+            (None, legacy) => legacy,
+        };
+        match (descriptor_provider, self.protocol_endpoint_id.as_deref()) {
             (None, None) => CredentialAuthorizationScope::Generic,
             (Some(provider_id), None) => CredentialAuthorizationScope::Provider { provider_id },
             (Some(provider_id), Some(protocol_endpoint_id)) => {
@@ -934,6 +994,7 @@ pub(crate) fn prepare_source_with_id(
             id,
             workspace_id: params.workspace_id,
             kind: params.kind,
+            descriptor: None,
             provider_id: params.provider_id,
             protocol_endpoint_id: None,
             env_key: params.env_key,
@@ -955,6 +1016,7 @@ pub async fn materialize(
     source: &CredentialSource,
     store: &dyn SecretStore,
 ) -> Result<RedactedString, CredentialError> {
+    source.validate_authority()?;
     if source.status != CredentialStatus::Active {
         return Err(CredentialError::NotActive(source.id.0.clone()));
     }
@@ -1102,6 +1164,7 @@ mod tests {
             id: CredentialSourceId("cred:ws1:test".into()),
             workspace_id: "ws1".into(),
             kind,
+            descriptor: None,
             provider_id: None,
             protocol_endpoint_id: None,
             env_key: None,
@@ -1112,6 +1175,44 @@ mod tests {
             status: CredentialStatus::Active,
             version: 1,
         }
+    }
+
+    /// Persisted-source authority decision: C1 descriptor present; C2 legacy
+    /// provider_id also present. The only valid combinations are exactly one
+    /// provider truth or neither for a generic legacy row. A dual-provider row
+    /// must fail before SecretStore access, even if malformed data bypassed the
+    /// canonical constructor.
+    #[tokio::test]
+    async fn malformed_dual_provider_source_cannot_materialize() {
+        let store = InMemorySecretStore::new();
+        let mut source = bare_source(CredentialKind::Vault);
+        source.provider_id = Some("legacy-provider".into());
+        source.material_ref = Some(SecretRef("must-not-read".into()));
+        source.descriptor = Some(CredentialDescriptor::new(
+            "github",
+            awaken_credential_contract::CredentialMaterialDescriptor::structured(
+                awaken_credential_contract::HTTP_BASIC_MATERIAL_TYPE,
+                ["password", "username"],
+            ),
+            [awaken_credential_contract::CredentialTargetContract::new(
+                awaken_credential_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::RepositoryTransport,
+                    awaken_credential_contract::repository_transport_audience(
+                        "https://github.com/awaken/example.git",
+                    )
+                    .unwrap(),
+                ),
+                awaken_credential_contract::CredentialUsage::HttpBasicAuth,
+            )],
+        ));
+
+        assert!(
+            matches!(
+                materialize(&source, &store).await,
+                Err(CredentialError::InvalidSource(_))
+            ),
+            "dual provider authority rejects before missing material is read"
+        );
     }
 
     #[test]
