@@ -753,6 +753,15 @@ impl SharedHost {
         self.completion.clone()
     }
 
+    /// Install the process composition's sole wakeup for committed Run progress.
+    /// The callback is notification-only; its consumer must reread durable truth.
+    pub fn install_committed_progress_wakeup(
+        &self,
+        wakeup: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(), &'static str> {
+        self.completion.install_committed_progress_wakeup(wakeup)
+    }
+
     /// Register the management assistant's tool executables globally (ADR-0052). They
     /// run on every thread's runtime, but only the reserved-scope assistant's config
     /// names them, so only its runs can invoke them; their ids are auto-allowed on the

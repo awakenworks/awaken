@@ -1349,6 +1349,16 @@ impl SharedHost {
                 HostError::internal(format!("fingerprint Session tool projection: {error}"))
             })?;
         }
+        let background_tasks_enabled = config
+            .resolved_spec
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID);
+        if background_tasks_enabled && is_acp {
+            return Err(HostError::bad_request(
+                "background_task requires the Native backend so the canonical tool executor remains process-addressable",
+            ));
+        }
         // WebSearch has one configuration/dispatch owner for both execution
         // backends. Native lets Runtime resolve the plugin once; ACP resolves
         // the same plugin once and exports that RawTool through MCP. A Session
@@ -1583,7 +1593,7 @@ impl SharedHost {
         // Memory observation, after Coordinator commit and before settlement, so
         // the durable intent lands beside authoritative Session truth. Local
         // execution observes here because its commit authority is in this Host.
-        let terminal_observers: Vec<_> = if self.upstream.is_some() {
+        let mut terminal_observers: Vec<_> = if self.upstream.is_some() {
             Vec::new()
         } else {
             self.memory_terminal_observer(
@@ -1627,13 +1637,8 @@ impl SharedHost {
         // are additive; an Environment/placement hand overrides only the tool
         // executor; one canonical RuntimeRunContext crosses the ingress boundary.
         let workspace_id = self.thread_workspace(thread).to_owned();
-        let run_context = terminal_observers.iter().cloned().fold(
-            awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
-                awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(
-                    workspace_id.as_str(),
-                )),
-            ),
-            awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
+        let run_context = awaken_runtime_contract::RuntimeRunContext::new().with_execution_scope(
+            awaken_tenancy::ExecutionScopeRef(awaken_tenancy::ScopeId::from(workspace_id.as_str())),
         );
         let dispatch_claim = self
             .session_slots
@@ -1676,6 +1681,28 @@ impl SharedHost {
             )),
             None => run_context,
         };
+        if background_tasks_enabled {
+            let generation = env.as_ref().map_or_else(
+                || "brain".to_string(),
+                |environment| environment.handle().sandbox_id,
+            );
+            terminal_observers.push(Arc::new(
+                crate::background_task::BackgroundTaskTerminalObserver::new(
+                    runtime.clone(),
+                    config.clone(),
+                    run_context.clone(),
+                    commit.clone(),
+                    self.memory.background(),
+                    awaken_ext_background_task::process_supervisor(),
+                    thread.to_string(),
+                    generation,
+                ),
+            ));
+        }
+        let run_context = terminal_observers.iter().cloned().fold(
+            run_context,
+            awaken_runtime_contract::RuntimeRunContext::with_terminal_observer,
+        );
         let (ingress, durable_ingress, claimed_worker) = self
             .build_ingress(
                 runtime.clone(),

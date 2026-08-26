@@ -397,6 +397,14 @@ pub fn platform_plugin_capabilities_with_web_search(
     let fetch_manifest = web_fetch.manifest();
     vec![
         PluginCapability {
+            id: awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string(),
+            schema_keys: vec![awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID.to_string()],
+            config_schema: Some(awaken_ext_background_task::config_schema()),
+            bound: awaken_ext_background_task::BackgroundTaskPlugin::new(Default::default())
+                .manifest()
+                .bound,
+        },
+        PluginCapability {
             id: STATE_MACHINE_PLUGIN_ID.to_string(),
             schema_keys: vec![STATE_MACHINE_PLUGIN_ID.to_string()],
             config_schema: Some(awaken_ext_state_machine::config_schema()),
@@ -545,7 +553,10 @@ pub(crate) fn build_runtime<S: RuntimeToolSource + ?Sized>(
         .with_metrics(Arc::new(awaken_observability::OtelMetricsRecorder::new()))
         // The tool state machine is available on every runtime; an agent activates
         // it via `plugin_ids` and configures its machines via `plugin_config`.
-        .with_plugin(Arc::new(StateMachinePlugin::empty()));
+        .with_plugin(Arc::new(StateMachinePlugin::empty()))
+        .with_plugin(Arc::new(
+            awaken_ext_background_task::BackgroundTaskPlugin::new(Default::default()),
+        ));
     // The full capability surface (ADR-0035 D8): hand tools plus provisioned skill
     // tools. Placement-agnostic — the kernel sees `RawTool`s, not "skills".
     for tool in sandbox.runtime_tools() {

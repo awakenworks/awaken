@@ -232,6 +232,13 @@ impl SessionApplication {
         self.lifecycle_wakeup.notify_one();
     }
 
+    /// Signal that committed Runtime progress may unblock retained Session work.
+    /// Process composition connects its completion observer here; the
+    /// application remains the sole owner of reconciliation state and effects.
+    pub fn request_lifecycle_reconciliation(&self) {
+        self.wake_lifecycle_supervisor();
+    }
+
     #[must_use]
     pub(crate) fn runtime(&self) -> &dyn SessionRuntime {
         self.runtime.as_ref()
