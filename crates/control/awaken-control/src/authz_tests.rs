@@ -2,6 +2,55 @@ use super::*;
 use awaken_iam_contract::AccountId;
 
 #[test]
+fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
+    // Cause/effect decision table:
+    // C1 first boot for Org + Workspace -> E1 create the IAM Org, then create
+    // one Directory node + `agents` product-space binding atomically; C2 restart
+    // with the exact same coordinates -> E2 reuse the binding and preserve
+    // Directory revision; C3 product id contains non-slug punctuation -> E3 a
+    // valid deterministic display slug; C4 runtime scope -> E4 remains the
+    // opaque Workspace id, not a node id.
+    let dir = tempfile::tempdir().unwrap();
+    let first = embedded_iam_for_tenant(dir.path(), "org-directory", "workspace_directory");
+    let first_directory = DirectoryApi::new(first.store.clone());
+    let product_space = ProductSpaceRef {
+        product: "agents".into(),
+        space_id: "workspace_directory".into(),
+    };
+    let binding = first_directory
+        .product_space_binding(&product_space)
+        .unwrap()
+        .expect("Agents workspace is placed");
+    assert_eq!(binding.org_id, OrgId("org-directory".into()));
+    assert_eq!(
+        first.workspace_id,
+        WorkspaceId("workspace_directory".into())
+    );
+    let node = first_directory
+        .node(&binding.node_id)
+        .unwrap()
+        .expect("Agents Directory node exists");
+    assert!(
+        node.slug
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+        "E3: slug is accepted by the Directory contract"
+    );
+    let revision = first_directory.revision().unwrap();
+    drop(first);
+
+    let restarted = embedded_iam_for_tenant(dir.path(), "org-directory", "workspace_directory");
+    let restarted_directory = DirectoryApi::new(restarted.store.clone());
+    assert_eq!(restarted_directory.revision().unwrap(), revision);
+    assert_eq!(
+        restarted_directory
+            .product_space_binding(&product_space)
+            .unwrap(),
+        Some(binding)
+    );
+}
+
+#[test]
 fn hosted_runtime_profile_is_one_workspace_scoped_lifecycle_contract() {
     use awaken_iam_server::{AuthorizationProfileAdmin, InMemoryStore};
 

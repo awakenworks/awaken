@@ -112,7 +112,7 @@ use awaken_iam_contract::{
     ScopeRef, Timestamp, WorkspaceId,
 };
 #[cfg(test)]
-use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
+use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ProductSpaceRef, ScopeKind};
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntitlementEngine, EntitlementProvider, EntropySource,
     IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
@@ -122,6 +122,8 @@ use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
 use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
+#[cfg(test)]
+use awaken_iam_server::DirectoryApi;
 use awaken_iam_server::{
     AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
 };
@@ -138,6 +140,7 @@ use axum::{Json, Router};
 mod bootstrap;
 mod clock;
 mod credentials;
+mod directory;
 mod entitlement;
 mod hosted_route_profile;
 mod local_browser;
@@ -156,6 +159,7 @@ use bootstrap::bootstrap_admin_token;
 #[cfg(test)]
 use clock::civil_from_days;
 use clock::{canonical_timestamp_shape, now_rfc3339, now_unix};
+use directory::reconcile_agents_directory;
 use hosted_route_profile::HostedRuntimeRouteDescriptor;
 pub use hosted_route_profile::{
     HostedRuntimePathMatch, HostedRuntimeRouteProfile, hosted_runtime_route_profile,
@@ -726,6 +730,7 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     // and any external reader see the same catalog the evaluator derives from.
     let now = Timestamp(now_rfc3339());
     seed_named_roles(&store, &now).expect("seed the preset role catalog");
+    reconcile_agents_directory(&store, org_id, workspace_id, &now);
     migrate_legacy_workspace_bindings(&store).unwrap_or_else(|error| {
         panic!("legacy Workspace binding migration requires operator repair: {error}")
     });
