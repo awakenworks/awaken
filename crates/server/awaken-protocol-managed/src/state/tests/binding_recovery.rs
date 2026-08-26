@@ -744,6 +744,59 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
 }
 
 #[tokio::test]
+async fn cold_workspace_list_projects_durable_sessions_without_runtime_effects() {
+    // Cause graph: C1 the process cache is cold after restart; C2 durable rows
+    // belong to two Workspaces; C3 no caller retrieved an individual id.
+    // Effects: E1 the requested Workspace still lists its Session; E2 the other
+    // Workspace remains fenced; E3 a collection read performs no Runtime,
+    // Environment, Resource, or MCP restoration.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-a",
+        sample_persisted("sesn_workspace_a"),
+    )
+    .await;
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-b",
+        sample_persisted("sesn_workspace_b"),
+    )
+    .await;
+
+    let runtime = RehydrateFake::default();
+    let restored = runtime.restored.clone();
+    let restored_environments = runtime.restored_environments.clone();
+    let restarted = ManagedState::new_with_mcp(runtime).with_session_repo(repo);
+    assert!(restarted.list_sessions().is_empty(), "C1 cold cache");
+
+    let listed = restarted
+        .list_sessions_scoped_durable("workspace-a")
+        .await
+        .expect("durable Workspace list");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|session| session.id.as_str())
+            .collect::<Vec<_>>(),
+        ["sesn_workspace_a"],
+        "E1 + E2"
+    );
+    assert!(
+        restarted.list_sessions().is_empty(),
+        "E3 remains a pure projection"
+    );
+    assert!(
+        restored.lock().unwrap().is_empty(),
+        "E3 no Runtime restoration"
+    );
+    assert!(
+        restored_environments.lock().unwrap().is_empty(),
+        "E3 no Environment restoration"
+    );
+}
+
+#[tokio::test]
 async fn committed_event_refresh_merges_peer_messages_exactly_once() {
     // Cause/effect graph:
     // C1 a durable Session is already cached on Coordinator A;

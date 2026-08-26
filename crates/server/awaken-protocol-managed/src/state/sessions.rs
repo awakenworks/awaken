@@ -1161,6 +1161,36 @@ impl ManagedState {
         out
     }
 
+    /// Build the collection projection from durable Workspace truth, overlaying
+    /// the richer same-process cache when present. A cold process must not
+    /// return an empty Session list merely because no caller retrieved every
+    /// durable id first.
+    pub async fn list_sessions_scoped_durable(
+        &self,
+        scope: &str,
+    ) -> Result<Vec<Session>, StateError> {
+        let persisted = self
+            .application
+            .sessions_by_owner(scope)
+            .await
+            .map_err(StateError::from)?;
+        let cached = self.sessions.lock().unwrap();
+        let mut out = Vec::with_capacity(persisted.len());
+        for session in persisted {
+            let session_id = session.session_id.clone();
+            if session.is_hidden() {
+                continue;
+            }
+            if let Some(record) = cached.get(&session_id) {
+                out.push(record.session_projection());
+            } else {
+                out.push(self.rehydrated_session(&session_id, scope, Some(session))?);
+            }
+        }
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(out)
+    }
+
     /// `DELETE /v1/sessions/{id}` — commit a terminal `session.deleted` event,
     /// push it to any open SSE stream, then drop the in-memory record. The
     /// broadcast happens *before* removal because after the record is gone there

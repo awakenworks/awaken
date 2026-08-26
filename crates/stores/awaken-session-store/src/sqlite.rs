@@ -402,6 +402,32 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         .map_err(corrupt)
     }
 
+    async fn list_by_owner(
+        &self,
+        owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT aggregate_json, revision FROM managed_session
+                 WHERE scope_id = ?1 ORDER BY session_id",
+            )
+            .map_err(storage)?;
+        statement
+            .query_map(params![owner_scope], |row| {
+                Ok(EncodedSessionRow {
+                    aggregate_json: row.get(0)?,
+                    revision: row.get(1)?,
+                })
+            })
+            .map_err(storage)?
+            .map(|row| {
+                row.map_err(storage)
+                    .and_then(|row| decode(row).map_err(corrupt))
+            })
+            .collect()
+    }
+
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         let conn = self.conn.lock().map_err(storage)?;
         (|| -> Result<SessionRecoveryScan, SessionRepositoryError> {

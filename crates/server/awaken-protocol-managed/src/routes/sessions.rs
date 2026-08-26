@@ -551,7 +551,10 @@ async fn list_sessions(
     let scope = workspace
         .map(|w| w.0.0)
         .unwrap_or_else(|| crate::state::DEFAULT_SCOPE.to_string());
-    let data = state.list_sessions_scoped(&scope);
+    let data = state
+        .list_sessions_scoped_durable(&scope)
+        .await
+        .map_err(error_response)?;
     let params = parse_session_list(raw.as_deref())?;
     session_list_page(data, &params).map(Json)
 }

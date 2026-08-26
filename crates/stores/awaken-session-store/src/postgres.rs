@@ -407,6 +407,29 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(corrupt)
     }
 
+    async fn list_by_owner(
+        &self,
+        owner_scope: &str,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        sqlx::query(
+            "SELECT aggregate_json, revision FROM managed_session \
+             WHERE scope_id = $1 ORDER BY session_id",
+        )
+        .bind(owner_scope)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?
+        .into_iter()
+        .map(|row| {
+            decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)
+        })
+        .collect()
+    }
+
     async fn reconcilable_sessions(&self) -> Result<SessionRecoveryScan, SessionRepositoryError> {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let mut scan = SessionRecoveryScan::default();
