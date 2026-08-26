@@ -153,7 +153,7 @@ fn sqlite_create_waits_for_a_competing_aggregate_writer() {
 fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
     /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
      * C2 two simultaneous Session-store starters, C3 later replay. Effects:
-     * E1 exactly one complete V1..V20 ledger, E2 both starters converge, E3
+     * E1 exactly one current V1 receipt, E2 both starters converge, E3
      * replay is a no-op. Rules: S1 T/F/F=>E1; S2 T/T/F=>E1+E2; S3 F/F/T=>E3.
      * A backend crash cannot expose DDL without its receipt because the shared
      * migration runner commits each migration and ledger row in one backend
@@ -184,7 +184,7 @@ fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ledger_count, 20, "S1/E1 and S3/E3");
+    assert_eq!(ledger_count, 1, "S1/E1 and S3/E3");
     let quarantine_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -521,10 +521,11 @@ async fn root_mutation_decision_table<R: ManagedSessionRepository>(repo: &R, id:
 }
 
 #[tokio::test]
-async fn negative_tombstone_revision_uses_the_repository_error_channel() {
+async fn negative_tombstone_revision_is_rejected_at_the_schema_boundary() {
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
     let session_id = "negative-tombstone";
-    repo.conn
+    let error = repo
+        .conn
         .lock()
         .unwrap()
         .execute(
@@ -533,23 +534,8 @@ async fn negative_tombstone_revision_uses_the_repository_error_channel() {
                  VALUES (?1, 'ws_a', -1, 'now')",
             params![session_id],
         )
-        .unwrap();
-    let payload = SessionMutationPayload::Replace(sample(session_id));
-    let mutation = SessionMutation {
-        expected_revision: SessionRevision(0),
-        idempotency: IdempotencyRecord {
-            key: "negative-tombstone:replace".into(),
-            payload_hash: payload.stable_hash(),
-        },
-        payload,
-        lifecycle_facts: Vec::new(),
-    };
-
-    assert!(matches!(
-        repo.commit_mutation("ws_a", mutation).await,
-        Err(SessionRepositoryError::Corrupt(message))
-            if message.contains("negative deleted Session revision")
-    ));
+        .expect_err("negative revision must never enter the repository");
+    assert!(error.to_string().contains("deleted_revision > 0"));
 }
 
 fn extraction(id: &str, key: &str) -> awaken_ext_memory::MemoryExtractionIntent {
@@ -932,33 +918,23 @@ async fn round_trips_and_survives_a_reopen() {
 }
 
 #[tokio::test]
-async fn rows_without_the_canonical_aggregate_fail_closed() {
-    // Persistence authority partition: the complete aggregate is the only
-    // readable truth. A row containing every retired split column still cannot
-    // synthesize current Resource state after schema convergence.
+async fn malformed_canonical_aggregate_fails_closed() {
+    // The complete aggregate is the only readable truth. The current baseline
+    // makes a missing aggregate impossible; malformed bytes still fail closed.
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    let legacy = serde_json::json!({
-        "inputs": [{
-            "binding_id": "legacy-file",
-            "source": { "kind": "file", "file_id": "file-old" },
-            "mount_path": "/legacy",
-            "access": "read_only"
-        }]
-    })
-    .to_string();
     repo.conn
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO managed_session
-                 (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json, effective_inputs_json)
-                 VALUES (?1, 'agent', 'model', NULL, '{}', 'env', '[]', ?2)",
-                params!["legacy", legacy],
-            )
-            .unwrap();
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO managed_session
+                 (session_id, scope_id, revision, aggregate_json)
+                 VALUES (?1, 'default', 1, '{')",
+            params!["malformed"],
+        )
+        .unwrap();
 
     assert!(matches!(
-        repo.get("legacy").await,
+        repo.get("malformed").await,
         Err(SessionRepositoryError::Corrupt(_))
     ));
 }
@@ -1028,18 +1004,17 @@ async fn corrupt_canonical_aggregate_fails_closed() {
 #[tokio::test]
 async fn legacy_columns_are_not_a_parallel_authority() {
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
-    let mut expected = sample("sesn_1");
-    expected = create_fixture(&repo, "default", expected, Vec::new()).await;
-    repo.conn
-        .lock()
+    let conn = repo.conn.lock().unwrap();
+    let mut statement = conn.prepare("PRAGMA table_info(managed_session)").unwrap();
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
         .unwrap()
-        .execute(
-            "UPDATE managed_session SET metadata_json = ?2, mcp_json = ?3,
-                 runtime_json = ?4 WHERE session_id = ?1",
-            params!["sesn_1", "{bad", "{bad", "{bad"],
-        )
+        .collect::<Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(repo.get("sesn_1").await, Ok(expected), "P1");
+    assert_eq!(
+        columns,
+        vec!["session_id", "scope_id", "revision", "aggregate_json"]
+    );
 }
 
 #[tokio::test]

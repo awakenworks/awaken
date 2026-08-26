@@ -24,6 +24,8 @@ impl SqliteManagedSessionRepository {
         // bootstrap connection cannot configure this repository's connection.
         conn.busy_timeout(SQLITE_WRITE_WAIT)
             .map_err(|e| e.to_string())?;
+        conn.pragma_update(None, "foreign_keys", "ON")
+            .map_err(|e| e.to_string())?;
         let bundle = session_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?
@@ -32,6 +34,42 @@ impl SqliteManagedSessionRepository {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
+    }
+
+    fn sync_session_indexes(
+        tx: &rusqlite::Transaction<'_>,
+        session: &PersistedSession,
+    ) -> Result<(), SessionRepositoryError> {
+        tx.execute(
+            "DELETE FROM managed_session_vault_reference WHERE session_id = ?1",
+            params![session.session_id],
+        )
+        .map_err(storage)?;
+        for vault_id in referenced_vault_ids(session) {
+            tx.execute(
+                "INSERT INTO managed_session_vault_reference (session_id, vault_id) \
+                 VALUES (?1, ?2)",
+                params![session.session_id, vault_id],
+            )
+            .map_err(storage)?;
+        }
+        if session.needs_reconciliation() {
+            tx.execute(
+                "INSERT INTO managed_session_reconciliation_work \
+                    (session_id, observed_revision) VALUES (?1, ?2) \
+                 ON CONFLICT (session_id) DO UPDATE SET \
+                    observed_revision = excluded.observed_revision",
+                params![session.session_id, db_revision(session.revision)?],
+            )
+            .map_err(storage)?;
+        } else {
+            tx.execute(
+                "DELETE FROM managed_session_reconciliation_work WHERE session_id = ?1",
+                params![session.session_id],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
     }
 }
 
@@ -100,14 +138,10 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         session.revision = new_revision;
         let inserted = tx
             .execute(
-                r#"INSERT OR IGNORE INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
-                 scope_id, status, archived_at, effective_inputs_json, environment_binding,
-                 runtime_json, revision, aggregate_json)
-             VALUES (?1, '', '', NULL, '{}', '', '[]', ?2, 'aggregate', NULL,
-                     '{"inputs":[]}', NULL,
-                     '{"mcp_servers":[],"runtime":null,"deny_egress":false,"sandbox":null}',
-                     ?3, ?4)"#,
+                "INSERT INTO managed_session \
+                    (session_id, scope_id, revision, aggregate_json) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT (session_id) DO NOTHING",
                 params![
                     session.session_id,
                     owner_scope,
@@ -121,6 +155,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 SessionRepositoryConflict::AlreadyExists,
             ));
         }
+        Self::sync_session_indexes(&tx, &session)?;
         tx.execute(
             "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
@@ -252,6 +287,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 if affected != 1 {
                     return Ok(SessionMutationResult::Conflict { current_revision });
                 }
+                Self::sync_session_indexes(&tx, &replacement)?;
             }
             SessionMutationPayload::Delete(tombstone) => {
                 let affected = tx
@@ -351,7 +387,7 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                 "SELECT aggregate_json, revision
                  FROM managed_session WHERE session_id = ?1",
                 params![session_id],
-                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, i64>(1)?)),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
             )
             .optional()
             .map_err(storage)?;
@@ -373,11 +409,12 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             {
                 let mut quarantined = conn
                     .prepare(
-                        "SELECT session_id, reason FROM managed_session_quarantine ORDER BY session_id",
+                        "SELECT session_id, reason FROM managed_session_quarantine \
+                         ORDER BY session_id LIMIT ?1",
                     )
                     .map_err(storage)?;
                 let rows = quarantined
-                    .query_map([], |row| {
+                    .query_map(params![RECOVERY_BATCH_SIZE], |row| {
                         Ok(SessionRecoveryQuarantine {
                             session_id: row.get(0)?,
                             reason: row.get(1)?,
@@ -390,15 +427,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             }
             let mut statement = conn
                 .prepare(
-                    "SELECT scope_id, session_id, aggregate_json, revision
-                 FROM managed_session session
-                 WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine
-                                   WHERE quarantine.session_id = session.session_id)
-                 ORDER BY session_id",
+                    "SELECT session.scope_id, session.session_id, session.aggregate_json, \
+                            session.revision, work.observed_revision \
+                     FROM managed_session_reconciliation_work work \
+                     JOIN managed_session session ON session.session_id = work.session_id \
+                     LEFT JOIN managed_session_quarantine quarantine \
+                            ON quarantine.session_id = session.session_id \
+                     WHERE quarantine.session_id IS NULL \
+                     ORDER BY session.session_id LIMIT ?1",
                 )
                 .map_err(storage)?;
             let rows = statement
-                .query_map([], |row| {
+                .query_map(params![RECOVERY_BATCH_SIZE], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
@@ -406,11 +446,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                             aggregate_json: row.get(2)?,
                             revision: row.get(3)?,
                         },
+                        row.get::<_, i64>(4)?,
                     ))
                 })
                 .map_err(storage)?;
             for row in rows {
-                let (workspace_id, session_id, row) = row.map_err(storage)?;
+                let (workspace_id, session_id, row, observed_revision) = row.map_err(storage)?;
+                if observed_revision != row.revision {
+                    return Err(corrupt(format!(
+                        "Session reconciliation revision drift for {session_id}"
+                    )));
+                }
+                let stored_revision = row.revision;
                 match decode(row) {
                     Ok(session) if session.needs_reconciliation() => {
                         scan.sessions.push(ScopedPersistedSession {
@@ -422,9 +469,14 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
                     Err(error) => {
                         let reason = error.to_string();
                         conn.execute(
-                            "INSERT OR IGNORE INTO managed_session_quarantine (session_id, reason) \
-                             VALUES (?1, ?2)",
-                            params![session_id, reason],
+                            "INSERT INTO managed_session_quarantine \
+                                (session_id, reason, observed_revision) \
+                             VALUES (?1, ?2, ?3) \
+                             ON CONFLICT (session_id) DO UPDATE SET \
+                                reason = excluded.reason, \
+                                observed_revision = excluded.observed_revision, \
+                                quarantined_at = CURRENT_TIMESTAMP",
+                            params![session_id, reason, stored_revision],
                         )
                         .map_err(storage)?;
                         scan.quarantined
@@ -441,31 +493,28 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         workspace_id: &str,
         vault_id: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
-        let session_ids = {
-            let conn = self.conn.lock().map_err(storage)?;
-            let mut statement = conn
-                .prepare(
-                    "SELECT session_id FROM managed_session WHERE scope_id = ?1 ORDER BY session_id",
-                )
-                .map_err(storage)?;
-            statement
-                .query_map(params![workspace_id], |row| row.get::<_, String>(0))
-                .map_err(storage)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(storage)?
-        };
-        let mut sessions = Vec::new();
-        for session_id in session_ids {
-            let session = self.get(&session_id).await?;
-            if !session.is_terminal()
-                && session.frozen_baseline().is_some_and(|baseline| {
-                    baseline
-                        .mcp_authoring
-                        .ordered_vault_ids
-                        .iter()
-                        .any(|id| id == vault_id)
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT session.aggregate_json, session.revision \
+                 FROM managed_session_vault_reference reference \
+                 JOIN managed_session session ON session.session_id = reference.session_id \
+                 WHERE reference.vault_id = ?1 AND session.scope_id = ?2 \
+                 ORDER BY session.session_id",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![vault_id, workspace_id], |row| {
+                Ok(EncodedSessionRow {
+                    aggregate_json: row.get(0)?,
+                    revision: row.get(1)?,
                 })
-            {
+            })
+            .map_err(storage)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let session = decode(row.map_err(storage)?).map_err(corrupt)?;
+            if !session.is_terminal() {
                 sessions.push(session);
             }
         }

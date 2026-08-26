@@ -71,3 +71,23 @@ worker at a time — the same single-owner guarantee by a different mechanism.
 - ADR-0009 — the dispatch store and worker this adds a SQLite backend to.
 - [requirements-coverage.md](../requirements-coverage.md) — store adapters
   satisfy the same contracts regardless of backing service.
+
+## 2026-08-27 deterministic current-state amendment
+
+WorkQueue, Managed Session, and Worker Registry now each publish one
+unconditional V1 current-state bundle. They retain one portable schema for
+SQLite and PostgreSQL and no startup-owned alternative DDL.
+
+- WorkQueue decodes its closed state and data-type vocabularies fail closed;
+  malformed metadata is corruption, never an empty default.
+- Managed Session stores one strongly typed aggregate document as the root
+  authority. Reconciliation and Vault-reference tables are maintained indexes,
+  not competing aggregate projections; legacy split JSON columns and full-table
+  recovery scans are absent.
+- Worker Registry stores lifecycle and placement as relational facts plus typed
+  JSON value objects. The former serialized `record_json` copy is absent.
+
+The persistence reset deliberately changes no public Managed Agents protocol or
+domain aggregate. Anthropic Managed Agents compatibility remains at the
+contract/admission boundary; persistence has exactly one internal fact for each
+concept.

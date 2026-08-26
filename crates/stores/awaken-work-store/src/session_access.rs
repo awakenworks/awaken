@@ -329,7 +329,7 @@ impl PostgresWorkQueue {
         .fetch_one(&mut *tx)
         .await
         .map_err(storage)?;
-        let item = pg_row_to_item(&row);
+        let item = pg_row_to_item(&row)?;
         tx.commit().await.map_err(storage)?;
         Ok(Some(ClaimedWork {
             item,
@@ -408,7 +408,7 @@ impl PostgresWorkQueue {
         let Some(row) = row else {
             return Ok(HeartbeatResult::NotFound);
         };
-        let current = pg_row_to_item(&row);
+        let current = pg_row_to_item(&row)?;
         let owner: Option<String> = row.try_get(11).map_err(storage)?;
         let epoch = u64::try_from(row.try_get::<i64, _>(12).map_err(storage)?).map_err(storage)?;
         if owner.as_deref() != Some(worker_id)
