@@ -25,6 +25,19 @@ pub(super) fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// Whether `value` has the contract's canonical RFC 3339 UTC shape
+/// (`YYYY-MM-DDTHH:MM:SSZ`), so lexical comparison is chronological. The mint
+/// engine additionally enforces `expires_at` strictly after `created_at`.
+pub(super) fn canonical_timestamp_shape(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 20
+        && bytes[19] == b'Z'
+        && [4usize, 7].iter().all(|&i| bytes[i] == b'-')
+        && bytes[10] == b'T'
+        && [13usize, 16].iter().all(|&i| bytes[i] == b':')
+        && (0..19).all(|i| [4, 7, 10, 13, 16].contains(&i) || bytes[i].is_ascii_digit())
+}
+
 /// Howard Hinnant's public-domain civil-from-days algorithm.
 pub(super) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;

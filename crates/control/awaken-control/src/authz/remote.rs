@@ -55,6 +55,32 @@ pub(super) struct RemoteAuthenticatedCredential {
     pub(super) access_token_claims: Option<awaken_iam_host::AccessTokenClaims>,
 }
 
+/// Closed failure vocabulary for the synchronous remote-IAM authentication
+/// boundary. Transport failure is distinct from a rejected credential so the
+/// PEP can retain stable operator diagnostics without exposing IAM internals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RemoteAuthenticationFailure {
+    Expired,
+    Revoked,
+    Invalid,
+    Transport,
+}
+
+pub(super) async fn authenticate_off_event_loop(
+    authz: Arc<RemoteManagementAuthz>,
+    presented: Option<String>,
+) -> Result<RemoteAuthenticatedCredential, RemoteAuthenticationFailure> {
+    // Desktop OAuth refresh and remote token verification use synchronous IAM
+    // transports. A stale cached token may refresh before authentication.
+    match tokio::task::spawn_blocking(move || authz.authenticate(presented)).await {
+        Ok(Ok(authenticated)) => Ok(authenticated),
+        Ok(Err(AuthReject::Expired)) => Err(RemoteAuthenticationFailure::Expired),
+        Ok(Err(AuthReject::Revoked)) => Err(RemoteAuthenticationFailure::Revoked),
+        Ok(Err(AuthReject::Invalid)) => Err(RemoteAuthenticationFailure::Invalid),
+        Err(_) => Err(RemoteAuthenticationFailure::Transport),
+    }
+}
+
 impl RemoteAuthenticatedCredential {
     pub(super) fn is_managed_tunnel_workload(&self) -> bool {
         self.access_token_claims.as_ref().is_some_and(|claims| {
