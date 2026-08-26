@@ -78,11 +78,13 @@ struct SandboxPolicyBindingInput {
     version: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct SandboxPolicyBindingOutput {
     environment_id: String,
-    policy_id: String,
-    version: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    policy_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<u64>,
     provisioning: awaken_session_contract::SandboxProvisioning,
 }
 
@@ -106,8 +108,8 @@ async fn project_policy_binding(
         .map_err(map_policy_error)?;
     Ok(SandboxPolicyBindingOutput {
         environment_id,
-        policy_id: reference.id.0,
-        version: reference.version.0,
+        policy_id: Some(reference.id.0),
+        version: Some(reference.version.0),
         provisioning: policy.provisioning,
     })
 }
@@ -195,17 +197,26 @@ async fn get_environment_sandbox_policy(
     State(state): State<Arc<EnvironmentExtensionsState>>,
     Path(environment_id): Path<String>,
 ) -> Result<Json<SandboxPolicyBindingOutput>, StatusCode> {
-    let reference = state
+    let environment = state
         .application
         .get(&environment_id)
         .await
         .map_err(map_application_error)?
-        .and_then(|item| item.sandbox_policy)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let Some(reference) = environment
+        .sandbox_policy
         .map(|reference| SandboxExecutionPolicyRef {
             id: SandboxExecutionPolicyId(reference.policy_id),
             version: SandboxExecutionPolicyVersion(reference.version),
         })
-        .ok_or(StatusCode::NOT_FOUND)?;
+    else {
+        return Ok(Json(SandboxPolicyBindingOutput {
+            environment_id,
+            policy_id: None,
+            version: None,
+            provisioning: Default::default(),
+        }));
+    };
     Ok(Json(
         project_policy_binding(&state, environment_id, reference).await?,
     ))
@@ -295,6 +306,75 @@ mod tests {
             )),
             StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    #[tokio::test]
+    async fn existing_environment_without_binding_projects_the_eager_default() {
+        // Cause/effect graph: Environment existence and optional policy binding
+        // are independent. An absent Environment is still 404, while an existing
+        // Environment without a binding has the effective eager default. The UI
+        // can therefore render the ordinary state without manufacturing an HTTP
+        // failure or treating absence as an authorization problem.
+        let catalog = Arc::new(ExecutableEnvironmentCatalog::new());
+        let application = Arc::new(EnvironmentApplication::new(
+            Arc::new(awaken_env_store::InMemoryEnvRegistry::new()),
+            Arc::new(LocalExecutableEnvironmentRegistrar::new(catalog)),
+            Some(Arc::new(
+                awaken_sandbox_policy_store::InMemorySandboxExecutionPolicyStore::default(),
+            )),
+        ));
+        let created = application
+            .create(awaken_environment_contract::CreateEnvironmentCommand {
+                command_id: "default-binding".into(),
+                name: "Default binding".into(),
+                description: Some(String::new()),
+                metadata: Default::default(),
+                scope: None,
+                config: awaken_environment_contract::EnvironmentConfig::SelfHosted,
+            })
+            .await
+            .expect("create the unbound Environment fixture");
+        let environment_id = created.id;
+        let app = environment_extensions_router(application, None);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get(format!(
+                    "/v1/awaken/environments/{environment_id}/sandbox-execution-policy"
+                ))
+                .body(Body::empty())
+                .expect("build the policy projection request"),
+            )
+            .await
+            .expect("serve the policy projection request");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read the policy projection response");
+        assert_eq!(
+            serde_json::from_slice::<SandboxPolicyBindingOutput>(&body)
+                .expect("decode the typed policy projection"),
+            SandboxPolicyBindingOutput {
+                environment_id,
+                policy_id: None,
+                version: None,
+                provisioning: awaken_session_contract::SandboxProvisioning::Eager,
+            }
+        );
+        let encoded = std::str::from_utf8(&body).expect("projection response is UTF-8 JSON");
+        assert!(!encoded.contains("policy_id"));
+        assert!(!encoded.contains("version"));
+
+        let missing = app
+            .oneshot(
+                Request::get("/v1/awaken/environments/missing/sandbox-execution-policy")
+                    .body(Body::empty())
+                    .expect("build the missing Environment request"),
+            )
+            .await
+            .expect("serve the missing Environment request");
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
