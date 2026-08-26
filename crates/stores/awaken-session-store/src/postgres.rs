@@ -43,6 +43,48 @@ impl PostgresManagedSessionRepository {
             handle: tokio::runtime::Handle::current(),
         })
     }
+
+    async fn sync_session_indexes(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        session: &PersistedSession,
+    ) -> Result<(), SessionRepositoryError> {
+        sqlx::query("DELETE FROM managed_session_vault_reference WHERE session_id = $1")
+            .bind(&session.session_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(storage)?;
+        for vault_id in referenced_vault_ids(session) {
+            sqlx::query(
+                "INSERT INTO managed_session_vault_reference (session_id, vault_id) \
+                 VALUES ($1, $2)",
+            )
+            .bind(&session.session_id)
+            .bind(vault_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(storage)?;
+        }
+        if session.needs_reconciliation() {
+            sqlx::query(
+                "INSERT INTO managed_session_reconciliation_work \
+                    (session_id, observed_revision) VALUES ($1, $2) \
+                 ON CONFLICT (session_id) DO UPDATE SET \
+                    observed_revision = excluded.observed_revision",
+            )
+            .bind(&session.session_id)
+            .bind(db_revision(session.revision)?)
+            .execute(&mut **tx)
+            .await
+            .map_err(storage)?;
+        } else {
+            sqlx::query("DELETE FROM managed_session_reconciliation_work WHERE session_id = $1")
+                .bind(&session.session_id)
+                .execute(&mut **tx)
+                .await
+                .map_err(storage)?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -103,13 +145,8 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         session.revision = new_revision;
         let inserted = sqlx::query(
             r#"INSERT INTO managed_session
-                (session_id, agent_id, model, title, metadata_json, environment_id, mcp_json,
-                 scope_id, status, archived_at, effective_inputs_json, environment_binding,
-                 runtime_json, revision, aggregate_json)
-             VALUES ($1, '', '', NULL, '{}', '', '[]', $2, 'aggregate', NULL,
-                     '{"inputs":[]}', NULL,
-                     '{"mcp_servers":[],"runtime":null,"deny_egress":false,"sandbox":null}',
-                     $3, $4)
+                (session_id, scope_id, revision, aggregate_json)
+             VALUES ($1, $2, $3, $4)
              ON CONFLICT (session_id) DO NOTHING"#,
         )
         .bind(&session.session_id)
@@ -125,6 +162,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 SessionRepositoryConflict::AlreadyExists,
             ));
         }
+        Self::sync_session_indexes(&mut tx, &session).await?;
         sqlx::query(
             "INSERT INTO managed_session_idempotency
                 (session_id, idempotency_key, payload_hash, committed_revision)
@@ -252,6 +290,7 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 if affected != 1 {
                     return Ok(SessionMutationResult::Conflict { current_revision });
                 }
+                Self::sync_session_indexes(&mut tx, &replacement).await?;
             }
             SessionMutationPayload::Delete(tombstone) => {
                 let affected = sqlx::query(
@@ -372,8 +411,10 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         let mut tx = self.pool.begin().await.map_err(storage)?;
         let mut scan = SessionRecoveryScan::default();
         for row in sqlx::query(
-            "SELECT session_id, reason FROM managed_session_quarantine ORDER BY session_id",
+            "SELECT session_id, reason FROM managed_session_quarantine \
+             ORDER BY session_id LIMIT $1",
         )
+        .bind(RECOVERY_BATCH_SIZE)
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?
@@ -384,12 +425,16 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             });
         }
         let rows = sqlx::query(
-            "SELECT scope_id, session_id, aggregate_json, revision \
-             FROM managed_session session \
-             WHERE NOT EXISTS (SELECT 1 FROM managed_session_quarantine quarantine \
-                               WHERE quarantine.session_id = session.session_id) \
-             ORDER BY session_id",
+            "SELECT session.scope_id, session.session_id, session.aggregate_json, \
+                    session.revision, work.observed_revision \
+             FROM managed_session_reconciliation_work work \
+             JOIN managed_session session ON session.session_id = work.session_id \
+             LEFT JOIN managed_session_quarantine quarantine \
+                    ON quarantine.session_id = session.session_id \
+             WHERE quarantine.session_id IS NULL \
+             ORDER BY session.session_id LIMIT $1",
         )
+        .bind(RECOVERY_BATCH_SIZE)
         .fetch_all(&mut *tx)
         .await
         .map_err(storage)?;
@@ -399,6 +444,13 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
                 revision: row.try_get("revision").map_err(storage)?,
             };
+            let observed_revision: i64 = row.try_get("observed_revision").map_err(storage)?;
+            let stored_revision: i64 = row.try_get("revision").map_err(storage)?;
+            if observed_revision != stored_revision {
+                return Err(corrupt(format!(
+                    "Session reconciliation revision drift for {session_id}"
+                )));
+            }
             match decode(encoded) {
                 Ok(session) if session.needs_reconciliation() => {
                     scan.sessions.push(ScopedPersistedSession {
@@ -410,11 +462,17 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
                 Err(error) => {
                     let reason = error.to_string();
                     sqlx::query(
-                        "INSERT INTO managed_session_quarantine (session_id, reason) \
-                         VALUES ($1, $2) ON CONFLICT (session_id) DO NOTHING",
+                        "INSERT INTO managed_session_quarantine \
+                            (session_id, reason, observed_revision) \
+                         VALUES ($1, $2, $3) \
+                         ON CONFLICT (session_id) DO UPDATE SET \
+                            reason = excluded.reason, \
+                            observed_revision = excluded.observed_revision, \
+                            quarantined_at = CURRENT_TIMESTAMP",
                     )
                     .bind(&session_id)
                     .bind(&reason)
+                    .bind(stored_revision)
                     .execute(&mut *tx)
                     .await
                     .map_err(storage)?;
@@ -433,25 +491,25 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         vault_id: &str,
     ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
         let rows = sqlx::query(
-            "SELECT session_id FROM managed_session WHERE scope_id = $1 ORDER BY session_id",
+            "SELECT session.aggregate_json, session.revision \
+             FROM managed_session_vault_reference reference \
+             JOIN managed_session session ON session.session_id = reference.session_id \
+             WHERE reference.vault_id = $1 AND session.scope_id = $2 \
+             ORDER BY session.session_id",
         )
+        .bind(vault_id)
         .bind(workspace_id)
         .fetch_all(&self.pool)
         .await
         .map_err(storage)?;
         let mut sessions = Vec::new();
         for row in rows {
-            let session_id: String = row.try_get("session_id").map_err(storage)?;
-            let session = self.get(&session_id).await?;
-            if !session.is_terminal()
-                && session.frozen_baseline().is_some_and(|baseline| {
-                    baseline
-                        .mcp_authoring
-                        .ordered_vault_ids
-                        .iter()
-                        .any(|id| id == vault_id)
-                })
-            {
+            let session = decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)?;
+            if !session.is_terminal() {
                 sessions.push(session);
             }
         }
