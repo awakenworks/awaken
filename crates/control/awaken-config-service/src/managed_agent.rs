@@ -180,6 +180,22 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         disabled_at: None,
         archived_at: None,
         tool_overrides,
+        tool_exposure: body
+            .get("tool_exposure")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid tool_exposure: {error}"))?
+            .unwrap_or_default(),
+        tool_discovery: body
+            .get("tool_discovery")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| format!("invalid tool_discovery: {error}"))?
+            .unwrap_or_default(),
         recovery_policies: body
             .get("recovery_policies")
             .cloned()
@@ -374,6 +390,8 @@ pub fn managed_from_agent_config(config: &AgentConfig, published: bool) -> Value
         "plugin_config": config.plugin_config,
         "context_policy": config.context_policy,
         "tool_overrides": config.tool_overrides,
+        "tool_exposure": config.tool_exposure,
+        "tool_discovery": config.tool_discovery,
         "compaction": config.compaction,
         "published": published,
     })
@@ -573,6 +591,42 @@ mod tests {
     #[test]
     fn malformed_tool_overrides_fail_closed() {
         assert!(agent_config_from_managed("a".into(), &json!({ "tool_overrides": 123 })).is_err());
+    }
+
+    #[test]
+    fn typed_tool_exposure_and_discovery_policies_round_trip() {
+        // Cause graph: Managed authoring supplies the two typed policy objects;
+        // effect: AgentConfig and the lossless Managed projection preserve them
+        // exactly. Malformed objects fail before publication rather than being
+        // silently replaced by defaults.
+        let exposure = json!({
+            "rules": [{
+                "selector": { "kind": "prefix", "value": "mcp__docs__" },
+                "exposure": "on_demand"
+            }]
+        });
+        let discovery = json!({
+            "max_results": 5,
+            "prompt": { "mode": "disabled" }
+        });
+        let config = agent_config_from_managed(
+            "typed-tools".into(),
+            &json!({
+                "tool_exposure": exposure.clone(),
+                "tool_discovery": discovery.clone()
+            }),
+        )
+        .expect("typed policies parse");
+        let projected = managed_from_agent_config(&config, false);
+        assert_eq!(projected["tool_exposure"], exposure);
+        assert_eq!(projected["tool_discovery"], discovery);
+        assert!(
+            agent_config_from_managed(
+                "invalid".into(),
+                &json!({ "tool_discovery": { "max_results": 0 } }),
+            )
+            .is_err()
+        );
     }
 
     #[test]

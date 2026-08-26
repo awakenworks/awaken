@@ -12,24 +12,69 @@ use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, ToolCall};
 use awaken_runtime_contract::resolved::{ContextPolicy, ResolvedSpec, ToolDescriptor};
 use awaken_runtime_contract::tool::ToolOutput;
 
+use crate::tool_discovery::ToolDiscoveryState;
+
 /// Build a model request from the resolved binding, transcript, and visible
 /// tool descriptors. `dynamic` carries any plugin-contributed tools live for
 /// this step (e.g. an MCP server's current tool set), merged after the pinned
 /// config descriptors so the model sees both.
+#[cfg(test)]
 pub(crate) fn build_chat_request(
     spec: &ResolvedSpec,
     prelude: &[Message],
     transcript: &[Message],
     dynamic: &[ToolDescriptor],
-    opened: &std::collections::BTreeSet<String>,
+    discovery: &ToolDiscoveryState,
 ) -> ChatRequest {
+    build_chat_request_checked(spec, prelude, transcript, dynamic, discovery, true)
+        .expect("test fixture has a unique model-facing tool catalog")
+}
+
+pub(crate) fn build_chat_request_checked(
+    spec: &ResolvedSpec,
+    prelude: &[Message],
+    transcript: &[Message],
+    dynamic: &[ToolDescriptor],
+    discovery: &ToolDiscoveryState,
+    expose_tools: bool,
+) -> awaken_runtime_contract::llm::Result<ChatRequest> {
+    let presentation = if expose_tools {
+        let combined = executable_tool_descriptors(spec, dynamic);
+        spec.tool_presentation
+            .model_projection(&combined, |canonical, fingerprint| {
+                discovery.contains(canonical, fingerprint)
+            })
+    } else {
+        Default::default()
+    };
+    let tools = presentation.tools;
+    let mut model_ids = std::collections::BTreeSet::new();
+    if let Some(duplicate) = tools
+        .iter()
+        .map(|tool| tool.id.as_str())
+        .find(|id| !model_ids.insert(*id))
+    {
+        return Err(awaken_runtime_contract::llm::Error::InvalidRequest(
+            format!(
+                "model-facing tool id {duplicate:?} is not unique after live catalog projection"
+            ),
+        ));
+    }
     // The agent's instructions lead the request as a system message, ahead of the
     // transcript. Empty instructions contribute no system message.
-    let mut messages = Vec::with_capacity(transcript.len() + prelude.len() + 1);
+    let mut messages = Vec::with_capacity(transcript.len() + prelude.len() + 2);
     if !spec.instructions.is_empty() {
         messages.push(ChatMessage {
             role: Role::System,
             content: vec![ContentBlock::text(spec.instructions.clone())],
+        });
+    }
+    // Deferred-tool guidance is a request-view concern like retrieved context:
+    // automatic by default, configurable, and never committed into the Thread.
+    if let Some(prompt) = presentation.prompt {
+        messages.push(ChatMessage {
+            role: Role::System,
+            content: vec![ContentBlock::text(prompt)],
         });
     }
     // Request-only context (recalled memories, retrieved docs): after the
@@ -47,11 +92,26 @@ pub(crate) fn build_chat_request(
     // withhold that static copy at this single convergence seam so providers never
     // receive two names and the live plugin schema remains authoritative. Plugin
     // merge already rejects duplicate dynamic owners before this point.
+    Ok(ChatRequest {
+        model_binding: spec.model_binding.binding().clone(),
+        inference: spec.plugin_config.inference.clone(),
+        messages,
+        tools,
+    })
+}
+
+/// The single convergence seam for pinned and plugin-published descriptors. Tool
+/// search and request construction both consume this exact catalog, so an MCP tool
+/// cannot be discoverable but uncallable (or the reverse).
+pub(crate) fn executable_tool_descriptors(
+    spec: &ResolvedSpec,
+    dynamic: &[ToolDescriptor],
+) -> Vec<ToolDescriptor> {
     let dynamic_ids = dynamic
         .iter()
         .map(|tool| tool.id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
-    let combined: Vec<ToolDescriptor> = spec
+    spec
         .tool_descriptors
         .iter()
         .filter(|tool| !dynamic_ids.contains(tool.id.as_str()))
@@ -88,18 +148,7 @@ pub(crate) fn build_chat_request(
                     })
         })
         .cloned()
-        .collect();
-    // `model_tools` applies the alias/description overrides, withholds deferred tools the
-    // model has not yet opened this run, and appends the `tool_open` meta-tool listing
-    // whatever stays deferred (absent when nothing is deferred). Its descriptors go to
-    // the request as-is — one tool type end to end, no lossy projection into a schema.
-    let tools = spec.tool_presentation.model_tools(&combined, opened);
-    ChatRequest {
-        model_binding: spec.model_binding.binding().clone(),
-        inference: spec.plugin_config.inference.clone(),
-        messages,
-        tools,
-    }
+        .collect()
 }
 
 /// Bound the model-visible message list per `policy`. Operates on the request

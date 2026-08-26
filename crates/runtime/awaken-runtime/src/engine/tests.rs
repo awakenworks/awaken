@@ -1,9 +1,23 @@
 use super::*;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointError;
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    ToolPresentation, ToolPresentationOverride,
 };
 use awaken_runtime_contract::tool::{RawTool, ToolOutputSpiller};
+
+#[test]
+fn runtime_operation_ids_are_one_closed_exact_match_table() {
+    // Cause/effect decision table: each closed operation id (C1) round-trips
+    // through classification (E1); an unknown id or a prefixed lookalike (C2)
+    // is ordinary tool space (E2=None). The enum's `id` method is the sole
+    // production string authority used by descriptors, prompts, and dispatch.
+    let operation = RuntimeToolOperation::ToolSearch;
+    assert_eq!(
+        RuntimeToolOperation::classify(operation.id()),
+        Some(operation)
+    );
+}
 
 fn spec(instructions: &str) -> ResolvedSpec {
     ResolvedSpec {
@@ -29,6 +43,49 @@ fn spec(instructions: &str) -> ResolvedSpec {
 
 fn user_message() -> Message {
     Message::text(MessageId("m1".to_string()), Role::User, "hi")
+}
+
+#[test]
+fn live_catalog_alias_collisions_fail_before_provider_io() {
+    // Causal graph: C1 the pinned catalog exposes `read`; C2 a live MCP tool is
+    // aliased to the same model id; C3 both converge at request projection.
+    // Effect E1 request construction returns a permanent InvalidRequest. This
+    // covers the collision compile-time validation cannot see because MCP tools
+    // may appear after publication.
+    let mut resolved = spec("");
+    resolved.tool_descriptors = vec![ToolDescriptor::pinned(
+        "test",
+        "read",
+        "read",
+        serde_json::json!({"type":"object"}),
+    )];
+    resolved.tool_presentation = ToolPresentation::from_overrides([(
+        "mcp__fs__read".into(),
+        ToolPresentationOverride {
+            alias: Some("read".into()),
+            ..Default::default()
+        },
+    )]);
+    let dynamic = [ToolDescriptor::pinned(
+        "mcp",
+        "mcp__fs__read",
+        "remote read",
+        serde_json::json!({"type":"object"}),
+    )];
+    let error = build_chat_request_checked(
+        &resolved,
+        &[],
+        &[user_message()],
+        &dynamic,
+        &Default::default(),
+        true,
+    )
+    .expect_err("C1+C2+C3=>E1");
+    assert!(matches!(
+        error,
+        awaken_runtime_contract::llm::Error::InvalidRequest(message)
+            if message.contains("not unique")
+    ));
 }
 
 #[test]
@@ -273,7 +330,11 @@ fn provider_server_tool_requires_explicit_always_allow() {
         "Search",
         serde_json::json!({"type":"object"}),
     )
-    .with_provider_server_tool("openrouter", "openrouter:web_search", serde_json::json!({}));
+    .with_provider_server_tool(
+        awaken_runtime_contract::resolved::ProviderServerTool::openrouter_web_search(
+            Default::default(),
+        ),
+    );
     let mut configured = spec("");
     configured.tool_descriptors = vec![tool];
     assert!(
@@ -1304,11 +1365,15 @@ async fn native_child_tool_effects_require_the_parent_attempt_authority() {
     execute_tool(
         &Runtime::new().with_tool(absent_tool.clone()),
         None,
+        None,
         &call,
         &RuntimeRunContext::new(),
-        &run_id,
-        &thread_id,
-        "operation-absent".into(),
+        ToolExecutionOrigin {
+            run_id: &run_id,
+            thread_id: &thread_id,
+            operation_id: "operation-absent".into(),
+        },
+        &Store::new(),
     )
     .await
     .expect("O1 absent authority stays compatible");
@@ -1328,11 +1393,15 @@ async fn native_child_tool_effects_require_the_parent_attempt_authority() {
     execute_tool(
         &Runtime::new().with_tool(current_tool.clone()),
         None,
+        None,
         &call,
         &current_child,
-        &run_id,
-        &thread_id,
-        "operation-current".into(),
+        ToolExecutionOrigin {
+            run_id: &run_id,
+            thread_id: &thread_id,
+            operation_id: "operation-current".into(),
+        },
+        &Store::new(),
     )
     .await
     .expect("O2 current parent authority permits the child effect");
@@ -1363,11 +1432,15 @@ async fn native_child_tool_effects_require_the_parent_attempt_authority() {
         execute_tool(
             &Runtime::new().with_tool(stale_tool.clone()),
             None,
+            None,
             &call,
             &stale_child,
-            &run_id,
-            &thread_id,
-            format!("operation-{label}"),
+            ToolExecutionOrigin {
+                run_id: &run_id,
+                thread_id: &thread_id,
+                operation_id: format!("operation-{label}"),
+            },
+            &Store::new(),
         )
         .await
         .expect_err("O3 stale parent authority fences the child tool");
@@ -1390,11 +1463,15 @@ async fn native_child_tool_effects_require_the_parent_attempt_authority() {
     let output = execute_tool(
         &Runtime::new().with_tool(invoked_tool.clone()),
         None,
+        None,
         &call,
         &child,
-        &run_id,
-        &thread_id,
-        "operation-spill".into(),
+        ToolExecutionOrigin {
+            run_id: &run_id,
+            thread_id: &thread_id,
+            operation_id: "operation-spill".into(),
+        },
+        &Store::new(),
     )
     .await
     .expect("O4 tool starts while authority is current");

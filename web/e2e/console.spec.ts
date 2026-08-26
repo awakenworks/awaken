@@ -309,7 +309,7 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
       target: "mcp__issues__create_issue",
       alias: "file_issue",
       description: "Create an issue with the verified acceptance criteria.",
-      defer: true,
+      exposure: "on_demand",
     },
   ]);
 

@@ -11,6 +11,7 @@ use crate::resolved::ToolDescriptor;
 use crate::tool::RawTool;
 
 use super::capability::PluginManifest;
+use super::concurrency::ToolConcurrencyConstraint;
 use super::guard::RunEndGuard;
 use super::phase::PhaseHook;
 
@@ -92,6 +93,8 @@ pub struct Contributions {
     pub run_end_guards: Vec<Arc<dyn RunEndGuard>>,
     /// Pre-execution tool gates this plugin contributes.
     pub tool_gates: Vec<Arc<dyn ToolGateHook>>,
+    /// Execution-time resource constraints this plugin contributes.
+    pub tool_constraints: Vec<Arc<dyn ToolConcurrencyConstraint>>,
     /// Tools contributed with their executable behavior, for dynamic tool sets.
     pub dynamic_tools: Vec<DynamicTool>,
 }
@@ -106,6 +109,7 @@ impl Contributions {
             action_kinds: Vec::new(),
             run_end_guards: Vec::new(),
             tool_gates: Vec::new(),
+            tool_constraints: Vec::new(),
             dynamic_tools: Vec::new(),
         }
     }
@@ -131,6 +135,15 @@ impl Contributions {
     /// Register a pre-execution tool gate.
     pub fn register_gate(&mut self, gate: Arc<dyn ToolGateHook>) -> &mut Self {
         self.tool_gates.push(gate);
+        self
+    }
+
+    /// Register a resource constraint that can only narrow tool concurrency.
+    pub fn register_tool_constraint(
+        &mut self,
+        constraint: Arc<dyn ToolConcurrencyConstraint>,
+    ) -> &mut Self {
+        self.tool_constraints.push(constraint);
         self
     }
 

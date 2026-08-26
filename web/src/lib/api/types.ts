@@ -433,24 +433,41 @@ export interface AgentConfig {
   max_steps: number;
   plugins: string[];
   /** Per-plugin config sections, keyed by plugin id (permission / state_machine /
-   * deferred-tools / generative-ui all live here as JSON). */
+   * generative-ui live here as extension-owned JSON). */
   plugin_config: Record<string, unknown>;
   context_policy: ContextPolicy;
-  /** Per-tool model-facing presentation (ADR-0053): alias / description override /
-   * defer, keyed by canonical tool id (a catalog id or an MCP `mcp__server__tool`). */
+  /** Exact model-facing appearance/exposure overrides, keyed by canonical tool id. */
   tool_overrides?: ToolOverride[];
+  /** Ordered first-match policy for static ids and live namespaces. */
+  tool_exposure?: ToolExposurePolicy;
+  /** Provider-neutral discovery behavior for on-demand tool definitions. */
+  tool_discovery?: ToolDiscoverySettings;
   /** Advanced persisted fields surfaced in the lossless JSON editor. */
   recovery_policies?: Record<string, unknown>;
   compaction?: unknown;
 }
-/** One tool's presentation override. `target` is the canonical tool id; `alias`
- * renames it for the model, `description` replaces its text, `defer` withholds its
- * schema until the model loads it via `tool_open`. */
+export type ToolExposure = "eager" | "on_demand";
+export type ToolSelector =
+  | { kind: "exact"; value: string }
+  | { kind: "prefix"; value: string };
+export interface ToolExposurePolicy {
+  rules?: Array<{ selector: ToolSelector; exposure: ToolExposure }>;
+  default?: ToolExposure;
+}
+export type ToolPromptInjection =
+  | { mode: "automatic" }
+  | { mode: "disabled" }
+  | { mode: "custom"; text: string };
+export interface ToolDiscoverySettings {
+  max_results?: number;
+  prompt?: ToolPromptInjection;
+}
+/** One exact tool override. `target` always remains the canonical id. */
 export interface ToolOverride {
   target: string;
   alias?: string;
   description?: string;
-  defer?: boolean;
+  exposure?: ToolExposure;
 }
 /** A list/get item: the object plus a live `published` flag (a compiled config is
  * currently installed in the runtime catalog). */

@@ -20,8 +20,8 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::permission::{ToolPermissionPolicy, ToolPermissionVerdict};
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
-    ToolPresentation,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
+    ToolPresentation, ToolPresentationOverride,
 };
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
@@ -321,12 +321,12 @@ impl ToolPermissionPolicy for RecordingDenyCanonical {
 fn snapshot_aliased() -> ExecutableAgentSnapshot {
     let mut snap = snapshot();
     // Present the canonical `echo` to the model as `safe_echo`.
-    snap.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+    snap.resolved_spec.tool_presentation = ToolPresentation::from_overrides([(
         "echo".to_string(),
-        ToolFacet {
+        ToolPresentationOverride {
             alias: Some("safe_echo".to_string()),
             description: None,
-            defer: false,
+            exposure: None,
         },
     )]);
     snap

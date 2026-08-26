@@ -13,6 +13,7 @@
 //! in-process mechanism, never external infrastructure — so keeping them here is
 //! a port carrying its own vocabulary, not a leak.
 
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use awaken_agent_contract::agent::message::Message;
@@ -25,7 +26,7 @@ use crate::capture::CaptureDecision;
 use crate::data_subject::{CaptureSink, DataSubjectId};
 use crate::live_inbox::LiveInbox;
 use crate::pause::PauseSignal;
-use crate::permission::ToolPermissionPolicy;
+use crate::permission::{ToolCapabilityNarrowing, ToolPermissionPolicy};
 use crate::terminal::RunTerminalObserver;
 use awaken_agent_contract::stream::checkpoint::StreamCheckpointStore;
 use thiserror::Error;
@@ -149,11 +150,18 @@ pub struct RuntimeRunContext {
     /// present routes every already-gated call through this port — e.g. a remote
     /// hand. The kernel never learns placement; it calls the port either way.
     pub tool_executor: Option<Arc<dyn crate::tool::ToolExecutor>>,
+    /// Optional maximum number of compatible tool calls entered concurrently in
+    /// one model step. `None` admits the complete compatible batch at once.
+    pub tool_concurrency_limit: Option<NonZeroUsize>,
     /// Host-owned materializer for model-visible tool results. Native and ACP
     /// executors both consult this after execution/projection and before commit,
     /// so oversized content has one sandbox-backed policy rather than per-tool
     /// truncation paths.
     pub tool_output_spiller: Option<Arc<dyn crate::tool::ToolOutputSpiller>>,
+    /// Closed, durable attempt restriction projected from `RunActivation`.
+    /// Runtime uses the same value both to hide tools from the model and to
+    /// reject any call that enters through recovery or an untrusted provider.
+    pub tool_capability_narrowing: ToolCapabilityNarrowing,
     /// Optional per-Run narrowing of the backend's tool permission authority.
     /// External runtimes use this for purpose-specific fail-closed overlays; it
     /// may restrict the configured policy but is never a capability grant.
@@ -198,6 +206,18 @@ pub struct RuntimeRunContext {
 impl RuntimeRunContext {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn with_tool_concurrency_limit(mut self, limit: NonZeroUsize) -> Self {
+        self.tool_concurrency_limit = Some(limit);
+        self
+    }
+
+    #[must_use]
+    pub fn max_parallel_tools(&self) -> usize {
+        self.tool_concurrency_limit
+            .map_or(usize::MAX, NonZeroUsize::get)
     }
 
     /// Bind the Workspace ownership already verified by Session admission.
@@ -359,6 +379,12 @@ impl RuntimeRunContext {
     }
 
     #[must_use]
+    pub fn with_tool_capability_narrowing(mut self, narrowing: ToolCapabilityNarrowing) -> Self {
+        self.tool_capability_narrowing = narrowing;
+        self
+    }
+
+    #[must_use]
     pub fn with_tool_permission_policy(mut self, policy: Arc<dyn ToolPermissionPolicy>) -> Self {
         self.tool_permission_policy = Some(policy);
         self
@@ -431,6 +457,20 @@ mod child_run_tests {
         async fn verify_current(&self) -> Result<(), AttemptOwnershipError> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn tool_parallelism_is_unbounded_by_default_and_explicitly_narrowable() {
+        // Boundary rule: absence of a deployment limit admits the complete
+        // compatible batch; a non-zero limit is the only narrowing mechanism.
+        assert_eq!(RuntimeRunContext::new().max_parallel_tools(), usize::MAX);
+        let two = NonZeroUsize::new(2).expect("two is non-zero");
+        assert_eq!(
+            RuntimeRunContext::new()
+                .with_tool_concurrency_limit(two)
+                .max_parallel_tools(),
+            2
+        );
     }
 
     #[test]

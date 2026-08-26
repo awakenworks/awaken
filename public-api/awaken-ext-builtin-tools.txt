@@ -120,6 +120,7 @@ pub const awaken_ext_builtin_tools::EditTool::ID: &'static str
 pub fn awaken_ext_builtin_tools::EditTool::call<'life0, 'async_trait>(&'life0 self, awaken_ext_builtin_tools::EditArgs) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::string::String, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub struct awaken_ext_builtin_tools::Erased<T>
 impl<T: awaken_runtime_contract::tool::Tool> awaken_runtime_contract::tool::RawTool for awaken_ext_builtin_tools::Erased<T>
+pub fn awaken_ext_builtin_tools::Erased<T>::concurrency(&self, &serde_json::value::Value) -> awaken_runtime_contract::tool::ToolConcurrency
 pub fn awaken_ext_builtin_tools::Erased<T>::execution_target(&self) -> awaken_runtime_contract::tool::ToolExecutionTarget
 pub fn awaken_ext_builtin_tools::Erased<T>::id(&self) -> &str
 pub fn awaken_ext_builtin_tools::Erased<T>::invoke<'life0, 'async_trait>(&'life0 self, awaken_runtime_contract::llm::ToolCall) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_runtime_contract::tool::ToolOutput, awaken_runtime_contract::tool::ToolError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
@@ -312,8 +313,6 @@ pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::descriptors(&self) -
 pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::fetch_config_schema(&self) -> serde_json::value::Value
 pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::register(&mut self, alloc::sync::Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>) -> core::result::Result<(), awaken_ext_builtin_tools::WebSearchRegistryError>
 pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::register_fetch(&mut self, alloc::sync::Arc<dyn awaken_ext_builtin_tools::WebFetchProvider>) -> core::result::Result<(), awaken_ext_builtin_tools::WebSearchRegistryError>
-pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::register_server_fetch(&mut self, awaken_ext_builtin_tools::WebServerToolProviderDescriptor) -> core::result::Result<(), awaken_ext_builtin_tools::WebSearchRegistryError>
-pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::register_server_search(&mut self, awaken_ext_builtin_tools::WebServerToolProviderDescriptor) -> core::result::Result<(), awaken_ext_builtin_tools::WebSearchRegistryError>
 pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::server_builtins() -> Self
 pub fn awaken_ext_builtin_tools::WebSearchProviderRegistry::try_new(impl core::iter::traits::collect::IntoIterator<Item = alloc::sync::Arc<dyn awaken_ext_builtin_tools::WebSearchProvider>>) -> core::result::Result<Self, awaken_ext_builtin_tools::WebSearchRegistryError>
 pub struct awaken_ext_builtin_tools::WebSearchRequest
@@ -330,12 +329,6 @@ pub awaken_ext_builtin_tools::WebSearchUserLocation::city: core::option::Option<
 pub awaken_ext_builtin_tools::WebSearchUserLocation::country: core::option::Option<alloc::string::String>
 pub awaken_ext_builtin_tools::WebSearchUserLocation::region: core::option::Option<alloc::string::String>
 pub awaken_ext_builtin_tools::WebSearchUserLocation::timezone: core::option::Option<alloc::string::String>
-pub struct awaken_ext_builtin_tools::WebServerToolProviderDescriptor
-pub awaken_ext_builtin_tools::WebServerToolProviderDescriptor::id: alloc::string::String
-pub awaken_ext_builtin_tools::WebServerToolProviderDescriptor::label: alloc::string::String
-pub awaken_ext_builtin_tools::WebServerToolProviderDescriptor::options_schema: serde_json::value::Value
-pub awaken_ext_builtin_tools::WebServerToolProviderDescriptor::provider_kind: alloc::string::String
-pub awaken_ext_builtin_tools::WebServerToolProviderDescriptor::tool_type: alloc::string::String
 pub struct awaken_ext_builtin_tools::WriteArgs
 pub awaken_ext_builtin_tools::WriteArgs::content: alloc::string::String
 pub awaken_ext_builtin_tools::WriteArgs::path: alloc::string::String

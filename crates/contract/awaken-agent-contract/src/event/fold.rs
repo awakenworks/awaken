@@ -172,6 +172,7 @@ fn visible_content_is_empty(content: &[ContentBlock]) -> bool {
         ContentBlock::Image { .. }
         | ContentBlock::Document { .. }
         | ContentBlock::SearchResult { .. }
+        | ContentBlock::ToolReference { .. }
         | ContentBlock::Redacted => true,
         ContentBlock::ToolUse { .. }
         | ContentBlock::ToolResult { .. }

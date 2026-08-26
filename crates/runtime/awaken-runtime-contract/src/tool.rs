@@ -9,7 +9,7 @@
 use async_trait::async_trait;
 use awaken_agent_contract::agent::content::{ContentBlock, extract_text};
 use awaken_agent_contract::agent::run::Id as RunId;
-use awaken_agent_contract::agent::state::Command as StateCommand;
+use awaken_agent_contract::agent::state::{Command as StateCommand, Store as StateStore};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -26,6 +26,13 @@ tokio::task_local! {
     /// may be synthesized with response-local scope. Business tools that need an
     /// idempotency key must use this run/step-scoped identity instead.
     static TOOL_OPERATION_CONTEXT: ToolOperationContext;
+    /// Immutable materialized State at executor entry. Stateful plugin tools
+    /// read this snapshot and return commands; they never receive a mutable
+    /// store or persistence handle.
+    static TOOL_STATE_CONTEXT: Arc<StateStore>;
+    /// Trusted lookup for a wrapper that delegates to another ordinary tool.
+    /// Runtime owns the catalog; model-authored ids can only query it.
+    static TOOL_EXECUTION_FACTS: Arc<dyn ToolExecutionFactsResolver>;
 }
 
 /// Stable runtime coordinates for one tool invocation.
@@ -151,6 +158,36 @@ pub fn current_tool_operation_id() -> Option<String> {
     current_tool_operation_context().map(|context| context.operation_id)
 }
 
+/// Read the immutable State snapshot captured at this tool invocation. Direct
+/// adapter/unit calls have no Runtime State and therefore return `None`.
+#[must_use]
+pub fn current_tool_state() -> Option<Arc<StateStore>> {
+    TOOL_STATE_CONTEXT.try_with(Clone::clone).ok()
+}
+
+/// Trusted policy resolved for one concrete ordinary tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolExecutionFacts {
+    pub recovery: ToolRecoveryPolicy,
+    pub concurrency: ToolConcurrency,
+}
+
+/// Read-only execution catalog available to compositional tools.
+pub trait ToolExecutionFactsResolver: Send + Sync {
+    fn resolve(&self, call: &ToolCall) -> Result<ToolExecutionFacts, ToolError>;
+}
+
+/// Resolve another ordinary tool through Runtime's current immutable catalog.
+pub fn current_tool_execution_facts(call: &ToolCall) -> Result<ToolExecutionFacts, ToolError> {
+    TOOL_EXECUTION_FACTS
+        .try_with(|resolver| resolver.resolve(call))
+        .unwrap_or_else(|_| {
+            Err(ToolError::Execution(
+                "tool execution catalog is unavailable outside Runtime".into(),
+            ))
+        })
+}
+
 /// Run one executor future with its durable runtime coordinates visible to the
 /// called tool. This keeps execution authority out of provider protocol ids and
 /// model-authored arguments.
@@ -159,6 +196,24 @@ pub async fn with_tool_operation_context<T>(
     future: impl std::future::Future<Output = T>,
 ) -> T {
     TOOL_OPERATION_CONTEXT.scope(context, future).await
+}
+
+/// Run one tool future with a read-only materialized State snapshot. The tool
+/// can only return [`StateCommand`] values on [`ToolOutput`]; Runtime remains
+/// the sole writer and commits them with the result.
+pub async fn with_tool_state_context<T>(
+    state: StateStore,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TOOL_STATE_CONTEXT.scope(Arc::new(state), future).await
+}
+
+/// Scope one immutable execution catalog to a Runtime-owned invocation.
+pub async fn with_tool_execution_facts<T>(
+    resolver: Arc<dyn ToolExecutionFactsResolver>,
+    future: impl std::future::Future<Output = T>,
+) -> T {
+    TOOL_EXECUTION_FACTS.scope(resolver, future).await
 }
 
 /// Compatibility helper for direct callers that only need durable operation
@@ -429,6 +484,134 @@ pub enum ToolExecutionTarget {
     Sandbox,
 }
 
+/// Stable address of an external or runtime-visible resource used to decide
+/// whether two tool calls may overlap. The namespace prevents unrelated
+/// extensions from accidentally aliasing equal local keys.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ToolResource {
+    pub namespace: String,
+    pub key: String,
+}
+
+impl ToolResource {
+    #[must_use]
+    pub fn new(namespace: impl Into<String>, key: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            key: key.into(),
+        }
+    }
+}
+
+/// One prospective access made by a tool invocation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolResourceAccess {
+    Read(ToolResource),
+    Write(ToolResource),
+}
+
+impl ToolResourceAccess {
+    fn parts(&self) -> (&ToolResource, ResourceAccessMode) {
+        match self {
+            Self::Read(resource) => (resource, ResourceAccessMode::Read),
+            Self::Write(resource) => (resource, ResourceAccessMode::Write),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResourceAccessMode {
+    Read,
+    Write,
+}
+
+impl ResourceAccessMode {
+    const fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Read, Self::Read) => Self::Read,
+            _ => Self::Write,
+        }
+    }
+
+    const fn conflicts_with(self, other: Self) -> bool {
+        matches!((self, other), (Self::Write, _) | (_, Self::Write))
+    }
+}
+
+/// Execution-time concurrency intent for one concrete tool call.
+///
+/// This is intentionally independent from recovery: idempotent replay of one
+/// operation says nothing about whether two different operations commute.
+///
+/// All variants compose through one conservative conflict algebra. Keeping the
+/// public enum makes a tool author's intent visible without method-only
+/// pseudo-constructors or a second scheduler-specific policy type.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ToolConcurrency {
+    /// The call must not overlap any other call in the same model step.
+    Serial,
+    /// Default: admit the call into the largest compatible execution wave.
+    #[default]
+    Parallel,
+    /// Read/write claims over stable domain-resource identities.
+    Resources(Vec<ToolResourceAccess>),
+}
+
+impl ToolConcurrency {
+    fn canonical_resources(
+        accesses: impl IntoIterator<Item = ToolResourceAccess>,
+    ) -> Vec<ToolResourceAccess> {
+        let mut canonical: std::collections::BTreeMap<ToolResource, ResourceAccessMode> =
+            std::collections::BTreeMap::new();
+        for access in accesses {
+            let (resource, mode) = access.parts();
+            canonical
+                .entry(resource.clone())
+                .and_modify(|current| *current = current.merge(mode))
+                .or_insert(mode);
+        }
+        canonical
+            .into_iter()
+            .map(|(resource, mode)| match mode {
+                ResourceAccessMode::Read => ToolResourceAccess::Read(resource),
+                ResourceAccessMode::Write => ToolResourceAccess::Write(resource),
+            })
+            .collect()
+    }
+
+    /// Conservatively combine independent declarations. Neither side can
+    /// widen the other: exclusive remains exclusive and resource claims union.
+    #[must_use]
+    pub fn narrowed_with(self, constraint: Self) -> Self {
+        match (self, constraint) {
+            (Self::Serial, _) | (_, Self::Serial) => Self::Serial,
+            (Self::Parallel, Self::Parallel) => Self::Parallel,
+            (Self::Parallel, Self::Resources(accesses))
+            | (Self::Resources(accesses), Self::Parallel) => {
+                Self::Resources(Self::canonical_resources(accesses))
+            }
+            (Self::Resources(left), Self::Resources(right)) => {
+                Self::Resources(Self::canonical_resources(left.into_iter().chain(right)))
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn compatible_with(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Serial, _) | (_, Self::Serial) => false,
+            (Self::Parallel, _) | (_, Self::Parallel) => true,
+            (Self::Resources(left), Self::Resources(right)) => !left.iter().any(|left| {
+                let (left_resource, left_mode) = left.parts();
+                right.iter().any(|right| {
+                    let (right_resource, right_mode) = right.parts();
+                    left_resource == right_resource && left_mode.conflicts_with(right_mode)
+                })
+            }),
+        }
+    }
+}
+
 /// Schema-erased tool: the dynamic call boundary used by the runtime and by
 /// MCP/server/client adapters. Concrete implementations live in
 /// extension/adapter crates, never in neutral crates.
@@ -440,6 +623,11 @@ pub trait RawTool: Send + Sync {
     }
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
+    }
+    /// Optionally narrow the default parallel execution for this invocation.
+    /// Stateful tools declare `Serial` or their exact resource accesses.
+    fn concurrency(&self, _arguments: &serde_json::Value) -> ToolConcurrency {
+        ToolConcurrency::Parallel
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError>;
 }
@@ -482,6 +670,12 @@ pub trait Tool: Send + Sync {
 
     fn recovery_capability(&self) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
+    }
+    /// Typed source of the invocation's concurrency contract. Tool authors use
+    /// their domain arguments directly; JSON inspection stays at the erased
+    /// external-tool boundary.
+    fn concurrency(&self, _args: &Self::Args) -> ToolConcurrency {
+        ToolConcurrency::Parallel
     }
     async fn call(&self, args: Self::Args) -> Result<Self::Output, ToolError>;
 }
@@ -538,6 +732,12 @@ pub trait ToolExecutor: Send + Sync {
     /// Remote/general executors fail closed unless they explicitly advertise one.
     fn recovery_capability(&self, _tool_id: &str) -> ToolRecoveryCapability {
         ToolRecoveryCapability::NonRecoverable
+    }
+
+    /// Concurrency contract of the concrete routed executor. The default admits
+    /// maximum parallelism; stateful executors must explicitly narrow it.
+    fn concurrency(&self, _tool_id: &str, _arguments: &serde_json::Value) -> ToolConcurrency {
+        ToolConcurrency::Parallel
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError>;
@@ -616,6 +816,11 @@ impl ToolExecutor for RawToolRegistry {
             .map_or(ToolRecoveryCapability::NonRecoverable, |tool| {
                 tool.recovery_capability()
             })
+    }
+
+    fn concurrency(&self, tool_id: &str, arguments: &serde_json::Value) -> ToolConcurrency {
+        self.get(tool_id)
+            .map_or_else(ToolConcurrency::default, |tool| tool.concurrency(arguments))
     }
 
     async fn invoke(&self, call: &ToolCall) -> Result<ToolOutput, ToolError> {
@@ -851,4 +1056,75 @@ mod recovery_tests {
             "persisted/wire zero attempt budgets never construct a policy"
         );
     }
+
+    #[test]
+    fn concurrency_claims_follow_the_resource_conflict_matrix() {
+        // Decision table: same-resource read/read is compatible; any same-
+        // resource pair containing a write conflicts; distinct resources do
+        // not. Serial conflicts with every claim and Parallel with every
+        // non-Serial claim. The runtime scheduler consumes only this rule.
+        let shared = ToolResource::new("filesystem", "/workspace/a");
+        let other = ToolResource::new("filesystem", "/workspace/b");
+        let reads = ToolConcurrency::Resources(vec![ToolResourceAccess::Read(shared.clone())]);
+        let writes = ToolConcurrency::Resources(vec![ToolResourceAccess::Write(shared.clone())]);
+        let other_write = ToolConcurrency::Resources(vec![ToolResourceAccess::Write(other)]);
+
+        assert_eq!(ToolConcurrency::default(), ToolConcurrency::Parallel);
+        assert!(reads.compatible_with(&reads));
+        assert!(!reads.compatible_with(&writes));
+        assert!(!writes.compatible_with(&reads));
+        assert!(!writes.compatible_with(&writes));
+        assert!(writes.compatible_with(&other_write));
+        assert!(ToolConcurrency::Parallel.compatible_with(&writes));
+        assert!(!ToolConcurrency::Serial.compatible_with(&reads));
+        assert!(!reads.compatible_with(&ToolConcurrency::Serial));
+    }
+
+    #[test]
+    fn resource_claims_are_canonical_and_narrowing_never_widens() {
+        let resource = ToolResource::new("filesystem", "/workspace/a");
+        let duplicate = ToolConcurrency::Resources(vec![
+            ToolResourceAccess::Read(resource.clone()),
+            ToolResourceAccess::Write(resource.clone()),
+            ToolResourceAccess::Read(resource.clone()),
+        ]);
+        let write = ToolConcurrency::Resources(vec![ToolResourceAccess::Write(resource)]);
+
+        assert_eq!(
+            duplicate.narrowed_with(ToolConcurrency::Parallel),
+            write,
+            "write dominates duplicate reads"
+        );
+        assert_eq!(
+            ToolConcurrency::Parallel.narrowed_with(write.clone()),
+            write
+        );
+        assert_eq!(
+            ToolConcurrency::Serial.narrowed_with(ToolConcurrency::Parallel),
+            ToolConcurrency::Serial
+        );
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn same_resource_conflict_is_symmetric_and_exactly_one_write_or_more() {
+    let left_writes: bool = kani::any();
+    let right_writes: bool = kani::any();
+    // Prove the finite decision kernel, not Rust's heap/String machinery. The
+    // public-algebra test above is the refinement check from one equal-resource
+    // claim pair into this kernel; distinct-resource filtering is structural.
+    let left = if left_writes {
+        ResourceAccessMode::Write
+    } else {
+        ResourceAccessMode::Read
+    };
+    let right = if right_writes {
+        ResourceAccessMode::Write
+    } else {
+        ResourceAccessMode::Read
+    };
+
+    assert_eq!(left.conflicts_with(right), right.conflicts_with(left));
+    assert_eq!(left.conflicts_with(right), left_writes || right_writes);
 }

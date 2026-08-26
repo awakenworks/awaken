@@ -161,6 +161,35 @@ impl Store {
         self.entries.len()
     }
 
+    /// Iterate one typed plugin namespace without exposing or cloning the
+    /// complete materialized map. Namespace ownership is still enforced when
+    /// the plugin declares its state-key capability; this is only a read view.
+    pub fn scan_prefix(
+        &self,
+        scope: Scope,
+        prefix: &str,
+    ) -> impl Iterator<Item = (&Key, &serde_json::Value)> {
+        self.entries
+            .iter()
+            .filter_map(move |((entry_scope, key), value)| {
+                (*entry_scope == scope && key.0.starts_with(prefix)).then_some((key, value))
+            })
+    }
+
+    /// Build the immutable executor view admitted by one plugin capability.
+    /// Runtime supplies the predicate from the owning manifest; tools never
+    /// receive the unfiltered materialized store.
+    pub fn project(&self, allows: impl Fn(&Key) -> bool) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|((_, key), _)| allows(key))
+                .map(|(slot, value)| (slot.clone(), value.clone()))
+                .collect(),
+        }
+    }
+
     /// Apply one command in sequence. `Commutative` object values shallow-merge;
     /// every other case replaces. `Remove` clears the entry.
     pub fn apply(&mut self, command: &Command) {
@@ -423,6 +452,74 @@ mod tests {
         assert!(cell.load(&store).is_err());
         store.apply(&cell.remove());
         assert_eq!(cell.load(&store).unwrap(), None);
+    }
+
+    #[test]
+    fn namespace_scan_is_scope_and_prefix_exact() {
+        // Causal graph: C1 same prefix+scope, C2 same prefix in another scope,
+        // C3 merely similar prefix. Only C1 is observable. This keeps plugin
+        // list/read tools from widening their declared State namespace.
+        let mut store = Store::new();
+        for command in [
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "background_task/one",
+                serde_json::json!({"state":"requested"}),
+            ),
+            Command::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "background_task/two",
+                serde_json::json!({"state":"requested"}),
+            ),
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "background_tasks/three",
+                serde_json::json!({"state":"requested"}),
+            ),
+        ] {
+            store.apply(&command);
+        }
+        let keys = store
+            .scan_prefix(Scope::Thread, "background_task/")
+            .map(|(key, _)| key.0.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, ["background_task/one"]);
+    }
+
+    #[test]
+    fn projected_store_contains_only_the_admitted_namespace() {
+        // C1 two plugin namespaces exist; C2 Runtime projects one prefix.
+        // E1 the owner sees every scope under its prefix; E2 unrelated state is
+        // absent and cannot be recovered by a broader scan.
+        let store = Store::rebuild(&[
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Disjoint,
+                "owner/a",
+                serde_json::json!(1),
+            ),
+            Command::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "other/b",
+                serde_json::json!(2),
+            ),
+        ]);
+        let projected = store.project(|key| key.0.starts_with("owner/"));
+        assert_eq!(projected.len(), 1, "C2/E1");
+        assert!(
+            projected
+                .get(Scope::Thread, &Key("owner/a".into()))
+                .is_some(),
+            "C2/E1"
+        );
+        assert!(
+            projected.scan_prefix(Scope::Run, "").next().is_none(),
+            "C2/E2"
+        );
     }
 
     #[test]

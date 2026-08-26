@@ -1,12 +1,37 @@
 //! Tool authorization, execution selection, and resumed-result folding.
 
 use super::*;
+use std::sync::Arc;
+
+/// Runtime-owned operations are classified once at the model boundary. The
+/// closed enum prevents dispatch, recovery and concurrency policy from growing
+/// independent string-matching tables.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RuntimeToolOperation {
+    ToolSearch,
+}
+
+impl RuntimeToolOperation {
+    #[must_use]
+    pub(crate) const fn id(self) -> &'static str {
+        match self {
+            Self::ToolSearch => awaken_runtime_contract::resolved::TOOL_SEARCH_ID,
+        }
+    }
+
+    #[must_use]
+    pub(crate) fn classify(tool_id: &str) -> Option<Self> {
+        [Self::ToolSearch]
+            .into_iter()
+            .find(|operation| operation.id() == tool_id)
+    }
+}
 
 /// Apply the Session's one model-visible tool-output policy before the result is
 /// persisted in a ToolBatch or appended to the transcript. Keeping this beside
 /// the loop lets fresh, recovered, and resumed paths share it without teaching
 /// individual tools about sandbox storage.
-pub(super) async fn spill_tool_output(
+pub(crate) async fn spill_tool_output(
     context: &RuntimeRunContext,
     run_id: &RunId,
     mut output: ToolOutput,
@@ -53,30 +78,61 @@ pub(super) fn permission_audit(call: &ToolCall, outcome: &GateOutcome) -> EventD
     .into()
 }
 
-/// Handle a call to the reserved `tool_open` meta-tool (ADR-0053): mark the requested
-/// tool opened for the rest of the run so its full schema is sent next step. The `name`
-/// is reverse-mapped to its canonical id; an unknown or non-deferred name is reported
-/// back to the model rather than silently accepted.
-pub(super) fn open_deferred_tool(
+/// Handle the reserved client-side `tool_search` meta-tool (ADR-0053). It searches
+/// the same combined static/dynamic catalog used to build the model request, reveals
+/// every match by canonical id, and returns Claude-compatible `tool_reference`
+/// blocks. Other providers deterministically project those references as text.
+pub(super) fn execute_tool_search(
     presentation: &ToolPresentation,
+    descriptors: &[ToolDescriptor],
     call: &ToolCall,
-    opened: &mut std::collections::BTreeSet<String>,
+    discovery: &mut ToolDiscoveryState,
 ) -> ToolOutput {
-    let name = call
-        .arguments
-        .get("name")
-        .and_then(|v| v.as_str())
-        .unwrap_or_default();
-    let canonical = presentation.resolve(name);
-    if presentation.is_deferred(canonical) {
-        opened.insert(canonical.to_string());
-        ToolOutput::ok(
+    let input = match serde_json::from_value::<ToolSearchInput>(call.arguments.clone()) {
+        Ok(input) => input,
+        Err(error) => {
+            return ToolOutput::error(
+                &call.call_id,
+                format!("invalid tool_search arguments: {error}"),
+            );
+        }
+    };
+    let query = match ToolSearchQuery::parse(&input.query) {
+        Ok(query) => query,
+        Err(error) => return ToolOutput::error(&call.call_id, error.to_string()),
+    };
+    if input.max_results.is_some_and(|value| {
+        usize::from(value.get()) > presentation.discovery().effective_max_results()
+    }) {
+        return ToolOutput::error(
             &call.call_id,
-            format!("Tool `{name}` is now available; call it directly on your next step."),
-        )
-    } else {
-        ToolOutput::error(&call.call_id, format!("no deferred tool named `{name}`"))
+            format!(
+                "tool_search.max_results exceeds the configured maximum of {}",
+                presentation.discovery().effective_max_results()
+            ),
+        );
     }
+    let matches = crate::tool_discovery::search_discoverable(
+        presentation,
+        descriptors,
+        discovery,
+        &query,
+        input.max_results,
+    );
+    if matches.is_empty() {
+        return ToolOutput::ok(&call.call_id, "No deferred tools matched the query.");
+    }
+    for found in &matches {
+        discovery.reveal(&found.canonical_id, found.descriptor.content_hash());
+    }
+    ToolOutput::ok_blocks(
+        &call.call_id,
+        matches
+            .into_iter()
+            .map(|found| ContentBlock::tool_reference(found.descriptor.id))
+            .collect(),
+    )
+    .with_state(vec![ToolDiscoveryStateKey::write(discovery)])
 }
 
 /// Build the committed ticket for an awaiting tool call. Adapter execution
@@ -118,15 +174,26 @@ pub(super) fn resume_ticket(
 /// Turn a resumed result into the tool/user message(s) and any staged state.
 /// An `allow` decision executes the pending tool now; a `deny` feeds a blocked
 /// result; a `ToolResult`/`Input` is used directly.
+pub(super) struct ResumeExecutionContext<'a> {
+    pub runtime: &'a Runtime,
+    pub resolved: &'a ResolvedRun,
+    pub env: &'a ResolvedExecutionEnv,
+    pub context: &'a RuntimeRunContext,
+}
+
 pub(super) async fn resume_into_messages(
-    runtime: &Runtime,
-    env: &ResolvedExecutionEnv,
+    execution: ResumeExecutionContext<'_>,
     run_id: &RunId,
     ticket: &ResumeTicket,
     result: ResumeResult,
     store: &Store,
-    context: &RuntimeRunContext,
 ) -> Result<(Vec<Message>, Vec<StateCommand>, Option<ToolOutput>)> {
+    let ResumeExecutionContext {
+        runtime,
+        resolved,
+        env,
+        context,
+    } = execution;
     // The pending call, when the ticket carries one, so a tool-outcome hook can
     // advance a machine on the replayed result exactly like a first-time call.
     let pending_call = |output: &ToolOutput| {
@@ -162,11 +229,15 @@ pub(super) async fn resume_into_messages(
                 let output = execute_tool(
                     runtime,
                     Some(env),
+                    Some(resolved),
                     &call,
                     context,
-                    run_id,
-                    &ticket.thread_id,
-                    operation_id,
+                    ToolExecutionOrigin {
+                        run_id,
+                        thread_id: &ticket.thread_id,
+                        operation_id,
+                    },
+                    store,
                 )
                 .await?;
                 let output = spill_tool_output(context, run_id, output).await?;
@@ -206,13 +277,20 @@ pub(super) async fn resume_into_messages(
 /// allows it; the first non-`Allow` outcome wins, and the host permission gate is
 /// absolute (a plugin gate can further restrict but never widen it, G21). An
 /// absent host gate allows (used only in tests). Gates read the run's state.
-pub(super) async fn gate_decision(
+pub(crate) async fn gate_decision(
     runtime: &Runtime,
     call: &ToolCall,
     env: &ResolvedExecutionEnv,
     state: &Store,
     context: &RuntimeRunContext,
 ) -> GateOutcome {
+    if context.tool_capability_narrowing
+        == awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll
+    {
+        return GateOutcome::Block {
+            reason: "tools are disabled for this Run".into(),
+        };
+    }
     let ctx = ToolCall {
         tool_id: call.tool_id.clone(),
         call_id: call.call_id.clone(),
@@ -279,7 +357,7 @@ pub(super) async fn fold_resume_tool_output(
 /// executed call/output on `PhaseContext::after_tool`, and may stage further state
 /// and reminder messages. Returns the hooks' additional state commands and
 /// messages (the tool's own output state is staged by the caller).
-pub(super) async fn collect_tool_reactions(
+pub(crate) async fn collect_tool_reactions(
     env: &ResolvedExecutionEnv,
     run_id: &RunId,
     step: usize,
@@ -316,6 +394,12 @@ pub(super) async fn collect_tool_reactions(
 /// only re-runs a statically registered pending tool.
 // OTel GenAI tool span: name `execute_tool {tool}`, `SpanKind::Internal`,
 // `gen_ai.operation.name = "execute_tool"` with the tool name + call id.
+pub(crate) struct ToolExecutionOrigin<'a> {
+    pub run_id: &'a RunId,
+    pub thread_id: &'a ThreadId,
+    pub operation_id: String,
+}
+
 #[tracing::instrument(
     name = "execute_tool",
     skip_all,
@@ -329,14 +413,14 @@ pub(super) async fn collect_tool_reactions(
         otel.status_code = tracing::field::Empty,
     )
 )]
-pub(super) async fn execute_tool(
+pub(crate) async fn execute_tool(
     runtime: &Runtime,
     env: Option<&ResolvedExecutionEnv>,
+    resolved: Option<&ResolvedRun>,
     call: &ToolCall,
     context: &RuntimeRunContext,
-    run_id: &RunId,
-    thread_id: &ThreadId,
-    operation_id: String,
+    origin: ToolExecutionOrigin<'_>,
+    state: &Store,
 ) -> Result<ToolOutput> {
     let span = tracing::Span::current();
     // Resolve placement per tool. A placed Hand must never capture Brain tools
@@ -357,17 +441,38 @@ pub(super) async fn execute_tool(
     // the single execute-tool confluence, and map it to a model-visible error just like
     // an `Err` — so unknown/invalid-args/execution/panic all fail closed identically.
     use futures_util::FutureExt;
-    let invocation = with_tool_operation_context(
-        ToolOperationContext {
-            run_id: Some(run_id.clone()),
-            thread_id: Some(thread_id.clone()),
-            operation_id,
-            call_id: Some(call.call_id.clone()),
-            execution_scope: context.execution_scope.clone(),
-        },
-        executor.invoke(call),
+    let state_bound = env.and_then(|env| env.dynamic_tool_state_bound(&call.tool_id));
+    let executor_state = match state_bound {
+        Some(bound) => state.project(|key| bound.allows(&key.0)),
+        None => Store::new(),
+    };
+    let invocation = with_tool_state_context(
+        executor_state,
+        with_tool_operation_context(
+            ToolOperationContext {
+                run_id: Some(origin.run_id.clone()),
+                thread_id: Some(origin.thread_id.clone()),
+                operation_id: origin.operation_id,
+                call_id: Some(call.call_id.clone()),
+                execution_scope: context.execution_scope.clone(),
+            },
+            async {
+                match resolved {
+                    Some(resolved) => {
+                        with_tool_execution_facts(
+                            Arc::new(CurrentToolExecutionFacts::new(
+                                runtime, env, resolved, context,
+                            )),
+                            executor.invoke(call),
+                        )
+                        .await
+                    }
+                    None => executor.invoke(call).await,
+                }
+            },
+        ),
     );
-    let output = match std::panic::AssertUnwindSafe(invocation)
+    let mut output = match std::panic::AssertUnwindSafe(invocation)
         .catch_unwind()
         .await
     {
@@ -378,6 +483,20 @@ pub(super) async fn execute_tool(
             format!("tool `{}` panicked during execution", call.tool_id),
         ),
     };
+    if let Some(bound) = state_bound
+        && let Some(command) = output
+            .state
+            .iter()
+            .find(|command| !bound.allows(&command.key.0))
+    {
+        output = ToolOutput::error(
+            &call.call_id,
+            format!(
+                "tool `{}` attempted state key {:?} outside its plugin capability",
+                call.tool_id, command.key.0
+            ),
+        );
+    }
     // OTel: a tool that returned an error (unknown tool, invocation failure, or a
     // model-visible error result) marks the span ERROR with a `gen_ai`-shaped type.
     if output.is_error {
@@ -404,6 +523,117 @@ struct LocalToolExecutor<'a> {
     env: Option<&'a ResolvedExecutionEnv>,
 }
 
+struct CurrentToolExecutionFacts {
+    descriptors: std::collections::BTreeMap<String, ToolDescriptor>,
+    tools: std::collections::BTreeMap<String, Arc<dyn RawTool>>,
+    sandbox: Option<Arc<dyn ToolExecutor>>,
+    constraints: Vec<Arc<dyn ToolConcurrencyConstraint>>,
+    stateful_dynamic_tools: std::collections::BTreeSet<String>,
+}
+
+impl CurrentToolExecutionFacts {
+    fn new(
+        runtime: &Runtime,
+        env: Option<&ResolvedExecutionEnv>,
+        resolved: &ResolvedRun,
+        context: &RuntimeRunContext,
+    ) -> Self {
+        let dynamic = env.map_or_else(Vec::new, ResolvedExecutionEnv::dynamic_descriptors);
+        let descriptors = executable_tool_descriptors(&resolved.spec, &dynamic)
+            .into_iter()
+            .map(|descriptor| (descriptor.id.clone(), descriptor))
+            .collect();
+        let mut tools = std::collections::BTreeMap::new();
+        for id in resolved
+            .spec
+            .tool_descriptors
+            .iter()
+            .map(|descriptor| descriptor.id.as_str())
+            .chain(dynamic.iter().map(|descriptor| descriptor.id.as_str()))
+        {
+            let tool = env
+                .and_then(|env| env.dynamic_tool(id))
+                .or_else(|| runtime.tool(id).cloned());
+            if let Some(tool) = tool {
+                tools.insert(id.to_string(), tool);
+            }
+        }
+        let stateful_dynamic_tools = env
+            .map(|env| {
+                dynamic
+                    .iter()
+                    .filter(|descriptor| {
+                        env.dynamic_tool_state_bound(&descriptor.id)
+                            .is_some_and(|bound| !bound.is_deny_all())
+                    })
+                    .map(|descriptor| descriptor.id.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            descriptors,
+            tools,
+            sandbox: context.tool_executor.clone(),
+            constraints: env
+                .map(|env| env.tool_constraints().to_vec())
+                .unwrap_or_default(),
+            stateful_dynamic_tools,
+        }
+    }
+}
+
+impl ToolExecutionFactsResolver for CurrentToolExecutionFacts {
+    fn resolve(&self, call: &ToolCall) -> std::result::Result<ToolExecutionFacts, ToolError> {
+        let descriptor = self
+            .descriptors
+            .get(&call.tool_id)
+            .filter(|descriptor| descriptor.kind == ToolKind::Regular)
+            .ok_or_else(|| ToolError::Unknown(call.tool_id.clone()))?;
+        if self.stateful_dynamic_tools.contains(&call.tool_id) {
+            return Err(ToolError::Execution(format!(
+                "stateful tool `{}` cannot be detached because its State commands require its owning Runtime commit path",
+                call.tool_id
+            )));
+        }
+        let tool = self
+            .tools
+            .get(&call.tool_id)
+            .ok_or_else(|| ToolError::Unknown(call.tool_id.clone()))?;
+        let (capability, concurrency) = match tool.execution_target() {
+            ToolExecutionTarget::Brain => (
+                tool.recovery_capability(),
+                tool.concurrency(&call.arguments),
+            ),
+            ToolExecutionTarget::Sandbox => {
+                let sandbox = self.sandbox.as_deref().ok_or_else(|| {
+                    ToolError::Execution(format!(
+                        "sandbox executor unavailable for tool `{}`",
+                        call.tool_id
+                    ))
+                })?;
+                (
+                    sandbox.recovery_capability(&call.tool_id),
+                    sandbox.concurrency(&call.tool_id, &call.arguments),
+                )
+            }
+        };
+        descriptor
+            .recovery_policy
+            .validate(capability)
+            .map_err(|error| ToolError::Execution(error.to_string()))?;
+        let concurrency = self
+            .constraints
+            .iter()
+            .fold(concurrency, |claim, constraint| {
+                claim.narrowed_with(constraint.constrain(call))
+            });
+        Ok(ToolExecutionFacts {
+            recovery: descriptor.recovery_policy.clone(),
+            concurrency,
+        })
+    }
+}
+
 impl LocalToolExecutor<'_> {
     fn tool(
         &self,
@@ -428,12 +658,64 @@ impl ToolExecutor for LocalToolExecutor<'_> {
             })
     }
 
+    fn concurrency(&self, tool_id: &str, arguments: &serde_json::Value) -> ToolConcurrency {
+        self.tool(tool_id)
+            .map_or_else(ToolConcurrency::default, |tool| tool.concurrency(arguments))
+    }
+
     async fn invoke(&self, call: &ToolCall) -> std::result::Result<ToolOutput, ToolError> {
         let tool = self.tool(&call.tool_id);
         match tool {
             Some(tool) => tool.invoke(call.clone()).await,
             None => Err(ToolError::Unknown(call.tool_id.clone())),
         }
+    }
+}
+
+/// Resolve concurrency through the same placement decision as invocation. A
+/// missing Sandbox executor and an unknown tool both fail closed to sequential.
+pub(crate) fn tool_concurrency(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    call: &ToolCall,
+) -> ToolConcurrency {
+    let local = LocalToolExecutor {
+        runtime,
+        env: Some(env),
+    };
+    match local.execution_target(&call.tool_id) {
+        Some(ToolExecutionTarget::Sandbox) => context
+            .tool_executor
+            .as_deref()
+            .map_or_else(ToolConcurrency::default, |executor| {
+                executor.concurrency(&call.tool_id, &call.arguments)
+            }),
+        Some(ToolExecutionTarget::Brain) => local.concurrency(&call.tool_id, &call.arguments),
+        None => ToolConcurrency::Serial,
+    }
+}
+
+/// Resolve recovery through the same placement decision as invocation.
+pub(crate) fn tool_recovery_capability(
+    runtime: &Runtime,
+    env: &ResolvedExecutionEnv,
+    context: &RuntimeRunContext,
+    tool_id: &str,
+) -> ToolRecoveryCapability {
+    let local = LocalToolExecutor {
+        runtime,
+        env: Some(env),
+    };
+    match local.execution_target(tool_id) {
+        Some(ToolExecutionTarget::Sandbox) => context
+            .tool_executor
+            .as_deref()
+            .map_or(ToolRecoveryCapability::NonRecoverable, |executor| {
+                executor.recovery_capability(tool_id)
+            }),
+        Some(ToolExecutionTarget::Brain) => local.recovery_capability(tool_id),
+        None => ToolRecoveryCapability::NonRecoverable,
     }
 }
 

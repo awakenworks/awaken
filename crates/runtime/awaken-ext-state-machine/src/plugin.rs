@@ -12,8 +12,9 @@ use awaken_runtime_contract::permission::{GateOutcome, ToolCall, ToolGateHook};
 use awaken_runtime_contract::plugin::{
     CapabilityBound, ContextMessages, Contributions, HookReaction, IdBound, PhaseContext,
     PhaseHook, PhaseHookPoint, PhaseKind, Plugin, PluginConfigError, PluginManifest, RunEndContext,
-    RunEndDecision, RunEndGuard,
+    RunEndDecision, RunEndGuard, ToolConcurrencyConstraint,
 };
+use awaken_runtime_contract::tool::{ToolConcurrency, ToolResource, ToolResourceAccess};
 use serde_json::{Value, json};
 
 use crate::config::{ContinuationSettings, StateMachineConfig, StateMachineConfigError};
@@ -85,6 +86,9 @@ impl StateMachinePlugin {
         contributions.register_gate(Arc::new(StateMachineGate {
             machines: Arc::clone(&machines),
         }));
+        contributions.register_tool_constraint(Arc::new(StateMachineConcurrency {
+            machines: Arc::clone(&machines),
+        }));
         contributions.register_hook(Arc::new(StateMachineObserver {
             machines: Arc::clone(&machines),
         }));
@@ -116,6 +120,7 @@ impl Plugin for StateMachinePlugin {
             bound: CapabilityBound {
                 state_keys: IdBound::Exact(STATE_KEYS.iter().map(|k| (*k).to_string()).collect()),
                 tool_gates: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
+                tool_constraints: IdBound::Exact(vec![STATE_MACHINE_PLUGIN_ID.into()]),
                 phase_hooks: vec![
                     PhaseHookPoint::StepStart,
                     PhaseHookPoint::BeforeInference,
@@ -168,6 +173,43 @@ fn merge_machines(
         out.push(machine);
     }
     Ok(out)
+}
+
+// ---------------------------------------------------------------------------
+// Execution-time resource constraint
+// ---------------------------------------------------------------------------
+
+struct StateMachineConcurrency {
+    machines: Arc<[Machine]>,
+}
+
+impl ToolConcurrencyConstraint for StateMachineConcurrency {
+    fn id(&self) -> &str {
+        STATE_MACHINE_PLUGIN_ID
+    }
+
+    fn constrain(&self, call: &ToolCall) -> ToolConcurrency {
+        let accesses = self.machines.iter().filter_map(|machine| {
+            let key = machine.render_key(&call.arguments)?;
+            machine
+                .matching_transitions(&call.tool_id, &call.arguments)
+                .next()?;
+            let scope = match machine.scope {
+                crate::machine::MachineScope::Thread => "thread",
+                crate::machine::MachineScope::Run => "run",
+            };
+            Some(ToolResourceAccess::Write(ToolResource {
+                namespace: format!("state_machine:{scope}:{}", machine.name),
+                key,
+            }))
+        });
+        let accesses = accesses.collect::<Vec<_>>();
+        if accesses.is_empty() {
+            ToolConcurrency::Parallel
+        } else {
+            ToolConcurrency::Resources(accesses)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

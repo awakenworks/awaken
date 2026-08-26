@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::{Command, Key, MergePolicy, Scope, Store};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::Runtime;
 use awaken_runtime_contract::activation::RunActivation;
@@ -20,8 +21,8 @@ use awaken_runtime_contract::plugin::{
     CapabilityBound, Contributions, DynamicTool, IdBound, Plugin, PluginManifest,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolFacet,
-    ToolPresentation,
+    CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor, ToolExposure,
+    ToolPresentation, ToolPresentationOverride,
 };
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 use awaken_runtime_contract::snapshot::{
@@ -226,12 +227,12 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
 
     // Alias the MCP tool + override its description.
     let mut act = activation();
-    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([(
         "mcp__srv__a".to_string(),
-        ToolFacet {
+        ToolPresentationOverride {
             alias: Some("create_issue".to_string()),
             description: Some("Create a GitHub issue.".to_string()),
-            defer: false,
+            exposure: None,
         },
     )]);
 
@@ -259,16 +260,16 @@ async fn presentation_aliases_an_mcp_tool_and_dispatches_the_alias_to_canonical(
     );
 }
 
-/// A scripted model for the defer flow: step 0 records the face and calls `tool_open`
-/// to load the deferred tool; step 1 records the face and calls the now-loaded tool;
+/// A scripted model for the discovery flow: step 0 records the catalog view and calls
+/// `tool_search`; step 1 records the view and calls the now-revealed tool;
 /// step 2 ends.
-struct DeferProbe {
+struct DiscoveryProbe {
     seen: Arc<Mutex<Vec<Vec<String>>>>,
     calls: AtomicUsize,
 }
 
 #[async_trait::async_trait]
-impl LlmExecutor for DeferProbe {
+impl LlmExecutor for DiscoveryProbe {
     async fn infer(
         &self,
         request: ChatRequest,
@@ -281,8 +282,8 @@ impl LlmExecutor for DeferProbe {
         let output = match n {
             0 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "open".to_string(),
-                tool_id: awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string(),
-                arguments: serde_json::json!({ "name": "create_issue" }),
+                tool_id: awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string(),
+                arguments: serde_json::json!({ "query": "select:create_issue" }),
             }]),
             1 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "c1".to_string(),
@@ -299,17 +300,23 @@ impl LlmExecutor for DeferProbe {
     }
 }
 
-/// ADR-0053 defer: a deferred MCP tool is withheld from the model face (only the reserved
-/// `tool_open` meta-tool is shown); after the model opens it, its full schema appears and
-/// it executes. Proves lazy tool loading over the same dynamic-tool seam, for MCP.
 #[tokio::test]
-async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
+async fn an_on_demand_tool_is_hidden_until_tool_search_then_callable_and_persisted() {
+    // Causal graph and state-transition coverage:
+    // C1 a live MCP descriptor is OnDemand; C2 it has an alias; C3 no reveal fact
+    // exists; C4 tool_search selects the alias; C5 the ToolResult and reveal State
+    // command commit in one Step; C6 the next inference rebuilds its model view.
+    // Effects: E1 only tool_search is initially visible; E2 the result carries a
+    // tool_reference; E3 the canonical-id/fingerprint fact survives State replay;
+    // E4 the aliased descriptor is visible next Step; E5 an alias call dispatches
+    // to the canonical MCP executable. This single path covers static/dynamic
+    // catalog convergence, presentation, persistence, replay and execution.
     let version = Arc::new(AtomicU64::new(1));
     let tools = Arc::new(Mutex::new(vec!["mcp__srv__a".to_string()]));
     let seen = Arc::new(Mutex::new(Vec::new()));
 
     let runtime = Runtime::new()
-        .with_llm(Arc::new(DeferProbe {
+        .with_llm(Arc::new(DiscoveryProbe {
             seen: seen.clone(),
             calls: AtomicUsize::new(0),
         }))
@@ -319,12 +326,12 @@ async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
         }));
 
     let mut act = activation();
-    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_facets([(
+    act.snapshot.resolved_spec.tool_presentation = ToolPresentation::from_overrides([(
         "mcp__srv__a".to_string(),
-        ToolFacet {
+        ToolPresentationOverride {
             alias: Some("create_issue".to_string()),
             description: Some("Create a GitHub issue.".to_string()),
-            defer: true,
+            exposure: Some(ToolExposure::OnDemand),
         },
     )]);
 
@@ -334,26 +341,37 @@ async fn a_deferred_tool_is_hidden_until_tool_open_then_callable() {
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
 
     let seen = seen.lock().unwrap();
-    let open_id = awaken_runtime_contract::resolved::TOOL_OPEN_ID.to_string();
-    // Step 0: only `tool_open` is shown — the deferred tool's schema is withheld.
-    assert!(seen[0].contains(&open_id), "tool_open is offered");
+    let search_id = awaken_runtime_contract::resolved::TOOL_SEARCH_ID.to_string();
+    // C1+C3=>E1: only `tool_search` is shown; the full schema is withheld.
+    assert!(seen[0].contains(&search_id), "tool_search is offered");
     assert!(
         !seen[0].contains(&"create_issue".to_string()),
-        "the deferred tool is withheld until opened"
+        "the on-demand tool is withheld until revealed"
     );
-    // Step 1: after opening, the tool's full schema is on the face.
+    // C4+C5+C6=>E4: the schema is visible on the next request.
     assert!(
         seen[1].contains(&"create_issue".to_string()),
-        "the opened tool appears on the next step"
+        "the revealed tool appears on the next step"
     );
-    // And it executed (reverse-mapped to the canonical MCP id).
+    // C2+call=>E5: execution uses the canonical MCP identity.
     let committed = commit.committed();
     assert!(
         committed
             .messages
             .iter()
             .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
-        "the opened tool executed"
+        "the revealed tool executed"
+    );
+    let replayed = Store::rebuild(&committed.state);
+    let discovery = replayed
+        .get(Scope::Run, &Key("runtime.tool_discovery.v1".into()))
+        .expect("committed discovery state replays");
+    assert!(
+        discovery
+            .pointer("/revealed/mcp__srv__a")
+            .and_then(serde_json::Value::as_str)
+            .is_some(),
+        "C5=>E3: state authority remains canonical rather than aliased"
     );
 }
 
@@ -396,5 +414,131 @@ async fn dynamic_tool_is_visible_executes_and_refreshes_at_the_step_boundary() {
             .iter()
             .any(|m| m.role == Role::Tool && m.text_content().contains("ran mcp__srv__a")),
         "the dynamic tool executed"
+    );
+}
+
+struct OutOfBoundStateTool;
+
+#[async_trait::async_trait]
+impl RawTool for OutOfBoundStateTool {
+    fn id(&self) -> &str {
+        "state_intruder"
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        Ok(
+            ToolOutput::ok(&call.call_id, "false success").with_state(vec![Command::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "other/secret",
+                serde_json::json!(true),
+            )]),
+        )
+    }
+}
+
+struct StateBoundPlugin;
+
+impl Plugin for StateBoundPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest {
+            id: "state-boundary".into(),
+            requires: Vec::new(),
+            config_sections: Vec::new(),
+            bound: CapabilityBound {
+                tools: IdBound::Exact(vec!["state_intruder".into()]),
+                state_keys: IdBound::Namespace("owned/".into()),
+                ..Default::default()
+            },
+        }
+    }
+
+    fn resolve(&self) -> Contributions {
+        let mut contributions = Contributions::new("state-boundary");
+        contributions.declare_state_key("owned/");
+        contributions.register_dynamic_tool(
+            DynamicTool::try_new(
+                ToolDescriptor::pinned(
+                    "state-boundary",
+                    "state_intruder",
+                    "attempt one forbidden state write",
+                    serde_json::json!({"type":"object","additionalProperties":false}),
+                ),
+                Arc::new(OutOfBoundStateTool),
+            )
+            .expect("test descriptor and executable identities match"),
+        );
+        contributions
+    }
+}
+
+struct StateBoundaryProbe {
+    calls: AtomicUsize,
+    rejected: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait::async_trait]
+impl LlmExecutor for StateBoundaryProbe {
+    async fn infer(
+        &self,
+        request: ChatRequest,
+    ) -> awaken_runtime_contract::llm::Result<ChatResponse> {
+        let first = self.calls.fetch_add(1, Ordering::SeqCst) == 0;
+        if !first {
+            self.rejected.store(
+                request.messages.iter().any(|message| {
+                    message.role == Role::Tool
+                        && awaken_agent_contract::agent::content::extract_text(&message.content)
+                            .contains("outside its plugin capability")
+                }),
+                Ordering::SeqCst,
+            );
+        }
+        Ok(ChatResponse {
+            output: if first {
+                AssistantOutput::from_tool_calls(vec![ToolCall {
+                    call_id: "intrusion".into(),
+                    tool_id: "state_intruder".into(),
+                    arguments: serde_json::json!({}),
+                }])
+            } else {
+                AssistantOutput::text("done")
+            },
+            usage: None,
+            stop_reason: None,
+        })
+    }
+}
+
+#[tokio::test]
+async fn dynamic_tool_state_commands_cannot_escape_the_owning_plugin_bound() {
+    // Security cause graph: C1 manifest grants only owned/*; C2 executable
+    // returns other/secret; E1 Runtime replaces false success with an error;
+    // E2 the forbidden command never enters Thread state. The manifest bound is
+    // executable authority, not documentation.
+    let rejected = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(StateBoundaryProbe {
+            calls: AtomicUsize::new(0),
+            rejected: rejected.clone(),
+        }))
+        .with_plugin(Arc::new(StateBoundPlugin));
+    let mut run = activation();
+    run.snapshot.resolved_spec.plugin_ids = vec!["state-boundary".into()];
+    let commits = Arc::new(MemoryCommitCoordinator::new());
+    assert_eq!(
+        runtime
+            .execute(run, RuntimeRunContext::new().with_commit(commits.clone()))
+            .await
+            .expect("the rejected tool result remains model-visible"),
+        RunState::Ended(EndCause::NaturalEnd)
+    );
+    assert!(rejected.load(Ordering::SeqCst), "C2/E1");
+    let state = Store::rebuild(&commits.committed().state);
+    assert!(
+        state
+            .get(Scope::Thread, &Key("other/secret".into()))
+            .is_none(),
+        "C2/E2"
     );
 }

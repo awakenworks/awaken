@@ -7,12 +7,15 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, RunState};
 use awaken_agent_contract::agent::state::StateKey;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_ext_mcp::transport::McpToolTransport;
+use awaken_ext_mcp::{CallToolResult, McpRawTool, McpToolDefinition, McpTransportError};
 use awaken_ext_state_machine::{
     Metrics, RunInstances, StateMachineConfig, StateMachinePlugin, ThreadInstances,
 };
@@ -32,6 +35,7 @@ use awaken_runtime_contract::snapshot::{
 use awaken_runtime_contract::tool::{RawTool, ToolError, ToolOutput};
 use awaken_store_inmem::{MemoryCommitCoordinator, replay_state};
 use serde_json::json;
+use tokio::sync::Barrier;
 
 const READ_BEFORE_WRITE: &str = r#"{"machines":[{
     "name":"rbw","scope":"thread","key":"{file_path}","initial":"unread","terminal":["written"],
@@ -86,6 +90,60 @@ impl RawTool for OkTool {
     }
     async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
         Ok(ToolOutput::ok(call.call_id, "contents"))
+    }
+}
+
+struct CountingTool {
+    id: &'static str,
+    calls: Arc<AtomicUsize>,
+}
+
+#[derive(Default)]
+struct ConcurrencyProbe {
+    active: AtomicUsize,
+    maximum: AtomicUsize,
+}
+
+struct ObservedMcpTransport {
+    probe: Arc<ConcurrencyProbe>,
+    barrier: Option<Arc<Barrier>>,
+}
+
+#[async_trait::async_trait]
+impl McpToolTransport for ObservedMcpTransport {
+    async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+        Ok(Vec::new())
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        _arguments: serde_json::Value,
+    ) -> Result<CallToolResult, McpTransportError> {
+        let active = self.probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+        self.probe.maximum.fetch_max(active, Ordering::SeqCst);
+        if let Some(barrier) = &self.barrier {
+            barrier.wait().await;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        self.probe.active.fetch_sub(1, Ordering::SeqCst);
+        serde_json::from_value(json!({
+            "content": [{"type": "text", "text": tool_name}],
+            "isError": false
+        }))
+        .map_err(|error| McpTransportError::ProtocolError(error.to_string()))
+    }
+}
+
+#[async_trait::async_trait]
+impl RawTool for CountingTool {
+    fn id(&self) -> &str {
+        self.id
+    }
+
+    async fn invoke(&self, call: ToolCall) -> Result<ToolOutput, ToolError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ToolOutput::ok(call.call_id, self.id))
     }
 }
 
@@ -187,6 +245,146 @@ async fn deny_then_corrected_read_write_reaches_terminal() {
     let metrics = Metrics::load_or_default(&store);
     assert_eq!(metrics.total.denied, 1);
     assert_eq!(metrics.total.transitioned, 2);
+}
+
+const RECHECK_BETWEEN_RESOURCE_WAVES: &str = r#"{"machines":[{
+    "name":"resource-workflow","scope":"run","key":"{resource}","initial":"open",
+    "transitions":[
+        {"on":"advance(resource ~ \"*\")","from":"open","to":"advanced"},
+        {"on":"only_while_open(resource ~ \"*\")","from":"open","to":"done",
+         "on_violation":{"action":"deny","reason":"resource {resource} is no longer open"}},
+        {"on":"finish_other(resource ~ \"*\")","from":"open","to":"done"}
+    ]}]}"#;
+
+/// Cause/effect design:
+///
+/// - C1 call 1 and call 2 target the same machine instance, so resource claims
+///   split them into different waves;
+/// - C2 call 3 targets another key and shares call 2's second parallel wave;
+/// - E1 call 1 advances the shared instance before wave 2 is gated;
+/// - E2 call 2 is denied from the new state and never reaches its executor;
+/// - E3 the independent call 3 still executes.
+///
+/// This is the stale-preflight regression: batch-start gate results must never
+/// authorize a later conflicting wave after state has advanced.
+#[tokio::test]
+async fn state_machine_rechecks_gate_after_each_conflicting_resource_wave() {
+    let denied_calls = Arc::new(AtomicUsize::new(0));
+    let independent_calls = Arc::new(AtomicUsize::new(0));
+    let llm = ScriptedLlm::new(vec![AssistantOutput::from_tool_calls(vec![
+        ToolCall {
+            call_id: "c1".into(),
+            tool_id: "advance".into(),
+            arguments: json!({"resource": "shared"}),
+        },
+        ToolCall {
+            call_id: "c2".into(),
+            tool_id: "only_while_open".into(),
+            arguments: json!({"resource": "shared"}),
+        },
+        ToolCall {
+            call_id: "c3".into(),
+            tool_id: "finish_other".into(),
+            arguments: json!({"resource": "independent"}),
+        },
+    ])]);
+    let plugin = StateMachinePlugin::from_config(
+        StateMachineConfig::from_json_str(RECHECK_BETWEEN_RESOURCE_WAVES).unwrap(),
+    )
+    .unwrap();
+    let runtime = Runtime::new()
+        .with_llm(Arc::new(llm))
+        .with_tool(Arc::new(OkTool("advance")))
+        .with_tool(Arc::new(CountingTool {
+            id: "only_while_open",
+            calls: denied_calls.clone(),
+        }))
+        .with_tool(Arc::new(CountingTool {
+            id: "finish_other",
+            calls: independent_calls.clone(),
+        }))
+        .with_plugin(Arc::new(plugin));
+
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let state = runtime
+        .execute(
+            activation(),
+            RuntimeRunContext::new().with_commit(commit.clone()),
+        )
+        .await
+        .expect("runs");
+
+    assert_eq!(state, RunState::Ended(EndCause::NaturalEnd));
+    assert_eq!(denied_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(independent_calls.load(Ordering::SeqCst), 1);
+    assert!(commit.committed().messages.iter().any(|message| {
+        message
+            .text_content()
+            .contains("resource shared is no longer open")
+    }));
+}
+
+const RESOURCE_PARTITION: &str = r#"{"machines":[{
+    "name":"mcp-repository","scope":"run","key":"{repository}","initial":"ready",
+    "transitions":[
+        {"on":"mcp__git__read(repository ~ \"*\")","from":"ready","to":"ready"},
+        {"on":"mcp__git__write(repository ~ \"*\")","from":"ready","to":"ready"}
+    ]}]}"#;
+
+/// Decision table for the State Machine → resource-claim → runtime path:
+///
+/// | machine | rendered key pair | expected maximum active |
+/// |---------|-------------------|-------------------------|
+/// | same    | same              | 1 |
+/// | same    | different         | 2 |
+///
+/// The tools themselves use the default `Parallel`; only the existing machine
+/// and key partition determines whether their executor futures overlap.
+#[tokio::test]
+async fn state_machine_instance_key_serializes_only_the_same_resource() {
+    for (case, repositories, expected, synchronize) in [
+        ("same key", ["acme/a", "acme/a"], 1, false),
+        ("different keys", ["acme/a", "acme/b"], 2, true),
+    ] {
+        let probe = Arc::new(ConcurrencyProbe::default());
+        let barrier = synchronize.then(|| Arc::new(Barrier::new(2)));
+        let llm = ScriptedLlm::new(vec![AssistantOutput::from_tool_calls(vec![
+            ToolCall {
+                call_id: "c1".into(),
+                tool_id: "mcp__git__read".into(),
+                arguments: json!({"repository": repositories[0]}),
+            },
+            ToolCall {
+                call_id: "c2".into(),
+                tool_id: "mcp__git__write".into(),
+                arguments: json!({"repository": repositories[1]}),
+            },
+        ])]);
+        let plugin = StateMachinePlugin::from_config(
+            StateMachineConfig::from_json_str(RESOURCE_PARTITION).unwrap(),
+        )
+        .unwrap();
+        let transport: Arc<dyn McpToolTransport> = Arc::new(ObservedMcpTransport {
+            probe: probe.clone(),
+            barrier,
+        });
+        let runtime = Runtime::new()
+            .with_llm(Arc::new(llm))
+            .with_tool(Arc::new(
+                McpRawTool::new("git", "read", transport.clone()).expect("MCP read tool"),
+            ))
+            .with_tool(Arc::new(
+                McpRawTool::new("git", "write", transport).expect("MCP write tool"),
+            ))
+            .with_plugin(Arc::new(plugin));
+
+        let outcome = runtime
+            .execute(activation(), RuntimeRunContext::new())
+            .await
+            .expect("runs");
+        assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd), "{case}");
+        assert_eq!(probe.maximum.load(Ordering::SeqCst), expected, "{case}");
+    }
 }
 
 const WARN_ON_UNREAD: &str = r#"{"machines":[{

@@ -28,6 +28,7 @@ schemars = { version = "1", optional = true }
 schema = ["dep:schemars"]
 
 [dev-dependencies]
+awaken-ext-mcp.workspace = true
 awaken-runtime = { workspace = true }
 awaken-store-inmem.workspace = true
 tokio.workspace = true

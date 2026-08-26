@@ -93,6 +93,10 @@ pub(crate) fn tool_result_content(block: &ContentBlock) -> Result<serde_json::Va
             "content": content,
             "citations": citations,
         })),
+        ContentBlock::ToolReference { tool_name } => Ok(serde_json::json!({
+            "type": "tool_reference",
+            "tool_name": tool_name,
+        })),
         ContentBlock::Redacted | ContentBlock::Thinking { .. } => Err(Error::InvalidRequest(
             "Anthropic tool results cannot contain redacted or thinking blocks".into(),
         )),
@@ -101,5 +105,24 @@ pub(crate) fn tool_result_content(block: &ContentBlock) -> Result<serde_json::Va
                 "Anthropic tool results cannot contain nested tool protocol blocks".into(),
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deferred_reference_uses_anthropics_native_closed_shape() {
+        // Claude consumes a typed tool_reference; no prompt parser or free-form
+        // JSON convention participates in deferred-tool discovery.
+        assert_eq!(
+            tool_result_content(&ContentBlock::tool_reference("create_issue"))
+                .expect("tool reference projection"),
+            serde_json::json!({
+                "type": "tool_reference",
+                "tool_name": "create_issue"
+            })
+        );
     }
 }

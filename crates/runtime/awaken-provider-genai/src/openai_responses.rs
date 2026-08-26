@@ -8,6 +8,11 @@ use awaken_agent_contract::agent::message::Role;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, StopReason, TokenUsage,
 };
+use awaken_runtime_contract::resolved::ProviderServerTool;
+#[cfg(test)]
+use awaken_runtime_contract::resolved::{
+    OpenRouterSearchEngine, OpenRouterWebFetchParameters, OpenRouterWebSearchParameters,
+};
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -161,10 +166,27 @@ enum ResponseTool {
         parameters: Value,
         strict: bool,
     },
-    ProviderServer {
+    OpenRouterToolSearch {
         #[serde(rename = "type")]
-        kind: String,
-        parameters: Value,
+        kind: OpenRouterToolSearchType,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        parameters: Option<OpenRouterToolSearchParameters>,
+    },
+    OpenRouterWebSearch {
+        #[serde(rename = "type")]
+        kind: OpenRouterWebSearchType,
+        #[serde(
+            skip_serializing_if = "awaken_runtime_contract::resolved::OpenRouterWebSearchParameters::is_empty"
+        )]
+        parameters: awaken_runtime_contract::resolved::OpenRouterWebSearchParameters,
+    },
+    OpenRouterWebFetch {
+        #[serde(rename = "type")]
+        kind: OpenRouterWebFetchType,
+        #[serde(
+            skip_serializing_if = "awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::is_empty"
+        )]
+        parameters: awaken_runtime_contract::resolved::OpenRouterWebFetchParameters,
     },
 }
 
@@ -172,6 +194,29 @@ enum ResponseTool {
 #[serde(rename_all = "snake_case")]
 enum ResponseToolType {
     Function,
+}
+
+#[derive(Debug, Serialize)]
+enum OpenRouterToolSearchType {
+    #[serde(rename = "openrouter:tool_search")]
+    ToolSearch,
+}
+
+#[derive(Debug, Serialize)]
+enum OpenRouterWebSearchType {
+    #[serde(rename = "openrouter:web_search")]
+    WebSearch,
+}
+
+#[derive(Debug, Serialize)]
+enum OpenRouterWebFetchType {
+    #[serde(rename = "openrouter:web_fetch")]
+    WebFetch,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenRouterToolSearchParameters {
+    max_results: u8,
 }
 
 #[cfg(test)]
@@ -202,6 +247,9 @@ fn request_body_for_provider(
                 } => media.push(ResponseInputContent::Text {
                     text: render_search_result(source, title, content),
                 }),
+                ContentBlock::ToolReference { tool_name } => {
+                    text.push_str(&format!("Deferred tool `{tool_name}` is now available."));
+                }
                 ContentBlock::Redacted | ContentBlock::Thinking { .. } => {}
                 ContentBlock::ToolUse { id, name, input } => {
                     items.push(ResponseInputItem::FunctionCall {
@@ -245,15 +293,34 @@ fn request_body_for_provider(
         .iter()
         .map(|tool| {
             if let Some(projection) = &tool.provider_server_tool {
-                if projection.provider_kind != provider_kind {
+                if projection.provider_kind() != provider_kind {
                     return Err(Error::Binding(format!(
                         "tool `{}` requires provider `{}` but exact route uses `{provider_kind}`",
-                        tool.id, projection.provider_kind
+                        tool.id,
+                        projection.provider_kind()
                     )));
                 }
-                return Ok(ResponseTool::ProviderServer {
-                    kind: projection.tool_type.clone(),
-                    parameters: projection.parameters.clone(),
+                return Ok(match projection {
+                    ProviderServerTool::OpenRouterToolSearch { max_results } => {
+                        ResponseTool::OpenRouterToolSearch {
+                            kind: OpenRouterToolSearchType::ToolSearch,
+                            parameters: max_results.map(|limit| OpenRouterToolSearchParameters {
+                                max_results: limit.get(),
+                            }),
+                        }
+                    }
+                    ProviderServerTool::OpenRouterWebSearch { parameters } => {
+                        ResponseTool::OpenRouterWebSearch {
+                            kind: OpenRouterWebSearchType::WebSearch,
+                            parameters: parameters.clone(),
+                        }
+                    }
+                    ProviderServerTool::OpenRouterWebFetch { parameters } => {
+                        ResponseTool::OpenRouterWebFetch {
+                            kind: OpenRouterWebFetchType::WebFetch,
+                            parameters: parameters.clone(),
+                        }
+                    }
                 });
             }
             Ok(ResponseTool::Function {
@@ -341,6 +408,11 @@ fn tool_output(blocks: &[ContentBlock], is_error: bool) -> Result<ResponseFuncti
             } => output.push(ResponseInputContent::Text {
                 text: render_search_result(source, title, content),
             }),
+            ContentBlock::ToolReference { tool_name } => {
+                output.push(ResponseInputContent::Text {
+                    text: format!("Deferred tool `{tool_name}` is now available."),
+                });
+            }
             ContentBlock::Redacted | ContentBlock::Thinking { .. } => {}
             ContentBlock::ToolUse { .. } | ContentBlock::ToolResult { .. } => {
                 return Err(Error::InvalidRequest(
@@ -563,6 +635,7 @@ mod tests {
                                     enabled: true,
                                 },
                         },
+                        ContentBlock::tool_reference("create_issue"),
                     ],
                 )],
             },
@@ -587,6 +660,10 @@ mod tests {
                 .unwrap()
                 .contains("https://example.test/weather"),
             "O1/E3"
+        );
+        assert_eq!(
+            body["input"][2]["output"][3]["text"], "Deferred tool `create_issue` is now available.",
+            "OpenAI/OpenRouter-compatible projections retain the same tool_search style through a deterministic text fallback"
         );
         assert_eq!(body["tools"][0]["name"], "weather");
         // Cause/effect rule O1: a legacy zero-argument object descriptor is
@@ -621,22 +698,57 @@ mod tests {
         request.tools.push(
             ToolDescriptor::pinned(
                 "builtin",
+                "tool_search",
+                "Search deferred tools",
+                json!({"type":"object"}),
+            )
+            .with_provider_server_tool(ProviderServerTool::openrouter_tool_search(
+                Some(
+                    awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(5)
+                        .expect("valid documented limit"),
+                ),
+            )),
+        );
+        request.tools.push(
+            ToolDescriptor::pinned(
+                "builtin",
                 "web_search",
                 "Search the web",
                 json!({"type":"object"}),
             )
-            .with_provider_server_tool(
-                "openrouter",
-                "openrouter:web_search",
-                json!({"engine":"auto","max_results":5}),
-            ),
+            .with_provider_server_tool(ProviderServerTool::openrouter_web_search(
+                OpenRouterWebSearchParameters {
+                    engine: Some(OpenRouterSearchEngine::Exa),
+                    max_results: std::num::NonZeroU32::new(3),
+                    ..Default::default()
+                },
+            )),
+        );
+        request.tools.push(
+            ToolDescriptor::pinned(
+                "builtin",
+                "web_fetch",
+                "Fetch a URL",
+                json!({"type":"object"}),
+            )
+            .with_provider_server_tool(ProviderServerTool::openrouter_web_fetch(
+                OpenRouterWebFetchParameters::default(),
+            )),
         );
         let body = serde_json::to_value(
             request_body_for_provider(&request, "openrouter").expect("R1 exact route"),
         )
         .unwrap();
-        assert_eq!(body["tools"][0]["type"], "openrouter:web_search");
+        assert_eq!(body["tools"][0]["type"], "openrouter:tool_search");
         assert_eq!(body["tools"][0]["parameters"]["max_results"], 5);
+        assert_eq!(body["tools"][1]["type"], "openrouter:web_search");
+        assert_eq!(body["tools"][1]["parameters"]["engine"], "exa");
+        assert_eq!(body["tools"][1]["parameters"]["max_results"], 3);
+        assert_eq!(body["tools"][2]["type"], "openrouter:web_fetch");
+        assert!(
+            body["tools"][2].get("parameters").is_none(),
+            "empty typed parameters are omitted rather than serialized as an open JSON bag"
+        );
         assert!(
             request_body_for_provider(&request, "openai")
                 .unwrap_err()
@@ -644,6 +756,52 @@ mod tests {
                 .contains("requires provider `openrouter`"),
             "R2"
         );
+    }
+
+    #[test]
+    fn portable_and_openrouter_native_tool_search_names_never_masquerade_as_each_other() {
+        // Cause/effect table:
+        // P1 ordinary `tool_search` on an exact OpenRouter Responses route ->
+        // an application-executed function tool; P2 provider-owned projection
+        // -> `openrouter:tool_search`; P3 either server projection on OpenAI ->
+        // fail before HTTP. Keeping both spellings distinct prevents a local
+        // task from being silently transferred to provider execution.
+        let mut portable = request(Vec::new());
+        portable.tools.push(ToolDescriptor::pinned(
+            "builtin:presentation",
+            awaken_runtime_contract::resolved::TOOL_SEARCH_ID,
+            "Search the local deferred catalog",
+            json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        ));
+        let portable_body = serde_json::to_value(
+            request_body_for_provider(&portable, "openrouter").expect("P1 portable projection"),
+        )
+        .expect("serialize portable request");
+        assert_eq!(portable_body["tools"][0]["type"], "function");
+        assert_eq!(portable_body["tools"][0]["name"], "tool_search");
+
+        let mut native = request(Vec::new());
+        native.tools.push(
+            ToolDescriptor::pinned(
+                "openrouter",
+                "openrouter_tool_search",
+                "OpenRouter-owned deferred catalog search",
+                json!({"type":"object"}),
+            )
+            .with_provider_server_tool(ProviderServerTool::openrouter_tool_search(
+                Some(
+                    awaken_runtime_contract::tool_discovery::ToolSearchLimit::new(5)
+                        .expect("valid documented limit"),
+                ),
+            )),
+        );
+        let native_body = serde_json::to_value(
+            request_body_for_provider(&native, "openrouter").expect("P2 native projection"),
+        )
+        .expect("serialize native request");
+        assert_eq!(native_body["tools"][0]["type"], "openrouter:tool_search");
+        assert_eq!(native_body["tools"][0]["parameters"]["max_results"], 5);
+        assert!(request_body_for_provider(&native, "openai").is_err(), "P3");
     }
 
     /// Response decision table and FMECA: R1=completed text -> NaturalEnd; R2=valid

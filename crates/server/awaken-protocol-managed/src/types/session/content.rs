@@ -94,6 +94,7 @@ fn validate_content_blocks(
                     | ContentBlock::Image { .. }
                     | ContentBlock::Document { .. }
                     | ContentBlock::SearchResult { .. }
+                    | ContentBlock::ToolReference { .. }
             ),
         };
         if !allowed {
@@ -126,6 +127,11 @@ fn validate_content_blocks(
             ContentBlock::SearchResult { content, .. } if content.is_empty() => {
                 return Err(format!(
                     "{event_type} search_result content must not be empty"
+                ));
+            }
+            ContentBlock::ToolReference { tool_name } if tool_name.trim().is_empty() => {
+                return Err(format!(
+                    "{event_type} tool_reference tool_name must not be empty"
                 ));
             }
             _ => {}

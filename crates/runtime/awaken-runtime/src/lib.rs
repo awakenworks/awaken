@@ -4,6 +4,7 @@
 //! depend on server routes, protocol DTOs, config CRUD, or durable ingress internals.
 
 mod circuit_breaker;
+mod detached_tool;
 mod engine;
 mod ingress;
 mod permission;
@@ -12,8 +13,10 @@ mod retry;
 mod run;
 mod runtime;
 mod snapshot_file;
+mod tool_discovery;
 
 pub use circuit_breaker::CircuitBreakerConfig;
+pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use ingress::{DirectRunIngress, RunIngress, RunService};
 pub use permission::PermissionGate;
 pub use retry::LlmRetryPolicy;

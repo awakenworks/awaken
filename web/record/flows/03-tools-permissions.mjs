@@ -95,7 +95,7 @@ export async function run({ page, goto, say, clearCaption, intro, checkpoint, ru
     expect(config.tools).not.toContain("mcp__issues__create_issue");
     expect(config.mcp_servers).toEqual(expect.arrayContaining([expect.objectContaining({ name: "issues" })]));
     expect(config.tool_overrides).toEqual(expect.arrayContaining([
-      expect.objectContaining({ target: "mcp__issues__create_issue", alias: "file_issue", defer: true }),
+      expect.objectContaining({ target: "mcp__issues__create_issue", alias: "file_issue", exposure: "on_demand" }),
     ]));
   });
   await say("Save, then Publish — the gate compiles into the agent's runtime config.", 4000);

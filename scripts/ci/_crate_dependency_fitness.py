@@ -135,13 +135,16 @@ def selftest() -> None:
     context allowed, C4 target is a contract, C5 source is bootstrap/tooling,
     C6 source context is a process application or developer tool, C7 source is
     a protocol/interface crate projecting an application contract, C8 source is
-    process bootstrap mounting a protocol/interface adapter.
+    process bootstrap mounting a protocol/interface adapter, C9 an extension
+    implementation depends on its neutral contract, C10 the contract attempts
+    the reverse dependency.
     Effects: E1 accept; E2 reject incomplete metadata; E3 reject domain-to-adapter;
     E4 reject application-to-adapter; E5 reject cross-context implementation;
     E6 accept explicit contract boundary; E7 accept process/test startup; E8
     reject a domain bootstrap/tooling crate that uses its layer as a bypass; E9
     accept a protocol projection without classifying it as shared ownership; E10
-    accept protocol mounting only at process bootstrap.
+    accept protocol mounting only at process bootstrap; E11 accept extension →
+    contract; E12 reject contract → extension.
 
     FMECA: misclassifying a wire projection as `shared` hides its protocol owner
     and permits unrelated contexts to treat transport DTOs as reusable domain
@@ -156,6 +159,8 @@ def selftest() -> None:
     | R8   | yes           | no              | yes               | no            | E8     |
     | R9   | protocol app  | application     | no                | no            | E9     |
     | R10  | domain        | protocol iface  | bootstrap         | no            | E10    |
+    | R11  | extension     | contract        | no                | no            | E11    |
+    | R12  | contract      | extension       | no                | no            | E12    |
     """
     c = lambda n, x, l, a="owner", d=frozenset(): CrateSpec(n, x, l, a, d)
     assert metadata_violations(c("missing", "", "", "")), "R2"
@@ -201,3 +206,15 @@ def selftest() -> None:
             c("managed-http", "protocol", "interface"),
         ]
     ), "R10 application remains protocol-neutral"
+    assert dependency_violations(
+        [
+            c("ext", "runtime", "infrastructure", "ext-example", frozenset({"contract"})),
+            c("contract", "runtime", "contract", "runtime"),
+        ]
+    ) == [], "R11 extension may depend on contract"
+    assert dependency_violations(
+        [
+            c("contract", "runtime", "contract", "runtime", frozenset({"ext"})),
+            c("ext", "runtime", "infrastructure", "ext-example"),
+        ]
+    ), "R12 contract must not depend on extension"

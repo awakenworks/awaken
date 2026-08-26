@@ -30,6 +30,7 @@ mod snapshot_builder;
 pub mod terminal;
 pub mod tool;
 pub mod tool_batch;
+pub mod tool_discovery;
 
 pub use activation::RunActivation;
 pub use boundary::{BoundaryOutcome, evaluate_boundary};
@@ -134,9 +135,11 @@ pub use snapshot::{
 pub use snapshot_builder::{DEFAULT_MAX_STEPS, ExecutableAgentSnapshotBuilder};
 pub use tokio_util::sync::CancellationToken;
 pub use tool::{
-    RawTool, RawToolRegistry, Tool, ToolExecutionTarget, ToolExecutor, ToolOperationToken,
-    ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy,
+    RawTool, RawToolRegistry, Tool, ToolConcurrency, ToolExecutionTarget, ToolExecutor,
+    ToolOperationToken, ToolOutput, ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy,
+    ToolResource, ToolResourceAccess,
 };
 pub use tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchId, ToolBatchPhase, ToolCallPhase, ToolWait, ToolWaitKind,
 };
+pub use tool_discovery::{ToolSearchInput, ToolSearchLimit, ToolSearchLimitError};

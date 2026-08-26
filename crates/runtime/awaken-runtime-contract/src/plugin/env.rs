@@ -10,7 +10,9 @@ use crate::permission::ToolGateHook;
 use crate::resolved::ToolDescriptor;
 use crate::tool::RawTool;
 
+use super::capability::IdBound;
 use super::capability::{BoundViolation, PluginManifest, enforce_bound};
+use super::concurrency::ToolConcurrencyConstraint;
 use super::contributions::{Contributions, DynamicTool, PluginConfigError};
 use super::guard::RunEndGuard;
 use super::phase::{PhaseHook, PhaseHookPoint};
@@ -110,10 +112,16 @@ pub struct ResolvedExecutionEnv {
     /// Pre-execution tool gates the selected plugins contribute, in dependency
     /// order. Consulted after the host gate; each can only restrict.
     tool_gates: Vec<Arc<dyn ToolGateHook>>,
+    /// Resource constraints in plugin dependency order.
+    tool_constraints: Vec<Arc<dyn ToolConcurrencyConstraint>>,
     /// Dynamic tools (descriptor + executable) contributed by the selected
     /// plugins, in dependency order. Merged into the model-visible tool face and
     /// consulted for execution alongside the runtime's static tool registry.
     dynamic_tools: Vec<DynamicTool>,
+    /// Runtime-only State ceiling keyed by the dynamic tool identity that owns
+    /// it. This is derived from the manifest during merge and is never authored
+    /// by a model call.
+    dynamic_tool_state_bounds: std::collections::BTreeMap<String, IdBound>,
 }
 
 impl ResolvedExecutionEnv {
@@ -165,13 +173,15 @@ impl ResolvedExecutionEnv {
         let mut phase_hooks: Vec<Arc<dyn PhaseHook>> = Vec::new();
         let mut run_end_guards: Vec<Arc<dyn RunEndGuard>> = Vec::new();
         let mut tool_gates: Vec<Arc<dyn ToolGateHook>> = Vec::new();
+        let mut tool_constraints: Vec<Arc<dyn ToolConcurrencyConstraint>> = Vec::new();
         let mut dynamic_tools: Vec<DynamicTool> = Vec::new();
+        let mut dynamic_tool_state_bounds = std::collections::BTreeMap::new();
         let mut action_kinds: Vec<String> = Vec::new();
         let mut action_owner: std::collections::BTreeMap<String, String> =
             std::collections::BTreeMap::new();
 
         for id in &order {
-            let (_, contributions) = plugins
+            let (manifest, contributions) = plugins
                 .iter()
                 .find(|(m, _)| &m.id == id)
                 .expect("ordered id is present");
@@ -194,12 +204,14 @@ impl ResolvedExecutionEnv {
                         second: id.clone(),
                     });
                 }
-                tool_owner.insert(tool_id, id.clone());
+                tool_owner.insert(tool_id.clone(), id.clone());
+                dynamic_tool_state_bounds.insert(tool_id, manifest.bound.state_keys.clone());
                 dynamic_tools.push(dynamic.clone());
             }
             phase_hooks.extend(contributions.phase_hooks.iter().cloned());
             run_end_guards.extend(contributions.run_end_guards.iter().cloned());
             tool_gates.extend(contributions.tool_gates.iter().cloned());
+            tool_constraints.extend(contributions.tool_constraints.iter().cloned());
             for kind in &contributions.action_kinds {
                 if let Some(first) = action_owner.get(kind) {
                     return Err(MergeError::DuplicateActionKind {
@@ -218,7 +230,9 @@ impl ResolvedExecutionEnv {
             action_kinds,
             run_end_guards,
             tool_gates,
+            tool_constraints,
             dynamic_tools,
+            dynamic_tool_state_bounds,
         })
     }
 
@@ -245,6 +259,12 @@ impl ResolvedExecutionEnv {
             .map(|dynamic| Arc::clone(dynamic.executable()))
     }
 
+    /// State namespace ceiling of a dynamic tool, derived from its owning
+    /// plugin manifest. An unknown/static tool receives no State authority.
+    pub fn dynamic_tool_state_bound(&self, id: &str) -> Option<&IdBound> {
+        self.dynamic_tool_state_bounds.get(id)
+    }
+
     /// Hooks registered for one phase point, in dependency order.
     pub fn hooks_for(&self, point: PhaseHookPoint) -> Vec<Arc<dyn PhaseHook>> {
         self.phase_hooks
@@ -262,6 +282,11 @@ impl ResolvedExecutionEnv {
     /// Plugin-contributed pre-execution tool gates, in dependency order.
     pub fn tool_gates(&self) -> &[Arc<dyn ToolGateHook>] {
         &self.tool_gates
+    }
+
+    /// Plugin-contributed resource constraints, in dependency order.
+    pub fn tool_constraints(&self) -> &[Arc<dyn ToolConcurrencyConstraint>] {
+        &self.tool_constraints
     }
 }
 

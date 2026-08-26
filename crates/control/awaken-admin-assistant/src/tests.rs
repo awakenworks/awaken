@@ -332,20 +332,31 @@ async fn draft_agent_round_trips_tool_overrides() {
                 "instructions": "author configs",
                 "tool_ids": ["read"],
                 "tool_overrides": [
-                    { "target": "read", "alias": "peek", "description": "look", "defer": true }
+                    {
+                        "target": "read",
+                        "alias": "peek",
+                        "description": "look",
+                        "exposure": "on_demand"
+                    }
                 ]
             }),
         ))
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.text());
-    // The persisted config carries the override (previously impossible to set at all).
+    // Causal graph: C1 the strict admin-tool boundary decodes a closed exposure
+    // enum; C2 validation succeeds. E1 the exact authored value is persisted;
+    // E2 the response projection is lossless. An unknown/boolean exposure is
+    // rejected by `deny_unknown_fields` + enum deserialization before mutation.
     let stored = h.store.stored("authoring").expect("persisted");
     assert_eq!(stored.tool_overrides.len(), 1);
     let ov = &stored.tool_overrides[0];
     assert_eq!(ov.target, "read");
     assert_eq!(ov.alias.as_deref(), Some("peek"));
-    assert!(ov.defer);
+    assert_eq!(
+        ov.exposure,
+        Some(awaken_runtime_contract::resolved::ToolExposure::OnDemand)
+    );
     // And the returned envelope reflects it too.
     let returned = parse_saved(&out.text());
     assert_eq!(returned.tool_overrides, stored.tool_overrides);

@@ -47,10 +47,10 @@ use awaken_runtime_contract::llm::{
 use awaken_runtime_contract::permission::GateOutcome;
 use awaken_runtime_contract::plugin::{
     AfterToolContext, ContextMessages, ContextWindow, PhaseContext, PhaseHookPoint, PhaseKind,
-    ResolvedExecutionEnv, RunEndContext, RunEndDecision,
+    ResolvedExecutionEnv, RunEndContext, RunEndDecision, ToolConcurrencyConstraint,
 };
 use awaken_runtime_contract::resolved::{
-    CatalogFingerprint, ContextPolicy, ResolvedRun, ToolKind, ToolPresentation,
+    CatalogFingerprint, ContextPolicy, ResolvedRun, ToolDescriptor, ToolKind, ToolPresentation,
 };
 use awaken_runtime_contract::resolver::{self, RunResolver};
 use awaken_runtime_contract::resume::{
@@ -61,18 +61,22 @@ use awaken_runtime_contract::runtime_context::{
 };
 use awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId;
 use awaken_runtime_contract::tool::{
-    ToolError, ToolExecutionTarget, ToolExecutor, ToolOperationContext, ToolOutput,
-    with_tool_operation_context,
+    RawTool, ToolConcurrency, ToolError, ToolExecutionFacts, ToolExecutionFactsResolver,
+    ToolExecutionTarget, ToolExecutor, ToolOperationContext, ToolOutput, with_tool_execution_facts,
+    with_tool_operation_context, with_tool_state_context,
 };
 use awaken_runtime_contract::tool::{ToolRecoveryCapability, ToolRecoveryMode, ToolRecoveryPolicy};
 use awaken_runtime_contract::tool_batch::{
     ActiveToolBatch, ToolBatch, ToolBatchPhase, ToolCallPhase, ToolWaitKind,
 };
+use awaken_runtime_contract::tool_discovery::ToolSearchInput;
+
+use crate::tool_discovery::{ToolDiscoveryState, ToolDiscoveryStateKey, ToolSearchQuery};
 
 use crate::runtime::Runtime;
 
 mod content;
-mod convert;
+pub(crate) mod convert;
 mod delegation;
 mod dispatch;
 mod finalize;
@@ -81,20 +85,20 @@ mod progress;
 mod resume;
 pub(crate) mod run_commands;
 mod run_loop;
-mod tool_execution;
+pub(crate) mod tool_execution;
 pub(crate) use convert::*;
 pub(crate) use delegation::reconcile_delegation_cancellations;
 use delegation::{
     DelegationInvocation, DelegationParent, delegation_error_output, invoke_delegation,
     is_resolved_delegation_call, persist_child_run_result, resume_delegation, run_delegation,
     stage_delegation_awaiting, stage_delegation_completed, stage_delegation_request,
-    stage_delegation_requests,
 };
 use finalize::{finalize, finish};
 use inference::*;
 use progress::*;
 use resume::{drive_resumed, fresh_resume_context};
 use run_loop::*;
+pub(crate) use tool_execution::RuntimeToolOperation;
 use tool_execution::*;
 
 /// Best-effort live emission. A sink failure is swallowed: committed truth is

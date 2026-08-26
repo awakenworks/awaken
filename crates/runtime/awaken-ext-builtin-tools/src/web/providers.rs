@@ -84,17 +84,15 @@ pub(super) fn openrouter_server_search_descriptor() -> WebServerToolProviderDesc
     WebServerToolProviderDescriptor {
         id: OPENROUTER_PROVIDER_ID.into(),
         label: "OpenRouter server search".into(),
-        provider_kind: OPENROUTER_PROVIDER_ID.into(),
-        tool_type: "openrouter:web_search".into(),
         options_schema: json!({
             "type": "object",
             "properties": {
                 "engine": { "type": "string", "enum": ["auto", "native", "exa", "firecrawl", "parallel", "perplexity"] },
                 "max_results": { "type": "integer", "minimum": 1 },
-                "max_uses": { "type": "integer", "minimum": 1 },
+                "max_total_results": { "type": "integer", "minimum": 1 },
                 "search_context_size": { "type": "string", "enum": ["low", "medium", "high"] }
             },
-            "additionalProperties": true
+            "additionalProperties": false
         }),
     }
 }
@@ -103,8 +101,6 @@ pub(super) fn openrouter_server_fetch_descriptor() -> WebServerToolProviderDescr
     WebServerToolProviderDescriptor {
         id: OPENROUTER_PROVIDER_ID.into(),
         label: "OpenRouter server fetch".into(),
-        provider_kind: OPENROUTER_PROVIDER_ID.into(),
-        tool_type: "openrouter:web_fetch".into(),
         options_schema: json!({
             "type": "object",
             "properties": {
@@ -112,7 +108,7 @@ pub(super) fn openrouter_server_fetch_descriptor() -> WebServerToolProviderDescr
                 "max_uses": { "type": "integer", "minimum": 1 },
                 "max_content_tokens": { "type": "integer", "minimum": 1 }
             },
-            "additionalProperties": true
+            "additionalProperties": false
         }),
     }
 }

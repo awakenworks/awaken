@@ -138,10 +138,10 @@ const cfgAgent = {
   plugins: [],
   plugin_config: {},
   context_policy: { kind: "keep_all" },
-  // Tool presentation (ADR-0053): rename a static tool + alias/defer an MCP tool.
+  // Tool presentation: rename a static tool + expose an aliased MCP tool on demand.
   tool_overrides: [
     { target: "read", alias: "open_file", description: "Read a file." },
-    { target: "mcp__docs__search", alias: "docs", defer: true },
+    { target: "mcp__docs__search", alias: "docs", exposure: "on_demand" },
   ],
 };
 await step("author config agent", "PUT", "/v1/config/agents/smoke-agent", cfgAgent, (s, p) => s === 200 && p.id === "smoke-agent");
@@ -153,7 +153,7 @@ await step("tool_overrides round-trip", "GET", "/v1/config/agents/smoke-agent", 
   s === 200 &&
   p.tool_overrides?.length === 2 &&
   p.tool_overrides.some((o) => o.target === "read" && o.alias === "open_file") &&
-  p.tool_overrides.some((o) => o.target === "mcp__docs__search" && o.defer === true));
+  p.tool_overrides.some((o) => o.target === "mcp__docs__search" && o.exposure === "on_demand"));
 await step("list config agents (draft)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === false));
 await step("publish config agent", "POST", "/v1/config/agents/smoke-agent/publish", undefined, (s, p) => s === 200 && p.installed === true);
 await step("list config agents (published)", "GET", "/v1/config/agents", undefined, (s, p) => s === 200 && p.data.some((a) => a.id === "smoke-agent" && a.published === true));

@@ -198,9 +198,9 @@ mod tests {
             "A1/E1"
         );
         let provider = awaken_ext_builtin_tools::web_fetch_descriptor().with_provider_server_tool(
-            "openrouter",
-            "web",
-            serde_json::json!({}),
+            awaken_runtime_contract::resolved::ProviderServerTool::openrouter_web_fetch(
+                awaken_runtime_contract::resolved::OpenRouterWebFetchParameters::default(),
+            ),
         );
         let error = match ensure_acp_host_executed_web_tool(&provider, "WebFetch") {
             Ok(()) => panic!("A2 provider-server placeholder must not be exported"),

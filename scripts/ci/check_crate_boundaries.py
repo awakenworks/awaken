@@ -27,7 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 CRATES = REPO_ROOT / "crates"
 
 NEUTRAL_CRATES = {"awaken-agent-contract", "awaken-runtime-contract", "awaken-runtime"}
-EXTENSION_CRATES = {"awaken-ext-builtin-tools", "awaken-ext-permission"}
+EXTENSION_CRATES = {
+    "awaken-ext-background-task",
+    "awaken-ext-builtin-tools",
+    "awaken-ext-permission",
+}
 FORBIDDEN_NEUTRAL_TERMS = {"managed"}
 BUILTIN_TOOL_IDS = {
     "bash", "read", "write", "edit", "glob", "grep", "web_fetch", "web_search",
@@ -35,7 +39,7 @@ BUILTIN_TOOL_IDS = {
 }
 FORBIDDEN_NEUTRAL_TYPE_NAMES = {
     "TypedTool": "use Tool for the typed API and RawTool for the low-level adapter",
-    "BackgroundTask": "use ScheduledAction, ResumeTicket, or durable dispatch by authority",
+    "BackgroundTask": "detached-tool state belongs in awaken-ext-background-task",
     "ToolExecutionLocus": "ToolExecutor is the sole neutral tool port",
     "ExecutorAdapter": "the executing side implements ToolExecutor",
     "ExecutionBackend": "tool execution is in-process; agent attempts use RunAttemptExecutor",
@@ -51,6 +55,12 @@ FORBIDDEN_NEUTRAL_SYMBOLS = {
     )},
     "ConfigPublicationCoordinator": "configuration publication stays outside runtime core",
     "RegistryCompiler": "registry compilation stays outside runtime core",
+}
+NEUTRAL_SYMBOL_ALLOWLIST = {
+    # Resource access modes are domain concurrency claims, not the builtin
+    # filesystem Read/Write tool implementations.
+    "Read": {"crates/runtime/awaken-runtime-contract/src/tool.rs"},
+    "Write": {"crates/runtime/awaken-runtime-contract/src/tool.rs"},
 }
 FORBIDDEN_NEUTRAL_IMPL_TRAITS = {
     "Tool": "concrete tools belong in extensions/adapters",
@@ -90,7 +100,8 @@ def check_neutral_code_boundaries() -> list[str]:
                 if pattern.search(content):
                     errors.append(f"{rel}: forbidden neutral type {name!r}; {FORBIDDEN_NEUTRAL_TYPE_NAMES[name]}")
             for name, pattern in symbols.items():
-                if pattern.search(content):
+                allowed = str(rel) in NEUTRAL_SYMBOL_ALLOWLIST.get(name, set())
+                if pattern.search(content) and not allowed:
                     errors.append(f"{rel}: forbidden neutral symbol {name!r}; {FORBIDDEN_NEUTRAL_SYMBOLS[name]}")
             for phrase, pattern in phrases.items():
                 if pattern.search(content):
@@ -106,6 +117,36 @@ def check_builtin_tool_ownership() -> list[str]:
     for crate_name in EXTENSION_CRATES:
         if next(CRATES.glob(f"*/{crate_name}/Cargo.toml"), None) is None:
             errors.append(f"missing required extension crate {crate_name!r}")
+    return errors
+
+
+def check_background_task_is_state_only() -> list[str]:
+    """Prevent the extension from growing a second persistence authority.
+
+    Cause/effect rule: a normal SQL/store dependency or migration directory
+    implies extension-owned durable storage and is rejected; dev-only test
+    dependencies remain outside this check.
+    """
+    errors: list[str] = []
+    spec = next(
+        (spec for spec in dependency_fitness_specs() if spec.name == "awaken-ext-background-task"),
+        None,
+    )
+    if spec is None:
+        return ["missing required extension crate awaken-ext-background-task"]
+    forbidden = sorted(
+        dependency
+        for dependency in spec.normal_deps
+        if dependency in {"sqlx", "rusqlite"} or dependency.endswith("-store")
+    )
+    if forbidden:
+        errors.append(
+            "awaken-ext-background-task must persist only through Runtime State; "
+            f"forbidden normal dependencies: {forbidden}"
+        )
+    manifest = next(CRATES.glob("*/awaken-ext-background-task/Cargo.toml"))
+    if any(path.is_dir() and path.name == "migrations" for path in manifest.parent.rglob("*")):
+        errors.append("awaken-ext-background-task must not own a migrations directory")
     return errors
 
 
@@ -136,6 +177,7 @@ def main() -> int:
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()
         + check_builtin_tool_ownership()
+        + check_background_task_is_state_only()
         + check_tests_are_not_arch_owners()
         + _resource_plane_fitness.check_all(REPO_ROOT, CRATES)
         + _runtime_secret_boundary.check_all(REPO_ROOT, CRATES)

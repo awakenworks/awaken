@@ -1,0 +1,26 @@
+[package]
+name = "awaken-ext-background-task"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[package.metadata.awaken]
+context = "runtime"
+layer = "infrastructure"
+authority = "ext-background-task"
+
+[dependencies]
+async-trait.workspace = true
+awaken-agent-contract.workspace = true
+awaken-runtime-contract.workspace = true
+schemars = "1"
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
+
+[lints]
+workspace = true

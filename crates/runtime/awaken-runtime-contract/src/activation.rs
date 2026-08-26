@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::DataSubjectId;
-use crate::permission::{DenyAllTools, ToolCapabilityNarrowing};
+use crate::permission::ToolCapabilityNarrowing;
 use crate::runtime_context::RuntimeRunContext;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -140,9 +140,9 @@ impl RunActivation {
     pub fn narrow_context(&self, context: RuntimeRunContext) -> RuntimeRunContext {
         match self.tool_capability_narrowing {
             ToolCapabilityNarrowing::Configured => context,
-            ToolCapabilityNarrowing::DenyAll => context.with_tool_permission_policy(
-                std::sync::Arc::new(DenyAllTools::new("tools are disabled for this Run")),
-            ),
+            ToolCapabilityNarrowing::DenyAll => {
+                context.with_tool_capability_narrowing(ToolCapabilityNarrowing::DenyAll)
+            }
         }
     }
 

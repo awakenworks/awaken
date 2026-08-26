@@ -1,0 +1,130 @@
+pub mod awaken_ext_background_task
+pub enum awaken_ext_background_task::BackgroundTaskEnd
+pub awaken_ext_background_task::BackgroundTaskEnd::Cancelled
+pub awaken_ext_background_task::BackgroundTaskEnd::Completed
+pub awaken_ext_background_task::BackgroundTaskEnd::Completed::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
+pub awaken_ext_background_task::BackgroundTaskEnd::Completed::is_error: bool
+pub awaken_ext_background_task::BackgroundTaskEnd::Failed
+pub awaken_ext_background_task::BackgroundTaskEnd::Failed::message: alloc::string::String
+pub awaken_ext_background_task::BackgroundTaskEnd::Indeterminate
+pub awaken_ext_background_task::BackgroundTaskEnd::Indeterminate::message: alloc::string::String
+pub enum awaken_ext_background_task::BackgroundTaskError
+pub awaken_ext_background_task::BackgroundTaskError::Busy
+pub awaken_ext_background_task::BackgroundTaskError::ClockOverflow
+pub awaken_ext_background_task::BackgroundTaskError::EpochOverflow
+pub awaken_ext_background_task::BackgroundTaskError::InvalidClaim
+pub awaken_ext_background_task::BackgroundTaskError::InvalidContinuation
+pub awaken_ext_background_task::BackgroundTaskError::InvalidIdentity
+pub awaken_ext_background_task::BackgroundTaskError::InvalidPersistedState
+pub awaken_ext_background_task::BackgroundTaskError::InvalidTransition
+pub awaken_ext_background_task::BackgroundTaskError::NonMonotonicLease
+pub awaken_ext_background_task::BackgroundTaskError::RevisionOverflow
+pub awaken_ext_background_task::BackgroundTaskError::StaleFence
+pub awaken_ext_background_task::BackgroundTaskError::Terminal
+pub enum awaken_ext_background_task::BackgroundTaskLifecycle
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Cancelling
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Cancelling::attempt: awaken_ext_background_task::TaskAttempt
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Ended
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Ended::end: awaken_ext_background_task::BackgroundTaskEnd
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Requested
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Running
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Running::attempt: awaken_ext_background_task::TaskAttempt
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Waiting
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Waiting::attempt: awaken_ext_background_task::TaskAttempt
+pub awaken_ext_background_task::BackgroundTaskLifecycle::Waiting::wait: awaken_ext_background_task::BackgroundWait
+impl awaken_ext_background_task::BackgroundTaskLifecycle
+pub const fn awaken_ext_background_task::BackgroundTaskLifecycle::is_terminal(&self) -> bool
+pub enum awaken_ext_background_task::BackgroundWait
+pub awaken_ext_background_task::BackgroundWait::ExternalInput
+pub awaken_ext_background_task::BackgroundWait::Remote(awaken_ext_background_task::RemoteContinuation)
+pub awaken_ext_background_task::BackgroundWait::Resource
+pub enum awaken_ext_background_task::RemoteProtocol
+pub awaken_ext_background_task::RemoteProtocol::A2a
+pub awaken_ext_background_task::RemoteProtocol::Mcp
+pub enum awaken_ext_background_task::TaskClaim
+pub awaken_ext_background_task::TaskClaim::Acquired(awaken_ext_background_task::TaskFence)
+pub awaken_ext_background_task::TaskClaim::EndedAttemptsExhausted
+pub awaken_ext_background_task::TaskClaim::EndedIndeterminate
+pub struct awaken_ext_background_task::BackgroundInvocation
+pub awaken_ext_background_task::BackgroundInvocation::call: awaken_runtime_contract::llm::ToolCall
+pub struct awaken_ext_background_task::BackgroundTask
+pub awaken_ext_background_task::BackgroundTask::id: awaken_ext_background_task::BackgroundTaskId
+pub awaken_ext_background_task::BackgroundTask::invocation: awaken_ext_background_task::BackgroundInvocation
+pub awaken_ext_background_task::BackgroundTask::lifecycle: awaken_ext_background_task::BackgroundTaskLifecycle
+pub awaken_ext_background_task::BackgroundTask::origin: awaken_ext_background_task::BackgroundTaskOrigin
+pub awaken_ext_background_task::BackgroundTask::revision: u64
+impl awaken_ext_background_task::BackgroundTask
+pub fn awaken_ext_background_task::BackgroundTask::attempt(&self) -> core::option::Option<&awaken_ext_background_task::TaskAttempt>
+pub fn awaken_ext_background_task::BackgroundTask::finish(&mut self, &awaken_ext_background_task::TaskFence, awaken_ext_background_task::BackgroundTaskEnd) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::heartbeat(&mut self, &awaken_ext_background_task::TaskFence, u64, u64) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::reclaim(&mut self, impl core::convert::Into<alloc::string::String>, u64, u64) -> core::result::Result<awaken_ext_background_task::TaskClaim, awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::request_cancel(&mut self) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::requested(awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskOrigin, awaken_ext_background_task::BackgroundInvocation) -> Self
+pub fn awaken_ext_background_task::BackgroundTask::same_request_as(&self, &Self) -> bool
+pub fn awaken_ext_background_task::BackgroundTask::start(&mut self, impl core::convert::Into<alloc::string::String>, u64, u64, awaken_ext_background_task::TaskExecutionPolicy) -> core::result::Result<awaken_ext_background_task::TaskFence, awaken_ext_background_task::BackgroundTaskError>
+pub fn awaken_ext_background_task::BackgroundTask::wait(&mut self, &awaken_ext_background_task::TaskFence, awaken_ext_background_task::BackgroundWait) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub struct awaken_ext_background_task::BackgroundTaskCompletion
+pub awaken_ext_background_task::BackgroundTaskCompletion::end: awaken_ext_background_task::BackgroundTaskEnd
+pub awaken_ext_background_task::BackgroundTaskCompletion::fence: awaken_ext_background_task::TaskFence
+pub struct awaken_ext_background_task::BackgroundTaskConfig
+pub awaken_ext_background_task::BackgroundTaskConfig::tools: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub struct awaken_ext_background_task::BackgroundTaskId(_)
+impl awaken_ext_background_task::BackgroundTaskId
+pub fn awaken_ext_background_task::BackgroundTaskId::as_str(&self) -> &str
+pub fn awaken_ext_background_task::BackgroundTaskId::new(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_ext_background_task::BackgroundTaskError>
+impl core::convert::From<awaken_ext_background_task::BackgroundTaskId> for alloc::string::String
+pub fn alloc::string::String::from(awaken_ext_background_task::BackgroundTaskId) -> Self
+impl core::convert::TryFrom<alloc::string::String> for awaken_ext_background_task::BackgroundTaskId
+pub type awaken_ext_background_task::BackgroundTaskId::Error = awaken_ext_background_task::BackgroundTaskError
+pub fn awaken_ext_background_task::BackgroundTaskId::try_from(alloc::string::String) -> core::result::Result<Self, Self::Error>
+pub struct awaken_ext_background_task::BackgroundTaskOrigin
+pub awaken_ext_background_task::BackgroundTaskOrigin::operation_id: alloc::string::String
+pub awaken_ext_background_task::BackgroundTaskOrigin::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_ext_background_task::BackgroundTaskOrigin::thread_id: awaken_agent_contract::agent::thread::Id
+pub struct awaken_ext_background_task::BackgroundTaskPlugin
+impl awaken_ext_background_task::BackgroundTaskPlugin
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::new(awaken_ext_background_task::BackgroundTaskConfig) -> Self
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::supervisor(&self) -> alloc::sync::Arc<awaken_ext_background_task::BackgroundTaskSupervisor>
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::with_supervisor(awaken_ext_background_task::BackgroundTaskConfig, alloc::sync::Arc<awaken_ext_background_task::BackgroundTaskSupervisor>) -> Self
+impl awaken_runtime_contract::plugin::contributions::Plugin for awaken_ext_background_task::BackgroundTaskPlugin
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::manifest(&self) -> awaken_runtime_contract::plugin::capability::PluginManifest
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::resolve(&self) -> awaken_runtime_contract::plugin::contributions::Contributions
+pub fn awaken_ext_background_task::BackgroundTaskPlugin::resolve_configured(&self, core::option::Option<&serde_json::value::Value>) -> core::result::Result<awaken_runtime_contract::plugin::contributions::Contributions, awaken_runtime_contract::plugin::contributions::PluginConfigError>
+pub struct awaken_ext_background_task::BackgroundTaskSupervisor
+impl awaken_ext_background_task::BackgroundTaskSupervisor
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::cancel(&self, &awaken_ext_background_task::BackgroundTaskId)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::complete(&self, awaken_ext_background_task::BackgroundTaskId, awaken_ext_background_task::BackgroundTaskCompletion)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::completion(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<awaken_ext_background_task::BackgroundTaskCompletion>
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::is_active(&self, &awaken_ext_background_task::BackgroundTaskId) -> bool
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::lease_ms() -> u64
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::new(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::now_ms() -> u64
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::register(&self, &awaken_ext_background_task::BackgroundTaskId) -> core::option::Option<tokio_util::sync::cancellation_token::CancellationToken>
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::retire(&self, &awaken_ext_background_task::BackgroundTaskId)
+pub fn awaken_ext_background_task::BackgroundTaskSupervisor::worker_id(&self) -> &str
+pub struct awaken_ext_background_task::RemoteContinuation
+pub awaken_ext_background_task::RemoteContinuation::protocol: awaken_ext_background_task::RemoteProtocol
+pub awaken_ext_background_task::RemoteContinuation::server_binding: alloc::string::String
+pub awaken_ext_background_task::RemoteContinuation::task_id: alloc::string::String
+impl awaken_ext_background_task::RemoteContinuation
+pub fn awaken_ext_background_task::RemoteContinuation::validate(&self) -> core::result::Result<(), awaken_ext_background_task::BackgroundTaskError>
+pub struct awaken_ext_background_task::TaskAttempt
+pub awaken_ext_background_task::TaskAttempt::epoch: u64
+pub awaken_ext_background_task::TaskAttempt::lease_expires_at_ms: u64
+pub awaken_ext_background_task::TaskAttempt::policy: awaken_ext_background_task::TaskExecutionPolicy
+pub awaken_ext_background_task::TaskAttempt::worker_id: alloc::string::String
+impl awaken_ext_background_task::TaskAttempt
+pub fn awaken_ext_background_task::TaskAttempt::fence(&self) -> awaken_ext_background_task::TaskFence
+pub fn awaken_ext_background_task::TaskAttempt::owns(&self, &awaken_ext_background_task::TaskFence) -> bool
+pub struct awaken_ext_background_task::TaskExecutionPolicy
+pub awaken_ext_background_task::TaskExecutionPolicy::concurrency: awaken_runtime_contract::tool::ToolConcurrency
+pub awaken_ext_background_task::TaskExecutionPolicy::recovery: awaken_runtime_contract::tool::ToolRecoveryPolicy
+pub struct awaken_ext_background_task::TaskFence
+pub awaken_ext_background_task::TaskFence::epoch: u64
+pub awaken_ext_background_task::TaskFence::worker_id: alloc::string::String
+pub const awaken_ext_background_task::BACKGROUND_TASK_PLUGIN_ID: &str
+pub const awaken_ext_background_task::BACKGROUND_TASK_STATE_PREFIX: &str
+pub fn awaken_ext_background_task::config_schema() -> serde_json::value::Value
+pub fn awaken_ext_background_task::process_supervisor() -> alloc::sync::Arc<awaken_ext_background_task::BackgroundTaskSupervisor>
+pub fn awaken_ext_background_task::task_state_cell(&awaken_ext_background_task::BackgroundTaskId) -> awaken_agent_contract::agent::state::StateCell<awaken_ext_background_task::BackgroundTask>
+pub fn awaken_ext_background_task::tasks_from_state(&awaken_agent_contract::agent::state::Store) -> core::result::Result<alloc::vec::Vec<awaken_ext_background_task::BackgroundTask>, awaken_runtime_contract::tool::ToolError>

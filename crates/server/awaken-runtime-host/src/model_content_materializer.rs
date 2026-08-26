@@ -88,6 +88,7 @@ fn collect_file_ids(blocks: &[ContentBlock], ids: &mut BTreeSet<String>) {
             | ContentBlock::Image { .. }
             | ContentBlock::Document { .. }
             | ContentBlock::SearchResult { .. }
+            | ContentBlock::ToolReference { .. }
             | ContentBlock::Redacted
             | ContentBlock::ToolUse { .. }
             | ContentBlock::Thinking { .. } => {}
@@ -153,6 +154,7 @@ fn replace_file_ids(
             ContentBlock::ToolResult { content, .. } => replace_file_ids(content, resolved)?,
             ContentBlock::Text { .. }
             | ContentBlock::SearchResult { .. }
+            | ContentBlock::ToolReference { .. }
             | ContentBlock::Redacted
             | ContentBlock::ToolUse { .. }
             | ContentBlock::Thinking { .. } => {}
