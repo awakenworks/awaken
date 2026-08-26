@@ -163,7 +163,9 @@ export interface UpdateSessionRequest {
 }
 
 export interface CreateSessionRequest {
-  agent: string | { id: string; version?: number; model?: string };
+  agent: string
+    | { id: string; type: "agent"; version?: number }
+    | { id: string; type: "agent_with_overrides"; version?: number; model?: string };
   environment_id?: string;
   title?: string;
   metadata?: Record<string, string>;
@@ -528,6 +530,7 @@ export interface PublishResult {
   publication_id: string;
   fingerprint: string;
   agent_id: string;
+  source_revision: number;
   installed: boolean;
 }
 

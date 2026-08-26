@@ -431,7 +431,7 @@ export default function AgentEditorSurface() {
           "首次运行前需要先处理草稿中的问题。",
         ));
       }
-      await api.post<PublishResult>(
+      const publication = await api.post<PublishResult>(
         ws(`/v1/config/agents/${targetId()}/publish`),
         {
           source_revision: sourceRevision,
@@ -439,7 +439,11 @@ export default function AgentEditorSurface() {
         },
       );
       const request: CreateSessionRequest = {
-        agent: targetId(),
+        // Publish is the immutable execution boundary. Pin the Session to the
+        // exact revision acknowledged by that boundary so an active-active
+        // Coordinator can either load that publication or fail creation
+        // closed; it must never run an unversioned fallback configuration.
+        agent: { id: targetId(), type: "agent", version: publication.source_revision },
         environment_id: intent.environmentId,
         title: app.t("Quickstart first run", "Quickstart 首次运行"),
       };

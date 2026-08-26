@@ -31,15 +31,22 @@ export class SyntheticModelDirectory {
       this.server!.close((error) => error ? reject(error) : resolve()));
   }
 
-  async configure(request: APIRequestContext, model: string) {
+  async configure(
+    request: APIRequestContext,
+    model: string,
+    configBase = "/v1/config",
+  ): Promise<string> {
     this.models.add(model);
-    const workspaceResponse = await request.get("/v1/config/workspace-context");
+    const workspaceResponse = await request.get(`${configBase}/workspace-context`);
     if (!workspaceResponse.ok()) {
       throw new Error(await workspaceResponse.text());
     }
-    const workspace = await workspaceResponse.json();
+    const executionWorkspace = workspaceResponse.headers()["anthropic-workspace-id"];
+    if (!executionWorkspace) {
+      throw new Error("workspace context omitted anthropic-workspace-id");
+    }
     const credentialsResponse = await request.get(
-      `/v1/config/credentials?workspace_id=${encodeURIComponent(workspace.workspace_id)}`,
+      `${configBase}/credentials?workspace_id=${encodeURIComponent(executionWorkspace)}`,
     );
     if (!credentialsResponse.ok()) {
       throw new Error(await credentialsResponse.text());
@@ -51,10 +58,10 @@ export class SyntheticModelDirectory {
     }>;
     const existing = credentials.find((source) =>
       source.provider_id === "anthropic" && source.status === "active");
-    const response = await request.post("/v1/config/provider-connections", {
+    const response = await request.post(`${configBase}/provider-connections`, {
       data: {
         idempotency_key: `e2e-synthetic-${model}`,
-        workspace_id: workspace.workspace_id,
+        workspace_id: executionWorkspace,
         provider_id: "anthropic",
         display_name: "E2E fixture",
         dialect: "anthropic_messages",
@@ -68,5 +75,25 @@ export class SyntheticModelDirectory {
     if (!response.ok()) {
       throw new Error(await response.text());
     }
+    const deadline = Date.now() + 20_000;
+    let lastProjection = "no executable-model projection";
+    while (Date.now() < deadline) {
+      const projection = await request.get(
+        `${configBase}/executable-models?workspace_id=${encodeURIComponent(executionWorkspace)}`,
+      );
+      lastProjection = await projection.text();
+      if (projection.ok()) {
+        const models = JSON.parse(lastProjection) as Array<{
+          model_id?: string;
+          readiness?: string;
+        }>;
+        if (models.some((candidate) =>
+          candidate.model_id === model && candidate.readiness === "ready")) {
+          return executionWorkspace;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`synthetic model did not become executable: ${lastProjection}`);
   }
 }

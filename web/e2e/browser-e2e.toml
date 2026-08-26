@@ -1,0 +1,4 @@
+# Browser acceptance runs a disposable, loopback-only all-in-one deployment.
+# Select the typed local sandbox explicitly: CI hosts are not required to expose
+# user namespaces, and an implicit unsafe fallback remains forbidden.
+sandbox_tier = "local"
