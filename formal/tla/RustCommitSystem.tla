@@ -132,23 +132,24 @@ StartOrRetry(s, t, c) ==
           s.version + 1)
     /\ Bump(s, t)
 
-\* A terminal-only delegation batch commits every stable relationship and
-\* executor-entry fact together, then runs the child futures concurrently.
-\* Result commits remain ordered and use CompleteCall below.
-StartParallelDelegations(s, t) ==
-    /\ Cardinality(AgentCalls) > 1
+\* One compatible execution wave commits every executor-entry fact together,
+\* and opens relationships for only the delegated calls in that wave. Results
+\* remain ordered and use CompleteCall below.
+StartParallelCalls(s, t, wave) ==
+    /\ wave \in SUBSET Calls
+    /\ Cardinality(wave) > 1
     /\ s.runState = "Running"
     /\ s.ticketKind = "None"
     /\ s.batchState = "Open"
-    /\ \A c \in AgentCalls:
+    /\ \A c \in wave:
          /\ s.callState[c] = "Requested"
          /\ s.attempts[c] < MaxAttempts
     /\ t = StateValue(
           s.runState, s.ticketKind, s.ticketCall,
-          [c \in Calls |-> IF c \in AgentCalls THEN "Executing" ELSE s.callState[c]],
-          [c \in Calls |-> IF c \in AgentCalls THEN s.attempts[c] + 1 ELSE s.attempts[c]],
+          [c \in Calls |-> IF c \in wave THEN "Executing" ELSE s.callState[c]],
+          [c \in Calls |-> IF c \in wave THEN s.attempts[c] + 1 ELSE s.attempts[c]],
           s.batchState,
-          [c \in Calls |-> IF c \in AgentCalls THEN "Open" ELSE s.linkState[c]],
+          [c \in Calls |-> IF c \in wave /\ c \in AgentCalls THEN "Open" ELSE s.linkState[c]],
           s.version + 1)
     /\ Bump(s, t)
 
@@ -277,7 +278,7 @@ EndRun(s, t) ==
 \* accepts the exact adjacent pair of projected production states.
 TransitionIds ==
     {"PersistBatch", "CommitNoop", "StartOrRetry",
-     "StartParallelDelegations", "AwaitCall", "ResumeExecuting",
+     "StartParallelCalls", "AwaitCall", "ResumeExecuting",
      "CompleteCall", "CompleteAndFinalize", "CompleteImmediate",
      "CompleteImmediateAndFinalize", "MarkIndeterminate", "FinalizeBatch",
      "EndRun"}
@@ -286,7 +287,8 @@ TransitionById(id, s, t) ==
     CASE id = "PersistBatch" -> PersistBatch(s, t)
       [] id = "CommitNoop" -> CommitNoop(s, t)
       [] id = "StartOrRetry" -> \E c \in Calls: StartOrRetry(s, t, c)
-      [] id = "StartParallelDelegations" -> StartParallelDelegations(s, t)
+      [] id = "StartParallelCalls" ->
+           \E wave \in SUBSET Calls: StartParallelCalls(s, t, wave)
       [] id = "AwaitCall" ->
            \E c \in Calls, kind \in TicketKinds \ {"None"}:
                AwaitCall(s, t, c, kind)
@@ -312,7 +314,7 @@ NextState(s, t) ==
     \/ PersistBatch(s, t)
     \/ CommitNoop(s, t)
     \/ \E c \in Calls: StartOrRetry(s, t, c)
-    \/ StartParallelDelegations(s, t)
+    \/ \E wave \in SUBSET Calls: StartParallelCalls(s, t, wave)
     \/ \E c \in Calls, kind \in TicketKinds \ {"None"}:
            AwaitCall(s, t, c, kind)
     \/ \E c \in Calls: ResumeExecuting(s, t, c)

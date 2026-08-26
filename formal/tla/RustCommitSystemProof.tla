@@ -32,10 +32,11 @@ BY Z3T(30) DEF StartOrRetry, Bump, StateValue, Safety, TypeOK, TicketCoherence,
    RunStates, TicketKinds, CallStates, TerminalCallStates, BatchStates,
    LinkStates, KernelAssumptions
 
-LEMMA StartParallelDelegationsSafety ==
-    KernelAssumptions /\ Safety(state) /\
-      StartParallelDelegations(state, state') => Safety(state')
-BY Z3T(30) DEF StartParallelDelegations, Bump, StateValue, Safety, TypeOK,
+LEMMA StartParallelCallsSafety ==
+    \A wave \in SUBSET Calls:
+      KernelAssumptions /\ Safety(state) /\
+        StartParallelCalls(state, state', wave) => Safety(state')
+BY Z3T(30) DEF StartParallelCalls, Bump, StateValue, Safety, TypeOK,
    TicketCoherence, BatchCoherence, AttemptCoherence, DelegationCoherence,
    EndedIsSealed, RunStates, TicketKinds, CallStates, TerminalCallStates,
    BatchStates, LinkStates, KernelAssumptions
@@ -121,7 +122,7 @@ BY Z3T(30) DEF EndRun, Bump, StateValue, Safety, TypeOK, TicketCoherence,
 
 LEMMA NextSafety == KernelAssumptions /\ Safety(state) /\ Next => Safety(state')
 BY PersistBatchSafety, CommitNoopSafety, StartOrRetrySafety,
-   StartParallelDelegationsSafety, AwaitCallSafety,
+   StartParallelCallsSafety, AwaitCallSafety,
    ResumeExecutingSafety, CompleteCallSafety, CompleteAndFinalizeSafety,
    CompleteImmediateSafety, CompleteImmediateAndFinalizeSafety,
    MarkIndeterminateSafety, FinalizeBatchSafety, EndRunSafety DEF Next, NextState

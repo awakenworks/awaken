@@ -475,13 +475,23 @@ The production bridge remains layered around that direct trace check:
 
 ## Running locally and from CI
 
-Install Kani, TLAPS, Java 11+, and obtain `tla2tools.jar`, then run:
+Bootstrap the repository-pinned Kani toolchain, install TLAPS and Java 11+,
+obtain `tla2tools.jar`, then run:
 
 ```sh
+scripts/ci/bootstrap_kani.sh
 TLA2TOOLS_JAR=/path/to/tla2tools.jar \
 TLAPM_BIN=/path/to/tlapm \
 scripts/ci/check_formal.sh --require-tools
 ```
+
+The bootstrap is pinned to a reviewed Kani source revision using Rust 1.97
+nightly because the published Kani 0.67 bundle embeds Rust 1.93, while the
+workspace's IAM dependencies require Rust 1.96. It retains Cargo's
+`rust-version` enforcement instead of masking an incompatible compiler with
+`--ignore-rust-version`; subsequent formal runs discover the cached source
+build automatically. `AWAKEN_KANI_CACHE_DIR`, `AWAKEN_KANI_SOURCE_DIR`, and
+`AWAKEN_KANI_BACKEND_DIR` allow CI to provide an equivalent prebuilt cache.
 
 The script names every Kani harness and uses isolated TLC state directories so
 fast sequential models cannot collide on TLC's timestamp-based default path. It
@@ -495,7 +505,7 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 330/330 formalizable obligations model-linked or
+checkpoint the ledger is 332/332 formalizable obligations model-linked or
 kernel-proved, plus 11 explicitly external obligations, for 100% formal
 evidence coverage. The evidence dimensions are reported independently: 196
 model-checked, 27 model-proved, 163 Kani-kernel-proved, and 6 linked to the
