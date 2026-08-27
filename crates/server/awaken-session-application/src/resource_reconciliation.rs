@@ -16,7 +16,7 @@ use awaken_session_contract::{
 
 use super::{
     SessionApplication, SessionMutationError, SessionPreparationError, SessionReconciliation,
-    SessionReconciliationFailure, mutation::repository_failure,
+    SessionReconciliationFailure, SessionRecoveryCandidates, mutation::repository_failure,
 };
 
 #[derive(Clone)]
@@ -969,10 +969,10 @@ impl SessionApplication {
 
     /// Reconcile every local durable Resource projection requiring convergence.
     pub async fn reconcile_resource_activations(&self) -> SessionReconciliation {
-        let mut report = SessionReconciliation::default();
-        let sessions = match self.session_repository().reconcilable_sessions().await {
-            Ok(sessions) => sessions,
+        let candidates = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => SessionRecoveryCandidates::from(scan),
             Err(error) => {
+                let mut report = SessionReconciliation::default();
                 report.failures.push(SessionReconciliationFailure {
                     session_id: "<repository>".to_string(),
                     message: error.to_string(),
@@ -980,14 +980,34 @@ impl SessionApplication {
                 return report;
             }
         };
-        report.pending = sessions.sessions.len();
-        report.quarantined.clone_from(&sessions.quarantined);
-        for scoped in sessions.sessions {
-            let owner_scope = scoped.workspace_id;
-            let session = scoped.session;
+        self.reconcile_resource_activations_from(&candidates).await
+    }
+
+    pub(super) async fn reconcile_resource_activations_from(
+        &self,
+        candidates: &SessionRecoveryCandidates,
+    ) -> SessionReconciliation {
+        let mut report = SessionReconciliation {
+            pending: candidates.sessions.len(),
+            quarantined: candidates.quarantined.clone(),
+            ..Default::default()
+        };
+        for candidate in &candidates.sessions {
+            let owner_scope = &candidate.workspace_id;
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(error) => {
+                    report.failures.push(SessionReconciliationFailure {
+                        session_id: candidate.session_id.clone(),
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            };
             let session_id = session.session_id.clone();
             if let Err(error) = self
-                .synchronize_resource_references(&owner_scope, &session)
+                .synchronize_resource_references(owner_scope, &session)
                 .await
             {
                 report.failures.push(SessionReconciliationFailure {
@@ -1002,7 +1022,7 @@ impl SessionApplication {
                 continue;
             }
             match self
-                .reconcile_persisted_resources(&owner_scope, session)
+                .reconcile_persisted_resources(owner_scope, session)
                 .await
             {
                 Ok(session) => report.settled.push(session),
@@ -1012,7 +1032,7 @@ impl SessionApplication {
                     // missing aggregate is then the authoritative successful
                     // outcome, not a retryable reconciliation failure. Repair
                     // the disposable reference projection from that truth.
-                    self.repair_resource_references(&owner_scope, &session_id)
+                    self.repair_resource_references(owner_scope, &session_id)
                         .await;
                 }
                 Err(error) => report.failures.push(SessionReconciliationFailure {

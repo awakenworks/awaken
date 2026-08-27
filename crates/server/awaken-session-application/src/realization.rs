@@ -202,8 +202,19 @@ impl awaken_session_contract::SessionProjectionSynchronizer for LocalProjectionS
 }
 
 impl SessionApplication {
-    async fn reconcile_pending_session_state(self: std::sync::Arc<Self>) -> SessionRecoveryCycle {
-        let resources = self.reconcile_resource_activations().await;
+    pub(crate) async fn reconcile_pending_session_state(
+        self: std::sync::Arc<Self>,
+    ) -> SessionRecoveryCycle {
+        let candidates = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => super::SessionRecoveryCandidates::from(scan),
+            Err(error) => {
+                tracing::warn!(error = ?error, "Session recovery candidate scan failed");
+                return SessionRecoveryCycle {
+                    retryable_failures: 1,
+                };
+            }
+        };
+        let resources = self.reconcile_resource_activations_from(&candidates).await;
         let resource_failure_count = resources.failures.len();
         let pending = resources.pending;
         let quarantined = resources.quarantined.len();
@@ -228,9 +239,9 @@ impl SessionApplication {
             );
         }
         let continuation_failure_count = self
-            .reconcile_environment_continuations(now_unix_ms())
+            .reconcile_environment_continuations_from(&candidates, now_unix_ms())
             .await;
-        let realizations = self.reconcile_session_realizations().await;
+        let realizations = self.reconcile_session_realizations_from(&candidates).await;
         let realization_failure_count = realizations.failures.len();
         for failure in realizations.failures {
             tracing::warn!(
@@ -252,7 +263,12 @@ impl SessionApplication {
         // cancelled; only its polling stack changes.
         let application = std::sync::Arc::clone(&self);
         let mut event_task = tokio::task::JoinSet::new();
-        event_task.spawn(async move { application.reconcile_event_batches().await });
+        let event_candidates = candidates.clone();
+        event_task.spawn(async move {
+            application
+                .reconcile_event_batches_from(&event_candidates)
+                .await
+        });
         let event_batches = match event_task.join_next().await {
             Some(Ok(report)) => report,
             Some(Err(error)) => {
@@ -286,7 +302,7 @@ impl SessionApplication {
                 "reconciled durable Session Event batches"
             );
         }
-        let outcomes = self.reconcile_outcome_continuations().await;
+        let outcomes = self.reconcile_outcome_continuations_from(&candidates).await;
         let outcome_failure_count = outcomes.failures.len();
         for (session_id, error) in outcomes.failures {
             tracing::warn!(
@@ -585,17 +601,10 @@ impl SessionApplication {
     /// same canonical realization driver used by create/update, not a restart-only
     /// environment or MCP path. Terminal and Worker-owned Sessions remain untouched.
     pub async fn reconcile_session_realizations(&self) -> SessionReconciliation {
-        let mut report = SessionReconciliation::default();
-        if let Err(error) = self.refresh_executable_projections().await {
-            report.failures.push(SessionReconciliationFailure {
-                session_id: "<executable-projections>".to_string(),
-                message: error,
-            });
-            return report;
-        }
-        let sessions = match self.session_repository().reconcilable_sessions().await {
-            Ok(sessions) => sessions,
+        let candidates = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => super::SessionRecoveryCandidates::from(scan),
             Err(error) => {
+                let mut report = SessionReconciliation::default();
                 report.failures.push(SessionReconciliationFailure {
                     session_id: "<repository>".to_string(),
                     message: error.to_string(),
@@ -603,10 +612,37 @@ impl SessionApplication {
                 return report;
             }
         };
-        report.pending = sessions.sessions.len();
-        report.quarantined.clone_from(&sessions.quarantined);
-        for scoped in sessions.sessions {
-            let session = scoped.session;
+        self.reconcile_session_realizations_from(&candidates).await
+    }
+
+    pub(super) async fn reconcile_session_realizations_from(
+        &self,
+        candidates: &super::SessionRecoveryCandidates,
+    ) -> SessionReconciliation {
+        let mut report = SessionReconciliation {
+            pending: candidates.sessions.len(),
+            quarantined: candidates.quarantined.clone(),
+            ..Default::default()
+        };
+        if let Err(error) = self.refresh_executable_projections().await {
+            report.failures.push(SessionReconciliationFailure {
+                session_id: "<executable-projections>".to_string(),
+                message: error,
+            });
+            return report;
+        }
+        for candidate in &candidates.sessions {
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(error) => {
+                    report.failures.push(SessionReconciliationFailure {
+                        session_id: candidate.session_id.clone(),
+                        message: error.to_string(),
+                    });
+                    continue;
+                }
+            };
             let now = now_unix_ms();
             let projection_is_current = session.realization.as_ref().is_some_and(|lease| {
                 lease.owner == self.local_realization_owner()
@@ -801,8 +837,8 @@ impl SessionApplication {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct SessionRecoveryCycle {
-    retryable_failures: usize,
+pub(crate) struct SessionRecoveryCycle {
+    pub(crate) retryable_failures: usize,
 }
 
 fn session_recovery_delay(failure_streak: u32) -> std::time::Duration {
