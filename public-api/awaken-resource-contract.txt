@@ -9,13 +9,6 @@ pub awaken_resource_contract::CreateFileRecordOutcome::Existing(awaken_resource_
 pub awaken_resource_contract::CreateFileRecordOutcome::Inserted(awaken_resource_contract::FileRecord)
 impl awaken_resource_contract::CreateFileRecordOutcome
 pub fn awaken_resource_contract::CreateFileRecordOutcome::record(&self) -> &awaken_resource_contract::FileRecord
-pub enum awaken_resource_contract::DeploymentBackingAllocationKind
-pub awaken_resource_contract::DeploymentBackingAllocationKind::Database
-pub awaken_resource_contract::DeploymentBackingAllocationKind::Object
-pub awaken_resource_contract::DeploymentBackingAllocationKind::Secret
-pub enum awaken_resource_contract::DeploymentBackingRole
-pub awaken_resource_contract::DeploymentBackingRole::FilesObject
-pub awaken_resource_contract::DeploymentBackingRole::ResourcesDatabase
 pub enum awaken_resource_contract::FileCatalogError
 pub awaken_resource_contract::FileCatalogError::Invalid(alloc::string::String)
 pub awaken_resource_contract::FileCatalogError::Storage(alloc::string::String)
@@ -652,7 +645,6 @@ pub fn awaken_resource_contract::content_id(&[u8]) -> alloc::string::String
 pub fn awaken_resource_contract::harvest_idempotency_key(&str, &str, &str) -> alloc::string::String
 pub fn awaken_resource_contract::memory_sha256_hex(&str) -> alloc::string::String
 pub fn awaken_resource_contract::memory_store_stem(&str) -> alloc::string::String
-pub fn awaken_resource_contract::select_deployment_backing_role(awaken_resource_contract::DeploymentBackingAllocationKind, &[u8]) -> core::option::Option<awaken_resource_contract::DeploymentBackingRole>
 pub fn awaken_resource_contract::skill_bundle_sha256(&[awaken_resource_contract::SkillBundleFile]) -> alloc::string::String
 pub fn awaken_resource_contract::skill_catalog_id(&str) -> alloc::string::String
 pub fn awaken_resource_contract::skill_stem(&str) -> alloc::string::String
