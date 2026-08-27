@@ -230,8 +230,12 @@ impl ManagedState {
                     // Resolve and freeze every target before the first receipt is
                     // persisted. Recovery executes only this immutable set; it
                     // never reinterprets a later Session Thread topology.
-                    let targets =
-                        self.interrupt_targets(session_id, session_thread_id.as_deref())?;
+                    let targets = Self::interrupt_targets(
+                        session_id,
+                        session_thread_id.as_deref(),
+                        &links,
+                        &child_snapshots,
+                    )?;
                     inputs.push(SessionEventInput::Interrupt(SessionEventInterrupt {
                         requested_target: session_thread_id.as_deref().map(|thread_id| {
                             session_thread_target_from_public(session_id, thread_id)

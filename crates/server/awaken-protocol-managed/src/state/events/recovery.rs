@@ -3,33 +3,77 @@
 use super::*;
 
 impl ManagedState {
-    /// Resolve the public optional Thread selector onto the runtime's canonical
-    /// Thread keys. The primary Thread has one public `sthr_` projection, while
-    /// the runtime has always keyed it by the Session id; child Thread ids are
-    /// already the child Run keys. Keeping that translation here prevents the
-    /// event handler and Thread routes from growing competing identity rules.
+    /// Classify one coordinated child from the same Runtime prefix already read
+    /// for Event admission. Link membership is the topology authority; committed
+    /// Thread disposition and latest Run state are its terminal authorities.
+    fn coordinated_thread_is_terminal(
+        link: &CoordinatedThreadLink,
+        snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    ) -> Result<bool, StateError> {
+        let Some(snapshot) = snapshot else {
+            // A link may commit before the child has a first recovery snapshot.
+            // It is still a valid cancellable dispatch target, not an unknown id.
+            return Ok(false);
+        };
+        let disposition =
+            awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
+                .map_err(|error| {
+                    StateError::Run(RunError::internal(format!(
+                        "recover coordinated Thread disposition: {error}"
+                    )))
+                })?;
+        let latest_run_id = snapshot.latest_run_id.as_ref().ok_or_else(|| {
+            StateError::Run(RunError::internal(
+                "coordinated Thread recovery omitted its latest committed Run",
+            ))
+        })?;
+        let latest_state = snapshot
+            .runs
+            .iter()
+            .find(|run| &run.id == latest_run_id)
+            .map(|run| &run.state)
+            .ok_or_else(|| {
+                StateError::Run(RunError::internal(
+                    "coordinated Thread recovery omitted its latest Run state",
+                ))
+            })?;
+        Ok(
+            disposition == awaken_agent_contract::ThreadDisposition::Archived
+                || coordinated_child_run_is_terminal(
+                    matches!(&link.target, CoordinatedThreadTarget::Advisor { .. }),
+                    latest_state,
+                ),
+        )
+    }
+
+    /// Resolve the public optional Thread selector onto the Runtime's canonical
+    /// Thread keys. The caller supplies the one link/snapshot prefix it already
+    /// read for this Event batch; the disposable Managed Thread DTO cache is not
+    /// a second membership or terminal authority.
     pub(super) fn interrupt_targets(
-        &self,
         session_id: &str,
         requested_thread_id: Option<&str>,
+        links: &[CoordinatedThreadLink],
+        child_snapshots: &std::collections::HashMap<
+            String,
+            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
+        >,
     ) -> Result<Vec<SessionThreadTarget>, StateError> {
-        let sessions = self.sessions.lock().unwrap();
-        let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
         if let Some(thread_id) = requested_thread_id {
             let target = session_thread_target_from_public(session_id, thread_id);
             let SessionThreadTarget::Child(child_thread_id) = &target else {
                 return Ok(vec![target]);
             };
-            let child = record
-                .child_threads
+            let link = links
                 .iter()
-                .find(|thread| thread.id == child_thread_id.0)
+                .find(|link| link.session_id == session_id && link.thread_id == *child_thread_id)
                 .ok_or_else(|| {
                     StateError::Run(RunError::bad_request(
                         "session_thread_id does not name a thread in this session",
                     ))
                 })?;
-            if child.status == SessionThreadStatus::Terminated {
+            if Self::coordinated_thread_is_terminal(link, child_snapshots.get(&child_thread_id.0))?
+            {
                 return Err(StateError::Run(RunError::bad_request(
                     "an archived or terminated session thread cannot be interrupted",
                 )));
@@ -37,19 +81,14 @@ impl ManagedState {
             return Ok(vec![target]);
         }
 
-        Ok(std::iter::once(SessionThreadTarget::Primary)
-            .chain(
-                record
-                    .child_threads
-                    .iter()
-                    .filter(|thread| thread.status != SessionThreadStatus::Terminated)
-                    .map(|thread| {
-                        SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(
-                            thread.id.clone(),
-                        ))
-                    }),
-            )
-            .collect())
+        let mut targets = vec![SessionThreadTarget::Primary];
+        for link in links.iter().filter(|link| link.session_id == session_id) {
+            if !Self::coordinated_thread_is_terminal(link, child_snapshots.get(&link.thread_id.0))?
+            {
+                targets.push(SessionThreadTarget::Child(link.thread_id.clone()));
+            }
+        }
+        Ok(targets)
     }
 
     /// Read one logical Thread through the Runtime's existing recovery snapshot
@@ -415,5 +454,188 @@ impl ManagedState {
             }
         }
         coordinates
+    }
+}
+
+#[cfg(test)]
+mod interrupt_target_tests {
+    use super::*;
+    use awaken_agent_contract::agent::run::{EndCause, Failure, Id as RunId, Record, RunState};
+    use awaken_agent_contract::agent::state::Action as StateAction;
+    use awaken_agent_contract::agent::thread::Id as ThreadId;
+    use awaken_session_contract::RunErrorKind;
+
+    fn link(thread_id: &str, target: CoordinatedThreadTarget) -> CoordinatedThreadLink {
+        CoordinatedThreadLink {
+            session_id: "session".into(),
+            thread_id: ThreadId(thread_id.into()),
+            target,
+            created_by_operation_id: format!("operation-{thread_id}"),
+            latest_run_id: Some(RunId(format!("run-{thread_id}"))),
+        }
+    }
+
+    fn snapshot(
+        thread_id: &str,
+        state: RunState,
+        archived: bool,
+    ) -> awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+        let run_id = RunId(format!("run-{thread_id}"));
+        awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
+            thread_id: ThreadId(thread_id.into()),
+            claimed_run_id: run_id.clone(),
+            runs: vec![Record {
+                id: run_id.clone(),
+                thread_id: ThreadId(thread_id.into()),
+                state,
+            }],
+            latest_run_id: Some(run_id),
+            messages: Vec::new(),
+            message_commit_cursors: Vec::new(),
+            state: archived
+                .then(awaken_agent_contract::archive_thread_command)
+                .into_iter()
+                .collect(),
+            state_commit_cursors: archived.then_some(1).into_iter().collect(),
+            events: Vec::new(),
+            resume_tickets: Vec::new(),
+            thread_version: 1,
+            store_cursor: 1,
+            next_commit_ordinal: 0,
+        }
+    }
+
+    #[test]
+    fn canonical_snapshot_classifies_interrupt_terminal_children() {
+        // Causes: C1 target kind is ordinary Agent or Advisor; C2 recovery
+        // snapshot is absent or present; C3 a present snapshot has a valid,
+        // missing, or dangling latest Run; C4 disposition is Active, Archived,
+        // or malformed; C5 latest Run is Running, naturally completed, or
+        // failed. Effects: E1 only an absent snapshot is the cancellable
+        // pre-first-snapshot state; E2 Running is cancellable; E3 completed
+        // ordinary Agent remains reusable; E4 any ended Advisor, failed Agent,
+        // or Archived Thread is terminal; E5 every malformed present snapshot
+        // fails Internal instead of reviving a possibly terminal Thread.
+        //
+        // Decision table: T0=!C2=>E1; T1=Agent+Running+Active=>E2;
+        // T2=Agent+Completed+Active=>E3; T3=Advisor+Ended+Active=>E4;
+        // T4=Agent+Failed+Active=>E4; T5=C4 Archived=>E4;
+        // T6=C2+missing latest=>E5; T7=C2+dangling latest=>E5;
+        // T8=C2+malformed disposition=>E5. Runtime recovery remains the only
+        // state/disposition authority; the Managed DTO cache is absent here.
+        let agent = link(
+            "agent",
+            CoordinatedThreadTarget::Agent {
+                agent_id: "researcher".into(),
+            },
+        );
+        let advisor = link(
+            "advisor",
+            CoordinatedThreadTarget::Advisor {
+                model: "advisor-model".into(),
+            },
+        );
+        assert!(
+            !ManagedState::coordinated_thread_is_terminal(&agent, None).unwrap(),
+            "T0"
+        );
+        assert!(
+            !ManagedState::coordinated_thread_is_terminal(
+                &agent,
+                Some(&snapshot("agent", RunState::Running, false)),
+            )
+            .unwrap(),
+            "T1"
+        );
+        assert!(
+            !ManagedState::coordinated_thread_is_terminal(
+                &agent,
+                Some(&snapshot(
+                    "agent",
+                    RunState::Ended(EndCause::NaturalEnd),
+                    false,
+                )),
+            )
+            .unwrap(),
+            "T2"
+        );
+        assert!(
+            ManagedState::coordinated_thread_is_terminal(
+                &advisor,
+                Some(&snapshot(
+                    "advisor",
+                    RunState::Ended(EndCause::NaturalEnd),
+                    false,
+                )),
+            )
+            .unwrap(),
+            "T3"
+        );
+        assert!(
+            ManagedState::coordinated_thread_is_terminal(
+                &agent,
+                Some(&snapshot(
+                    "agent",
+                    RunState::Ended(EndCause::Error(Failure::CapabilityBound)),
+                    false,
+                )),
+            )
+            .unwrap(),
+            "T4"
+        );
+        assert!(
+            ManagedState::coordinated_thread_is_terminal(
+                &agent,
+                Some(&snapshot("agent", RunState::Running, true)),
+            )
+            .unwrap(),
+            "T5"
+        );
+
+        let mut missing_latest = snapshot("agent", RunState::Running, false);
+        missing_latest.latest_run_id = None;
+        let missing_latest =
+            ManagedState::coordinated_thread_is_terminal(&agent, Some(&missing_latest));
+        assert!(
+            matches!(
+                &missing_latest,
+                Err(StateError::Run(RunError {
+                    kind: RunErrorKind::Internal,
+                    ..
+                }))
+            ),
+            "T6: {missing_latest:?}"
+        );
+
+        let mut dangling_latest = snapshot("agent", RunState::Running, false);
+        dangling_latest.latest_run_id = Some(RunId("missing-run".into()));
+        let dangling_latest =
+            ManagedState::coordinated_thread_is_terminal(&agent, Some(&dangling_latest));
+        assert!(
+            matches!(
+                &dangling_latest,
+                Err(StateError::Run(RunError {
+                    kind: RunErrorKind::Internal,
+                    ..
+                }))
+            ),
+            "T7: {dangling_latest:?}"
+        );
+
+        let mut malformed_disposition = snapshot("agent", RunState::Running, true);
+        malformed_disposition.state[0].action =
+            StateAction::Set(serde_json::json!({"unknown": true}));
+        let malformed_disposition =
+            ManagedState::coordinated_thread_is_terminal(&agent, Some(&malformed_disposition));
+        assert!(
+            matches!(
+                &malformed_disposition,
+                Err(StateError::Run(RunError {
+                    kind: RunErrorKind::Internal,
+                    ..
+                }))
+            ),
+            "T8: {malformed_disposition:?}"
+        );
     }
 }

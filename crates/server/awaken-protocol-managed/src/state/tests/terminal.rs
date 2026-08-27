@@ -313,25 +313,24 @@ async fn child_thread_archive_failure_commits_no_terminal_projection() {
     assert!(runtime.archive_commits().is_empty(), "F1/E1");
 }
 
-/// Cause/effect graph: optional `session_thread_id` -> canonical runtime
-/// Thread selection -> interrupt side effects. A named live Thread selects
-/// exactly itself; an absent selector fans out to the primary and every
-/// non-terminal child; an unknown selector or the retired primary sentinel
-/// fails admission before the
-/// receipt/event log or runtime changes. The durable archived-child branch is
-/// covered with the archive disposition port rather than a fabricated cache row.
-/// The Runtime fixture first exposes one committed coordinated prefix, so the
-/// selector rules remain isolated from User Event admission timing.
+/// Cause/effect graph: optional `session_thread_id` plus the one canonical
+/// Runtime link/recovery prefix -> interrupt side effects. A fresh Running link
+/// selects exactly itself even before the disposable Managed child cache catches
+/// up; an absent selector fans out to the primary and every canonical
+/// non-terminal child; an unknown selector or a canonical archived/terminated
+/// child fails admission before the receipt/event log or runtime changes.
 ///
 /// Decision table:
 /// | rule | selector | target state | runtime keys | persisted receipt |
 /// |---|---|---|---|---|
-/// | I1 | child id | idle/requires-action | child only | yes |
+/// | I1 | child id | fresh Running link; cache absent | child only | yes |
 /// | I2 | primary id | live | Session id only | yes |
 /// | I3 | absent | root + live child | parent partition root + child | yes |
 /// | I4 | unknown/retired id | absent | none | no |
 /// | I5 | absent | one target fails | every target attempted, durable receipt pending | yes |
 /// | I6 | I5 retry | all targets healthy | same frozen set, processed once | same receipt |
+/// | I7 | child id | canonical Archived; cache stale Running | none | no |
+/// | I8 | absent | root + canonical Archived child | parent root only | yes |
 #[tokio::test]
 async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // Causes: the fixtures below establish `interrupt selector targets one thread or all non
@@ -347,6 +346,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     // same-index Message commit coordinates; selector behavior never relies on
     // a read-time anchor fallback.
     let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    runtime.defer_child_completion();
     let state = Arc::new(ManagedState::new(runtime.clone()));
     let request = serde_json::from_value(serde_json::json!({
         "agent": "coder", "environment_id": "env_local"
@@ -361,8 +361,12 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     )
     .await
     .expect("I1-I5 setup installs one committed coordinated recovery prefix");
-    state.refresh_committed_events(&session.id).await.unwrap();
     let child_id = crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID;
+    assert_eq!(
+        state.list_threads(&session.id).unwrap().len(),
+        1,
+        "I1 precondition keeps the disposable child projection stale"
+    );
     let primary_id = state
         .list_threads(&session.id)
         .unwrap()
@@ -389,6 +393,7 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
         vec![format!("child:{}:{child_id}", session.id)],
         "I1"
     );
+    state.refresh_committed_events(&session.id).await.unwrap();
     assert_eq!(
         state
             .list_thread_events(&session.id, child_id, None, None)
@@ -527,6 +532,63 @@ async fn interrupt_selector_targets_one_thread_or_all_non_terminal_threads() {
     assert!(
         runtime.take_interrupts().is_empty(),
         "I6 no duplicate effect"
+    );
+
+    <crate::test_support::CoordinatedRuntimeFake as SessionRuntime>::archive_session_thread(
+        &runtime,
+        &session.id,
+        child_id,
+    )
+    .await
+    .expect("I7 canonical archive transition");
+    assert_eq!(
+        state.get_thread(&session.id, child_id).unwrap().status,
+        SessionThreadStatus::Running,
+        "I7 precondition leaves the disposable cache stale"
+    );
+    let interrupt_count = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data
+        .iter()
+        .filter(|event| event.type_str() == "user.interrupt")
+        .count();
+    let archived_error = state
+        .send_events(
+            &session.id,
+            send(InboundEvent::UserInterrupt {
+                session_thread_id: Some(child_id.into()),
+            }),
+        )
+        .await
+        .expect_err("I7 rejects the canonically Archived child");
+    assert!(matches!(archived_error, StateError::Run(_)), "I7");
+    assert!(runtime.take_interrupts().is_empty(), "I7");
+    assert_eq!(
+        state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data
+            .iter()
+            .filter(|event| event.type_str() == "user.interrupt")
+            .count(),
+        interrupt_count,
+        "I7 appends no rejected receipt"
+    );
+
+    state
+        .send_events(
+            &session.id,
+            send(InboundEvent::UserInterrupt {
+                session_thread_id: None,
+            }),
+        )
+        .await
+        .expect("I8 accepts the canonical non-terminal target set");
+    assert_eq!(
+        runtime.take_interrupts(),
+        vec![format!("primary:{}", session.id)],
+        "I8 excludes the canonically Archived child despite stale cache"
     );
 }
 
