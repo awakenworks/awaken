@@ -14,8 +14,8 @@ use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    CredentialExecutionPolicy, CredentialMaterialBinding, CredentialUsage, InferenceEndpoint,
-    ProviderExecutionProfile, UnspecifiedReasoning,
+    CredentialMaterialBinding, CredentialUsage, InferenceEndpoint, ProviderExecutionProfile,
+    UnspecifiedReasoning,
 };
 use awaken_tenancy::ScopeId;
 
