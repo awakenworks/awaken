@@ -17,7 +17,12 @@ import {
   validPrebuiltManifest,
   verifyInstalledDependencies,
 } from './deterministic_runner.mjs';
-import { AWAKEN_BIN_ENV, SCENARIO_HOST_BIN_ENV, WORKER_BIN_ENV } from './cargo_binary.mjs';
+import {
+  AWAKEN_BIN_ENV,
+  SCENARIO_HOST_BIN_ENV,
+  WORKER_BIN_ENV,
+  scenarioHandCompanionPath,
+} from './cargo_binary.mjs';
 
 const E2E_ROOT_FOR_TEST = path.dirname(fileURLToPath(import.meta.url));
 
@@ -140,12 +145,12 @@ test('fingerprints build inputs but ignores Cargo storage locations', () => {
 // exactly; E2 select the ignored target cache visible inside C3. Constraint K1:
 // location never changes the source/build fingerprint or creates a second
 // artifact owner. Decision rules: R1 C1->E1; R2 !C1&&C3->E2.
-test('keeps the canonical prebuilt trio visible to read-only namespace E2Es', () => {
+test('keeps the canonical prebuilt set visible to read-only namespace E2Es', () => {
   assert.equal(prebuiltDirectory('/shared/e2e'), '/shared/e2e', 'R1');
   assert.equal(prebuiltDirectory(undefined), 'target/e2e-prebuilt', 'R2');
 });
 
-// Artifact consistency boundary: C1 all three immutable artifacts exist, C2 only
+// Artifact consistency boundary: C1 all four immutable artifacts exist, C2 only
 // one exists, C3 source/build fingerprint matches, C4 binary digests match.
 // R1 C1+C3+C4 -> reuse exact set without Cargo; R2 C2 -> fail before a shard
 // can combine builds; R3 C1+(!C3|!C4) -> reject reuse and rebuild the set.
@@ -155,21 +160,25 @@ test('reuses only a complete explicit prebuilt artifact set', () => {
   try {
     const awaken = path.join(directory, `awaken${suffix}`);
     const scenarioHost = path.join(directory, `awaken-scenario-host${suffix}`);
+    const handCompanion = scenarioHandCompanionPath(scenarioHost);
     const worker = path.join(directory, `awaken-worker${suffix}`);
     fs.writeFileSync(awaken, 'awaken');
     assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
     fs.writeFileSync(scenarioHost, 'scenario');
     assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
     fs.writeFileSync(worker, 'worker');
+    assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
+    fs.writeFileSync(handCompanion, 'hand');
     const fingerprint = prebuildFingerprint({});
     const dependencyLockDigest = fileDigest(path.join(E2E_ROOT_FOR_TEST, 'package-lock.json'));
     const manifest = {
-      version: 2,
+      version: 3,
       fingerprint,
       dependencyLockDigest,
       binaries: {
         awaken: fileDigest(awaken),
         scenarioHost: fileDigest(scenarioHost),
+        handCompanion: fileDigest(handCompanion),
         worker: fileDigest(worker),
       },
     };
@@ -186,6 +195,7 @@ test('reuses only a complete explicit prebuilt artifact set', () => {
         dependencyLockDigest,
         awaken,
         scenarioHost,
+        handCompanion,
         worker,
       ),
       false,

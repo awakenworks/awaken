@@ -4,6 +4,7 @@
 // target through the same parser and diagnostic contract.
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 export const AWAKEN_BIN_ENV = 'AWAKEN_E2E_AWAKEN_BIN';
@@ -138,4 +139,54 @@ export function cargoExecutable({
     );
   }
   return parseCargoExecutable(output, targetName, targetKind);
+}
+
+export function scenarioHandCompanionPath(scenarioHost) {
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  return path.join(path.dirname(scenarioHost), `awaken-sandbox${suffix}`);
+}
+
+// Scenario-host companion build decision table:
+// C1 an immutable scenario-host snapshot is supplied; C2 source build is
+// required. Effects: E1 require the release-layout sibling to exist without
+// re-evaluating its capability; E2 build the existing `hand` feature and the
+// scenario host into one Cargo target directory. Rules: B1 C1=>E1;
+// B2 C2=>E2. The runtime remains the sole capability owner through its
+// `awaken-sandbox hand --check`; this helper owns only artifact colocation.
+export function cargoScenarioHostBundle({
+  cwd,
+  environment = process.env,
+  prebuiltEnvironmentName = SCENARIO_HOST_BIN_ENV,
+}) {
+  const prebuilt = requirePrebuiltExecutable(prebuiltEnvironmentName, environment);
+  if (prebuilt) {
+    const handCompanion = scenarioHandCompanionPath(prebuilt);
+    if (!fs.statSync(handCompanion, { throwIfNoEntry: false })?.isFile()) {
+      throw new Error(
+        `${prebuiltEnvironmentName} requires sibling scenario companion: ${handCompanion}`,
+      );
+    }
+    return { scenarioHost: prebuilt, handCompanion };
+  }
+
+  const handCompanion = cargoExecutable({
+    cwd,
+    packageName: 'awaken-sandbox',
+    targetName: 'awaken-sandbox',
+    features: ['hand'],
+    environment,
+  });
+  const scenarioHost = cargoExecutable({
+    cwd,
+    packageName: 'awaken-scenario-host',
+    targetName: 'awaken-scenario-host',
+    environment,
+  });
+  const expectedCompanion = scenarioHandCompanionPath(scenarioHost);
+  if (path.resolve(handCompanion) !== path.resolve(expectedCompanion)) {
+    throw new Error(
+      `scenario host and hand companion are not siblings: ${scenarioHost}, ${handCompanion}`,
+    );
+  }
+  return { scenarioHost, handCompanion };
 }
