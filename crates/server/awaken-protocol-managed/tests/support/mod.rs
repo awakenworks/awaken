@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, PersistedSession,
     SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRepositoryError, SessionRevision,
+    SessionRepositoryError,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 
@@ -157,9 +157,20 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionRevision, SessionRepositoryError> {
+    ) -> Result<awaken_session_contract::SessionCreateResult, SessionRepositoryError> {
         self.inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
+            .await
+    }
+
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        self.inner
+            .replay_create(owner_scope, session_id, idempotency)
             .await
     }
 
@@ -271,6 +282,16 @@ impl ManagedSessionRepository for ScheduledConflictRepository {
         &self,
     ) -> Result<awaken_session_contract::SessionRecoveryScan, SessionRepositoryError> {
         self.inner.reconcilable_sessions().await
+    }
+
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        self.inner
+            .sessions_referencing_credential_source(workspace_id, source_id)
+            .await
     }
 
     async fn idempotency_receipt(

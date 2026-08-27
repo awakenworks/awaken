@@ -138,6 +138,83 @@ pub struct EnvironmentFingerprint(pub String);
 #[serde(transparent)]
 pub struct SessionBaselineFingerprint(pub String);
 
+/// Immutable authoring boundary for one Session.
+///
+/// `Managed` preserves the ordinary Anthropic-compatible mutation surface.
+/// Product-authored profiled Sessions select one of the narrower policies at
+/// creation; adapters may project those product modes, but cannot reinterpret
+/// this persisted fact after the Session root exists.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionMutationPolicy {
+    #[default]
+    Managed,
+    Frozen,
+    FileResources,
+}
+
+/// Immutable selection of the Agent system instructions presented by one
+/// Session. A closed enum preserves the distinction between inheritance, an
+/// explicit clear, and a replacement without encoding it in mutable metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "mode", content = "value", rename_all = "snake_case")]
+pub enum SessionSystemPromptSelection {
+    #[default]
+    Inherit,
+    Clear,
+    Replace(String),
+}
+
+impl SessionSystemPromptSelection {
+    #[must_use]
+    pub const fn is_inherit(&self) -> bool {
+        matches!(self, Self::Inherit)
+    }
+
+    #[must_use]
+    pub fn resolve(&self, inherited: Option<String>) -> Option<String> {
+        match self {
+            Self::Inherit => inherited,
+            Self::Clear => None,
+            Self::Replace(value) => Some(value.clone()),
+        }
+    }
+}
+
+impl SessionMutationPolicy {
+    #[must_use]
+    pub const fn is_managed(&self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub const fn admits_public_agent_mutation(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    #[must_use]
+    pub const fn admits_repository_credential_mutation(self) -> bool {
+        matches!(self, Self::Managed)
+    }
+
+    /// Decide whether one complete public Resource manifest may replace the
+    /// current desired manifest. The policy remains the only mutation
+    /// authority; protocol adapters may fail earlier to avoid lowering side
+    /// effects, but cannot widen this decision.
+    #[must_use]
+    pub fn admits_resource_replacement(
+        self,
+        current: &crate::ResolvedSessionResources,
+        next: &crate::ResolvedSessionResources,
+    ) -> bool {
+        match self {
+            Self::Managed => true,
+            Self::Frozen => false,
+            Self::FileResources => current.preserves_profiled_resources_except_files(next),
+        }
+    }
+}
+
 /// Exact normalized Environment facts frozen for one Session.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,6 +251,11 @@ pub struct SessionMcpAuthoringContext {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlSessionCreationInputs {
+    /// Immutable post-create mutation authority. Historical intents decode as
+    /// ordinary Managed Sessions; product adapters must select a profiled mode
+    /// explicitly before this complete intent is finalized.
+    #[serde(default, skip_serializing_if = "SessionMutationPolicy::is_managed")]
+    pub mutation_policy: SessionMutationPolicy,
     pub environment: EnvironmentSnapshot,
     pub runtime_placement: SessionRuntimePlacement,
     pub agent_id: String,
@@ -188,6 +270,13 @@ pub struct ControlSessionCreationInputs {
     /// remain authoritative.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<crate::SessionModelOverride>,
+    /// Exact Session-local system prompt selection. Historical intents inherit
+    /// their pinned Agent publication and retain the legacy serialized shape.
+    #[serde(
+        default,
+        skip_serializing_if = "SessionSystemPromptSelection::is_inherit"
+    )]
+    pub system_prompt: SessionSystemPromptSelection,
     pub runtime: Option<String>,
     pub mcp_authoring: SessionMcpAuthoringContext,
     pub delegate_ids: Vec<String>,
@@ -230,6 +319,7 @@ impl SessionCreationIntent {
     /// remains an execution concern and cannot mutate the Session baseline.
     pub fn finalize(self) -> Result<CompiledSessionCreation, SessionCreationFinalizeError> {
         let ControlSessionCreationInputs {
+            mutation_policy,
             environment,
             runtime_placement,
             agent_id,
@@ -237,6 +327,7 @@ impl SessionCreationIntent {
             model,
             execution_model_ref,
             model_override,
+            system_prompt,
             runtime,
             mcp_authoring,
             delegate_ids,
@@ -250,7 +341,7 @@ impl SessionCreationIntent {
         } = self.control;
         let initial_mcp = crate::mcp_attachment::resolve_mcp_draft_precedence(initial_mcp)
             .map_err(|error| SessionCreationFinalizeError::McpConflict(error.to_string()))?;
-        let baseline = SessionBaseline::compile_with_execution_model_ref(
+        let baseline = SessionBaseline::compile_with_policy_system_and_execution_model_ref(
             SessionBaselineInputs {
                 environment,
                 runtime_placement,
@@ -268,6 +359,8 @@ impl SessionCreationIntent {
                 transcript_prefix,
             },
             execution_model_ref,
+            mutation_policy,
+            system_prompt,
         );
         Ok(CompiledSessionCreation {
             baseline,
@@ -281,6 +374,8 @@ impl SessionCreationIntent {
 #[serde(deny_unknown_fields)]
 pub struct SessionBaseline {
     pub fingerprint: SessionBaselineFingerprint,
+    #[serde(default, skip_serializing_if = "SessionMutationPolicy::is_managed")]
+    pub mutation_policy: SessionMutationPolicy,
     pub environment: EnvironmentSnapshot,
     pub runtime_placement: SessionRuntimePlacement,
     pub mcp_authoring: SessionMcpAuthoringContext,
@@ -294,6 +389,11 @@ pub struct SessionBaseline {
     pub execution_model_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override: Option<crate::SessionModelOverride>,
+    #[serde(
+        default,
+        skip_serializing_if = "SessionSystemPromptSelection::is_inherit"
+    )]
+    pub system_prompt: Box<SessionSystemPromptSelection>,
     pub runtime: Option<String>,
     pub delegate_ids: Vec<String>,
     pub toolsets: Vec<awaken_agent_contract::ToolsetPolicy>,
@@ -344,6 +444,38 @@ impl SessionBaseline {
         inputs: SessionBaselineInputs,
         execution_model_ref: String,
     ) -> Self {
+        Self::compile_with_policy_and_execution_model_ref(
+            inputs,
+            execution_model_ref,
+            SessionMutationPolicy::Managed,
+        )
+    }
+
+    /// Compile the immutable baseline with an explicit post-create mutation
+    /// boundary. The Managed branch intentionally retains the historical
+    /// fingerprint byte-for-byte; only profiled policies add a domain-separated
+    /// fact.
+    #[must_use]
+    pub(crate) fn compile_with_policy_and_execution_model_ref(
+        inputs: SessionBaselineInputs,
+        execution_model_ref: String,
+        mutation_policy: SessionMutationPolicy,
+    ) -> Self {
+        Self::compile_with_policy_system_and_execution_model_ref(
+            inputs,
+            execution_model_ref,
+            mutation_policy,
+            SessionSystemPromptSelection::Inherit,
+        )
+    }
+
+    #[must_use]
+    fn compile_with_policy_system_and_execution_model_ref(
+        inputs: SessionBaselineInputs,
+        execution_model_ref: String,
+        mutation_policy: SessionMutationPolicy,
+        system_prompt: SessionSystemPromptSelection,
+    ) -> Self {
         #[derive(serde::Serialize)]
         struct Facts<'a> {
             environment: &'a EnvironmentSnapshot,
@@ -379,7 +511,7 @@ impl SessionBaseline {
             prompts,
             transcript_prefix,
         } = inputs;
-        let fingerprint = SessionBaselineFingerprint(crate::stable_fingerprint(&Facts {
+        let legacy_fingerprint = crate::stable_fingerprint(&Facts {
             environment: &environment,
             runtime_placement,
             mcp_authoring: &mcp_authoring,
@@ -395,9 +527,28 @@ impl SessionBaseline {
             env: &env,
             prompts: &prompts,
             transcript_prefix: &transcript_prefix,
-        }));
+        });
+        let authoring_fingerprint = if system_prompt.is_inherit() {
+            legacy_fingerprint
+        } else {
+            crate::stable_fingerprint(&(
+                "session-system-prompt-selection-v1",
+                legacy_fingerprint,
+                &system_prompt,
+            ))
+        };
+        let fingerprint = SessionBaselineFingerprint(if mutation_policy.is_managed() {
+            authoring_fingerprint
+        } else {
+            crate::stable_fingerprint(&(
+                "profiled-session-mutation-policy-v1",
+                authoring_fingerprint,
+                mutation_policy,
+            ))
+        });
         Self {
             fingerprint,
+            mutation_policy,
             environment,
             runtime_placement,
             mcp_authoring,
@@ -406,6 +557,7 @@ impl SessionBaseline {
             model,
             execution_model_ref,
             model_override,
+            system_prompt: Box::new(system_prompt),
             runtime,
             delegate_ids,
             toolsets,
@@ -588,6 +740,7 @@ mod tests {
 
     fn control_inputs(network: SessionNetworkPolicy) -> ControlSessionCreationInputs {
         ControlSessionCreationInputs {
+            mutation_policy: SessionMutationPolicy::Managed,
             environment: environment(1, network),
             runtime_placement: SessionRuntimePlacement::Local,
             agent_id: "agent".into(),
@@ -595,6 +748,7 @@ mod tests {
             model: "model".into(),
             execution_model_ref: "model".into(),
             model_override: None,
+            system_prompt: SessionSystemPromptSelection::Inherit,
             runtime: Some("native".into()),
             mcp_authoring: SessionMcpAuthoringContext::default(),
             delegate_ids: vec!["delegate".into()],
@@ -826,6 +980,111 @@ mod tests {
             SessionBaseline::compile(with_mount).fingerprint,
             "B4"
         );
+    }
+
+    #[test]
+    fn mutation_policy_preserves_legacy_shape_and_fences_profiled_fingerprints() {
+        // Cause/effect graph: C1 a historical baseline omits mutation policy;
+        // C2 an ordinary Managed baseline selects the default; C3/C4 the same
+        // immutable facts select Frozen/FileResources. Effects: E1 legacy
+        // decode is Managed, E2 Managed retains the pre-policy fingerprint and
+        // omitted wire shape, E3 each profiled policy has a distinct immutable
+        // fingerprint. Constraint: policy is selected only at finalization.
+        //
+        // | Rule | Policy field | Selected policy | Effect |
+        // | P1 | absent | Managed | E1 + E2 |
+        // | P2 | Managed | Managed | E2 |
+        // | P3 | Frozen | Frozen | E3 |
+        // | P4 | FileResources | FileResources | E3 |
+        let inputs = || baseline_inputs(environment(1, SessionNetworkPolicy::Unrestricted));
+        let managed = SessionBaseline::compile(inputs());
+        let frozen = SessionBaseline::compile_with_policy_and_execution_model_ref(
+            inputs(),
+            "model".into(),
+            SessionMutationPolicy::Frozen,
+        );
+        let files = SessionBaseline::compile_with_policy_and_execution_model_ref(
+            inputs(),
+            "model".into(),
+            SessionMutationPolicy::FileResources,
+        );
+
+        let mut legacy = serde_json::to_value(&managed).expect("P1 encode");
+        assert!(legacy.get("mutation_policy").is_none(), "P2/E2");
+        legacy
+            .as_object_mut()
+            .expect("baseline object")
+            .remove("mutation_policy");
+        let decoded: SessionBaseline = serde_json::from_value(legacy).expect("P1 decode");
+        assert_eq!(
+            decoded.mutation_policy,
+            SessionMutationPolicy::Managed,
+            "P1/E1"
+        );
+        assert_eq!(decoded.fingerprint, managed.fingerprint, "P1/E2");
+        assert_ne!(frozen.fingerprint, managed.fingerprint, "P3/E3");
+        assert_ne!(files.fingerprint, managed.fingerprint, "P4/E3");
+        assert_ne!(files.fingerprint, frozen.fingerprint, "P3/P4/E3");
+    }
+
+    #[test]
+    fn system_prompt_selection_preserves_legacy_inheritance_and_clear_replace_semantics() {
+        // Cause/effect graph: C1 historical creation/baseline omits the system
+        // selection; C2 inherit is explicit; C3 clear is selected; C4 a value is
+        // selected. Effects: E1 C1/C2 inherit the exact Agent publication and
+        // retain the legacy serialized shape/fingerprint; E2 C3 projects no
+        // system text; E3 C4 projects the replacement; E4 C3/C4 are distinct
+        // immutable baseline facts. Decision rules S1=C1/C2=>E1,
+        // S2=C3=>E2+E4, S3=C4=>E3+E4.
+        let inherited = SessionCreationIntent {
+            control: control_inputs(SessionNetworkPolicy::Unrestricted),
+        }
+        .finalize()
+        .expect("S1 finalize")
+        .baseline;
+        let mut clear = control_inputs(SessionNetworkPolicy::Unrestricted);
+        clear.system_prompt = SessionSystemPromptSelection::Clear;
+        let clear = SessionCreationIntent { control: clear }
+            .finalize()
+            .expect("S2 finalize")
+            .baseline;
+        let mut replaced = control_inputs(SessionNetworkPolicy::Unrestricted);
+        replaced.system_prompt = SessionSystemPromptSelection::Replace("session rules".into());
+        let replaced = SessionCreationIntent { control: replaced }
+            .finalize()
+            .expect("S3 finalize")
+            .baseline;
+
+        assert!(
+            serde_json::to_value(&inherited)
+                .expect("S1 encode")
+                .get("system_prompt")
+                .is_none(),
+            "S1/E1"
+        );
+        assert_eq!(
+            inherited
+                .system_prompt
+                .resolve(Some("published rules".into()))
+                .as_deref(),
+            Some("published rules"),
+            "S1/E1"
+        );
+        assert_eq!(
+            clear.system_prompt.resolve(Some("published rules".into())),
+            None,
+            "S2/E2"
+        );
+        assert_eq!(
+            replaced
+                .system_prompt
+                .resolve(Some("published rules".into())),
+            Some("session rules".into()),
+            "S3/E3"
+        );
+        assert_ne!(clear.fingerprint, inherited.fingerprint, "S2/E4");
+        assert_ne!(replaced.fingerprint, inherited.fingerprint, "S3/E4");
+        assert_ne!(replaced.fingerprint, clear.fingerprint, "S2/S3/E4");
     }
 
     #[test]

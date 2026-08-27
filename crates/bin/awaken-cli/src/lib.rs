@@ -1216,6 +1216,7 @@ mod runtime_session_store_tests {
     fn creation_intent() -> SessionCreationIntent {
         SessionCreationIntent {
             control: ControlSessionCreationInputs {
+                mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
                 environment: EnvironmentSnapshot {
                     environment_id: awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
                         .into(),
@@ -1247,6 +1248,7 @@ mod runtime_session_store_tests {
                 agent_id: "assistant".into(),
                 agent_revision: None,
                 model_override: None,
+                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
                 model: "test-model".into(),
                 execution_model_ref: "test-model".into(),
                 runtime: None,

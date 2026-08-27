@@ -236,6 +236,7 @@ impl BuiltInDreamAgent {
             .create_profiled_session(CreateProfiledSessionCommand {
                 owner_scope: request.workspace_id.clone(),
                 session_id: session_id.clone(),
+                mutation_policy: awaken_session_contract::SessionMutationPolicy::Frozen,
                 agent_id: request.agent_id.clone(),
                 source_revision: None,
                 environment_id: None,
@@ -243,6 +244,7 @@ impl BuiltInDreamAgent {
                 mounts,
                 env: Vec::new(),
                 prompts,
+                resource_inputs: Vec::new(),
                 mcp_candidates: Vec::new(),
                 repositories: Vec::new(),
                 network_restriction: Some(awaken_session_contract::SessionNetworkPolicy::None),
@@ -252,6 +254,7 @@ impl BuiltInDreamAgent {
                     ("awaken.dream_job_id".into(), request.job_id.clone()),
                 ]),
                 tools: Some(tools),
+                idempotency: None,
             })
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;

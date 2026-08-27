@@ -108,9 +108,13 @@ fn configured_admission_application(
     app
 }
 
+fn managed_repository_id(session_id: &str) -> String {
+    format!("managed:{session_id}:repository:source")
+}
+
 fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceInput {
     SessionRepositoryResourceInput {
-        id: "repo-replay".into(),
+        id: managed_repository_id("repo-replay"),
         workspace_id: "workspace".into(),
         name: name.into(),
         description: "Session source".into(),
@@ -123,11 +127,170 @@ fn repository_input(name: &str, remote_url: &str) -> SessionRepositoryResourceIn
     }
 }
 
-fn token_repository_input(id: &str, name: &str) -> SessionRepositoryResourceInput {
+fn token_repository_input(session_id: &str, name: &str) -> SessionRepositoryResourceInput {
     let mut input = repository_input(name, "https://github.com/awaken/example.git");
-    input.id = id.into();
+    input.id = managed_repository_id(session_id);
     input.authorization_token = Some(awaken_agent_contract::RedactedString::new("x"));
     input
+}
+
+fn register_replayed_token_repository(
+    registry: &dyn awaken_resource_contract::ResourceRegistry,
+    input: &SessionRepositoryResourceInput,
+) {
+    let owner = SessionRepositoryOwner::from_repository_id(&input.id)
+        .expect("test Repository has a canonical Session owner");
+    let repository_id = awaken_resource_contract::RepositoryId::from(input.id.clone());
+    let definition = awaken_resource_contract::RepositoryDefinition {
+        id: repository_id.clone(),
+        workspace_id: input.workspace_id.clone(),
+        name: input.name.clone(),
+        description: input.description.clone(),
+        metadata: owner.marker(),
+        state: awaken_resource_contract::ResourceState::Suspended,
+        current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
+        timestamps: Default::default(),
+    };
+    let initial_config = awaken_resource_contract::RepositoryConfigVersion {
+        repository_id,
+        version: awaken_resource_contract::ConfigVersion::INITIAL,
+        remote_url: input.remote_url.clone(),
+        credential_binding: Some(format!("{}:credential", input.id)),
+        initial_branch: input.initial_branch.clone(),
+        initial_commit: input.initial_commit.clone(),
+        clone_policy: Default::default(),
+    };
+    awaken_resource_contract::RepositoryAggregate::register(
+        definition.clone(),
+        initial_config.clone(),
+    )
+    .expect("valid replay fixture");
+    registry
+        .register_repository(awaken_resource_contract::RegisterRepository {
+            definition,
+            initial_config,
+        })
+        .expect("register replay fixture");
+}
+
+fn repository_retirement_resources(
+    session_id: &str,
+    credential: Option<awaken_credential_contract::CredentialRef>,
+) -> awaken_session_contract::ResolvedSessionResources {
+    let repository_id = managed_repository_id(session_id);
+    let remote_url = "https://github.com/awaken/example.git";
+    let credential_binding = credential
+        .as_ref()
+        .map(|_| format!("{repository_id}:credential"));
+    let credential = credential.map(|credential| {
+        let holder = awaken_credential_contract::PlaintextHolder::new(
+            awaken_credential_contract::PlaintextBoundary::Worker,
+            "spiffe://awaken.test/worker",
+        );
+        Box::new(awaken_session_contract::ResolvedRepositoryCredential {
+            access: awaken_credential_contract::CredentialAccess::new(
+                credential,
+                awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_session_contract::repository_transport_credential_usage(),
+                awaken_credential_contract::CredentialExecutionPolicy::exact(
+                    holder.clone(),
+                    awaken_credential_contract::ModelExposurePolicy::Forbidden,
+                ),
+            )
+            .with_target(
+                awaken_session_contract::repository_transport_credential_target(remote_url)
+                    .expect("Repository target"),
+            ),
+            selected_plaintext_holder: holder,
+        })
+    });
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from(format!(
+                "repository-{session_id}"
+            )),
+            source: awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id: repository_id.clone().into(),
+                config: awaken_resource_contract::RepositoryConfigVersion {
+                    repository_id: repository_id.into(),
+                    version: awaken_resource_contract::ConfigVersion::INITIAL,
+                    remote_url: remote_url.into(),
+                    credential_binding,
+                    initial_branch: Some("main".into()),
+                    initial_commit: None,
+                    clone_policy: Default::default(),
+                },
+                credential,
+            },
+            mount_path: "/workspace/source".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        }],
+        Vec::new(),
+    )
+    .expect("valid Repository retirement fixture")
+}
+
+fn session_with_repository_retirement(
+    session_id: &str,
+    self_hosted: bool,
+    resources: awaken_session_contract::ResolvedSessionResources,
+) -> PersistedSession {
+    let mut session = persisted(session_id, self_hosted, "idle");
+    session.resources = awaken_session_contract::SessionResourceState::from_active(resources);
+    session
+        .resources
+        .prepare(
+            session_id,
+            awaken_session_contract::ResolvedSessionResources::default(),
+        )
+        .expect("prepare omission");
+    session.resources.commit().expect("commit omission");
+    session
+}
+
+fn register_retirement_repository(
+    registry: &dyn awaken_resource_contract::ResourceRegistry,
+    session_id: &str,
+    marked: bool,
+    credential_bound: bool,
+) {
+    let repository_id = managed_repository_id(session_id);
+    let definition = awaken_resource_contract::RepositoryDefinition {
+        id: repository_id.clone().into(),
+        workspace_id: "workspace".into(),
+        name: "Retirement fixture".into(),
+        description: "Retirement fixture".into(),
+        metadata: if marked {
+            SessionRepositoryOwner::managed(session_id).marker()
+        } else {
+            Default::default()
+        },
+        state: awaken_resource_contract::ResourceState::Suspended,
+        current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
+        timestamps: Default::default(),
+    };
+    registry
+        .register_repository(awaken_resource_contract::RegisterRepository {
+            definition,
+            initial_config: awaken_resource_contract::RepositoryConfigVersion {
+                repository_id: repository_id.clone().into(),
+                version: awaken_resource_contract::ConfigVersion::INITIAL,
+                remote_url: "https://github.com/awaken/example.git".into(),
+                credential_binding: credential_bound.then(|| format!("{repository_id}:credential")),
+                initial_branch: Some("main".into()),
+                initial_commit: None,
+                clone_policy: Default::default(),
+            },
+        })
+        .expect("register retirement fixture");
+    registry
+        .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
+            workspace_id: "workspace".into(),
+            id: repository_id.into(),
+            state: awaken_resource_contract::ResourceState::Active,
+        })
+        .expect("activate retirement fixture");
 }
 
 /// Fault-only decorator; the composed Resource Registry remains the sole state
@@ -341,16 +504,36 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for FaultInjectingRes
     }
 }
 
-/// Fault-only ingress port; it owns no credential state or replay ledger.
+/// Fault-only ingress port. Its set exists only to project Applied/Replayed and
+/// retirement observations for the cause/effect rules; production Vault state
+/// and replay remain owned by the composed credential implementation.
 #[derive(Default)]
 struct FaultInjectingRepositoryCredentialIngress {
     calls: AtomicUsize,
     failures: AtomicUsize,
+    retirement_failures: AtomicUsize,
+    entered_sources: Mutex<BTreeSet<String>>,
+    retirements: Mutex<Vec<awaken_credential_contract::CredentialRef>>,
 }
 
 impl FaultInjectingRepositoryCredentialIngress {
     fn fail_next(&self) {
         self.failures.store(1, Ordering::SeqCst);
+    }
+
+    fn fail_next_retirement(&self) {
+        self.retirement_failures.store(1, Ordering::SeqCst);
+    }
+
+    fn seed_replayed_source(&self, repository_id: &str) {
+        self.entered_sources
+            .lock()
+            .unwrap()
+            .insert(format!("{repository_id}:credential"));
+    }
+
+    fn retirements(&self) -> Vec<awaken_credential_contract::CredentialRef> {
+        self.retirements.lock().unwrap().clone()
     }
 }
 
@@ -362,13 +545,41 @@ impl RepositoryCredentialIngress for FaultInjectingRepositoryCredentialIngress {
         _workspace_id: &str,
         _target: awaken_credential_contract::CredentialTarget,
         _token: awaken_agent_contract::RedactedString,
-    ) -> Result<awaken_credential_contract::CredentialSourceId, String> {
+    ) -> Result<RepositoryCredentialEntry, String> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if FaultInjectingResourceRegistry::consume_failure(&self.failures) {
             Err("injected credential ingress failure".into())
         } else {
-            Ok(source_id)
+            let provenance = if self
+                .entered_sources
+                .lock()
+                .unwrap()
+                .insert(source_id.0.clone())
+            {
+                SessionParticipantProvenance::Applied
+            } else {
+                SessionParticipantProvenance::Replayed
+            };
+            Ok(RepositoryCredentialEntry {
+                credential: awaken_credential_contract::CredentialRef {
+                    id: source_id.0,
+                    revision: 1,
+                },
+                provenance,
+            })
         }
+    }
+
+    async fn retire_repository_token(
+        &self,
+        credential: &awaken_credential_contract::CredentialRef,
+        _workspace_id: &str,
+    ) -> Result<(), String> {
+        if FaultInjectingResourceRegistry::consume_failure(&self.retirement_failures) {
+            return Err("injected credential retirement failure".into());
+        }
+        self.retirements.lock().unwrap().push(credential.clone());
+        Ok(())
     }
 
     async fn rotate_repository_token(
@@ -397,6 +608,17 @@ fn repository_saga_application(
     app
 }
 
+fn repository_retirement_application(
+    sessions: Arc<dyn ManagedSessionRepository>,
+    registry: Arc<dyn awaken_resource_contract::ResourceRegistry>,
+    ingress: Arc<dyn RepositoryCredentialIngress>,
+) -> SessionApplication {
+    let mut app = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
+    app.set_resource_registry(registry);
+    app.set_repository_credential_ingress(ingress);
+    app
+}
+
 #[tokio::test]
 async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
@@ -412,6 +634,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     // replay receipt; the Session application creates no side store or cache.
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let registry = resources.authorities().resource_registry();
+    let repository_id = managed_repository_id("repo-replay");
     let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("Session repository"),
@@ -422,31 +645,43 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         Arc::new(RecordingEnvironmentSource::default()),
     );
     original.set_resource_registry(registry.clone());
+    let registered = original
+        .configure_session_repository(repository_input(
+            "Repository",
+            "https://example.test/source.git",
+        ))
+        .await
+        .expect("R1 registers");
     assert_eq!(
-        original
-            .configure_session_repository(repository_input(
-                "Repository",
-                "https://example.test/source.git",
-            ))
-            .await
-            .expect("R1 registers"),
-        awaken_resource_contract::RepositoryId::from("repo-replay"),
+        registered.repository_id,
+        awaken_resource_contract::RepositoryId::from(repository_id.clone()),
         "R1/E1"
+    );
+    assert_eq!(
+        registered.registry_provenance,
+        SessionParticipantProvenance::Applied,
+        "R1/E1 current command owns the Registry participant"
     );
     drop(original);
 
     let mut restarted = application(sessions, Arc::new(RecordingEnvironmentSource::default()));
     restarted.set_resource_registry(registry.clone());
+    let replayed = restarted
+        .configure_session_repository(repository_input(
+            "Repository",
+            "https://example.test/source.git",
+        ))
+        .await
+        .expect("R2 exact replay");
     assert_eq!(
-        restarted
-            .configure_session_repository(repository_input(
-                "Repository",
-                "https://example.test/source.git",
-            ))
-            .await
-            .expect("R2 exact replay"),
-        awaken_resource_contract::RepositoryId::from("repo-replay"),
+        replayed.repository_id,
+        awaken_resource_contract::RepositoryId::from(repository_id.clone()),
         "R2/E2"
+    );
+    assert_eq!(
+        replayed.registry_provenance,
+        SessionParticipantProvenance::Replayed,
+        "R2/E2 prior durable truth owns the Registry participant"
     );
 
     let definition_mismatch = restarted
@@ -475,7 +710,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
     );
     assert_eq!(
         registry
-            .find_repository("workspace", "repo-replay")
+            .find_repository("workspace", &repository_id)
             .expect("inventory")
             .expect("registered definition")
             .name,
@@ -486,7 +721,7 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
         registry
             .find_repository_config(
                 "workspace",
-                "repo-replay",
+                &repository_id,
                 awaken_resource_contract::ConfigVersion::INITIAL,
             )
             .expect("inventory")
@@ -499,30 +734,46 @@ async fn repository_configuration_replays_only_the_exact_registry_aggregate() {
 
 #[tokio::test]
 async fn token_repository_registration_is_one_recoverable_registry_vault_saga() {
-    // Cause/effect graph: C1 token and credential ref are mutually exclusive;
-    // C2 the Repository aggregate validates; C3 Suspended registration commits;
-    // C4 an existing aggregate is an exact Suspended/Active replay; C5 Vault
-    // ingress seals the deterministic binding; C6 Registry activation commits.
-    // Effects: E1 pre-admission failure writes neither participant; E2 register
-    // failure never reaches Vault; E3 ingress/activation failure retains a
-    // non-executable Suspended aggregate; E4 exact retry resumes the same saga
-    // and reaches Active; E5 conflicting replay never reaches Vault.
+    // Cause/effect graph: C1 token/ref exclusivity and C2 the pure Repository
+    // aggregate validation pass/fail before effects; C3 Registry registration
+    // fails, Applies, or Replays; C4 Vault ingress fails, Applies, or Replays;
+    // C5 activation succeeds/fails. Effects: E1 C1/C2 failure writes neither
+    // participant; E2 C3 failure never reaches Vault; E3 a pre-root failure
+    // retires only a Registry participant Applied by this command; E4 it retires
+    // only a Vault participant Applied by this command; E5 every Replayed
+    // participant remains byte-for-byte durable; E6 success reaches Active.
+    // Constraint: compensation preserves the first error and provenance is
+    // participant-local; a failed command never infers replayed truth is orphaned.
     //
-    // | Rule | C1 | C2 | C3/C4 | C5 | C6 | Effect |
-    // |---|---|---|---|---|---|---|
-    // | S1 dual token+ref | F | - | - | - | - | E1 |
-    // | S2 invalid config | T | F | - | - | - | E1 |
-    // | S3 register failure | T | T | F | - | - | E2 |
-    // | S4 ingress failure | T | T | T | F | - | E3 |
-    // | S5 exact retry | T | T | T | T | T | E4 |
-    // | S6 conflicting replay | T | T | F | - | - | E5 |
-    // | S7 activation failure | T | T | T | T | F | E3 |
-    // | S8 activation retry | T | T | T | T | T | E4 |
+    // | Rule | C1/C2 | Registry C3 | Vault C4 | Activate C5 | Effect |
+    // |---|---|---|---|---|---|
+    // | S1/S2 validation | fail | - | - | - | E1 |
+    // | S3 registration | pass | fail | - | - | E2 |
+    // | S4 ingress | pass | Applied | fail | - | E3 |
+    // | S5 ingress | pass | Replayed | fail | - | E5 |
+    // | S6 conflict | pass | conflicting replay | - | - | E5 |
+    // | S7 activation | pass | Applied | Applied | fail | E3 + E4 |
+    // | S8 activation | pass | Applied | Replayed | fail | E3 + E5 |
+    // | S9 activation | pass | Replayed | Applied | fail | E5 + E4 |
+    // | S10 activation | pass | Replayed | Replayed | fail | E5 |
+    // | S11/S12 success/replay | pass | Applied/Replayed | Applied/Replayed | pass/already Active | E6 + E5 |
     let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
     let inner = resources.authorities().resource_registry();
     let registry = Arc::new(FaultInjectingResourceRegistry::new(inner.clone()));
     let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
     let app = repository_saga_application(registry.clone(), ingress.clone());
+    let repository_state = |session_id: &str| {
+        let repository_id = managed_repository_id(session_id);
+        inner
+            .find_repository("workspace", &repository_id)
+            .expect("Registry inventory")
+            .expect("Repository definition")
+            .state
+    };
+    let credential_ref = |session_id: &str| awaken_credential_contract::CredentialRef {
+        id: format!("{}:credential", managed_repository_id(session_id)),
+        revision: 1,
+    };
 
     let mut dual = token_repository_input("repo-dual", "Dual");
     dual.credential = Some(awaken_credential_contract::CredentialRef {
@@ -537,7 +788,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S1");
     assert!(
         inner
-            .find_repository("workspace", "repo-dual")
+            .find_repository("workspace", &managed_repository_id("repo-dual"))
             .unwrap()
             .is_none(),
         "S1/E1 zero Registry write"
@@ -553,7 +804,7 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S2");
     assert!(
         inner
-            .find_repository("workspace", "repo-invalid")
+            .find_repository("workspace", &managed_repository_id("repo-invalid"))
             .unwrap()
             .is_none(),
         "S2/E1 zero Registry write"
@@ -570,132 +821,476 @@ async fn token_repository_registration_is_one_recoverable_registry_vault_saga() 
     assert_eq!(ingress.calls.load(Ordering::SeqCst), 0, "S3/E2");
     assert!(
         inner
-            .find_repository("workspace", "repo-register")
+            .find_repository("workspace", &managed_repository_id("repo-register"))
             .unwrap()
             .is_none(),
         "S3 register failure does not persist"
     );
 
     ingress.fail_next();
+    let retirements_before = ingress.retirements().len();
     assert!(
-        app.configure_session_repository(token_repository_input("repo-ingress", "Ingress"))
-            .await
-            .is_err(),
+        app.configure_session_repository(token_repository_input(
+            "repo-ingress-applied",
+            "Ingress Applied",
+        ))
+        .await
+        .is_err(),
         "S4/E3 ingress failure"
     );
-    let suspended = inner
-        .find_repository("workspace", "repo-ingress")
-        .unwrap()
-        .expect("S4 Suspended receipt");
     assert_eq!(
-        suspended.state,
-        awaken_resource_contract::ResourceState::Suspended,
-        "S4/E3"
+        repository_state("repo-ingress-applied"),
+        awaken_resource_contract::ResourceState::Deleted,
+        "S4/E3 only this command's Applied Registry participant retires"
     );
     assert!(matches!(
-        inner.resolve_repository("workspace", "repo-ingress"),
+        inner.resolve_repository("workspace", &managed_repository_id("repo-ingress-applied")),
         Err(awaken_resource_contract::ResourceRegistryError::NotActive {
-            state: awaken_resource_contract::ResourceState::Suspended,
+            state: awaken_resource_contract::ResourceState::Deleted,
             ..
         })
     ));
     assert_eq!(
+        ingress.retirements().len(),
+        retirements_before,
+        "S4 no Vault participant existed to retire"
+    );
+    assert_eq!(
         inner
             .find_repository_config(
                 "workspace",
-                "repo-ingress",
+                &managed_repository_id("repo-ingress-applied"),
                 awaken_resource_contract::ConfigVersion::INITIAL,
             )
             .unwrap()
             .expect("S4 config")
             .credential_binding
             .as_deref(),
-        Some("repo-ingress:credential"),
+        Some(
+            format!(
+                "{}:credential",
+                managed_repository_id("repo-ingress-applied")
+            )
+            .as_str()
+        ),
         "S4 deterministic saga binding"
     );
 
+    let replayed_ingress = token_repository_input("repo-ingress-replayed", "Ingress Replayed");
+    register_replayed_token_repository(inner.as_ref(), &replayed_ingress);
+    ingress.fail_next();
+    let retirements_before = ingress.retirements().len();
+    app.configure_session_repository(replayed_ingress)
+        .await
+        .expect_err("S5 injected Vault failure");
     assert_eq!(
-        app.configure_session_repository(token_repository_input("repo-ingress", "Ingress"))
-            .await
-            .expect("S5/E4 exact retry"),
-        awaken_resource_contract::RepositoryId::from("repo-ingress")
+        repository_state("repo-ingress-replayed"),
+        awaken_resource_contract::ResourceState::Suspended,
+        "S5/E5 replayed Registry truth is not retired"
     );
-    assert_eq!(ingress.calls.load(Ordering::SeqCst), 2, "S4-S5");
     assert_eq!(
-        inner
-            .find_repository("workspace", "repo-ingress")
-            .unwrap()
-            .expect("S5 Active receipt")
-            .state,
-        awaken_resource_contract::ResourceState::Active,
-        "S5/E4"
+        ingress.retirements().len(),
+        retirements_before,
+        "S5 no Vault participant existed to retire"
     );
 
     let ingress_before_conflict = ingress.calls.load(Ordering::SeqCst);
+    let retirements_before = ingress.retirements().len();
     assert!(
         app.configure_session_repository(token_repository_input(
-            "repo-ingress",
+            "repo-ingress-replayed",
             "Conflicting Ingress",
         ))
         .await
         .is_err(),
-        "S6/E5 conflicting replay"
+        "S6 conflicting replay"
     );
     assert_eq!(
         ingress.calls.load(Ordering::SeqCst),
         ingress_before_conflict,
-        "S6/E5 zero Vault ingress"
-    );
-
-    let ingress_before_activation = ingress.calls.load(Ordering::SeqCst);
-    let activations_before = registry.activation_calls.load(Ordering::SeqCst);
-    registry.fail_next_activation();
-    assert!(
-        app.configure_session_repository(token_repository_input("repo-activate", "Activate"))
-            .await
-            .is_err(),
-        "S7/E3 activation failure"
+        "S6/E5 conflict never reaches Vault"
     );
     assert_eq!(
-        ingress.calls.load(Ordering::SeqCst),
-        ingress_before_activation + 1,
-        "S7 ingress precedes activation"
-    );
-    assert_eq!(
-        inner
-            .find_repository("workspace", "repo-activate")
-            .unwrap()
-            .expect("S7 Suspended receipt")
-            .state,
+        repository_state("repo-ingress-replayed"),
         awaken_resource_contract::ResourceState::Suspended,
-        "S7/E3"
+        "S6/E5 conflicting replay preserves prior Registry truth"
     );
-    assert!(matches!(
-        inner.resolve_repository("workspace", "repo-activate"),
-        Err(awaken_resource_contract::ResourceRegistryError::NotActive { .. })
-    ));
-
-    app.configure_session_repository(token_repository_input("repo-activate", "Activate"))
-        .await
-        .expect("S8/E4 activation retry");
     assert_eq!(
-        ingress.calls.load(Ordering::SeqCst),
-        ingress_before_activation + 2,
-        "S8 exact ingress replay"
+        ingress.retirements().len(),
+        retirements_before,
+        "S6/E5 no participant is retired"
+    );
+
+    let retirements_before = ingress.retirements().len();
+    registry.fail_next_activation();
+    app.configure_session_repository(token_repository_input(
+        "repo-activate-aa",
+        "Activate Applied Applied",
+    ))
+    .await
+    .expect_err("S7 injected activation failure");
+    assert_eq!(
+        repository_state("repo-activate-aa"),
+        awaken_resource_contract::ResourceState::Deleted,
+        "S7/E3 Applied Registry participant retires"
+    );
+    assert_eq!(
+        &ingress.retirements()[retirements_before..],
+        &[credential_ref("repo-activate-aa")],
+        "S7/E4 Applied Vault participant retires"
+    );
+
+    let applied_registry_replayed_vault =
+        token_repository_input("repo-activate-ar", "Activate Applied Replayed");
+    ingress.seed_replayed_source(&applied_registry_replayed_vault.id);
+    let retirements_before = ingress.retirements().len();
+    registry.fail_next_activation();
+    app.configure_session_repository(applied_registry_replayed_vault)
+        .await
+        .expect_err("S8 injected activation failure");
+    assert_eq!(
+        repository_state("repo-activate-ar"),
+        awaken_resource_contract::ResourceState::Deleted,
+        "S8/E3 Applied Registry participant retires"
+    );
+    assert_eq!(
+        ingress.retirements().len(),
+        retirements_before,
+        "S8/E5 Replayed Vault participant is not retired"
+    );
+
+    let replayed_registry_applied_vault =
+        token_repository_input("repo-activate-ra", "Activate Replayed Applied");
+    register_replayed_token_repository(inner.as_ref(), &replayed_registry_applied_vault);
+    let retirements_before = ingress.retirements().len();
+    registry.fail_next_activation();
+    app.configure_session_repository(replayed_registry_applied_vault)
+        .await
+        .expect_err("S9 injected activation failure");
+    assert_eq!(
+        repository_state("repo-activate-ra"),
+        awaken_resource_contract::ResourceState::Suspended,
+        "S9/E5 Replayed Registry participant is not retired"
+    );
+    assert_eq!(
+        &ingress.retirements()[retirements_before..],
+        &[credential_ref("repo-activate-ra")],
+        "S9/E4 Applied Vault participant retires"
+    );
+
+    let replayed_registry_replayed_vault =
+        token_repository_input("repo-activate-rr", "Activate Replayed Replayed");
+    register_replayed_token_repository(inner.as_ref(), &replayed_registry_replayed_vault);
+    ingress.seed_replayed_source(&replayed_registry_replayed_vault.id);
+    let retirements_before = ingress.retirements().len();
+    registry.fail_next_activation();
+    app.configure_session_repository(replayed_registry_replayed_vault)
+        .await
+        .expect_err("S10 injected activation failure");
+    assert_eq!(
+        repository_state("repo-activate-rr"),
+        awaken_resource_contract::ResourceState::Suspended,
+        "S10/E5 Replayed Registry participant is not retired"
+    );
+    assert_eq!(
+        ingress.retirements().len(),
+        retirements_before,
+        "S10/E5 Replayed Vault participant is not retired"
+    );
+
+    let succeeded = app
+        .configure_session_repository(token_repository_input(
+            "repo-activate-success",
+            "Activate Success",
+        ))
+        .await
+        .expect("S11/E6 fresh success");
+    assert_eq!(
+        succeeded.registry_provenance,
+        SessionParticipantProvenance::Applied,
+        "S11 Registry provenance"
+    );
+    assert_eq!(
+        succeeded
+            .credential
+            .as_ref()
+            .expect("S11 credential")
+            .provenance,
+        SessionParticipantProvenance::Applied,
+        "S11 Vault provenance"
+    );
+    assert_eq!(
+        repository_state("repo-activate-success"),
+        awaken_resource_contract::ResourceState::Active,
+        "S11/E6"
+    );
+
+    let activations_before = registry.activation_calls.load(Ordering::SeqCst);
+    let retirements_before = ingress.retirements().len();
+    let replayed = app
+        .configure_session_repository(token_repository_input(
+            "repo-activate-success",
+            "Activate Success",
+        ))
+        .await
+        .expect("S12/E6 exact replay");
+    assert_eq!(
+        replayed.registry_provenance,
+        SessionParticipantProvenance::Replayed,
+        "S12 Registry provenance"
+    );
+    assert_eq!(
+        replayed
+            .credential
+            .as_ref()
+            .expect("S12 credential")
+            .provenance,
+        SessionParticipantProvenance::Replayed,
+        "S12 Vault provenance"
     );
     assert_eq!(
         registry.activation_calls.load(Ordering::SeqCst),
-        activations_before + 2,
-        "S7-S8 one failed and one successful activation"
+        activations_before,
+        "S12 already-Active replay performs no activation"
     );
     assert_eq!(
-        inner
-            .find_repository("workspace", "repo-activate")
+        ingress.retirements().len(),
+        retirements_before,
+        "S12/E5 exact replay retires neither participant"
+    );
+}
+
+#[tokio::test]
+async fn repository_retirement_requires_durable_owner_before_any_vault_effect() {
+    // Retirement-authority cause/effect graph: C1 the canonical Session
+    // namespace has a matching durable owner marker, a mismatching/absent marker,
+    // or no surviving definition; C2 the exact removed input carries an inline
+    // credential pin; C3 the Session is Worker-placed and otherwise Active.
+    // Effects: E1 only a matching marker authorizes Vault/Registry retirement;
+    // E2 markerless/shared truth is a successful no-op; E3 a missing definition
+    // completes an idempotent replay without inferring credential authority; E4
+    // every completed rule clears the durable intent under the Session root CAS.
+    //
+    // | Rule | Definition | Marker | Inline pin | Worker | Effect |
+    // |---|---|---|---|---|---|
+    // | A1 | present | mismatch | forged | yes | E2 + E4, no Vault effect |
+    // | A2 | absent | n/a | forged | yes | E3 + E4, no Vault effect |
+    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
+    let registry = resources.authorities().resource_registry();
+    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Session repository"),
+    );
+
+    let markerless_id = "retirement-markerless";
+    let markerless_credential = awaken_credential_contract::CredentialRef {
+        id: format!("{}:credential", managed_repository_id(markerless_id)),
+        revision: 7,
+    };
+    register_retirement_repository(registry.as_ref(), markerless_id, false, true);
+    create(
+        sessions.as_ref(),
+        session_with_repository_retirement(
+            markerless_id,
+            true,
+            repository_retirement_resources(markerless_id, Some(markerless_credential)),
+        ),
+    )
+    .await;
+
+    let absent_id = "retirement-already-purged";
+    let absent_credential = awaken_credential_contract::CredentialRef {
+        id: format!("{}:credential", managed_repository_id(absent_id)),
+        revision: 11,
+    };
+    create(
+        sessions.as_ref(),
+        session_with_repository_retirement(
+            absent_id,
+            true,
+            repository_retirement_resources(absent_id, Some(absent_credential)),
+        ),
+    )
+    .await;
+
+    let app =
+        repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
+    let report = app.reconcile_resource_activations().await;
+    assert!(report.failures.is_empty(), "A1-A2/E4: {report:?}");
+    assert!(
+        sessions
+            .get(markerless_id)
+            .await
             .unwrap()
-            .expect("S8 Active receipt")
+            .resources
+            .repository_retirements()
+            .is_empty(),
+        "A1/E4"
+    );
+    assert!(
+        sessions
+            .get(absent_id)
+            .await
+            .unwrap()
+            .resources
+            .repository_retirements()
+            .is_empty(),
+        "A2/E4"
+    );
+    assert!(ingress.retirements().is_empty(), "A1-A2/E2-E3");
+    assert_eq!(
+        registry
+            .find_repository("workspace", &managed_repository_id(markerless_id))
+            .unwrap()
+            .unwrap()
             .state,
         awaken_resource_contract::ResourceState::Active,
-        "S8/E4"
+        "A1/E2"
+    );
+}
+
+#[tokio::test]
+async fn repository_retirement_restart_retry_fences_same_identity_until_cleanup_cas() {
+    // Cleanup/reintroduction cause/effect graph: C1 an exact owned Repository
+    // retirement is durable; C2 exact credential retirement fails once; C3 a
+    // same-id manifest command races while the intent remains; C4 the process
+    // and SQLite connection restart; C5 the retry succeeds. Effects: E1 failure
+    // leaves both Registry participant and root intent durable; E2 C3 conflicts
+    // before creating pending truth; E3 reopen discovers and retries the intent;
+    // E4 credential is retired before Repository and the queue clears only after
+    // both effects; E5 same-id admission succeeds only after that clear CAS.
+    //
+    // | Rule | Intent | Credential | Same-id command | Restart | Effect |
+    // |---|---|---|---|---|---|
+    // | R1 | pending | fails | no | no | E1 |
+    // | R2 | pending | n/a | yes | no | E2 |
+    // | R3 | pending | succeeds | no | yes | E3 + E4 |
+    // | R4 | cleared | complete | yes | yes | E5 |
+    let dir = tempfile::tempdir().expect("temporary Session repository");
+    let path = dir.path().join("repository-retirement.db");
+    let path = path.to_string_lossy().to_string();
+    let resources_authority =
+        awaken_resource_persistence::ephemeral().expect("Resource authorities");
+    let registry = resources_authority.authorities().resource_registry();
+    let ingress = Arc::new(FaultInjectingRepositoryCredentialIngress::default());
+    let session_id = "retirement-restart";
+    let credential = awaken_credential_contract::CredentialRef {
+        id: format!("{}:credential", managed_repository_id(session_id)),
+        revision: 13,
+    };
+    let manifest = repository_retirement_resources(session_id, Some(credential.clone()));
+    register_retirement_repository(registry.as_ref(), session_id, true, true);
+
+    {
+        let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open(&path)
+                .expect("open Session authority"),
+        );
+        create(
+            sessions.as_ref(),
+            session_with_repository_retirement(session_id, true, manifest.clone()),
+        )
+        .await;
+        let app =
+            repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
+
+        let before_barrier = sessions.get(session_id).await.unwrap();
+        assert!(
+            matches!(
+                app.replace_session_resource_manifest(
+                    session_id,
+                    ReplaceSessionResourceManifest {
+                        request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
+                        resources: manifest.clone(),
+                        expected_session_revision: None,
+                        idempotency_key: None,
+                    },
+                )
+                .await,
+                Err(SessionResourceManifestError::Conflict)
+            ),
+            "R2/E2"
+        );
+        assert_eq!(
+            sessions.get(session_id).await.unwrap(),
+            before_barrier,
+            "R2/E2 no root commit"
+        );
+
+        ingress.fail_next_retirement();
+        let first = app.reconcile_resource_activations().await;
+        assert_eq!(first.failures.len(), 1, "R1/E1: {first:?}");
+        assert!(
+            !sessions
+                .get(session_id)
+                .await
+                .unwrap()
+                .resources
+                .repository_retirements()
+                .is_empty(),
+            "R1/E1 durable intent"
+        );
+        assert_eq!(
+            registry
+                .find_repository("workspace", &managed_repository_id(session_id))
+                .unwrap()
+                .unwrap()
+                .state,
+            awaken_resource_contract::ResourceState::Active,
+            "R1/E1 credential-first ordering"
+        );
+    }
+
+    let sessions: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open(&path)
+            .expect("reopen Session authority"),
+    );
+    let app =
+        repository_retirement_application(sessions.clone(), registry.clone(), ingress.clone());
+    let restarted = app.reconcile_resource_activations().await;
+    assert!(restarted.failures.is_empty(), "R3/E3-E4: {restarted:?}");
+    assert!(
+        sessions
+            .get(session_id)
+            .await
+            .unwrap()
+            .resources
+            .repository_retirements()
+            .is_empty(),
+        "R3/E4 clear CAS"
+    );
+    assert_eq!(
+        ingress.retirements(),
+        vec![credential],
+        "R3/E4 exact Vault pin"
+    );
+    assert_eq!(
+        registry
+            .find_repository("workspace", &managed_repository_id(session_id))
+            .unwrap()
+            .unwrap()
+            .state,
+        awaken_resource_contract::ResourceState::Deleted,
+        "R3/E4 Repository follows Vault"
+    );
+
+    let admitted = app
+        .replace_session_resource_manifest(
+            session_id,
+            ReplaceSessionResourceManifest {
+                request_fingerprint: awaken_session_contract::stable_fingerprint(&manifest),
+                resources: manifest.clone(),
+                expected_session_revision: None,
+                idempotency_key: None,
+            },
+        )
+        .await
+        .expect("R4/E5 admission after cleanup CAS");
+    assert_eq!(
+        admitted.session.resources.pending.as_ref(),
+        Some(&manifest),
+        "R4/E5"
     );
 }
 
@@ -780,15 +1375,15 @@ async fn root_mutation_cause_effect_decision_table() {
 }
 
 /// Session-root insertion graph. C1 identity is unused; C2 key/hash/payload
-/// exactly replay; C3 an existing key carries another hash; C4 another key
+/// exactly replay even when a fresh lowering differs; C3 an existing key carries another hash; C4 another key
 /// targets an existing identity. Effects are E1 one insert/revision advance,
-/// E2 replay of the same revision, E3 idempotency mismatch, and E4 identity
+/// E2 replay of the current durable aggregate, E3 idempotency mismatch, and E4 identity
 /// conflict. The application is the only repository-result classifier.
 ///
 /// | Rule | Identity | Key/hash | Payload | Effect |
 /// |---|---|---|---|---|
 /// | C1 | unused | new | original | E1 |
-/// | C2 | existing | exact | exact | E2 |
+/// | C2 | existing | exact | different lowering | E2 |
 /// | C3 | existing | same key/different hash | changed | E3 |
 /// | C4 | existing | another key | any | E4 |
 #[tokio::test]
@@ -812,45 +1407,63 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
         .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
         .await
         .expect("C1");
+    let awaken_session_contract::SessionCreateResult::Applied(inserted) = inserted else {
+        panic!("C1 must apply")
+    };
     assert_eq!(
         inserted.revision,
         awaken_session_contract::SessionRevision(1),
         "C1"
     );
+    let mut durable = inserted.clone();
+    durable.title = Some("durable-after-create".into());
+    let durable = app
+        .commit_session_snapshot("workspace", durable, "test-create-replay", Vec::new())
+        .await
+        .expect("prepare C2 durable aggregate");
+    let mut lowered_again = original.clone();
+    lowered_again.title = Some("new-lowering-must-not-win".into());
     let replayed = app
-        .create_session_root("workspace", original.clone(), record.clone(), Vec::new())
+        .create_session_root("workspace", lowered_again, record.clone(), Vec::new())
         .await
         .expect("C2");
-    assert_eq!(replayed.revision, inserted.revision, "C2");
+    let awaken_session_contract::SessionCreateResult::Replayed(replayed) = replayed else {
+        panic!("C2 must replay")
+    };
+    assert_eq!(replayed, durable, "C2");
 
     let mut changed = original.clone();
     changed.title = Some("changed".into());
-    assert_eq!(
-        app.create_session_root(
-            "workspace",
-            changed,
-            awaken_session_contract::IdempotencyRecord {
-                key: record.key,
-                payload_hash: "changed-hash".into(),
-            },
-            Vec::new(),
-        )
-        .await,
-        Err(SessionMutationError::IdempotencyMismatch),
+    assert!(
+        matches!(
+            app.create_session_root(
+                "workspace",
+                changed,
+                awaken_session_contract::IdempotencyRecord {
+                    key: record.key,
+                    payload_hash: "changed-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(crate::SessionCreationError::IdempotencyMismatch)
+        ),
         "C3"
     );
-    assert_eq!(
-        app.create_session_root(
-            "workspace",
-            original,
-            awaken_session_contract::IdempotencyRecord {
-                key: "create-root:another".into(),
-                payload_hash: "another-hash".into(),
-            },
-            Vec::new(),
-        )
-        .await,
-        Err(SessionMutationError::Conflict),
+    assert!(
+        matches!(
+            app.create_session_root(
+                "workspace",
+                original,
+                awaken_session_contract::IdempotencyRecord {
+                    key: "create-root:another".into(),
+                    payload_hash: "another-hash".into(),
+                },
+                Vec::new(),
+            )
+            .await,
+            Err(crate::SessionCreationError::Conflict)
+        ),
         "C4"
     );
 }
@@ -3954,6 +4567,232 @@ async fn transferred_activity_fences_a_late_distinct_boundary_before_conflict_va
     assert_eq!(after_stale.closed_runtime_intervals.len(), 1, "A3/E1");
 }
 
+#[derive(Default)]
+struct FailOnceMcpRealizer {
+    stage_calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl McpAttachmentRealizer for FailOnceMcpRealizer {
+    async fn stage_mcp_attachment(
+        &self,
+        request: awaken_session_contract::StageMcpAttachment,
+    ) -> Result<awaken_session_contract::McpRealizationReceipt, RunError> {
+        if self.stage_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            return Err(RunError::unavailable("injected MCP stage outage"));
+        }
+        McpAttachmentRealizer::stage_mcp_attachment(&NoopMcpRealizer, request).await
+    }
+
+    async fn publish_mcp_generation(
+        &self,
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        McpAttachmentRealizer::publish_mcp_generation(&NoopMcpRealizer, generation).await
+    }
+
+    async fn drain_mcp_generation(
+        &self,
+        generation: awaken_session_contract::McpGenerationRef,
+    ) -> Result<(), RunError> {
+        McpAttachmentRealizer::drain_mcp_generation(&NoopMcpRealizer, generation).await
+    }
+}
+
+#[tokio::test]
+async fn mixed_update_commits_one_receipted_root_before_realization_and_replays_the_effect() {
+    // Cause/effect graph: C1 one command mixes title, metadata, budget, and MCP
+    // Agent desired state; C2 its root CAS and durable command receipt commit;
+    // C3 MCP realization succeeds or fails retryably; C4 the caller replays the
+    // exact command after C3 failure. Effects: E1 every desired field and MCP
+    // generation share the single next root revision named by the receipt; E2 a
+    // C3 failure is ProjectionAfterCommit carrying that complete committed
+    // outcome; E3 C4 keeps the original command revision and allocates exactly
+    // the aggregate-owned N+1 recovery generation, then realizes durable truth
+    // without re-authoring any public field.
+    // Constraint: normalization is pure before C2; no title/metadata/budget or
+    // MCP intent may commit through an independent command mutation.
+    //
+    // | Rule | C1 | C2 | C3 | C4 | Effect |
+    // |---|---|---|---|---|---|
+    // | M1 | yes | commits | retryable failure | no | E1 + E2 |
+    // | M2 | same command | already committed | succeeds | exact | E3 |
+    let session_id = "mixed-update-one-root";
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("mixed update repository"),
+    );
+    let mut session = persisted(session_id, false, "idle");
+    session.budget = awaken_session_contract::SessionBudgetState::Active {
+        max_list_cost_minor: 10,
+        consumed_numerator: 0,
+        usage_cursor: Default::default(),
+        snapshot: awaken_session_contract::ManagedListPriceSnapshot {
+            snapshot_id: "mixed-prices-v1".into(),
+            version: 1,
+            effective_at_unix_ms: 1,
+            arithmetic_version: 1,
+            model_rates: Default::default(),
+            runtime_rates: Default::default(),
+            fingerprint: "mixed-prices-v1-fingerprint".into(),
+        },
+        reach_transitions: Vec::new(),
+    };
+    create(repo.as_ref(), session).await;
+    let before = repo.get(session_id).await.expect("initial mixed Session");
+    let command_revision = awaken_session_contract::SessionRevision(
+        before
+            .revision
+            .0
+            .checked_add(1)
+            .expect("test command revision"),
+    );
+    let realizer = Arc::new(FailOnceMcpRealizer::default());
+    let app = SessionApplication::new(
+        Arc::new(NoopRuntime),
+        realizer.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let idempotency_key = "mixed-update-key";
+    let command = SessionUpdateCommand {
+        title: Some(SessionFieldUpdate::Replace("one root".into())),
+        metadata: Some(SessionMetadataUpdate::Patch(
+            std::collections::BTreeMap::from([("owner".into(), Some("session".into()))]),
+        )),
+        budget: Some(SessionFieldUpdate::Replace(20)),
+        tools: None,
+        mcp_update: Some(SessionMcpUpdate::PublicReplacement(vec![
+            McpAttachmentCandidate {
+                name: "docs".into(),
+                target: McpAttachmentCandidateTarget::HttpUrl(
+                    "https://docs.example.test/mcp".into(),
+                ),
+                prompts_as_skills: false,
+                published_credential: None,
+                origin: awaken_session_contract::McpAttachmentOrigin::Session,
+            },
+        ])),
+        idempotency_key: Some(idempotency_key.into()),
+        request_fingerprint: awaken_session_contract::stable_fingerprint(&(
+            "mixed-update-one-root-v1",
+            session_id,
+        )),
+        if_match: None,
+    };
+
+    let (committed, failure) = match app.update_session(session_id, command.clone()).await {
+        Err(SessionUpdateError::ProjectionAfterCommit { outcome, source }) => (*outcome, source),
+        other => panic!("M1/E2 expected committed realization failure, got {other:?}"),
+    };
+    assert_eq!(
+        failure.kind,
+        awaken_session_contract::RunErrorKind::Unavailable,
+        "M1/E2"
+    );
+    assert_eq!(committed.command_revision, command_revision, "M1/E1");
+    assert!(committed.command_applied, "M1/E1");
+    assert_eq!(
+        committed.changes,
+        SessionUpdateChanges {
+            title: true,
+            metadata: true,
+            tools: false,
+            mcp: true,
+            budget: true,
+        },
+        "M1/E1 complete mixed command"
+    );
+    assert_eq!(
+        committed.session.revision, command_revision,
+        "M1/E1 one command CAS"
+    );
+    assert_eq!(
+        committed.session.title.as_deref(),
+        Some("one root"),
+        "M1/E1"
+    );
+    assert_eq!(
+        committed.session.metadata.get("owner").map(String::as_str),
+        Some("session"),
+        "M1/E1"
+    );
+    assert_eq!(
+        committed.session.budget.max_list_cost_minor(),
+        Some(20),
+        "M1/E1"
+    );
+    assert_eq!(
+        committed.session.mcp.desired_attachments().len(),
+        1,
+        "M1/E1"
+    );
+
+    let receipt_key = format!(
+        "managed:update-command:{session_id}:{}",
+        SessionApplication::update_operation_id(session_id, idempotency_key)
+    );
+    let receipt = repo
+        .idempotency_receipt(session_id, &receipt_key)
+        .await
+        .expect("M1 receipt read")
+        .expect("M1 durable command receipt");
+    assert_eq!(receipt.committed_revision, command_revision, "M1/E1");
+    let durable_after_failure = repo.get(session_id).await.expect("M1 durable mixed truth");
+    assert_eq!(
+        durable_after_failure.title.as_deref(),
+        Some("one root"),
+        "M1/E2"
+    );
+    assert_eq!(
+        durable_after_failure.budget.max_list_cost_minor(),
+        Some(20),
+        "M1/E2"
+    );
+    assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 1, "M1/E2");
+
+    let replayed = app
+        .update_session(session_id, command)
+        .await
+        .expect("M2 exact replay repairs realization");
+    assert!(!replayed.command_applied, "M2/E3");
+    assert_eq!(replayed.command_revision, command_revision, "M2/E3");
+    assert_eq!(replayed.changes, SessionUpdateChanges::default(), "M2/E3");
+    assert_eq!(replayed.session.title.as_deref(), Some("one root"), "M2/E3");
+    assert_eq!(
+        replayed.session.budget.max_list_cost_minor(),
+        Some(20),
+        "M2/E3"
+    );
+    let desired = replayed.session.mcp.desired_attachments();
+    assert_eq!(desired.len(), 1, "M2/E3");
+    assert_eq!(
+        replayed.session.mcp.attachments.len(),
+        2,
+        "M2/E3 one failed generation plus one exact recovery generation"
+    );
+    assert_eq!(
+        desired[0].generation.0, 2,
+        "M2/E3 Failed -> N+1 uses the canonical MCP retry rule"
+    );
+    assert_eq!(
+        desired[0].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "M2/E3"
+    );
+    assert!(desired[0].publication_acknowledged, "M2/E3");
+    assert_eq!(realizer.stage_calls.load(Ordering::SeqCst), 2, "M2/E3");
+    assert_eq!(
+        repo.idempotency_receipt(session_id, &receipt_key)
+            .await
+            .expect("M2 receipt read")
+            .expect("M2 durable command receipt")
+            .committed_revision,
+        command_revision,
+        "M2/E3 receipt remains the original command CAS"
+    );
+}
+
 /// Update-admission authority graph. C1 durable status is idle; C2 durable
 /// status is running/terminal; C3 an interface cache is absent or stale.
 /// Only C1 permits mutation (E1); C2 always rejects without a root revision
@@ -3987,7 +4826,7 @@ async fn update_admission_uses_only_durable_session_status() {
         metadata: None,
         budget: None,
         tools: None,
-        mcp_candidates: None,
+        mcp_update: None,
         idempotency_key: None,
         request_fingerprint: awaken_session_contract::stable_fingerprint(&title),
         if_match: None,
@@ -4010,6 +4849,181 @@ async fn update_admission_uses_only_durable_session_status() {
         );
         assert_eq!(repo.get(id).await.expect(rule), before, "{rule}");
     }
+}
+
+#[tokio::test]
+async fn profiled_update_authority_separates_public_agent_and_credential_lifecycle_commands() {
+    // Cause/effect graph: C1 baseline policy Managed/Frozen/FileResources; C2
+    // public update changes tools or replaces MCP desired topology; C3 the
+    // repository-owned credential lifecycle replays an otherwise empty exact
+    // topology; C4 that lifecycle command also carries a public authoring field;
+    // C5 title-only public mutation. Effects: E1 Managed+C2 commits; E2 profiled
+    // C2 rejects before MCP refresh/root mutation; E3 profiled C3 is admitted to
+    // the canonical MCP state machine; E4 C4 always rejects; E5 C5 remains wire
+    // compatible and does not become an agent hidden-axis mutation.
+    // Rules U1=Managed+C2=>E1, U2/U3=profiled+C2=>E2,
+    // U4=profiled+C3=>E3, U5=C4=>E4, U6=profiled+C5=>E5.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("profiled update repository"),
+    );
+    for (id, policy) in [
+        (
+            "update-managed-policy",
+            awaken_session_contract::SessionMutationPolicy::Managed,
+        ),
+        (
+            "update-frozen-policy",
+            awaken_session_contract::SessionMutationPolicy::Frozen,
+        ),
+        (
+            "update-files-policy",
+            awaken_session_contract::SessionMutationPolicy::FileResources,
+        ),
+    ] {
+        let mut session = persisted(id, false, "idle");
+        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+        else {
+            unreachable!("fixture baseline is frozen")
+        };
+        baseline.mutation_policy = policy;
+        create(repo.as_ref(), session).await;
+    }
+    let runtime = Arc::new(super::realization::RecordingResourceRuntime::default());
+    let app = application_with_runtime(
+        runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let tools = awaken_session_contract::SessionToolConfiguration {
+        toolsets: Vec::new(),
+        client_tools: vec![awaken_agent_contract::ClientToolDescriptor {
+            name: "client-tool".into(),
+            description: "client owned".into(),
+            input_schema: serde_json::json!({"type": "object"}),
+        }],
+    };
+    let command = |tools, mcp_update, title, fingerprint: &str| SessionUpdateCommand {
+        title,
+        metadata: None,
+        budget: None,
+        tools,
+        mcp_update,
+        idempotency_key: None,
+        request_fingerprint: fingerprint.into(),
+        if_match: None,
+    };
+
+    app.update_session(
+        "update-managed-policy",
+        command(Some(tools.clone()), None, None, "U1"),
+    )
+    .await
+    .expect("U1/E1");
+    assert_eq!(
+        repo.get("update-managed-policy").await.unwrap().tools,
+        tools,
+        "U1/E1"
+    );
+    assert_eq!(
+        runtime.replaced_tools.lock().unwrap().as_slice(),
+        [("update-managed-policy".into(), tools.clone())].as_slice(),
+        "U1/E1 post-commit projection"
+    );
+
+    let frozen_before = repo.get("update-frozen-policy").await.unwrap();
+    assert!(
+        matches!(
+            app.update_session(
+                "update-frozen-policy",
+                command(Some(tools.clone()), None, None, "U2")
+            )
+            .await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "U2/E2"
+    );
+    assert_eq!(
+        repo.get("update-frozen-policy").await.unwrap(),
+        frozen_before,
+        "U2/E2"
+    );
+
+    let files_before = repo.get("update-files-policy").await.unwrap();
+    assert!(
+        matches!(
+            app.update_session(
+                "update-files-policy",
+                command(
+                    None,
+                    Some(SessionMcpUpdate::PublicReplacement(Vec::new())),
+                    None,
+                    "U3"
+                )
+            )
+            .await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "U3/E2"
+    );
+    assert_eq!(
+        repo.get("update-files-policy").await.unwrap(),
+        files_before,
+        "U3/E2"
+    );
+
+    app.update_session(
+        "update-files-policy",
+        command(
+            None,
+            Some(SessionMcpUpdate::CredentialLifecycle {
+                source_id: "vault-source".into(),
+                revoked: false,
+                candidates: Vec::new(),
+            }),
+            None,
+            "U4",
+        ),
+    )
+    .await
+    .expect("U4/E3");
+    assert!(
+        matches!(
+            app.update_session(
+                "update-files-policy",
+                command(
+                    None,
+                    Some(SessionMcpUpdate::CredentialLifecycle {
+                        source_id: "vault-source".into(),
+                        revoked: false,
+                        candidates: Vec::new(),
+                    }),
+                    Some(SessionFieldUpdate::Replace("forbidden".into())),
+                    "U5"
+                )
+            )
+            .await,
+            Err(SessionUpdateError::Rejected(_))
+        ),
+        "U5/E4"
+    );
+    let titled = app
+        .update_session(
+            "update-frozen-policy",
+            command(
+                None,
+                None,
+                Some(SessionFieldUpdate::Replace("visible title".into())),
+                "U6",
+            ),
+        )
+        .await
+        .expect("U6/E5");
+    assert_eq!(
+        titled.session.title.as_deref(),
+        Some("visible title"),
+        "U6/E5"
+    );
 }
 
 #[tokio::test]
@@ -4070,7 +5084,7 @@ async fn budget_update_lifecycle_follows_the_one_way_decision_table() {
             None => SessionFieldUpdate::Clear,
         }),
         tools: None,
-        mcp_candidates: None,
+        mcp_update: None,
         idempotency_key: None,
         request_fingerprint: awaken_session_contract::stable_fingerprint(&budget),
         if_match: None,
@@ -4239,95 +5253,104 @@ async fn budget_update_resumes_exact_committed_pauses_without_activity_leaks() {
             None => SessionFieldUpdate::Clear,
         }),
         tools: None,
-        mcp_candidates: None,
+        mcp_update: None,
         idempotency_key: Some(key.into()),
         request_fingerprint: awaken_session_contract::stable_fingerprint(&(budget, key)),
         if_match: None,
     };
 
-    let raised = app
-        .update_session("resume-budget-root", command(Some(2), "raise-root"))
-        .await
-        .expect("R1 raise resumes root");
-    assert_eq!(raised.session.budget.max_list_cost_minor(), Some(2), "R1");
-    let removed = app
-        .update_session("resume-budget-child", command(None, "remove-child"))
-        .await
-        .expect("R2 removal resumes child");
-    assert!(
-        matches!(removed.session.budget, SessionBudgetState::Removed { .. }),
-        "R2"
-    );
-    let initial_deliveries = runtime.budget_resume_deliveries.lock().unwrap().clone();
-    assert_eq!(initial_deliveries.len(), 2, "R1/R2 one delivery each");
-    assert_eq!(
-        initial_deliveries[0].run_id,
-        RunId("root-run".into()),
-        "R1/E1"
-    );
-    assert_eq!(initial_deliveries[0].pause_generation, 7, "R1/E1");
-    assert_eq!(
-        initial_deliveries[0].prior_session_activity_epoch, None,
-        "R1/E2"
-    );
-    assert_eq!(
-        initial_deliveries[1].run_id,
-        RunId("child-run".into()),
-        "R2/E1"
-    );
-    assert_eq!(
-        initial_deliveries[1].thread_id,
-        ThreadId("child-thread".into()),
-        "R2/E1"
-    );
-    assert_eq!(initial_deliveries[1].pause_generation, 9, "R2/E1");
-    assert_eq!(
-        initial_deliveries[1].prior_session_activity_epoch,
-        Some(41),
-        "R2/E2"
-    );
+    Box::pin(async {
+        let raised = app
+            .update_session("resume-budget-root", command(Some(2), "raise-root"))
+            .await
+            .expect("R1 raise resumes root");
+        assert_eq!(raised.session.budget.max_list_cost_minor(), Some(2), "R1");
+        let removed = app
+            .update_session("resume-budget-child", command(None, "remove-child"))
+            .await
+            .expect("R2 removal resumes child");
+        assert!(
+            matches!(removed.session.budget, SessionBudgetState::Removed { .. }),
+            "R2"
+        );
+        let initial_deliveries = runtime.budget_resume_deliveries.lock().unwrap().clone();
+        assert_eq!(initial_deliveries.len(), 2, "R1/R2 one delivery each");
+        assert_eq!(
+            initial_deliveries[0].run_id,
+            RunId("root-run".into()),
+            "R1/E1"
+        );
+        assert_eq!(initial_deliveries[0].pause_generation, 7, "R1/E1");
+        assert_eq!(
+            initial_deliveries[0].prior_session_activity_epoch, None,
+            "R1/E2"
+        );
+        assert_eq!(
+            initial_deliveries[1].run_id,
+            RunId("child-run".into()),
+            "R2/E1"
+        );
+        assert_eq!(
+            initial_deliveries[1].thread_id,
+            ThreadId("child-thread".into()),
+            "R2/E1"
+        );
+        assert_eq!(initial_deliveries[1].pause_generation, 9, "R2/E1");
+        assert_eq!(
+            initial_deliveries[1].prior_session_activity_epoch,
+            Some(41),
+            "R2/E2"
+        );
+    })
+    .await;
 
-    let concurrent = command(Some(2), "concurrent-exact");
-    let (left, right) = tokio::join!(
-        app.update_session("resume-budget-concurrent", concurrent.clone()),
-        app.update_session("resume-budget-concurrent", concurrent),
-    );
-    left.expect("R3 left exact update");
-    right.expect("R3 right exact update");
-    let concurrent_deliveries = runtime
-        .budget_resume_deliveries
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|delivery| delivery.session_id == "resume-budget-concurrent")
-        .cloned()
-        .collect::<Vec<_>>();
-    assert_eq!(
-        concurrent_deliveries.len(),
-        2,
-        "R3 recovery reaches Runtime twice"
-    );
-    assert_eq!(
-        concurrent_deliveries[0], concurrent_deliveries[1],
-        "R3/E1+E3"
-    );
-    let concurrent_session = repo.get("resume-budget-concurrent").await.unwrap();
-    assert_eq!(concurrent_session.active_activity_epochs.len(), 1, "R3/E3");
-    assert!(
-        concurrent_session
-            .active_activity_epochs
-            .contains(&concurrent_deliveries[0].session_activity_epoch),
-        "R3/E3"
-    );
+    Box::pin(async {
+        let concurrent = command(Some(2), "concurrent-exact");
+        let (left, right) = tokio::join!(
+            Box::pin(app.update_session("resume-budget-concurrent", concurrent.clone())),
+            Box::pin(app.update_session("resume-budget-concurrent", concurrent)),
+        );
+        left.expect("R3 left exact update");
+        right.expect("R3 right exact update");
+        let concurrent_deliveries = runtime
+            .budget_resume_deliveries
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|delivery| delivery.session_id == "resume-budget-concurrent")
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            concurrent_deliveries.len(),
+            2,
+            "R3 recovery reaches Runtime twice"
+        );
+        assert_eq!(
+            concurrent_deliveries[0], concurrent_deliveries[1],
+            "R3/E1+E3"
+        );
+        let concurrent_session = repo.get("resume-budget-concurrent").await.unwrap();
+        assert_eq!(concurrent_session.active_activity_epochs.len(), 1, "R3/E3");
+        assert!(
+            concurrent_session
+                .active_activity_epochs
+                .contains(&concurrent_deliveries[0].session_activity_epoch),
+            "R3/E3"
+        );
+    })
+    .await;
 
-    runtime.set_budget_resume_dispositions([SessionBudgetResumeDisposition::Stale]);
-    app.update_session("resume-budget-stale", command(Some(2), "stale-raise"))
-        .await
-        .expect("R4 stale resume is a successful update");
-    let stale = repo.get("resume-budget-stale").await.unwrap();
-    assert_eq!(stale.execution, SessionExecutionState::Idle, "R4/E4");
-    assert!(stale.active_activity_epochs.is_empty(), "R4/E4");
-    assert!(stale.running_interval.is_none(), "R4/E4");
+    Box::pin(async {
+        runtime.set_budget_resume_dispositions([SessionBudgetResumeDisposition::Stale]);
+        app.update_session("resume-budget-stale", command(Some(2), "stale-raise"))
+            .await
+            .expect("R4 stale resume is a successful update");
+        let stale = repo.get("resume-budget-stale").await.unwrap();
+        assert_eq!(stale.execution, SessionExecutionState::Idle, "R4/E4");
+        assert!(stale.active_activity_epochs.is_empty(), "R4/E4");
+        assert!(stale.running_interval.is_none(), "R4/E4");
+    })
+    .await;
 }
 
 /// Cause/effect graph: C1 the Runtime presents the exact durable realization

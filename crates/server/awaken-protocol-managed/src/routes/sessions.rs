@@ -616,16 +616,18 @@ async fn update_session(
                 metadata,
                 budget,
                 tools: tools.map(|tools| crate::project::session_tool_configuration(&tools)),
-                mcp_candidates: mcp_servers.map(|servers| {
-                    servers
-                        .into_iter()
-                        .map(|server| {
-                            crate::state::agent_mcp_candidate(
-                                server,
-                                awaken_session_contract::McpAttachmentOrigin::Session,
-                            )
-                        })
-                        .collect()
+                mcp_update: mcp_servers.map(|servers| {
+                    awaken_session_application::SessionMcpUpdate::PublicReplacement(
+                        servers
+                            .into_iter()
+                            .map(|server| {
+                                crate::state::agent_mcp_candidate(
+                                    server,
+                                    awaken_session_contract::McpAttachmentOrigin::Session,
+                                )
+                            })
+                            .collect(),
+                    )
                 }),
                 idempotency_key,
                 request_fingerprint,
@@ -1081,10 +1083,18 @@ pub async fn replace_resource_manifest(
         .map(crate::types::resource::ResourceInput::idempotency_fingerprint)
         .collect::<Vec<_>>();
     let request_fingerprint = awaken_session_contract::stable_fingerprint(&fingerprints);
-    let (manifest, command_revision) = state
-        .replace_resource_manifest(&id, body, idempotency_key, if_match, request_fingerprint)
-        .await
-        .map_err(error_response)?;
+    // The state owner composes Repository lowering, root CAS, realization, and
+    // durable retirement. Keep that complete application future behind the one
+    // HTTP-adapter boundary instead of embedding it in Axum's request future.
+    let (manifest, command_revision) = Box::pin(state.replace_resource_manifest(
+        &id,
+        body,
+        idempotency_key,
+        if_match,
+        request_fingerprint,
+    ))
+    .await
+    .map_err(error_response)?;
     let mut response_headers = HeaderMap::new();
     response_headers.insert(
         header::ETAG,
@@ -1094,14 +1104,14 @@ pub async fn replace_resource_manifest(
     Ok((response_headers, Json(manifest)))
 }
 
-const PROFILED_SESSION_REQUEST_FINGERPRINT: &str = "awaken.profiled_session_request_fingerprint";
+const PROFILED_SESSION_CREATE_RECEIPT_PREFIX: &str = "profiled:create";
 
 /// Lower Awaken's strongly typed extension request into the sole profiled
 /// Session composer. The handler owns no Session state or realization path.
 pub async fn create_profiled_session(
     State(state): State<Arc<ManagedState>>,
     workspace: Option<axum::Extension<WorkspaceScope>>,
-    Json(mut body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
+    Json(body): Json<awaken_protocol_awaken::ProfiledSessionCreate>,
 ) -> Result<Json<awaken_protocol_awaken::ProfiledSessionCreated>, (StatusCode, Json<ErrorResponse>)>
 {
     let owner_scope = workspace
@@ -1114,21 +1124,21 @@ pub async fn create_profiled_session(
     if body.session_id.trim().is_empty()
         || body.agent_id.trim().is_empty()
         || body.source_revision == Some(0)
-        || body
-            .metadata
-            .contains_key(PROFILED_SESSION_REQUEST_FINGERPRINT)
     {
         return Err(error_response(StateError::Run(RunError::bad_request(
-            "profiled Session identity, revision, or reserved metadata is invalid",
+            "profiled Session identity or revision is invalid",
         ))));
     }
     let request_fingerprint = awaken_session_contract::stable_fingerprint(&body);
+    let idempotency = awaken_session_contract::IdempotencyRecord {
+        key: format!(
+            "{PROFILED_SESSION_CREATE_RECEIPT_PREFIX}:{}",
+            body.session_id
+        ),
+        payload_hash: request_fingerprint,
+    };
     if let Some(existing) = state
-        .replay_session_with_metadata(
-            &body.session_id,
-            &owner_scope,
-            &[(PROFILED_SESSION_REQUEST_FINGERPRINT, &request_fingerprint)],
-        )
+        .replay_session_with_receipt(&body.session_id, &owner_scope, &idempotency)
         .await
         .map_err(error_response)?
     {
@@ -1137,10 +1147,7 @@ pub async fn create_profiled_session(
             metadata: existing.metadata,
         }));
     }
-    body.metadata.insert(
-        PROFILED_SESSION_REQUEST_FINGERPRINT.into(),
-        request_fingerprint,
-    );
+    let mutation_policy = body.mode.mutation_policy();
     let mcp_candidates = body
         .mcp_attachments
         .into_iter()
@@ -1182,6 +1189,7 @@ pub async fn create_profiled_session(
         .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
             owner_scope,
             session_id: body.session_id,
+            mutation_policy,
             agent_id: body.agent_id,
             source_revision: body.source_revision,
             environment_id: body.environment_id,
@@ -1189,15 +1197,17 @@ pub async fn create_profiled_session(
             mounts: body.mounts,
             env: body.env,
             prompts: body.prompts,
+            resource_inputs: body.resource_inputs,
             mcp_candidates,
             repositories,
             network_restriction: body.network_restriction,
             title: body.title,
             metadata: body.metadata,
             tools: body.tools,
+            idempotency: Some(idempotency),
         })
         .await
-        .map_err(|error| error_response(StateError::Run(error)))?;
+        .map_err(|error| error_response(ManagedState::map_creation_error(error)))?;
     state
         .ensure_session(&session.session_id)
         .await
@@ -1413,6 +1423,38 @@ mod managed_json_tests {
         )));
         assert_eq!(status, axum::http::StatusCode::SERVICE_UNAVAILABLE, "R1");
         assert_eq!(body.0.error.kind, "api_error", "R2");
+    }
+
+    #[test]
+    fn profiled_create_preserves_typed_repository_statuses() {
+        // Profiled-create status cause/effect table. C1 occupied identity; C2
+        // tombstoned identity; C3 same key/different request (including a race
+        // loser); C4 dependency outage; C5 corrupt durable receipt/aggregate.
+        // Effects are stable Anthropic envelopes with 409 for C1-C3, 503 for C4,
+        // and 500 for C5. The adapter matches typed application errors only;
+        // message text and concurrency timing cannot change the status.
+        use awaken_session_application::SessionCreationError;
+
+        for (rule, error) in [
+            ("C1", SessionCreationError::Conflict),
+            ("C2", SessionCreationError::Tombstoned),
+            ("C3", SessionCreationError::IdempotencyMismatch),
+        ] {
+            let (status, body) =
+                error_response(crate::state::ManagedState::map_creation_error(error));
+            assert_eq!(status, StatusCode::CONFLICT, "{rule}");
+            assert_eq!(body.0.error.kind, "invalid_request_error", "{rule}");
+        }
+        let (status, body) = error_response(crate::state::ManagedState::map_creation_error(
+            SessionCreationError::Unavailable("offline".into()),
+        ));
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "C4");
+        assert_eq!(body.0.error.kind, "api_error", "C4");
+        let (status, body) = error_response(crate::state::ManagedState::map_creation_error(
+            SessionCreationError::Internal("dangling receipt".into()),
+        ));
+        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR, "C5");
+        assert_eq!(body.0.error.kind, "api_error", "C5");
     }
 
     /// Preview selector cause/effect table: C1 message requested, C2 thinking

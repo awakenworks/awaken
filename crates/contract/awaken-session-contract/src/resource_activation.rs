@@ -55,6 +55,12 @@ pub struct SessionResourceState {
     pub pending: Option<ResolvedSessionResources>,
     #[serde(default)]
     pub activations: Vec<SessionResourceActivation>,
+    /// Exact removed Repository inputs whose Session-owned Registry/Vault
+    /// participants still require retirement. The intent is created atomically
+    /// with activation of the replacement generation and remains a retention
+    /// edge until the application records successful idempotent cleanup.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repository_retirements: Vec<ResolvedInput>,
 }
 
 /// Physical Resource pins retained across an active/pending replacement. This
@@ -81,7 +87,7 @@ impl SessionResourceReferences {
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ResourceActivationError {
-    #[error("a Session resource activation is already pending")]
+    #[error("a Session resource activation or Repository retirement is already pending")]
     Pending,
     #[error("no Session resource activation is pending")]
     NoPending,
@@ -111,6 +117,7 @@ impl SessionResourceState {
             inputs.extend_from_slice(pending.inputs());
             skills.extend_from_slice(pending.skills());
         }
+        inputs.extend_from_slice(&self.repository_retirements);
         SessionResourceReferences { inputs, skills }
     }
 
@@ -129,6 +136,7 @@ impl SessionResourceState {
             active,
             pending: None,
             activations: Vec::new(),
+            repository_retirements: Vec::new(),
         }
     }
 
@@ -138,7 +146,8 @@ impl SessionResourceState {
         session_id: &str,
         desired: ResolvedSessionResources,
     ) -> Result<u64, ResourceActivationError> {
-        if self.pending.is_some()
+        if self.has_repository_retirement_conflict(&desired)
+            || self.pending.is_some()
             || self.activations.iter().any(|activation| {
                 matches!(
                     activation.state,
@@ -195,6 +204,9 @@ impl SessionResourceState {
         if self.pending.is_none() {
             return Err(ResourceActivationError::NoPending);
         }
+        if self.has_repository_retirement_conflict(&desired) {
+            return Err(ResourceActivationError::Pending);
+        }
         let mutable = self.activations.iter().all(|activation| {
             activation.revision != self.revision
                 || (activation.state == ActivationState::Prepared
@@ -223,6 +235,16 @@ impl SessionResourceState {
             .pending
             .take()
             .ok_or(ResourceActivationError::NoPending)?;
+        let desired_repository_ids = desired
+            .inputs()
+            .iter()
+            .filter_map(repository_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for input in self.active.inputs().iter().filter(|input| {
+            repository_id(input).is_some_and(|id| !desired_repository_ids.contains(id))
+        }) {
+            upsert_repository_retirement(&mut self.repository_retirements, input.clone());
+        }
         for activation in &mut self.activations {
             match activation.state {
                 ActivationState::Prepared if activation.revision == self.revision => {
@@ -235,6 +257,36 @@ impl SessionResourceState {
         }
         self.active = desired;
         Ok(())
+    }
+
+    /// Exact pending Repository retirement candidates. Ownership is deliberately
+    /// validated by the Session application against the Resource Registry; this
+    /// aggregate stores lifecycle intent and never duplicates catalog policy.
+    #[must_use]
+    pub fn repository_retirements(&self) -> &[ResolvedInput] {
+        &self.repository_retirements
+    }
+
+    #[must_use]
+    pub fn has_repository_retirements(&self) -> bool {
+        !self.repository_retirements.is_empty()
+    }
+
+    fn has_repository_retirement_conflict(&self, desired: &ResolvedSessionResources) -> bool {
+        desired.inputs().iter().filter_map(repository_id).any(|id| {
+            self.repository_retirements
+                .iter()
+                .any(|retirement| repository_id(retirement) == Some(id))
+        })
+    }
+
+    /// Record completion of one exact retirement without clearing a newer pin
+    /// for the same Repository identity.
+    pub fn complete_repository_retirement(&mut self, completed: &ResolvedInput) -> bool {
+        let before = self.repository_retirements.len();
+        self.repository_retirements
+            .retain(|candidate| candidate != completed);
+        self.repository_retirements.len() != before
     }
 
     /// Record a failed attempt that must be retried by the reconciler.
@@ -316,6 +368,7 @@ impl SessionResourceState {
     pub fn complete_terminal_release(&mut self, reason: impl Into<String>) {
         self.pending = None;
         self.active = ResolvedSessionResources::default();
+        self.repository_retirements.clear();
         let reason = reason.into();
         for activation in &mut self.activations {
             match activation.state {
@@ -383,12 +436,45 @@ impl SessionResourceState {
     #[must_use]
     pub fn needs_reconciliation(&self) -> bool {
         self.pending.is_some()
+            || self.has_repository_retirements()
             || self.activations.iter().any(|activation| {
                 matches!(
                     activation.state,
                     ActivationState::Prepared | ActivationState::Releasing
                 )
             })
+    }
+}
+
+fn repository_id(input: &ResolvedInput) -> Option<&str> {
+    match &input.source {
+        ResolvedInputSource::Repository { repository_id, .. } => Some(repository_id.as_str()),
+        ResolvedInputSource::File { .. } | ResolvedInputSource::MemoryStore { .. } => None,
+    }
+}
+
+fn repository_credential_revision(input: &ResolvedInput) -> Option<u64> {
+    match &input.source {
+        ResolvedInputSource::Repository { credential, .. } => credential
+            .as_deref()
+            .map(|credential| credential.access.credential.revision),
+        ResolvedInputSource::File { .. } | ResolvedInputSource::MemoryStore { .. } => None,
+    }
+}
+
+fn upsert_repository_retirement(retirements: &mut Vec<ResolvedInput>, candidate: ResolvedInput) {
+    let Some(candidate_id) = repository_id(&candidate) else {
+        return;
+    };
+    if let Some(existing) = retirements
+        .iter_mut()
+        .find(|existing| repository_id(existing) == Some(candidate_id))
+    {
+        if repository_credential_revision(&candidate) > repository_credential_revision(existing) {
+            *existing = candidate;
+        }
+    } else {
+        retirements.push(candidate);
     }
 }
 
@@ -422,7 +508,7 @@ fn prepared_activation(
 
 #[cfg(test)]
 mod tests {
-    use awaken_resource_contract::{BindingId, FileId};
+    use awaken_resource_contract::{BindingId, ConfigVersion, FileId};
 
     use super::*;
 
@@ -432,6 +518,32 @@ mod tests {
                 binding_id: BindingId::from(format!("binding-{id}")),
                 source: ResolvedInputSource::File {
                     file_id: FileId::from(format!("file-{id}")),
+                },
+                mount_path: format!("/inputs/{id}"),
+                access: ResourceAccess::ReadOnly,
+                instructions: None,
+            }],
+            Vec::new(),
+        )
+        .unwrap()
+    }
+
+    fn repository_manifest(id: &str) -> ResolvedSessionResources {
+        ResolvedSessionResources::try_new(
+            vec![ResolvedInput {
+                binding_id: BindingId::from(format!("binding-{id}")),
+                source: ResolvedInputSource::Repository {
+                    repository_id: format!("managed:session-1:repository:{id}").into(),
+                    config: awaken_resource_contract::RepositoryConfigVersion {
+                        repository_id: format!("managed:session-1:repository:{id}").into(),
+                        version: ConfigVersion::INITIAL,
+                        remote_url: format!("https://example.test/{id}.git"),
+                        credential_binding: None,
+                        initial_branch: Some("main".into()),
+                        initial_commit: None,
+                        clone_policy: Default::default(),
+                    },
+                    credential: None,
                 },
                 mount_path: format!("/inputs/{id}"),
                 access: ResourceAccess::ReadOnly,
@@ -468,6 +580,57 @@ mod tests {
         assert_eq!(state.active, manifest("b"));
         assert_eq!(state.activations[0].state, ActivationState::Released);
         assert_eq!(state.activations[1].state, ActivationState::Active);
+    }
+
+    /// Repository-retirement cause/effect graph: C1 an Active Repository is
+    /// absent from the committed successor; C2 realization rolls back instead;
+    /// C3 the same Repository is requested while its retirement is unsettled;
+    /// C4 cleanup has durably cleared that intent. Effects: E1 commit atomically
+    /// retains the exact removed input as cleanup intent; E2 rollback creates no
+    /// intent; E3 same-identity reintroduction fails closed before a new pending
+    /// generation exists; E4 an unsettled intent remains a physical Resource
+    /// retention edge; E5 retry after durable cleanup may prepare normally.
+    ///
+    /// | Rule | Removed | Settlement | Reintroduced | Effect |
+    /// |---|---|---|---|---|
+    /// | R1 | yes | commit | no | E1 + E4 |
+    /// | R2 | yes | rollback | no | E2 |
+    /// | R3 | prior intent | prepare | yes | E3 + E4 |
+    /// | R4 | intent cleared | prepare | yes | E5 |
+    #[test]
+    fn repository_retirement_intent_follows_the_manifest_commit_boundary() {
+        let repository = repository_manifest("source");
+
+        let mut committed = SessionResourceState::from_active(repository.clone());
+        committed
+            .prepare("session-1", ResolvedSessionResources::default())
+            .unwrap();
+        committed.commit().unwrap();
+        assert_eq!(
+            committed.repository_retirements(),
+            repository.inputs(),
+            "R1/E1"
+        );
+        assert!(committed.has_references(), "R1/E4");
+
+        let mut rolled_back = SessionResourceState::from_active(repository.clone());
+        rolled_back
+            .prepare("session-1", ResolvedSessionResources::default())
+            .unwrap();
+        rolled_back.rollback("injected").unwrap();
+        assert!(rolled_back.repository_retirements().is_empty(), "R2/E2");
+
+        assert_eq!(
+            committed.prepare("session-1", repository.clone()),
+            Err(ResourceActivationError::Pending),
+            "R3/E3"
+        );
+        assert!(committed.pending.is_none(), "R3/E3");
+        assert!(committed.has_references(), "R3/E4");
+
+        assert!(committed.complete_repository_retirement(&repository.inputs()[0]));
+        committed.prepare("session-1", repository).unwrap();
+        assert!(committed.pending.is_some(), "R4/E5");
     }
 
     /// Visible-generation cause/effect graph. C1=active mounted inputs; C2=active

@@ -2,16 +2,16 @@
 
 use awaken_scoped_migration::{Migration, MigrationBundle, MigrationError};
 
-/// Fresh installations have one current baseline. The ledger, rather than
-/// conditional SQL or a retained compatibility stream, is the sole apply
-/// decision.
+/// V1 is the published current baseline. Later additions keep its checksum
+/// immutable and advance through the same ledger-owned migration stream.
 pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
     MigrationBundle::new(
         "awaken.managed_session",
-        vec![Migration::new(
-            1,
-            "current managed Session and adjacent process authorities",
-            "CREATE TABLE {prefix}_session (\
+        vec![
+            Migration::new(
+                1,
+                "current managed Session and adjacent process authorities",
+                "CREATE TABLE {prefix}_session (\
                  session_id TEXT PRIMARY KEY CHECK (length(session_id) > 0), \
                  scope_id TEXT NOT NULL CHECK (length(scope_id) > 0), \
                  revision BIGINT NOT NULL CHECK (revision > 0), \
@@ -86,7 +86,20 @@ pub(crate) fn session_bundle() -> Result<MigrationBundle, MigrationError> {
                  memory_store_id TEXT NOT NULL, \
                  data TEXT NOT NULL, \
                  PRIMARY KEY (workspace_id, memory_store_id))",
-        )?],
+            )?,
+            Migration::new(
+                2,
+                "current desired MCP credential-source dependency index",
+                "CREATE TABLE {prefix}_session_credential_source_reference (\
+                     session_id TEXT NOT NULL \
+                         REFERENCES {prefix}_session(session_id) ON DELETE CASCADE, \
+                     credential_source_id TEXT NOT NULL, \
+                     PRIMARY KEY (session_id, credential_source_id)); \
+                 CREATE INDEX {prefix}_session_credential_source_reference_lookup_idx \
+                     ON {prefix}_session_credential_source_reference \
+                        (credential_source_id, session_id)",
+            )?,
+        ],
     )
 }
 
@@ -95,9 +108,22 @@ mod tests {
     use super::session_bundle;
 
     #[test]
-    fn session_schema_is_one_deterministic_current_baseline() {
+    fn session_schema_preserves_v1_and_adds_one_deterministic_dependency_index() {
+        // Migration cause/effect table: C1 published V1 receipt exists -> E1 its
+        // checksum remains accepted; C2 V2 is absent -> E2 apply only additive
+        // source-index DDL; C3 V2 is present -> E3 ledger replay is a no-op.
+        // M1=C1+C2=>E1+E2, M2=C1+C3=>E1+E3. Backfill is deliberately owned by
+        // repository startup because only the canonical Rust root decoder can
+        // derive desired credential dependencies without a parallel JSON model.
         let bundle = session_bundle().expect("session bundle");
-        assert_eq!(bundle.migrations().len(), 1);
+        assert_eq!(
+            bundle
+                .migrations()
+                .iter()
+                .map(awaken_scoped_migration::Migration::version)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
         let sql = bundle.migrations()[0].sql_for(awaken_scoped_migration::Dialect::Sqlite);
         for retired in [
             "agent_id",
@@ -111,5 +137,11 @@ mod tests {
         }
         assert!(sql.contains("session_reconciliation_work"));
         assert!(sql.contains("session_vault_reference"));
+        assert!(!sql.contains("session_credential_source_reference"));
+        assert!(
+            bundle.migrations()[1]
+                .sql_for(awaken_scoped_migration::Dialect::Sqlite)
+                .contains("session_credential_source_reference")
+        );
     }
 }
