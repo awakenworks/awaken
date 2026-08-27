@@ -352,6 +352,18 @@ atomically persists the creation intent, frozen baseline, and initial Event plan
 in one Session root. The sole lifecycle reconciler later executes that retained
 plan through the same Session Event state machine as public Event batches.
 
+Profiled creation uses that same boundary. Its complete command carries direct
+Resource attachments beside Repository/MCP inputs and the product mode that
+selects the immutable baseline mutation policy owned by
+[ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority).
+The one `SessionInputResolver` composes those inputs with published Agent
+defaults before `SessionCreationIntent::finalize`; a repository idempotency
+receipt and complete `resources.desired()` truth are written in the original
+revision-1 root insert. Repository `Applied` alone continues into realization,
+activation, and eligible WorkQueue projection; `Replayed` returns current
+durable truth without repeating those effects. A post-create Resource-manifest
+write is not a second creation phase.
+
 ### Terminal outcomes
 
 | Failure point | Durable truth | Caller outcome |
@@ -566,6 +578,10 @@ the exact snapshot, source revision, and fingerprint selected before execution.
 - Session binding, management audit, and webhook delivery consume narrow Control
   ports; AllInOne supplies local adapters and split Coordinator supplies one
   authenticated HTTP adapter;
+- profiled WorkUnit/Interactive requests lower through the sole profiled Session
+  composer, freeze their direct Resource inputs and mutation policy before the
+  original insert, and use the Session repository receipt rather than mutable
+  metadata for create replay;
 - `ResourceAuthorities` exposes the authoritative `ResourceCatalog` beside its
   existing File, Memory, Skill, repository-verification, and lifecycle ports;
 - HTTP File commands and Runtime artifact harvesting call one
@@ -647,6 +663,9 @@ cite the rule they cover.
 | E22 | incremental projection tail is missing/out of order, or durable high-water is behind the local cursor | atomically full-replay the owning command log; fail admission closed if replay fails |
 | E23 | Control starts while either registration boundary is unavailable | remain live and serving from last-known-good durable projections, report pending/failure/lag degradation, and retry both authoritative recoveries with bounded backoff |
 | E24 | configuration requests a standalone Resources role without an independent scaling or credential-isolation topology | reject the role and keep the canonical Resources component co-deployed; create no extra migration or application path |
+| E25 | profiled create includes direct Resource and Repository inputs | resolve all inputs once, freeze the selected policy, and insert complete revision-1 desired truth plus its receipt before realization/activation/WorkQueue effects |
+| E26 | a product retries creation or attempts post-create completion | exact receipt preflight or concurrent `Replayed` returns current durable truth with no repeated effect; a mismatched payload or private profiled whole-manifest write fails without a parallel authoring path |
+| E27 | exact create replay names `ActivationFailed`, a tombstone, or corrupt receipt/identity state | return typed 409 for terminal occupation and typed internal failure for corruption; never resurrect, backfill, or execute external effects |
 
 The concrete multi-process topology, cluster lifecycle, and fault-injection
 entry points are owned by the

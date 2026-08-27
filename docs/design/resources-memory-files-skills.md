@@ -462,6 +462,15 @@ requested higher access          -> requires a new authorization decision
 Array order never grants precedence. Prompts are rendered once from the final
 effective set, so what the Agent is told is what the environment provisions.
 
+For profiled Sessions, initial direct attachments enter this merge before the
+original root insert. Later Resource authoring first passes the immutable
+Session policy owned by
+[ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority).
+The Resources context does not infer WorkUnit/Interactive intent. An admitted
+File-only change still uses the same complete manifest, root CAS, activation,
+and recovery path; a rejected non-File or Skill change reaches none of those
+effects.
+
 ## File Lifecycle
 
 ### Configure
@@ -502,6 +511,13 @@ retention or legal hold
 ```
 
 A shared blob survives removal of one Workspace's ownership edge.
+
+Session File item create/delete is an item-shaped adapter over the canonical
+complete-manifest command. The adapter reads the Session root once, derives the
+new complete desired manifest, and submits that read revision as the exact root
+precondition. It never retries by rebasing on a concurrent winner. Therefore one
+racing item mutation commits, the loser returns HTTP `409`, and the winner's
+File set cannot be silently overwritten.
 
 ## MemoryStore Lifecycle
 
@@ -642,6 +658,29 @@ its credential binding, denies clone/fetch/push, and eventually removes local
 working trees/cache. Reclamation must never delete the external remote
 repository; that requires a separate explicit high-risk operation outside this
 lifecycle.
+
+### Session ownership and root adoption
+
+The Session application is the sole coordinator for a Repository definition
+created from Managed or profiled Session input. The Resource Catalog and the
+optional Vault ingress independently classify their idempotent work as
+`Applied` or `Replayed`; this transient provenance is carried only until the
+Session root adopts the resolved input. All pure validation precedes those
+effects. A pre-root failure or root-CAS loser rereads the durable root and retires
+only an unreferenced `Applied` participant. Replayed work, an adopted participant,
+and an unavailable/corrupt adoption read are preserved. The whole-manifest
+adapter invokes this same coordinator and compensation path.
+
+Once the root is durable, ordinary terminal Session reconciliation owns cleanup.
+Delete authority requires both the closed
+`managed:{session}:repository:* | profiled:{session}:repository:*` namespace and
+the exact canonical owner-kind/session metadata stamped on the Repository
+definition. A markerless lookalike or shared definition is left unchanged and
+does not hold terminal convergence open. For a truly owned inline credential,
+the coordinator first schedules/tombstones only the awaken-local Repository
+definition, then archives the exact credential source revision and reclaims its
+material through the one Vault lifecycle. It never deletes the external Git
+remote.
 
 ## Lifecycle State and Live Deny
 
@@ -832,6 +871,13 @@ This matches the observable Managed Agents model—resources enter a Session,
 repositories clone current content, and credentials are not echoed—while the
 internal config version remains an awaken governance detail.
 
+Ordinary Managed Sessions retain the full existing item-level Resource
+mutation surface. The private profiled wire supplies its complete initial
+attachments at creation and cannot use a whole-manifest extension as a second
+authoring path. An Interactive profiled Session may later use the ordinary File
+item verbs; the Session application proves that the resulting complete manifest
+preserves every non-File input and exact Skill pin before it commits.
+
 ## Current Implementation and Migration
 
 ### Keep
@@ -960,12 +1006,27 @@ Fail before Agent execution when:
 Fail an operation without widening authority when:
 
 - Memory CAS is stale;
+- a File item command's read revision is stale; it conflicts without rebase or
+  realization;
 - a read-only binding attempts a write/extraction;
 - Repository state or credential is revoked before fetch/push;
 - an activation lease is stale.
 
-Cleanup failure leaves an activation in `Releasing` or `Failed` for the
-reconciler. It never silently marks the resource released.
+A failed pre-root Repository command preserves its first error and compensates
+only participants proved both `Applied` by that command and unadopted by the
+durable root. Replay, adoption, or an unavailable/corrupt root read never grants
+cleanup authority.
+
+Cleanup failure leaves an activation in `Releasing` or `Failed`, or leaves an
+exact removed-Repository retirement intent in the Session Resource state, for
+the same reconciler. The intent remains a reference edge across restart. A
+replacement cannot reintroduce that Repository id until the cleanup completion
+CAS clears the intent; this prevents a new root winner from racing an older
+external retirement. Item DELETE and whole-manifest omission do not own another
+post-response cleanup path. Shared or markerless definitions are a no-op before
+any Vault effect; an owned inline credential is retired by exact revision before
+the Repository so a partial failure remains safely retryable. Cleanup never
+silently marks the resource released.
 
 ## Verification Matrix
 
@@ -975,10 +1036,13 @@ reconciler. It never silently marks the resource released.
 | File | binary round-trip; blob digest validation; distinct logical uploads may share bytes; edited Session copy cannot mutate the original blob; K8s live replacement/removal stays below the fixed input root, is Agent-read-only, and survives handle adoption; shared-blob ownership isolation; safe GC |
 | Memory | config update affects only later Sessions; current content remains shared; read-only extraction denied; CAS conflict loses no update |
 | Repository | config update affects later Sessions; no commit pin; exact source revision/usage/holder pin; anonymous/missing/stale/inactive/cross-Workspace/mismatched cases fail closed; retained pre-pin row migrates once before I/O; material absent from manifest/logs/prompt/disk; remote is never deleted by GC |
+| Session mutation fence | File item create/delete passes its read revision to the complete-manifest root CAS; a racing loser is `409` and cannot overwrite the winner; explicit whole-manifest `If-Match` has the same rule |
+| Session-owned Repository | Registry/Vault `Applied | Replayed` provenance; pure-validation-before-effect; root-aware pre-adoption compensation of Applied only; successful item/whole-manifest omission persists one exact retirement intent; same-id reintroduction conflicts until cleanup CAS; Managed/Profiled namespace plus exact owner marker; shared/markerless no-op before Vault; credential-first exact inline retirement; local/external/receipt/terminal/restart convergence |
 | Skill | binary bundle round-trip; traversal rejected; restart preserves history; v1 Session keeps v1 after v2 publication; hash mismatch fails closed |
 | Scope/auth | cross-Workspace File/Memory/Repo access fails closed; old config cannot bypass suspension/deletion/revocation |
 | Recovery | stale Prepared/Active/Releasing activations converge idempotently after restart |
 | Reclamation | no referenced File purge; a racing cross-node reference loses to or blocks the durable fence; crash resumes the same fence; Memory drains handles/jobs; Repository cleanup removes only local material |
+| Profiled mutation boundary | complete direct inputs freeze in the original insert; File-only Interactive changes preserve non-File inputs and exact Skill pins; Frozen, protected-resource, private whole-manifest, and profiled Repository-credential changes fail before external effects |
 | Boundary | Runtime Core receives no product DTO, IAM policy, secret, absolute host path, Project, or WorkUnit |
 
 `SessionResourceActivation.tla`, `ResourceDispatch.tla`, and
