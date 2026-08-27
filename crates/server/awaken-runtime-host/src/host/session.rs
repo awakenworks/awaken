@@ -7,9 +7,10 @@ mod environment_lifecycle;
 mod input_projection;
 
 use super::*;
+pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
 pub(super) use input_projection::{
-    ManagedCoordinationRole, SessionToolsetProjection, project_frozen_session_model_override,
-    project_managed_coordination_surface, project_session_tool_override,
+    ManagedCoordinationRole, project_frozen_session_model_override,
+    project_managed_coordination_surface,
 };
 use input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
