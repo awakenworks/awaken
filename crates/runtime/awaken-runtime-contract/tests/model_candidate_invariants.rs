@@ -53,8 +53,10 @@ fn assert_rejected(binding: ModelBinding, provisioning: ModelProvisioning, expec
 /// | P1 | Native | Provider | complete route, no ACP profile | accept |
 /// | P2a | exact ACP | Provider | complete route, ACP profile, provider default | accept |
 /// | P2b | exact ACP | Provider | complete route, ACP profile, explicit reasoning policy | accept |
-/// | P3 | Native/ACP/A2A | Provider | backend/profile family disagrees | reject |
-/// | P4 | Native/ACP | Provider | any required route coordinate is non-canonical | reject |
+/// | P3 | Native | Provider/Brokered | no Workspace credential | accept |
+/// | P4 | Native | Provider/Brokered | Workspace credential present | reject |
+/// | P5 | Native/ACP/A2A | Provider | backend/profile family disagrees | reject |
+/// | P6 | Native/ACP | Provider | any required route coordinate is non-canonical | reject |
 /// | R1 | exact A2A | Remote | empty model and security fingerprint | accept |
 /// | R2 | other | Remote | any | reject |
 /// | R3 | exact A2A | Remote | local model or missing security proof | reject |
@@ -162,11 +164,41 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         .is_ok(),
         "P2b",
     );
+    assert!(
+        ResolvedModelCandidate::try_brokered_provider(
+            ModelBinding::new("identity-a", "model-a", "native"),
+            "provider@1",
+            "route@1",
+            "workspace-a",
+            endpoint(),
+        )
+        .is_ok(),
+        "P3",
+    );
+    assert_rejected(
+        ModelBinding::new("identity-a", "model-a", "native"),
+        ModelProvisioning::Provider {
+            provider_ref: "provider@1".into(),
+            route_ref: "route@1".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Brokered,
+            scope_id: "workspace-a".into(),
+            credential: Some(Box::new(awaken_runtime_contract::CredentialAccess::new(
+                credential(),
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            ))),
+            endpoint: Box::new(endpoint()),
+            acp: None,
+        },
+        "brokered provider provisioning cannot carry a Workspace credential",
+    );
     assert_rejected(
         ModelBinding::new("identity-a", "model-a", "acp:claude"),
         ModelProvisioning::Provider {
             provider_ref: "provider@1".into(),
             route_ref: "route@1".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Direct,
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
@@ -180,6 +212,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         ModelProvisioning::Provider {
             provider_ref: "provider@1".into(),
             route_ref: "route@1".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Direct,
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
@@ -193,6 +226,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         ModelProvisioning::Provider {
             provider_ref: "provider@1".into(),
             route_ref: "route@1".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Direct,
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
@@ -206,6 +240,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         ModelProvisioning::Provider {
             provider_ref: " provider@1".into(),
             route_ref: "route@1".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Direct,
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),

@@ -630,6 +630,19 @@ impl std::fmt::Display for ExactModelRef {
     }
 }
 
+/// How one exact published Provider candidate obtains access. This is a
+/// provider-neutral execution fact: it is neither catalog provenance nor a
+/// commercial funding decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccessKind {
+    /// Call the published endpoint directly, optionally using the exact
+    /// Workspace credential frozen beside the candidate.
+    Direct,
+    /// Ask the installed broker to authorize and materialize the exact route.
+    Brokered,
+}
+
 /// The provisioning facts for one published model candidate. This is snapshot
 /// data, not secret material and not an IAM decision. Local endpoints, gateways,
 /// and provider SaaS use `Provider`; a trusted local ACP agent uses
@@ -657,6 +670,9 @@ pub enum ModelProvisioning {
     Provider {
         provider_ref: String,
         route_ref: String,
+        /// Explicit access-source axis. Credential presence and route naming
+        /// are never interpreted as access-source evidence.
+        access_kind: ProviderAccessKind,
         /// Opaque ownership coordinate for the pinned credential. It denotes a
         /// Workspace today but deliberately carries no action/capability: scope
         /// range and authorization function remain orthogonal.
@@ -796,6 +812,91 @@ impl ResolvedModelCandidate {
         )
     }
 
+    /// Build one broker-authorized Provider candidate. Brokered publications
+    /// never carry a Workspace credential; the installed broker freezes the
+    /// exact downstream credential only while authorizing an attempt.
+    pub fn try_brokered_provider(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        endpoint: crate::InferenceEndpoint,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_brokered_provider_with_reasoning(
+            binding,
+            provider_ref,
+            route_ref,
+            scope_id,
+            endpoint,
+            UnspecifiedReasoning::ProviderDefault,
+        )
+    }
+
+    pub fn try_brokered_provider_with_reasoning(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        endpoint: crate::InferenceEndpoint,
+        unspecified_reasoning: UnspecifiedReasoning,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_brokered_provider_with_profile(
+            binding,
+            provider_ref,
+            route_ref,
+            scope_id,
+            endpoint,
+            ProviderExecutionProfile {
+                unspecified_reasoning,
+                acp: None,
+            },
+        )
+    }
+
+    pub fn try_brokered_provider_with_acp(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        endpoint: crate::InferenceEndpoint,
+        acp: AcpExecutionProfile,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_brokered_provider_with_profile(
+            binding,
+            provider_ref,
+            route_ref,
+            scope_id,
+            endpoint,
+            ProviderExecutionProfile {
+                unspecified_reasoning: UnspecifiedReasoning::ProviderDefault,
+                acp: Some(acp),
+            },
+        )
+    }
+
+    pub fn try_brokered_provider_with_profile(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        endpoint: crate::InferenceEndpoint,
+        profile: ProviderExecutionProfile,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_from_parts(
+            binding,
+            ModelProvisioning::Provider {
+                provider_ref: provider_ref.into(),
+                route_ref: route_ref.into(),
+                access_kind: ProviderAccessKind::Brokered,
+                scope_id: scope_id.into(),
+                credential: None,
+                endpoint: Box::new(endpoint),
+                unspecified_reasoning: profile.unspecified_reasoning,
+                acp: profile.acp.map(Box::new),
+            },
+        )
+    }
+
     pub fn try_provider_with_acp(
         binding: ModelBinding,
         provider_ref: impl Into<String>,
@@ -833,6 +934,7 @@ impl ResolvedModelCandidate {
             ModelProvisioning::Provider {
                 provider_ref: provider_ref.into(),
                 route_ref: route_ref.into(),
+                access_kind: ProviderAccessKind::Direct,
                 scope_id: scope_id.into(),
                 credential: credential.map(Box::new),
                 endpoint: Box::new(endpoint),
@@ -931,6 +1033,8 @@ impl ResolvedModelCandidate {
             ModelProvisioning::Provider {
                 provider_ref,
                 route_ref,
+                access_kind,
+                credential,
                 endpoint,
                 acp,
                 ..
@@ -963,6 +1067,11 @@ impl ResolvedModelCandidate {
                 {
                     return Err(InvalidResolvedModelCandidate(
                         "ACP provider provisioning requires an exact capability pin",
+                    ));
+                }
+                if *access_kind == ProviderAccessKind::Brokered && credential.is_some() {
+                    return Err(InvalidResolvedModelCandidate(
+                        "brokered provider provisioning cannot carry a Workspace credential",
                     ));
                 }
             }

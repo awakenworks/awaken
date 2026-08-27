@@ -626,6 +626,7 @@ mod tests {
         let provider = awaken_runtime_contract::resolved::ModelProvisioning::Provider {
             provider_ref: "provider".into(),
             route_ref: "route".into(),
+            access_kind: awaken_runtime_contract::resolved::ProviderAccessKind::Direct,
             scope_id: "workspace".into(),
             credential: None,
             endpoint: Box::new(awaken_runtime_contract::resolved::InferenceEndpoint {

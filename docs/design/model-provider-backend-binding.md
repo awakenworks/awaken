@@ -64,6 +64,14 @@ run may fallback from one model to another, the candidate list, order or weights
 health inputs, and downgrade rules must be visible before activation and recorded
 in the resolved data needed for replay/debugging.
 
+`ProviderAccessKind` is the access-source axis for a Provider candidate:
+`Direct` means the exact endpoint is called with an optional Workspace-owned
+`CredentialAccess`; `Brokered` means a downstream platform authorizes and
+materializes the exact route. It is orthogonal to Provider, model, protocol and
+backend identity. `OfferingSource` is catalog provenance and must not be copied
+as a second runtime access vocabulary; the executable-model projection maps it
+once to `ProviderAccessKind`.
+
 `ModelProviderSpec` is deliberately narrow. It describes where model calls can go
 and what model-facing capability evidence is available. It is not the generic
 place to store a future runtime driver, platform adapter, installed command,

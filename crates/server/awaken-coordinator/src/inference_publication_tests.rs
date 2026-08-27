@@ -729,6 +729,7 @@ mod tests {
         let ModelProvisioning::Provider {
             provider_ref,
             route_ref,
+            access_kind,
             scope_id,
             endpoint,
             unspecified_reasoning,
@@ -743,6 +744,7 @@ mod tests {
             ModelProvisioning::Provider {
                 provider_ref,
                 route_ref,
+                access_kind,
                 scope_id,
                 credential: Some(Box::new(direct_credential)),
                 endpoint,

@@ -223,6 +223,7 @@ impl CatalogModelPublicationResolver {
             processing_placement: None,
         };
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
+        let brokered = matches!(access, PublicationAccess::Brokered);
         let credential = match access {
             PublicationAccess::Direct(credential) => credential
                 .map(|credential| {
@@ -254,8 +255,27 @@ impl CatalogModelPublicationResolver {
             PublicationAccess::Brokered => None,
         };
         let error_binding = binding.clone();
-        match acp {
-            Some(acp) => ResolvedModelCandidate::try_provider_with_profile(
+        match (brokered, acp) {
+            (true, Some(acp)) => ResolvedModelCandidate::try_brokered_provider_with_profile(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                endpoint,
+                ProviderExecutionProfile {
+                    unspecified_reasoning: reasoning,
+                    acp: Some(acp),
+                },
+            ),
+            (true, None) => ResolvedModelCandidate::try_brokered_provider_with_reasoning(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                endpoint,
+                reasoning,
+            ),
+            (false, Some(acp)) => ResolvedModelCandidate::try_provider_with_profile(
                 binding,
                 provider_ref,
                 route_ref,
@@ -267,7 +287,7 @@ impl CatalogModelPublicationResolver {
                     acp: Some(acp),
                 },
             ),
-            None => ResolvedModelCandidate::try_provider_with_reasoning(
+            (false, None) => ResolvedModelCandidate::try_provider_with_reasoning(
                 binding,
                 provider_ref,
                 route_ref,

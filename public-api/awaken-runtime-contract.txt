@@ -1000,6 +1000,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::credenti
 pub awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned::model_selection: awaken_runtime_contract::resolved::BackendModelSelection
 pub awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider
+pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::access_kind: awaken_runtime_contract::resolved::ProviderAccessKind
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::acp: core::option::Option<alloc::boxed::Box<awaken_runtime_contract::resolved::AcpExecutionProfile>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::credential: core::option::Option<alloc::boxed::Box<awaken_credential_contract::CredentialAccess>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::endpoint: alloc::boxed::Box<awaken_runtime_contract::resolved::InferenceEndpoint>
@@ -1028,6 +1029,9 @@ pub awaken_runtime_contract::resolved::OpenRouterSearchEngine::Firecrawl
 pub awaken_runtime_contract::resolved::OpenRouterSearchEngine::Native
 pub awaken_runtime_contract::resolved::OpenRouterSearchEngine::Parallel
 pub awaken_runtime_contract::resolved::OpenRouterSearchEngine::Perplexity
+pub enum awaken_runtime_contract::resolved::ProviderAccessKind
+pub awaken_runtime_contract::resolved::ProviderAccessKind::Brokered
+pub awaken_runtime_contract::resolved::ProviderAccessKind::Direct
 pub enum awaken_runtime_contract::resolved::ProviderServerTool
 pub awaken_runtime_contract::resolved::ProviderServerTool::OpenRouterToolSearch
 pub awaken_runtime_contract::resolved::ProviderServerTool::OpenRouterToolSearch::max_results: core::option::Option<awaken_runtime_contract::tool_discovery::ToolSearchLimit>
@@ -1143,6 +1147,8 @@ pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self)
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::host(awaken_runtime_contract::resolved::ModelBinding) -> Self
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::provisioning(&self) -> &awaken_runtime_contract::resolved::ModelProvisioning
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_backend_owned(awaken_runtime_contract::resolved::ModelBinding, awaken_credential_contract::CredentialRef, awaken_runtime_contract::resolved::BackendModelSelection, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, awaken_agent_contract::acp::AcpSessionConfiguration) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_from_parts(awaken_runtime_contract::resolved::ModelBinding, awaken_runtime_contract::resolved::ModelProvisioning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
