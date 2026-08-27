@@ -133,7 +133,7 @@ pub use resource::{
     ResolvedInput, ResolvedInputSource, ResolvedRepositoryCredential, ResolvedSessionResources,
     ResolvedSkillBinding, SessionInputAttachment, SessionInputError, SessionInputResolver,
     SessionResourceManifest, repository_transport_credential_target,
-    repository_transport_credential_usage,
+    repository_transport_credential_usage, repository_transport_material_binding,
 };
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,

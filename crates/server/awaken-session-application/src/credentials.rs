@@ -96,10 +96,10 @@ impl SessionApplication {
                 .map_err(|error| {
                     SessionPreparationError::Rejected(RunError::bad_request(error.to_string()))
                 })?;
-        let material_binding = awaken_credential_contract::CredentialMaterialBinding::for_target(
+        let material_binding = awaken_session_contract::repository_transport_material_binding(
             owner_scope,
-            &(repository_id, config.version),
-            &usage,
+            repository_id,
+            config.version,
         );
         let access = credentials
             .credential_access_for_source(

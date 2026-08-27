@@ -1860,6 +1860,7 @@ pub fn awaken_session_contract::realization_lease_authorizes(&awaken_session_con
 pub const fn awaken_session_contract::realization_lease_is_live_at(u64, u64) -> bool
 pub fn awaken_session_contract::repository_transport_credential_target(&str) -> core::result::Result<awaken_credential_contract::descriptor::CredentialTarget, awaken_credential_contract::descriptor::CredentialDescriptorError>
 pub fn awaken_session_contract::repository_transport_credential_usage() -> awaken_credential_contract::usage::CredentialUsage
+pub fn awaken_session_contract::repository_transport_material_binding(&str, &awaken_resource_contract::input::RepositoryId, awaken_resource_contract::registry::ConfigVersion) -> awaken_credential_contract::custody::CredentialMaterialBinding
 pub const fn awaken_session_contract::resolved_environment_snapshot_is_exact(bool, u64, core::option::Option<u64>) -> bool
 pub fn awaken_session_contract::resolved_toolsets(&[awaken_agent_contract::toolset::ToolsetPolicy]) -> alloc::vec::Vec<awaken_session_contract::AgentTool>
 pub fn awaken_session_contract::session_agent_report_messages<'a>(&'a [awaken_agent_contract::agent::message::Message], &awaken_agent_contract::agent::run::Id) -> alloc::vec::Vec<&'a awaken_agent_contract::agent::message::Message>
