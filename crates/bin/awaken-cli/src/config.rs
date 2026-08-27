@@ -16,7 +16,6 @@ use awaken_runtime_host::{ContentRedaction, PackageImageBuilder};
 use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
 mod cloud_iam;
 mod deployment;
-mod deployment_backing;
 mod file_schema;
 mod file_support;
 mod local_product;
@@ -26,6 +25,7 @@ mod runtime_settings;
 mod seal_key;
 mod service_boundary;
 mod worker_bootstrap;
+mod workspace_data;
 
 pub use awaken_worker::WorkerBootstrap;
 pub use cloud_iam::CloudIamConfig;
@@ -486,9 +486,9 @@ impl ResolvedDeployment {
                 data_dir.join("captured_content.db"),
             ),
         };
-        let resources = deployment_backing::resolve(
+        let resources = workspace_data::resolve(
             execution_store_url(&file.resource_database_url),
-            file.deployment_backing.as_ref(),
+            file.workspace_data.as_ref(),
             data_dir.clone(),
         )?;
         resources
