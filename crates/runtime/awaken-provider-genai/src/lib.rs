@@ -21,13 +21,13 @@ use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
     ThinkingBlock, Tool as GenaiTool, ToolCall as GenaiToolCall, ToolResponse, Usage,
 };
-use genai::chat::{ChatOptions, ReasoningEffort as GenaiReasoningEffort};
 
 /// The genai wire adapter, re-exported so a consumer selects a provider wire without
 /// naming the model SDK itself (which stays named only in this crate).
 pub use genai::adapter::AdapterKind;
 
 mod anthropic_content;
+mod inference_options;
 mod openai_responses;
 pub use openai_responses::OpenAiResponsesExecutor;
 mod transcript_projection;
@@ -250,11 +250,7 @@ fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -
 pub struct GenaiExecutor {
     client: Client,
     adapter: Option<AdapterKind>,
-    /// Provider defaults that cannot be represented by the neutral inference
-    /// vocabulary. DeepSeek V4 enables high-effort thinking by default; when an
-    /// Agent did not request reasoning, disable it explicitly so an ordinary
-    /// chat turn does not spend most of its latency on hidden reasoning chunks.
-    default_extra_body: Option<serde_json::Value>,
+    unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
     timeout: Duration,
     idle_timeout: Duration,
 }
@@ -266,8 +262,12 @@ impl GenaiExecutor {
         candidate: &ResolvedModelCandidate,
         credential: impl Into<String>,
     ) -> std::result::Result<Self, String> {
-        let endpoint = match candidate.provisioning() {
-            ModelProvisioning::Provider { endpoint, .. } => endpoint,
+        let (endpoint, unspecified_reasoning) = match candidate.provisioning() {
+            ModelProvisioning::Provider {
+                endpoint,
+                unspecified_reasoning,
+                ..
+            } => (endpoint, *unspecified_reasoning),
             _ => {
                 return Err(format!(
                     "snapshot candidate `{}` has no provider endpoint",
@@ -287,10 +287,11 @@ impl GenaiExecutor {
                 ));
             }
         };
-        Ok(Self::from_resolved(
+        Ok(Self::from_resolved_with_reasoning(
             adapter,
             (!endpoint.base_url.trim().is_empty()).then(|| endpoint.base_url.clone()),
             credential,
+            unspecified_reasoning,
         ))
     }
 
@@ -312,7 +313,7 @@ impl GenaiExecutor {
         Self {
             client,
             adapter,
-            default_extra_body: None,
+            unspecified_reasoning: Default::default(),
             timeout: DEFAULT_TIMEOUT,
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
         }
@@ -348,10 +349,23 @@ impl GenaiExecutor {
         base_url: Option<String>,
         key: impl Into<String>,
     ) -> Self {
+        Self::from_resolved_with_reasoning(
+            adapter,
+            base_url,
+            key,
+            awaken_runtime_contract::UnspecifiedReasoning::ProviderDefault,
+        )
+    }
+
+    fn from_resolved_with_reasoning(
+        adapter: genai::adapter::AdapterKind,
+        base_url: Option<String>,
+        key: impl Into<String>,
+        unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
+    ) -> Self {
         use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
         use genai::{ModelIden, ServiceTarget};
 
-        let default_extra_body = deepseek_default_extra_body(adapter, base_url.as_deref());
         let key = key.into();
         let base_url = normalize_provider_base_url(adapter, base_url);
         let resolver = ServiceTargetResolver::from_resolver_fn(
@@ -368,7 +382,7 @@ impl GenaiExecutor {
             .with_service_target_resolver(resolver)
             .build();
         let mut executor = Self::with_client_for_adapter(client, adapter);
-        executor.default_extra_body = default_extra_body;
+        executor.unspecified_reasoning = unspecified_reasoning;
         executor
     }
 
@@ -612,57 +626,13 @@ impl LlmExecutor for GenaiExecutor {
 }
 
 impl GenaiExecutor {
-    fn chat_options(&self, request: &ChatRequest, streaming: bool) -> Result<ChatOptions> {
-        let mut options = to_genai_options(request, streaming)?;
-        if request.inference.effort.is_none()
-            && let Some(extra_body) = &self.default_extra_body
-        {
-            options = options.with_extra_body(extra_body.clone());
-        }
-        Ok(options)
+    fn chat_options(
+        &self,
+        request: &ChatRequest,
+        streaming: bool,
+    ) -> Result<genai::chat::ChatOptions> {
+        inference_options::materialize(request, streaming, self.unspecified_reasoning)
     }
-}
-
-fn deepseek_default_extra_body(
-    adapter: AdapterKind,
-    base_url: Option<&str>,
-) -> Option<serde_json::Value> {
-    if adapter != AdapterKind::OpenAI {
-        return None;
-    }
-    let url = reqwest::Url::parse(base_url?).ok()?;
-    matches!(url.host_str(), Some("api.deepseek.com"))
-        .then(|| serde_json::json!({ "thinking": { "type": "disabled" } }))
-}
-
-/// Materialize the snapshot's typed inference controls into genai's per-call
-/// options. A control the adapter cannot faithfully express is rejected before
-/// network I/O; accepting and silently running with another behavior would make
-/// the immutable Agent revision untrue.
-fn to_genai_options(request: &ChatRequest, _streaming: bool) -> Result<ChatOptions> {
-    use awaken_runtime_contract::agent_bindings::{InferenceSpeed, ReasoningEffort};
-
-    if request.inference.speed == Some(InferenceSpeed::Fast) {
-        return Err(Error::InvalidRequest(
-            "inference speed `fast` is not supported by the configured genai adapter".into(),
-        ));
-    }
-    if let Some(geo) = &request.inference.inference_geo {
-        return Err(Error::InvalidRequest(format!(
-            "inference_geo `{geo}` is not supported by the configured genai adapter"
-        )));
-    }
-    let mut options = ChatOptions::default();
-    if let Some(effort) = request.inference.effort {
-        options = options.with_reasoning_effort(match effort {
-            ReasoningEffort::Low => GenaiReasoningEffort::Low,
-            ReasoningEffort::Medium => GenaiReasoningEffort::Medium,
-            ReasoningEffort::High => GenaiReasoningEffort::High,
-            ReasoningEffort::Xhigh => GenaiReasoningEffort::XHigh,
-            ReasoningEffort::Max => GenaiReasoningEffort::Max,
-        });
-    }
-    Ok(options)
 }
 
 /// Classify a provider error string into the contract's error taxonomy. The
@@ -1524,9 +1494,6 @@ mod hermetic_tests {
 
     use awaken_agent_contract::agent::content::ContentBlock;
     use awaken_agent_contract::agent::message::Role;
-    use awaken_runtime_contract::agent_bindings::{
-        InferenceOptions, InferenceSpeed, ReasoningEffort,
-    };
     use awaken_runtime_contract::llm::{
         ChatMessage, ChatRequest, DeltaSink, LlmExecutor, StopReason,
     };
@@ -1534,8 +1501,8 @@ mod hermetic_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{
-        AdapterKind, CredentialProbe, GenaiExecutor, GenaiReasoningEffort, discover_model_ids,
-        normalize_provider_base_url, probe_credential, to_genai_options, to_genai_request,
+        AdapterKind, CredentialProbe, GenaiExecutor, discover_model_ids,
+        normalize_provider_base_url, probe_credential, to_genai_request,
     };
 
     #[test]
@@ -1555,114 +1522,6 @@ mod hermetic_tests {
             )
             .as_deref(),
             Some("https://api.deepseek.com")
-        );
-    }
-
-    fn controlled_request(inference: InferenceOptions) -> ChatRequest {
-        ChatRequest {
-            model_binding: ModelBinding::new("provider", "claude-opus-4-8", "genai"),
-            inference,
-            messages: vec![ChatMessage {
-                role: Role::User,
-                content: vec![ContentBlock::text("hello")],
-            }],
-            tools: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn typed_inference_controls_are_materialized_or_rejected_before_io() {
-        // Causal graph:
-        // immutable ChatRequest controls -> provider adapter options OR stable
-        // pre-I/O rejection. No branch may silently discard a requested mode.
-        //
-        // Decision table:
-        // | effort | speed    | geo  | provider behavior                         |
-        // | high   | standard | none | genai reasoning_effort=High              |
-        // | none   | omitted  | none | default options                          |
-        // | any    | fast     | none | invalid_request before network execution |
-        // | any    | any      | set  | invalid_request before network execution |
-        let standard = controlled_request(InferenceOptions {
-            effort: Some(ReasoningEffort::High),
-            speed: Some(InferenceSpeed::Standard),
-            inference_geo: None,
-        });
-        let options = to_genai_options(&standard, false).unwrap();
-        assert!(matches!(
-            options.reasoning_effort,
-            Some(GenaiReasoningEffort::High)
-        ));
-
-        let defaults = to_genai_options(&controlled_request(Default::default()), false).unwrap();
-        assert!(defaults.reasoning_effort.is_none());
-
-        let fast = controlled_request(InferenceOptions {
-            effort: Some(ReasoningEffort::Max),
-            speed: Some(InferenceSpeed::Fast),
-            inference_geo: None,
-        });
-        let error = to_genai_options(&fast, false).unwrap_err();
-        assert_eq!(error.code(), "invalid_request");
-
-        let geo = controlled_request(InferenceOptions {
-            effort: None,
-            speed: None,
-            inference_geo: Some(awaken_runtime_contract::agent_bindings::InferenceGeography::Us),
-        });
-        let error = to_genai_options(&geo, false).unwrap_err();
-        assert_eq!(error.code(), "invalid_request");
-        assert!(error.to_string().contains("inference_geo `us`"));
-    }
-
-    #[test]
-    fn deepseek_default_thinking_is_disabled_unless_the_agent_requests_reasoning() {
-        // Cause/effect decision table:
-        // D1 DeepSeek endpoint + no authored effort -> disable provider-default
-        //    thinking so ordinary chat returns visible content promptly.
-        // D2 DeepSeek endpoint + authored effort -> do not override the provider;
-        //    the explicit reasoning request remains authoritative.
-        // D3 another OpenAI-compatible endpoint -> never inject DeepSeek fields.
-        let deepseek = GenaiExecutor::from_resolved(
-            AdapterKind::OpenAI,
-            Some("https://api.deepseek.com".into()),
-            "fixture-key",
-        );
-        let defaults = deepseek
-            .chat_options(&controlled_request(Default::default()), true)
-            .unwrap();
-        assert_eq!(
-            defaults.extra_body,
-            Some(serde_json::json!({ "thinking": { "type": "disabled" } })),
-            "D1",
-        );
-
-        let reasoned = deepseek
-            .chat_options(
-                &controlled_request(InferenceOptions {
-                    effort: Some(ReasoningEffort::High),
-                    ..Default::default()
-                }),
-                true,
-            )
-            .unwrap();
-        assert!(reasoned.extra_body.is_none(), "D2");
-        assert!(matches!(
-            reasoned.reasoning_effort,
-            Some(GenaiReasoningEffort::High)
-        ));
-
-        let compatible = GenaiExecutor::from_resolved(
-            AdapterKind::OpenAI,
-            Some("https://example.test/v1".into()),
-            "fixture-key",
-        );
-        assert!(
-            compatible
-                .chat_options(&controlled_request(Default::default()), true)
-                .unwrap()
-                .extra_body
-                .is_none(),
-            "D3",
         );
     }
 

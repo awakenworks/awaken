@@ -10,11 +10,12 @@ use awaken_credential_vault::{
     DeferredCredentialHolderSelection, ExactCredentialAccessRequest, SelectionPolicy,
     compile_exact_credential_access,
 };
-use awaken_model_catalog::{Offering, ProviderCatalog};
+use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
 use awaken_runtime_contract::{
     CredentialExecutionPolicy, CredentialMaterialBinding, CredentialUsage, InferenceEndpoint,
+    ProviderExecutionProfile, UnspecifiedReasoning,
 };
 use awaken_tenancy::ScopeId;
 
@@ -28,6 +29,17 @@ pub(super) enum PublicationAccess<'a> {
 pub(super) struct PublicationCredentialLookup<'a> {
     pub(super) sources: &'a [CredentialSource],
     pub(super) pool: Option<&'a CredentialPool>,
+}
+
+/// Compile catalog identity into provider behavior once, before the immutable
+/// runtime snapshot crosses the control/runtime boundary. Runtime adapters must
+/// never recover this policy from mutable URLs or vendor-shaped JSON.
+fn unspecified_reasoning(provider_slug: &str, dialect: ApiDialect) -> UnspecifiedReasoning {
+    if provider_slug == "deepseek" && dialect == ApiDialect::OpenAiChat {
+        UnspecifiedReasoning::Disabled
+    } else {
+        UnspecifiedReasoning::ProviderDefault
+    }
 }
 
 impl SourceLookup for PublicationCredentialLookup<'_> {
@@ -199,6 +211,7 @@ impl CatalogModelPublicationResolver {
         } else {
             format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version)
         };
+        let reasoning = unspecified_reasoning(provider.slug.as_str(), endpoint.dialect);
         let endpoint = InferenceEndpoint {
             adapter_kind: endpoint.dialect.adapter_kind().to_string(),
             api_dialect: endpoint.dialect.as_str().to_string(),
@@ -242,27 +255,69 @@ impl CatalogModelPublicationResolver {
         };
         let error_binding = binding.clone();
         match acp {
-            Some(acp) => ResolvedModelCandidate::try_provider_with_acp(
+            Some(acp) => ResolvedModelCandidate::try_provider_with_profile(
                 binding,
                 provider_ref,
                 route_ref,
                 workspace.clone(),
                 credential,
                 endpoint,
-                acp,
+                ProviderExecutionProfile {
+                    unspecified_reasoning: reasoning,
+                    acp: Some(acp),
+                },
             ),
-            None => ResolvedModelCandidate::try_provider(
+            None => ResolvedModelCandidate::try_provider_with_reasoning(
                 binding,
                 provider_ref,
                 route_ref,
                 workspace.clone(),
                 credential,
                 endpoint,
+                reasoning,
             ),
         }
         .map_err(|error| PublicationResolutionError::CandidateUnavailable {
             binding: error_binding,
             reason: error.to_string(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::unspecified_reasoning;
+    use awaken_model_catalog::ApiDialect;
+    use awaken_runtime_contract::UnspecifiedReasoning;
+
+    #[test]
+    fn catalog_identity_compiles_to_an_explicit_reasoning_policy() {
+        // Cause/effect graph (catalog facts -> immutable runtime policy):
+        // C1 DeepSeek + OpenAI Chat -> disable implicit thinking.
+        // C2 DeepSeek + Anthropic compatibility -> retain provider default.
+        // C3 DeepSeek + Gemini compatibility -> retain provider default.
+        // C4 another vendor + OpenAI Chat -> retain provider default.
+        // These edges prevent URL aliases and arbitrary request JSON from
+        // changing policy after publication.
+        assert_eq!(
+            unspecified_reasoning("deepseek", ApiDialect::OpenAiChat),
+            UnspecifiedReasoning::Disabled,
+            "C1",
+        );
+        assert_eq!(
+            unspecified_reasoning("deepseek", ApiDialect::AnthropicMessages),
+            UnspecifiedReasoning::ProviderDefault,
+            "C2",
+        );
+        assert_eq!(
+            unspecified_reasoning("deepseek", ApiDialect::Gemini),
+            UnspecifiedReasoning::ProviderDefault,
+            "C3",
+        );
+        assert_eq!(
+            unspecified_reasoning("openrouter", ApiDialect::OpenAiChat),
+            UnspecifiedReasoning::ProviderDefault,
+            "C4",
+        );
     }
 }

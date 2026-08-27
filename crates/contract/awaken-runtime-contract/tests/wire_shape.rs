@@ -253,10 +253,48 @@ fn acp_execution_profile_preserves_backend_wire_and_is_optional_on_provider_wire
     )
     .expect("coherent native provider candidate");
     assert!(
-        serde_json::to_value(native).unwrap()["provisioning"]
+        serde_json::to_value(&native).unwrap()["provisioning"]
             .get("acp")
             .is_none(),
         "E2"
+    );
+
+    // Cause/effect wire matrix for the closed reasoning policy:
+    // W1 provider-default -> omitted for backward-compatible canonical wire.
+    // W2 explicitly disabled -> one enum token, never provider-shaped JSON.
+    // W3 unknown token -> rejected by serde before an executable candidate exists.
+    let native_wire = serde_json::to_value(&native).unwrap();
+    assert!(
+        native_wire["provisioning"]
+            .get("unspecified_reasoning")
+            .is_none(),
+        "W1"
+    );
+    let disabled =
+        awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_reasoning(
+            ModelBinding::new("deepseek", "deepseek-chat", "genai"),
+            "deepseek@1",
+            "deepseek.open_ai_chat@1",
+            "workspace-a",
+            None,
+            endpoint(),
+            awaken_runtime_contract::UnspecifiedReasoning::Disabled,
+        )
+        .expect("coherent provider candidate with explicit reasoning policy");
+    let disabled_wire = serde_json::to_value(disabled).unwrap();
+    assert_eq!(
+        disabled_wire["provisioning"]["unspecified_reasoning"],
+        json!("disabled"),
+        "W2"
+    );
+    let mut unknown_wire = disabled_wire;
+    unknown_wire["provisioning"]["unspecified_reasoning"] = json!({"type": "vendor_extension"});
+    assert!(
+        serde_json::from_value::<awaken_runtime_contract::resolved::ResolvedModelCandidate>(
+            unknown_wire
+        )
+        .is_err(),
+        "W3"
     );
 
     let provider =
