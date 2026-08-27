@@ -12,6 +12,7 @@ authority = "ext-builtin-tools"
 [dependencies]
 awaken-runtime-contract.workspace = true
 async-trait.workspace = true
+cap-std = "4"
 glob = "0.3"
 regex = "1"
 schemars = "1"
