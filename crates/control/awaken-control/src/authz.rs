@@ -67,7 +67,7 @@
 //! writes BOTH the live engine and the store rows under one lock, so a restart
 //! over the same directory authenticates previously minted tokens. Hydration
 //! walks the store's bindings to their principals and reloads each principal's
-//! tokens (the `ApiTokenRepo` port deliberately has no list-all).
+//! tokens (the `ApiTokenRepository` contract deliberately has no list-all).
 //!
 //! **What remains deferred**: custom roles, group rosters, and approval
 //! discharge. Commercial entitlements are installed into this same IAM state;
@@ -117,7 +117,7 @@ use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntitlementEngine, EntitlementProvider, EntropySource,
     IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
 };
-use awaken_iam_core::{ApiTokenRepo, RoleBindingRepo};
+use awaken_iam_core::{ApiTokenRepository, RoleBindingRepository};
 #[cfg(test)]
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
 use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
@@ -364,12 +364,12 @@ impl ManagementAuthz {
         let issued = ApiTokenMinter::new(OsEntropy)
             .mint(directory, authz.policy_mut(), request)
             .map_err(|err| err.to_string())?;
-        // Persist through the SqlStore ports, mirroring exactly what mint wrote
+        // Persist through the SqlStore repositories, mirroring exactly what mint wrote
         // into the live engine: the token row and the principal→role binding at
         // the token's workspace scope.
-        ApiTokenRepo::create(&self.store, issued.token.clone())
+        ApiTokenRepository::create(&self.store, issued.token.clone())
             .map_err(|err| format!("persist token row: {err}"))?;
-        RoleBindingRepo::add(
+        RoleBindingRepository::add(
             &self.store,
             RoleBinding {
                 principal,
@@ -410,16 +410,16 @@ impl ManagementAuthz {
             .clone();
         // The row carries the full token (incl. `revoked_at`), so updating it
         // persists the revocation across a restart.
-        ApiTokenRepo::update(&self.store, token.clone()).expect("persist token revocation");
+        ApiTokenRepository::update(&self.store, token.clone()).expect("persist token revocation");
         Ok(token)
     }
 
-    /// Every persisted token, ordered by id. The `ApiTokenRepo` port has no
+    /// Every persisted token, ordered by id. The `ApiTokenRepository` contract has no
     /// list-all by design, so the walk goes bindings → principals → each
     /// principal's tokens (every mint writes a binding, so the walk is total).
     fn all_tokens(&self) -> Vec<ApiToken> {
         let mut principals: Vec<PrincipalRef> = Vec::new();
-        for binding in RoleBindingRepo::list(&self.store).expect("list role bindings") {
+        for binding in RoleBindingRepository::list(&self.store).expect("list role bindings") {
             if !principals.contains(&binding.principal) {
                 principals.push(binding.principal);
             }
@@ -427,7 +427,7 @@ impl ManagementAuthz {
         let mut tokens: Vec<ApiToken> = principals
             .iter()
             .flat_map(|principal| {
-                ApiTokenRepo::list_for_principal(&self.store, principal)
+                ApiTokenRepository::list_for_principal(&self.store, principal)
                     .expect("list principal tokens")
             })
             .collect();
@@ -453,7 +453,7 @@ impl ManagementAuthz {
     /// The mint-time role of `token`, derived from its principal's persisted
     /// Workspace-profile binding at the token's workspace.
     fn role_of(&self, token: &ApiToken) -> Option<String> {
-        let bindings = RoleBindingRepo::list_for_principal(&self.store, &token.principal)
+        let bindings = RoleBindingRepository::list_for_principal(&self.store, &token.principal)
             .expect("list principal bindings");
         let workspace_bindings: Vec<_> = bindings
             .iter()
@@ -467,7 +467,7 @@ impl ManagementAuthz {
         workspace_bindings
             .iter()
             .find(|b| {
-                matches!(&b.scope, ScopeRef::Workspace { workspace_id } if workspace_id == &token.workspace)
+                matches!(&b.scope, ScopeRef::Workspace { workspace_id } if *workspace_id == token.workspace)
             })
             .or_else(|| workspace_bindings.first())
             .map(|b| local_role(&b.role.0).to_owned())
@@ -638,7 +638,7 @@ fn retire_legacy_profile(
 /// the store before the process refuses startup. A canonical binding left by a
 /// prior interrupted migration authorizes removal of its remaining legacy rows.
 fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> Result<(), String> {
-    let bindings = RoleBindingRepo::list(store).expect("list legacy role bindings");
+    let bindings = RoleBindingRepository::list(store).expect("list legacy role bindings");
     let mut migration = Vec::new();
     for legacy in &bindings {
         if !is_legacy_workspace_role(&legacy.role.0) {
@@ -682,10 +682,11 @@ fn migrate_legacy_workspace_bindings(store: &SqlStore<SqliteBackend>) -> Result<
         migration.push((canonical, legacy.clone()));
     }
     for (canonical, legacy) in migration {
-        RoleBindingRepo::add(store, canonical).expect("add canonical Workspace role binding");
-        RoleBindingRepo::remove(store, &legacy).expect("remove legacy Workspace role binding");
+        RoleBindingRepository::add(store, canonical).expect("add canonical Workspace role binding");
+        RoleBindingRepository::remove(store, &legacy)
+            .expect("remove legacy Workspace role binding");
     }
-    if let Some(remaining) = RoleBindingRepo::list(store)
+    if let Some(remaining) = RoleBindingRepository::list(store)
         .expect("list remaining legacy role bindings")
         .into_iter()
         .find(|binding| is_legacy_workspace_role(&binding.role.0))
@@ -745,14 +746,14 @@ pub fn embedded_iam_for_tenant_with_entitlements(
         role: qualify_role("admin"),
         scope: ScopeRef::Global,
     };
-    if RoleBindingRepo::list(&store)
+    if RoleBindingRepository::list(&store)
         .expect("list bindings before bootstrap scope migration")
         .contains(&legacy_global_bootstrap)
     {
-        RoleBindingRepo::remove(&store, &legacy_global_bootstrap)
+        RoleBindingRepository::remove(&store, &legacy_global_bootstrap)
             .expect("remove legacy global bootstrap binding");
     }
-    RoleBindingRepo::add(
+    RoleBindingRepository::add(
         &store,
         RoleBinding {
             principal: PrincipalRef::Service {
@@ -784,13 +785,13 @@ pub fn embedded_iam_for_tenant_with_entitlements(
     );
 
     // Hydrate the durable rows into the in-memory evaluator (it is never
-    // auto-hydrated): bindings into the policy, and — since `ApiTokenRepo` has
+    // auto-hydrated): bindings into the policy, and — since `ApiTokenRepository` has
     // no list-all by design — each binding principal's tokens into the
     // directory. Every mint writes a binding, so the walk is total. Failing
     // closed on a corrupt row (panic) beats dropping a token silently.
     let mut hydrated_tokens = 0usize;
     let mut seen_principals: Vec<PrincipalRef> = Vec::new();
-    for binding in RoleBindingRepo::list(&store).expect("list role bindings") {
+    for binding in RoleBindingRepository::list(&store).expect("list role bindings") {
         if let ScopeRef::Workspace { workspace_id } = &binding.scope {
             engine
                 .policy_mut()
@@ -799,7 +800,7 @@ pub fn embedded_iam_for_tenant_with_entitlements(
         }
         if !seen_principals.contains(&binding.principal) {
             seen_principals.push(binding.principal.clone());
-            for token in ApiTokenRepo::list_for_principal(&store, &binding.principal)
+            for token in ApiTokenRepository::list_for_principal(&store, &binding.principal)
                 .expect("list principal tokens")
             {
                 directory.create(token).expect("hydrate unique token row");
@@ -1129,7 +1130,7 @@ const ROUTE_POLICIES: &[RoutePolicyDescriptor] = &[
     ),
     // MCP Tunnels are Cloud-owned resources exposed through the canonical
     // Management router.  Keep their public ACL in the same Workspace policy
-    // namespace as the injected application port: reads may inspect only the
+    // namespace as the injected application boundary: reads may inspect only the
     // authenticated Workspace and every lifecycle operation is a write.  An
     // absent Cloud application still leaves the routes unmounted.
     RoutePolicyDescriptor::control(

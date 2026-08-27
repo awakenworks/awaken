@@ -9,13 +9,14 @@ fn embedded_agents_workspace_has_one_idempotent_iam_directory_placement() {
     // with the exact same coordinates -> E2 reuse the binding and preserve
     // Directory revision; C3 product id contains non-slug punctuation -> E3 a
     // valid deterministic display slug; C4 runtime scope -> E4 remains the
-    // opaque Workspace id, not a node id.
+    // opaque Workspace id, not a node id; C5 caller-supplied replay metadata ->
+    // E5 cannot create a second compiler or overwrite the IAM placement.
     let dir = tempfile::tempdir().unwrap();
     let first = embedded_iam_for_tenant(dir.path(), "org-directory", "workspace_directory");
     let first_directory = DirectoryApi::new(first.store.clone());
     let product_space = ProductSpaceRef {
         product: "agents".into(),
-        space_id: "workspace_directory".into(),
+        space_id: "workspace/workspace_directory".into(),
     };
     let binding = first_directory
         .product_space_binding(&product_space)

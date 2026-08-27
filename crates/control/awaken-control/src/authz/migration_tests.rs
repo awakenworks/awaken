@@ -29,7 +29,7 @@ fn embedded_upgrade_consolidates_legacy_companion_bindings_once() {
         "awaken.runtime.resources:agent_publisher",
         "awaken.runtime.management:hosted_workspace_admin",
     ] {
-        RoleBindingRepo::add(
+        RoleBindingRepository::add(
             &store,
             RoleBinding {
                 principal: principal.clone(),
@@ -42,7 +42,7 @@ fn embedded_upgrade_consolidates_legacy_companion_bindings_once() {
 
     migrate_legacy_workspace_bindings(&store).unwrap();
     migrate_legacy_workspace_bindings(&store).unwrap();
-    let bindings = RoleBindingRepo::list_for_principal(&store, &principal).unwrap();
+    let bindings = RoleBindingRepository::list_for_principal(&store, &principal).unwrap();
     assert_eq!(bindings.len(), 3);
     for expected in ["admin", "legacy_hosted_admin", "publisher"] {
         assert_eq!(
@@ -77,7 +77,7 @@ fn embedded_upgrade_rejects_incomplete_legacy_authority_without_writes() {
     let scope = ScopeRef::Workspace {
         workspace_id: WorkspaceId("workspace-local".to_owned()),
     };
-    RoleBindingRepo::add(
+    RoleBindingRepository::add(
         &store,
         RoleBinding {
             principal: principal.clone(),
@@ -89,9 +89,9 @@ fn embedded_upgrade_rejects_incomplete_legacy_authority_without_writes() {
 
     let error = migrate_legacy_workspace_bindings(&store).unwrap_err();
     assert!(error.contains("no authority-equivalent canonical binding"));
-    let first = RoleBindingRepo::list_for_principal(&store, &principal).unwrap();
+    let first = RoleBindingRepository::list_for_principal(&store, &principal).unwrap();
     assert_eq!(
-        RoleBindingRepo::list_for_principal(&store, &principal).unwrap(),
+        RoleBindingRepository::list_for_principal(&store, &principal).unwrap(),
         first
     );
     assert_eq!(first.len(), 1);
@@ -122,11 +122,11 @@ fn embedded_upgrade_rejects_an_unknown_legacy_role_without_writes() {
             workspace_id: WorkspaceId("workspace-local".to_owned()),
         },
     };
-    RoleBindingRepo::add(&store, binding.clone()).unwrap();
+    RoleBindingRepository::add(&store, binding.clone()).unwrap();
 
     let error = migrate_legacy_workspace_bindings(&store).unwrap_err();
     assert!(error.contains("unsupported legacy role"));
-    assert_eq!(RoleBindingRepo::list(&store).unwrap(), [binding]);
+    assert_eq!(RoleBindingRepository::list(&store).unwrap(), [binding]);
 }
 
 #[test]
@@ -155,7 +155,7 @@ fn embedded_upgrade_resumes_cleanup_after_canonical_binding_commit() {
         "awaken.runtime.resources:admin".to_owned(),
         qualify_role("admin").0,
     ] {
-        RoleBindingRepo::add(
+        RoleBindingRepository::add(
             &store,
             RoleBinding {
                 principal: principal.clone(),
@@ -169,7 +169,7 @@ fn embedded_upgrade_resumes_cleanup_after_canonical_binding_commit() {
     migrate_legacy_workspace_bindings(&store).unwrap();
     migrate_legacy_workspace_bindings(&store).unwrap();
 
-    let bindings = RoleBindingRepo::list_for_principal(&store, &principal).unwrap();
+    let bindings = RoleBindingRepository::list_for_principal(&store, &principal).unwrap();
     assert_eq!(bindings.len(), 1);
     assert_eq!(bindings[0].role, qualify_role("admin"));
     assert_eq!(bindings[0].scope, scope);

@@ -1,6 +1,6 @@
 # ADR-0077: IAM Directory Owns Agents Product-Space Placement
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-27
 - Implements: awaken-iam ADR-0013
 - Preserves: ADR-0048 IAM host adoption, ADR-0063 resource/authz isolation
@@ -17,12 +17,13 @@ and resource ownership to presentation hierarchy.
 
 The stable Agents Workspace id remains the product and persistence coordinate.
 IAM stores its independent placement as
-`ProductSpaceRef { product: "agents", space_id: workspace_id }`. Local embedded
-boot reconciles the hidden Org and this binding through IAM's existing
-independent `DirectoryApi` and shared SQLite store. Organization bootstrap still
-uses IAM authorization administration; Directory placement does not. Hosted
-provisioning performs the same IAM command through Cloud's remote or embedded
-IAM administration path.
+`ProductSpaceRef { product: "agents", space_id: "workspace/<opaque-id>" }`.
+Local embedded boot reconciles the hidden Org and calls IAM's canonical
+`EnsureProductSpacePlacement` through the existing `DirectoryApi` and shared
+SQLite store. IAM alone derives the node id, canonical slug, timestamp, active
+state, and audit actor. Organization bootstrap still uses IAM authorization
+administration; Directory placement does not. Hosted provisioning performs the
+same command through Cloud's remote or embedded IAM administration path.
 
 Agents adds no directory model, repository, database tables, client, server, or
 hierarchy-aware runtime API. Moving the IAM node therefore changes neither
@@ -39,10 +40,10 @@ and IAM-free except at their existing authorization edge.
 ## Dynamic behavior
 
 On first local boot, the adapter migrates IAM, idempotently creates the hidden
-Org, then atomically creates one Directory node and `agents` binding. On restart,
-the binding is read and reused without advancing Directory revision. A binding
-found in another Org fails boot. Directory mutation failures fail closed; no
-product write is attempted as a fallback.
+Org, then ensures one Directory placement. On restart, IAM returns the existing
+placement without advancing Directory revision or overwriting later user moves
+and metadata. A placement found in another Org fails boot. Directory mutation
+failures fail closed; no product-side placement write is attempted as a fallback.
 
 ## Consequences
 
