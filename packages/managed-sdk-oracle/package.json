@@ -6,7 +6,7 @@
   "scripts": {
     "generate": "node src/cli.mjs generate",
     "check": "node src/cli.mjs check",
-    "test": "node --test test/*.test.mjs"
+    "test": "node --test test/*.test.mjs && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk-current": "npm:@anthropic-ai/sdk@0.121.0",
