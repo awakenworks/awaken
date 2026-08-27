@@ -60,6 +60,15 @@ pub fn file_store_bundle() -> Result<MigrationBundle, MigrationError> {
                 "optional GA Files download expiry",
                 "ALTER TABLE {prefix}_file ADD COLUMN expires_at TEXT",
             )?,
+            Migration::per_dialect(
+                4,
+                "preserve portable logical File flags as 64-bit integers",
+                "ALTER TABLE {prefix}_file ALTER COLUMN downloadable TYPE BIGINT \
+                 USING downloadable::BIGINT; \
+                 ALTER TABLE {prefix}_file ALTER COLUMN deleted TYPE BIGINT \
+                 USING deleted::BIGINT",
+                "SELECT 1",
+            )?,
         ],
     )
 }

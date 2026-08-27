@@ -685,6 +685,31 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "postgres")]
+    async fn isolated_postgres_url(schema: &'static str) -> Option<String> {
+        use sqlx::Executor;
+
+        let base = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+        });
+        let Ok(admin) = sqlx::PgPool::connect(&base).await else {
+            println!("[skip] no Postgres reachable");
+            return None;
+        };
+        let _ = admin
+            .execute(format!("DROP SCHEMA IF EXISTS {schema} CASCADE").as_str())
+            .await;
+        admin
+            .execute(format!("CREATE SCHEMA {schema}").as_str())
+            .await
+            .expect("create schema");
+        admin.close().await;
+        let separator = if base.contains('?') { '&' } else { '?' };
+        Some(format!(
+            "{base}{separator}options=-c%20search_path%3D{schema}"
+        ))
+    }
+
     /// Live Postgres round-trip for [`PgFileStore`](crate::postgres::PgFileStore),
     /// isolated in its own schema. Skips when no Postgres is reachable
     /// (`AWAKEN_TEST_DATABASE_URL`), proving the shared portable bundle renders and
@@ -694,24 +719,9 @@ mod tests {
     async fn postgres_round_trip() {
         use crate::postgres::PgFileStore;
 
-        let base = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
-            "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
-        });
-        let Ok(admin) = sqlx::PgPool::connect(&base).await else {
-            println!("[skip] no Postgres reachable");
+        let Some(url) = isolated_postgres_url("t_file_store").await else {
             return;
         };
-        use sqlx::Executor;
-        let _ = admin
-            .execute("DROP SCHEMA IF EXISTS t_file_store CASCADE")
-            .await;
-        admin
-            .execute("CREATE SCHEMA t_file_store")
-            .await
-            .expect("create schema");
-        admin.close().await;
-        let sep = if base.contains('?') { '&' } else { '?' };
-        let url = format!("{base}{sep}options=-c%20search_path%3Dt_file_store");
 
         // Causal graph: verify -> read ledger -> serve/fail; only migrate may
         // create ledger/tables. The table pins all three startup decisions:
@@ -738,6 +748,101 @@ mod tests {
             store.put(b"portable").await.unwrap(),
             InMemoryFileStore::new().put(b"portable").await.unwrap()
         );
+    }
+
+    /// Live upgrade proof for the portable-integer renderer transition. The
+    /// V1-V3 ledger checksum never encoded the rendered PostgreSQL width, so a
+    /// released database may carry the same receipts with `INT4` while a fresh
+    /// database now renders the columns as `INT8`.
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn postgres_v4_widens_legacy_file_flags_without_losing_values() {
+        use crate::postgres::PgFileStore;
+        use crate::schema::{BUNDLE_ID, NS, file_store_bundle};
+        use awaken_scoped_migration::{MigrationBundle, postgres::PostgresMigrationRunner};
+        use sqlx::Row;
+
+        // Width-upgrade cause/effect decision table:
+        // C1=V1-V3 canonical receipts with legacy INT4 columns; C2=Verify or
+        // Migrate; C3=V4 already present. Effects: E1 Verify reports pending and
+        // writes nothing; E2 Migrate widens both flags while preserving values;
+        // E3 Verify/replay succeeds and performs no second migration.
+        //
+        // | Rule | C1 | operation | C3 | Effect |
+        // |---|---|---|---|---|
+        // | W1 | T | Verify  | F | E1 pending, INT4/value unchanged |
+        // | W2 | T | Migrate | F | E2 one V4, INT8/value preserved |
+        // | W3 | T | Verify/replay | T | E3 current, no DDL |
+        let Some(url) = isolated_postgres_url("t_file_store_integer_width").await else {
+            return;
+        };
+        let pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let full = file_store_bundle().unwrap();
+        let legacy = MigrationBundle::new(BUNDLE_ID, full.migrations()[..3].to_vec()).unwrap();
+        let runner = PostgresMigrationRunner::with_prefix(pool.clone(), NS).unwrap();
+        assert_eq!(runner.run_bundle(&legacy).await.unwrap().len(), 3);
+
+        // Reproduce the released physical schema while retaining the exact
+        // canonical V1-V3 receipts. The portable template/checksum did not
+        // change when the renderer began widening INTEGER for fresh databases.
+        sqlx::raw_sql(
+            "ALTER TABLE file_store_file ALTER COLUMN downloadable TYPE INTEGER \
+             USING downloadable::INTEGER; \
+             ALTER TABLE file_store_file ALTER COLUMN deleted TYPE INTEGER \
+             USING deleted::INTEGER",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO file_store_file \
+             (id, workspace_id, blob_id, filename, mime_type, size_bytes, created_at, \
+              downloadable, deleted) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+        )
+        .bind("legacy-file")
+        .bind("legacy-workspace")
+        .bind("legacy-blob")
+        .bind("legacy.txt")
+        .bind("text/plain")
+        .bind(3_i64)
+        .bind("2026-08-27T00:00:00Z")
+        .bind(1_i32)
+        .bind(0_i32)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(runner.verify_bundle(&full).await.is_err(), "W1 pending V4");
+        let before = sqlx::query("SELECT downloadable, deleted FROM file_store_file WHERE id = $1")
+            .bind("legacy-file")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(before.get::<i32, _>("downloadable"), 1, "W1");
+        assert_eq!(before.get::<i32, _>("deleted"), 0, "W1");
+
+        assert_eq!(runner.run_bundle(&full).await.unwrap().len(), 1, "W2");
+        runner.verify_bundle(&full).await.unwrap();
+        assert!(runner.run_bundle(&full).await.unwrap().is_empty(), "W3");
+        let column_types = sqlx::query_scalar::<_, String>(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema = current_schema() AND table_name = 'file_store_file' \
+             AND column_name IN ('downloadable', 'deleted') ORDER BY column_name",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(column_types, vec!["bigint", "bigint"], "W2");
+
+        let store = PgFileStore::with_existing_pool(pool).await.unwrap();
+        let record = store
+            .get_file("legacy-workspace", "legacy-file", false)
+            .await
+            .unwrap()
+            .expect("W2 preserved logical File");
+        assert!(record.downloadable, "W2");
+        assert!(!record.deleted, "W2");
     }
 
     #[cfg(feature = "sqlite")]
