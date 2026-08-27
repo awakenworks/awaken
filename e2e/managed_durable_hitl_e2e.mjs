@@ -31,9 +31,10 @@ async function dispatches(thread) {
 async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, { SESSION_DEPLOYMENT_INGRESS: 'durable', SESSION_DEPLOYMENT_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) });
+  const serverEnv = { SESSION_DEPLOYMENT_INGRESS: 'durable', SESSION_DEPLOYMENT_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) };
+  let srv = spawnServer('real', PORT, serverEnv);
   await waitForPort(PORT);
-  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+  let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
   try {
     const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
     const initialReceipt = await client.beta.sessions.events.send(s.id, {
@@ -42,15 +43,19 @@ async function main() {
     });
 
     // Cause/effect graph: C1 durable first turn; C2 committed approval ticket;
-    // C3 exact approval input; C4 resumed Run ends. Effects: E1 one Awaiting
+    // C3 exact approval input+Idempotency-Key; C4 resumed Run ends; C5 process
+    // restarts after the response could have been lost. Effects: E1 one Awaiting
     // dispatch exists before approval; E2 the dispatch Worker resumes; E3 Done
-    // removes the row; E4 the Managed projection reaches end_turn.
+    // removes the row; E4 the Managed projection reaches end_turn; E5 an exact
+    // retry returns the original receipt; E6 key reuse with another decision is
+    // 409; E7 public history contains one confirmation and one tool result.
     //
     // | Rule | ticket | input | resumed state | queue effect |
     // | R1 | open | none | Awaiting | one Awaiting row |
     // | R2 | open | exact approval | Ended | row removed |
-    // | R3 | open | exact approval | Awaiting(new ticket) | one Awaiting row |
-    // This scenario covers R1/R2. The run-ingress settle suite owns R3.
+    // | R3 | consumed+restart | exact key/body | exact receipt, no new row |
+    // | R4 | consumed+restart | same key/changed body | 409, no mutation |
+    // The run-ingress settle suite owns the new-ticket partition.
     // The durable run awaits on a tool_use awaiting approval.
     const initialReceiptId = initialReceipt.data[0]?.id;
     assert.equal(typeof initialReceiptId, 'string', 'R1 exact durable User Event receipt');
@@ -74,10 +79,16 @@ async function main() {
     pass('durable run awaiting on a tool_use (requires_action)');
 
     // Approve — the DISPATCH WORKER resumes the awaiting durable run out of band.
-    const confirmationReceipt = await client.beta.sessions.events.send(s.id, {
+    const confirmationBody = {
       events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'allow' }],
       betas: BETAS,
-    });
+    };
+    const confirmationOptions = { headers: { 'Idempotency-Key': 'durable-hitl-confirmation-1' } };
+    const confirmationReceipt = await client.beta.sessions.events.send(
+      s.id,
+      confirmationBody,
+      confirmationOptions,
+    );
     const confirmationReceiptId = confirmationReceipt.data[0]?.id;
     assert.equal(typeof confirmationReceiptId, 'string', 'R2 exact approval receipt');
     await waitForSessionEventReceipt(
@@ -92,7 +103,48 @@ async function main() {
     assert.equal((await dispatches(s.id)).length, 0, 'R2/E3: terminal resume removes the durable dispatch');
     pass('durable ingress: an awaiting run resumed by the worker after approval (resume path)');
 
-    console.log('E2E PASS: durable HITL — the dispatch worker resumes an awaiting run after approval.');
+    // Treat the first HTTP response as lost: retain only the caller's stable key
+    // and body, restart the complete server, and ask the public API again.
+    await stopServer(srv.server);
+    srv = spawnServer('real', PORT, serverEnv);
+    await waitForPort(PORT);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    const replay = await client.beta.sessions.events.send(
+      s.id,
+      confirmationBody,
+      confirmationOptions,
+    );
+    assert.deepEqual(replay, confirmationReceipt, 'R3/E5 restart replays the exact receipt');
+    await assert.rejects(
+      client.beta.sessions.events.send(
+        s.id,
+        {
+          events: [{ type: 'user.tool_confirmation', tool_use_id: toolUse.id, result: 'deny' }],
+          betas: BETAS,
+        },
+        confirmationOptions,
+      ),
+      (error) => error?.status === 409,
+      'R4/E6 same key with another approval decision conflicts',
+    );
+    const durableEvents = [];
+    for await (const event of client.beta.sessions.events.list(s.id, { betas: BETAS })) {
+      durableEvents.push(event);
+    }
+    assert.equal(
+      durableEvents.filter((event) => event.type === 'user.tool_confirmation').length,
+      1,
+      'R3+R4/E7 one durable confirmation',
+    );
+    assert.equal(
+      durableEvents.filter((event) =>
+        event.type === 'agent.tool_result' && event.tool_use_id === toolUse.id).length,
+      1,
+      'R3+R4/E7 one durable result for the approved tool call',
+    );
+    pass('response-loss retry survives restart with one receipt and conflict-safe key reuse');
+
+    console.log('E2E PASS: durable HITL — approval, restart replay, and conflict-safe idempotency form one closure.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

@@ -81,6 +81,11 @@ fn snapshot_repository_skill_files(
     roots
         .iter()
         .flat_map(|root| {
+            let visible_root = if root.starts_with("workspace/") {
+                format!("/{root}")
+            } else {
+                root.clone()
+            };
             env.scan_skill_dir(root)
                 .into_iter()
                 .map(move |file| SkillFile {
@@ -88,7 +93,11 @@ fn snapshot_repository_skill_files(
                     // multiple repositories remain independently visible.
                     id: format!("repository:{root}:{}", file.id),
                     content: file.content,
-                    dir: Some(file.dir),
+                    // Providers may strip their physical workspace prefix while
+                    // scanning. Reconstruct the Agent-visible path from the
+                    // frozen mount root so Workdir/Namespace/Container expose
+                    // one `/workspace/...` coordinate.
+                    dir: Some(format!("{visible_root}/{}", file.id)),
                 })
         })
         .collect()
@@ -710,8 +719,8 @@ mod tests {
         assert_ne!(initial[0].dir, initial[1].dir, "R1 distinct sandbox paths");
         let prompt = managed_filesystem_prompt(frozen.as_ref()).expect("R1 prompt metadata");
         assert_eq!(prompt.matches("- Shared:").count(), 2, "R1 both announced");
-        assert!(prompt.contains("workspace/a/.claude/skills/shared/SKILL.md"));
-        assert!(prompt.contains("workspace/b/.claude/skills/shared/SKILL.md"));
+        assert!(prompt.contains("/workspace/a/.claude/skills/shared/SKILL.md"));
+        assert!(prompt.contains("/workspace/b/.claude/skills/shared/SKILL.md"));
         assert!(
             !prompt.contains("A-v1") && !prompt.contains("B-v1"),
             "R1 prompt exposes metadata and paths, not instruction bodies"

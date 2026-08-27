@@ -206,7 +206,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("error") => awaken_scenario_host::build_error_router(),
         Ok("worker") => awaken_scenario_host::build_worker_router(),
         Ok("environment-matrix") => awaken_scenario_host::build_environment_matrix_router(),
-        Ok("full-chain") => awaken_scenario_host::build_full_chain_router(),
+        Ok("full-chain") => awaken_scenario_host::build_full_chain_router().await,
         _ => awaken_scenario_host::build_echo_router(),
     };
     // Brain admin surface (ADR-0022 D7): the connection-count metric that KEDA
@@ -453,7 +453,13 @@ mod dispatch_tests {
             ("error", sh::build_error_router()),
             ("worker", sh::build_worker_router()),
             ("environment-matrix", sh::build_environment_matrix_router()),
-            ("full-chain", sh::build_full_chain_router()),
+            (
+                "full-chain",
+                sh::build_full_chain_router_with_deployment(
+                    awaken_runtime_host::DeploymentConfig::ephemeral(),
+                )
+                .await,
+            ),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
             ("<default/unknown>", sh::build_echo_router()),
         ];

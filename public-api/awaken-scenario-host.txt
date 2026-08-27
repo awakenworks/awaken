@@ -99,7 +99,8 @@ pub fn awaken_scenario_host::build_echo_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_environment_matrix_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_ephemeral_resource_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_error_router() -> axum::routing::Router
-pub fn awaken_scenario_host::build_full_chain_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_full_chain_router() -> axum::routing::Router
+pub async fn awaken_scenario_host::build_full_chain_router_with_deployment(awaken_runtime_host::deployment_config::DeploymentConfig) -> axum::routing::Router
 pub fn awaken_scenario_host::build_git_repo_router() -> axum::routing::Router
 pub fn awaken_scenario_host::build_graded_router(alloc::sync::Arc<dyn awaken_runtime_contract::llm::LlmExecutor>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> axum::routing::Router
 pub async fn awaken_scenario_host::build_management_web_router() -> axum::routing::Router

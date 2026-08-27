@@ -72,6 +72,7 @@ pub use continuation::SessionContinuationError;
 pub use creation::{CreateSessionCommand, SessionCreationError};
 mod credentials;
 mod event_batches;
+pub use event_batches::SessionEventBatchIdempotency;
 mod outcome_reconciliation;
 mod projection;
 pub use credentials::SessionPreparationError;

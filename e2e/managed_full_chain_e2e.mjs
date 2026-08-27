@@ -3,8 +3,8 @@
 // resource via the API, is offered a skill, and has out-of-band memory extraction —
 // then one natural-language turn drives the whole ADR-0038/0036 loop:
 //   configure (API) → apply (sandbox mounts) → NL turn → read and use a skill →
-//   write the memory store → commit the repo → produce an output artifact →
-//   retrieve the artifact via GET /v1/files → release once to reconcile/publish.
+//   write the memory store → commit the repo → export patch evidence →
+//   retrieve artifacts → apply/test/scan in an external worktree; remote push stays manual.
 // Plus: the extractor sub-run saves a cross-session memory after the turn.
 //
 // The model runs for real (GenaiExecutor → fake upstream reproducing the `fullChain`
@@ -14,15 +14,16 @@
 // End-to-end FMECA / cause-effect graph (the assertions in `main` own the table):
 // C1 authoritative Skill/Memory/Repository configuration exists; C2 Session
 // freezes those resources and env_local; C3 the real provider turn completes;
-// C4 gated mutations are approved; C5 release/reconciliation succeeds. Effects:
-// E1 attached and repository-local Skills are announced and read; E2 Memory and Repository mutations publish;
-// E3 the output is one downloadable File whose bytes are exact; E4 extraction
+// C4 gated mutations are approved; C5 archive/reconciliation succeeds; C6 exported
+// evidence verifies and applies externally. Effects: E1 attached and repository-local
+// Skills are announced and read; E2 Memory publishes while the Repository remote is unchanged;
+// E3 patch, manifest, SHA and output Files have exact bytes; E4 extraction
 // persists cross-Session memory; E5 equal authored Skill bytes are idempotent and
 // changed bytes append one version. Any missing cause must fail the scenario,
 // never be interpreted as an empty store or successful no-op.
 //
 // | Rule | C1 | C2 | C3 | C4 | C5 | Required effects |
-// | F1 | yes | yes | yes | yes | yes | E1+E2+E3+E4+E5 |
+// | F1 | yes | yes | yes | yes | yes | E1+E2+E3+E4+E5+C6 |
 // | F2 | missing/invalid | any | any | any | any | fail closed before invocation |
 // | F3 | yes | yes | provider/turn fails | any | any | no fabricated terminal success |
 // | F4 | yes | yes | yes | denied | any | no gated Resource mutation |
@@ -33,6 +34,7 @@
 // Run: (from e2e/)  node managed_full_chain_e2e.mjs
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -76,6 +78,11 @@ function seedRemote() {
   git(['config', 'user.email', 'seed@t'], work);
   git(['config', 'user.name', 'seed'], work);
   fs.writeFileSync(`${work}/README.md`, README);
+  fs.writeFileSync(
+    `${work}/verify.sh`,
+    '#!/usr/bin/env bash\nset -euo pipefail\ntest "$(cat CHAIN.txt)" = "REPO_FULLCHAIN_8830"\ngit diff --check\n',
+    { mode: 0o755 },
+  );
   fs.mkdirSync(`${work}/.claude/skills/repository-guide`, { recursive: true });
   fs.writeFileSync(
     `${work}/.claude/skills/repository-guide/SKILL.md`,
@@ -172,6 +179,7 @@ async function main() {
   const { server } = spawnServer('full-chain', PORT, {
     SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
     ...realServerEnv('fullChain', upstream, { mode: 'full-chain' }),
+    SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace',
   });
   try {
     await waitForPort(PORT);
@@ -229,7 +237,6 @@ async function main() {
     let evs = [];
     let files = null;
     let memContent = '';
-    let pushed = '';
     for (let i = 0; i < 60; i += 1) {
       await sleep(400);
       evs = await listEvents(c, session.id);
@@ -259,13 +266,16 @@ async function main() {
         { timeoutMs: 30_000, pollMs: 200 },
       );
     }
+    const failedTools = evs.filter((event) => event.type === 'agent.tool_result' && event.is_error);
+    assert.deepEqual(failedTools, [], `every full-chain tool effect succeeds: ${JSON.stringify(failedTools)}`);
 
     assert.equal(
       git(['rev-parse', 'main'], bare).trim(),
       remoteHeadBefore,
       'Files GET does not advance the Repository remote',
     );
-    await c.beta.sessions.delete(session.id, { betas: BETAS });
+    const archivedMain = await c.beta.sessions.archive(session.id, { betas: BETAS });
+    assert.equal(archivedMain.status, 'terminated', 'main Session archive is the synchronous harvest edge');
     for (let i = 0; i < 60; i += 1) {
       // Observation decision table: full+success exposes durable bytes; basic
       // deliberately elides them; transport/decode failure is a test failure,
@@ -277,19 +287,64 @@ async function main() {
       files = await listArtifacts(c, session.id);
       const listed = files?.data ?? files?.files ?? files ?? [];
       const listedArray = Array.isArray(listed) ? listed : listed.data ?? [];
-      try {
-        pushed = git(['show', 'main:CHAIN.txt'], bare).trim();
-      } catch {
-        pushed = '';
-      }
+      const names = listedArray.map((file) => file.filename ?? file.path ?? file.logical_path ?? '');
       if (
         memContent.includes(MEMO_MARKER)
-        && pushed === REPO_MARKER
-        && listedArray.some((file) =>
-          (file.filename ?? file.path ?? file.logical_path ?? '').includes('result.txt'))
+        && ['result.txt', 'change.patch', 'manifest.json', 'manifest.sha256']
+          .every((name) => names.some((listedName) => listedName.endsWith(name)))
       ) break;
       await sleep(200);
     }
+
+    // Artifact handoff decision table: C1 a sandbox commit exists; C2 archive
+    // harvested all four outputs; C3 patch and manifest hashes agree; C4 the
+    // external checkout is still at the recorded base. Effects: E1 remote stays
+    // unchanged; E2 `git apply --check` succeeds; E3 apply changes only CHAIN.txt;
+    // E4 the repository-owned test and diff scan pass. Any missing/hash/base
+    // condition fails closed before applying or claiming acceptance.
+    const artifacts = files?.data ?? files?.files ?? files ?? [];
+    const arr = Array.isArray(artifacts) ? artifacts : artifacts.data ?? [];
+    const artifactNamed = (name) => arr.find((file) =>
+      (file.filename ?? file.path ?? file.logical_path ?? '').endsWith(name));
+    const download = async (name) => {
+      const artifact = artifactNamed(name);
+      assert.ok(artifact, `${name} is listed by /v1/files: ${JSON.stringify(arr)}`);
+      const response = await fetch(`http://127.0.0.1:${PORT}/v1/files/${artifact.id}/content`, {
+        headers: {
+          'x-api-key': 'e2e-dummy',
+          'anthropic-beta': BETAS.join(','),
+        },
+      });
+      const bytes = Buffer.from(await response.arrayBuffer());
+      assert.equal(response.status, 200, `${name} is downloadable: ${bytes.toString('utf8')}`);
+      return bytes;
+    };
+    const resultBytes = await download('result.txt');
+    const patchBytes = await download('change.patch');
+    const manifestBytes = await download('manifest.json');
+    const manifestShaBytes = await download('manifest.sha256');
+    assert.equal(resultBytes.toString('utf8'), ARTIFACT_MARKER, 'sandbox output bytes are exact');
+    const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    assert.equal(manifest.base_commit, remoteHeadBefore, 'manifest records the mounted baseline');
+    assert.notEqual(manifest.sandbox_commit, remoteHeadBefore, 'manifest records the sandbox commit');
+    assert.equal(manifest.patch_sha256, sha256(patchBytes), 'manifest authenticates the patch');
+    assert.equal(manifestShaBytes.toString('utf8').trim(), sha256(manifestBytes), 'SHA file authenticates manifest');
+    assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'archive does not publish the sandbox commit');
+
+    const acceptance = `${TMP}/acceptance`;
+    git(['clone', '-q', bare, acceptance]);
+    assert.equal(git(['rev-parse', 'HEAD'], acceptance).trim(), manifest.base_commit, 'external checkout matches manifest base');
+    const patchPath = `${TMP}/change.patch`;
+    fs.writeFileSync(patchPath, patchBytes);
+    git(['apply', '--check', patchPath], acceptance);
+    git(['apply', patchPath], acceptance);
+    assert.equal(fs.readFileSync(`${acceptance}/CHAIN.txt`, 'utf8'), REPO_MARKER, 'external worktree received exact change');
+    assert.deepEqual(git(['status', '--porcelain'], acceptance).trim().split('\n'), ['?? CHAIN.txt'], 'only the intended file changed');
+    execFileSync('bash', ['verify.sh'], { cwd: acceptance, stdio: 'pipe' });
+    git(['diff', '--check'], acceptance);
+    assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'acceptance does not push the remote');
+    pass('patch + manifest + SHA downloaded, verified, externally applied, tested, and scanned without remote publication');
 
     // 4) Attached and repository-local Skills share the sole filesystem path.
     // Causes: C6 the Session has filesystem tools and one frozen attached Skill;
@@ -336,7 +391,7 @@ async function main() {
     const frozenBefore = await probeRepositorySkillPaths(c, frozenRepositorySession.id);
     assert.deepEqual(
       frozenBefore,
-      ['workspace/repo/.claude/skills/repository-guide/SKILL.md'],
+      ['/workspace/repo/.claude/skills/repository-guide/SKILL.md'],
       'R7 first Run freezes the original repository Skill metadata',
     );
     addLateRepositorySkill(bare);
@@ -355,8 +410,8 @@ async function main() {
     assert.deepEqual(
       await probeRepositorySkillPaths(c, freshRepositorySession.id),
       [
-        'workspace/repo/.claude/skills/late-guide/SKILL.md',
-        'workspace/repo/.claude/skills/repository-guide/SKILL.md',
+        '/workspace/repo/.claude/skills/late-guide/SKILL.md',
+        '/workspace/repo/.claude/skills/repository-guide/SKILL.md',
       ],
       'R9 a new Session snapshots the advanced repository checkout',
     );
@@ -404,27 +459,7 @@ async function main() {
     assert.ok(memContent.includes(MEMO_MARKER), `memory-store write-back landed: ${JSON.stringify(memContent)}`);
     pass('Session release reconciled memory_store write under its id');
 
-    // 6) Repo commit + push-back to the real bare remote.
-    assert.equal(pushed, REPO_MARKER, 'the agent edit was committed + pushed to the remote');
-    pass('Session release published the Agent-authored Repository commit');
-
-    // 7) Output artifact retrievable via the Files API.
-    const artifacts = files?.data ?? files?.files ?? files ?? [];
-    const arr = Array.isArray(artifacts) ? artifacts : artifacts.data ?? [];
-    const artifact = arr.find((f) => (f.filename ?? f.path ?? f.logical_path ?? '').includes('result.txt'));
-    assert.ok(artifact, `the output artifact is listed by /v1/files: ${JSON.stringify(arr)}`);
-    const artifactResponse = await fetch(`http://127.0.0.1:${PORT}/v1/files/${artifact.id}/content`, {
-      headers: {
-        'x-api-key': 'e2e-dummy',
-        'anthropic-beta': BETAS.join(','),
-      },
-    });
-    const artifactBytes = await artifactResponse.text();
-    assert.equal(artifactResponse.status, 200, `artifact content is downloadable: ${artifactBytes}`);
-    assert.equal(artifactBytes, ARTIFACT_MARKER, 'downloaded File bytes equal the sandbox output');
-    pass('output artifact projected, listed, and downloaded with exact bytes via /v1/files');
-
-    // 8) Cross-session memory: the extractor sub-run saved a memory the store persisted.
+    // 6) Cross-session memory: the extractor sub-run saved a memory the store persisted.
     // Extraction is out-of-band (fires after the turn's terminal step, runs its own
     // model call), so poll the durable memory root while the server is still up.
     const grep = (dir, needle) => {
@@ -561,7 +596,7 @@ async function main() {
     assert.equal(consumingArchived.status, 'terminated');
     pass('agent-authored Skill versions persist without implicitly mutating Agent selection');
 
-    console.log('E2E PASS: full chain — config → mounts → skill → memory + repo write-back → artifact → authored Skill versions.');
+    console.log('E2E PASS: full chain — config → mounts → skill → memory + sandbox commit → verified patch handoff → authored Skill versions.');
   } finally {
     await stopServer(server);
     upstream.close();

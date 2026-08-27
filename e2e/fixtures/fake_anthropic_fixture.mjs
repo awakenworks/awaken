@@ -520,12 +520,13 @@ export const BEHAVIORS = {
       }
       // Write into the mounted MemoryStore directory.
       case 2: return tool('wm', 'write', { path: '/mnt/memory/note.md', content: 'MEMO_FULLCHAIN_5521' });
-      // Write into the cloned repo working tree (host commits + pushes on harvest).
-      case 3: return tool('wr', 'write', { path: 'workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
+      // Write into the cloned repo working tree; lifecycle cleanup never pushes it.
+      case 3: return tool('wr', 'write', { path: '/workspace/repo/CHAIN.txt', content: 'REPO_FULLCHAIN_8830' });
       // Produce an output artifact (harvested into the blob store, listed by /v1/files).
-      case 4: return tool('wa', 'write', { path: 'outputs/result.txt', content: 'ARTIFACT_FULLCHAIN_9142' });
-      // Commit the repo edit in the jail so the host push-back has something to ship.
-      case 5: return tool('wc', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add CHAIN.txt'" });
+      case 4: return tool('wa', 'write', { path: '/mnt/session/outputs/result.txt', content: 'ARTIFACT_FULLCHAIN_9142' });
+      // Commit and export the review handoff. The agent uses only its sandbox;
+      // an external operator owns application, tests, scans, and remote push.
+      case 5: return tool('wc', 'bash', { command: "out=${AWAKEN_OUTPUTS_DIR:?} && cd /workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add CHAIN.txt' && git format-patch -1 --stdout > \"$out/change.patch\" && base=$(git rev-parse HEAD^) && head=$(git rev-parse HEAD) && patch_sha=$(sha256sum \"$out/change.patch\" | awk '{print $1}') && printf '{\"base_commit\":\"%s\",\"sandbox_commit\":\"%s\",\"patch_sha256\":\"%s\"}\\n' \"$base\" \"$head\" \"$patch_sha\" > \"$out/manifest.json\" && sha256sum \"$out/manifest.json\" | awk '{print $1}' > \"$out/manifest.sha256\"" });
       default: return text('done: used attached and repository skills, wrote memory + repo + artifact');
     }
   },

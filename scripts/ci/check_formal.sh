@@ -287,6 +287,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness terminal_state_classification_is_exact \
     --harness unknown_transition_trigger_and_result_fail_closed
   run_kani awaken-runtime-host \
+    --harness resume_receipt_classification_is_exact_and_conflict_absorbing \
     --harness file_read_authority_never_changes_path_class_or_admits_unsafe_input \
     --harness hand_availability_has_only_explicit_recovery_and_terminal_transitions \
     --harness hand_binding_can_only_become_ready_through_tracked_starting \

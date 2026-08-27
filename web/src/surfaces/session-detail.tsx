@@ -4,7 +4,7 @@
 // events cache key so the transcript refreshes.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Link, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
@@ -12,7 +12,7 @@ import SessionFiles from "../components/session/SessionFiles";
 import SessionIntegrations from "../components/session/SessionIntegrations";
 import SessionThreads from "../components/session/SessionThreads";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
-import { api, ws } from "../lib/api/client";
+import { api, IdempotencyScope, ws } from "../lib/api/client";
 import type { InboundEvent, ListEventsResponse, SendEventsResponse, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { canSendToSession, projectSessionRuntime, sessionErrorText } from "../lib/session-log";
@@ -30,6 +30,7 @@ export default function SessionDetailSurface() {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const toast = useToast();
+  const controlIdentity = useRef(new IdempotencyScope("session-control"));
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
@@ -60,8 +61,16 @@ export default function SessionDetailSurface() {
   const canSend = canSendToSession(runtime, session.data?.status);
 
   const control = useMutation({
-    mutationFn: (evs: InboundEvent[]) => api.post<SendEventsResponse>(`${base}/events`, { events: evs }),
+    mutationFn: (evs: InboundEvent[]) => {
+      const request = { events: evs };
+      return api.post<SendEventsResponse>(
+        `${base}/events`,
+        request,
+        controlIdentity.current.headersFor(request),
+      );
+    },
     onSuccess: (result) => {
+      controlIdentity.current.complete();
       const receipt = result.data.at(-1);
       setControlResult(receipt ? `${receipt.type} accepted · ${receipt.id}` : null);
       void qc.invalidateQueries({ queryKey: eventsKey });

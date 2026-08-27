@@ -393,8 +393,8 @@ impl LlmExecutor for MemoryResourceModel {
 /// A deterministic model for the github_repository resource e2e (ADR-0038). The
 /// repo is cloned host-side into the working tree at `workspace/repo`; the model
 /// first `read`s the seed file (proving the clone landed inside the jail) and then
-/// `write`s a new file, which the host commits and pushes back to the remote on
-/// harvest. Sequenced off the tool-result count so it needs no transcript parsing.
+/// `write`s a new file that remains sandbox-local until an explicit publication
+/// workflow consumes it. Sequenced off the tool-result count so it needs no transcript parsing.
 pub struct GitRepoModel;
 
 #[async_trait::async_trait]

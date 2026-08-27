@@ -462,6 +462,13 @@ pub struct SessionEventBatch {
     /// vector position or a process-local clock.
     #[serde(default)]
     pub admitted_revision: crate::SessionRevision,
+    /// Optional HTTP retry identity and its canonical request fingerprint. The
+    /// pair is retained on this existing Session-root command; there is no
+    /// protocol-side idempotency table or second Event store.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_fingerprint: Option<String>,
     /// W3C trace context captured once for this atomic ordinary admission. It
     /// is request-local observability provenance, not Event or Run identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -473,6 +480,21 @@ pub struct SessionEventBatch {
 }
 
 impl SessionEventBatch {
+    pub fn bind_idempotency(
+        &mut self,
+        key: impl Into<String>,
+        request_fingerprint: impl Into<String>,
+    ) -> Result<(), SessionEventBatchError> {
+        let key = key.into();
+        let request_fingerprint = request_fingerprint.into();
+        if key.trim().is_empty() || request_fingerprint.trim().is_empty() {
+            return Err(SessionEventBatchError::InvalidIdempotencyCoordinate);
+        }
+        self.idempotency_key = Some(key);
+        self.request_fingerprint = Some(request_fingerprint);
+        Ok(())
+    }
+
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.events.iter().all(|entry| entry.processed)
@@ -688,6 +710,8 @@ impl SessionEventBatch {
             batch_id,
             events,
             admitted_revision: crate::SessionRevision::default(),
+            idempotency_key: None,
+            request_fingerprint: None,
             traceparent,
             wake_activity_epoch: None,
         })
@@ -757,6 +781,8 @@ pub enum SessionEventBatchError {
     UnsupportedInitialEvent,
     #[error("Session Event progress does not match the current operation")]
     ProgressMismatch,
+    #[error("Session Event idempotency key and request fingerprint must both be non-empty")]
+    InvalidIdempotencyCoordinate,
 }
 
 #[cfg(test)]

@@ -19,6 +19,31 @@ use super::{SessionApplication, SessionMutationError, mutation::repository_failu
 /// This is a recovery scheduling bound, independent of create-time admission.
 const EVENT_BATCH_RECONCILIATION_STEPS: usize = 50;
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionEventBatchIdempotency {
+    Absent,
+    Exact(SessionEventBatch),
+    Conflict,
+}
+
+fn classify_event_batch_idempotency(
+    batches: &[SessionEventBatch],
+    key: &str,
+    request_fingerprint: &str,
+) -> SessionEventBatchIdempotency {
+    let Some(batch) = batches
+        .iter()
+        .find(|batch| batch.idempotency_key.as_deref() == Some(key))
+    else {
+        return SessionEventBatchIdempotency::Absent;
+    };
+    if batch.request_fingerprint.as_deref() == Some(request_fingerprint) {
+        SessionEventBatchIdempotency::Exact(batch.clone())
+    } else {
+        SessionEventBatchIdempotency::Conflict
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct EventBatchReconciliation {
     pub settled: usize,
@@ -40,6 +65,28 @@ struct SelectedSessionEvent {
 }
 
 impl SessionApplication {
+    /// Observe the Session root's one retained Event-batch retry coordinate.
+    /// This read exists so a protocol retry can recover its original receipt
+    /// before current pending-tool admission; it does not own another receipt.
+    pub async fn session_event_batch_idempotency(
+        &self,
+        session_id: &str,
+        key: &str,
+        request_fingerprint: &str,
+    ) -> Result<SessionEventBatchIdempotency, RunError> {
+        let session = self
+            .session_repository()
+            .get(session_id)
+            .await
+            .map_err(repository_failure)
+            .map_err(mutation_run_error)?;
+        Ok(classify_event_batch_idempotency(
+            &session.event_batches,
+            key,
+            request_fingerprint,
+        ))
+    }
+
     async fn message_projection_anchor(
         &self,
         session_id: &str,
@@ -212,6 +259,27 @@ impl SessionApplication {
         data_subject_id: Option<String>,
         traceparent: Option<String>,
     ) -> Result<SessionEventBatch, RunError> {
+        self.append_session_event_batch_idempotent(
+            session_id,
+            inputs,
+            data_subject_id,
+            traceparent,
+            None,
+        )
+        .await
+    }
+
+    /// Atomically append or replay one HTTP-idempotent Event batch. The key and
+    /// fingerprint live on the existing root command, so concurrent callers
+    /// either observe that exact batch or a conflict under the same root CAS.
+    pub async fn append_session_event_batch_idempotent(
+        &self,
+        session_id: &str,
+        inputs: Vec<SessionEventInput>,
+        data_subject_id: Option<String>,
+        traceparent: Option<String>,
+        idempotency: Option<(String, String)>,
+    ) -> Result<SessionEventBatch, RunError> {
         for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
             let owner = self.owner(session_id).await.map_err(mutation_run_error)?;
             let mut session = self
@@ -220,6 +288,25 @@ impl SessionApplication {
                 .await
                 .map_err(repository_failure)
                 .map_err(mutation_run_error)?;
+            if let Some((key, request_fingerprint)) = idempotency.as_ref() {
+                match classify_event_batch_idempotency(
+                    &session.event_batches,
+                    key,
+                    request_fingerprint,
+                ) {
+                    SessionEventBatchIdempotency::Exact(batch) => return Ok(batch),
+                    SessionEventBatchIdempotency::Conflict => {
+                        return Err(RunError {
+                            message:
+                                "Idempotency-Key was already used for another Session Event batch"
+                                    .into(),
+                            kind: awaken_session_contract::RunErrorKind::BadRequest,
+                            code: "idempotency_conflict".into(),
+                        });
+                    }
+                    SessionEventBatchIdempotency::Absent => {}
+                }
+            }
             if session.is_terminal() {
                 return Err(RunError::bad_request(
                     "Session no longer accepts Event batches",
@@ -243,6 +330,11 @@ impl SessionApplication {
             )
             .map_err(|error| RunError::bad_request(error.to_string()))?;
             batch.admitted_revision = committed_revision;
+            if let Some((key, request_fingerprint)) = idempotency.as_ref() {
+                batch
+                    .bind_idempotency(key.clone(), request_fingerprint.clone())
+                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+            }
             session.event_batches.push(batch.clone());
             match self
                 .commit_session_snapshot(&owner, session, "append-event-batch", Vec::new())

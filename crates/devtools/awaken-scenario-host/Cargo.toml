@@ -24,7 +24,7 @@ awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-run-ingress = { workspace = true, features = ["durable"] }
-awaken-sandbox-local.workspace = true
+awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
 awaken-tenancy = { workspace = true }

@@ -183,8 +183,8 @@ pub fn build_memory_resource_router() -> Router {
 }
 
 /// A router for the github_repository RESOURCE e2e (ADR-0038): a deterministic model
-/// reads a host-cloned repo's file and writes a change the host commits + pushes back
-/// to the remote on harvest. `AWAKEN_MODEL_MODE=git-repo`.
+/// reads a host-cloned repo's file and writes a sandbox-local change. Remote publication
+/// remains an explicit operator workflow. `AWAKEN_MODEL_MODE=git-repo`.
 pub fn build_git_repo_router() -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
     let host = resource_host(model, model_ref);
@@ -194,13 +194,22 @@ pub fn build_git_repo_router() -> Router {
 /// The combined-chain router (native full-chain e2e): one session configures a
 /// memory_store + github_repository resource, is offered a skill, and has out-of-band
 /// memory extraction — so a single conversation exercises skill use → memory-store
-/// write-back → git commit/push → output-artifact harvest end to end on the native
+/// write-back → git commit/patch export → output-artifact harvest end to end on the native
 /// backend. Driven over the real wire by the `fullChain` behavior (this in-process
 /// `EchoModel` is only the non-http fallback, never run by the e2e).
 /// `AWAKEN_MODEL_MODE=full-chain` with `AWAKEN_MODEL_SOURCE=http`.
-pub fn build_full_chain_router() -> Router {
+pub async fn build_full_chain_router() -> Router {
+    build_full_chain_router_with_deployment(scenario_deployment()).await
+}
+
+/// The full-chain assembly with an explicit deployment snapshot. Tests use the
+/// local tier while the process entry point keeps the configured production
+/// tier; both paths consume the same Runtime/resource composition.
+pub async fn build_full_chain_router_with_deployment(
+    deployment: awaken_runtime_host::DeploymentConfig,
+) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(EchoModel), "full-chain");
-    let host = resource_host(model, model_ref);
+    let host = runtime_resource_host_with_deployment(model, model_ref, deployment).await;
     mount_with_memory_publication(
         host,
         "full-chain",

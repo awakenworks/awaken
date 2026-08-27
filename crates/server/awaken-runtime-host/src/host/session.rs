@@ -248,9 +248,9 @@ impl SharedHost {
             let required = awaken_provisioning_contract::SandboxRequirements::from_spec(spec, true);
             let capabilities = provider.capabilities();
             if !capabilities.satisfies_requirements(&required) {
-                return Err(HostError::internal(
-                    "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes",
-                ));
+                return Err(HostError::internal(format!(
+                    "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes: required={required:?}, provider={capabilities:?}",
+                )));
             }
         }
         self.cache_volume_prewarmer

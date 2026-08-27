@@ -754,18 +754,29 @@ test("Session Integrations shows only the durable active MCP projection", async 
 });
 
 test("Agent composer supports multiline input and shows work immediately on the first message", async ({ page, request }) => {
+  // Cross-component rule: C1 a browser composer submits one Event command and
+  // C2 its response is still pending; E1 optimistic work remains visible and
+  // E2 the HTTP request carries a stable non-empty Idempotency-Key. Backend
+  // adapter and restart E2E own exact replay/conflict; this browser row proves
+  // the key is not dropped between UI mutation and Managed wire boundary.
   const res = await request.post("/v1/sessions", {
     headers: MANAGED_HEADERS,
     data: { agent: "default", title: "composer-e2e" },
   });
   const sid = (await res.json()).id as string;
   let postedText = "";
+  let postedIdempotencyKey = "";
   let release!: () => void;
   const held = new Promise<void>((resolve) => { release = resolve; });
-  await page.route(`**/v1/sessions/${sid}/events`, async (route) => {
+  const eventCommand = new RegExp(
+    `/v1/(?:workspaces/[^/]+/)?sessions/${sid}/events$`,
+    "u",
+  );
+  await page.route(eventCommand, async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     const body = route.request().postDataJSON() as { events: Array<{ content: Array<{ text: string }> }> };
     postedText = body.events[0].content[0].text;
+    postedIdempotencyKey = route.request().headers()["idempotency-key"] ?? "";
     await held;
     await route.fulfill({ status: 202, contentType: "application/json", body: "{}" });
   });
@@ -782,6 +793,7 @@ test("Agent composer supports multiline input and shows work immediately on the 
   await expect(page.locator(".agent-working")).toContainText("Agent is working");
   await expect(page.locator(".transcript-pending-message")).toContainText("Summarize the issue\n  Keep only decisions");
   await expect.poll(() => postedText).toBe("Summarize the issue\n  Keep only decisions\n");
+  await expect.poll(() => postedIdempotencyKey).toMatch(/^session-events-/u);
   await expect(page.locator(".transcript-composer")).toBeVisible();
   const composerBox = await page.locator(".transcript-composer").boundingBox();
   const viewport = page.viewportSize();

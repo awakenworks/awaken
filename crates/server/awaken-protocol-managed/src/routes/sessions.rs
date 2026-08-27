@@ -1300,8 +1300,9 @@ async fn send_events(
                 })
         })
         .transpose()?;
+    let idempotency_key = parse_idempotency_key(&headers)?;
     state
-        .send_events_attributed(&id, req, data_subject_id)
+        .send_events_attributed(&id, req, data_subject_id, idempotency_key)
         .await
         .map(Json)
         .map_err(error_response)

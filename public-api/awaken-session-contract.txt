@@ -453,6 +453,7 @@ pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeDescription
 pub awaken_session_contract::SessionEventBatchError::EmptyOutcomeRubric
 pub awaken_session_contract::SessionEventBatchError::EmptySessionId
 pub awaken_session_contract::SessionEventBatchError::InvalidBatchRevision
+pub awaken_session_contract::SessionEventBatchError::InvalidIdempotencyCoordinate
 pub awaken_session_contract::SessionEventBatchError::InvalidInterruptTargets
 pub awaken_session_contract::SessionEventBatchError::InvalidOutcomeIterations
 pub awaken_session_contract::SessionEventBatchError::InvalidToolReplyCoordinate
@@ -1290,9 +1291,12 @@ pub struct awaken_session_contract::SessionEventBatch
 pub awaken_session_contract::SessionEventBatch::admitted_revision: awaken_session_contract::SessionRevision
 pub awaken_session_contract::SessionEventBatch::batch_id: alloc::string::String
 pub awaken_session_contract::SessionEventBatch::events: alloc::vec::Vec<awaken_session_contract::SessionEventEntry>
+pub awaken_session_contract::SessionEventBatch::idempotency_key: core::option::Option<alloc::string::String>
+pub awaken_session_contract::SessionEventBatch::request_fingerprint: core::option::Option<alloc::string::String>
 pub awaken_session_contract::SessionEventBatch::traceparent: core::option::Option<alloc::string::String>
 pub awaken_session_contract::SessionEventBatch::wake_activity_epoch: core::option::Option<u64>
 impl awaken_session_contract::SessionEventBatch
+pub fn awaken_session_contract::SessionEventBatch::bind_idempotency(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::compile(&str, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_contract::SessionEventInput>) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::compile_attributed(&str, impl core::convert::Into<alloc::string::String>, alloc::vec::Vec<awaken_session_contract::SessionEventInput>, core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>) -> core::result::Result<Self, awaken_session_contract::SessionEventBatchError>
 pub fn awaken_session_contract::SessionEventBatch::is_complete(&self) -> bool

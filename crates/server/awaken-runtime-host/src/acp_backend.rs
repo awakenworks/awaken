@@ -48,6 +48,23 @@ async fn validate_namespace_hand_bin(path: &std::path::Path) -> Result<(), Strin
     })
 }
 
+fn namespace_hand_path(current_exe: &std::path::Path) -> std::path::PathBuf {
+    let binary_name = format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX);
+    let sibling = current_exe.with_file_name(&binary_name);
+    let Some(parent) = current_exe.parent() else {
+        return sibling;
+    };
+    if parent.file_name() == Some(std::ffi::OsStr::new("deps")) {
+        if let Some(profile_dir) = parent.parent() {
+            let cargo_companion = profile_dir.join(binary_name);
+            if cargo_companion.is_file() {
+                return cargo_companion;
+            }
+        }
+    }
+    sibling
+}
+
 enum AcpExecutorSource {
     Static(Arc<AcpRunExecutor>),
     Bound {
@@ -296,9 +313,7 @@ impl crate::host::SharedHost {
         // composition root prevents provider-specific host paths crossing inward.
         let namespace_hand_path = std::env::current_exe()
             .ok()
-            .map(|path| {
-                path.with_file_name(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
-            })
+            .map(|path| namespace_hand_path(&path))
             .unwrap_or_else(|| {
                 std::path::PathBuf::from(format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX))
             });
@@ -454,6 +469,44 @@ pub(crate) fn session_sandbox_base(deployment: &crate::DeploymentConfig) -> std:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn namespace_companion_resolution_preserves_release_and_cargo_test_layouts() {
+        // Cause/effect table: C1 a release executable and companion are siblings
+        // -> E1 keep the sibling path; C2 Cargo runs a test from `debug/deps`
+        // while the built companion is in `debug` -> E2 use that profile-level
+        // companion. A missing profile companion falls back to the release
+        // sibling so validation owns the one fail-closed error path.
+        let root = std::env::temp_dir().join(format!(
+            "awaken-namespace-companion-path-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&root).ok();
+        let profile = root.join("debug");
+        let deps = profile.join("deps");
+        std::fs::create_dir_all(&deps).unwrap();
+        let companion_name = format!("awaken-sandbox{}", std::env::consts::EXE_SUFFIX);
+        let companion = profile.join(&companion_name);
+        std::fs::write(&companion, []).unwrap();
+
+        assert_eq!(
+            namespace_hand_path(&profile.join("awaken")),
+            profile.join(&companion_name),
+            "C1/E1"
+        );
+        assert_eq!(
+            namespace_hand_path(&deps.join("awaken-test-hash")),
+            companion,
+            "C2/E2"
+        );
+        std::fs::remove_file(&companion).unwrap();
+        assert_eq!(
+            namespace_hand_path(&deps.join("awaken-test-hash")),
+            deps.join(companion_name),
+            "missing profile companion preserves fail-closed sibling validation"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
     use crate::host::SharedHost;
 
     struct NoLlm;

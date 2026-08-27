@@ -70,6 +70,7 @@ export default function AgentEditorSurface() {
   const qc = useQueryClient();
   const toast = useToast();
   const quickRunCreateIdentity = useRef(new IdempotencyScope("quick-run-session-create"));
+  const quickRunEventIdentity = useRef(new IdempotencyScope("quick-run-session-events"));
   const deploymentCapabilities = useConfigCapabilities();
   const managedRuntime = hasSurface(deploymentCapabilities.data, "managed_runtime");
   const { ws: wsId = "default", id = "new" } = useParams();
@@ -454,16 +455,22 @@ export default function AgentEditorSurface() {
         request,
         quickRunCreateIdentity.current.headersFor(request),
       );
-      await api.post(ws(`/v1/sessions/${session.id}/events`), {
+      const eventRequest = {
         events: [{
           type: "user.message",
           content: [{ type: "text", text: intent.task }],
         }],
-      });
+      };
+      await api.post(
+        ws(`/v1/sessions/${session.id}/events`),
+        eventRequest,
+        quickRunEventIdentity.current.headersFor(eventRequest),
+      );
       return session;
     },
     onSuccess: (session) => {
       quickRunCreateIdentity.current.complete();
+      quickRunEventIdentity.current.complete();
       setDirty(false);
       setResourcesDirty(false);
       setQuickRunIntent(undefined);

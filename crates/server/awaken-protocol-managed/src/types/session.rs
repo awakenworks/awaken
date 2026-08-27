@@ -575,7 +575,7 @@ pub enum OutcomeRubric {
 /// Inbound events a client posts to `POST /v1/sessions/{id}/events`. M1 acts on
 /// `user.message`; the rest deserialize (so the batch is accepted) and are
 /// wired in later milestones.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum InboundEvent {
     #[serde(rename = "user.message")]
@@ -695,7 +695,7 @@ impl SessionCreateParams {
 }
 
 /// `POST .../events` request body.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SendEventsRequest {
     pub events: Vec<InboundEvent>,
