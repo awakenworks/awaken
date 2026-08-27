@@ -20,15 +20,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  allowManagedToolBoundaries,
   cleanupFixtureTree,
-  hasEndTurn,
   pass,
   realServerEnv,
   spawnServer,
   startUpstream,
   stopServer,
   waitForPort,
-  waitForSessionEventReceipt,
   waitForValue,
 } from './harness.mjs';
 
@@ -78,56 +77,25 @@ async function main() {
       betas: BETAS,
     });
     // M0 lifecycle: C1=exact write-task receipt; C2=requires_action with exact
-    // tool ids; C3=exact allow batch; C4=end_turn. E1=successful write/read
-    // results before release. Constraint: approvals are scenario writes and all
-    // observation is receipt-scoped. C1+C2=>approve; C1+C2+C3+C4=>E1.
+    // unapproved tool ids; C3=exact allow batch; C4=canonical ordering may
+    // replay an older requires_action after C3; C5=end_turn. E1=approve each
+    // tool id once; E2=ignore C4; E3=successful write/read results before
+    // release. Constraint: the canonical harness owns approval sequencing and
+    // all observation is receipt-scoped. M1 C1+C2=>E1; M2 C3+C4=>E2;
+    // M3 C1+C2+C3+C5=>E3.
     const taskReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: MARKER }] }],
       betas: BETAS,
     });
 
     // Drive write -> approval at committed boundaries, then release the mount once.
-    let observation = await waitForSessionEventReceipt(
+    const completedEvents = await allowManagedToolBoundaries({
       client,
-      session.id,
-      taskReceipt.data[0]?.id,
-      BETAS,
-      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
-      'M0 write task reaches its first committed boundary',
-    );
-    let completedEvents = observation.events;
-    for (let boundary = 0; boundary < 10 && !hasEndTurn(completedEvents); boundary += 1) {
-      const idle = [...observation.delta]
-        .reverse()
-        .find((event) => event.type === 'session.status_idle');
-      assert.equal(idle?.stop_reason?.type, 'requires_action', 'M0 nonterminal boundary requires approval');
-      const pendingIds = idle.stop_reason.event_ids;
-      assert.ok(pendingIds.length > 0, 'M0 requires_action names pending Event ids');
-      const decisions = pendingIds.map((id) => {
-        const toolUse = completedEvents.find(
-          (event) => event.id === id && event.type === 'agent.tool_use',
-        );
-        assert.equal(toolUse?.evaluated_permission, 'ask', `M0 ${id} is gated`);
-        return { type: 'user.tool_confirmation', tool_use_id: id, result: 'allow' };
-      });
-      const approval = await client.beta.sessions.events.send(session.id, {
-        events: decisions,
-        betas: BETAS,
-      });
-      const receiptIds = approval.data.map((event) => event.id);
-      observation = await waitForSessionEventReceipt(
-        client,
-        session.id,
-        receiptIds.at(-1),
-        BETAS,
-        ({ events, delta }) => receiptIds.every((id) => events.some(
-          (event) => event.id === id && event.processed_at,
-        )) && delta.some((event) => event.type === 'session.status_idle'),
-        'M0 approval batch reaches its next committed boundary',
-      );
-      completedEvents = observation.events;
-    }
-    assert.ok(hasEndTurn(completedEvents), 'the memory-writing turn completed');
+      sessionId: session.id,
+      taskReceiptId: taskReceipt.data[0]?.id,
+      betas: BETAS,
+      description: 'M0 memory write',
+    });
     const toolResults = completedEvents.filter((event) => event.type === 'agent.tool_result');
     const writeResult = toolResults[0];
     assert.ok(writeResult, 'the gated write produced a tool result before release');

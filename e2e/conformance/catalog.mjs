@@ -90,9 +90,23 @@ export function rustPreviewTypes() {
 }
 
 export function rustBeta() {
-  const m = read(MANAGED_HEADERS_RS).match(/MANAGED_BETA:\s*&str\s*=\s*"([^"]+)"/);
-  if (!m) throw new Error('MANAGED_BETA const not found in protocol-managed headers');
-  return m[1];
+  const source = read(MANAGED_HEADERS_RS);
+  // Authority-extraction decision table: C1=MANAGED_BETA aliases a
+  // ManagedCapability variant; C2=that variant owns one literal in beta();
+  // E1=return the owned literal. Missing C1 or C2 fails closed. Reading the
+  // alias and its owner avoids reintroducing a second literal solely for this
+  // static gate. Rule B1=C1+C2=>E1; B2=!C1||!C2=>error.
+  const owner = source.match(
+    /MANAGED_BETA:\s*&str\s*=\s*ManagedCapability::([A-Za-z]+)\.beta\(\)/,
+  );
+  if (!owner) throw new Error('MANAGED_BETA capability owner not found in protocol-managed headers');
+  const betaBody = source.match(
+    /pub const fn beta\(self\)[\s\S]*?match self \{([\s\S]*?)\n\s*\}\n\s*\}/,
+  );
+  if (!betaBody) throw new Error('ManagedCapability beta() body not found');
+  const literal = betaBody[1].match(new RegExp(`Self::${owner[1]}\\s*=>\\s*"([^"]+)"`));
+  if (!literal) throw new Error(`ManagedCapability::${owner[1]} beta literal not found`);
+  return literal[1];
 }
 
 export function harnessBetas() {

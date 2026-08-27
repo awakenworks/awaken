@@ -340,11 +340,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pause_reaches_the_single_runtime_attempt_registry_and_fails_closed_after_deregister() {
+    async fn pause_reaches_the_single_runtime_attempt_registry_and_fails_closed_after_attempt() {
         use awaken_runtime_contract::pause::PauseSignal;
 
         // Cause/effect graph: C1 the exact Run/Thread attempt is registered; C2
-        // it carries a pause signal; C3 its exact generation is deregistered.
+        // it carries a pause signal; C3 its exact tracking lifetime ends.
         // Effects: E1 C1+C2 requests that signal once; E2 C3 makes replay fail
         // closed as NoSubscriber. Constraint: the service and executor must use
         // the same Runtime registry, never an ingress-private pause map.
@@ -363,7 +363,7 @@ mod tests {
         let thread_id = awaken_agent_contract::agent::thread::Id("external-thread".into());
         let pause = PauseSignal::new();
         let context = RuntimeRunContext::new().with_pause(pause.clone());
-        let registration = runtime.register_attempt_controls(&run_id, &thread_id, &context);
+        let tracking = runtime.track_active_attempt(&run_id, &thread_id, &context);
 
         service
             .pause(&run_id.0)
@@ -374,7 +374,7 @@ mod tests {
             "the executor context observes the request"
         );
 
-        runtime.deregister_attempt_controls(&registration);
+        drop(tracking);
         assert!(matches!(
             service.pause(&run_id.0).await,
             Err(Error::NoSubscriber(_))

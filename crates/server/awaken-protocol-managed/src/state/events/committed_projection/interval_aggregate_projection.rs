@@ -238,6 +238,16 @@ impl ManagedState {
             if let Some(running_id) = running_id {
                 append_running_once(record, running_id);
             }
+            // A BudgetReachTransition owns the aggregate usage + idle pair for
+            // a cap crossing. The interval still owns its Running edge, but
+            // projecting its terminal pair as well would publish the same
+            // budget pause twice. If the transition commit is momentarily
+            // behind the lifecycle/interval prefix, leave the aggregate pause
+            // absent until that durable authority becomes visible.
+            if matches!(stop_reason, StopReason::BudgetReached) {
+                prior_close = close;
+                continue;
+            }
             record.events.extend([
                 Event {
                     id: usage_id,

@@ -264,6 +264,7 @@ async function main() {
       },
       providerRef: 'anthropic@1',
       routeRef: 'fake-endpoint@1',
+      accessKind: 'direct',
       scopeId: credential.json.workspace_id,
       credential: {
         credential: { id: credential.json.id, revision: credential.json.version },

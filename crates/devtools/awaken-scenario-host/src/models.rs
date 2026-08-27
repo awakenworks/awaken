@@ -391,7 +391,7 @@ impl LlmExecutor for MemoryResourceModel {
 }
 
 /// A deterministic model for the github_repository resource e2e (ADR-0038). The
-/// repo is cloned host-side into the working tree at `workspace/repo`; the model
+/// repo is cloned host-side into the working tree at `/workspace/repo`; the model
 /// first `read`s the seed file (proving the clone landed inside the jail) and then
 /// `write`s a new file that remains sandbox-local until an explicit publication
 /// workflow consumes it. Sequenced off the tool-result count so it needs no transcript parsing.
@@ -412,13 +412,13 @@ impl LlmExecutor for GitRepoModel {
             0 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "r".into(),
                 tool_id: "read".into(),
-                arguments: serde_json::json!({ "path": "workspace/repo/README.md" }),
+                arguments: serde_json::json!({ "path": "/workspace/repo/README.md" }),
             }]),
             1 => AssistantOutput::from_tool_calls(vec![ToolCall {
                 call_id: "w".into(),
                 tool_id: "write".into(),
                 arguments: serde_json::json!({
-                    "path": "workspace/repo/NEW.txt",
+                    "path": "/workspace/repo/NEW.txt",
                     "content": "AGENT_REPO_MARKER_3390"
                 }),
             }]),

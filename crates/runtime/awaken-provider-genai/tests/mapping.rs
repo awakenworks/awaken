@@ -618,9 +618,9 @@ fn usage_maps_and_clamps_missing_or_negative_to_zero() {
 
 #[test]
 fn executor_constructors_are_available() {
-    let _ = GenaiExecutor::from_resolved(
+    let _ = GenaiExecutor::from_materialized_endpoint(
         genai::adapter::AdapterKind::OpenAI,
-        None,
+        "https://api.openai.com/v1",
         "explicit-test-key",
     )
     .with_timeout(Duration::from_secs(5));

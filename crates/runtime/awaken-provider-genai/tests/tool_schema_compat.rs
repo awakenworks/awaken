@@ -98,7 +98,7 @@ async fn capture_one_request() -> (String, tokio::sync::oneshot::Receiver<Value>
 
 async fn provider_payload(adapter: AdapterKind) -> Value {
     let (base_url, payload) = capture_one_request().await;
-    let executor = GenaiExecutor::from_resolved(adapter, Some(base_url), "fixture-secret")
+    let executor = GenaiExecutor::from_materialized_endpoint(adapter, base_url, "fixture-secret")
         .with_timeout(Duration::from_secs(5));
     let model = if adapter == AdapterKind::Vertex {
         "gemini-2.5-flash"

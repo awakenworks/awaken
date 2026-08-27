@@ -403,7 +403,11 @@ log "9/10 promote the replayed PostgreSQL standby behind the stable service"
 # D1 standby has replayed the observed writer LSN -> promotion is lossless for
 # accepted durable facts; D2 writer Pod removed + promoted standby atomically
 # relabelled as the one primary -> the unchanged Service and NetworkPolicy both
-# retarget to the same new writer; D3 API write/read -> no stale truth.
+# retarget to the same new writer; D3 API write/read -> no stale truth; D4
+# promotion recovery still has an in-flight checkpoint -> wait for the
+# database's own synchronous checkpoint barrier before the separate steady-state
+# latency phase. Decision rules: D1+D2+D3 prove lossless failover;
+# D1+D2+D3+D4 fence recovery I/O before load.
 PRIMARY_LSN=$(kubectl -n "$NS" exec postgres-primary-0 -- psql -U postgres -d awaken -tAc 'SELECT pg_current_wal_lsn()' | tr -d '[:space:]')
 for _ in $(seq 1 120); do
   REPLAYED=$(kubectl -n "$NS" exec postgres-standby-0 -- psql -U postgres -d awaken -tAc \
@@ -418,6 +422,11 @@ kubectl -n "$NS" exec postgres-standby-0 -- \
   gosu postgres pg_ctl promote -D /var/lib/postgresql/data/pgdata -w
 kubectl -n "$NS" label pod postgres-standby-0 database-role=primary --overwrite >/dev/null
 node "$DRIVER" verify-durable "$API_URL" "$DEPLOYMENT_ID" "$SESSION_ID" ADR71-AFTER-DATABASE-FAILOVER
+# `pg_ctl promote -w` waits for read/write promotion, not for the recovery
+# checkpoint it starts. An explicit synchronous checkpoint joins that existing
+# database authority and returns only after the new primary is steady for step 10.
+kubectl -n "$NS" exec postgres-standby-0 -- psql -v ON_ERROR_STOP=1 \
+  -U postgres -d awaken -c 'CHECKPOINT' >/dev/null
 
 log "10/10 run concurrent pressure through the same endpoint and audit final truth"
 node "$DRIVER" load "$API_URL" "$ENVIRONMENT_ID"

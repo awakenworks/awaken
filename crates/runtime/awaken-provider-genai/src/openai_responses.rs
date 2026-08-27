@@ -24,22 +24,18 @@ use crate::classify_error;
 pub struct OpenAiResponsesExecutor {
     client: reqwest::Client,
     url: Url,
-    api_key: String,
+    authentication: String,
     provider_kind: String,
 }
 
 impl OpenAiResponsesExecutor {
-    pub fn new(base_url: &str, api_key: impl Into<String>) -> Result<Self, Error> {
-        Self::new_for_provider("openai", base_url, api_key)
-    }
-
     /// Construct an executor for one exact provider implementation of the
     /// Responses dialect. Provider-native server tools are admitted only when
     /// their descriptor names this same provider kind.
-    pub fn new_for_provider(
+    pub fn from_materialized_endpoint(
         provider_kind: impl Into<String>,
         base_url: &str,
-        api_key: impl Into<String>,
+        authentication: impl Into<String>,
     ) -> Result<Self, Error> {
         let mut url = Url::parse(base_url)
             .map_err(|error| Error::Binding(format!("invalid Responses base URL: {error}")))?;
@@ -54,7 +50,7 @@ impl OpenAiResponsesExecutor {
         Ok(Self {
             client,
             url,
-            api_key: api_key.into(),
+            authentication: authentication.into(),
             provider_kind: provider_kind.into(),
         })
     }
@@ -63,7 +59,7 @@ impl OpenAiResponsesExecutor {
         let response = self
             .client
             .post(self.url.clone())
-            .bearer_auth(&self.api_key)
+            .bearer_auth(&self.authentication)
             .json(&request_body_for_provider(request, &self.provider_kind)?)
             .send()
             .await
@@ -921,8 +917,12 @@ mod tests {
             captured
         });
 
-        let executor =
-            OpenAiResponsesExecutor::new(&format!("http://{address}/v1"), "private-key").unwrap();
+        let executor = OpenAiResponsesExecutor::from_materialized_endpoint(
+            "openai",
+            &format!("http://{address}/v1"),
+            "private-key",
+        )
+        .unwrap();
         let result = executor
             .infer(request(vec![ChatMessage {
                 role: Role::User,
@@ -965,8 +965,12 @@ mod tests {
             socket.write_all(response.as_bytes()).await.unwrap();
         });
 
-        let executor =
-            OpenAiResponsesExecutor::new(&format!("http://{address}/v1"), "bad-key").unwrap();
+        let executor = OpenAiResponsesExecutor::from_materialized_endpoint(
+            "openai",
+            &format!("http://{address}/v1"),
+            "bad-key",
+        )
+        .unwrap();
         let error = executor
             .infer(request(vec![ChatMessage {
                 role: Role::User,

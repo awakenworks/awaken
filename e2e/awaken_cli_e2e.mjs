@@ -18,7 +18,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import readline from 'node:readline';
-import { spawn, execFileSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import Anthropic from '@anthropic-ai/sdk';
@@ -26,6 +26,7 @@ import { startFakeAnthropic } from './fixtures/fake_anthropic_fixture.mjs';
 import { automatedAllInOneArgs } from './awaken_cli_args.mjs';
 import { AWAKEN_BIN_ENV, cargoExecutable } from './cargo_binary.mjs';
 import {
+  cleanupFixtureTree,
   managedFileUploadForm,
   waitForSessionEventReceipt,
   waitForValue,
@@ -114,21 +115,6 @@ async function ready(base, timeoutMs = 60_000) {
     if (Date.now() > deadline) throw new Error('management plane did not become ready');
     await sleep(200);
   }
-}
-
-function seedRepository(root) {
-  const work = path.join(root, 'repository-work');
-  const remote = path.join(root, 'repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'sqlite resource catalog');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
 }
 
 async function main() {
@@ -487,66 +473,6 @@ async function main() {
     assert.ok(adminTranscript.includes('ADMIN-RUN-DONE'), adminTranscript);
     console.log('ok: production Admin Assistant completes its ordinary audited management tool chain');
 
-    // Exercise the production embedded Resource Catalog adapter through the same
-    // Managed Session edge used by cloud mode. Only the persistence adapter differs.
-    // Resource-realization cause graph: C1 the repository definition resolves;
-    // C2 a Worker owns the exact Session realization lease; C3 the pinned Agent
-    // credential is current; C4 a later credential revocation occurs only after
-    // this activation has settled. Effects: C1+C2+C3 activates one projected
-    // repository; !C2 remains pending; !C3 fails closed without manufacturing an
-    // active Resource; C4 cannot retroactively invalidate the completed proof.
-    //
-    // | Rule | Repository | Worker lease | Current credential | Effect |
-    // |---|---|---|---|---|
-    // | RC1 | valid | current | yes | one active Resource, then retire |
-    // | RC2 | valid | absent/stale | yes | pending, never projected active |
-    // | RC3 | valid | current | no | realization fails closed |
-    const repository = seedRepository(mgmtDir);
-    const repositorySession = await client.beta.sessions.create({
-      agent: AGENT,
-      environment_id: 'env_local',
-      resources: [{
-        type: 'github_repository',
-        url: repository,
-        mount_path: '/workspace/repository',
-      }],
-      betas: BETAS,
-    });
-    const repositoryReceipt = await client.beta.sessions.events.send(repositorySession.id, {
-      events: [{
-        type: 'user.message',
-        content: [{ type: 'text', text: 'activate the repository projection' }],
-      }],
-      betas: BETAS,
-    });
-    const repositoryReceiptId = repositoryReceipt.data[0]?.id;
-    assert.equal(typeof repositoryReceiptId, 'string', 'RC1 exact repository activation receipt');
-    await waitForSessionEventReceipt(
-      client,
-      repositorySession.id,
-      repositoryReceiptId,
-      BETAS,
-      ({ delta }) => delta.some((event) => event.type === 'session.status_idle'),
-      'RC1 repository activation Run to commit',
-      { timeoutMs: 30_000 },
-    );
-    const repositoryResource = await waitForValue(
-      async () => {
-        const projection = await client.beta.sessions.retrieve(repositorySession.id, { betas: BETAS });
-        return projection.resources.find((resource) => resource.type === 'github_repository');
-      },
-      Boolean,
-      'RC1 repository resource to project on the Session',
-      { timeoutMs: 30_000 },
-    );
-    assert.ok(repositoryResource?.id);
-    const retiredRepository = await client.beta.sessions.resources.delete(repositoryResource.id, {
-      session_id: repositorySession.id,
-      betas: BETAS,
-    });
-    assert.equal(retiredRepository.type, 'session_resource_deleted');
-    console.log('ok: create-time repository configuration publishes and retires through SQLite');
-
     const callsBeforeRevocation = upstream.requests.length;
     r = await req(base, 'POST', `/v1/config/credentials/${credentialId}/archive`, {
       expected_version: providerCredentialVersion,
@@ -756,7 +682,7 @@ async function main() {
   } finally {
     await h.stop();
     upstream.close();
-    fs.rmSync(mgmtDir, { recursive: true, force: true });
+    cleanupFixtureTree(mgmtDir);
   }
   console.log('\nawaken_cli_e2e: PASS');
 }

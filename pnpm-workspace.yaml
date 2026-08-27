@@ -3,6 +3,7 @@ packages:
   - packages/*
 allowBuilds:
   esbuild: true
+minimumReleaseAge: 1440
 minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.27'
   - '@ai-sdk/react@4.0.39'

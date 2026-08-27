@@ -112,7 +112,11 @@ async fn kimi_discovers_activates_and_follows_a_skill() {
         format!("Your only task now: reply with exactly this token and nothing else: {SECRET}"),
     );
 
-    let executor = GenaiExecutor::anthropic_compatible(base, key);
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
+        base,
+        key,
+    );
     let app = build_router_with_skills(Arc::new(executor), model, vec![codeword]);
     let id = create_session(&app).await;
 

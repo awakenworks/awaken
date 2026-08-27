@@ -19,6 +19,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  cleanupFixtureTree,
   pass,
   realServerEnv,
   spawnServer,
@@ -82,15 +83,18 @@ async function main() {
   // Cause/effect graph: C1=durable ingress returns an initially unprocessed User
   // Event receipt; C2=the dispatch
   // worker claims and commits it; C3=a fresh process opens the same storage;
-  // C4=a follow-up Run targets the same Session. Effects: E1=one on-disk queue
+  // C4=a follow-up Run targets the same Session; C5=process shutdown leaves a
+  // live or disconnected FUSE projection below fixture storage. Effects: E1=one on-disk queue
   // owns delivery; E2=the first reply settles terminal; E3=the queue survives;
-  // E4=rehydration preserves prior history and commits the follow-up. Decision
-  // rules: R1 C1 && C2 => E1-E2; R2 R1 && C3 => E3; R3 R2 && C4 => E4.
+  // E4=rehydration preserves prior history and commits the follow-up; E5=the
+  // canonical fixture cleanup detaches mounts before removing storage. Decision
+  // rules: R1 C1 && C2 => E1-E2; R2 R1 && C3 => E3; R3 R2 && C4 => E4;
+  // R4 C5=>E5.
   // Decision rule summary: admission+claim proves delivery; restart+follow-up
   // proves durable rehydration through the same queue and Session identity.
   // Constraints/invariant: one persisted dispatch queue owns delivery and the
   // replacement process reuses, rather than recreates, Session/Run truth.
-  fs.rmSync(STORE_DIR, { recursive: true, force: true });
+  cleanupFixtureTree(STORE_DIR);
   fs.mkdirSync(STORE_DIR, { recursive: true });
 
   // One fake upstream survives the restart, so both processes dial the same wire.
@@ -144,7 +148,7 @@ async function main() {
   } finally {
     await stopServer(b.server);
     upstream.close();
-    fs.rmSync(STORE_DIR, { recursive: true, force: true });
+    cleanupFixtureTree(STORE_DIR);
   }
 }
 

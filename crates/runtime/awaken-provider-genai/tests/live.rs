@@ -44,20 +44,23 @@ fn live_executor() -> (GenaiExecutor, String) {
     let (adapter, base_url, key, default_model) = if let Some(key) = deepseek {
         (
             awaken_provider_genai::AdapterKind::OpenAI,
-            Some("https://api.deepseek.com/v1".to_string()),
+            "https://api.deepseek.com/v1".to_string(),
             key,
             "deepseek-v4-flash",
         )
     } else {
         (
             awaken_provider_genai::AdapterKind::OpenAI,
-            None,
+            "https://api.openai.com/v1".to_string(),
             std::env::var("OPENAI_API_KEY").expect("set OPENAI_API_KEY or DEEPSEEK_API_KEY"),
             "gpt-4o-mini",
         )
     };
     let model = std::env::var("AWAKEN_GENAI_MODEL").unwrap_or_else(|_| default_model.to_string());
-    (GenaiExecutor::from_resolved(adapter, base_url, key), model)
+    (
+        GenaiExecutor::from_materialized_endpoint(adapter, base_url, key),
+        model,
+    )
 }
 
 fn text_request(model: String, prompt: &str) -> ChatRequest {
@@ -148,8 +151,12 @@ async fn live_deepseek_openai_responses_completion() {
     // on the strongest model the endpoint currently advertises as executable.
     let model =
         std::env::var("AWAKEN_RESPONSES_MODEL").unwrap_or_else(|_| "deepseek-v4-flash".to_string());
-    let executor = OpenAiResponsesExecutor::new("https://api.deepseek.com/v1", key)
-        .expect("construct Responses executor");
+    let executor = OpenAiResponsesExecutor::from_materialized_endpoint(
+        "deepseek",
+        "https://api.deepseek.com/v1",
+        key,
+    )
+    .expect("construct Responses executor");
 
     assert_text_completion(&executor, model).await;
 }
@@ -243,9 +250,9 @@ fn live_deepseek_anthropic_executor() -> (GenaiExecutor, String) {
     let model =
         std::env::var("AWAKEN_ANTHROPIC_MODEL").unwrap_or_else(|_| "deepseek-v4-pro".to_string());
     (
-        GenaiExecutor::from_resolved(
+        GenaiExecutor::from_materialized_endpoint(
             awaken_provider_genai::AdapterKind::Anthropic,
-            Some("https://api.deepseek.com/anthropic".to_string()),
+            "https://api.deepseek.com/anthropic",
             key,
         ),
         model,
@@ -269,9 +276,9 @@ async fn live_deepseek_openai_chat_reasoning_tool_round_trip() {
     let key = std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY");
     let model = std::env::var("AWAKEN_DEEPSEEK_CHAT_MODEL")
         .unwrap_or_else(|_| "deepseek-v4-pro".to_string());
-    let executor = GenaiExecutor::from_resolved(
+    let executor = GenaiExecutor::from_materialized_endpoint(
         awaken_provider_genai::AdapterKind::OpenAI,
-        Some("https://api.deepseek.com/v1".to_string()),
+        "https://api.deepseek.com/v1",
         key,
     );
 

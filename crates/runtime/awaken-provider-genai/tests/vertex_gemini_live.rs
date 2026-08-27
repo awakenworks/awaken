@@ -17,15 +17,27 @@ use awaken_runtime_contract::llm::{ChatMessage, ChatRequest, LlmExecutor};
 use awaken_runtime_contract::resolved::ModelBinding;
 use support::compatibility_tool;
 
+fn live_executor() -> GenaiExecutor {
+    let project = std::env::var("GEMINI_PROJECT").expect("set GEMINI_PROJECT");
+    let location = std::env::var("GEMINI_LOCATION").unwrap_or_else(|_| "global".to_string());
+    let token = std::env::var("GEMINI_ACCESS_TOKEN").expect("set GEMINI_ACCESS_TOKEN (OAuth2)");
+    let host = if location == "global" {
+        "aiplatform.googleapis.com".to_string()
+    } else {
+        format!("{location}-aiplatform.googleapis.com")
+    };
+    GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Vertex,
+        format!("https://{host}/v1/projects/{project}/locations/{location}/"),
+        token,
+    )
+}
+
 #[tokio::test]
 #[ignore = "requires network and a Google OAuth2 access token"]
 async fn gemini_on_vertex_with_oauth_bearer() {
-    let project = std::env::var("GEMINI_PROJECT").expect("set GEMINI_PROJECT");
-    let location = std::env::var("GEMINI_LOCATION").unwrap_or_else(|_| "global".to_string());
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-    let token = std::env::var("GEMINI_ACCESS_TOKEN").expect("set GEMINI_ACCESS_TOKEN (OAuth2)");
-
-    let executor = GenaiExecutor::vertex_gemini(project, location, token);
+    let executor = live_executor();
     let request = ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: "vertex".into(),
@@ -58,11 +70,8 @@ async fn gemini_on_vertex_accepts_generated_schema_and_completes_a_tool_round_tr
     // the expected typed call. G2 replay the complete assistant turn followed by
     // the correlated tool result -> Gemini accepts the continuation and reports
     // the marker. Together they cover declaration and multi-turn compatibility.
-    let project = std::env::var("GEMINI_PROJECT").expect("set GEMINI_PROJECT");
-    let location = std::env::var("GEMINI_LOCATION").unwrap_or_else(|_| "global".to_string());
     let model = std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
-    let token = std::env::var("GEMINI_ACCESS_TOKEN").expect("set GEMINI_ACCESS_TOKEN (OAuth2)");
-    let executor = GenaiExecutor::vertex_gemini(project, location, token);
+    let executor = live_executor();
     let user = ChatMessage {
         role: Role::User,
         content: vec![ContentBlock::text(

@@ -14,7 +14,9 @@ use awaken_runtime_contract::inference::InferenceExecutorMaterializer;
 use awaken_runtime_contract::llm::{
     ChatRequest, ChatResponse, DeltaSink, Error as LlmError, LlmExecutor,
 };
-use awaken_runtime_contract::resolved::{Backend, ModelProvisioning, ResolvedModelCandidate};
+use awaken_runtime_contract::resolved::{
+    Backend, ModelProvisioning, ProviderAccessKind, ResolvedModelCandidate,
+};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
 use crate::PinnedCredentialMaterializer;
@@ -79,7 +81,7 @@ pub fn executor_from_materialized_endpoint_for_provider(
         base_url.ok_or_else(|| ResolvedExecutorError::MissingBaseUrl(adapter_kind.to_string()))?;
     let credential = credential.ok_or(ResolvedExecutorError::MissingCredential)?;
     if api_dialect == "open_ai_responses" {
-        return awaken_provider_genai::OpenAiResponsesExecutor::new_for_provider(
+        return awaken_provider_genai::OpenAiResponsesExecutor::from_materialized_endpoint(
             provider_kind,
             base_url,
             credential.expose_secret(),
@@ -95,9 +97,9 @@ pub fn executor_from_materialized_endpoint_for_provider(
         other => return Err(ResolvedExecutorError::UnsupportedAdapter(other.to_string())),
     };
     Ok(Arc::new(
-        awaken_provider_genai::GenaiExecutor::from_resolved(
+        awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(
             adapter,
-            Some(base_url.to_string()),
+            base_url,
             credential.expose_secret(),
         ),
     ))
@@ -159,7 +161,7 @@ impl CredentialInferenceMaterializer {
     ) -> Result<Option<Arc<dyn LlmExecutor>>, String> {
         let ModelProvisioning::Provider {
             provider_ref,
-            route_ref,
+            access_kind,
             endpoint,
             ..
         } = candidate.provisioning()
@@ -167,29 +169,33 @@ impl CredentialInferenceMaterializer {
             return Ok(None);
         };
 
-        #[cfg(feature = "brokered")]
-        if route_ref.starts_with(crate::brokered_inference::BROKERED_ROUTE_PREFIX) {
-            if !self.brokered_mode_enabled {
-                return Err("cloud_models_disabled: brokered model supply is disabled".into());
+        if *access_kind == ProviderAccessKind::Brokered {
+            #[cfg(feature = "brokered")]
+            {
+                if !self.brokered_mode_enabled {
+                    return Err("cloud_models_disabled: brokered model supply is disabled".into());
+                }
+                let client = self.brokered.clone().ok_or_else(|| {
+                    "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
+                        .to_string()
+                })?;
+                return crate::brokered_inference::BrokeredCandidateExecutor::new(
+                    client,
+                    provider_ref,
+                    &candidate.binding().model_ref,
+                    &endpoint.api_dialect,
+                    &endpoint.adapter_kind,
+                    local_run_correlation,
+                    context.ownership.clone(),
+                )
+                .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
             }
-            let client = self.brokered.clone().ok_or_else(|| {
-                "cloud_sign_in_required: brokered inference needs an authenticated Awaken Cloud identity"
-                    .to_string()
-            })?;
-            return crate::brokered_inference::BrokeredCandidateExecutor::new(
-                client,
-                provider_ref,
-                &candidate.binding().model_ref,
-                &endpoint.api_dialect,
-                &endpoint.adapter_kind,
-                local_run_correlation,
-                context.ownership.clone(),
-            )
-            .map(|executor| Some(Arc::new(executor) as Arc<dyn LlmExecutor>));
+            #[cfg(not(feature = "brokered"))]
+            return Err("cloud_models_disabled: brokered model supply is disabled".into());
         }
 
         #[cfg(not(feature = "brokered"))]
-        let _ = (provider_ref, route_ref, local_run_correlation);
+        let _ = local_run_correlation;
 
         let secret = self
             .credentials
@@ -583,14 +589,12 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "brokered")]
     fn brokered_candidate(model: &str) -> ResolvedModelCandidate {
-        ResolvedModelCandidate::try_provider(
+        ResolvedModelCandidate::try_brokered_provider(
             ModelBinding::new("openai", model, "genai"),
             "openai@1",
-            "brokered:awaken-cloud:openai:open_ai_responses@7",
+            "awaken-cloud:openai:open_ai_responses@7",
             "workspace-a",
-            None,
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_responses".into(),
@@ -602,21 +606,81 @@ mod tests {
         .expect("coherent brokered provider candidate")
     }
 
+    #[cfg(not(feature = "brokered"))]
+    #[tokio::test]
+    async fn brokered_access_fails_closed_when_the_adapter_is_absent() {
+        // Cause/effect design: C1 the immutable candidate explicitly requests
+        // Brokered access; C2 this binary has no brokered adapter. C1+C2 => E1
+        // fail with cloud_models_disabled before direct credential lookup or
+        // provider I/O. Route text is deliberately plain, so it has no causal
+        // role. Decision rule N1=C1+C2=>E1.
+        let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+        let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+        let error = CredentialInferenceMaterializer::new(credentials, secrets)
+            .materialize_exact(
+                &brokered_candidate("model-a"),
+                &RuntimeRunContext::new(),
+                None,
+            )
+            .await
+            .err()
+            .expect("N1 brokered access without an adapter must fail closed");
+        assert!(error.contains("cloud_models_disabled"), "N1/E1");
+    }
+
+    #[cfg(feature = "brokered")]
+    fn direct_candidate_with_brokered_looking_route(model: &str) -> ResolvedModelCandidate {
+        ResolvedModelCandidate::try_provider(
+            ModelBinding::new("openai", model, "genai"),
+            "openai@1",
+            "brokered:misleading-route@1",
+            "workspace-a",
+            None,
+            awaken_runtime_contract::InferenceEndpoint {
+                adapter_kind: "openai".into(),
+                api_dialect: "open_ai_responses".into(),
+                base_url: "https://provider.invalid".into(),
+                upstream_model: model.into(),
+                processing_placement: None,
+            },
+        )
+        .expect("coherent direct provider candidate")
+    }
+
     #[cfg(feature = "brokered")]
     #[tokio::test]
     async fn brokered_mode_and_candidate_routing_share_one_decision_table() {
         // Causes: C1 brokered supply is enabled; C2 an authenticated client is
-        // installed; C3 the requested binding is in the publication-pinned set.
+        // installed; C3 the requested binding is in the publication-pinned set;
+        // C4 the explicit access kind, independently of route text.
         // Effects: E1 return a lazy exact executor without acquiring a grant;
-        // E2 report disabled; E3 require sign-in; E4 reject an unpinned binding.
+        // E2 report disabled; E3 require sign-in; E4 reject an unpinned binding;
+        // E5 a direct candidate remains direct even if its route resembles the
+        // retired brokered prefix.
         // Rules: B1=!C1 -> E2; B2=C1&&!C2 -> E3; B3=C1&&C2&&C3 -> E1;
-        // B4=C1&&C2&&!C3 -> E4. Primary and fallback both exercise B3.
+        // B4=C1&&C2&&!C3 -> E4; B5=direct access+prefixed route -> E5.
+        // Primary and fallback use plain route identities and exercise B3,
+        // proving route text has no access-routing authority.
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
         let materializer = CredentialInferenceMaterializer::new(credentials, secrets);
         let primary = brokered_candidate("model-primary");
         let fallback = brokered_candidate("model-fallback");
         let context = RuntimeRunContext::new().with_ownership(Arc::new(CurrentOwnership));
+
+        assert!(
+            materializer
+                .materialize_exact(
+                    &direct_candidate_with_brokered_looking_route("model-direct"),
+                    &context,
+                    None,
+                )
+                .await
+                .err()
+                .expect("anonymous direct route reaches direct materialization")
+                .contains("resolved inference carries no credential"),
+            "B5/E5"
+        );
 
         assert!(
             materializer

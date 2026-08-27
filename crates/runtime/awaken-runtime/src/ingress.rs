@@ -87,6 +87,9 @@ impl RunService for DirectRunIngress {
         activation: RunActivation,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        let _attempt_tracking =
+            self.runtime
+                .track_active_attempt(&activation.run_id, &activation.thread_id, &context);
         self.executor.execute(activation, context).await
     }
 
@@ -96,6 +99,9 @@ impl RunService for DirectRunIngress {
         command: ResumeCommand,
         context: RuntimeRunContext,
     ) -> Result<RunState> {
+        let _attempt_tracking =
+            self.runtime
+                .track_active_attempt(&activation.run_id, &activation.thread_id, &context);
         self.executor.resume(activation, command, context).await
     }
 

@@ -23,7 +23,12 @@ import path from 'node:path';
 import { spawn, execFileSync as rawExecFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
-import { REPO_ROOT, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  committedEffectsAfterUnanchoredReceipt,
+  REPO_ROOT,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 import { cargoExecutable } from './cargo_binary.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38143);
@@ -219,18 +224,17 @@ async function exerciseContainerEnvironment(
           `${name} capability effect is not falsely processed`,
         );
         // Failure decision rules: F1 synchronous admission error => surface it;
-        // F2 accepted command + retryable provider/capability failure => retain
-        // the exact unprocessed receipt and create no Agent/terminal effect over
-        // one bounded reconciliation window. F2 is not a session.error until a
-        // separate authority classifies the fault as permanently quarantined.
+        // F2 accepted command + retryable provider/capability failure => return
+        // the exact unprocessed admission receipt, exclude it from unanchored
+        // committed history, and create no Agent/terminal effect over one bounded
+        // reconciliation window. F2 is not a session.error until a separate
+        // authority classifies the fault as permanently quarantined.
         await new Promise((resolve) => setTimeout(resolve, 750));
         events = await listSessionEvents(client, session.id);
-        const acceptedAt = events.findIndex((event) => event.id === acceptedId);
-        assert.notEqual(acceptedAt, -1, `${name} retained its exact User Event`);
-        assert.equal(events[acceptedAt].processed_at, null, `${name} retained retryable custody`);
-        const delta = events.slice(acceptedAt + 1);
-        assert.ok(
-          !delta.some((event) => [
+        committedEffectsAfterUnanchoredReceipt({
+          history: events,
+          receiptId: acceptedId,
+          forbiddenEventTypes: new Set([
             'agent.message',
             'agent.tool_use',
             'agent.tool_result',
@@ -239,12 +243,20 @@ async function exerciseContainerEnvironment(
             'session.usage',
             'span.model_request_start',
             'span.model_request_end',
-          ].includes(event.type)),
-          `${name} fabricated no execution/terminal effect: ${JSON.stringify(delta)}`,
-        );
+          ]),
+          description: `${name} retryable provider failure`,
+        });
       }
     }
-    await client.beta.sessions.delete(session.id, { betas: BETAS });
+    // Cleanup decision rules: C1 successful effects settled => ordinary Session
+    // delete/release is valid; C2 an expected retryable capability failure left
+    // the exact receipt unsettled => a terminal delete must remain unavailable.
+    // The process-scoped fixture directory owns C2 teardown after the assertion;
+    // attempting an API delete here would contradict the fail-closed invariant
+    // this branch just proved.
+    if (expectSuccess) {
+      await client.beta.sessions.delete(session.id, { betas: BETAS });
+    }
   }
   if (proveImageReuse) {
     assert.equal(realizedImages.length, 2);
@@ -259,7 +271,9 @@ async function exerciseContainerEnvironment(
       `${name} must reuse the exact content-addressed image while keeping sessions isolated`,
     );
   }
-  await client.beta.environments.delete(environment.id, { betas: BETAS });
+  if (expectSuccess) {
+    await client.beta.environments.delete(environment.id, { betas: BETAS });
+  }
 }
 
 async function exercisePackageManagerMatrix(client, { registryOnly = false } = {}) {

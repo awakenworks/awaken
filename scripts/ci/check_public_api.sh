@@ -17,6 +17,8 @@
 # ``--require-tools`` and fails closed.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
 
 bless=0
 require_tools=0

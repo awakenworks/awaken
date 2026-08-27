@@ -309,13 +309,14 @@ async function main() {
     // Cause/effect graph / decision table for the built-in Docker provider:
     // C1=credential selected; C2=substitution; C3=no-bypass network enforcement;
     // C4=a driving event wakes the registered Worker realization.
-    // C1 + !(C2 && C3) + C4 -> D1 durably admit the exact command, then retain
-    //                              it unprocessed while permanent Worker custody
-    //                              failure settles/terminates before container launch.
+    // C1 + !(C2 && C3) + C4 -> D1 durably admit the exact command, then mark it
+    //                              processed at the failed Run's durable terminal
+    //                              anchor while permanent Worker custody failure
+    //                              settles/terminates before container launch.
     // !C1              -> D2 inject the anonymous MCP endpoint normally.
     //
     // | Rule | credential | substitution + no-bypass | driving event | result             |
-    // | D1   | yes        | no                       | yes           | exact receipt; retained/unprocessed; error + terminal; no launch |
+    // | D1   | yes        | no                       | yes           | exact receipt; terminal-processed; error + terminal; no launch |
     // | D2   | no         | n/a                      | yes           | launch + MCP config |
     // FMECA: rolling D1 back into an HTTP error erases the committed Session
     // command. The accepted receipt plus permanent terminal projection proves
@@ -344,7 +345,11 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 750));
     const secureEvents = await listEvents(client, secureSession.id);
     const retainedSecure = secureEvents.find((event) => event.id === acceptedSecure.id);
-    assert.equal(retainedSecure?.processed_at, null, 'D1 durable history retains the failed command');
+    assert.equal(
+      typeof retainedSecure?.processed_at,
+      'string',
+      'D1 durable history anchors the exact command to its failed Run terminal',
+    );
     const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
     assert.equal(secureErrors.length, 1, 'D1 permanent custody failure projects exactly one error');
     assert.ok(
