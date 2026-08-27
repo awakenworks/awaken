@@ -50,7 +50,7 @@ pub(super) struct FileConfig {
     pub(super) otel_metric_export_interval_ms: Option<u64>,
     pub(super) management_database_url_file: Option<PathBuf>,
     pub(super) resource_database_url: Option<String>,
-    pub(super) deployment_backing: Option<super::deployment_backing::Config>,
+    pub(super) workspace_data: Option<super::workspace_data::Config>,
     pub(super) catalog_db: Option<String>,
     pub(super) credential_db: Option<String>,
     pub(super) config_db: Option<String>,
