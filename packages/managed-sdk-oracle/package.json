@@ -14,7 +14,8 @@
     "conformance:recovery:cleanup": "node src/conformance/recovery.mjs cleanup",
     "generate": "node src/cli.mjs generate",
     "check": "node src/cli.mjs check",
-    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json"
+    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json && pnpm run test:behavior",
+    "test:behavior": "cargo test --manifest-path ../../Cargo.toml -p awaken-protocol-managed --all-features --locked"
   },
   "dependencies": {
     "@anthropic-ai/sdk-current": "npm:@anthropic-ai/sdk@0.122.0",
