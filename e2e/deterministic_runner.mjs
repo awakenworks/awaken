@@ -225,6 +225,12 @@ export function preparedEnvironment(environment, explicitDirectory) {
   const manifestPath = path.join(directory, 'manifest.json');
   const fingerprint = prebuildFingerprint(cleanEnvironment);
   const dependencyLockDigest = fileDigest(path.join(E2E_ROOT, 'package-lock.json'));
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    manifest = undefined;
+  }
   const existingAwaken = fs.statSync(awakenDestination, { throwIfNoEntry: false })?.isFile();
   const existingScenarioHost = fs.statSync(
     scenarioHostDestination,
@@ -236,16 +242,19 @@ export function preparedEnvironment(environment, explicitDirectory) {
   )?.isFile();
   const existingWorker = fs.statSync(workerDestination, { throwIfNoEntry: false })?.isFile();
   if (existingAwaken || existingScenarioHost || existingHandCompanion || existingWorker) {
-    if (!existingAwaken || !existingScenarioHost || !existingHandCompanion || !existingWorker) {
+    const complete = existingAwaken
+      && existingScenarioHost
+      && existingHandCompanion
+      && existingWorker;
+    // A current manifest is a publication receipt for one immutable four-file
+    // set, so a missing member is corruption. An older manifest instead owns a
+    // complete cache schema of its own (v2 had no hand companion): invalidate
+    // it through the normal rebuild path rather than misclassifying it as a
+    // partially published current set.
+    if (manifest?.version === 3 && !complete) {
       throw new Error(`incomplete E2E prebuilt directory: ${directory}`);
     }
-    let manifest;
-    try {
-      manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-    } catch {
-      manifest = undefined;
-    }
-    if (validPrebuiltManifest(
+    if (complete && validPrebuiltManifest(
       manifest,
       fingerprint,
       dependencyLockDigest,
