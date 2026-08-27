@@ -5,6 +5,7 @@
 - Amended: 2026-08-01 — logical File identity and canonical Resources application
 - Amended: 2026-08-10 — typed application-contributed Session inputs
 - Amended: 2026-08-12 — one front-door IAM enforcement path
+- Amended: 2026-08-27 — profiled creation, File item fencing, and Session-owned Repository adoption
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -501,3 +502,67 @@ fence the requested Workspace once, select the action namespace, obtain one PDP
 decision, stamp the Workspace only on Allow, and enter the handler. Deny,
 approval, transport failure, and an unmapped route terminate at that same edge.
 No `resource_guard` compatibility layer remains.
+
+## Amendment: profiled inputs freeze in the original root (2026-08-27)
+
+Profiled product adapters now pass direct `SessionInputAttachment` values beside
+Repository inputs into the existing `create_profiled_session` composer. Agent
+defaults and those direct inputs enter the one `SessionInputResolver` before
+`SessionCreationIntent::finalize`; the initial `ResolvedSessionResources` is
+therefore complete in the original Session insert. A post-create whole-manifest
+call is not an alternative creation or recovery path.
+
+After creation, Resource lifecycle and realization remain unchanged. The
+Session application first applies the immutable baseline mutation authority
+owned by
+[ADR-0066](0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority),
+then admitted changes reuse the existing whole-manifest root CAS and realization
+driver. The Resource Catalog, resolver, and protocol adapter neither infer a
+product mode nor maintain another mutable policy.
+
+### Session-scoped Repository adoption and mutation fencing
+
+A Repository definition created while lowering one Managed or profiled Session
+is a participant in the Session root command, not an independently successful
+aggregate. Registry creation and optional Vault credential creation each return
+their own `Applied | Replayed` provenance. Pure request, path, collision, Skill,
+Environment, and baseline-policy validation runs before either participant.
+Before the root is adopted, a failure compensates only an `Applied` participant;
+it never retires a replayed participant. Compensation first reads the durable
+root: an unavailable or corrupt root is preserved for reconciliation, a
+concurrent winner that references the participant has adopted it, and only an
+unreferenced participant is retired. Whole-manifest replacement uses this same
+participant/root boundary rather than a second cleanup path.
+
+After root adoption, the existing Session Resource state and reconciler own
+release; there is no protocol-local cleanup saga. When a replacement generation
+becomes Active, the same root commit moves each Repository present in the old
+generation but absent from the successor into an exact durable retirement
+intent. That intent remains both reconciliation work and a Resource/Vault
+retention edge until cleanup and its completion CAS succeed. Local realization
+attempts cleanup immediately after the Active commit; externally realized and
+restarted Sessions are discovered by the same reconciliation scan. Terminal
+cleanup consumes the same intents together with the active and pending
+generations. Item DELETE and whole-manifest omission therefore have one
+manifest/CAS/retirement path.
+
+While an intent is unsettled, prepare and unattempted revise reject a successor
+that reintroduces the same Repository id. This fail-closed admission barrier is
+required before the external effect: detecting a later root CAS conflict cannot
+undo a Repository already retired by an older reconciler. Cleanup may tombstone
+a Session-created Repository only when both its closed
+`managed:{session}:repository:*` or `profiled:{session}:repository:*` namespace
+and the canonical owner-kind/session metadata match. Namespace resemblance,
+missing metadata, or a shared definition is a successful no-op and never grants
+Vault authority. For an owned inline credential, cleanup first retires the exact
+source revision through the canonical Vault archive/material-reclamation path,
+then retires the Repository. Either failure preserves the intent for idempotent
+receipt replay or restart; an already absent Registry definition completes as a
+no-op without inferring credential ownership.
+
+The ordinary Managed File item create/delete verbs read one Session revision,
+derive the complete desired manifest, and pass that exact revision to the same
+root CAS. They do not rebase after a concurrent writer: one mutation wins and a
+loser receives conflict (`409`) with the winner's manifest intact. Explicit
+whole-manifest replacement retains its caller-supplied `If-Match` fence and the
+same no-lost-update rule.

@@ -147,7 +147,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md` | Decision record | Not required | n/a |
 | `adr/0064-runtime-owned-outcome-orchestration.md` | Decision record | Not required | n/a |
 | `adr/0065-recoverable-embeddable-remote-worker.md` | Decision record | Not required | n/a |
-| `adr/0066-session-service-binding-and-realization.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
+| `adr/0066-session-service-binding-and-realization.md` | Accepted target with implemented immutable mutation-policy and atomic create-receipt slices; whole guardrail remains target until deployment/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
 | `adr/0067-credential-custody-model-exposure-and-secret-delivery.md` | Accepted target landing in verified slices; whole guardrail remains target until implementation/E2E evidence is complete | Delegated | [remote Worker component catalog](design/remote-worker-protocol.md#10-remote-worker-component-catalog) |
 | `adr/0068-unified-prompt-and-skill-optimization.md` | Proposed decision record | Not required | n/a |
 | `adr/0069-acp-capability-configuration-lifecycle.md` | Proposed decision record | Not required | n/a |
@@ -156,6 +156,6 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0072-environment-definition-and-execution-boundary.md` | Accepted Environment definition/execution ownership target | Required | self |
 | `adr/0073-session-environment-owned-hand-and-worker-capability-placement.md` | Implemented decision record | Not required | n/a |
 | `adr/0074-session-environment-suspension-and-checkpointed-continuation.md` | Proposed Session Environment continuation decision | Not required | n/a |
-| `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker consolidation decision | Not required | n/a |
+| `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker, complete-profiled-creation, and effect-fenced replay consolidation decision | Not required | n/a |
 | `adr/0076-session-owned-background-tool-execution.md` | Implemented Native BackgroundTask decision | Not required | n/a |
 | `adr/0077-iam-directory-product-space-placement.md` | Implemented product-space placement decision | Not required | n/a |

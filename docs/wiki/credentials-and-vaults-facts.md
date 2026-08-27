@@ -42,13 +42,13 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Links: guardrails G8, G9, and G14
 - Verification: docs review checklist and replay/serialization tests.
 
-## FACT-CRED-005: Session MCP convergence is an accepted target
+## FACT-CRED-005: Session mutation authority is baseline-owned
 
-- Status: accepted target; Slice 0 contract closure required, not a current invariant
-- Owner: [ADR-0066](../adr/0066-session-service-binding-and-realization.md)
-- Fact: the scoped Session persistence row carries one consumed complete creation intent, one immutable finalized baseline, the existing versioned Resource state, and one MCP-only attachment set under replace/tombstone root mutation. Agent and Session MCP inputs share one normalizer; the existing Managed full-replacement API diffs into the same generations. A self-hosted Session uses the Environment WorkQueue, and a Session realization lease fences local/remote stage, CAS Active, publish, drain, and recovery (ADR-0075).
-- Links: [architecture invariants](../INVARIANTS.md); [remote Worker protocol](../design/remote-worker-protocol.md)
-- Verification: planned root-CAS/store conformance, old-path deletion, Environment pin/network-intersection, MCP create/call/add/replace/remove/recovery, Native/ACP parity, stale-ownership, and out-of-policy target tests.
+- Status: accepted target landing in verified slices; whole G42 is not yet promoted
+- Owner: [ADR-0066 mutation authority](../adr/0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority)
+- Fact: one immutable baseline policy preserves ordinary Managed authoring while profiled modes fail closed at canonical Agent, Resource, and Repository-credential commands; typed Vault lifecycle adoption is the only cross-policy MCP exception.
+- Links: [architecture invariants](../INVARIANTS.md); [complete profiled creation](../adr/0075-unified-managed-session-worker-execution.md#amendment-2026-08-27-profiled-creation-is-one-complete-insert); [credential lifecycle](../design/credentials-and-vaults.md#front-door-wire-alignment-managed-agents)
+- Verification: policy/fingerprint, complete-create, Resource replacement, Repository credential, public MCP replacement, and typed credential-lifecycle decision tests.
 
 ## FACT-CRED-006: Plaintext boundary and model exposure are separate
 
@@ -81,3 +81,11 @@ Owner: [credentials-and-vaults.md](../design/credentials-and-vaults.md).
 - Fact: the trusted Gateway process composes Awaken's canonical Credential repository, SecretStore, and pinned materializer under one exact `PlatformRelay` holder; built-in `CredentialUsage::HttpEffect` freezes every material field's exact header, query, or RFC 6901 JSON-pointer destinations, and Flow receives no material and owns neither a raw-secret endpoint nor a duplicate Vault.
 - Links: [credentials and vaults](../design/credentials-and-vaults.md#hosted-governance-credential-resources)
 - Verification: exact holder, Workspace, source revision, field/placement set, material shape, usage, and effect-target binding tests plus the hosted Gateway effect E2E; deployments without the canonical in-process adapter fail closed because envelope metadata is not a cryptographic transport.
+
+## FACT-CRED-010: Vault rollout discovers the actual desired source
+
+- Status: active
+- Owner: [Managed Agents credential lifecycle](../design/credentials-and-vaults.md#front-door-wire-alignment-managed-agents)
+- Fact: the Managed Session repository derives an additive exact credential-source index from canonical desired MCP attachments, synchronizes it in the root transaction, and transactionally rebuilds it from canonical roots before SQLite/Postgres constructors serve. Vault rollout queries exact Workspace plus source id; the older Vault-membership index is not reinterpreted. Session-owned Repository compensation and terminal cleanup archive only the exact owned source revision through the same Vault lifecycle.
+- Links: [Session-owned Repository lifecycle](../design/resources-memory-files-skills.md#session-ownership-and-root-adoption)
+- Verification: V1-to-V2 migration/backfill/restart, root update/archive/delete/unrelated-source, SQLite/Postgres conformance, exact rollout, and inline Repository credential reclamation tests.
