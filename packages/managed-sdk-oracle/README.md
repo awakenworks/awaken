@@ -13,6 +13,15 @@ There are three independent authorities:
 - Cloud qualification executes the same named SDK anchors against a deployed
   product. It proves behavior; it does not redefine either contract.
 
+Two generated verification artifacts prevent those authorities from drifting:
+
+- `contracts/anthropic-managed/operation-coverage.generated.json` maps every
+  current SDK operation and reviewed SDK-absent route to its Rust behavior-test
+  owner and exact SDK compile fixtures.
+- `fixtures/generated/*.ts` compile every discovered operation against every
+  pinned SDK anchor. `fixtures/user-profiles-change-point.ts` additionally
+  checks the intentional response-type transition at the User Profiles anchor.
+
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
 `config/scope.json` declares the Managed namespaces plus the small, reviewed set
 of documented routes that are intentionally absent from the selected SDK
@@ -33,5 +42,5 @@ another hand-maintained manifest.
    version, then run its matrix suite against the product.
 
 The `check` command regenerates in memory and compares byte-for-byte. CI and the
-contract generation script both call it, so stale generated artifacts fail
-closed.
+contract generation script both call it, while `test` type-checks all compile
+fixtures, so stale or unowned compatibility claims fail closed.

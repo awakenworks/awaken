@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "resources": {
+    "agents": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+    },
+    "deploymentRuns": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+    },
+    "deployments": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+    },
+    "dreams": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+    },
+    "environments": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs"
+    },
+    "files": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+    },
+    "memoryStores": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+    },
+    "models": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs"
+    },
+    "sessions": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+    },
+    "skills": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+    },
+    "tunnels": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+    },
+    "userProfiles": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+    },
+    "vaults": {
+      "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+    }
+  }
+}
