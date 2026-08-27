@@ -64,3 +64,7 @@ pub(super) fn reconcile_agents_directory(
         )
         .expect("ensure Agents Directory placement");
 }
+
+#[cfg(test)]
+#[path = "directory_tests.rs"]
+mod tests;
