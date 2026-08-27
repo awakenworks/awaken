@@ -574,31 +574,6 @@ impl ManagedState {
             })
             .transpose()
             .map_err(StateError::Run)?;
-        // Anthropic requires MCP declarations and toolsets to be a bijective
-        // reference: every declared server has a toolset and every toolset names
-        // a declared server. Validate create-time overrides before provisioning.
-        if let (Some(mcp_servers), Some(tools)) =
-            (req.agent.mcp_servers_override(), req.agent.tools_override())
-        {
-            let declared = mcp_servers
-                .iter()
-                .map(crate::types::agent::AgentMcpServer::name)
-                .collect::<std::collections::BTreeSet<_>>();
-            let toolset_names = tools
-                .iter()
-                .filter_map(|tool| match tool {
-                    awaken_session_contract::AgentTool::McpToolset {
-                        mcp_server_name, ..
-                    } => Some(mcp_server_name.as_str()),
-                    _ => None,
-                })
-                .collect::<std::collections::BTreeSet<_>>();
-            if declared != toolset_names {
-                return Err(StateError::Run(RunError::bad_request(
-                    "each mcp_server must be referenced by exactly one mcp_toolset",
-                )));
-            }
-        }
         let agent_mcp_override = req.agent.mcp_servers_override();
         let mcp_drafts = self
             .application
@@ -724,6 +699,29 @@ impl ManagedState {
             .tools_override()
             .map(project::session_tool_configuration)
             .unwrap_or(inherited_tools);
+        // Validate after replacement/inheritance has produced the effective
+        // Session configuration. Checking only when both override arrays were
+        // present admitted a partial override whose inherited half named a
+        // different server.
+        let effective_server_names = mcp_drafts
+            .iter()
+            .map(|draft| draft.name.clone())
+            .collect::<Vec<_>>();
+        let effective_toolset_names = effective_tools
+            .toolsets
+            .iter()
+            .filter_map(|toolset| match &toolset.source {
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name } => {
+                    Some(server_name.clone())
+                }
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
+            })
+            .collect::<Vec<_>>();
+        awaken_session_contract::validate_mcp_toolset_pairing(
+            &effective_server_names,
+            &effective_toolset_names,
+        )
+        .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
         let budget_state = match &req.budget {
             Some(budget) => {
                 let max_list_cost_minor = budget

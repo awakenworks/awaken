@@ -161,7 +161,7 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
         .flatten()
         .collect::<Vec<_>>();
     awaken_session_contract::validate_agent_tools(&authored_toolsets)?;
-    Ok(AgentConfig {
+    let config = AgentConfig {
         id,
         instructions: string("system").unwrap_or_default(),
         max_steps: body
@@ -232,7 +232,9 @@ pub fn agent_config_from_managed(id: String, body: &Value) -> Result<AgentConfig
             .get("compaction")
             .filter(|value| !value.is_null())
             .and_then(|value| serde_json::from_value(value.clone()).ok()),
-    })
+    };
+    config.validate_managed_tool_bindings()?;
+    Ok(config)
 }
 
 fn managed_model_selection(model: Option<&Value>) -> Result<ModelSelection, String> {
@@ -670,11 +672,60 @@ mod tests {
         }]);
         let config = agent_config_from_managed(
             "calculator".into(),
-            &json!({ "model": "test", "tools": tools }),
+            &json!({
+                "model": "test",
+                "mcp_servers": [{
+                    "type": "url",
+                    "name": "calc",
+                    "url": "https://calc.example.test/mcp"
+                }],
+                "tools": tools
+            }),
         )
         .expect("typed toolset parses");
         assert_eq!(config.toolsets.len(), 1);
         assert_eq!(managed_from_agent_config(&config, false)["tools"], tools);
+    }
+
+    #[test]
+    fn managed_mcp_server_and_toolset_are_an_exact_pair_at_the_authoring_boundary() {
+        // Causal decision table:
+        // server/toolset = 0/0 valid, 1/1 matching valid, 1/0 missing policy,
+        // 0/1 dangling policy, 1/2 duplicate policy. Every invalid row is
+        // rejected before an AgentConfig can be stored or compiled.
+        let server = json!({
+            "type": "url", "name": "docs", "url": "https://docs.example.test/mcp"
+        });
+        let toolset = json!({ "type": "mcp_toolset", "mcp_server_name": "docs" });
+        assert!(agent_config_from_managed("empty".into(), &json!({})).is_ok());
+        assert!(
+            agent_config_from_managed(
+                "paired".into(),
+                &json!({ "mcp_servers": [server.clone()], "tools": [toolset.clone()] }),
+            )
+            .is_ok()
+        );
+        assert!(
+            agent_config_from_managed(
+                "missing".into(),
+                &json!({ "mcp_servers": [server.clone()] }),
+            )
+            .unwrap_err()
+            .contains("every MCP server must have one mcp_toolset")
+        );
+        assert!(
+            agent_config_from_managed("dangling".into(), &json!({ "tools": [toolset.clone()] }),)
+                .unwrap_err()
+                .contains("undeclared server")
+        );
+        assert!(
+            agent_config_from_managed(
+                "duplicate".into(),
+                &json!({ "mcp_servers": [server], "tools": [toolset.clone(), toolset] }),
+            )
+            .unwrap_err()
+            .contains("duplicated")
+        );
     }
 
     #[test]

@@ -484,6 +484,51 @@ fn session_with_mcp(agent_id: &str, mcp_servers: Vec<Value>, vault_ids: Vec<Stri
     })
 }
 
+#[tokio::test]
+async fn session_mcp_overrides_validate_the_effective_pair_not_field_presence() {
+    // Cause/effect matrix for an Agent with no inherited MCP configuration:
+    // overriding either half alone, using different names, or duplicating a
+    // ToolSet must fail before Session persistence or MCP staging. Only the
+    // exact server/ToolSet pair is accepted.
+    let h = harness(None);
+    let server = json!({ "name": "docs", "type": "url", "url": MCP_URL });
+    let toolset = json!({ "type": "mcp_toolset", "mcp_server_name": "docs" });
+    for agent in [
+        json!({
+            "id": "agent", "type": "agent_with_overrides",
+            "mcp_servers": [server.clone()]
+        }),
+        json!({
+            "id": "agent", "type": "agent_with_overrides",
+            "tools": [toolset.clone()]
+        }),
+        json!({
+            "id": "agent", "type": "agent_with_overrides",
+            "mcp_servers": [server.clone()],
+            "tools": [{ "type": "mcp_toolset", "mcp_server_name": "other" }]
+        }),
+        json!({
+            "id": "agent", "type": "agent_with_overrides",
+            "mcp_servers": [server.clone()],
+            "tools": [toolset.clone(), toolset.clone()]
+        }),
+    ] {
+        let (status, body) = call(
+            &h.app,
+            "POST",
+            "/v1/sessions",
+            Some(json!({ "agent": agent })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body.to_string().contains("exactly one mcp_toolset"),
+            "{body}"
+        );
+    }
+    assert!(h.staged.lock().unwrap().is_empty());
+}
+
 async fn call_with_headers(
     app: &Router,
     method: &str,

@@ -332,6 +332,33 @@ pub fn validate_agent_tools(tools: &[AgentTool]) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate the shared MCP ownership invariant after an API adapter has applied
+/// replacement/inheritance semantics: each effective server has exactly one
+/// effective MCP ToolSet, and no ToolSet points outside that server set.
+pub fn validate_mcp_toolset_pairing(
+    server_names: &[String],
+    toolset_server_names: &[String],
+) -> Result<(), String> {
+    let servers = server_names
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if servers.len() != server_names.len() {
+        return Err("mcp_server names must be unique".into());
+    }
+    let toolsets = toolset_server_names
+        .iter()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if toolsets.len() != toolset_server_names.len() {
+        return Err("each mcp_server must be referenced by exactly one mcp_toolset".into());
+    }
+    if servers != toolsets {
+        return Err("each mcp_server must be referenced by exactly one mcp_toolset".into());
+    }
+    Ok(())
+}
+
 fn domain_filter(config: &AgentToolConfig) -> Option<serde_json::Value> {
     config
         .allowed_domains
@@ -665,6 +692,29 @@ fn projected_user_location(value: &serde_json::Value) -> AgentWebSearchUserLocat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn effective_mcp_pairing_covers_the_complete_bijection_table() {
+        // This is shared by Agent authoring and Session-local replacements.
+        // The table covers absence, exact pairing, missing, dangling, and both
+        // duplicate axes so an adapter cannot accidentally weaken the contract.
+        for (servers, toolsets, valid) in [
+            (vec![], vec![], true),
+            (vec!["docs"], vec!["docs"], true),
+            (vec!["docs"], vec![], false),
+            (vec![], vec!["docs"], false),
+            (vec!["docs", "docs"], vec!["docs"], false),
+            (vec!["docs"], vec!["docs", "docs"], false),
+        ] {
+            let servers = servers.into_iter().map(str::to_string).collect::<Vec<_>>();
+            let toolsets = toolsets.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert_eq!(
+                validate_mcp_toolset_pairing(&servers, &toolsets).is_ok(),
+                valid,
+                "servers={servers:?}, toolsets={toolsets:?}"
+            );
+        }
+    }
 
     #[test]
     fn official_agent_toolset_has_one_exact_eight_member_source() {
