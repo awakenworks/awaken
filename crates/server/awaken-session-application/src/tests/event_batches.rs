@@ -576,6 +576,106 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
 }
 
 #[tokio::test]
+async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
+    // Cause/effect graph: C1 a key is absent/exact/conflicting; C2 the
+    // application instance is warm or reconstructed over the same repository.
+    // Effects: E1 absent appends one root batch; E2 exact returns that byte-for-
+    // value batch without a new revision; E3 conflict fails closed; E4 a new key
+    // remains a distinct user intent. Constraints: the Session root's retained
+    // batch is the only receipt and request fingerprint owner.
+    // | Rule | Key/fingerprint | Instance | Effect |
+    // | I1 | new K1/F1 | warm | E1 |
+    // | I2 | K1/F1 | warm/restarted | E2 |
+    // | I3 | K1/F2 | any | E3 |
+    // | I4 | K2/F1 | any | E4 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("idempotency repository"),
+    );
+    create(
+        repository.as_ref(),
+        persisted("event-idempotency", false, "idle"),
+    )
+    .await;
+    let input = vec![SessionEventInput::UserMessage {
+        content: vec![ContentBlock::text("one intent")],
+    }];
+    let app = application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let first = app
+        .append_session_event_batch_idempotent(
+            "event-idempotency",
+            input.clone(),
+            None,
+            None,
+            Some(("key-1".into(), "fingerprint-1".into())),
+        )
+        .await
+        .expect("I1/E1");
+    let replay = app
+        .append_session_event_batch_idempotent(
+            "event-idempotency",
+            input.clone(),
+            None,
+            None,
+            Some(("key-1".into(), "fingerprint-1".into())),
+        )
+        .await
+        .expect("I2/E2 warm replay");
+    assert_eq!(replay, first, "I2/E2");
+    assert_eq!(
+        repository
+            .get("event-idempotency")
+            .await
+            .unwrap()
+            .event_batches
+            .len(),
+        1,
+        "I2/E2"
+    );
+
+    let restarted = application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert_eq!(
+        restarted
+            .session_event_batch_idempotency("event-idempotency", "key-1", "fingerprint-1",)
+            .await
+            .expect("I2 restart read"),
+        SessionEventBatchIdempotency::Exact(first.clone()),
+        "I2/E2 restart replay"
+    );
+    let conflict = restarted
+        .append_session_event_batch_idempotent(
+            "event-idempotency",
+            input.clone(),
+            None,
+            None,
+            Some(("key-1".into(), "fingerprint-2".into())),
+        )
+        .await
+        .expect_err("I3/E3");
+    assert_eq!(conflict.code, "idempotency_conflict", "I3/E3");
+
+    let later = restarted
+        .append_session_event_batch_idempotent(
+            "event-idempotency",
+            input,
+            None,
+            None,
+            Some(("key-2".into(), "fingerprint-1".into())),
+        )
+        .await
+        .expect("I4/E4");
+    assert_ne!(later.batch_id, first.batch_id, "I4/E4");
+}
+
+#[tokio::test]
 async fn legacy_terminal_batches_resolve_under_root_cas_without_runtime_effects() {
     // Cause/effect graph: C1 an old writer left a terminal Session with one
     // accepted unprocessed command; C2 terminal cleanup is Fenced, Requested

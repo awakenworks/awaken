@@ -81,6 +81,7 @@ impl ProtocolState {
         self.progress_at_final = self.progress;
     }
 
+    #[cfg(test)]
     fn invariants(&self) -> bool {
         self.responses <= 1
             && (!self.notification || self.responses == 0)

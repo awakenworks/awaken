@@ -329,7 +329,8 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
     ) -> Result<SendEventsResponse, StateError> {
-        self.send_events_attributed(session_id, req, None).await
+        self.send_events_attributed(session_id, req, None, None)
+            .await
     }
 
     /// Send an official Managed event envelope with optional request-grain data
@@ -345,10 +346,17 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
         data_subject_id: Option<String>,
+        idempotency_key: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
         let traceparent = awaken_observability::current_traceparent();
-        self.send_event_batch(session_id, req, data_subject_id, traceparent)
-            .await
+        self.send_event_batch(
+            session_id,
+            req,
+            data_subject_id,
+            traceparent,
+            idempotency_key,
+        )
+        .await
     }
 
     /// Validate and atomically retain one complete public Event batch. Durable
@@ -362,68 +370,130 @@ impl ManagedState {
         req: SendEventsRequest,
         data_subject_id: Option<String>,
         traceparent: Option<String>,
+        idempotency_key: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
         // Recover the session from durable truth if its in-memory record was lost
         // (a process restart) before resolving the agent — so a resume continues
         // the awaiting run instead of failing closed (ADR-0039).
         self.ensure_session(session_id).await?;
-        // An archived session is terminal and read-only: refuse every inbound write
-        // (message, resume, interrupt, outcome) with a 409, before touching the
-        // runtime — the contract makes an archived session read-only.
-        let (agent_id, is_built_in_dream_agent, inference_geo) = {
-            let sessions = self.sessions.lock().unwrap();
-            let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
-            if record.session.archived_at.is_some() {
-                return Err(StateError::Archived);
+        let request_fingerprint = idempotency_key
+            .as_ref()
+            .map(|_| awaken_session_contract::stable_fingerprint(&(&req, &data_subject_id)));
+        let replay_coordinate = idempotency_key
+            .as_deref()
+            .zip(request_fingerprint.as_deref());
+
+        // Cause/effect decision table for transport retry admission:
+        // R1 no key => preserve ordinary current-state validation; R2 new key =>
+        // validate and append under the Session root CAS; R3 same key+fingerprint
+        // => replay the one retained batch before archived/pending-tool checks;
+        // R4 same key+different fingerprint => 409 and no mutation. A second
+        // observation after any admission failure closes the Absent->Exact race.
+        let classify_retry = || async {
+            let Some((key, fingerprint)) = replay_coordinate else {
+                return Ok(None);
+            };
+            match self
+                .application
+                .session_event_batch_idempotency(session_id, key, fingerprint)
+                .await
+                .map_err(StateError::Run)?
+            {
+                awaken_session_application::SessionEventBatchIdempotency::Absent => Ok(None),
+                awaken_session_application::SessionEventBatchIdempotency::Exact(batch) => {
+                    Ok(Some(batch))
+                }
+                awaken_session_application::SessionEventBatchIdempotency::Conflict => {
+                    Err(StateError::IdempotencyMismatch)
+                }
             }
-            (
-                record.agent_id.clone(),
-                record.agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
-                    && record
-                        .session
-                        .metadata
-                        .get("awaken.session.origin")
-                        .is_some_and(|origin| origin == "dream"),
-                record.session.agent.model.inference_geo,
-            )
         };
-        let owner_scope = self
-            .owner_scope(session_id)
-            .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
-        if self.application.agent_unavailable(&owner_scope, &agent_id) && !is_built_in_dream_agent {
-            return Err(StateError::Run(RunError::bad_request(format!(
-                "agent_unavailable: agent `{agent_id}` cannot admit a new event"
-            ))));
-        }
-        let starts_run = req.events.iter().any(|event| {
-            matches!(
-                event,
-                InboundEvent::UserMessage { .. }
-                    | InboundEvent::UserToolConfirmation { .. }
-                    | InboundEvent::UserCustomToolResult { .. }
-                    | InboundEvent::UserToolResult { .. }
-                    | InboundEvent::UserDefineOutcome { .. }
-            )
-        });
-        if starts_run {
-            self.authorize_inference_geo(
-                &owner_scope,
-                inference_geo,
-                crate::InferenceGeoCheckpoint::Run,
-            )
-            .await?;
-        }
-        // Batch admission precedes the first receipt/event append. One invalid
-        // member therefore cannot leave a partial public history.
-        let validated = self.validate_event_batch(session_id, &req.events).await?;
-        if validated.inputs.is_empty() {
-            return Ok(SendEventsResponse { data: Vec::new() });
-        }
-        let accepted = self
-            .application
-            .append_session_event_batch(session_id, validated.inputs, data_subject_id, traceparent)
-            .await
-            .map_err(StateError::Run)?;
+        let accepted = if let Some(batch) = classify_retry().await? {
+            batch
+        } else {
+            let admission = async {
+                // An archived session is terminal and read-only: refuse every inbound write
+                // (message, resume, interrupt, outcome) with a 409, before touching the
+                // runtime — the contract makes an archived session read-only.
+                let (agent_id, is_built_in_dream_agent, inference_geo) = {
+                    let sessions = self.sessions.lock().unwrap();
+                    let record = sessions.get(session_id).ok_or(StateError::NotFound)?;
+                    if record.session.archived_at.is_some() {
+                        return Err(StateError::Archived);
+                    }
+                    (
+                        record.agent_id.clone(),
+                        record.agent_id == awaken_dream_application::BUILT_IN_DREAM_AGENT_ID
+                            && record
+                                .session
+                                .metadata
+                                .get("awaken.session.origin")
+                                .is_some_and(|origin| origin == "dream"),
+                        record.session.agent.model.inference_geo,
+                    )
+                };
+                let owner_scope = self
+                    .owner_scope(session_id)
+                    .unwrap_or_else(|| super::DEFAULT_SCOPE.to_string());
+                if self.application.agent_unavailable(&owner_scope, &agent_id)
+                    && !is_built_in_dream_agent
+                {
+                    return Err(StateError::Run(RunError::bad_request(format!(
+                        "agent_unavailable: agent `{agent_id}` cannot admit a new event"
+                    ))));
+                }
+                let starts_run = req.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        InboundEvent::UserMessage { .. }
+                            | InboundEvent::UserToolConfirmation { .. }
+                            | InboundEvent::UserCustomToolResult { .. }
+                            | InboundEvent::UserToolResult { .. }
+                            | InboundEvent::UserDefineOutcome { .. }
+                    )
+                });
+                if starts_run {
+                    self.authorize_inference_geo(
+                        &owner_scope,
+                        inference_geo,
+                        crate::InferenceGeoCheckpoint::Run,
+                    )
+                    .await?;
+                }
+                // Batch admission precedes the first receipt/event append. One invalid
+                // member therefore cannot leave a partial public history.
+                let validated = self.validate_event_batch(session_id, &req.events).await?;
+                if validated.inputs.is_empty() {
+                    return Ok(None);
+                }
+                self.application
+                    .append_session_event_batch_idempotent(
+                        session_id,
+                        validated.inputs,
+                        data_subject_id,
+                        traceparent,
+                        idempotency_key.clone().zip(request_fingerprint.clone()),
+                    )
+                    .await
+                    .map(Some)
+                    .map_err(|error| {
+                        if error.code == "idempotency_conflict" {
+                            StateError::IdempotencyMismatch
+                        } else {
+                            StateError::Run(error)
+                        }
+                    })
+            }
+            .await;
+            match admission {
+                Ok(Some(batch)) => batch,
+                Ok(None) => return Ok(SendEventsResponse { data: Vec::new() }),
+                Err(error) => match classify_retry().await? {
+                    Some(batch) => batch,
+                    None => return Err(error),
+                },
+            }
+        };
 
         // Retryable dependency failure after the root CAS cannot revoke an
         // acknowledged command. The lifecycle supervisor owns every later retry;

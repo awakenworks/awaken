@@ -3,8 +3,8 @@
 // read-only/history views may keep them in a pending buffer to preserve scroll position.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
-import { api, streamUrl } from "./api/client";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { api, IdempotencyScope, streamUrl } from "./api/client";
 import type { InboundEvent, ListEventsResponse, SessionEvent } from "./api/types";
 import {
   SSE_EVENT_NAMES,
@@ -43,6 +43,7 @@ export function useSessionLog(
 ): SessionLog {
   const qc = useQueryClient();
   const [pending, setPending] = useState<SessionEvent[]>([]);
+  const sendIdentity = useRef(new IdempotencyScope("session-events"));
 
   const events = useQuery({
     queryKey,
@@ -90,8 +91,18 @@ export function useSessionLog(
   };
 
   const send = useMutation({
-    mutationFn: (evs: InboundEvent[]) => api.post(`${base}/events`, { events: evs }),
-    onSuccess: () => void events.refetch(),
+    mutationFn: (evs: InboundEvent[]) => {
+      const request = { events: evs };
+      return api.post(
+        `${base}/events`,
+        request,
+        sendIdentity.current.headersFor(request),
+      );
+    },
+    onSuccess: () => {
+      sendIdentity.current.complete();
+      void events.refetch();
+    },
   });
 
   return {
