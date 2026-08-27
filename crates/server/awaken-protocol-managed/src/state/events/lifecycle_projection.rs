@@ -67,14 +67,7 @@ impl ManagedState {
             }
             let agent_name = record.child_threads[index].agent.display_name().to_string();
             let is_advisor = record.child_threads[index].agent.is_advisor();
-            let ordinary_failed = !is_advisor && event.kind == RunLifecycleEventKind::Failed;
-            let advisor_self_terminal = is_advisor
-                && matches!(
-                    event.kind,
-                    RunLifecycleEventKind::Completed
-                        | RunLifecycleEventKind::Failed
-                        | RunLifecycleEventKind::Cancelled
-                );
+            let run_terminates_thread = coordinated_child_run_is_terminal(is_advisor, &event.state);
             match event.kind {
                 RunLifecycleEventKind::Running | RunLifecycleEventKind::Resumed => {
                     if record.child_threads[index].status != SessionThreadStatus::Running {
@@ -199,7 +192,7 @@ impl ManagedState {
                         });
                     }
                     record.projected_terminal_cursors.insert(event.cursor);
-                    if ordinary_failed {
+                    if run_terminates_thread && !is_advisor {
                         // A committed Failed Run is the absorbing admission
                         // fence for an ordinary coordinated Thread. Project the
                         // error first and terminate directly: publishing Idle
@@ -241,7 +234,7 @@ impl ManagedState {
                         },
                         processed_at: Some(PROCESSED_AT.to_string()),
                     });
-                    if advisor_self_terminal {
+                    if run_terminates_thread {
                         // Each consultation owns one Thread and self-terminates
                         // after its one ordinary Run. This terminal is derived
                         // from the durable advisor target + Run boundary, not a

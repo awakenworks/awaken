@@ -51,11 +51,13 @@
 import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  E2E_HOME_ROOT,
   waitForSessionEventReceipt,
   waitForValue,
   withScenarioServer,
 } from './harness.mjs';
 import { FAKE_USAGE } from './fixtures/fake_anthropic_fixture.mjs';
+import { sqliteDatabaseForThread, sqliteRows } from './sqlite.mjs';
 
 // The provider adapter (genai) normalizes input to the TOTAL input incl. the
 // prompt-cache tokens, so each inference reports this as `input_tokens`.
@@ -161,7 +163,20 @@ async function createAwaitingChild(client, prompt) {
   return boundary;
 }
 
-async function waitForSettledChild(client, sessionId, childId, label = 'child end_turn and aggregate idle') {
+// Settlement observation decision table: C1 the child commits end_turn; C2 the
+// aggregate Session is idle; C3 the caller may require a later committed root
+// effect. Effects: E1 return one coherent child/root snapshot only after every
+// required cause; E2 keep polling through the transient C1+C2 boundary that can
+// precede an asynchronous child report. Rules: S1 C1+C2+!C3=>E1 (interrupt and
+// archive cases); S2 C1+C2+C3=>E1 (normal report); otherwise=>E2. Canonical
+// Managed history remains the effect authority; elapsed time is never evidence.
+async function waitForSettledChild(
+  client,
+  sessionId,
+  childId,
+  label = 'child end_turn and aggregate idle',
+  primaryEffect = () => true,
+) {
   return waitForValue(
     async () => {
       const [session, primaryEvents, childEvents] = await Promise.all([
@@ -172,7 +187,11 @@ async function waitForSettledChild(client, sessionId, childId, label = 'child en
       const idle = [...childEvents]
         .reverse()
         .find((event) => event.type === 'session.thread_status_idle');
-      if (session.status !== 'idle' || idle?.stop_reason?.type !== 'end_turn') return null;
+      if (
+        session.status !== 'idle'
+        || idle?.stop_reason?.type !== 'end_turn'
+        || !primaryEffect(primaryEvents)
+      ) return null;
       return { primaryEvents, childEvents };
     },
     (value) => value !== null,
@@ -800,6 +819,15 @@ async function main() {
         waiting.session.id,
         waiting.childId,
         'confirmed child and root report settle',
+        (primaryEvents) => {
+          const reportIndex = primaryEvents.findIndex(
+            (event) => event.type === 'agent.message'
+              && event.content?.[0]?.text === 'coordination completed from child report',
+          );
+          return reportIndex >= 0 && primaryEvents.slice(reportIndex + 1).some(
+            (event) => event.type === 'session.status_idle',
+          );
+        },
       );
       // M11b receipt rule: C6 exact deny receipt; E6 it is processed before the
       // observed child/root terminal boundary. K2 prior allow state is excluded.
@@ -1072,7 +1100,7 @@ async function main() {
     'delegate',
     'delegating',
     PORT + 2,
-    async (baseUrl) => {
+    async (baseUrl, upstream) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
       const session = await client.beta.sessions.create({
         agent: 'assistant',
@@ -1086,21 +1114,62 @@ async function main() {
         }],
         betas: BETAS,
       });
-      const running = await waitForValue(
-        () => listThreads(client, session.id),
-        (threads) => threads.some(
-          (thread) => thread.agent?.type === 'advisor' && thread.status === 'running',
-        ),
-        'Advisor Thread did not reach Running before cancellation',
-        { timeoutMs: 30_000 },
-      ).then((threads) => threads.find(
-        (thread) => thread.agent?.type === 'advisor' && thread.status === 'running',
-      ));
+      const runtimeDatabase = await waitForValue(
+        () => {
+          try {
+            return sqliteDatabaseForThread(
+              `${E2E_HOME_ROOT}/managed-advisor-cancel`,
+              session.id,
+              'runtime_message',
+            );
+          } catch {
+            return null;
+          }
+        },
+        (database) => typeof database === 'string',
+        'M14 root runtime commit database was not created',
+        { timeoutMs: 30_000, pollMs: 25 },
+      );
+      // M14 cancellation observation: C5 the canonical Runtime store has one
+      // non-root Run in Running; C6 the fake Provider has accepted that request
+      // but has not completed its delayed response. Effects: E7 use that exact
+      // stored child Thread id as the public targeted selector; E8 cancellation
+      // occurs inside the Advisor inference window. Rules: C5+C6=>E7+E8;
+      // otherwise keep polling. The Runtime store owns lifecycle truth and the
+      // existing provider ledger owns socket progress; neither IDs nor state are
+      // derived from timing, public projection lag, or a parallel fixture store.
+      const runningEvidence = await waitForValue(
+        () => {
+          const rows = sqliteRows(
+            runtimeDatabase,
+            `SELECT run_id, thread_id, phase
+             FROM runtime_run_record
+             WHERE thread_id <> ? AND phase = ?`,
+            session.id,
+            JSON.stringify('Running'),
+          );
+          assert.ok(rows.length <= 1, `M14 expected at most one child Running row: ${JSON.stringify(rows)}`);
+          return {
+            rows,
+            providerReceived: upstream.received,
+            providerCompleted: upstream.requests.length,
+          };
+        },
+        (evidence) => evidence.rows.length === 1
+          && evidence.providerReceived > evidence.providerCompleted,
+        'M14 Advisor Run and Provider request were not concurrently in flight',
+        { timeoutMs: 30_000, pollMs: 25 },
+      );
+      const running = runningEvidence.rows[0];
       const receipt = await client.beta.sessions.events.send(session.id, {
-        events: [{ type: 'user.interrupt', session_thread_id: running.id }],
+        events: [{ type: 'user.interrupt', session_thread_id: running.thread_id }],
         betas: BETAS,
       });
-      assert.equal(receipt.data[0].session_thread_id, running.id, 'M14 exact child selector receipt');
+      assert.equal(
+        receipt.data[0].session_thread_id,
+        running.thread_id,
+        'M14 exact child selector receipt',
+      );
       const drivingReceipt = (await driving).data[0];
       assert.equal(drivingReceipt?.type, 'user.message', 'M14 exact driving User receipt');
       const evidence = await settledAdvisorEvidence(client, session.id);
@@ -1123,7 +1192,11 @@ async function main() {
         { timeoutMs: 30_000 },
       );
       const serialized = JSON.stringify({ events: evidence.events, child: evidence.childEvents });
-      assert.equal(evidence.advisor.id, running.id, 'M14/E1 cancellation retains the exact Advisor Thread');
+      assert.equal(
+        evidence.advisor.id,
+        running.thread_id,
+        'M14/E1 cancellation retains the exact Advisor Thread',
+      );
       assert.ok(
         !evidence.childEvents.some((event) => event.type === 'agent.thread_message_received'),
         'M14/E3 cancelled Advisor emits no partial advice receive',
@@ -1134,7 +1207,10 @@ async function main() {
       );
       assert.ok(!serialized.includes('independent advisor advice'), 'M14/E3 no in-flight advice leaks');
     },
-    { SESSION_DEPLOYMENT_SANDBOX_TIER: 'local' },
+    {
+      SESSION_DEPLOYMENT_SANDBOX_TIER: 'local',
+      SESSION_DEPLOYMENT_STORAGE_DIR: `${E2E_HOME_ROOT}/managed-advisor-cancel`,
+    },
     { upstream: { delayMs: 4_000 } },
   );
 }
