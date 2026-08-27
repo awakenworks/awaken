@@ -635,6 +635,7 @@ mod tests {
                 upstream_model: "model".into(),
                 processing_placement: None,
             }),
+            unspecified_reasoning: Default::default(),
             acp: None,
         };
 

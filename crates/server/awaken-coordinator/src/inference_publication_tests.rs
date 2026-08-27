@@ -731,6 +731,7 @@ mod tests {
             route_ref,
             scope_id,
             endpoint,
+            unspecified_reasoning,
             acp,
             ..
         } = resolved.primary.provisioning().clone()
@@ -745,6 +746,7 @@ mod tests {
                 scope_id,
                 credential: Some(Box::new(direct_credential)),
                 endpoint,
+                unspecified_reasoning,
                 acp,
             },
         )

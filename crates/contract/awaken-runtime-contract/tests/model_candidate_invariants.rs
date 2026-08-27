@@ -1,6 +1,6 @@
 use awaken_runtime_contract::resolved::{
     AcpExecutionProfile, BackendModelSelection, ModelBinding, ModelProvisioning,
-    ResolvedModelCandidate,
+    ProviderExecutionProfile, ResolvedModelCandidate, UnspecifiedReasoning,
 };
 use awaken_runtime_contract::{CredentialRef, InferenceEndpoint};
 
@@ -51,7 +51,8 @@ fn assert_rejected(binding: ModelBinding, provisioning: ModelProvisioning, expec
 /// | B3 | Native | BackendOwned | any | reject |
 /// | B4 | exact ACP | BackendOwned | model policy disagrees with model | reject |
 /// | P1 | Native | Provider | complete route, no ACP profile | accept |
-/// | P2 | exact ACP | Provider | complete route and ACP profile | accept |
+/// | P2a | exact ACP | Provider | complete route, ACP profile, provider default | accept |
+/// | P2b | exact ACP | Provider | complete route, ACP profile, explicit reasoning policy | accept |
 /// | P3 | Native/ACP/A2A | Provider | backend/profile family disagrees | reject |
 /// | P4 | Native/ACP | Provider | any required route coordinate is non-canonical | reject |
 /// | R1 | exact A2A | Remote | empty model and security fingerprint | accept |
@@ -145,6 +146,22 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
         .is_ok(),
         "P2",
     );
+    assert!(
+        ResolvedModelCandidate::try_provider_with_profile(
+            ModelBinding::new("identity-a", "model-a", "acp:claude"),
+            "provider@1",
+            "route@1",
+            "workspace-a",
+            None,
+            endpoint(),
+            ProviderExecutionProfile {
+                unspecified_reasoning: UnspecifiedReasoning::Disabled,
+                acp: Some(acp_profile()),
+            },
+        )
+        .is_ok(),
+        "P2b",
+    );
     assert_rejected(
         ModelBinding::new("identity-a", "model-a", "acp:claude"),
         ModelProvisioning::Provider {
@@ -153,6 +170,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
+            unspecified_reasoning: Default::default(),
             acp: None,
         },
         "provider provisioning and executor backend are incoherent",
@@ -165,6 +183,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
+            unspecified_reasoning: Default::default(),
             acp: Some(Box::new(acp_profile())),
         },
         "provider provisioning and executor backend are incoherent",
@@ -177,6 +196,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
+            unspecified_reasoning: Default::default(),
             acp: None,
         },
         "provider provisioning and executor backend are incoherent",
@@ -189,6 +209,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
             scope_id: "workspace-a".into(),
             credential: None,
             endpoint: Box::new(endpoint()),
+            unspecified_reasoning: Default::default(),
             acp: None,
         },
         "provider provisioning requires complete canonical route coordinates",

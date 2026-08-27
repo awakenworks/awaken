@@ -150,6 +150,31 @@ pub struct InferenceEndpoint {
     pub processing_placement: Option<InferencePlacement>,
 }
 
+/// Closed provider behavior for an otherwise unspecified reasoning request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UnspecifiedReasoning {
+    #[default]
+    ProviderDefault,
+    Disabled,
+}
+
+impl UnspecifiedReasoning {
+    #[must_use]
+    const fn is_provider_default(&self) -> bool {
+        matches!(self, Self::ProviderDefault)
+    }
+}
+
+/// Provider-route execution facts that are orthogonal to endpoint and
+/// credential selection. Grouping them prevents constructors from expressing
+/// this one policy as an error-prone sequence of positional arguments.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProviderExecutionProfile {
+    pub unspecified_reasoning: UnspecifiedReasoning,
+    pub acp: Option<AcpExecutionProfile>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InferencePlacement {
     pub geography: crate::agent_bindings::InferenceGeography,
@@ -639,6 +664,14 @@ pub enum ModelProvisioning {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         credential: Option<Box<crate::CredentialAccess>>,
         endpoint: Box<crate::InferenceEndpoint>,
+        /// Explicit behavior when an Agent leaves reasoning effort unspecified.
+        /// Provider-specific wire fields are derived by the transport adapter;
+        /// raw JSON never crosses this immutable route boundary.
+        #[serde(
+            default,
+            skip_serializing_if = "UnspecifiedReasoning::is_provider_default"
+        )]
+        unspecified_reasoning: UnspecifiedReasoning,
         /// Present only when an external ACP executor consumes this Provider
         /// route. Native execution leaves it absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -729,14 +762,35 @@ impl ResolvedModelCandidate {
         credential: Option<crate::CredentialAccess>,
         endpoint: crate::InferenceEndpoint,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
-        Self::try_from_parts(
+        Self::try_provider_with_reasoning(
             binding,
-            ModelProvisioning::Provider {
-                provider_ref: provider_ref.into(),
-                route_ref: route_ref.into(),
-                scope_id: scope_id.into(),
-                credential: credential.map(Box::new),
-                endpoint: Box::new(endpoint),
+            provider_ref,
+            route_ref,
+            scope_id,
+            credential,
+            endpoint,
+            UnspecifiedReasoning::ProviderDefault,
+        )
+    }
+
+    pub fn try_provider_with_reasoning(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        credential: Option<crate::CredentialAccess>,
+        endpoint: crate::InferenceEndpoint,
+        unspecified_reasoning: UnspecifiedReasoning,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_provider_with_profile(
+            binding,
+            provider_ref,
+            route_ref,
+            scope_id,
+            credential,
+            endpoint,
+            ProviderExecutionProfile {
+                unspecified_reasoning,
                 acp: None,
             },
         )
@@ -751,6 +805,29 @@ impl ResolvedModelCandidate {
         endpoint: crate::InferenceEndpoint,
         acp: AcpExecutionProfile,
     ) -> Result<Self, InvalidResolvedModelCandidate> {
+        Self::try_provider_with_profile(
+            binding,
+            provider_ref,
+            route_ref,
+            scope_id,
+            credential,
+            endpoint,
+            ProviderExecutionProfile {
+                unspecified_reasoning: UnspecifiedReasoning::ProviderDefault,
+                acp: Some(acp),
+            },
+        )
+    }
+
+    pub fn try_provider_with_profile(
+        binding: ModelBinding,
+        provider_ref: impl Into<String>,
+        route_ref: impl Into<String>,
+        scope_id: impl Into<awaken_tenancy::ScopeId>,
+        credential: Option<crate::CredentialAccess>,
+        endpoint: crate::InferenceEndpoint,
+        profile: ProviderExecutionProfile,
+    ) -> Result<Self, InvalidResolvedModelCandidate> {
         Self::try_from_parts(
             binding,
             ModelProvisioning::Provider {
@@ -759,7 +836,8 @@ impl ResolvedModelCandidate {
                 scope_id: scope_id.into(),
                 credential: credential.map(Box::new),
                 endpoint: Box::new(endpoint),
-                acp: Some(Box::new(acp)),
+                unspecified_reasoning: profile.unspecified_reasoning,
+                acp: profile.acp.map(Box::new),
             },
         )
     }
