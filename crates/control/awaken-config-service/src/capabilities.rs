@@ -206,12 +206,71 @@ async fn get_capabilities(State(state): State<Arc<CapabilityState>>) -> Json<Val
     Json(json!({
         "runtime_version": env!("CARGO_PKG_VERSION"),
         "tools": tool_caps,
+        "toolsets": managed_toolset_catalog(&state.tools),
         "plugins": plugin_catalog(&state.plugins),
         "policies": policy_catalog(&state.policies),
         "runtimes": runtime_caps,
         "sandbox_execution_policy": sandbox_execution_policy_capability(),
         "dreams": dream_capability(),
     }))
+}
+
+/// Managed Agents tool-family authoring metadata. Closed membership comes from
+/// the wire contract while descriptions and input schemas come from the live
+/// runtime catalog, so authoring clients do not duplicate either authority.
+fn managed_toolset_catalog(tools: &[ToolDescriptor]) -> Vec<Value> {
+    let members = awaken_session_contract::AGENT_TOOLSET_TOOL_IDS
+        .iter()
+        .map(|name| {
+            let descriptor = tools.iter().find(|tool| tool.id == *name);
+            let configurable_fields = match *name {
+                "web_fetch" => json!([
+                    "enabled",
+                    "permission_policy",
+                    "allowed_domains",
+                    "blocked_domains",
+                    "max_content_tokens"
+                ]),
+                "web_search" => json!([
+                    "enabled",
+                    "permission_policy",
+                    "allowed_domains",
+                    "blocked_domains",
+                    "user_location"
+                ]),
+                _ => json!(["enabled", "permission_policy"]),
+            };
+            json!({
+                "name": name,
+                "description": descriptor.map(|tool| tool.description.as_str()),
+                "input_schema": descriptor.map(|tool| &tool.parameters),
+                "available": descriptor.is_some(),
+                "configurable_fields": configurable_fields,
+            })
+        })
+        .collect::<Vec<_>>();
+    vec![
+        json!({
+            "type": "agent_toolset_20260401",
+            "source_kind": "agent",
+            "dynamic_members": false,
+            "default_config": {
+                "enabled": true,
+                "permission_policy": { "type": "always_allow" }
+            },
+            "members": members,
+        }),
+        json!({
+            "type": "mcp_toolset",
+            "source_kind": "mcp",
+            "dynamic_members": true,
+            "default_config": {
+                "enabled": true,
+                "permission_policy": { "type": "always_ask" }
+            },
+            "member_configurable_fields": ["enabled", "permission_policy"],
+        }),
+    ]
 }
 
 /// Stable, deployment-independent Dream authoring limits. Runtime model
@@ -407,6 +466,52 @@ mod tests {
                 .as_deref(),
             Some("available"),
             "R2"
+        );
+    }
+
+    #[test]
+    fn managed_toolset_catalog_uses_contract_members_and_source_specific_defaults() {
+        let tools = vec![ToolDescriptor::pinned(
+            "builtin:test",
+            "bash",
+            "Run a shell command.",
+            json!({ "type": "object", "properties": {} }),
+        )];
+        let catalog = managed_toolset_catalog(&tools);
+        assert_eq!(catalog.len(), 2);
+        assert_eq!(catalog[0]["type"], "agent_toolset_20260401");
+        assert_eq!(
+            catalog[0]["default_config"]["permission_policy"]["type"],
+            "always_allow"
+        );
+        assert_eq!(catalog[1]["type"], "mcp_toolset");
+        assert_eq!(catalog[1]["dynamic_members"], true);
+        assert_eq!(
+            catalog[1]["default_config"]["permission_policy"]["type"],
+            "always_ask"
+        );
+        let members = catalog[0]["members"].as_array().unwrap();
+        assert_eq!(
+            members.len(),
+            awaken_session_contract::AGENT_TOOLSET_TOOL_IDS.len()
+        );
+        let bash = members
+            .iter()
+            .find(|member| member["name"] == "bash")
+            .unwrap();
+        assert_eq!(bash["available"], true);
+        assert_eq!(bash["description"], "Run a shell command.");
+        let web_search = members
+            .iter()
+            .find(|member| member["name"] == "web_search")
+            .unwrap();
+        assert_eq!(web_search["available"], false);
+        assert!(
+            web_search["configurable_fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|field| field == "user_location")
         );
     }
 

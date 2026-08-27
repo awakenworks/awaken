@@ -803,6 +803,122 @@ impl AgentConfig {
 }
 
 impl AgentConfig {
+    /// Validate the structural ownership contract shared by every Agent write,
+    /// preview, publication, and Session override path. An MCP server and its
+    /// policy are one logical integration even though the Managed Agents wire
+    /// projects them into `mcp_servers[]` and `tools[].mcp_toolset`.
+    pub fn validate_tool_bindings(&self) -> Result<(), String> {
+        use awaken_runtime_contract::agent_bindings::ToolsetSource;
+
+        if self.mcp_servers.len() > 20 {
+            return Err("mcp_servers supports at most 20 entries".into());
+        }
+        if self.client_tools.len() + self.toolsets.len() > 128 {
+            return Err("tools supports at most 128 declared entries".into());
+        }
+        if !self.toolsets.is_empty() && self.plugin_config.contains_key("permission") {
+            return Err(
+                "toolsets and plugin_config.permission are competing permission sources".into(),
+            );
+        }
+
+        let mut server_names = std::collections::BTreeSet::new();
+        for server in &self.mcp_servers {
+            if !(1..=255).contains(&server.name.chars().count()) {
+                return Err("mcp_server name must be 1-255 characters".into());
+            }
+            if !server_names.insert(server.name.as_str()) {
+                return Err(format!("mcp_server name {:?} is duplicated", server.name));
+            }
+        }
+
+        let mut sources = std::collections::BTreeSet::new();
+        let mut referenced_mcp = std::collections::BTreeSet::new();
+        for toolset in &self.toolsets {
+            let source = match &toolset.source {
+                ToolsetSource::Agent => "agent".to_string(),
+                ToolsetSource::Mcp { server_name } => {
+                    if !server_names.contains(server_name.as_str()) {
+                        return Err(format!(
+                            "mcp_toolset references undeclared server {server_name:?}"
+                        ));
+                    }
+                    referenced_mcp.insert(server_name.as_str());
+                    format!("mcp:{server_name}")
+                }
+            };
+            if !sources.insert(source.clone()) {
+                return Err(format!("toolset source {source:?} is duplicated"));
+            }
+            let mut names = std::collections::BTreeSet::new();
+            for entry in &toolset.overrides {
+                if entry.name.trim().is_empty() || !names.insert(entry.name.as_str()) {
+                    return Err(format!(
+                        "toolset source {source:?} has an empty or duplicate tool override {:?}",
+                        entry.name
+                    ));
+                }
+            }
+        }
+
+        // Empty typed toolsets are the explicit compatibility marker for older
+        // Awaken configurations whose exact `tool_ids` owned MCP selection.
+        // Managed Agents authoring calls the strict method below; compilation
+        // keeps old stored revisions executable while never accepting a partial
+        // typed representation.
+        if !self.toolsets.is_empty() && referenced_mcp != server_names {
+            let missing = server_names
+                .difference(&referenced_mcp)
+                .copied()
+                .collect::<Vec<_>>();
+            return Err(format!(
+                "every MCP server must have one mcp_toolset; missing {missing:?}"
+            ));
+        }
+        Ok(())
+    }
+
+    /// Validate the public Managed Agents invariant: every declared MCP server
+    /// has exactly one typed `mcp_toolset`. Unlike [`Self::validate_tool_bindings`],
+    /// this deliberately does not admit the legacy exact-id representation.
+    pub fn validate_managed_tool_bindings(&self) -> Result<(), String> {
+        self.validate_tool_bindings()?;
+        for server in &self.mcp_servers {
+            if let awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(
+                transport,
+            ) = &server.transport
+                && transport.url.len() > 2_048
+            {
+                return Err("mcp_server URL must be at most 2048 bytes".into());
+            }
+            server.transport.normalize().map_err(|error| {
+                format!("mcp_server {:?} transport is invalid: {error}", server.name)
+            })?;
+        }
+        let referenced = self
+            .toolsets
+            .iter()
+            .filter_map(|toolset| match &toolset.source {
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Mcp { server_name } => {
+                    Some(server_name.as_str())
+                }
+                awaken_runtime_contract::agent_bindings::ToolsetSource::Agent => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let servers = self
+            .mcp_servers
+            .iter()
+            .map(|server| server.name.as_str())
+            .collect::<std::collections::BTreeSet<_>>();
+        if referenced != servers {
+            let missing = servers.difference(&referenced).copied().collect::<Vec<_>>();
+            return Err(format!(
+                "every MCP server must have one mcp_toolset; missing {missing:?}"
+            ));
+        }
+        Ok(())
+    }
+
     /// Project the executor kind without adding a parallel persisted
     /// discriminant. Unresolved Auto/Profile selections belong to the native
     /// resolver; every explicit selection is parsed by the canonical runtime
@@ -818,6 +934,102 @@ impl AgentConfig {
 
 fn delegation_limits_are_default(limits: &DelegationLimits) -> bool {
     limits == &DelegationLimits::default()
+}
+
+#[cfg(test)]
+mod tool_binding_tests {
+    use super::AgentConfig;
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+    };
+    use awaken_runtime_contract::agent_bindings::{
+        AgentMcpServerBinding, AgentMcpTransportBinding,
+    };
+
+    fn server(name: &str) -> AgentMcpServerBinding {
+        AgentMcpServerBinding {
+            name: name.into(),
+            transport: AgentMcpTransportBinding::http(format!("https://{name}.example.test/mcp")),
+            credential: None,
+            prompts_as_skills: false,
+        }
+    }
+
+    fn mcp_policy(name: &str, permission: ToolPermissionRequirement) -> ToolsetPolicy {
+        ToolsetPolicy {
+            source: ToolsetSource::Mcp {
+                server_name: name.into(),
+            },
+            default: ToolExecutionPolicy {
+                enabled: true,
+                permission,
+            },
+            overrides: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn managed_mcp_pairing_decision_table_is_complete() {
+        let mut config = AgentConfig::default();
+        assert!(config.validate_managed_tool_bindings().is_ok(), "0/0");
+
+        config.mcp_servers = vec![server("docs")];
+        assert!(
+            config
+                .validate_managed_tool_bindings()
+                .unwrap_err()
+                .contains("missing"),
+            "1/0"
+        );
+
+        config.toolsets = vec![mcp_policy("docs", ToolPermissionRequirement::AlwaysAsk)];
+        assert!(config.validate_managed_tool_bindings().is_ok(), "1/1");
+
+        config
+            .toolsets
+            .push(mcp_policy("docs", ToolPermissionRequirement::AlwaysAsk));
+        assert!(
+            config
+                .validate_managed_tool_bindings()
+                .unwrap_err()
+                .contains("duplicated"),
+            "1/2"
+        );
+
+        config.mcp_servers.clear();
+        config.toolsets.truncate(1);
+        assert!(
+            config
+                .validate_managed_tool_bindings()
+                .unwrap_err()
+                .contains("undeclared"),
+            "0/1"
+        );
+    }
+
+    #[test]
+    fn legacy_exact_tool_configs_remain_readable_but_not_managed_authorable() {
+        let mut config = AgentConfig::default();
+        config.mcp_servers = vec![server("legacy")];
+        assert!(config.validate_tool_bindings().is_ok());
+        assert!(config.validate_managed_tool_bindings().is_err());
+    }
+
+    #[test]
+    fn mcp_default_permission_is_explicitly_configurable() {
+        for permission in [
+            ToolPermissionRequirement::AlwaysAsk,
+            ToolPermissionRequirement::AlwaysAllow,
+        ] {
+            let mut config = AgentConfig::default();
+            config.mcp_servers = vec![server("ops")];
+            config.toolsets = vec![mcp_policy("ops", permission)];
+            config
+                .validate_managed_tool_bindings()
+                .expect("valid policy");
+            assert_eq!(config.toolsets[0].default.permission, permission);
+        }
+    }
 }
 
 #[cfg(test)]
