@@ -41,6 +41,25 @@ pub fn repository_transport_credential_usage() -> awaken_credential_contract::Cr
     awaken_credential_contract::CredentialUsage::HttpBasicAuth
 }
 
+/// Derive the one exact material binding shared by Session credential pinning
+/// and the deployment-selected Repository transport. Runtime- and
+/// transport-local coordinates are deliberately absent: the durable authority
+/// is the owning Workspace plus the frozen Repository identity and config
+/// version.
+#[must_use]
+pub fn repository_transport_material_binding(
+    workspace_id: &str,
+    repository_id: &awaken_resource_contract::RepositoryId,
+    config_version: awaken_resource_contract::ConfigVersion,
+) -> awaken_credential_contract::CredentialMaterialBinding {
+    let usage = repository_transport_credential_usage();
+    awaken_credential_contract::CredentialMaterialBinding::for_target(
+        workspace_id,
+        &(repository_id, config_version),
+        &usage,
+    )
+}
+
 /// Derive the one provider-neutral credential target for an HTTPS Repository
 /// remote. Session compilation, retained-pin validation, and credential ingress
 /// all call this owner instead of independently interpreting the URL.
@@ -753,6 +772,53 @@ mod tests {
                 .validate_for_repository("credential-1", "https://github.com/awaken/first.git")
                 .is_err(),
             "P6/E2"
+        );
+    }
+
+    /// Material-binding cause/effect graph: C1=Workspace identity;
+    /// C2=Repository identity; C3=frozen config version; C4=canonical
+    /// Repository transport usage. E1 the Session compiler and deployment
+    /// materializer derive one identical binding; E2 changing any durable
+    /// identity axis changes the binding before credential material is opened.
+    ///
+    /// | Rule | C1 | C2 | C3 | C4 | Effect |
+    /// |---|---|---|---|---|---|
+    /// | B1 | exact | exact | exact | exact | E1 |
+    /// | B2 | changed | exact | exact | exact | E2 |
+    /// | B3 | exact | changed | exact | exact | E2 |
+    /// | B4 | exact | exact | changed | exact | E2 |
+    #[test]
+    fn repository_material_binding_has_one_durable_authority() {
+        let repository_id = RepositoryId::new("repository-a");
+        let exact =
+            repository_transport_material_binding("workspace-a", &repository_id, ConfigVersion(7));
+        assert_eq!(
+            exact,
+            awaken_credential_contract::CredentialMaterialBinding::for_target(
+                "workspace-a",
+                &(&repository_id, ConfigVersion(7)),
+                &repository_transport_credential_usage(),
+            ),
+            "B1/E1",
+        );
+        assert_ne!(
+            exact,
+            repository_transport_material_binding("workspace-b", &repository_id, ConfigVersion(7),),
+            "B2/E2",
+        );
+        assert_ne!(
+            exact,
+            repository_transport_material_binding(
+                "workspace-a",
+                &RepositoryId::new("repository-b"),
+                ConfigVersion(7),
+            ),
+            "B3/E2",
+        );
+        assert_ne!(
+            exact,
+            repository_transport_material_binding("workspace-a", &repository_id, ConfigVersion(8),),
+            "B4/E2",
         );
     }
 
