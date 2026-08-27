@@ -17,6 +17,7 @@ import {
   AWAKEN_BIN_ENV,
   SCENARIO_HOST_BIN_ENV,
   cargoExecutable,
+  cargoScenarioHostBundle,
 } from './cargo_binary.mjs';
 
 // The historical 38xxx defaults overlap Linux's ephemeral client-port range.
@@ -205,12 +206,16 @@ function serverProcessEnv(addr, configured = {}, inheritedEnvironment = process.
 
 function ensureBuilt() {
   if (serverBin) return serverBin;
-  serverBin = cargoExecutable({
+  // C1 direct E2E build; C2 deterministic prebuilt snapshot. E1 C1 builds the
+  // existing hand-capable sibling beside scenario-host; E2 C2 requires that
+  // immutable sibling but leaves capability validation to runtime-host.
+  // Rules: H1 C1=>E1; H2 C2=>E2. One bundle helper prevents fixtures from
+  // independently guessing Cargo features or companion paths.
+  ({ scenarioHost: serverBin } = cargoScenarioHostBundle({
     cwd: REPO_ROOT,
-    packageName: 'awaken-scenario-host',
-    targetName: 'awaken-scenario-host',
+    environment: process.env,
     prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
-  });
+  }));
   return serverBin;
 }
 

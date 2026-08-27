@@ -189,7 +189,13 @@ async function main() {
   }
   fs.rmSync(TMP, { recursive: true, force: true });
   fs.mkdirSync(TMP, { recursive: true });
-  const repository = seedRepository();
+  // Repository path-fidelity decision table:
+  // R1 Local Workdir cannot expose one sandbox-absolute path to an opaque ACP
+  // process, so its fixture omits Repository inputs and exercises the supported
+  // Skill/Memory plus rejected read-only File surface.
+  // R2 Namespace has tool transparency and path fidelity, so it retains the
+  // complete Repository create/detach coverage below.
+  const repository = TIER === 'namespace' ? seedRepository() : undefined;
   const fixtureRepository = seedAgentFixtureRepository();
   const home = `${TMP}/home`;
   fs.mkdirSync(`${home}/.awaken`, { recursive: true });
@@ -258,16 +264,18 @@ async function main() {
           mount_path: '/notes',
           access: TIER === 'namespace' ? 'read_only' : 'read_write',
         },
-        {
-          type: 'github_repository',
-          url: fixtureRepository,
-          mount_path: '/workspace/fixture',
-        },
-        {
-          type: 'github_repository',
-          url: repository,
-          mount_path: '/workspace/live-repo',
-        },
+        ...(TIER === 'namespace' ? [
+          {
+            type: 'github_repository',
+            url: fixtureRepository,
+            mount_path: '/workspace/fixture',
+          },
+          {
+            type: 'github_repository',
+            url: repository,
+            mount_path: '/workspace/live-repo',
+          },
+        ] : []),
       ],
       betas: BETAS,
     });
@@ -290,7 +298,11 @@ async function main() {
     });
     const repoResource = session.resources.find((resource) =>
       resource.type === 'github_repository' && resource.mount_path === '/workspace/live-repo');
-    assert.ok(repoResource?.id);
+    assert.equal(
+      Boolean(repoResource?.id),
+      TIER === 'namespace',
+      `${TIER} Repository admission matches its path-fidelity capability`,
+    );
     // Live File admission decision table:
     // read-only mount + namespace enforcement -> attach at the official
     // /mnt/session/uploads path; read-only mount + local Workdir -> reject before
@@ -307,7 +319,7 @@ async function main() {
       );
       reply = await lastReply(client, session.id, 'observe rejected live attachment');
       assert.match(reply, /live_file","ABSENT/, 'a rejected attach leaves no live path');
-      assert.match(reply, /live_repo","NAMESPACE-REPOSITORY-OK/, 'the existing repository remains pinned');
+      assert.match(reply, /live_repo","ABSENT/, 'Local does not fabricate a split-path Repository');
     } else {
       const fileResource = await client.beta.sessions.resources.add(session.id, {
         type: 'file',
@@ -346,10 +358,12 @@ async function main() {
         betas: BETAS,
       });
     }
-    await client.beta.sessions.resources.delete(repoResource.id, {
-      session_id: session.id,
-      betas: BETAS,
-    });
+    if (repoResource?.id) {
+      await client.beta.sessions.resources.delete(repoResource.id, {
+        session_id: session.id,
+        betas: BETAS,
+      });
+    }
     reply = await lastReply(client, session.id, 'observe detached resources');
     assert.match(reply, /renamed_file","ABSENT/, 'file detach revoked the live path');
     assert.match(reply, /live_repo","ABSENT/, 'repository detach revoked its create-time path');

@@ -24,6 +24,9 @@ awaken-ext-builtin-tools.workspace = true
 awaken-ext-memory.workspace = true
 awaken-ext-skills.workspace = true
 awaken-run-ingress = { workspace = true, features = ["durable"] }
+# Deterministic scenarios seed absolute local bare repositories. Reuse the
+# sandbox adapter's existing test-only transport admission; product roots never
+# enable this feature and keep the HTTPS-only boundary.
 awaken-sandbox-local = { workspace = true, features = ["test-support"] }
 awaken-worker-transport-security.workspace = true
 awaken-admin-assistant = { workspace = true }
