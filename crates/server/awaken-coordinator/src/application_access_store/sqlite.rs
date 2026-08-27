@@ -1,5 +1,4 @@
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 use rusqlite::{Connection, Error as SqliteError, ErrorCode, OptionalExtension, params};
@@ -10,31 +9,27 @@ use super::{
     ApplicationAccessTokenHash, ApplicationAccessTokenId, StoredApplicationAccessRow,
 };
 
-const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
-
 pub(super) struct SqliteApplicationAccessRepository {
     pub(super) connection: Arc<Mutex<Connection>>,
 }
 
 impl SqliteApplicationAccessRepository {
     pub(super) fn open(path: &str) -> Result<Self, ApplicationAccessRepositoryError> {
-        let connection = Connection::open(path).map_err(unavailable)?;
+        let connection = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
         Self::from_connection(connection)
     }
 
     #[cfg(any(test, feature = "test-support"))]
     pub(super) fn open_in_memory() -> Result<Self, ApplicationAccessRepositoryError> {
-        let connection = Connection::open_in_memory().map_err(unavailable)?;
+        let connection = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?;
         Self::from_connection(connection)
     }
 
     fn from_connection(connection: Connection) -> Result<Self, ApplicationAccessRepositoryError> {
-        connection
-            .busy_timeout(SQLITE_WRITE_WAIT)
-            .map_err(unavailable)?;
-        connection
-            .execute_batch("PRAGMA journal_mode = WAL;")
-            .map_err(unavailable)?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NAMESPACE)
             .map_err(|error| ApplicationAccessRepositoryError::Unavailable(error.to_string()))?
             .run_bundle(

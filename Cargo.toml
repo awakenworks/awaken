@@ -128,6 +128,7 @@ awaken-iam-client = { git = "https://github.com/awakenworks/awaken-iam.git", rev
 awaken-iam-host = { git = "https://github.com/awakenworks/awaken-iam.git", rev = "fe1c3e96f6a5c79a8120a6c1e02d802aacdb7597", version = "=0.1.2-dev" }
 awaken-store-conformance = { path = "crates/stores/awaken-store-conformance" }
 awaken-store-runtime = { path = "crates/stores/awaken-store-runtime" }
+awaken-sqlite-runtime = { path = "crates/stores/awaken-sqlite-runtime" }
 awaken-store-inmem = { path = "crates/runtime/awaken-store-inmem" }
 awaken-store-fs = { path = "crates/stores/awaken-store-fs" }
 awaken-store-schema = { path = "crates/stores/awaken-store-schema" }

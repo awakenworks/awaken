@@ -12,7 +12,6 @@
 //! (features `sealed-aead` + `sqlite`), which stores only `nonce ‖ ciphertext`.
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 
@@ -36,8 +35,6 @@ use awaken_credential_vault::{
 
 /// The credential component's table namespace (its bundle prefix).
 const NS: &str = "credential";
-const FILE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Errors from opening or migrating the store.
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -64,14 +61,9 @@ fn storage(err: impl std::fmt::Display) -> CredentialError {
 }
 
 fn open_file_connection(path: &str) -> Result<Connection, StoreError> {
-    let connection = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
-    connection
-        .busy_timeout(FILE_BUSY_TIMEOUT)
-        .map_err(|err| StoreError::Open(err.to_string()))?;
-    connection
-        .execute_batch("PRAGMA journal_mode = WAL;")
-        .map_err(|err| StoreError::Open(err.to_string()))?;
-    Ok(connection)
+    awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+        .open()
+        .map_err(|err| StoreError::Open(err.to_string()))
 }
 
 /// Apply the credential bundle once and construct both adapters over the same
@@ -1157,6 +1149,7 @@ impl SealedBlobStore for SqliteSealedBlobStore {
 mod tests {
     use super::*;
     use awaken_credential_vault::{CredentialKind, CredentialStatus};
+    use std::time::Duration;
 
     fn source(id: &str) -> CredentialSource {
         CredentialSource {

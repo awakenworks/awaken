@@ -56,8 +56,6 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
 
-const SQLITE_WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
-
 // Poll-liveness bookkeeping is shared by the durable stores. Lease authority remains
 // in their rows. The volatile executable specification is never part of a default
 // product build.
@@ -82,20 +80,24 @@ pub struct SqliteWorkQueue {
 impl SqliteWorkQueue {
     /// Open (or create) the work-queue database at `path` and apply migrations.
     pub fn open(path: &str) -> Result<Self, String> {
-        Self::from_connection(Connection::open(path).map_err(|e| e.to_string())?)
+        Self::from_connection(
+            awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+                .open()
+                .map_err(|e| e.to_string())?,
+        )
     }
 
     /// A private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
-        Self::from_connection(Connection::open_in_memory().map_err(|e| e.to_string())?)
+        Self::from_connection(
+            awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+                .open()
+                .map_err(|e| e.to_string())?,
+        )
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
-        conn.busy_timeout(SQLITE_WRITE_WAIT)
-            .map_err(|e| e.to_string())?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")
-            .map_err(|e| e.to_string())?;
         let bundle = work_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?

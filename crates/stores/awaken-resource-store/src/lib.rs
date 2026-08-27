@@ -9,8 +9,6 @@
 use parking_lot::Mutex;
 
 use std::collections::BTreeSet;
-#[cfg(feature = "sqlite")]
-use std::time::Duration;
 
 #[cfg(feature = "sqlite")]
 use async_trait::async_trait;
@@ -25,9 +23,6 @@ use awaken_resource_contract::{
 };
 #[cfg(feature = "sqlite")]
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-
-#[cfg(feature = "sqlite")]
-const SQLITE_RESOURCE_WRITE_WAIT: Duration = Duration::from_secs(30);
 
 #[cfg(feature = "postgres")]
 mod postgres;
@@ -59,12 +54,8 @@ impl SqliteResourceStore {
     }
 
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self, ResourcePurgeError> {
-        let connection = Connection::open(path).map_err(|error| storage(error.to_string()))?;
-        connection
-            .busy_timeout(SQLITE_RESOURCE_WRITE_WAIT)
-            .map_err(|error| storage(error.to_string()))?;
-        connection
-            .execute_batch("PRAGMA journal_mode = WAL;")
+        let connection = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
             .map_err(|error| storage(error.to_string()))?;
         let store = Self {
             connection: Mutex::new(connection),

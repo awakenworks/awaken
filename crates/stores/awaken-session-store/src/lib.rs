@@ -14,7 +14,6 @@
 
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use async_trait::async_trait;
 #[cfg(test)]
@@ -40,7 +39,6 @@ use sqlx::postgres::PgPool;
 /// The session store's table namespace / bundle prefix: the table is
 /// `managed_session`, the ledger `managed_schema_migrations`.
 const NS: &str = "managed";
-const SQLITE_WRITE_WAIT: Duration = Duration::from_secs(30);
 const RECOVERY_BATCH_SIZE: i64 = 256;
 
 fn aggregate_str(session: &PersistedSession) -> Result<String, SessionRepositoryError> {

@@ -10,6 +10,7 @@ use awaken_session_contract::{
 };
 
 use super::*;
+use std::time::Duration;
 
 #[test]
 fn lifecycle_decoder_rejects_missing_authoritative_fields_but_accepts_legacy_object_id() {

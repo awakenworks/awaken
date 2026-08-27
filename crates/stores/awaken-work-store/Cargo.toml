@@ -22,6 +22,7 @@ loom = []
 # for (SQLite embedded / Postgres distributed, at parity).
 awaken-session-contract = { workspace = true }
 awaken-agent-contract.workspace = true
+awaken-sqlite-runtime.workspace = true
 # Reuse the platform's canonical OS CSPRNG seam; WorkStore owns no parallel
 # token directory or IAM policy, only one lease-bound opaque secret digest.
 awaken-iam-core.workspace = true

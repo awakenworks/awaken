@@ -714,6 +714,7 @@ dependencies = [
  "awaken-session-application",
  "awaken-session-contract",
  "awaken-session-store",
+ "awaken-sqlite-runtime",
  "awaken-store-fs",
  "awaken-store-inmem",
  "awaken-store-postgres",
@@ -799,6 +800,7 @@ dependencies = [
  "awaken-credential-vault",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-sqlite-runtime",
  "chacha20poly1305",
  "rusqlite",
  "serde",
@@ -1758,6 +1760,7 @@ dependencies = [
  "awaken-resource-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-sqlite-runtime",
  "awaken-store-runtime",
  "parking_lot",
  "proptest",
@@ -2321,6 +2324,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "awaken-sqlite-runtime",
  "awaken-store-runtime",
  "proptest",
  "rusqlite",
@@ -2347,6 +2351,15 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+]
+
+[[package]]
+name = "awaken-sqlite-runtime"
+version = "1.0.0-dev"
+dependencies = [
+ "rusqlite",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]
@@ -2427,6 +2440,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
+ "awaken-sqlite-runtime",
  "awaken-store-conformance",
  "awaken-store-schema",
  "rusqlite",
@@ -2520,6 +2534,7 @@ dependencies = [
  "awaken-scoped-migration",
  "awaken-scoped-migration-sqlite",
  "awaken-session-contract",
+ "awaken-sqlite-runtime",
  "base64 0.22.1",
  "loom",
  "proptest",

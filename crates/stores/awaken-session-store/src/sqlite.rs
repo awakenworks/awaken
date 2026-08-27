@@ -7,27 +7,22 @@ pub struct SqliteManagedSessionRepository {
 impl SqliteManagedSessionRepository {
     /// Open (or create) `sessions.db` at `path` and apply the schema migrations.
     pub fn open(path: &str) -> Result<Self, String> {
-        let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|e| e.to_string())?;
         Self::from_connection(conn)
     }
 
     /// An in-memory database (tests).
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, String> {
-        let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|e| e.to_string())?;
         Self::from_connection(conn)
     }
 
     fn from_connection(conn: Connection) -> Result<Self, String> {
-        // Embedded compositions intentionally colocate several aggregate stores
-        // in one WAL database. A busy timeout is connection-local, so the
-        // bootstrap connection cannot configure this repository's connection.
-        conn.busy_timeout(SQLITE_WRITE_WAIT)
-            .map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "foreign_keys", "ON")
-            .map_err(|e| e.to_string())?;
-        conn.pragma_update(None, "journal_mode", "WAL")
-            .map_err(|e| e.to_string())?;
         let bundle = session_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?

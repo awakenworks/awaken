@@ -12,6 +12,7 @@ authority = "store-sqlite"
 [dependencies]
 awaken-agent-contract.workspace = true
 awaken-store-schema = { workspace = true }
+awaken-sqlite-runtime.workspace = true
 awaken-scoped-migration.workspace = true
 awaken-scoped-migration-sqlite.workspace = true
 async-trait.workspace = true

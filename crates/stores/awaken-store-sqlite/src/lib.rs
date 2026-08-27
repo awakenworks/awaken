@@ -129,14 +129,18 @@ impl SqliteCommitCoordinator {
     /// Open (or create) a database file, apply the commit migrations, and
     /// hydrate the projection.
     pub fn open(path: &str) -> Result<Self, StoreError> {
-        let conn = Connection::open(path).map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::file(path)
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 
     /// Open a private in-memory database for tests and scenario fixtures.
     #[cfg(any(test, feature = "test-support"))]
     pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory().map_err(|err| StoreError::Open(err.to_string()))?;
+        let conn = awaken_sqlite_runtime::SqliteConnectionFactory::memory()
+            .open()
+            .map_err(|err| StoreError::Open(err.to_string()))?;
         Self::from_connection(conn)
     }
 

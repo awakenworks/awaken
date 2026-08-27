@@ -95,6 +95,7 @@ awaken-resource-contract.workspace = true
 awaken-resource-application.workspace = true
 awaken-store-fs.workspace = true
 awaken-store-sqlite.workspace = true
+awaken-sqlite-runtime.workspace = true
 awaken-store-postgres.workspace = true
 awaken-store-inmem = { workspace = true, optional = true }
 awaken-connection-plan.workspace = true
