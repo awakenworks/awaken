@@ -488,7 +488,7 @@ impl ResolvedDeployment {
         };
         let resources = deployment_backing::resolve(
             execution_store_url(&file.resource_database_url),
-            file.deployment_backing_file.as_deref(),
+            file.deployment_backing.as_ref(),
             data_dir.clone(),
         )?;
         resources
