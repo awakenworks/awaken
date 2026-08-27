@@ -1,14 +1,21 @@
 pub mod awaken_protocol_awaken
+pub enum awaken_protocol_awaken::ProfiledSessionMode
+pub awaken_protocol_awaken::ProfiledSessionMode::Interactive
+pub awaken_protocol_awaken::ProfiledSessionMode::WorkUnit
+impl awaken_protocol_awaken::ProfiledSessionMode
+pub const fn awaken_protocol_awaken::ProfiledSessionMode::mutation_policy(self) -> awaken_session_contract::baseline::SessionMutationPolicy
 pub struct awaken_protocol_awaken::ProfiledSessionCreate
 pub awaken_protocol_awaken::ProfiledSessionCreate::agent_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreate::env: alloc::vec::Vec<awaken_provisioning_contract::vocab::EnvVar>
 pub awaken_protocol_awaken::ProfiledSessionCreate::environment_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionCreate::mcp_attachments: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionMcpAttachment>
 pub awaken_protocol_awaken::ProfiledSessionCreate::metadata: alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>
+pub awaken_protocol_awaken::ProfiledSessionCreate::mode: awaken_protocol_awaken::ProfiledSessionMode
 pub awaken_protocol_awaken::ProfiledSessionCreate::mounts: alloc::vec::Vec<awaken_provisioning_contract::vocab::MountRequirement>
 pub awaken_protocol_awaken::ProfiledSessionCreate::network_restriction: core::option::Option<awaken_session_contract::baseline::SessionNetworkPolicy>
 pub awaken_protocol_awaken::ProfiledSessionCreate::prompts: alloc::vec::Vec<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionCreate::repositories: alloc::vec::Vec<awaken_protocol_awaken::ProfiledSessionRepository>
+pub awaken_protocol_awaken::ProfiledSessionCreate::resource_inputs: alloc::vec::Vec<awaken_session_contract::resource::SessionInputAttachment>
 pub awaken_protocol_awaken::ProfiledSessionCreate::session_id: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionCreate::source_revision: core::option::Option<u64>
 pub awaken_protocol_awaken::ProfiledSessionCreate::title: core::option::Option<alloc::string::String>
