@@ -1,0 +1,9 @@
+pub mod awaken_sqlite_runtime
+pub enum awaken_sqlite_runtime::SqliteConnectionError
+pub awaken_sqlite_runtime::SqliteConnectionError::Configure(rusqlite::error::Error)
+pub awaken_sqlite_runtime::SqliteConnectionError::Open(rusqlite::error::Error)
+pub struct awaken_sqlite_runtime::SqliteConnectionFactory
+impl awaken_sqlite_runtime::SqliteConnectionFactory
+pub fn awaken_sqlite_runtime::SqliteConnectionFactory::file(impl core::convert::AsRef<std::path::Path>) -> Self
+pub const fn awaken_sqlite_runtime::SqliteConnectionFactory::memory() -> Self
+pub fn awaken_sqlite_runtime::SqliteConnectionFactory::open(&self) -> core::result::Result<rusqlite::Connection, awaken_sqlite_runtime::SqliteConnectionError>

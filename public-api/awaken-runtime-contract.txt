@@ -1007,6 +1007,7 @@ pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::endpoint: al
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::provider_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::route_ref: alloc::string::String
 pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::scope_id: awaken_tenancy::ScopeId
+pub awaken_runtime_contract::resolved::ModelProvisioning::Provider::unspecified_reasoning: awaken_runtime_contract::resolved::UnspecifiedReasoning
 pub awaken_runtime_contract::resolved::ModelProvisioning::Remote
 pub awaken_runtime_contract::resolved::ModelProvisioning::Remote::credential: core::option::Option<alloc::boxed::Box<awaken_credential_contract::CredentialAccess>>
 pub awaken_runtime_contract::resolved::ModelProvisioning::Remote::scope_id: awaken_tenancy::ScopeId
@@ -1066,6 +1067,9 @@ pub awaken_runtime_contract::resolved::ToolSelector::Exact(alloc::string::String
 pub awaken_runtime_contract::resolved::ToolSelector::Prefix(alloc::string::String)
 impl awaken_runtime_contract::resolved::ToolSelector
 pub fn awaken_runtime_contract::resolved::ToolSelector::matches(&self, &str) -> bool
+pub enum awaken_runtime_contract::resolved::UnspecifiedReasoning
+pub awaken_runtime_contract::resolved::UnspecifiedReasoning::Disabled
+pub awaken_runtime_contract::resolved::UnspecifiedReasoning::ProviderDefault
 pub struct awaken_runtime_contract::resolved::A2aBackend(_)
 impl awaken_runtime_contract::resolved::A2aBackend
 pub fn awaken_runtime_contract::resolved::A2aBackend::endpoint(&self) -> &str
@@ -1141,6 +1145,9 @@ pub fn awaken_runtime_contract::resolved::OpenRouterWebSearchParameters::is_empt
 pub struct awaken_runtime_contract::resolved::PresentedToolCatalog
 pub awaken_runtime_contract::resolved::PresentedToolCatalog::discoverable: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
 pub awaken_runtime_contract::resolved::PresentedToolCatalog::visible: alloc::vec::Vec<awaken_runtime_contract::resolved::ToolDescriptor>
+pub struct awaken_runtime_contract::resolved::ProviderExecutionProfile
+pub awaken_runtime_contract::resolved::ProviderExecutionProfile::acp: core::option::Option<awaken_runtime_contract::resolved::AcpExecutionProfile>
+pub awaken_runtime_contract::resolved::ProviderExecutionProfile::unspecified_reasoning: awaken_runtime_contract::resolved::UnspecifiedReasoning
 pub struct awaken_runtime_contract::resolved::ResolvedModelCandidate
 impl awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::binding(&self) -> &awaken_runtime_contract::resolved::ModelBinding
@@ -1152,6 +1159,8 @@ pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_brokered_p
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_from_parts(awaken_runtime_contract::resolved::ModelBinding, awaken_runtime_contract::resolved::ModelProvisioning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_acp(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::AcpExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_profile(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::ProviderExecutionProfile) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
+pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider_with_reasoning(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, awaken_runtime_contract::resolved::InferenceEndpoint, awaken_runtime_contract::resolved::UnspecifiedReasoning) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::try_remote(awaken_runtime_contract::resolved::ModelBinding, impl core::convert::Into<awaken_tenancy::ScopeId>, core::option::Option<awaken_credential_contract::CredentialAccess>, impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, awaken_runtime_contract::resolved::InvalidResolvedModelCandidate>
 impl core::convert::AsRef<awaken_runtime_contract::resolved::ModelBinding> for awaken_runtime_contract::resolved::ResolvedModelCandidate
 pub fn awaken_runtime_contract::resolved::ResolvedModelCandidate::as_ref(&self) -> &awaken_runtime_contract::resolved::ModelBinding
@@ -1834,6 +1843,9 @@ pub awaken_runtime_contract::ToolWaitKind::Delegation
 pub awaken_runtime_contract::ToolWaitKind::ExternalResult
 pub awaken_runtime_contract::ToolWaitKind::ScheduledAction
 pub awaken_runtime_contract::ToolWaitKind::ToolPermission
+pub enum awaken_runtime_contract::UnspecifiedReasoning
+pub awaken_runtime_contract::UnspecifiedReasoning::Disabled
+pub awaken_runtime_contract::UnspecifiedReasoning::ProviderDefault
 pub enum awaken_runtime_contract::Wait
 pub awaken_runtime_contract::Wait::Auth
 pub awaken_runtime_contract::Wait::Both
@@ -2098,6 +2110,9 @@ pub awaken_runtime_contract::PluginManifest::config_sections: alloc::vec::Vec<al
 pub awaken_runtime_contract::PluginManifest::id: alloc::string::String
 pub awaken_runtime_contract::PluginManifest::requires: alloc::vec::Vec<alloc::string::String>
 pub struct awaken_runtime_contract::PrivacyExportError(pub alloc::string::String)
+pub struct awaken_runtime_contract::ProviderExecutionProfile
+pub awaken_runtime_contract::ProviderExecutionProfile::acp: core::option::Option<awaken_runtime_contract::resolved::AcpExecutionProfile>
+pub awaken_runtime_contract::ProviderExecutionProfile::unspecified_reasoning: awaken_runtime_contract::resolved::UnspecifiedReasoning
 pub struct awaken_runtime_contract::RawToolRegistry
 impl awaken_runtime_contract::tool::RawToolRegistry
 pub fn awaken_runtime_contract::tool::RawToolRegistry::get(&self, &str) -> core::option::Option<&alloc::sync::Arc<dyn awaken_runtime_contract::tool::RawTool>>
