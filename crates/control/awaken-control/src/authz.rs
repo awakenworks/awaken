@@ -112,7 +112,7 @@ use awaken_iam_contract::{
     ScopeRef, Timestamp, WorkspaceId,
 };
 #[cfg(test)]
-use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ProductSpaceRef, ScopeKind};
+use awaken_iam_contract::{GrantEffect, GrantSubjectRef, ScopeKind};
 use awaken_iam_core::{
     ApiTokenDirectory, ApiTokenMinter, EntitlementEngine, EntitlementProvider, EntropySource,
     IamError, IssuedApiToken, OsEntropy, RoleBinding, RoleId,
@@ -122,8 +122,6 @@ use awaken_iam_core::{ApiTokenRepository, RoleBindingRepository};
 use awaken_iam_core::{Effect, Grant, GrantId, GrantSubject};
 use awaken_iam_host::{AuthReject, IamClient, IamGate, LocalIamState};
 use awaken_iam_preset::{named_role_catalog, seed_named_roles};
-#[cfg(test)]
-use awaken_iam_server::DirectoryApi;
 use awaken_iam_server::{
     AuthorizationProfileAdmin, AuthzApi, SqlStore, SqliteBackend, sqlite_migrated_store,
 };
