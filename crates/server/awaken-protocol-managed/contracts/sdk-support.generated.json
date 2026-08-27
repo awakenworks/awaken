@@ -1,0 +1,24 @@
+{
+  "current_oracle": "0.121.0",
+  "schema_version": 1,
+  "supported_sdk_anchors": [
+    {
+      "id": "oldest",
+      "operation_fingerprint": "5f487d23932fcfe4bdb31cb82e1e27e861a0e4d28aaa9e8929a83f6eebb2291a",
+      "role": "oldest_supported",
+      "version": "0.105.0"
+    },
+    {
+      "id": "user_profiles_legacy",
+      "operation_fingerprint": "6f10dbb8297c2cdf9a4915587cd4bf41c2a5f7f136dd994bae8b83b9ded19da5",
+      "role": "protocol_change_point",
+      "version": "0.117.1"
+    },
+    {
+      "id": "current",
+      "operation_fingerprint": "d624e4304b4995f1457658d2d83e716371738a0705edcd2538a20630e06b8ce0",
+      "role": "current_oracle",
+      "version": "0.121.0"
+    }
+  ]
+}

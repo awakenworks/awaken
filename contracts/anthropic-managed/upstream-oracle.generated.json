@@ -1,0 +1,1019 @@
+{
+  "anchors": [
+    {
+      "id": "oldest",
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.revealToken",
+        "beta.tunnels.rotateToken"
+      ],
+      "operation_fingerprint": "5f487d23932fcfe4bdb31cb82e1e27e861a0e4d28aaa9e8929a83f6eebb2291a",
+      "role": "oldest_supported",
+      "version": "0.105.0"
+    },
+    {
+      "id": "user_profiles_legacy",
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_fingerprint": "6f10dbb8297c2cdf9a4915587cd4bf41c2a5f7f136dd994bae8b83b9ded19da5",
+      "role": "protocol_change_point",
+      "version": "0.117.1"
+    },
+    {
+      "id": "current",
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_fingerprint": "d624e4304b4995f1457658d2d83e716371738a0705edcd2538a20630e06b8ce0",
+      "role": "current_oracle",
+      "version": "0.121.0"
+    }
+  ],
+  "current": {
+    "id": "current",
+    "operation_fingerprint": "d624e4304b4995f1457658d2d83e716371738a0705edcd2538a20630e06b8ce0",
+    "operations": [
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.archive",
+        "method": "POST",
+        "path": "/v1/agents/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.create",
+        "method": "POST",
+        "path": "/v1/agents"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.list",
+        "method": "GET",
+        "path": "/v1/agents"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.retrieve",
+        "method": "GET",
+        "path": "/v1/agents/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.update",
+        "method": "POST",
+        "path": "/v1/agents/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.versions.list",
+        "method": "GET",
+        "path": "/v1/agents/{}/versions"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deploymentRuns.list",
+        "method": "GET",
+        "path": "/v1/deployment_runs"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deploymentRuns.retrieve",
+        "method": "GET",
+        "path": "/v1/deployment_runs/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.archive",
+        "method": "POST",
+        "path": "/v1/deployments/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.create",
+        "method": "POST",
+        "path": "/v1/deployments"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.list",
+        "method": "GET",
+        "path": "/v1/deployments"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.pause",
+        "method": "POST",
+        "path": "/v1/deployments/{}/pause"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.retrieve",
+        "method": "GET",
+        "path": "/v1/deployments/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.run",
+        "method": "POST",
+        "path": "/v1/deployments/{}/run"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.unpause",
+        "method": "POST",
+        "path": "/v1/deployments/{}/unpause"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.update",
+        "method": "POST",
+        "path": "/v1/deployments/{}"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.archive",
+        "method": "POST",
+        "path": "/v1/dreams/{}/archive"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.cancel",
+        "method": "POST",
+        "path": "/v1/dreams/{}/cancel"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.create",
+        "method": "POST",
+        "path": "/v1/dreams"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.list",
+        "method": "GET",
+        "path": "/v1/dreams"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.retrieve",
+        "method": "GET",
+        "path": "/v1/dreams/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.archive",
+        "method": "POST",
+        "path": "/v1/environments/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.create",
+        "method": "POST",
+        "path": "/v1/environments"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.delete",
+        "method": "DELETE",
+        "path": "/v1/environments/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.list",
+        "method": "GET",
+        "path": "/v1/environments"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.retrieve",
+        "method": "GET",
+        "path": "/v1/environments/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.update",
+        "method": "POST",
+        "path": "/v1/environments/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.ack",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/ack"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.heartbeat",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/heartbeat"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.list",
+        "method": "GET",
+        "path": "/v1/environments/{}/work"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.poll",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/poll"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.retrieve",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.stats",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/stats"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.stop",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/stop"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.update",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}"
+      },
+      {
+        "betas": [
+          "files-api-2025-04-14"
+        ],
+        "id": "beta.files.delete",
+        "method": "DELETE",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [
+          "files-api-2025-04-14"
+        ],
+        "id": "beta.files.download",
+        "method": "GET",
+        "path": "/v1/files/{}/content"
+      },
+      {
+        "betas": [
+          "files-api-2025-04-14"
+        ],
+        "id": "beta.files.list",
+        "method": "GET",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [
+          "files-api-2025-04-14"
+        ],
+        "id": "beta.files.retrieveMetadata",
+        "method": "GET",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [
+          "files-api-2025-04-14"
+        ],
+        "id": "beta.files.upload",
+        "method": "POST",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.archive",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/archive"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.create",
+        "method": "POST",
+        "path": "/v1/memory_stores"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.delete",
+        "method": "DELETE",
+        "path": "/v1/memory_stores/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.list",
+        "method": "GET",
+        "path": "/v1/memory_stores"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memories.create",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memories"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memories.delete",
+        "method": "DELETE",
+        "path": "/v1/memory_stores/{}/memories/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memories.list",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memories"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memories.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memories/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memories.update",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memories/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memoryVersions.list",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memory_versions"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memoryVersions.redact",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memory_versions/{}/redact"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.memoryVersions.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memory_versions/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memoryStores.update",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}"
+      },
+      {
+        "betas": [],
+        "id": "beta.models.list",
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "betas": [],
+        "id": "beta.models.retrieve",
+        "method": "GET",
+        "path": "/v1/models/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.archive",
+        "method": "POST",
+        "path": "/v1/sessions/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.create",
+        "method": "POST",
+        "path": "/v1/sessions"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.delete",
+        "method": "DELETE",
+        "path": "/v1/sessions/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/events"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.send",
+        "method": "POST",
+        "path": "/v1/sessions/{}/events"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.stream",
+        "method": "GET",
+        "path": "/v1/sessions/{}/events/stream"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.list",
+        "method": "GET",
+        "path": "/v1/sessions"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.add",
+        "method": "POST",
+        "path": "/v1/sessions/{}/resources"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.delete",
+        "method": "DELETE",
+        "path": "/v1/sessions/{}/resources/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/resources"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}/resources/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.update",
+        "method": "POST",
+        "path": "/v1/sessions/{}/resources/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.archive",
+        "method": "POST",
+        "path": "/v1/sessions/{}/threads/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.events.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}/events"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.events.stream",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}/stream"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.update",
+        "method": "POST",
+        "path": "/v1/sessions/{}"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.create",
+        "method": "POST",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.list",
+        "method": "GET",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.versions.create",
+        "method": "POST",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.versions.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}/versions/{}"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.versions.download",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}/content"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.versions.list",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [
+          "skills-2025-10-02"
+        ],
+        "id": "beta.skills.versions.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.archive",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/archive"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.archive",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/certificates/{}/archive"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.create",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/certificates"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.list",
+        "method": "GET",
+        "path": "/v1/tunnels/{}/certificates"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.retrieve",
+        "method": "GET",
+        "path": "/v1/tunnels/{}/certificates/{}"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.create",
+        "method": "POST",
+        "path": "/v1/tunnels"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.list",
+        "method": "GET",
+        "path": "/v1/tunnels"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.retrieve",
+        "method": "GET",
+        "path": "/v1/tunnels/{}"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.revealToken",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/reveal_token"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.rotateToken",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/rotate_token"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.userProfiles.create",
+        "method": "POST",
+        "path": "/v1/user_profiles"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.userProfiles.createEnrollmentURL",
+        "method": "POST",
+        "path": "/v1/user_profiles/{}/enrollment_url"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.userProfiles.list",
+        "method": "GET",
+        "path": "/v1/user_profiles"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.userProfiles.retrieve",
+        "method": "GET",
+        "path": "/v1/user_profiles/{}"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.userProfiles.update",
+        "method": "POST",
+        "path": "/v1/user_profiles/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.archive",
+        "method": "POST",
+        "path": "/v1/vaults/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.create",
+        "method": "POST",
+        "path": "/v1/vaults"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.archive",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}/archive"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.create",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.delete",
+        "method": "DELETE",
+        "path": "/v1/vaults/{}/credentials/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.list",
+        "method": "GET",
+        "path": "/v1/vaults/{}/credentials"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.mcpOAuthValidate",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.retrieve",
+        "method": "GET",
+        "path": "/v1/vaults/{}/credentials/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.update",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.delete",
+        "method": "DELETE",
+        "path": "/v1/vaults/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.list",
+        "method": "GET",
+        "path": "/v1/vaults"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.retrieve",
+        "method": "GET",
+        "path": "/v1/vaults/{}"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.update",
+        "method": "POST",
+        "path": "/v1/vaults/{}"
+      }
+    ],
+    "role": "current_oracle",
+    "version": "0.121.0"
+  },
+  "documented_routes": [
+    {
+      "id": "documented.skills.versions.retrieveFile",
+      "method": "GET",
+      "path": "/v1/skills/{}/versions/{}/files/{}",
+      "reason": "Official bundle-file endpoint is documented but not generated by the current TypeScript SDK"
+    },
+    {
+      "id": "documented.memoryStores.memories.patch",
+      "method": "PATCH",
+      "path": "/v1/memory_stores/{}/memories/{}",
+      "reason": "Canonical protocol verb retained beside the generated SDK POST transport"
+    },
+    {
+      "id": "documented.organizationTunnels.create",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.list",
+      "method": "GET",
+      "path": "/v1/organizations/tunnels",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.retrieve",
+      "method": "GET",
+      "path": "/v1/organizations/tunnels/{}",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.archive",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels/{}/archive",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.revealToken",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels/{}/reveal_token",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.rotateToken",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels/{}/rotate_token",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.certificates.create",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels/{}/certificates",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.certificates.list",
+      "method": "GET",
+      "path": "/v1/organizations/tunnels/{}/certificates",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.certificates.retrieve",
+      "method": "GET",
+      "path": "/v1/organizations/tunnels/{}/certificates/{}",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    },
+    {
+      "id": "documented.organizationTunnels.certificates.archive",
+      "method": "POST",
+      "path": "/v1/organizations/tunnels/{}/certificates/{}/archive",
+      "reason": "Deprecated official organization-scoped Tunnel migration surface"
+    }
+  ],
+  "schema_version": 1
+}

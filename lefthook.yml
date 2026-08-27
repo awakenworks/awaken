@@ -61,6 +61,10 @@ pre-commit:
       glob: "{package.json,pnpm-lock.yaml,package-lock.json,yarn.lock,bun.lockb,apps/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},packages/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml},web/**/*.{ts,tsx,js,jsx,mjs,cjs,json,css,html,md,mdx,yml,yaml}}"
       run: scripts/ci/check-frontend.sh --quick
 
+    managed-sdk-oracle:
+      glob: "{packages/managed-sdk-oracle/**/*,contracts/anthropic-managed/*,crates/server/awaken-protocol-managed/contracts/*}"
+      run: pnpm --filter @awaken/managed-sdk-oracle test && pnpm --filter @awaken/managed-sdk-oracle check
+
     # 6. Every relative Markdown link resolves to a real file and anchor.
     check-doc-links:
       glob: "docs/**/*.md"

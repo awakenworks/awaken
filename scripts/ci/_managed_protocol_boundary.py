@@ -1,119 +1,11 @@
 """Semantic route and application boundaries for the Managed protocol adapter."""
 
+import json
 import re
 from pathlib import Path
 
 import _execution_ownership_fitness
 
-
-# Exact normalized method/path inventory verified against the Anthropic Managed
-# Agents beta surface. Parameters use the shared ownership check's `{}` form.
-# This is the compatibility contract: adding an Awaken feature requires the
-# explicitly separate protocol crate inventory below, never another core route.
-ANTHROPIC_MANAGED_ROUTES = frozenset(
-    {
-        ("GET", "/v1/agents"), ("POST", "/v1/agents"),
-        ("GET", "/v1/agents/{}"), ("POST", "/v1/agents/{}"),
-        ("POST", "/v1/agents/{}/archive"),
-        ("GET", "/v1/agents/{}/versions"),
-        ("GET", "/v1/deployments"), ("POST", "/v1/deployments"),
-        ("GET", "/v1/deployments/{}"), ("POST", "/v1/deployments/{}"),
-        ("POST", "/v1/deployments/{}/archive"),
-        ("POST", "/v1/deployments/{}/pause"),
-        ("POST", "/v1/deployments/{}/unpause"),
-        ("POST", "/v1/deployments/{}/run"),
-        ("GET", "/v1/deployment_runs"), ("GET", "/v1/deployment_runs/{}"),
-        ("GET", "/v1/dreams"), ("POST", "/v1/dreams"),
-        ("GET", "/v1/dreams/{}"), ("POST", "/v1/dreams/{}/cancel"),
-        ("POST", "/v1/dreams/{}/archive"),
-        ("GET", "/v1/environments"), ("POST", "/v1/environments"),
-        ("GET", "/v1/environments/{}"), ("POST", "/v1/environments/{}"),
-        ("DELETE", "/v1/environments/{}"),
-        ("POST", "/v1/environments/{}/archive"),
-        ("GET", "/v1/environments/{}/work"),
-        ("GET", "/v1/environments/{}/work/poll"),
-        ("GET", "/v1/environments/{}/work/stats"),
-        ("GET", "/v1/environments/{}/work/{}"),
-        ("POST", "/v1/environments/{}/work/{}"),
-        ("POST", "/v1/environments/{}/work/{}/ack"),
-        ("POST", "/v1/environments/{}/work/{}/heartbeat"),
-        ("POST", "/v1/environments/{}/work/{}/stop"),
-        ("GET", "/v1/sessions"), ("POST", "/v1/sessions"),
-        ("GET", "/v1/sessions/{}"), ("POST", "/v1/sessions/{}"),
-        ("DELETE", "/v1/sessions/{}"), ("POST", "/v1/sessions/{}/archive"),
-        ("GET", "/v1/sessions/{}/events"), ("POST", "/v1/sessions/{}/events"),
-        ("GET", "/v1/sessions/{}/events/stream"),
-        ("GET", "/v1/sessions/{}/threads"),
-        ("GET", "/v1/sessions/{}/threads/{}"),
-        ("POST", "/v1/sessions/{}/threads/{}/archive"),
-        ("GET", "/v1/sessions/{}/threads/{}/events"),
-        ("GET", "/v1/sessions/{}/threads/{}/stream"),
-        ("GET", "/v1/sessions/{}/resources"),
-        ("POST", "/v1/sessions/{}/resources"),
-        ("GET", "/v1/sessions/{}/resources/{}"),
-        ("POST", "/v1/sessions/{}/resources/{}"),
-        ("DELETE", "/v1/sessions/{}/resources/{}"),
-        ("GET", "/v1/user_profiles"), ("POST", "/v1/user_profiles"),
-        ("GET", "/v1/user_profiles/{}"), ("POST", "/v1/user_profiles/{}"),
-        ("POST", "/v1/user_profiles/{}/enrollment_url"),
-        ("GET", "/v1/vaults"), ("POST", "/v1/vaults"),
-        ("GET", "/v1/vaults/{}"), ("POST", "/v1/vaults/{}"),
-        ("DELETE", "/v1/vaults/{}"), ("POST", "/v1/vaults/{}/archive"),
-        ("GET", "/v1/vaults/{}/credentials"),
-        ("POST", "/v1/vaults/{}/credentials"),
-        ("GET", "/v1/vaults/{}/credentials/{}"),
-        ("POST", "/v1/vaults/{}/credentials/{}"),
-        ("DELETE", "/v1/vaults/{}/credentials/{}"),
-        ("POST", "/v1/vaults/{}/credentials/{}/archive"),
-        ("POST", "/v1/vaults/{}/credentials/{}/mcp_oauth_validate"),
-        ("GET", "/v1/files"), ("POST", "/v1/files"),
-        ("GET", "/v1/files/{}"), ("DELETE", "/v1/files/{}"),
-        ("GET", "/v1/files/{}/content"),
-        ("GET", "/v1/memory_stores"), ("POST", "/v1/memory_stores"),
-        ("GET", "/v1/memory_stores/{}"),
-        ("POST", "/v1/memory_stores/{}"),
-        ("DELETE", "/v1/memory_stores/{}"),
-        ("POST", "/v1/memory_stores/{}/archive"),
-        ("GET", "/v1/memory_stores/{}/memories"),
-        ("POST", "/v1/memory_stores/{}/memories"),
-        ("GET", "/v1/memory_stores/{}/memories/{}"),
-        ("POST", "/v1/memory_stores/{}/memories/{}"),
-        ("PATCH", "/v1/memory_stores/{}/memories/{}"),
-        ("DELETE", "/v1/memory_stores/{}/memories/{}"),
-        ("GET", "/v1/memory_stores/{}/memory_versions"),
-        ("GET", "/v1/memory_stores/{}/memory_versions/{}"),
-        ("POST", "/v1/memory_stores/{}/memory_versions/{}/redact"),
-        ("GET", "/v1/models"), ("GET", "/v1/models/{*}"),
-        ("GET", "/v1/skills"), ("POST", "/v1/skills"),
-        ("GET", "/v1/skills/{}"), ("DELETE", "/v1/skills/{}"),
-        ("GET", "/v1/skills/{}/versions"),
-        ("POST", "/v1/skills/{}/versions"),
-        ("GET", "/v1/skills/{}/versions/{}"),
-        ("DELETE", "/v1/skills/{}/versions/{}"),
-        ("GET", "/v1/skills/{}/versions/{}/content"),
-        ("GET", "/v1/skills/{}/versions/{}/files/{*}"),
-        ("GET", "/v1/tunnels"), ("POST", "/v1/tunnels"),
-        ("GET", "/v1/tunnels/{}"), ("POST", "/v1/tunnels/{}/archive"),
-        ("POST", "/v1/tunnels/{}/reveal_token"),
-        ("POST", "/v1/tunnels/{}/rotate_token"),
-        ("GET", "/v1/tunnels/{}/certificates"),
-        ("POST", "/v1/tunnels/{}/certificates"),
-        ("GET", "/v1/tunnels/{}/certificates/{}"),
-        ("POST", "/v1/tunnels/{}/certificates/{}/archive"),
-        # Official deprecated Admin API retained during the MCP Tunnel
-        # organization-to-workspace migration window.
-        ("GET", "/v1/organizations/tunnels"),
-        ("POST", "/v1/organizations/tunnels"),
-        ("GET", "/v1/organizations/tunnels/{}"),
-        ("POST", "/v1/organizations/tunnels/{}/archive"),
-        ("POST", "/v1/organizations/tunnels/{}/reveal_token"),
-        ("POST", "/v1/organizations/tunnels/{}/rotate_token"),
-        ("GET", "/v1/organizations/tunnels/{}/certificates"),
-        ("POST", "/v1/organizations/tunnels/{}/certificates"),
-        ("GET", "/v1/organizations/tunnels/{}/certificates/{}"),
-        ("POST", "/v1/organizations/tunnels/{}/certificates/{}/archive"),
-    }
-)
 
 AWAKEN_MANAGED_EXTENSION_ROUTES = frozenset(
     {
@@ -213,12 +105,14 @@ def check_session_admission_ownership(repo_root: Path) -> list[str]:
 
 
 def managed_route_inventory_violations(
-    core: set[tuple[str, str]], extensions: set[tuple[str, str]]
+    expected_core: set[tuple[str, str]],
+    core: set[tuple[str, str]],
+    extensions: set[tuple[str, str]],
 ) -> list[str]:
     errors: list[str] = []
-    for route in sorted(core - ANTHROPIC_MANAGED_ROUTES):
+    for route in sorted(core - expected_core):
         errors.append(f"non-Anthropic route in managed core: {route[0]} {route[1]}")
-    for route in sorted(ANTHROPIC_MANAGED_ROUTES - core):
+    for route in sorted(expected_core - core):
         errors.append(f"missing Anthropic managed route owner: {route[0]} {route[1]}")
     for route in sorted(extensions - AWAKEN_MANAGED_EXTENSION_ROUTES):
         errors.append(f"unlisted Awaken managed extension route: {route[0]} {route[1]}")
@@ -228,6 +122,28 @@ def managed_route_inventory_violations(
         if not path.startswith("/v1/awaken/"):
             errors.append(f"Awaken extension is not explicitly namespaced: {method} {path}")
     return errors
+
+
+def official_managed_routes(repo_root: Path) -> set[tuple[str, str]]:
+    manifest = json.loads(
+        (
+            repo_root
+            / "contracts/anthropic-managed/upstream-oracle.generated.json"
+        ).read_text(encoding="utf-8")
+    )
+    operations = (
+        manifest["current"]["operations"]
+        + [
+            operation
+            for anchor in manifest["anchors"]
+            for operation in anchor["only_in_anchor"]
+        ]
+        + manifest["documented_routes"]
+    )
+    return {
+        (operation["method"], operation["path"].replace("{*}", "{}"))
+        for operation in operations
+    }
 
 
 def check_managed_route_inventory(repo_root: Path) -> list[str]:
@@ -240,7 +156,12 @@ def check_managed_route_inventory(repo_root: Path) -> list[str]:
     extensions: set[tuple[str, str]] = set()
     for path in sorted(extension_root.glob("**/*.rs")):
         extensions.update(_execution_ownership_fitness._owned_routes(path))
-    return managed_route_inventory_violations(core, extensions)
+    normalized_core = {
+        (method, route.replace("{*}", "{}")) for method, route in core
+    }
+    return managed_route_inventory_violations(
+        official_managed_routes(repo_root), normalized_core, extensions
+    )
 
 
 def selftest() -> None:
@@ -249,18 +170,21 @@ def selftest() -> None:
     # namespaced extension inventory, C3 unknown core route, C4 unknown extension.
     # R1 C1+C2 -> accept; R2 C3 -> reject compatibility contamination;
     # R3 C4 -> reject implicit extension; R4 missing declared route -> reject drift.
+    official = {("GET", "/v1/sessions"), ("POST", "/v1/sessions")}
     assert managed_route_inventory_violations(
-        set(ANTHROPIC_MANAGED_ROUTES), set(AWAKEN_MANAGED_EXTENSION_ROUTES)
+        official, set(official), set(AWAKEN_MANAGED_EXTENSION_ROUTES)
     ) == [], "R1"
     assert managed_route_inventory_violations(
-        set(ANTHROPIC_MANAGED_ROUTES) | {("GET", "/v1/custom")},
+        official,
+        set(official) | {("GET", "/v1/custom")},
         set(AWAKEN_MANAGED_EXTENSION_ROUTES),
     ), "R2"
     assert managed_route_inventory_violations(
-        set(ANTHROPIC_MANAGED_ROUTES),
+        official,
+        set(official),
         set(AWAKEN_MANAGED_EXTENSION_ROUTES) | {("GET", "/v1/custom")},
     ), "R3"
-    assert managed_route_inventory_violations(set(), set()), "R4"
+    assert managed_route_inventory_violations(official, set(), set()), "R4"
 
     # Application-boundary cause/effect graph: C5 production wire state calls a
     # semantic SessionApplication operation; C6 it reaches through the application
