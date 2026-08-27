@@ -12497,7 +12497,7 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
 }
 
 #[tokio::test]
-async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
+async fn session_tool_policy_preserves_the_published_snapshot_identity() {
     // Constraint/Invariant: the authoritative inputs and ownership boundaries
     // documented here remain the only decision source; no parallel path is admitted.
     // Decision rule: execute every reachable cause partition documented here and
@@ -12509,11 +12509,12 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
 
     // Cause/effect decision table:
     // | publication | frozen Session policy | effect |
-    // | present     | present               | Runtime gate reads Session policy separately; execution clone/publication unchanged |
+    // | present     | present               | Runtime gate reads Session policy separately; snapshot and fingerprint unchanged |
     // | generated   | present               | generated execution config receives policy |
     // The second rule is owned by the fallback construction path. This test owns
-    // the immutable-publication boundary only. The executable gate behavior of
-    // the same `effective_tool_authorization` owner is covered by
+    // the immutable-publication and distributed-continuation boundary: another
+    // Worker must reconstruct the exact publication fingerprint. The executable
+    // gate behavior of the same `effective_tool_authorization` owner is covered by
     // `config::tests::toolset_policy_controls_execution_gate_behavior`; copying
     // policy into this snapshot would create a second authority and fingerprint.
     let publication = crate::config::server_config(
@@ -12572,6 +12573,7 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
             .toolsets
             .is_empty()
     );
+    assert_eq!(context.config.fingerprint, publication.fingerprint);
 }
 
 #[tokio::test]

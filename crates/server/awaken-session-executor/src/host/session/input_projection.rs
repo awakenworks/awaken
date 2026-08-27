@@ -70,55 +70,6 @@ pub(in crate::host) fn project_managed_coordination_surface(
         || config.resolved_spec.plugin_config.agent.advisor != before_advisor
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::host) enum SessionToolsetProjection {
-    PreservePublished,
-    ProjectIntoSnapshot,
-}
-
-/// Apply the Session's exact client-tool overlay in one place. Toolset policy
-/// remains outside an immutable primary publication but must be embedded in a
-/// generated config or an inherited child dispatch snapshot, whose executor
-/// has no separate Session policy input.
-pub(in crate::host) fn project_session_tool_override(
-    snapshot: &mut awaken_runtime_contract::ExecutableAgentSnapshot,
-    tools: &awaken_session_contract::SessionToolConfiguration,
-    toolsets: SessionToolsetProjection,
-) -> bool {
-    let mut changed = false;
-    if toolsets == SessionToolsetProjection::ProjectIntoSnapshot
-        && snapshot.resolved_spec.plugin_config.agent.toolsets != tools.toolsets
-    {
-        snapshot.resolved_spec.plugin_config.agent.toolsets = tools.toolsets.clone();
-        changed = true;
-    }
-    let projected = tools
-        .client_tools
-        .iter()
-        .map(crate::config::session_client_tool_descriptor)
-        .collect::<Vec<_>>();
-    let current = snapshot
-        .resolved_spec
-        .tool_descriptors
-        .iter()
-        .filter(|descriptor| {
-            descriptor.kind == awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    if current != projected {
-        snapshot
-            .resolved_spec
-            .tool_descriptors
-            .retain(|descriptor| {
-                descriptor.kind != awaken_runtime_contract::resolved::ToolKind::ClientExecuted
-            });
-        snapshot.resolved_spec.tool_descriptors.extend(projected);
-        changed = true;
-    }
-    changed
-}
-
 pub(super) fn merge_acp_mcp_servers(
     publication: Vec<awaken_runtime_contract::resolved::AcpMcpServer>,
     staged: impl IntoIterator<Item = awaken_run_executor_acp::SessionMcpServer>,
