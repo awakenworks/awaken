@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   api,
   getWorkspace,
+  IdempotencyScope,
   issueApplicationAccessToken,
   type IssuedApplicationAccessToken,
   ws,
@@ -45,6 +46,28 @@ export function draftPreviewRequest(previewId: string, draft: AgentConfig, resou
       revision: 1,
     },
   };
+}
+
+export interface DraftPreviewAttempt {
+  signature: string;
+  externalThreadId: string;
+  nextPreviewId: string;
+}
+
+/** Retain every create coordinate while the result is unknown; a changed
+ * snapshot is a different preview operation and receives fresh coordinates. */
+export function selectDraftPreviewAttempt(
+  current: DraftPreviewAttempt | undefined,
+  signature: string,
+  randomId: () => string = () => crypto.randomUUID(),
+): DraftPreviewAttempt {
+  return current?.signature === signature
+    ? current
+    : {
+        signature,
+        externalThreadId: randomId(),
+        nextPreviewId: `preview-${randomId()}`,
+      };
 }
 
 function AiSdkPreview({
@@ -203,6 +226,8 @@ export default function SandboxPane({
 }) {
   const app = useApp();
   const previewId = useRef<string | undefined>(undefined);
+  const previewAttempt = useRef<DraftPreviewAttempt | undefined>(undefined);
+  const createIdentity = useRef(new IdempotencyScope("preview-session-create"));
   const signature = useMemo(() => draftPreviewSignature(draft, resources), [draft, resources]);
   const [access, setAccess] = useState<PreviewAccess>();
   const [previewedSignature, setPreviewedSignature] = useState<string>();
@@ -212,8 +237,9 @@ export default function SandboxPane({
   const start = async () => {
     setStarting(true);
     setStartError(undefined);
-    const externalThreadId = crypto.randomUUID();
-    const nextPreviewId = `preview-${crypto.randomUUID()}`;
+    const attempt = selectDraftPreviewAttempt(previewAttempt.current, signature);
+    previewAttempt.current = attempt;
+    const { externalThreadId, nextPreviewId } = attempt;
     let registered = false;
     try {
       await api.post(
@@ -221,7 +247,12 @@ export default function SandboxPane({
         draftPreviewRequest(nextPreviewId, draft, resources),
       );
       registered = true;
-      const session = await api.post<Session>(ws("/v1/sessions"), { agent: nextPreviewId });
+      const request = { agent: nextPreviewId };
+      const session = await api.post<Session>(
+        ws("/v1/sessions"),
+        request,
+        createIdentity.current.headersFor(request),
+      );
       const token = await issueApplicationAccessToken({
         authority_id: "awaken-console",
         application_scope: previewApplicationScope(getWorkspace()),
@@ -235,6 +266,8 @@ export default function SandboxPane({
       });
       const previousPreviewId = previewId.current;
       previewId.current = nextPreviewId;
+      previewAttempt.current = undefined;
+      createIdentity.current.complete();
       setAccess({ token, threadId: externalThreadId });
       setPreviewedSignature(signature);
       if (previousPreviewId) {

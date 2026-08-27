@@ -243,6 +243,15 @@ impl SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
+        if spec.isolation >= awaken_provisioning_contract::IsolationClass::Namespace {
+            let required = awaken_provisioning_contract::SandboxRequirements::from_spec(spec, true);
+            let capabilities = provider.capabilities();
+            if !capabilities.satisfies_requirements(&required) {
+                return Err(HostError::internal(
+                    "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes",
+                ));
+            }
+        }
         self.cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await

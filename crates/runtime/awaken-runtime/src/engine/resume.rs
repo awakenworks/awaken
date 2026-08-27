@@ -47,10 +47,18 @@ pub(super) async fn drive_resumed(
     thread_id: &ThreadId,
     ticket: &ResumeTicket,
     result: ResumeResult,
+    resume_operation_id: Option<String>,
     fresh_context: Vec<Message>,
     reader: &dyn CommittedThreadView,
     context: &RuntimeRunContext,
 ) -> Result<RunState> {
+    let resume_applied = resume_operation_id.map(|operation_id| {
+        RunEvent::ResumeApplied {
+            operation_id,
+            correlation_id: ticket.correlation_id.clone(),
+        }
+        .into()
+    });
     let committed = reader.committed_messages(thread_id);
     // Cause/effect decision table for resumed assistant ids:
     // R1 no prior assistant for this Run -> start at step 0;
@@ -141,14 +149,18 @@ pub(super) async fn drive_resumed(
                     true,
                     Vec::new(),
                     approval_state,
-                    vec![
-                        RunEvent::PermissionDecided {
-                            tool_id: pending.tool_id.clone(),
-                            call_id: call_id.to_string(),
-                            decision: "approved".to_string(),
-                        }
-                        .into(),
-                    ],
+                    {
+                        let mut events = vec![
+                            RunEvent::PermissionDecided {
+                                tool_id: pending.tool_id.clone(),
+                                call_id: call_id.to_string(),
+                                decision: "approved".to_string(),
+                            }
+                            .into(),
+                        ];
+                        events.extend(resume_applied.clone());
+                        events
+                    },
                 ))
                 .await
                 .map_err(|error| Error::Commit(error.to_string()))?;
@@ -266,7 +278,7 @@ pub(super) async fn drive_resumed(
     )
     .await?;
     seed_state.splice(0..0, delegation_state);
-    let seed_audit = if decision_precommitted {
+    let mut seed_audit = if decision_precommitted {
         Vec::new()
     } else if let (Some(decision), Some((call_id, pending))) =
         (permission_decision, ticket.tool_call())
@@ -282,6 +294,9 @@ pub(super) async fn drive_resumed(
     } else {
         Vec::new()
     };
+    if !decision_precommitted {
+        seed_audit.extend(resume_applied);
+    }
     // The resumed tool's own state is folded into the store so a later step in
     // this resume observes the advanced state; it also seeds the attempt's batch
     // (kept first) so step commits and conflict validation cover it too.

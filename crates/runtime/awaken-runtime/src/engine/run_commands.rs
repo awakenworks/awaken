@@ -188,6 +188,7 @@ pub(crate) async fn perform_scheduled_action(
         snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id),
         catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint),
         result: ResumeResult::allow(),
+        operation_id: None,
         context_messages: Vec::new(),
         now_ms,
     };
@@ -212,6 +213,7 @@ pub(crate) async fn resume_run(
         &reader.committed_messages(&command.thread_id),
         command.context_messages,
     )?;
+    let resume_operation_id = command.operation_id.clone();
 
     let snapshot = runtime
         .snapshot_by_id(&ExecutableAgentSnapshotId(ticket.snapshot_id.clone()))
@@ -266,6 +268,7 @@ pub(crate) async fn resume_run(
         &thread_id,
         &ticket,
         command.result,
+        resume_operation_id,
         context_messages,
         reader,
         &context,

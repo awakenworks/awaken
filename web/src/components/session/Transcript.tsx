@@ -201,13 +201,13 @@ export default function Transcript({
   };
 
   useEffect(() => {
-    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || running) return;
+    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || running || pendingIds.size > 0) return;
     handledAutoMessage.current = autoMessage.id;
     sendText(autoMessage.text);
   // `sendText` intentionally uses the current session/context. An auto-message id is
   // the idempotency boundary; changing render-local callback identities must not resend.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoMessage?.id, running, sendPending]);
+  }, [autoMessage?.id, pendingIds.size, running, sendPending]);
 
   useEffect(() => {
     if (running || sendPending) return;
@@ -235,7 +235,7 @@ export default function Transcript({
   };
 
   const submit = () => {
-    if (!draft.trim() || sendPending) return;
+    if (!draft.trim() || sendPending || pendingIds.size > 0) return;
     // Preserve the operator's exact multiline text (indentation and trailing newline
     // can be meaningful in code/prompts); trimming is only the emptiness check above.
     const userText = draft;
@@ -343,7 +343,7 @@ export default function Transcript({
           </span>
         </ChatMessage>
       )}
-      {(running || sendPending) && (
+      {(running || sendPending) && pendingIds.size === 0 && (
         <ChatThinking
           className="agent-working"
           label={app.t("Agent is working…", "Agent 正在处理…")}
@@ -358,9 +358,11 @@ export default function Transcript({
           value={draft}
           onChange={setDraft}
           onSubmit={submit}
-          busy={sendPending}
+          busy={sendPending || pendingIds.size > 0}
           ariaLabel={app.t("Message to agent", "给 Agent 的消息")}
-          placeholder={placeholder ?? app.t("Message…", "输入消息…")}
+          placeholder={pendingIds.size > 0
+            ? app.t("Resolve the pending tool request before sending a message.", "请先处理待审批工具，再发送消息。")
+            : placeholder ?? app.t("Message…", "输入消息…")}
           sendLabel={sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
           sendIcon={<span>{sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}</span>}
           leadingActions={modelOverride ? (

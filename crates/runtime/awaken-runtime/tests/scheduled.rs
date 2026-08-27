@@ -502,6 +502,7 @@ async fn a_resume_with_a_wrong_fingerprint_for_a_scheduled_action_is_rejected() 
         .expect("awaits on a scheduled action");
 
     let stale = ResumeCommand {
+        operation_id: None,
         correlation_id: "sched-1".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),

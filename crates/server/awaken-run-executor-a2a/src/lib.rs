@@ -1731,6 +1731,7 @@ mod tests {
 
     fn resume_command(activation: &RunActivation) -> ResumeCommand {
         ResumeCommand {
+            operation_id: None,
             correlation_id: "missing-ticket".into(),
             run_id: activation.run_id.clone(),
             thread_id: activation.thread_id.clone(),

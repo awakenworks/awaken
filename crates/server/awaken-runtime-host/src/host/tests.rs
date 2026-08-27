@@ -3263,7 +3263,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
     );
 }
 
-/// Repository detach decision table on the resident Workdir environment:
+/// Repository detach decision table on the resident Namespace environment:
 /// C1 a create-time Repository is physically realized; C2 the next durable
 /// generation omits it; C3 the Session environment remains resident. E1 removes
 /// the exact working tree before the mutation returns and E2 preserves the same
@@ -3272,7 +3272,7 @@ async fn applying_changed_inputs_rebuilds_the_resource_projection_and_cached_san
 /// | Rule | C1 | C2 | C3 | Effect |
 /// | RD1  | T  | T  | T  | E1 removed + E2 retained environment |
 #[tokio::test]
-async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
+async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
     use awaken_session_contract::SessionRuntime;
 
     let fixture = tempfile::tempdir().unwrap();
@@ -3294,9 +3294,14 @@ async fn applying_repository_detach_removes_the_resident_workdir_checkout() {
     git(&["commit", "-q", "-m", "seed"]);
 
     let mut raw_host = SharedHost::new(Arc::new(OkModel), "stub");
-    raw_host.session_provider = crate::session_environment::SessionEnvironmentProvider::workdir(
-        fixture.path().join("sandboxes"),
-    );
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            fixture.path().join("sandboxes"),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let desired = effective_resources(vec![TestInput {
@@ -10042,7 +10047,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     // coordinate; C5 the preflight Run/correlation fence is current/stale; C6
     // an ordinary ExistingThread follow-up is already bound to a deterministic
     // fresh Run; C7 that same operation is retried exactly or with changed
-    // content; C8 accompanying System is exact/changed.
+    // content; C8 accompanying System is exact/changed; C9 a later await reuses
+    // the provider Run/correlation/call id under a new public Event occurrence.
     // Effects: E1 one Outbox delivery is relayed; E2 dispatch epoch rotates
     // before it becomes runnable; E3 exact retry creates no second input; E4 a
     // conflicting reply is rejected and cannot rotate again; E5 a concurrent
@@ -10051,7 +10057,9 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     // wakes only that old Run, then its settlement releases the fresh follow-up;
     // E8 exact operation retry keeps one Run/message and changed content fails
     // without another effect; E9 a changed System payload conflicts just like a
-    // changed reply and cannot create another durable delivery.
+    // changed reply and cannot create another durable delivery; E10 a delayed
+    // old occurrence cannot answer the later await; E11 the newly admitted
+    // occurrence remains independently deliverable.
     //
     // | Rule | Ticket/affinity | Dispatch | Reply | Effect |
     // |---|---|---|---|---|
@@ -10062,6 +10070,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
     // | CR5 | exact + fresh follow-up | Awaiting | fresh/exact reply | E6+E7 |
     // | CR6 | exact + fresh follow-up | Awaiting | exact/changed follow-up retry | E8 |
     // | CR7 | exact + changed System | Running with evidence | fresh | E9 |
+    // | CR10 | later identical await + old Thread version | exact old receipt | E10 |
+    // | CR11 | later identical await + current version/new Event id | active | E11 |
     use awaken_agent_contract::agent::awaiting::{AwaitTarget, PendingTool, ToolAwaitReason};
     use awaken_agent_contract::thread::commit::coordinator::Coordinator as _;
     use awaken_agent_contract::thread::commit::staged::{RunDisposition, ThreadCommit};
@@ -10123,6 +10133,11 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         ))
         .await
         .expect("commit child Awaiting ticket");
+    let admitted_thread_version = commit
+        .recovery_snapshot(&child, &child_run)
+        .await
+        .expect("read admitted reply coordinate")
+        .thread_version;
 
     let initial_epoch = 41;
     let resumed_epoch = 42;
@@ -10241,6 +10256,8 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
 
     let command = awaken_session_contract::SessionThreadToolReplyCommand {
         session_id: parent.0.clone(),
+        tool_request_event_id: Some("evt-coordinated-reply-tool-use-1".into()),
+        expected_thread_version: Some(admitted_thread_version),
         target: awaken_session_contract::SessionThreadTarget::Child(child.clone()),
         expected_run_id: child_run.clone(),
         expected_correlation_id: ticket.correlation_id.clone(),
@@ -10363,6 +10380,59 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         "CR6/E8 the follow-up remains one message"
     );
 
+    // Model the Runtime's single successful resume commit: Running consumes
+    // the active ticket while ResumeApplied remains as the durable ingress
+    // receipt. This is the response-loss partition that the old implementation
+    // could not distinguish from an unresolved/stale reply.
+    //
+    // | Rule | Active ticket | Receipt | Retried payload | Effect |
+    // |---|---|---|---|---|
+    // | CR8 | absent | exact O1/correlation | exact O1 | already applied/no-op |
+    // | CR9 | absent | O1/correlation | changed O2 | conflict/no mutation |
+    // Constraint/invariant: ticket removal and receipt creation share the
+    // Runtime ThreadCommit; neither Session nor dispatch owns a shadow receipt.
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::running(child_run.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            vec![
+                awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied {
+                    operation_id: command.delivery_operation_id(),
+                    correlation_id: ticket.correlation_id.clone(),
+                }
+                .into(),
+            ],
+        ))
+        .await
+        .expect("commit the accepted reply receipt while consuming its ticket");
+    let replay_fence = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .expect("CR8 receipt replaces the consumed ticket for exact retry");
+    assert!(
+        replay_fence.already_applied,
+        "CR8 exact receipt is terminal"
+    );
+    host.reply_session_thread_tool(awaken_session_contract::SessionThreadToolReplyDelivery {
+        command: command.clone(),
+        fence: replay_fence,
+        session_activity_epoch: resumed_epoch,
+    })
+    .await
+    .expect("CR8 exact response-loss retry is a no-op");
+    assert_eq!(
+        dispatch
+            .list(&child)
+            .await
+            .expect("CR8 unchanged Inbox")
+            .len(),
+        2,
+        "CR8 does not stage a second input"
+    );
+
     let mut conflicting_system = command.clone();
     conflicting_system
         .accompanying_system
@@ -10384,6 +10454,41 @@ async fn coordinated_child_reply_rotates_activity_at_the_parent_affined_outbox_b
         0,
         "CR7/E9"
     );
+
+    commit
+        .commit(ThreadCommit::assemble(
+            child.clone(),
+            RunDisposition::awaiting(ticket.clone()),
+            true,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ))
+        .await
+        .expect("commit a later await that reuses provider coordinates");
+    let later_thread_version = commit
+        .recovery_snapshot(&child, &child_run)
+        .await
+        .expect("read later reply coordinate")
+        .thread_version;
+    let delayed_old_fence = host
+        .session_thread_tool_reply_fence(&command)
+        .await
+        .expect("CR10 old receipt absorbs a delayed old occurrence");
+    assert!(delayed_old_fence.already_applied, "CR10/E10");
+    let mut later_occurrence = command.clone();
+    later_occurrence.tool_request_event_id = Some("evt-coordinated-reply-tool-use-2".into());
+    later_occurrence.expected_thread_version = Some(later_thread_version);
+    assert_ne!(
+        later_occurrence.delivery_operation_id(),
+        command.delivery_operation_id(),
+        "CR11 each public Event occurrence owns a distinct durable operation"
+    );
+    let later_fence = host
+        .session_thread_tool_reply_fence(&later_occurrence)
+        .await
+        .expect("CR11 current occurrence targets the later active await");
+    assert!(!later_fence.already_applied, "CR11/E11");
 
     let mut conflicting = command;
     conflicting.reply =
@@ -10545,6 +10650,8 @@ async fn primary_generic_tool_result_uses_the_same_fenced_durable_reply_path() {
 
     let command = awaken_session_contract::SessionThreadToolReplyCommand {
         session_id: parent.0.clone(),
+        tool_request_event_id: Some("evt-primary-reply-tool-use-1".into()),
+        expected_thread_version: None,
         target: awaken_session_contract::SessionThreadTarget::Primary,
         expected_run_id: run_id.clone(),
         expected_correlation_id: ticket.correlation_id.clone(),
@@ -12402,12 +12509,13 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
 
     // Cause/effect decision table:
     // | publication | frozen Session policy | effect |
-    // | present     | present               | Runtime gate receives policy; publication unchanged |
+    // | present     | present               | Runtime gate reads Session policy separately; execution clone/publication unchanged |
     // | generated   | present               | generated execution config receives policy |
     // The second rule is owned by the fallback construction path. This test owns
-    // the distributed continuation boundary: a second claim must compare the
-    // same immutable publication while the execution clone exposes the Session's
-    // exact MCP policy to the dynamic-tool filter.
+    // the immutable-publication boundary only. The executable gate behavior of
+    // the same `effective_tool_authorization` owner is covered by
+    // `config::tests::toolset_policy_controls_execution_gate_behavior`; copying
+    // policy into this snapshot would create a second authority and fingerprint.
     let publication = crate::config::server_config(
         "assistant",
         "stub",
@@ -12446,17 +12554,15 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .ctx_for("policy-session", Some("assistant"))
         .await
         .expect("build Session from immutable publication");
-    assert_eq!(
+    assert!(
         context
             .config
             .resolved_spec
             .plugin_config
             .agent
-            .tool_policy("mcp__flow__workflow_get"),
-        Some(ToolExecutionPolicy {
-            enabled: true,
-            permission: ToolPermissionRequirement::AlwaysAllow,
-        })
+            .toolsets
+            .is_empty(),
+        "the attempt clone preserves the immutable publication; Session policy is consumed by the one authorization owner"
     );
     assert!(
         publication

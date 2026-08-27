@@ -5,6 +5,8 @@ import {
   mergeEvents,
   pairToolResults,
   pendingConfirmIds,
+  projectSessionRuntime,
+  canSendToSession,
   sessionErrorText,
   spanDurationMs,
   textOf,
@@ -49,12 +51,66 @@ describe("pairToolResults", () => {
 });
 
 describe("pendingConfirmIds", () => {
-  it("collects event ids from a requires_action idle stop", () => {
+  it("projects only the latest unresolved requires_action set", () => {
+    // Cause/effect graph: C1 lifecycle is running/requires-action/end/error;
+    // C2 an answer/result for one requested id is absent/present; C3 unrelated
+    // frames follow a lifecycle frame. Effects: E1 current phase follows the
+    // latest lifecycle fact; E2 pending ids are replaced, individually closed,
+    // or terminally cleared; E3 non-lifecycle frames cannot fabricate idle.
+    //
+    // | Rule | Lifecycle/input | Effect |
+    // |---|---|---|
+    // | S1 | running + message | running/no pending |
+    // | S2 | requires_action(u1,u2) | idle/u1,u2 |
+    // | S3 | S2 + confirmation(u1) + result(u2) | idle/empty |
+    // | S4 | stale requires_action + later end/error | idle-or-error/empty |
     const ids = pendingConfirmIds([
       ev({ id: "u1", type: "agent.tool_use", name: "delete" }),
       ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
     ]);
     expect([...ids]).toEqual(["u1"]);
+  });
+  it("closes answered ids and does not retain an old approval card", () => {
+    const state = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1", "u2"] } }),
+      ev({ id: "a1", type: "user.tool_confirmation", tool_use_id: "u1", result: "allow" }),
+      ev({ id: "a2", type: "agent.tool_result", tool_use_id: "u2" }),
+    ]);
+    expect(state.phase).toBe("idle");
+    expect([...state.pendingConfirmIds]).toEqual([]);
+  });
+  it("a later terminal frame clears stale requires_action state", () => {
+    const ended = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
+      ev({ id: "s2", type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+    ]);
+    expect(ended.phase).toBe("idle");
+    expect(ended.pendingConfirmIds.size).toBe(0);
+    const failed = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
+      ev({ id: "e1", type: "session.error", error: { message: "worker failed" } }),
+    ]);
+    expect(failed.phase).toBe("error");
+    expect(failed.pendingConfirmIds.size).toBe(0);
+    expect(failed.latestError?.id).toBe("e1");
+  });
+  it("derives send admission from event truth with a Session fallback", () => {
+    // Cause/effect graph: C1 event phase is known/unknown; C2 Session fallback
+    // is running/rescheduling/idle; C3 pending tools are empty/nonempty.
+    // Effect E1 permits send only at a known non-running boundary with no
+    // pending tool. Decision rules: A1 unknown+running=>deny; A2
+    // unknown+idle+empty=>allow; A3 idle+pending=>deny; A4 idle+empty=>allow.
+    const unknown = projectSessionRuntime([]);
+    expect(canSendToSession(unknown, "running")).toBe(false);
+    expect(canSendToSession(unknown, "idle")).toBe(true);
+    const pending = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
+    ]);
+    expect(canSendToSession(pending, "idle")).toBe(false);
+    const idle = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "end_turn" } }),
+    ]);
+    expect(canSendToSession(idle, "running")).toBe(true);
   });
   it("is empty for an end_turn stop", () => {
     const ids = pendingConfirmIds([
@@ -101,8 +157,11 @@ describe("traceSpans", () => {
 });
 
 describe("isRunning", () => {
-  it("is true when the last frame is a running status", () => {
-    expect(isRunning([ev({ id: "s1", type: "session.status_running" })])).toBe(true);
+  it("is true when the latest lifecycle frame is running", () => {
+    expect(isRunning([
+      ev({ id: "s1", type: "session.status_running" }),
+      ev({ id: "m1", type: "agent.message" }),
+    ])).toBe(true);
   });
   it("is false when the last frame is idle", () => {
     expect(

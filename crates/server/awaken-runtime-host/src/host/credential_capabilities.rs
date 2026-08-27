@@ -1,9 +1,45 @@
 //! Process-local credential realization capabilities.
 
 use super::*;
+use awaken_run_ingress::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
+use awaken_runtime_contract::CredentialMaterialSource;
 
 const ACP_MCP_CLIENT_INJECTION_MATERIAL_TYPE: &str =
     "awaken.credential.mcp-process-protocol-field/v1";
+
+/// Select the exact Worker capability required to realize one immutable model
+/// candidate. Credential custody owns this mapping; dispatch placement only
+/// aggregates the selected capabilities across candidates.
+pub(super) fn model_realization_capability(
+    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
+) -> Option<&'static str> {
+    match candidate.provisioning() {
+        awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
+            Some(HOST_EXECUTOR_CAPABILITY)
+        }
+        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
+            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+        }
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider {
+            credential: Some(credential),
+            ..
+        }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: Some(credential),
+            ..
+        } if credential.material_source == CredentialMaterialSource::WorkerReference => {
+            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
+        }
+        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
+        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: Some(_),
+            ..
+        } => Some(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
+        awaken_runtime_contract::resolved::ModelProvisioning::Remote {
+            credential: None, ..
+        } => None,
+    }
+}
 
 /// Compose the one installed-evidence profile shared by Session MCP staging,
 /// local dispatch claims, and registered-Worker capability publication.

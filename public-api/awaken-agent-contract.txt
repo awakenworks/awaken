@@ -386,6 +386,7 @@ pub enum awaken_agent_contract::audit::kind::Kind
 pub awaken_agent_contract::audit::kind::Kind::Continuation
 pub awaken_agent_contract::audit::kind::Kind::ModelRequestCompleted
 pub awaken_agent_contract::audit::kind::Kind::PermissionDecided
+pub awaken_agent_contract::audit::kind::Kind::ResumeApplied
 pub awaken_agent_contract::audit::kind::Kind::RunAwaiting
 pub awaken_agent_contract::audit::kind::Kind::RunRescheduled
 pub awaken_agent_contract::audit::kind::Kind::RunResumed
@@ -420,6 +421,9 @@ pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::call_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::decision: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::PermissionDecided::tool_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied
+pub awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied::correlation_id: alloc::string::String
+pub awaken_agent_contract::audit::run_event::RunEvent::ResumeApplied::operation_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::RunAwaiting
 pub awaken_agent_contract::audit::run_event::RunEvent::RunAwaiting::run_id: alloc::string::String
 pub awaken_agent_contract::audit::run_event::RunEvent::RunRescheduled

@@ -843,10 +843,6 @@ impl ManagedHost {
             .harvest_thread_skills(thread)
             .await
             .map_err(|error| RunError::internal(error.to_string()))?;
-        self.host
-            .publish_thread_repositories(thread)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
         let projection_update = match &live_environment {
             Some(environment) => environment
                 .begin_live_projection_update()
@@ -1249,22 +1245,20 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
         // Archive/delete and the recovery scanner may observe the same durable
         // cleanup intent concurrently. Serialize the complete external-effect
-        // sequence on the Session lifecycle owner: repository push is CAS-based
-        // and cannot safely race an identical retry before the first receipt is
-        // committed. Once the winner removes the slot, the waiter sees an empty
-        // projection and completes as the intended idempotent no-op.
+        // sequence on the Session lifecycle owner: Skill/Artifact harvest and
+        // environment disposal cannot safely race an identical retry before the
+        // first receipt is committed. Once the winner removes the slot, the
+        // waiter sees an empty projection and completes as the intended no-op.
         let lifecycle = self
             .host
             .session_slots
             .update(&command.thread_id, |slot| slot.lifecycle.clone());
         let _lifecycle = lifecycle.lock().await;
-        // Terminal release owns every reverse operation: publish Agent-authored Repo
-        // commits (when the Agent did not own publication through MCP), persist
-        // run-authored Skills, then dispose. A GET /files poll is never a write edge.
-        self.host
-            .publish_thread_repositories(&command.thread_id)
-            .await
-            .map_err(|error| RunError::internal(error.to_string()))?;
+        // Terminal release persists local Skills/Artifacts and disposes the
+        // environment. It never pushes Repository content implicitly: Managed
+        // Repository publication is an explicit Agent/MCP operation governed by
+        // that tool's permission policy, while controlled workflows export a
+        // patch into outputs for Artifact download and human application.
         self.host
             .harvest_thread_skills(&command.thread_id)
             .await

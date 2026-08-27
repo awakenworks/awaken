@@ -599,6 +599,7 @@ fn activation_with_regular_tool() -> RunActivation {
 /// correlation id), carrying the given user input.
 fn resume_command(input: &str) -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         correlation_id: CALL_ID.to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),

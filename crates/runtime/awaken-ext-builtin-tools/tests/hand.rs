@@ -68,6 +68,78 @@ async fn glob_lists_matching_paths() {
 }
 
 #[tokio::test]
+async fn glob_absolute_pattern_reuses_the_confined_logical_path_projection() {
+    // Cause/effect graph: C1 pattern is relative/absolute; C2 an absolute
+    // pattern is inside/outside a trusted logical projection; C3 `path` is
+    // absent/present. Effects: E1 relative behavior is unchanged; E2 a trusted
+    // absolute pattern matches and returns logical paths; E3 escape and
+    // ambiguous absolute+path inputs fail closed without exposing host paths.
+    //
+    // | Rule | Pattern | Projection | path | Effect |
+    // |---|---|---|---|---|
+    // | G1 | relative | n/a | present | E1 |
+    // | G2 | absolute | trusted | absent | E2 |
+    // | G3 | absolute | absent | absent | E3 |
+    // | G4 | absolute | trusted | present | E3 |
+    // Constraint: FileContext remains the one confinement/projection owner for
+    // every filesystem tool; glob adds no path map of its own.
+    let workdir = tempfile::tempdir().expect("workdir");
+    let projected = tempfile::tempdir().expect("physical projection");
+    std::fs::write(projected.path().join("a.rs"), "a").expect("projected file");
+    let context =
+        HandToolContext::new(workdir.path()).with_path_projection("/managed", projected.path());
+    let glob = executable_hand_tools_in(context)
+        .into_iter()
+        .find(|candidate| candidate.id() == "glob")
+        .expect("glob tool");
+
+    let relative = glob
+        .invoke(call(
+            "glob",
+            serde_json::json!({ "pattern": "*.rs", "path": "/managed" }),
+        ))
+        .await
+        .expect("G1 relative pattern under a logical root");
+    assert_eq!(relative.text(), "/managed/a.rs", "G1/E1");
+
+    let output = glob
+        .invoke(call(
+            "glob",
+            serde_json::json!({ "pattern": "/managed/*.rs" }),
+        ))
+        .await
+        .expect("G2 trusted logical pattern");
+    assert_eq!(output.text(), "/managed/a.rs", "G2/E2");
+    assert!(
+        !output
+            .text()
+            .contains(&projected.path().to_string_lossy()[..]),
+        "G2/E2"
+    );
+
+    let outside = glob
+        .invoke(call(
+            "glob",
+            serde_json::json!({ "pattern": "/outside/*.rs" }),
+        ))
+        .await
+        .expect_err("G3 untrusted absolute pattern");
+    assert!(matches!(outside, ToolError::Execution(_)), "G3/E3");
+
+    let ambiguous = glob
+        .invoke(call(
+            "glob",
+            serde_json::json!({
+                "pattern": "/managed/*.rs",
+                "path": workdir.path()
+            }),
+        ))
+        .await
+        .expect_err("G4 absolute pattern has no second root");
+    assert!(matches!(ambiguous, ToolError::InvalidArguments(_)), "G4/E3");
+}
+
+#[tokio::test]
 async fn glob_supports_node_brace_and_at_extglob_alternation_without_duplicates() {
     // Cause/effect graph: Node fs.glob alternation forms select two extensions;
     // overlapping alternatives must not duplicate a path in the 200-result budget.

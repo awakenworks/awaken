@@ -20,6 +20,13 @@ use awaken_session_contract::{
 
 const MAX_LIFECYCLE_PAGE: usize = 1_024;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SessionReplyReceipt {
+    Absent,
+    Exact,
+    Conflict,
+}
+
 #[derive(Clone)]
 struct PendingCoordinationCall {
     run_id: RunId,
@@ -294,6 +301,73 @@ fn apply_active_batch_coordination_results(
 }
 
 impl SharedHost {
+    /// Resolve a public reply to the one currently committed Awaiting ticket.
+    /// Thread recovery remains the authority; the Session event identity and
+    /// version are only admission fences against delayed or reused call ids.
+    pub(super) async fn validated_session_thread_tool_reply(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<(ThreadId, ResumeTicket), HostError> {
+        if command.session_id.trim().is_empty()
+            || command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(HostError::bad_request(
+                "Session Thread tool reply is incomplete",
+            ));
+        }
+        let thread_id = command.target.thread_id(&command.session_id);
+        if command
+            .target
+            .child_thread_id()
+            .is_some_and(|child| child.0 == command.session_id)
+        {
+            return Err(HostError::bad_request(
+                "a coordinated child Thread must differ from its parent Session",
+            ));
+        }
+        let commit = self.commit_for_read(&command.session_id).await?;
+        let snapshot = commit
+            .recovery_snapshot(&thread_id, &command.expected_run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        if command
+            .expected_thread_version
+            .is_some_and(|expected| expected != snapshot.thread_version)
+        {
+            return Err(HostError::bad_request(
+                "Session Thread awaiting ticket changed after Event admission",
+            ));
+        }
+        if snapshot.latest_run_id.as_ref() != Some(&command.expected_run_id)
+            || !snapshot.runs.iter().any(|run| {
+                run.id == command.expected_run_id && matches!(run.state, RunState::Awaiting)
+            })
+        {
+            return Err(HostError::bad_request("Session Thread has no awaiting Run"));
+        }
+        let mut tickets = snapshot.resume_tickets.into_iter().filter(|entry| {
+            entry.run_id == command.expected_run_id
+                && entry.ticket.thread_id == thread_id
+                && entry.ticket.correlation_id == command.expected_correlation_id
+        });
+        let ticket = tickets.next().ok_or_else(|| {
+            HostError::bad_request("Session Thread awaiting ticket changed after Event admission")
+        })?;
+        if tickets.next().is_some() {
+            return Err(HostError::internal(
+                "Session Thread has multiple matching committed resume tickets",
+            ));
+        }
+        self.check_pending(
+            &ticket.ticket,
+            &command.tool_use_id,
+            command.reply.client_executed(),
+        )?;
+        Ok((thread_id, ticket.ticket))
+    }
+
     /// Derive the absorbing follow-up fence from the latest committed Run in the
     /// parent Session partition. No Thread status or dispatch flag shadows that
     /// lifecycle truth.
@@ -315,7 +389,23 @@ impl SharedHost {
         &self,
         command: &awaken_session_contract::SessionThreadToolReplyCommand,
     ) -> Result<awaken_session_contract::SessionThreadToolReplyFence, HostError> {
-        let (thread_id, _ticket) = self.validated_session_thread_tool_reply(command).await?;
+        let (thread_id, _ticket) = match self.validated_session_thread_tool_reply(command).await {
+            Ok(active) => active,
+            Err(active_error) => match self.session_thread_tool_reply_receipt(command).await? {
+                SessionReplyReceipt::Exact => {
+                    return Ok(awaken_session_contract::SessionThreadToolReplyFence {
+                        prior_session_activity_epoch: None,
+                        already_applied: true,
+                    });
+                }
+                SessionReplyReceipt::Conflict => {
+                    return Err(HostError::bad_request(
+                        "Session Thread awaiting correlation was answered by another reply operation",
+                    ));
+                }
+                SessionReplyReceipt::Absent => return Err(active_error),
+            },
+        };
         let parent = ThreadId(command.session_id.clone());
         let dispatch = self
             .dispatch_store()?
@@ -350,6 +440,7 @@ impl SharedHost {
         }
         Ok(awaken_session_contract::SessionThreadToolReplyFence {
             prior_session_activity_epoch,
+            already_applied: false,
         })
     }
 
@@ -366,7 +457,28 @@ impl SharedHost {
             fence,
             session_activity_epoch,
         } = delivery;
-        let (thread_id, ticket) = self.validated_session_thread_tool_reply(&command).await?;
+        let (thread_id, ticket) = match self.validated_session_thread_tool_reply(&command).await {
+            Ok(_) if fence.already_applied => {
+                return Err(HostError::internal(
+                    "Session Thread reply became active after an applied-receipt fence",
+                ));
+            }
+            Ok(active) => active,
+            Err(active_error) => match self.session_thread_tool_reply_receipt(&command).await? {
+                SessionReplyReceipt::Exact => return Ok(()),
+                SessionReplyReceipt::Conflict => {
+                    return Err(HostError::bad_request(
+                        "Session Thread awaiting correlation was answered by another reply operation",
+                    ));
+                }
+                SessionReplyReceipt::Absent if fence.already_applied => {
+                    return Err(HostError::internal(
+                        "Session Thread reply receipt disappeared after fencing",
+                    ));
+                }
+                SessionReplyReceipt::Absent => return Err(active_error),
+            },
+        };
         let result =
             super::run::session_thread_reply_result(&ticket, &command.tool_use_id, &command.reply);
 
@@ -412,13 +524,7 @@ impl SharedHost {
             .map_err(|error| HostError::bad_request(error.message))?
             .into_iter()
             .collect::<Vec<_>>();
-        let message_id = format!(
-            "session-thread-reply-{}",
-            awaken_session_contract::stable_fingerprint(&(
-                "managed-session-thread-reply-v2",
-                command.activity_operation_id(),
-            ))
-        );
+        let message_id = command.delivery_operation_id();
         let input = PendingInput {
             message_id,
             run_id: command.expected_run_id,
@@ -446,6 +552,59 @@ impl SharedHost {
                 .map_err(|error| HostError::internal(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Classify the committed receipt only after the current active ticket fails
+    /// validation. A successful resume intentionally deletes that ticket, while
+    /// the audit fact lives in the same ThreadCommit and therefore survives
+    /// response loss, Worker settlement, process restart, and projection lag.
+    async fn session_thread_tool_reply_receipt(
+        &self,
+        command: &awaken_session_contract::SessionThreadToolReplyCommand,
+    ) -> Result<SessionReplyReceipt, HostError> {
+        if command.session_id.trim().is_empty()
+            || command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(HostError::bad_request(
+                "Session Thread tool reply is incomplete",
+            ));
+        }
+        let thread_id = command.target.thread_id(&command.session_id);
+        let commit = self.commit_for_read(&command.session_id).await?;
+        let snapshot = commit
+            .recovery_snapshot(&thread_id, &command.expected_run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        let expected_operation = command.delivery_operation_id();
+        let mut same_correlation = false;
+        for event in snapshot.events.iter().filter(|event| {
+            event.run_id == command.expected_run_id
+                && event.kind == awaken_agent_contract::audit::kind::Kind::ResumeApplied
+        }) {
+            let correlation = event
+                .payload
+                .get("correlation_id")
+                .and_then(serde_json::Value::as_str);
+            if correlation != Some(command.expected_correlation_id.as_str()) {
+                continue;
+            }
+            same_correlation = true;
+            if event
+                .payload
+                .get("operation_id")
+                .and_then(serde_json::Value::as_str)
+                == Some(expected_operation.as_str())
+            {
+                return Ok(SessionReplyReceipt::Exact);
+            }
+        }
+        Ok(if same_correlation {
+            SessionReplyReceipt::Conflict
+        } else {
+            SessionReplyReceipt::Absent
+        })
     }
 
     async fn coordinated_child_admission(

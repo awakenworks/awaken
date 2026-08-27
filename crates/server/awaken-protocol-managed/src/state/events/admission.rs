@@ -79,14 +79,18 @@ impl ManagedState {
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
         let root_pending = root_snapshot
             .as_ref()
-            .map(Self::pending_ticket_from_recovery_snapshot)
+            .map(|snapshot| {
+                Self::pending_ticket_from_recovery_snapshot(snapshot)
+                    .map(|pending| pending.map(|pending| (snapshot.thread_version, pending)))
+            })
             .transpose()?
             .flatten();
         let mut candidates = root_pending
             .into_iter()
-            .map(|(run_id, correlation_id, pending)| {
+            .map(|(thread_version, (run_id, correlation_id, pending))| {
                 PendingToolReplyCandidate::from_pending(
                     SessionThreadTarget::Primary,
+                    thread_version,
                     run_id,
                     correlation_id,
                     pending,
@@ -111,6 +115,7 @@ impl ManagedState {
                     SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(
                         thread_id.clone(),
                     )),
+                    snapshot.thread_version,
                     run_id,
                     correlation_id,
                     pending,
@@ -207,10 +212,11 @@ impl ManagedState {
                     Self::resolve_tool_reply(session_id, public_event_id, family, &candidates)?;
                 Self::consume_tool_reply_identity(&mut unresolved, &resolved)?;
                 inputs.push(SessionEventInput::ToolReply(SessionEventToolReply {
-                    public_tool_use_event_id: public_event_id.to_string(),
+                    tool_request_event_id: public_event_id.to_string(),
                     target: resolved.key.target,
                     expected_run_id: resolved.key.expected_run_id,
                     expected_correlation_id: resolved.key.expected_correlation_id,
+                    expected_thread_version: Some(resolved.key.expected_thread_version),
                     runtime_tool_use_id: resolved.key.runtime_call_id,
                     reply: retained_reply,
                 }));

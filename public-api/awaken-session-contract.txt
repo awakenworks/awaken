@@ -1313,10 +1313,11 @@ pub awaken_session_contract::SessionEventProjectionAnchor::source_commit_cursor:
 pub struct awaken_session_contract::SessionEventToolReply
 pub awaken_session_contract::SessionEventToolReply::expected_correlation_id: alloc::string::String
 pub awaken_session_contract::SessionEventToolReply::expected_run_id: awaken_agent_contract::agent::run::Id
-pub awaken_session_contract::SessionEventToolReply::public_tool_use_event_id: alloc::string::String
+pub awaken_session_contract::SessionEventToolReply::expected_thread_version: core::option::Option<u64>
 pub awaken_session_contract::SessionEventToolReply::reply: awaken_session_contract::SessionEventToolReplyKind
 pub awaken_session_contract::SessionEventToolReply::runtime_tool_use_id: alloc::string::String
 pub awaken_session_contract::SessionEventToolReply::target: awaken_session_contract::SessionThreadTarget
+pub awaken_session_contract::SessionEventToolReply::tool_request_event_id: alloc::string::String
 impl awaken_session_contract::SessionEventToolReply
 pub fn awaken_session_contract::SessionEventToolReply::delivery_command(&self, &str, core::option::Option<awaken_session_contract::SessionUserRunSystemInput>) -> awaken_session_contract::SessionThreadToolReplyCommand
 pub struct awaken_session_contract::SessionExecutionStateError(pub alloc::string::String)
@@ -1506,17 +1507,21 @@ pub struct awaken_session_contract::SessionThreadToolReplyCommand
 pub awaken_session_contract::SessionThreadToolReplyCommand::accompanying_system: core::option::Option<awaken_session_contract::SessionUserRunSystemInput>
 pub awaken_session_contract::SessionThreadToolReplyCommand::expected_correlation_id: alloc::string::String
 pub awaken_session_contract::SessionThreadToolReplyCommand::expected_run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_contract::SessionThreadToolReplyCommand::expected_thread_version: core::option::Option<u64>
 pub awaken_session_contract::SessionThreadToolReplyCommand::reply: awaken_session_contract::SessionThreadToolReply
 pub awaken_session_contract::SessionThreadToolReplyCommand::session_id: alloc::string::String
 pub awaken_session_contract::SessionThreadToolReplyCommand::target: awaken_session_contract::SessionThreadTarget
+pub awaken_session_contract::SessionThreadToolReplyCommand::tool_request_event_id: core::option::Option<alloc::string::String>
 pub awaken_session_contract::SessionThreadToolReplyCommand::tool_use_id: alloc::string::String
 impl awaken_session_contract::SessionThreadToolReplyCommand
 pub fn awaken_session_contract::SessionThreadToolReplyCommand::activity_operation_id(&self) -> alloc::string::String
+pub fn awaken_session_contract::SessionThreadToolReplyCommand::delivery_operation_id(&self) -> alloc::string::String
 pub struct awaken_session_contract::SessionThreadToolReplyDelivery
 pub awaken_session_contract::SessionThreadToolReplyDelivery::command: awaken_session_contract::SessionThreadToolReplyCommand
 pub awaken_session_contract::SessionThreadToolReplyDelivery::fence: awaken_session_contract::SessionThreadToolReplyFence
 pub awaken_session_contract::SessionThreadToolReplyDelivery::session_activity_epoch: u64
 pub struct awaken_session_contract::SessionThreadToolReplyFence
+pub awaken_session_contract::SessionThreadToolReplyFence::already_applied: bool
 pub awaken_session_contract::SessionThreadToolReplyFence::prior_session_activity_epoch: core::option::Option<u64>
 pub struct awaken_session_contract::SessionTombstone
 pub awaken_session_contract::SessionTombstone::deleted_at: alloc::string::String

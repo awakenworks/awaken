@@ -2,43 +2,13 @@
 //! and the [`CompletionRegistry`] that owns temporary completion observers plus
 //! best-effort live routes for each foreground Run.
 
+use super::credential_capabilities::model_realization_capability;
 use super::*;
-use awaken_run_ingress::{
-    HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementRequirements,
-};
+use awaken_run_ingress::PlacementRequirements;
+#[cfg(test)]
+use awaken_run_ingress::{HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY};
 use awaken_runtime_contract::CredentialMaterialSource;
 use std::collections::{BTreeSet, HashMap};
-
-pub(crate) fn model_realization_capability(
-    candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
-) -> Option<&'static str> {
-    match candidate.provisioning() {
-        awaken_runtime_contract::resolved::ModelProvisioning::HostExecutor => {
-            Some(HOST_EXECUTOR_CAPABILITY)
-        }
-        awaken_runtime_contract::resolved::ModelProvisioning::BackendOwned { .. } => {
-            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
-        }
-        awaken_runtime_contract::resolved::ModelProvisioning::Provider {
-            credential: Some(credential),
-            ..
-        }
-        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
-            credential: Some(credential),
-            ..
-        } if credential.material_source == CredentialMaterialSource::WorkerReference => {
-            Some(awaken_run_ingress::WORKER_LOCAL_CREDENTIALS_CAPABILITY)
-        }
-        awaken_runtime_contract::resolved::ModelProvisioning::Provider { .. }
-        | awaken_runtime_contract::resolved::ModelProvisioning::Remote {
-            credential: Some(_),
-            ..
-        } => Some(PROVIDER_CREDENTIAL_SOURCE_CAPABILITY),
-        awaken_runtime_contract::resolved::ModelProvisioning::Remote {
-            credential: None, ..
-        } => None,
-    }
-}
 
 fn worker_local_credentials(
     models: &awaken_runtime_contract::resolved::ResolvedSpec,
@@ -1108,6 +1078,7 @@ mod completion_tests {
 
     fn resume_command(run_id: &str, correlation_id: &str, answer: &str) -> ResumeCommand {
         ResumeCommand {
+            operation_id: None,
             correlation_id: correlation_id.into(),
             run_id: RunId(run_id.into()),
             thread_id: ThreadId("thread-1".into()),

@@ -225,8 +225,11 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
     // Test design — Causes: permission gate returns RequireConfirmation and an
     // exact correlated allow later resumes it. Effects: execution first awaits
     // with zero tool calls, then commits approval and runs once. Constraints/
-    // invariants: approval precedes the effect and must match the durable ticket.
-    // Decision rule P1: ask=>Awaiting/zero; exact allow=>approved/one/NaturalEnd.
+    // invariants: approval and the delivery-operation receipt precede the effect,
+    // are committed at the same boundary, and must match the durable ticket.
+    // Decision rule P1: ask=>Awaiting/zero; exact allow with operation O1
+    // =>approved+ResumeApplied(O1)/one/NaturalEnd. The sibling Host decision
+    // table covers response-loss retry and changed-operation conflict.
     let ran = Arc::new(AtomicUsize::new(0));
     let runtime = runtime(
         ran.clone(),
@@ -251,6 +254,7 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
 
     // The operator's allow decision, correlated to the ticket, resumes the call.
     let resume = ResumeCommand {
+        operation_id: Some("session-thread-reply-operation-1".to_string()),
         correlation_id: TICKET.to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
@@ -271,6 +275,18 @@ async fn ask_awaits_then_a_resumed_allow_runs_the_tool() {
         vec!["ask", "approved"],
         "the resume decision is committed before tool execution"
     );
+    let committed = commit.committed();
+    let receipts = committed
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::ResumeApplied)
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1, "one delivery operation has one receipt");
+    assert_eq!(
+        receipts[0].payload["operation_id"],
+        "session-thread-reply-operation-1"
+    );
+    assert_eq!(receipts[0].payload["correlation_id"], TICKET);
 }
 
 /// A model that calls a tool by its MODEL-FACING ALIAS, not the canonical id.

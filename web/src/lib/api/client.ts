@@ -169,8 +169,8 @@ async function toError(res: Response): Promise<ApiClientError> {
   return new ApiClientError(res.status, code, message, requestId);
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers = requestHeaders(path);
+async function request<T>(method: string, path: string, body?: unknown, extraHeaders?: Record<string, string>): Promise<T> {
+  const headers = requestHeaders(path, extraHeaders);
   if (body !== undefined) headers["content-type"] = "application/json";
   const res = await fetch(path, {
     method,
@@ -248,7 +248,7 @@ async function download(path: string, filename: string): Promise<void> {
 
 export const api = {
   get: <T>(path: string) => request<T>("GET", path),
-  post: <T>(path: string, body?: unknown) => request<T>("POST", path, body),
+  post: <T>(path: string, body?: unknown, headers?: Record<string, string>) => request<T>("POST", path, body, headers),
   put: <T>(path: string, body?: unknown) => request<T>("PUT", path, body),
   del: <T>(path: string) => request<T>("DELETE", path),
   upload,
@@ -256,6 +256,34 @@ export const api = {
   bytes,
   download,
 };
+
+/**
+ * One browser operation's retry identity. An exact payload keeps its key across
+ * timeout/retry; editing the payload starts a new operation. The server remains
+ * the durable idempotency authority—this class stores no Session receipt.
+ */
+export class IdempotencyScope {
+  private current?: { fingerprint: string; key: string };
+
+  constructor(private readonly prefix: string) {}
+
+  headersFor(payload: unknown): Record<string, string> {
+    const fingerprint = JSON.stringify(payload);
+    if (!this.current || this.current.fingerprint !== fingerprint) {
+      this.current = {
+        fingerprint,
+        key: `${this.prefix}-${globalThis.crypto.randomUUID()}`,
+      };
+    }
+    return { "idempotency-key": this.current.key };
+  }
+
+  /** Close an operation after its success is known. A later identical user
+   * intent is a new operation and must not resolve to the old response. */
+  complete(): void {
+    this.current = undefined;
+  }
+}
 
 export async function resolveWorkspaceContext(): Promise<string> {
   const selected = routeWorkspace();

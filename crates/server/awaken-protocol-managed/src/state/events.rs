@@ -111,7 +111,7 @@ fn public_inbound_kind_from_command(
                     allow,
                     deny_message,
                 } => OutboundKind::UserToolConfirmation {
-                    tool_use_id: reply.public_tool_use_event_id.clone(),
+                    tool_use_id: reply.tool_request_event_id.clone(),
                     result: if *allow {
                         ConfirmResult::Allow
                     } else {
@@ -122,7 +122,7 @@ fn public_inbound_kind_from_command(
                 },
                 SessionEventToolReplyKind::CustomToolResult { content, is_error } => {
                     OutboundKind::UserCustomToolResult {
-                        custom_tool_use_id: reply.public_tool_use_event_id.clone(),
+                        custom_tool_use_id: reply.tool_request_event_id.clone(),
                         content: content.clone(),
                         is_error: *is_error,
                         session_thread_id,
@@ -130,7 +130,7 @@ fn public_inbound_kind_from_command(
                 }
                 SessionEventToolReplyKind::ToolResult { content, is_error } => {
                     OutboundKind::UserToolResult {
-                        tool_use_id: reply.public_tool_use_event_id.clone(),
+                        tool_use_id: reply.tool_request_event_id.clone(),
                         content: content.clone(),
                         is_error: *is_error,
                         session_thread_id,
@@ -667,6 +667,7 @@ struct PendingToolReplyCandidate {
 impl PendingToolReplyCandidate {
     fn from_pending(
         target: SessionThreadTarget,
+        expected_thread_version: u64,
         expected_run_id: awaken_agent_contract::agent::run::Id,
         expected_correlation_id: String,
         pending: Pending,
@@ -674,6 +675,7 @@ impl PendingToolReplyCandidate {
         Self {
             key: PendingToolReplyKey {
                 target,
+                expected_thread_version,
                 expected_run_id,
                 expected_correlation_id,
                 runtime_call_id: pending.tool_use_id,
@@ -691,6 +693,7 @@ impl PendingToolReplyCandidate {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct PendingToolReplyKey {
     target: SessionThreadTarget,
+    expected_thread_version: u64,
     expected_run_id: awaken_agent_contract::agent::run::Id,
     expected_correlation_id: String,
     runtime_call_id: String,

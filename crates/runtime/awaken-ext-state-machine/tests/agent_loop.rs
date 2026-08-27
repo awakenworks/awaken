@@ -844,6 +844,7 @@ impl ToolGateHook for AwaitTheAwaitTool {
 
 fn await_resume_command() -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         correlation_id: "await-ticket".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),

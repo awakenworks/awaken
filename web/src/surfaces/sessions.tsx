@@ -4,11 +4,11 @@
 // archive marks a row without removing it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
-import { api, ws } from "../lib/api/client";
+import { api, IdempotencyScope, ws } from "../lib/api/client";
 import type {
   AgentConfigList,
   CreateSessionRequest,
@@ -48,6 +48,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const [vaultIds, setVaultIds] = useState<string[]>([]);
   const [mcp, setMcp] = useState<{ name: string; url: string; prompts_as_skills: boolean }[]>([]);
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
+  const createIdentity = useRef(new IdempotencyScope("console-session-create"));
   // Inline pickers over the config plane (published agents) + environments.
   const agents = useQuery({
     queryKey: ["config-agents", wsId],
@@ -63,8 +64,9 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
-      api.post<Session>(ws("/v1/sessions"), body),
+      api.post<Session>(ws("/v1/sessions"), body, createIdentity.current.headersFor(body)),
     onSuccess: (session) => {
+      createIdentity.current.complete();
       nav(`/w/${wsId}/sessions/${session.id}`);
     },
   });

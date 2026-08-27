@@ -1420,6 +1420,11 @@ impl SessionRuntime for ToolAwaitingFake {
             .ok_or_else(|| RunError::bad_request("adapter fixture Run is not Awaiting"))?;
         if command.target != awaken_session_contract::SessionThreadTarget::Primary
             || command.session_id != run.session_id
+            || command
+                .tool_request_event_id
+                .as_deref()
+                .is_none_or(str::is_empty)
+            || command.expected_thread_version != Some(u64::try_from(run.lifecycle.len()).unwrap())
             || command.expected_run_id != run.run_id
             || command.expected_correlation_id
                 != format!("adapter-awaiting-ticket:{}", pending.tool_use_id)
@@ -1434,6 +1439,7 @@ impl SessionRuntime for ToolAwaitingFake {
             // settled it but the durable dispatch fence still identifies that
             // prior epoch when the reply transfers activity to the same Run.
             prior_session_activity_epoch: Some(1),
+            already_applied: false,
         })
     }
 

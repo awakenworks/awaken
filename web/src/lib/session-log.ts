@@ -43,21 +43,65 @@ export function pairToolResults(log: SessionEvent[]): Map<string, SessionEvent> 
   return results;
 }
 
-/** The tool_use ids the run is blocked on (a `requires_action` idle stop). */
-export function pendingConfirmIds(log: SessionEvent[]): Set<string> {
-  const ids = new Set<string>();
-  for (const ev of log) {
-    if (ev.type === "session.status_idle" && "stop_reason" in ev) {
-      const sr = ev.stop_reason as { type: string; event_ids?: string[] };
-      if (sr.type === "requires_action") for (const id of sr.event_ids ?? []) ids.add(id);
-    }
-  }
-  return ids;
+export interface SessionRuntimeProjection {
+  phase: "unknown" | "running" | "idle" | "error";
+  pendingConfirmIds: Set<string>;
+  latestError?: SessionEvent;
 }
 
-/** Whether the run's last committed frame is a "still working" status. */
+/**
+ * Fold the committed stream into its one current Runtime projection. Status,
+ * Chat, Trace, send admission, and Stop controls must all consume this reducer;
+ * historical `requires_action` frames are facts, not permanent pending state.
+ */
+export function projectSessionRuntime(log: SessionEvent[]): SessionRuntimeProjection {
+  let phase: SessionRuntimeProjection["phase"] = "unknown";
+  let ids = new Set<string>();
+  let latestError: SessionEvent | undefined;
+  for (const ev of log) {
+    if (ev.type === "session.status_running") {
+      phase = "running";
+      ids = new Set();
+    } else if (ev.type === "session.status_idle" && "stop_reason" in ev) {
+      phase = "idle";
+      const sr = ev.stop_reason as { type: string; event_ids?: string[] };
+      ids = new Set(sr.type === "requires_action" ? sr.event_ids ?? [] : []);
+    } else if (ev.type === "session.error") {
+      phase = "error";
+      ids = new Set();
+      latestError = ev;
+    } else if (ev.type === "agent.tool_result" && "tool_use_id" in ev) {
+      ids.delete(String(ev.tool_use_id));
+    } else if (ev.type === "user.tool_confirmation" && "tool_use_id" in ev) {
+      ids.delete(String(ev.tool_use_id));
+    } else if (ev.type === "user.custom_tool_result" && "custom_tool_use_id" in ev) {
+      ids.delete(String(ev.custom_tool_use_id));
+    }
+  }
+  return { phase, pendingConfirmIds: ids, latestError };
+}
+
+/** The currently unresolved tool ids from the canonical Runtime projection. */
+export function pendingConfirmIds(log: SessionEvent[]): Set<string> {
+  return projectSessionRuntime(log).pendingConfirmIds;
+}
+
+/** Whether the latest lifecycle frame says the run is still working. */
 export function isRunning(log: SessionEvent[]): boolean {
-  return log[log.length - 1]?.type === "session.status_running";
+  return projectSessionRuntime(log).phase === "running";
+}
+
+/** Send admission from the current event projection, falling back to the
+ * Session row only while no lifecycle event has arrived. */
+export function canSendToSession(
+  runtime: SessionRuntimeProjection,
+  sessionStatus?: string,
+): boolean {
+  const phase = runtime.phase === "unknown" ? sessionStatus : runtime.phase;
+  return phase != null
+    && phase !== "running"
+    && phase !== "rescheduling"
+    && runtime.pendingConfirmIds.size === 0;
 }
 
 /** A concise, actionable explanation for a committed run failure. */

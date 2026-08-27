@@ -154,6 +154,7 @@ fn activation() -> RunActivation {
 
 fn resume_command() -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         // A manual-pause ticket is correlated by the run id.
         correlation_id: "run-1".to_string(),
         run_id: RunId("run-1".to_string()),

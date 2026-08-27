@@ -42,6 +42,13 @@ pub enum RunEvent {
         call_id: String,
         decision: String,
     },
+    /// A stable durable-ingress operation consumed this Run's resume ticket.
+    /// The correlation detects a different operation attempting to answer the
+    /// same closed wait after its active ticket has been removed.
+    ResumeApplied {
+        operation_id: String,
+        correlation_id: String,
+    },
     /// A run-end continuation guard decided one round; `detail` is the guard's
     /// opaque payload (the kernel does not interpret it).
     Continuation { detail: serde_json::Value },
@@ -90,6 +97,16 @@ impl From<RunEvent> for Draft {
                 Kind::PermissionDecided,
                 serde_json::json!({ "tool_id": tool_id, "call_id": call_id, "decision": decision }),
             ),
+            RunEvent::ResumeApplied {
+                operation_id,
+                correlation_id,
+            } => (
+                Kind::ResumeApplied,
+                serde_json::json!({
+                    "operation_id": operation_id,
+                    "correlation_id": correlation_id
+                }),
+            ),
             RunEvent::Continuation { detail } => (Kind::Continuation, detail),
         };
         Draft { kind, payload }
@@ -123,6 +140,20 @@ mod tests {
         assert_eq!(
             d.payload,
             serde_json::json!({ "tool_id": "echo", "call_id": "c1", "decision": "allow" })
+        );
+
+        let d: Draft = RunEvent::ResumeApplied {
+            operation_id: "delivery-1".into(),
+            correlation_id: "ticket-1".into(),
+        }
+        .into();
+        assert_eq!(d.kind, Kind::ResumeApplied);
+        assert_eq!(
+            d.payload,
+            serde_json::json!({
+                "operation_id": "delivery-1",
+                "correlation_id": "ticket-1"
+            })
         );
 
         // Continuation carries the guard's opaque detail verbatim as the payload.
