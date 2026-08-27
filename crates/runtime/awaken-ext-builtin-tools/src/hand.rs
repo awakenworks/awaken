@@ -6,6 +6,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write as _;
+use std::ops::Deref;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
 use std::sync::{
@@ -118,7 +119,12 @@ impl FileContext {
         Self(Arc::new(context.clone()))
     }
 
-    fn resolve(&self, input: &str) -> Result<PathBuf, ToolError> {
+    fn ensure_workdir(&self) -> Result<(), ToolError> {
+        std::fs::create_dir_all(&self.0.workdir)
+            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+    }
+
+    fn resolve(&self, input: &str) -> Result<ConfinedPath, ToolError> {
         if input.is_empty() {
             return Err(ToolError::InvalidArguments("file path is required".into()));
         }
@@ -146,17 +152,74 @@ impl FileContext {
         for allowed in &self.0.allowed_roots {
             roots.push(canonicalize_or_absolute(allowed)?);
         }
-        if roots.iter().any(|root| path_is_within(root, &resolved)) {
-            Ok(resolved)
-        } else {
-            Err(ToolError::Execution(format!(
-                "path {input:?} escapes workdir"
-            )))
-        }
+        let root = roots
+            .into_iter()
+            .filter(|root| path_is_within(root, &resolved))
+            .max_by_key(|root| root.components().count())
+            .ok_or_else(|| ToolError::Execution(format!("path {input:?} escapes workdir")))?;
+        let relative = resolved
+            .strip_prefix(&root)
+            .expect("selected root contains the resolved path")
+            .to_path_buf();
+        let directory = cap_std::fs::Dir::open_ambient_dir(&root, cap_std::ambient_authority())
+            .map_err(|error| file_error("path", input, &error))?;
+        Ok(ConfinedPath {
+            absolute: resolved,
+            relative,
+            directory: Arc::new(directory),
+        })
     }
 
     fn max_file_bytes(&self) -> Option<u64> {
         self.0.max_file_bytes
+    }
+}
+
+/// A path bound to an already-open directory capability. String resolution is
+/// used only to select the least-authoritative trusted root; all subsequent
+/// filesystem effects are relative to this handle, so a symlink swap cannot
+/// redirect an operation outside that root.
+#[derive(Clone)]
+struct ConfinedPath {
+    absolute: PathBuf,
+    relative: PathBuf,
+    directory: Arc<cap_std::fs::Dir>,
+}
+
+impl ConfinedPath {
+    fn metadata(&self) -> std::io::Result<cap_std::fs::Metadata> {
+        self.directory.metadata(&self.relative)
+    }
+
+    fn read_to_string(&self) -> std::io::Result<String> {
+        self.directory.read_to_string(&self.relative)
+    }
+
+    fn create_parent_dirs(&self) -> std::io::Result<()> {
+        match self.relative.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => self.directory.create_dir_all(parent),
+            _ => Ok(()),
+        }
+    }
+
+    fn rename_to(&self, destination: &Self) -> std::io::Result<()> {
+        self.directory.rename(
+            &self.relative,
+            &destination.directory,
+            &destination.relative,
+        )
+    }
+
+    fn remove_file(&self) -> std::io::Result<()> {
+        self.directory.remove_file(&self.relative)
+    }
+}
+
+impl Deref for ConfinedPath {
+    type Target = Path;
+
+    fn deref(&self) -> &Self::Target {
+        &self.absolute
     }
 }
 
@@ -251,12 +314,14 @@ fn file_error(operation: &str, input: &str, error: &std::io::Error) -> ToolError
 }
 
 fn regular_file(
-    path: &Path,
+    path: &ConfinedPath,
     input: &str,
     operation: &str,
     limit: Option<u64>,
 ) -> Result<(), ToolError> {
-    let metadata = std::fs::metadata(path).map_err(|error| file_error(operation, input, &error))?;
+    let metadata = path
+        .metadata()
+        .map_err(|error| file_error(operation, input, &error))?;
     if !metadata.is_file() {
         return Err(ToolError::Execution(format!(
             "{operation}: {input} is not a regular file"
@@ -278,44 +343,26 @@ fn regular_file(
     Ok(())
 }
 
-fn create_parent_dirs(path: &Path) -> std::io::Result<()> {
-    let Some(parent) = path.parent() else {
-        return Ok(());
-    };
-    let mut builder = std::fs::DirBuilder::new();
-    builder.recursive(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::DirBuilderExt;
-        builder.mode(0o755);
-    }
-    builder.create(parent)
-}
-
-fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
-    create_parent_dirs(path)?;
-    let parent = path.parent().unwrap_or(Path::new("."));
+fn atomic_write(path: &ConfinedPath, content: &str) -> std::io::Result<()> {
+    path.create_parent_dirs()?;
+    let parent = path.relative.parent().unwrap_or(Path::new(""));
     let temporary = parent.join(format!(
         ".tmp-{}-{}",
         std::process::id(),
         uuid::Uuid::new_v4()
     ));
     let result = (|| {
-        let mut options = std::fs::OpenOptions::new();
+        let mut options = cap_std::fs::OpenOptions::new();
         options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o644);
-        }
-        let mut file = options.open(&temporary)?;
+        let mut file = path.directory.open_with(&temporary, &options)?;
         file.write_all(content.as_bytes())?;
         file.sync_all()?;
         drop(file);
-        std::fs::rename(&temporary, path)
+        path.directory
+            .rename(&temporary, &path.directory, &path.relative)
     })();
     if result.is_err() {
-        let _ = std::fs::remove_file(&temporary);
+        let _ = path.directory.remove_file(&temporary);
     }
     result
 }
@@ -355,7 +402,8 @@ impl Tool for ReadTool {
         }
         let path = self.0.resolve(&args.path)?;
         regular_file(&path, &args.path, "read", self.0.max_file_bytes())?;
-        let content = std::fs::read_to_string(&path)
+        let content = path
+            .read_to_string()
             .map_err(|error| file_error("read", &args.path, &error))?;
         let Some(range) = args.view_range else {
             return Ok(content);
@@ -767,6 +815,7 @@ impl Tool for WriteTool {
                 "write: file_path is required".into(),
             ));
         }
+        self.0.ensure_workdir()?;
         let path = self.0.resolve(&args.path)?;
         atomic_write(&path, &args.content)
             .map_err(|error| file_error("write", &args.path, &error))?;
@@ -830,7 +879,8 @@ impl Tool for EditTool {
         }
         let path = self.0.resolve(&args.path)?;
         regular_file(&path, &args.path, "edit", self.0.max_file_bytes())?;
-        let content = std::fs::read_to_string(&path)
+        let content = path
+            .read_to_string()
             .map_err(|error| file_error("edit", &args.path, &error))?;
         let matches = content.matches(&args.old).count();
         match matches {
@@ -887,20 +937,20 @@ impl Tool for MoveTool {
     async fn call(&self, args: MoveArgs) -> Result<String, ToolError> {
         let source = self.0.resolve(&args.source)?;
         let destination = self.0.resolve(&args.destination)?;
-        if !source.is_file() {
+        if !source
+            .metadata()
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
             return Err(ToolError::Execution(format!(
                 "move {}: source is not a file",
                 args.source
             )));
         }
-        if let Some(parent) = destination.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                ToolError::Execution(format!("move {}: {error}", args.destination))
-            })?;
-        }
-        std::fs::rename(&source, &destination).map_err(|error| {
+        destination
+            .create_parent_dirs()
+            .map_err(|error| ToolError::Execution(format!("move {}: {error}", args.destination)))?;
+        source.rename_to(&destination).map_err(|error| {
             ToolError::Execution(format!(
                 "move {} to {}: {error}",
                 args.source, args.destination
@@ -936,13 +986,17 @@ impl Tool for DeleteTool {
 
     async fn call(&self, args: DeleteArgs) -> Result<String, ToolError> {
         let path = self.0.resolve(&args.path)?;
-        if !path.is_file() {
+        if !path
+            .metadata()
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
             return Err(ToolError::Execution(format!(
                 "delete {}: path is not a file",
                 args.path
             )));
         }
-        std::fs::remove_file(path)
+        path.remove_file()
             .map_err(|error| ToolError::Execution(format!("delete {}: {error}", args.path)))?;
         Ok(format!("deleted {}", args.path))
     }
@@ -1533,6 +1587,41 @@ mod write_tests {
             "a canonical root must not broaden the trusted boundary"
         );
         assert!(!outside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_capability_closes_check_use_symlink_races() {
+        use std::os::unix::fs::symlink;
+
+        // Causal graph for the check/use race:
+        // R1 resolve an in-root read, then replace its parent with an escaping
+        //    symlink -> the capability-relative read fails closed.
+        // R2 resolve an in-root write, perform the same replacement -> atomic
+        //    creation fails and the outside directory remains untouched.
+        // The adversarial swap is deliberately between policy resolution and
+        // I/O, so this tests the handle boundary rather than canonicalization.
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let pivot = root.path().join("pivot");
+        let held = root.path().join("held");
+        std::fs::create_dir(&pivot).unwrap();
+        std::fs::write(pivot.join("secret"), "inside").unwrap();
+        std::fs::write(outside.path().join("secret"), "outside").unwrap();
+        let files = FileContext::new(&HandToolContext::new(root.path()));
+
+        let read = files.resolve("pivot/secret").unwrap();
+        std::fs::rename(&pivot, &held).unwrap();
+        symlink(outside.path(), &pivot).unwrap();
+        assert!(read.read_to_string().is_err(), "R1");
+
+        std::fs::remove_file(&pivot).unwrap();
+        std::fs::rename(&held, &pivot).unwrap();
+        let write = files.resolve("pivot/new.txt").unwrap();
+        std::fs::rename(&pivot, &held).unwrap();
+        symlink(outside.path(), &pivot).unwrap();
+        assert!(atomic_write(&write, "must-not-escape").is_err(), "R2");
+        assert!(!outside.path().join("new.txt").exists(), "R2");
     }
 
     #[tokio::test]
