@@ -18,6 +18,21 @@ use awaken_session_contract::{
 
 const MANAGED_MULTIAGENT_EVENT_ID_PREFIX: &str = "magent_v1_";
 
+/// Whether one committed coordinated Run permanently closes its logical child
+/// Thread. Ordinary Agent Threads remain reusable after completion or external
+/// cancellation and close only on the contract's failed classification;
+/// one-shot Advisor consultations close at every terminal Run boundary.
+pub(super) fn coordinated_child_run_is_terminal(
+    is_advisor: bool,
+    state: &awaken_agent_contract::agent::run::RunState,
+) -> bool {
+    if is_advisor {
+        state.is_terminal()
+    } else {
+        awaken_session_contract::coordinated_thread_failed(state)
+    }
+}
+
 /// One public inbound event rebuilt from canonical Session/Thread truth. The
 /// batch coordinate is ephemeral ordering metadata, never a second event log.
 struct DurableInboundProjection {
