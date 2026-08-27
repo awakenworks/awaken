@@ -1130,10 +1130,28 @@ mod postgres {
         source: CredentialSource,
         child: ManagedVaultCredential,
     ) -> PendingManagedCredentialMutation {
+        // Managed create material-state cause/effect table. The production
+        // constructor is the sole phase owner; this fixture may only drive the
+        // transition that its result requires.
+        //
+        // | Rule | new material | initial phase | fixture effect |
+        // |---|---|---|---|
+        // | MC1 | yes | Writing | exact owner advances once to Ready |
+        // | MC2 | no  | Ready   | retain constructor truth; no fake write |
+        // | MC3 | either | either | logical begin replay owns no attempt |
         let writing = PendingManagedCredentialMutation::create(source, child).unwrap();
         assert!(repo.begin_managed_mutation(writing.clone()).await.unwrap());
         assert!(!repo.begin_managed_mutation(writing.clone()).await.unwrap());
-        repo.mark_managed_mutation_ready(&writing).await.unwrap()
+        if writing.material_fence.phase == CredentialMaterialMutationPhase::Writing {
+            repo.mark_managed_mutation_ready(&writing).await.unwrap()
+        } else {
+            assert_eq!(
+                writing.material_fence.phase,
+                CredentialMaterialMutationPhase::Ready,
+                "MC2 constructor owns the material-free phase"
+            );
+            writing
+        }
     }
 
     async fn wait_for_lock_waiters(pool: &PgPool, application_name: &str, expected: i64) {
@@ -1711,18 +1729,28 @@ mod postgres {
 
     #[tokio::test]
     async fn postgres_expired_writer_claim_is_exact_snapshot_cas() {
+        // Writer-claim cause/effect table: a material-bearing command starts in
+        // Writing (C1); two recovery callers present the same expired snapshot
+        // (C2). Exactly one claims epoch N+1 (E1), the other observes the CAS
+        // loss (E2), and the former owner cannot mutate or abort afterward (E3).
         let Some(pool) = schema_pool("t_cred_managed_writer_claim").await else {
             return;
         };
         let repo = PostgresCredentialRepo::with_pool(pool.clone())
             .await
             .expect("store");
-        let source = managed_source("cred:claim", "ws");
+        let mut source = managed_source("cred:claim", "ws");
+        source.material_ref = Some(SecretRef("sec:claim".into()));
         let writing = PendingManagedCredentialMutation::create(
             source.clone(),
             managed_child("child-claim", "vault-claim", "ws", source.id),
         )
         .unwrap();
+        assert_eq!(
+            writing.material_fence.phase,
+            CredentialMaterialMutationPhase::Writing,
+            "C1 material-bearing create owns a writer lease"
+        );
         repo.begin_managed_mutation(writing.clone()).await.unwrap();
         let now = writing.material_fence.writer_lease_expires_at_unix_ms;
         let deadline = now.checked_add(10_000).unwrap();
