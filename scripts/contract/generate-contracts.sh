@@ -17,7 +17,7 @@ schema_json="$out_dir/model-schemas.generated.json"
 openapi_json="$out_dir/openapi.generated.json"
 ts_out="$out_dir/model-config.d.ts"
 model_selection_ts="$out_dir/model-selection.generated.d.ts"
-managed_agents_json="$out_dir/anthropic-managed-agents-0.120.schemas.generated.json"
+managed_agents_json="$out_dir/anthropic-managed/canonical-wire.schemas.generated.json"
 check=0
 [ "${1:-}" = "--check" ] && check=1
 

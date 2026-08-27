@@ -1,7 +1,7 @@
-//! Generated JSON Schema registry for the Anthropic-owned DTOs whose 0.117
-//! beta and 0.120 GA forms Awaken serves. The Rust DTO derives are the only
-//! local schema source; the official SDK declaration fingerprint remains the
-//! upstream oracle.
+//! Generated JSON Schema registry for the Anthropic-owned DTO families whose
+//! wire shape changed across the supported SDK anchors. Rust DTO derives are
+//! the canonical local source; the development-only SDK oracle fingerprints
+//! the complete reviewed upstream declaration scope.
 
 use schemars::schema_for;
 use serde_json::{Map, Value};

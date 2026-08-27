@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extractOperations } from './extract-operations.mjs';
+import { managedTypeFingerprint } from './extract-types.mjs';
 import { stableJson } from './normalize.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,12 +25,15 @@ function fingerprint(operations) {
 function generated() {
   const extracted = anchors.anchors.map((anchor) => {
     const sdk = extractOperations(anchor.module, scope);
+    const types = managedTypeFingerprint(anchor.module, scope);
     assert.ok(sdk.operations.length > 0, `${anchor.id} extracted no Managed operations`);
     return {
       id: anchor.id,
       role: anchor.role,
       version: sdk.version,
       operation_fingerprint: fingerprint(sdk.operations),
+      type_fingerprint: types.fingerprint,
+      declaration_file_count: types.file_count,
       operations: sdk.operations,
     };
   });
@@ -46,6 +50,8 @@ function generated() {
       role: anchor.role,
       version: anchor.version,
       operation_fingerprint: anchor.operation_fingerprint,
+      type_fingerprint: anchor.type_fingerprint,
+      declaration_file_count: anchor.declaration_file_count,
       only_in_anchor: anchor.operations.filter(({ id }) => !currentById.has(id)),
       only_in_current: currentOracle.operations
         .filter(({ id }) => !anchorIds.has(id))
@@ -62,12 +68,23 @@ function generated() {
     support: stableJson({
       schema_version: 1,
       current_oracle: currentOracle.version,
-      supported_sdk_anchors: extracted.map(({ id, role, version, operation_fingerprint }) => ({
-        id,
-        role,
-        version,
-        operation_fingerprint,
-      })),
+      supported_sdk_anchors: extracted.map(
+        ({
+          id,
+          role,
+          version,
+          operation_fingerprint,
+          type_fingerprint,
+          declaration_file_count,
+        }) => ({
+          id,
+          role,
+          version,
+          operation_fingerprint,
+          type_fingerprint,
+          declaration_file_count,
+        }),
+      ),
     }),
   };
 }

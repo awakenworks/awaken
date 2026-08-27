@@ -4,8 +4,8 @@
 //! projection live in `routes::user_profiles`.
 //!
 //! **This is a SEPARATE beta** from the rest of this crate: the official SDK
-//! gates `beta.userProfiles.*` behind its own version: pinned SDK 0.117.1 emits
-//! `user-profiles-2026-03-24`, while reviewed SDK 0.120.0 emits
+//! gates `beta.userProfiles.*` behind its own version: SDK 0.117.1 emits
+//! `user-profiles-2026-03-24`, while SDK 0.120.0 and the current oracle emit
 //! `user-profiles-2026-08-18`. Neither uses the `managed-agents-2026-04-01`
 //! header. `trust_grants` is the end-user's OAuth-style authorization grants —
 //! a closed `{ status }` shape — and is deliberately NOT reused for GDPR

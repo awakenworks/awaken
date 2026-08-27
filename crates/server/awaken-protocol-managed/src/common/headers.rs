@@ -20,6 +20,33 @@ pub enum ManagedCapability {
 }
 
 impl ManagedCapability {
+    pub const ALL: [Self; 9] = [
+        Self::ManagedAgents,
+        Self::Files,
+        Self::Skills,
+        Self::Memory,
+        Self::UserProfilesLegacy,
+        Self::UserProfilesCurrent,
+        Self::Dreams,
+        Self::TunnelsLegacy,
+        Self::TunnelsCurrent,
+    ];
+
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::ManagedAgents => "managed_agents",
+            Self::Files => "files",
+            Self::Skills => "skills",
+            Self::Memory => "memory",
+            Self::UserProfilesLegacy => "user_profiles_legacy",
+            Self::UserProfilesCurrent => "user_profiles_current",
+            Self::Dreams => "dreams",
+            Self::TunnelsLegacy => "tunnels_legacy",
+            Self::TunnelsCurrent => "tunnels_current",
+        }
+    }
+
     #[must_use]
     pub const fn beta(self) -> &'static str {
         match self {
@@ -232,6 +259,8 @@ fn idempotency_key_admission_rejects_empty_overlong_and_every_invalid_byte() {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use axum::http::{HeaderMap, HeaderValue};
 
     use super::*;
@@ -271,6 +300,24 @@ mod tests {
             HeaderValue::from_static("prefix-skills-2025-10-02"),
         );
         assert!(!has_capability(&substring, ManagedCapability::Skills), "R2");
+    }
+
+    #[test]
+    fn capability_registry_has_unique_intent_and_wire_selectors() {
+        // Cause/effect graph: every protocol capability contributes one intent
+        // id and one official selector. Duplicate ids would collapse generated
+        // evidence; duplicate selectors would make distinct behavior appear
+        // selectable by the same wire fact. Both fail at the single registry.
+        let ids = ManagedCapability::ALL
+            .into_iter()
+            .map(ManagedCapability::id)
+            .collect::<BTreeSet<_>>();
+        let betas = ManagedCapability::ALL
+            .into_iter()
+            .map(ManagedCapability::beta)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(ids.len(), ManagedCapability::ALL.len());
+        assert_eq!(betas.len(), ManagedCapability::ALL.len());
     }
 
     #[test]

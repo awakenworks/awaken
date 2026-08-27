@@ -227,7 +227,7 @@ async fn user_profiles_require_their_own_beta_family() {
     // | B1 | absent | 400 |
     // | B2 | managed-agents | 400 |
     // | B3 | SDK 0.117.1 user-profiles-2026-03-24 | handler |
-    // | B4 | SDK 0.120.0 user-profiles-2026-08-18 | handler |
+    // | B4 | current SDK user-profiles-2026-08-18 | handler |
     let app = app().layer(axum::middleware::from_fn(enforce_managed_beta));
     for (header, expected) in [
         (None, StatusCode::BAD_REQUEST),

@@ -3,21 +3,27 @@
   "schema_version": 1,
   "supported_sdk_anchors": [
     {
+      "declaration_file_count": 35,
       "id": "oldest",
       "operation_fingerprint": "5f487d23932fcfe4bdb31cb82e1e27e861a0e4d28aaa9e8929a83f6eebb2291a",
       "role": "oldest_supported",
+      "type_fingerprint": "bec8f7b9d236d1e72ffcfad0ac362f1a5de60681e603661250ff23c1f21593a8",
       "version": "0.105.0"
     },
     {
+      "declaration_file_count": 40,
       "id": "user_profiles_legacy",
       "operation_fingerprint": "6f10dbb8297c2cdf9a4915587cd4bf41c2a5f7f136dd994bae8b83b9ded19da5",
       "role": "protocol_change_point",
+      "type_fingerprint": "f0dd45cd49980ac2aafa69fce9c79500b8752fd5e25e5df81c15521190c30e88",
       "version": "0.117.1"
     },
     {
+      "declaration_file_count": 40,
       "id": "current",
       "operation_fingerprint": "d624e4304b4995f1457658d2d83e716371738a0705edcd2538a20630e06b8ce0",
       "role": "current_oracle",
+      "type_fingerprint": "0469c62cf21843b96409b47075fd9c8e14c064713fa0ec52bb440d33dc0ea4a5",
       "version": "0.121.0"
     }
   ]
