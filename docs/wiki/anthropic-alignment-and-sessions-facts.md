@@ -22,9 +22,9 @@ Owner: [anthropic-alignment-and-sessions.md](../design/anthropic-alignment-and-s
 
 - Status: active
 - Owner: [Sessions](../design/anthropic-alignment-and-sessions.md#sessions)
-- Fact: public session records are projections over committed runtime and server facts; adapters do not invent independent authority.
+- Fact: public session records are projections over committed runtime and server facts; adapters do not invent independent authority. Internal profiled modes and mutation policy never enter ordinary Managed Agents DTOs, ordinary metadata-backed replay remains compatible, and typed system-prompt selection preserves omitted, explicit-null, and exact-value round trips.
 - Links: guardrails G1, G10, and G13
-- Verification: projection ordering tests and store truth review.
+- Verification: projection ordering, legacy Managed serialization/fingerprint, prompt round-trip, and store-truth tests.
 
 ## FACT-ALIGN-003: Outcome mapping is not runtime semantics
 

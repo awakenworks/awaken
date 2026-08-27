@@ -467,3 +467,84 @@ substitutes for this per-process proof.
 ordinary rolling deployment safe or reconstruct facts an old writer never
 retained. A later two-stage reader-first rollout and an online legacy-history
 migration are explicitly deferred.
+
+## Amendment (2026-08-27): profiled creation is one complete insert
+
+The immutable post-create policy and its mutation matrix are owned by
+[ADR-0066](0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority).
+This amendment owns only how profiled product intent reaches that authority.
+
+The private `ProfiledSessionCreate` requires `mode` with the closed wire values
+`work_unit | interactive`, represented by
+`ProfiledSessionMode::{WorkUnit, Interactive}`. WorkUnit lowers to
+`SessionMutationPolicy::Frozen`; Interactive lowers to
+`SessionMutationPolicy::FileResources`. The private wire deliberately exposes
+no `Managed` mode, while ordinary `/v1/sessions` creation remains Managed and
+keeps its existing Anthropic-compatible shape.
+
+Direct `resource_inputs`, Repository inputs, published Agent defaults, MCP
+candidates, Environment selection, tools, mounts, environment values, prompts,
+and network policy all enter the sole `create_profiled_session` composer. It
+resolves them before `SessionCreationIntent::finalize`, then persists the frozen
+baseline, initial Resource/MCP truth, and repository-owned `IdempotencyRecord`
+in the original revision-1 root insert. Its complete direct attachments are
+already present in `resources.desired()`; active Resource truth is published
+only after realization. The receipt, not mutable Session metadata, owns
+profiled create replay.
+
+```text
+hosted product profile
+  -> required WorkUnit/Interactive mode
+  -> atomic repository receipt preflight
+     exact live receipt -------------------------------> return durable aggregate
+     exact ActivationFailed/tombstone -----------------> typed HTTP 409
+     absent receipt and identity ----------------------> continue
+  -> one complete CreateProfiledSessionCommand
+  -> resolve published defaults + direct inputs + Repository/MCP candidates
+  -> SessionCreationIntent::finalize
+  -> repository create(root revision 1 + idempotency receipt)
+     Applied -> realization -> activation -> eligible WorkQueue projection
+     Replayed -> return repository durable aggregate; perform none of those effects
+```
+
+`ManagedSessionRepository::create` owns the concurrent race and returns
+`SessionCreateResult::{Applied(PersistedSession), Replayed(PersistedSession)}`.
+Only `Applied` may continue into Runtime realization, activation CAS, cleanup,
+lifecycle wake, or WorkQueue dispatch. `Replayed` discards the newly lowered
+candidate and returns the repository's current durable aggregate without
+repeating any effect. The atomic `replay_create` preflight uses the same owner,
+receipt, identity, and tombstone classification; it is an optimization, not a
+second replay authority.
+
+An exact replay whose durable aggregate is `ActivationFailed` returns
+`SessionCreationError::Tombstoned`, projected as HTTP 409, and never attempts to
+resurrect, replace, realize, activate, or dispatch it. Conflict, tombstone, and
+payload mismatch retain typed conflict outcomes; unavailable storage remains
+unavailable, while dangling or otherwise corrupt durable identity becomes the
+typed internal error. No case falls back to the locally compiled candidate.
+
+The creation cause/effect table is:
+
+| Rule | Atomic preflight | Repository create result | Durable state | Effect |
+|---|---|---|---|---|
+| C1 | receipt and identity absent | `Applied` | revision-1 complete desired truth | realize, activate, and project eligible Work exactly once |
+| C2 | exact receipt | not called | live/current | return that durable aggregate; no lowering or external effect |
+| C3 | absent before a concurrent winner | `Replayed` | live/current | return that durable aggregate; no realization, activation, cleanup, lifecycle wake, or Work dispatch |
+| C4 | exact receipt or `Replayed` | any | `ActivationFailed` | `Tombstoned` / HTTP 409; no external effect |
+| C5 | occupied/tombstoned identity or mismatched receipt | conflict | any | typed HTTP 409; no insertion or external effect |
+| C6 | dangling, ahead, or double identity | corrupt | any | typed internal failure; no insertion or external effect |
+
+The hosted Flow projection uses that one command. Its former post-create
+Resource resolve/fingerprint/whole-manifest authoring path is removed rather
+than retained as a synchronized fallback. Later Interactive File changes use
+the ordinary item-level Managed Resource verbs and ADR-0066's application gate;
+they are not creation completion.
+
+This new non-Managed baseline field and profiled receipt contract join the
+already-required maintenance cutover above. Stop every old Coordinator writer
+before writing a profiled row. The mutation-policy owner in
+[ADR-0066](0066-session-service-binding-and-realization.md#compatibility-and-maintenance-cutover)
+defines the forward-only rule: no old profiled metadata/default-receipt adoption
+or backfill, and Flow uses a new post-cutover identity. Reader defaults preserve
+historical Managed rows but do not make mixed writers safe or infer a stricter
+policy for an old Session.

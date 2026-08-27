@@ -252,6 +252,42 @@ accepts the complete event and the repository still contains the exact event
 payload for its id. This is not a durable fleet-wide consumer registry or a
 proof that no referencing Session appeared concurrently with the query.
 
+The Managed Session repository owns discovery of those current references. Its
+additive V2 schema stores a derived `(session_id, credential_source_id)` index
+for the actual credential sources in the canonical desired MCP attachments; the
+older Vault-membership reference retains its distinct meaning. Every Session
+root create/update synchronizes the derived rows in the same root transaction,
+and Session deletion removes them by the existing root relationship. SQLite and
+Postgres constructors, including pre-provisioned-schema constructors, apply or
+verify the migration and then transactionally clear and rebuild the complete
+derived table by decoding canonical persisted roots before they return a serving
+repository. A decode or transaction failure fails startup; restart repeats the
+deterministic rebuild, so no readiness registry or SQL-side duplicate JSON model
+exists. Vault rollout queries by exact Workspace plus source id.
+
+Session adoption preserves that typed ownership. Public MCP desired-set
+authoring enters the Session application as `SessionMcpUpdate::PublicReplacement`;
+the Vault rollout enters as the distinct
+`SessionMcpUpdate::CredentialLifecycle`. The latter may only replay or
+monotonically advance the same source revision, or remove the exact attachments
+affected by archive/delete. It cannot add or retarget MCP topology, alter an
+unrelated credential, or carry Session title/metadata/budget/tool updates.
+Consequently a Frozen or FileResources baseline can reject public re-authoring
+without blocking credential rotation or revocation. The Session policy never
+becomes another credential lifecycle, and the rollout still converges through
+the one MCP generation protocol above.
+
+A write-only Repository authorization token is different: it authors a new
+Session-scoped Repository credential binding and is accepted only for an
+ordinary Managed Session. Profiled rejection occurs before Vault ingress or
+another material effect, while the existing Vault lifecycle remains unchanged.
+Its ingress receipt independently records `Applied | Replayed` provenance beside
+the Resource Registry receipt. Before Session-root adoption, compensation may
+archive only an exact `Applied` source revision that the durable root did not
+adopt; replayed or indeterminate work is preserved. After adoption, terminal
+Session reconciliation invokes the same exact Vault archive/material reclaim
+operation for an owned Repository rather than adding a credential cleanup path.
+
 An HTTP success for update/archive/delete acknowledges the durable credential
 fence and outbox commit; it is not a claim that every online Session has already
 converged. Busy Sessions keep their old generation and leave the event pending

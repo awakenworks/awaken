@@ -61,6 +61,18 @@ Treat public sessions as product projections over runtime/server state:
 Do not add a product `SessionRecord` to runtime core unless the same value object
 is required for non-product runtime execution.
 
+The immutable Session mutation policy is internal creation truth, not Managed
+Agents wire vocabulary. Ordinary `/v1/sessions` create and update routes still
+lower to `Managed`, omit `mutation_policy`, preserve their historical
+serialization and fingerprints, and retain the existing Agent/Resource/MCP
+authoring behavior. `SessionSystemPromptSelection::{Inherit, Clear, Replace}`
+freezes the public request's omitted/explicit-null/exact-value distinction;
+`Inherit` remains omitted and legacy-fingerprinted, while GET resolves the
+frozen choice against the pinned Agent publication. Private profiled
+WorkUnit/Interactive modes never project into Managed request or response DTOs;
+their post-create authority is owned by
+[ADR-0066](../adr/0066-session-service-binding-and-realization.md#2026-08-27-amendment-immutable-post-create-mutation-authority).
+
 ## Managed model and coordinator compatibility
 
 The public model object is translated through the existing provider-neutral

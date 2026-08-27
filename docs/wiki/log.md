@@ -1,5 +1,66 @@
 # Wiki Update Log
 
+## 2026-08-27 — Freeze profiled Session mutation authority at creation
+
+- Added the persisted Managed/Frozen/FileResources policy to the immutable
+  Session baseline and kept ADR-0066 as the sole post-create mutation owner.
+- Kept the ordinary Managed wire shape, authoring behavior, omitted policy and
+  inherited-prompt defaults, and historical fingerprints compatible. A typed
+  prompt selection now preserves inherit, explicit clear, and exact replacement;
+  maintenance reuses the existing explicit cutover instead of inferring old
+  rows during rolling deployment.
+- Made each private profiled command resolve its mode, direct Resource and
+  Repository inputs, MCP candidates, and remaining creation inputs before the
+  one original revision-1 Session insert; repository idempotency owns the replay
+  receipt and the complete direct attachments are already desired there.
+- Made the repository atomically classify create as Applied or Replayed. Only
+  Applied continues into realization, activation, lifecycle wake, cleanup, and
+  eligible WorkQueue dispatch; replay returns current durable truth without
+  repeating an effect, while ActivationFailed remains a typed HTTP 409.
+- Fenced create receipts to revision 1 and mutation receipts to their exact next
+  revision. Mismatched operation/expected-revision reuse conflicts; dangling,
+  ahead, or double identity fails as corrupt without synthesizing state.
+- Removed post-create whole-manifest completion from the profiled creation
+  model. Flow now projects one complete creation command, while Interactive
+  products use the existing public item-level File verbs after creation.
+- Split public MCP replacement from typed credential lifecycle adoption.
+  Frozen and FileResources reject public MCP authoring, but the existing Vault
+  lifecycle may still apply a same-source monotonic revision or revoke its
+  affected attachment without broadening topology.
+- Limited FileResources to File binding attach/replace/delete, froze all
+  non-File inputs and exact Skill pins, froze all Resource changes for Frozen,
+  and rejected profiled Repository credential rotation and private whole-
+  manifest replacement before any Vault or lowering side effect.
+- Kept the beta cutover full-stop and forward-only: old profiled metadata/default
+  receipts are neither adopted nor backfilled, their deterministic retry returns
+  409, and Flow creates a new post-cutover identity. Ordinary public Managed
+  metadata replay stays compatible.
+- Made Session-created Repository Registry and Vault work explicit
+  `Applied | Replayed` participants in the existing root command. Pre-root
+  failure consults durable adoption and compensates only unreferenced Applied
+  work; after adoption the existing terminal saga requires exact Managed/Profiled
+  namespace plus owner metadata, preserves shared definitions, and retires an
+  owned inline credential by exact source revision through the canonical Vault
+  archive/material path.
+- Routed ordinary File item create/delete through the same complete-manifest root
+  CAS with the revision read before derivation. Concurrent losers return `409`;
+  neither item verbs nor whole-manifest replacement rebase over the winner.
+- Made successful item deletion and whole-manifest omission persist removed
+  Session-owned Repository retirement intent in the existing Session Resource
+  root. The one reconciler consumes it after local or external activation, on
+  exact receipt replay, during terminal cleanup, and after restart. Until its
+  cleanup CAS succeeds, same-id reintroduction conflicts and the intent remains
+  a Registry/Vault retention edge. Durable owner metadata is verified before
+  any Vault effect; owned inline credentials retire by exact revision before the
+  Repository, while shared, markerless, and already-absent definitions remain
+  side-effect-free no-ops.
+- Added the additive V2 actual MCP credential-source dependency index without
+  changing the V1 checksum or reinterpreting Vault membership. Session root
+  writes maintain it transactionally; SQLite/Postgres startup rebuilds it from
+  canonical roots before serving, and Vault rollout selects exact Workspace plus
+  source. The beta writer cutover remains full-stop; this record does not claim a
+  deployment or live E2E result.
+
 ## 2026-08-26 — Bind credential source metadata to exact target and usage
 
 - Extended the existing Credential source row and admin create/read/CAS-rotate

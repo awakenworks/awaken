@@ -62,9 +62,9 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 
 - Status: active
 - Owner: [Common configure-to-reclaim flow](../design/resources-memory-files-skills.md#common-configure-to-reclaim-flow)
-- Fact: one Session resolver merges Agent defaults with temporary attachments and selects current Memory/Repository configuration versions; it never selects Memory content or a Git commit.
-- Links: guardrail G37
-- Verification: single-resolution, replacement, and no-content-pin tests.
+- Fact: one Session resolver merges Agent defaults and direct attachments into revision-1 desired truth before the original insert; active truth appears only after realization. Later Resource commands first obey the baseline mutation policy, then reuse the canonical manifest lifecycle; configuration selection still does not select Memory content or a Git commit.
+- Links: guardrail G37; [profiled input amendment](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md#amendment-profiled-inputs-freeze-in-the-original-root-2026-08-27)
+- Verification: single-resolution, revision-1 desired-versus-active, complete-before-insert, policy-constrained replacement, and no-content-pin tests.
 
 ## FACT-RES-008: Lifecycle stages have named owners
 
@@ -97,3 +97,11 @@ Owner: [resources-memory-files-skills.md](../design/resources-memory-files-skill
 - Fact: zero-reference proof, durable physical-identity fencing, and racing reference rejection are one resource-store consistency protocol; the protocol contains no principal, role, API key, policy, Org, Project, or WorkUnit.
 - Links: guardrails G21 and G38
 - Verification: in-memory/SQLite/Postgres store conformance, cross-Workspace shared-blob fencing, crash/retry reclamation tests, and dependency-boundary checks.
+
+## FACT-RES-012: Session resource mutations share one root fence
+
+- Status: active
+- Owner: [File lifecycle and Session-owned Repository adoption](../design/resources-memory-files-skills.md#file-lifecycle)
+- Fact: File item create/delete is an adapter over the exact-read-revision complete-manifest root CAS, so a concurrent loser is `409` without rebase or lost update. Registry and Vault participants for a Session-owned Repository retain independent `Applied | Replayed` provenance until root adoption; pre-root compensation retires only unreferenced Applied work. After adoption, successful item or whole-manifest omission persists an exact retirement intent in the Session Resource root. The common reconciler retains and retries it across receipt replay, external activation, terminal cleanup, and restart; same-id reintroduction conflicts until completion. Retirement requires both the closed Managed/Profiled namespace and exact owner metadata, leaves shared/markerless definitions and Vault untouched, and retires an owned inline credential by exact revision before the Repository.
+- Links: [ADR-0063 Session mutation fencing](../adr/0063-resource-input-identity-configuration-pinning-and-lifecycle.md#session-scoped-repository-adoption-and-mutation-fencing)
+- Verification: File create/delete race tests, item/whole-manifest durable-retirement tests, same-id admission barrier, SQLite cleanup retry after reopen, whole-manifest root-loser tests, Applied/Replayed compensation matrix, owner-marker filter tests, and exact inline-credential reclamation tests.
