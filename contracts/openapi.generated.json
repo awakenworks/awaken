@@ -2059,10 +2059,28 @@
               "dialect_unavailable"
             ],
             "type": "string"
+          },
+          "ProviderAccessKind": {
+            "description": "How one exact published Provider candidate obtains access. This is a\nprovider-neutral execution fact: it is neither catalog provenance nor a\ncommercial funding decision.",
+            "oneOf": [
+              {
+                "const": "direct",
+                "description": "Call the published endpoint directly, optionally using the exact\nWorkspace credential frozen beside the candidate.",
+                "type": "string"
+              },
+              {
+                "const": "brokered",
+                "description": "Ask the installed broker to authorize and materialize the exact route.",
+                "type": "string"
+              }
+            ]
           }
         },
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "properties": {
+          "access_kind": {
+            "$ref": "#/$defs/ProviderAccessKind"
+          },
           "backend_ref": {
             "type": "string"
           },
@@ -2088,6 +2106,7 @@
           "model_id",
           "endpoint_id",
           "dialect",
+          "access_kind",
           "readiness"
         ],
         "title": "ExecutableModelOption",
