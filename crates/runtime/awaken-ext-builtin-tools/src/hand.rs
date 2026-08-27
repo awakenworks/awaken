@@ -860,7 +860,13 @@ impl Tool for EditTool {
 
 /// Move or rename one file. Directory trees are intentionally unsupported so
 /// callers cannot turn a narrowly-scoped file operation into a recursive move.
-pub struct MoveTool;
+pub struct MoveTool(FileContext);
+
+impl MoveTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -879,20 +885,22 @@ impl Tool for MoveTool {
     const DESCRIPTION: &'static str = "Move or rename a file";
 
     async fn call(&self, args: MoveArgs) -> Result<String, ToolError> {
-        if !std::path::Path::new(&args.source).is_file() {
+        let source = self.0.resolve(&args.source)?;
+        let destination = self.0.resolve(&args.destination)?;
+        if !source.is_file() {
             return Err(ToolError::Execution(format!(
                 "move {}: source is not a file",
                 args.source
             )));
         }
-        if let Some(parent) = std::path::Path::new(&args.destination).parent()
+        if let Some(parent) = destination.parent()
             && !parent.as_os_str().is_empty()
         {
             std::fs::create_dir_all(parent).map_err(|error| {
                 ToolError::Execution(format!("move {}: {error}", args.destination))
             })?;
         }
-        std::fs::rename(&args.source, &args.destination).map_err(|error| {
+        std::fs::rename(&source, &destination).map_err(|error| {
             ToolError::Execution(format!(
                 "move {} to {}: {error}",
                 args.source, args.destination
@@ -904,7 +912,13 @@ impl Tool for MoveTool {
 
 /// Delete exactly one regular file. Directories are rejected; recursive deletion
 /// remains outside the model-callable capability surface.
-pub struct DeleteTool;
+pub struct DeleteTool(FileContext);
+
+impl DeleteTool {
+    pub fn new(context: &HandToolContext) -> Self {
+        Self(FileContext::new(context))
+    }
+}
 
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -921,13 +935,14 @@ impl Tool for DeleteTool {
     const DESCRIPTION: &'static str = "Delete one file";
 
     async fn call(&self, args: DeleteArgs) -> Result<String, ToolError> {
-        if !std::path::Path::new(&args.path).is_file() {
+        let path = self.0.resolve(&args.path)?;
+        if !path.is_file() {
             return Err(ToolError::Execution(format!(
                 "delete {}: path is not a file",
                 args.path
             )));
         }
-        std::fs::remove_file(&args.path)
+        std::fs::remove_file(path)
             .map_err(|error| ToolError::Execution(format!("delete {}: {error}", args.path)))?;
         Ok(format!("deleted {}", args.path))
     }
@@ -1446,8 +1461,8 @@ pub fn executable_hand_tools_in(context: HandToolContext) -> Vec<Arc<dyn RawTool
         erase_for(ReadTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(WriteTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(EditTool::new(&context), ToolExecutionTarget::Sandbox),
-        erase_for(MoveTool, ToolExecutionTarget::Sandbox),
-        erase_for(DeleteTool, ToolExecutionTarget::Sandbox),
+        erase_for(MoveTool::new(&context), ToolExecutionTarget::Sandbox),
+        erase_for(DeleteTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(GlobTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(GrepTool::new(&context), ToolExecutionTarget::Sandbox),
         erase_for(BashTool::new(&context), ToolExecutionTarget::Sandbox),
@@ -1534,7 +1549,8 @@ mod write_tests {
         let source = base.join("source.md");
         let destination = base.join("nested/destination.md");
         std::fs::write(&source, "durable").unwrap();
-        MoveTool
+        let context = HandToolContext::new(&base);
+        MoveTool::new(&context)
             .call(MoveArgs {
                 source: source.to_string_lossy().into_owned(),
                 destination: destination.to_string_lossy().into_owned(),
@@ -1546,7 +1562,7 @@ mod write_tests {
             "durable",
             "M1"
         );
-        DeleteTool
+        DeleteTool::new(&context)
             .call(DeleteArgs {
                 path: destination.to_string_lossy().into_owned(),
             })
@@ -1554,7 +1570,7 @@ mod write_tests {
             .unwrap();
         assert!(!destination.exists(), "M2");
         assert!(
-            DeleteTool
+            DeleteTool::new(&context)
                 .call(DeleteArgs {
                     path: base.to_string_lossy().into_owned(),
                 })

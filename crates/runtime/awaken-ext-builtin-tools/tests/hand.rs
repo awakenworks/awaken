@@ -535,6 +535,12 @@ async fn bash_strips_ansi_and_keeps_only_the_last_100_kib() {
 
 #[tokio::test]
 async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
+    // Causal graph for the shared file-authority boundary:
+    // C1 lexical parent escape -> reject before filesystem mutation.
+    // C2 absolute path outside every trusted root -> reject.
+    // C3 symlink resolving outside a trusted root -> reject.
+    // C4 move/delete use the same resolver as read/write/edit -> reject both
+    // source and destination escapes; no tool-specific ambient path bypass.
     let root = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), "secret").unwrap();
@@ -557,6 +563,32 @@ async fn file_tools_reject_parent_absolute_and_symlink_escapes() {
             .expect_err("symlink escape must fail");
         assert!(error.to_string().contains("escapes workdir"));
     }
+
+    let inside = root.path().join("inside.txt");
+    let escaped_move = outside.path().join("moved.txt");
+    std::fs::write(&inside, "inside").unwrap();
+    let error = tool_at("move", root.path())
+        .invoke(call(
+            "move",
+            serde_json::json!({
+                "source": inside,
+                "destination": escaped_move,
+            }),
+        ))
+        .await
+        .expect_err("move destination outside workdir must fail");
+    assert!(error.to_string().contains("escapes workdir"), "C4");
+    assert!(inside.exists(), "a rejected move leaves its source intact");
+
+    let error = tool_at("delete", root.path())
+        .invoke(call(
+            "delete",
+            serde_json::json!({ "path": outside.path().join("secret") }),
+        ))
+        .await
+        .expect_err("delete outside workdir must fail");
+    assert!(error.to_string().contains("escapes workdir"), "C4");
+    assert!(outside.path().join("secret").exists());
 }
 
 #[tokio::test]
