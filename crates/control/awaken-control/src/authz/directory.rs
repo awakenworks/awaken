@@ -1,7 +1,7 @@
 //! Agents anti-corruption adapter for IAM Directory placement.
 
 use awaken_iam_contract::{
-    EnsureProductSpacePlacement, OrgId, PrincipalRef, ProductSpaceRef, Timestamp,
+    EnsureProductSpacePlacement, OrgId, PrincipalRef, ProductId, ProductSpaceRef, Timestamp,
 };
 use awaken_iam_core::Organization;
 use awaken_iam_server::{
@@ -43,7 +43,7 @@ pub(super) fn reconcile_agents_directory(
     }
 
     let product_space = ProductSpaceRef {
-        product: "agents".into(),
+        product_id: ProductId::new("agents").expect("static product id is canonical"),
         space_id: format!("workspace/{workspace_id}"),
     };
     directory
@@ -56,7 +56,11 @@ pub(super) fn reconcile_agents_directory(
                 preferred_slug: workspace_id.to_owned(),
                 description: Some("Agents workspace".into()),
             },
-            DirectoryCommandContext::service("agents", at.clone()),
+            DirectoryCommandContext::product_service(
+                ProductId::new("agents").expect("static product id is canonical"),
+                "agents",
+                at.clone(),
+            ),
         )
         .expect("ensure Agents Directory placement");
 }
