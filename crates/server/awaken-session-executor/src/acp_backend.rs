@@ -54,12 +54,12 @@ fn namespace_hand_path(current_exe: &std::path::Path) -> std::path::PathBuf {
     let Some(parent) = current_exe.parent() else {
         return sibling;
     };
-    if parent.file_name() == Some(std::ffi::OsStr::new("deps")) {
-        if let Some(profile_dir) = parent.parent() {
-            let cargo_companion = profile_dir.join(binary_name);
-            if cargo_companion.is_file() {
-                return cargo_companion;
-            }
+    if parent.file_name() == Some(std::ffi::OsStr::new("deps"))
+        && let Some(profile_dir) = parent.parent()
+    {
+        let cargo_companion = profile_dir.join(binary_name);
+        if cargo_companion.is_file() {
+            return cargo_companion;
         }
     }
     sibling
