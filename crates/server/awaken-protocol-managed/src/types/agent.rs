@@ -111,6 +111,20 @@ impl AgentSkill {
             },
         }
     }
+
+    /// Project the immutable version selected by Session creation. Cold reads
+    /// consume this exact pin instead of reopening Runtime capabilities or the
+    /// mutable Skill catalog.
+    #[must_use]
+    pub(crate) fn from_resolved_binding(
+        binding: &awaken_session_contract::ResolvedSkillBinding,
+    ) -> Self {
+        Self::from_binding(awaken_agent_contract::AgentSkillBinding {
+            kind: binding.kind,
+            skill_id: binding.skill_id.clone(),
+            version: binding.version.to_string(),
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

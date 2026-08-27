@@ -146,6 +146,145 @@ async fn recovery_scans_fail_closed_without_panicking_the_supervisor() {
     assert_eq!(quarantined_rows, 0, "R4 durable stale evidence removed");
 }
 
+#[tokio::test]
+async fn create_and_mutation_receipts_fail_closed_on_corrupt_identity_state() {
+    // Durable-receipt corruption table. C1 create receipt exists without any
+    // identity; C2 create receipt points at an undecodable live aggregate; C3 a
+    // non-create revision is stored under a create receipt key; C4 both live and
+    // tombstone identities exist; C5 a mutation receipt exists without either
+    // identity. Effects: every rule returns Corrupt, never
+    // replay/not-found/conflict, and no replacement aggregate or external outbox
+    // fact is synthesized. These states require backend injection because the
+    // repository transaction never creates them.
+    let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
+    repo.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["dangling-create", "create", "request", 1_i64],
+        )
+        .unwrap();
+    assert!(matches!(
+        repo.replay_create(
+            "workspace",
+            "dangling-create",
+            &IdempotencyRecord {
+                key: "create".into(),
+                payload_hash: "request".into(),
+            },
+        )
+        .await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
+
+    let damaged_id = "damaged-create";
+    let candidate = sample(damaged_id);
+    let payload = SessionMutationPayload::Replace(candidate.clone());
+    let record = IdempotencyRecord {
+        key: "damaged-create".into(),
+        payload_hash: payload.stable_hash(),
+    };
+    repo.create("workspace", candidate, record.clone(), Vec::new())
+        .await
+        .unwrap();
+    repo.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+            params!["{", damaged_id],
+        )
+        .unwrap();
+    assert!(matches!(
+        repo.replay_create("workspace", damaged_id, &record).await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
+
+    let non_create_id = "non-create-receipt";
+    let candidate = sample(non_create_id);
+    let payload = SessionMutationPayload::Replace(candidate.clone());
+    let record = IdempotencyRecord {
+        key: "create".into(),
+        payload_hash: payload.stable_hash(),
+    };
+    repo.create("workspace", candidate, record.clone(), Vec::new())
+        .await
+        .unwrap();
+    repo.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "UPDATE managed_session_idempotency SET committed_revision = ?1
+             WHERE session_id = ?2 AND idempotency_key = ?3",
+            params![2_i64, non_create_id, record.key],
+        )
+        .unwrap();
+    assert!(matches!(
+        repo.replay_create("workspace", non_create_id, &record)
+            .await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
+
+    let dual_identity_id = "dual-create-identity";
+    let candidate = sample(dual_identity_id);
+    let payload = SessionMutationPayload::Replace(candidate.clone());
+    let record = IdempotencyRecord {
+        key: "create".into(),
+        payload_hash: payload.stable_hash(),
+    };
+    repo.create("workspace", candidate, record.clone(), Vec::new())
+        .await
+        .unwrap();
+    repo.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO managed_session_tombstone
+                (session_id, scope_id, deleted_revision, deleted_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![dual_identity_id, "workspace", 1_i64, "now"],
+        )
+        .unwrap();
+    assert!(matches!(
+        repo.replay_create("workspace", dual_identity_id, &record)
+            .await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
+
+    let missing = sample("dangling-mutation");
+    let payload = SessionMutationPayload::Replace(missing.clone());
+    let payload_hash = payload.stable_hash();
+    repo.conn
+        .lock()
+        .unwrap()
+        .execute(
+            "INSERT INTO managed_session_idempotency
+                (session_id, idempotency_key, payload_hash, committed_revision)
+             VALUES (?1, ?2, ?3, ?4)",
+            params!["dangling-mutation", "mutation", payload_hash, 1_i64],
+        )
+        .unwrap();
+    assert!(matches!(
+        repo.commit_mutation(
+            "workspace",
+            SessionMutation {
+                expected_revision: SessionRevision(0),
+                idempotency: IdempotencyRecord {
+                    key: "mutation".into(),
+                    payload_hash: payload.stable_hash(),
+                },
+                payload,
+                lifecycle_facts: Vec::new(),
+            },
+        )
+        .await,
+        Err(SessionRepositoryError::Corrupt(_))
+    ));
+}
+
 /// Shared-file write-admission causal graph:
 /// another aggregate owns the SQLite writer reservation × wait budget.
 ///
@@ -236,8 +375,9 @@ fn sqlite_recovery_scan_waits_before_reading_and_repairing_quarantine() {
 fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
     /* MIG-01/MIG-02 cause/effect decision table. Causes: C1 fresh database,
      * C2 two simultaneous Session-store starters, C3 later replay. Effects:
-     * E1 exactly one current V1 receipt, E2 both starters converge, E3
-     * replay is a no-op. Rules: S1 T/F/F=>E1; S2 T/T/F=>E1+E2; S3 F/F/T=>E3.
+     * E1 exactly one V1 and one V2 receipt, E2 both migration and deterministic
+     * source-index rebuild converge, E3 replay reapplies no DDL but rebuilds the
+     * derived index. Rules: S1 T/F/F=>E1; S2 T/T/F=>E1+E2; S3 F/F/T=>E3.
      * A backend crash cannot expose DDL without its receipt because the shared
      * migration runner commits each migration and ledger row in one backend
      * transaction; this test exercises the competing-start boundary around it. */
@@ -267,7 +407,7 @@ fn sqlite_migration_startup_is_concurrent_and_replay_safe() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(ledger_count, 1, "S1/E1 and S3/E3");
+    assert_eq!(ledger_count, 2, "S1/E1 and S3/E3");
     let quarantine_exists: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -369,6 +509,256 @@ pub(crate) fn sample(id: &str) -> PersistedSession {
     }
 }
 
+fn sample_with_credential_source(id: &str, source_id: &str) -> PersistedSession {
+    let mut session = sample(id);
+    session.mcp.attachments[0].credential =
+        Some(awaken_credential_contract::CredentialAccess::new(
+            awaken_credential_contract::CredentialRef {
+                id: source_id.into(),
+                revision: 1,
+            },
+            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_credential_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        ));
+    session
+}
+
+#[tokio::test]
+async fn sqlite_v2_dependency_backfill_is_atomic_and_restart_repairable() {
+    // V2 startup-backfill cause/effect graph. C1 a published V1 database has a
+    // healthy canonical root; C2 another V1 root is corrupt; C3 the corrupt root
+    // is repaired before restart; C4 V2 already exists but its derived rows are
+    // missing. Effects: E1 V1 checksum is accepted and V2 DDL is applied once;
+    // E2 canonical decode failure prevents repository service and rolls the
+    // entire rebuild back; E3 repaired restart indexes every actual source while
+    // preserving both ordinary roots; E4 every later constructor deterministically
+    // repairs the complete derived table without another completion registry.
+    //
+    // | Rule | V2 | root decode | derived rows | Effect |
+    // | B1 | absent | all valid | absent | E1 + E3 |
+    // | B2 | absent/present | one corrupt | any | E2, no partial rebuild |
+    // | B3 | present | repaired | absent | E3 + E4 |
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("session-source-v1-upgrade.db");
+    let path = path.to_string_lossy().to_string();
+    let mut healthy = sample_with_credential_source("sesn_source_v1", "source-v1");
+    healthy.revision = SessionRevision(1);
+    let conn = Connection::open(&path).unwrap();
+    let full = session_bundle().unwrap();
+    let v1 = awaken_scoped_migration::MigrationBundle::new(
+        full.bundle_id(),
+        full.migrations()[..1].to_vec(),
+    )
+    .unwrap();
+    awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
+        .unwrap()
+        .run_bundle(&conn, &v1)
+        .unwrap();
+    conn.execute(
+        "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params![
+            healthy.session_id,
+            "ws-source",
+            db_revision(healthy.revision).unwrap(),
+            aggregate_str(&healthy).unwrap(),
+        ],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
+         VALUES (?1, ?2, ?3, ?4)",
+        params!["sesn_source_corrupt", "ws-source", 1_i64, "{"],
+    )
+    .unwrap();
+    drop(conn);
+
+    let first = SqliteManagedSessionRepository::open(&path);
+    assert!(first.is_err(), "B2/E2 canonical decode prevents service");
+    let conn = Connection::open(&path).unwrap();
+    let ledger_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM managed_schema_migrations \
+             WHERE bundle_id = ?1",
+            params!["awaken.managed_session"],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(ledger_count, 2, "B2/E1 V2 DDL and receipt are durable");
+    let dependency_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM managed_session_credential_source_reference",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(dependency_count, 0, "B2/E2 rebuild rolled back atomically");
+    assert_eq!(
+        conn.query_row("SELECT COUNT(*) FROM managed_session", [], |row| row
+            .get::<_, i64>(0))
+            .unwrap(),
+        2,
+        "B2/E2 canonical roots are untouched"
+    );
+
+    let mut repaired = sample_with_credential_source("sesn_source_corrupt", "source-repaired");
+    repaired.revision = SessionRevision(1);
+    conn.execute(
+        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+        params![aggregate_str(&repaired).unwrap(), repaired.session_id],
+    )
+    .unwrap();
+    drop(conn);
+
+    let repo = SqliteManagedSessionRepository::open(&path).expect("B3 repaired restart");
+    for (source_id, session_id) in [
+        ("source-v1", "sesn_source_v1"),
+        ("source-repaired", "sesn_source_corrupt"),
+    ] {
+        assert_eq!(
+            repo.sessions_referencing_credential_source(
+                "ws-source",
+                &awaken_credential_contract::CredentialSourceId(source_id.into()),
+            )
+            .await
+            .unwrap()[0]
+                .session_id,
+            session_id,
+            "B3/E3"
+        );
+    }
+    drop(repo);
+
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "DELETE FROM managed_session_credential_source_reference \
+         WHERE credential_source_id = ?1",
+        params!["source-v1"],
+    )
+    .unwrap();
+    drop(conn);
+    let reopened = SqliteManagedSessionRepository::open(&path).expect("B3 restart repair");
+    assert_eq!(
+        reopened
+            .sessions_referencing_credential_source(
+                "ws-source",
+                &awaken_credential_contract::CredentialSourceId("source-v1".into()),
+            )
+            .await
+            .unwrap()[0]
+            .session_id,
+        "sesn_source_v1",
+        "B3/E4"
+    );
+}
+
+#[tokio::test]
+async fn postgres_v2_dependency_backfill_and_restart_use_the_same_root_decoder() {
+    // Backend-parity rules reuse B1/B3 above: P1 a V1 canonical root plus
+    // absent V2 -> apply additive DDL and rebuild; P2 V2 present plus missing
+    // derived row -> constructor rebuilds before service. Effects are the same
+    // exact Workspace+source discovery and unchanged canonical aggregate. The
+    // PostgreSQL table locks additionally serialize P1/P2 with root writers.
+    use sqlx::Executor;
+    use sqlx::postgres::{PgPool, PgPoolOptions};
+
+    let url = std::env::var("AWAKEN_TEST_DATABASE_URL").unwrap_or_else(|_| {
+        "postgres://oversight:oversight@127.0.0.1:32771/awaken_store_test".to_string()
+    });
+    let Ok(admin) = PgPool::connect(&url).await else {
+        println!("[skip] no Postgres reachable");
+        return;
+    };
+    let _ = admin
+        .execute("DROP SCHEMA IF EXISTS t_session_source_backfill CASCADE")
+        .await;
+    admin
+        .execute("CREATE SCHEMA t_session_source_backfill")
+        .await
+        .expect("create source-backfill schema");
+    let pool = PgPoolOptions::new()
+        .after_connect(|connection, _| {
+            Box::pin(async move {
+                connection
+                    .execute("SET search_path = t_session_source_backfill")
+                    .await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .expect("connect source-backfill schema");
+    let full = session_bundle().unwrap();
+    let v1 = awaken_scoped_migration::MigrationBundle::new(
+        full.bundle_id(),
+        full.migrations()[..1].to_vec(),
+    )
+    .unwrap();
+    awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
+        .unwrap()
+        .run_bundle(&v1)
+        .await
+        .unwrap();
+    let mut session = sample_with_credential_source("sesn_pg_source_v1", "source-pg-v1");
+    session.revision = SessionRevision(1);
+    sqlx::query(
+        "INSERT INTO managed_session (session_id, scope_id, revision, aggregate_json) \
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(&session.session_id)
+    .bind("ws-source")
+    .bind(db_revision(session.revision).unwrap())
+    .bind(aggregate_str(&session).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let repo = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("P1 migrate and backfill");
+    let source_id = awaken_credential_contract::CredentialSourceId("source-pg-v1".into());
+    assert_eq!(
+        repo.sessions_referencing_credential_source("ws-source", &source_id)
+            .await
+            .unwrap()[0]
+            .session_id,
+        session.session_id,
+        "P1"
+    );
+    assert_eq!(
+        repo.get(&session.session_id).await.unwrap(),
+        session,
+        "P1 root"
+    );
+
+    sqlx::query("DELETE FROM managed_session_credential_source_reference")
+        .execute(&pool)
+        .await
+        .unwrap();
+    let restarted = PostgresManagedSessionRepository::with_pool(pool.clone())
+        .await
+        .expect("P2 restart rebuild");
+    assert_eq!(
+        restarted
+            .sessions_referencing_credential_source("ws-source", &source_id)
+            .await
+            .unwrap()[0]
+            .session_id,
+        session.session_id,
+        "P2"
+    );
+    pool.close().await;
+    admin
+        .execute("DROP SCHEMA IF EXISTS t_session_source_backfill CASCADE")
+        .await
+        .expect("drop source-backfill schema");
+    admin.close().await;
+}
+
 fn fact(id: &str, session_id: &str, event_type: &str) -> ManagedLifecycleFact {
     ManagedLifecycleFact {
         id: id.into(),
@@ -389,7 +779,7 @@ pub(crate) async fn create_fixture<R: ManagedSessionRepository>(
     session.revision = SessionRevision(0);
     let payload = SessionMutationPayload::Replace(session.clone());
     let payload_hash = payload.stable_hash();
-    session.revision = repo
+    match repo
         .create(
             owner,
             session.clone(),
@@ -400,8 +790,11 @@ pub(crate) async fn create_fixture<R: ManagedSessionRepository>(
             facts,
         )
         .await
-        .expect("create Session fixture");
-    session
+        .expect("create Session fixture")
+    {
+        awaken_session_contract::SessionCreateResult::Applied(session)
+        | awaken_session_contract::SessionCreateResult::Replayed(session) => session,
+    }
 }
 
 async fn replace_fixture<R: ManagedSessionRepository>(

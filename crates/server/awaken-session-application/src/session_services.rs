@@ -51,6 +51,22 @@ pub trait SessionCredentialSource: Send + Sync {
     ) -> Result<CredentialAccess, String>;
 }
 
+/// Whether one external participant was created by the current Session command
+/// or was adopted from exact durable truth left by an earlier attempt.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionParticipantProvenance {
+    Applied,
+    Replayed,
+}
+
+/// Exact secret-free result of Repository credential ingress. The provenance
+/// is transient command data; the Vault source remains the durable authority.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RepositoryCredentialEntry {
+    pub credential: awaken_credential_contract::CredentialRef,
+    pub provenance: SessionParticipantProvenance,
+}
+
 /// Write-only ingress for repository material. Implementations seal material
 /// before returning the opaque source id used by Session compilation.
 #[async_trait::async_trait]
@@ -61,7 +77,15 @@ pub trait RepositoryCredentialIngress: Send + Sync {
         workspace_id: &str,
         target: awaken_credential_contract::CredentialTarget,
         token: RedactedString,
-    ) -> Result<CredentialSourceId, String>;
+    ) -> Result<RepositoryCredentialEntry, String>;
+
+    /// Terminally archive one exact Session-owned Repository source and reclaim
+    /// its material through the canonical credential WAL/CAS path.
+    async fn retire_repository_token(
+        &self,
+        credential: &awaken_credential_contract::CredentialRef,
+        workspace_id: &str,
+    ) -> Result<(), String>;
 
     async fn rotate_repository_token(
         &self,

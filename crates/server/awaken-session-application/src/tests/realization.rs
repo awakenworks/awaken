@@ -37,8 +37,10 @@ fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
 }
 
 #[derive(Default)]
-struct RecordingResourceRuntime {
+pub(super) struct RecordingResourceRuntime {
     applied: Mutex<Vec<(u64, awaken_session_contract::ResolvedSessionResources)>>,
+    pub(super) replaced_tools:
+        Mutex<Vec<(String, awaken_session_contract::SessionToolConfiguration)>>,
 }
 
 #[async_trait::async_trait]
@@ -54,6 +56,18 @@ impl SessionRuntime for RecordingResourceRuntime {
             .lock()
             .unwrap()
             .push((resource_revision, inputs.clone()));
+        Ok(())
+    }
+
+    async fn replace_session_tools(
+        &self,
+        thread: &str,
+        tools: awaken_session_contract::SessionToolConfiguration,
+    ) -> Result<(), RunError> {
+        self.replaced_tools
+            .lock()
+            .unwrap()
+            .push((thread.to_owned(), tools));
         Ok(())
     }
 
@@ -258,6 +272,166 @@ async fn running_session_persists_manifest_and_applies_only_at_idle_boundary() {
     let committed = repo.get("running-manifest").await.unwrap();
     assert!(committed.resources.pending.is_none(), "M2/E2");
     assert_eq!(committed.resources.active, desired, "M2/E2");
+}
+
+fn profiled_policy_manifest(
+    file: &str,
+    skill_version: u64,
+) -> awaken_session_contract::ResolvedSessionResources {
+    let (inputs, _) = file_resources(file).into_parts();
+    let mut skill = skill_resources("review").skills()[0].clone();
+    skill.version = skill_version;
+    skill.bundle_sha256 = format!("sha-review-{skill_version}");
+    awaken_session_contract::ResolvedSessionResources::try_new(inputs, vec![skill]).unwrap()
+}
+
+async fn seed_profiled_resource_policy_sessions(repo: Arc<dyn ManagedSessionRepository>) {
+    for (id, policy) in [
+        (
+            "resource-managed",
+            awaken_session_contract::SessionMutationPolicy::Managed,
+        ),
+        (
+            "resource-frozen",
+            awaken_session_contract::SessionMutationPolicy::Frozen,
+        ),
+        (
+            "resource-files",
+            awaken_session_contract::SessionMutationPolicy::FileResources,
+        ),
+    ] {
+        let mut session = persisted(id, false, "idle");
+        let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+        else {
+            unreachable!("fixture baseline is frozen")
+        };
+        baseline.mutation_policy = policy;
+        session.resources = awaken_session_contract::SessionResourceState::from_active(
+            profiled_policy_manifest("initial", 1),
+        );
+        create(repo.as_ref(), session).await;
+    }
+}
+
+async fn assert_managed_and_frozen_resource_policy_rules(
+    app: Arc<SessionApplication>,
+    repo: Arc<dyn ManagedSessionRepository>,
+) {
+    let command = |resources| ReplaceSessionResourceManifest {
+        request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
+        resources,
+        expected_session_revision: None,
+        idempotency_key: None,
+    };
+
+    app.replace_session_resource_manifest(
+        "resource-managed",
+        command(profiled_policy_manifest("next", 1)),
+    )
+    .await
+    .expect("R1/E1");
+
+    let frozen_before = repo.get("resource-frozen").await.unwrap();
+    assert!(
+        matches!(
+            app.replace_session_resource_manifest(
+                "resource-frozen",
+                command(profiled_policy_manifest("next", 1)),
+            )
+            .await,
+            Err(SessionResourceManifestError::Rejected(_))
+        ),
+        "R2/E2"
+    );
+    assert_eq!(
+        repo.get("resource-frozen").await.unwrap(),
+        frozen_before,
+        "R2/E2"
+    );
+}
+
+async fn assert_file_resource_and_credential_policy_rules(
+    app: Arc<SessionApplication>,
+    repo: Arc<dyn ManagedSessionRepository>,
+) {
+    let command = |resources| ReplaceSessionResourceManifest {
+        request_fingerprint: awaken_session_contract::stable_fingerprint(&resources),
+        resources,
+        expected_session_revision: None,
+        idempotency_key: None,
+    };
+    app.replace_session_resource_manifest(
+        "resource-files",
+        command(profiled_policy_manifest("next", 1)),
+    )
+    .await
+    .expect("R3/E3");
+    let files_before = repo.get("resource-files").await.unwrap();
+    assert!(
+        matches!(
+            app.replace_session_resource_manifest(
+                "resource-files",
+                command(profiled_policy_manifest("next", 2)),
+            )
+            .await,
+            Err(SessionResourceManifestError::Rejected(_))
+        ),
+        "R4/E4"
+    );
+    assert_eq!(
+        repo.get("resource-files").await.unwrap(),
+        files_before,
+        "R4/E4"
+    );
+
+    let rotation = app
+        .rotate_repository_credential(
+            "resource-files",
+            "workspace",
+            &awaken_resource_contract::BindingId::from("missing-repository"),
+            awaken_agent_contract::RedactedString::new("never-consumed"),
+        )
+        .await
+        .expect_err("R5/E5");
+    assert!(
+        rotation.to_string().contains("credentials are immutable"),
+        "R5/E5 policy must precede missing Vault/binding checks: {rotation}"
+    );
+    assert_eq!(
+        repo.get("resource-files").await.unwrap(),
+        files_before,
+        "R5/E5"
+    );
+}
+
+#[tokio::test]
+async fn profiled_resource_mutation_policy_fences_the_root_before_external_effects() {
+    // Cause/effect graph: C1 policy Managed/Frozen/FileResources; C2 complete
+    // manifest changes a File; C3 it changes an exact Skill; C4 Repository-token
+    // rotation is requested while no Vault ingress is configured. Effects: E1
+    // Managed+C2 commits; E2 Frozen rejects with no root change; E3
+    // FileResources+C2 commits; E4 FileResources+C3 rejects with no root change;
+    // E5 profiled C4 rejects on immutable policy before consulting Vault.
+    // Decision rules R1=Managed+C2=>E1, R2=Frozen+C2=>E2,
+    // R3=FileResources+C2=>E3, R4=FileResources+C3=>E4,
+    // R5=profiled+C4=>E5. Each independent cause partition owns a boxed
+    // test-only future so the decision oracles do not share one oversized async
+    // frame; production stack limits and state transitions remain unchanged.
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("profiled policy repository"),
+    );
+    Box::pin(seed_profiled_resource_policy_sessions(repo.clone())).await;
+    let app = Arc::new(application(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    Box::pin(assert_managed_and_frozen_resource_policy_rules(
+        app.clone(),
+        repo.clone(),
+    ))
+    .await;
+    Box::pin(assert_file_resource_and_credential_policy_rules(app, repo)).await;
 }
 
 #[tokio::test]
@@ -1599,11 +1773,13 @@ fn realization_owner_follows_the_frozen_placement_decision_table() {
         value.baseline = awaken_session_contract::SessionBaselineState::Preparing(
             awaken_session_contract::SessionCreationIntent {
                 control: awaken_session_contract::ControlSessionCreationInputs {
+                    mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
                     environment: baseline.environment,
                     runtime_placement: SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
                     model_override: baseline.model_override,
+                    system_prompt: *baseline.system_prompt,
                     model: baseline.model,
                     execution_model_ref: baseline.execution_model_ref,
                     runtime: baseline.runtime,

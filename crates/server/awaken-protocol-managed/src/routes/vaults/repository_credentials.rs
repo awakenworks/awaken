@@ -11,11 +11,16 @@ use awaken_credential_contract::{
     CredentialDescriptor, CredentialMaterialDescriptor, CredentialSourceId, CredentialTarget,
     CredentialTargetContract, HTTP_BASIC_MATERIAL_TYPE, http_basic_material,
 };
-use awaken_credential_vault::repo::{CredentialMaterialPatch, rotate_credential_materials_exact};
+use awaken_credential_vault::repo::{
+    CredentialMaterialPatch, CredentialRetirement, revoke_credential_exact,
+    rotate_credential_materials_exact,
+};
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind, CredentialStatus,
 };
-use awaken_session_application::RepositoryCredentialIngress;
+use awaken_session_application::{
+    RepositoryCredentialEntry, RepositoryCredentialIngress, SessionParticipantProvenance,
+};
 
 use super::VaultState;
 
@@ -27,7 +32,7 @@ impl RepositoryCredentialIngress for VaultState {
         workspace_id: &str,
         target: CredentialTarget,
         token: RedactedString,
-    ) -> Result<CredentialSourceId, String> {
+    ) -> Result<RepositoryCredentialEntry, String> {
         validate_github_repository_target(&target)?;
         let material = repository_http_basic_material(token).map_err(|error| error.to_string())?;
         let descriptor = CredentialDescriptor::new(
@@ -58,7 +63,57 @@ impl RepositoryCredentialIngress for VaultState {
         )
         .await
         .map_err(|error| error.to_string())?;
-        Ok(entry.source.id)
+        let revision = u64::try_from(entry.source.version)
+            .map_err(|_| "repository credential revision exceeds the Session range".to_string())?;
+        Ok(RepositoryCredentialEntry {
+            credential: awaken_credential_contract::CredentialRef {
+                id: entry.source.id.0,
+                revision,
+            },
+            provenance: if entry.created {
+                SessionParticipantProvenance::Applied
+            } else {
+                SessionParticipantProvenance::Replayed
+            },
+        })
+    }
+
+    async fn retire_repository_token(
+        &self,
+        credential: &awaken_credential_contract::CredentialRef,
+        workspace_id: &str,
+    ) -> Result<(), String> {
+        let source_id = CredentialSourceId(credential.id.clone());
+        let source = self
+            .repository
+            .get(&source_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if source.workspace_id != workspace_id {
+            return Err("repository credential binding is unavailable in this Workspace".into());
+        }
+        let expected = i64::try_from(credential.revision)
+            .map_err(|_| "repository credential revision exceeds the Vault range".to_string())?;
+        let completed = expected
+            .checked_add(1)
+            .ok_or_else(|| "repository credential revision exceeds the Vault range".to_string())?;
+        if source.version == completed
+            && source.status == CredentialStatus::Archived
+            && source.material_ref.is_none()
+            && source.auxiliary_material_refs.is_empty()
+        {
+            return Ok(());
+        }
+        revoke_credential_exact(
+            &source_id,
+            expected,
+            CredentialRetirement::Archive,
+            self.secrets.as_ref(),
+            self.repository.as_ref(),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|error| error.to_string())
     }
 
     async fn rotate_repository_token(

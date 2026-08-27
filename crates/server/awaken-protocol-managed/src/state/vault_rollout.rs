@@ -1,15 +1,13 @@
 //! Credential-outbox consumer for online Managed Sessions.
 
-use std::collections::BTreeMap;
-
 use awaken_credential_vault::repo::{
     ManagedCredentialAdoptionError, ManagedCredentialAdoptionProgress, ManagedCredentialOperation,
     ManagedCredentialRollout, ManagedCredentialRolloutTarget,
 };
 use awaken_session_application::{
-    McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionUpdateCommand,
+    McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionMcpUpdate, SessionUpdateCommand,
 };
-use awaken_session_contract::{McpAttachmentState, SessionExecutionState, stable_fingerprint};
+use awaken_session_contract::{SessionExecutionState, stable_fingerprint};
 
 use super::ManagedState;
 
@@ -37,7 +35,7 @@ impl ManagedState {
         let sessions = self
             .application
             .session_repository_handle()
-            .sessions_referencing_vault(&event.workspace_id, &event.vault_id)
+            .sessions_referencing_credential_source(&event.workspace_id, &event.source_id)
             .await
             .map_err(|error| ManagedCredentialAdoptionError::Unavailable(error.to_string()))?;
         let mut pending = Vec::new();
@@ -46,27 +44,9 @@ impl ManagedState {
                 pending.push(session.session_id);
                 continue;
             }
-            let desired_names = session.mcp.desired_names.as_ref();
-            let mut desired = BTreeMap::new();
-            for attachment in &session.mcp.attachments {
-                let is_desired = desired_names.map_or_else(
-                    || !attachment.state.is_terminal(),
-                    |names| names.contains(&attachment.name),
-                );
-                if !is_desired || attachment.state == McpAttachmentState::Removed {
-                    continue;
-                }
-                let replace = desired.get(&attachment.name).is_none_or(
-                    |current: &&awaken_session_contract::SessionMcpAttachment| {
-                        current.generation < attachment.generation
-                    },
-                );
-                if replace {
-                    desired.insert(attachment.name.clone(), attachment);
-                }
-            }
+            let desired = session.mcp.desired_attachments();
             let mut candidates = Vec::with_capacity(desired.len());
-            for attachment in desired.into_values() {
+            for attachment in desired {
                 let uses_changed_source = attachment
                     .credential
                     .as_ref()
@@ -142,7 +122,15 @@ impl ManagedState {
                         metadata: None,
                         budget: None,
                         tools: None,
-                        mcp_candidates: Some(candidates),
+                        mcp_update: Some(SessionMcpUpdate::CredentialLifecycle {
+                            source_id: event.source_id.0.clone(),
+                            revoked: matches!(
+                                event.operation,
+                                ManagedCredentialOperation::Archive
+                                    | ManagedCredentialOperation::Delete
+                            ),
+                            candidates,
+                        }),
                         idempotency_key: Some(event.id.clone()),
                         request_fingerprint,
                         if_match: None,

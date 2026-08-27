@@ -26,6 +26,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 awaken-config-resolver = { workspace = true, features = ["test-support"] }
+awaken-credential-contract.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

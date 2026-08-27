@@ -2,10 +2,12 @@
 
 use super::*;
 use awaken_session_contract::{
-    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionMutation,
-    SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
+    IdempotencyRecord, ManagedLifecycleFact, PersistedSession, SessionCreateResult,
+    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionRepositoryConflict,
     SessionRepositoryError,
 };
+
+use crate::creation::validated_create_replay;
 
 pub(crate) fn repository_failure(error: SessionRepositoryError) -> SessionMutationError {
     match error {
@@ -48,21 +50,35 @@ impl SessionApplication {
     }
 
     /// Insert one newly compiled Session root. Exact replays return the durable
-    /// revision; a different command targeting the same identity conflicts.
+    /// aggregate; a different command targeting the same identity conflicts.
     pub async fn create_session_root(
         &self,
         owner_scope: &str,
-        mut session: PersistedSession,
+        session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<PersistedSession, SessionMutationError> {
-        let revision = self
-            .sessions_repo
-            .create(owner_scope, session.clone(), idempotency, lifecycle_facts)
+    ) -> Result<SessionCreateResult, SessionCreationError> {
+        self.sessions_repo
+            .create(owner_scope, session, idempotency, lifecycle_facts)
             .await
-            .map_err(repository_failure)?;
-        session.revision = revision;
-        Ok(session)
+            .map_err(SessionCreationError::repository)
+    }
+
+    /// Atomically inspect the repository's create receipt and identity. This is
+    /// the only preflight used by deterministic protocol creates; it never
+    /// assembles receipt, aggregate, and owner from separate reads.
+    pub async fn replay_session_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionCreationError> {
+        self.sessions_repo
+            .replay_create(owner_scope, session_id, idempotency)
+            .await
+            .map_err(SessionCreationError::repository)?
+            .map(validated_create_replay)
+            .transpose()
     }
 
     /// Commit a complete aggregate replacement through the sole root CAS.

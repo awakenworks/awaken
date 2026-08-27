@@ -15,7 +15,7 @@ pub use dream_policies::dream_policy_router;
 pub use live_inbox::live_inbox_router;
 pub use profiled_sessions::{
     ProfiledSessionCreate, ProfiledSessionCreated, ProfiledSessionMcpAttachment,
-    ProfiledSessionRepository, profiled_session_router,
+    ProfiledSessionMode, ProfiledSessionRepository, profiled_session_router,
 };
 pub use resource_manifests::session_resource_manifest_router;
 pub use sandbox_policies::environment_extensions_router;

@@ -1,5 +1,74 @@
 use super::*;
 
+#[derive(Default)]
+struct RecordingCreateRuntime {
+    baseline_installs: AtomicUsize,
+    preparations: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl SessionRuntime for RecordingCreateRuntime {
+    fn install_session_baseline(
+        &self,
+        _thread: &str,
+        _baseline: &awaken_session_contract::SessionBaseline,
+    ) -> Result<(), RunError> {
+        self.baseline_installs.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn prepare_session(
+        &self,
+        _thread: &str,
+        _init: awaken_session_contract::SessionInit,
+    ) -> Result<(), RunError> {
+        self.preparations.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never runs")
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never resumes")
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        unreachable!("create replay test never custom-resumes")
+    }
+
+    async fn define_outcome(
+        &self,
+        _thread: &str,
+        _description: &str,
+        _rubric: &str,
+        _max_iterations: u32,
+    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
+        unreachable!("create replay test never defines an outcome")
+    }
+
+    fn model(&self) -> String {
+        "create-replay-model".into()
+    }
+}
+
 fn profiled_mount(id: &str) -> awaken_provisioning_contract::MountRequirement {
     awaken_provisioning_contract::MountRequirement {
         mount_id: id.into(),
@@ -26,6 +95,8 @@ struct AdmissionEnvironment;
 struct ProfiledAgent {
     unavailable: bool,
 }
+
+struct ResourceProfiledAgent;
 
 struct SubstitutingProfileSource;
 
@@ -173,6 +244,50 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for Profiled
     }
 }
 
+impl awaken_executable_agent_contract::ExecutableAgentProfileSource for ResourceProfiledAgent {
+    fn session_profile_in(
+        &self,
+        workspace_id: &str,
+        agent_id: &str,
+    ) -> Option<awaken_executable_agent_contract::ExecutableAgentSessionProfile> {
+        let mut profile =
+            awaken_executable_agent_contract::ExecutableAgentProfileSource::session_profile_in(
+                &ProfiledAgent { unavailable: false },
+                workspace_id,
+                agent_id,
+            )?;
+        profile.resources = vec![awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::from("agent-resource"),
+            target: awaken_resource_contract::InputResourceId::File(
+                awaken_resource_contract::FileId::from("agent-file"),
+            ),
+            mount_path: "/workspace/agent-input".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        }];
+        Some(profile)
+    }
+}
+
+fn direct_file_attachment(
+    binding_id: &str,
+    file_id: &str,
+    mount_path: &str,
+) -> awaken_session_contract::SessionInputAttachment {
+    awaken_session_contract::SessionInputAttachment {
+        binding: awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::from(binding_id),
+            target: awaken_resource_contract::InputResourceId::File(
+                awaken_resource_contract::FileId::from(file_id),
+            ),
+            mount_path: mount_path.into(),
+            access: awaken_resource_contract::ResourceAccess::ReadOnly,
+            instructions: None,
+        },
+        replaces: None,
+    }
+}
+
 #[async_trait::async_trait]
 impl SessionEnvironmentSource for AdmissionEnvironment {
     async fn get(
@@ -264,11 +379,13 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         session_id: session_id.into(),
         intent: awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
+                mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
                 environment,
                 runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                 agent_id: "agent".into(),
                 agent_revision: None,
                 model_override: None,
+                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
                 model: "model".into(),
                 execution_model_ref: "model".into(),
                 runtime: None,
@@ -287,7 +404,101 @@ fn creation_command(session_id: &str) -> CreateSessionCommand {
         metadata: Default::default(),
         tools: Default::default(),
         budget: Default::default(),
+        repository_configurations: Vec::new(),
+        idempotency: None,
         initial_events: None,
+    }
+}
+
+fn owned_repository_input(session_id: &str) -> SessionRepositoryResourceInput {
+    SessionRepositoryResourceInput {
+        id: format!("managed:{session_id}:repository:0"),
+        workspace_id: "workspace".into(),
+        name: "Session Repository".into(),
+        description: "creation compensation fixture".into(),
+        remote_url: "https://github.com/awaken/compensation.git".into(),
+        authorization_token: None,
+        credential: None,
+        mount_path: "/workspace/repository".into(),
+        initial_branch: Some("main".into()),
+        initial_commit: None,
+    }
+}
+
+#[tokio::test]
+async fn root_rejection_compensates_only_applied_repository_participants() {
+    // Cause/effect graph: C1 Repository participant is Applied/Replayed; C2 a
+    // foreign durable root occupies the Session id without referencing that
+    // Repository; C3 exact create replay proves idempotency mismatch. Effects:
+    // E1 the caller still receives the first root Conflict; E2 Applied is
+    // retired; E3 Replayed remains Active because an earlier command owns it.
+    //
+    // | Rule | Participant | Root receipt | Root reference | Result | Repository |
+    // | C1 | Applied | different | absent | Conflict | Deleted |
+    // | C2 | Replayed | different | absent | Conflict | Active |
+    for (rule, replayed, expected_state) in [
+        (
+            "C1",
+            false,
+            awaken_resource_contract::ResourceState::Deleted,
+        ),
+        ("C2", true, awaken_resource_contract::ResourceState::Active),
+    ] {
+        let session_id = format!("creation-participant-{rule}");
+        let repository = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("participant repository"),
+        );
+        let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
+        let catalog = resources.authorities().resource_registry();
+        let mut application = application_with_runtime(
+            Arc::new(RecordingCreateRuntime::default()),
+            repository.clone(),
+            Arc::new(AdmissionEnvironment),
+        );
+        application.set_resource_registry(catalog.clone());
+
+        let first = application
+            .configure_session_repository(owned_repository_input(&session_id))
+            .await
+            .expect("first participant");
+        let configured = if replayed {
+            application
+                .configure_session_repository(owned_repository_input(&session_id))
+                .await
+                .expect("exact participant replay")
+        } else {
+            first
+        };
+        assert_eq!(
+            configured.registry_provenance,
+            if replayed {
+                SessionParticipantProvenance::Replayed
+            } else {
+                SessionParticipantProvenance::Applied
+            },
+            "{rule} precondition"
+        );
+        create(repository.as_ref(), persisted(&session_id, false, "idle")).await;
+
+        let mut command = creation_command(&session_id);
+        command.repository_configurations = vec![configured.clone()];
+        assert!(
+            matches!(
+                application.create_session(command).await,
+                Err(SessionCreationError::Conflict)
+            ),
+            "{rule}/E1"
+        );
+        assert_eq!(
+            catalog
+                .find_repository("workspace", configured.repository_id.as_str())
+                .unwrap()
+                .unwrap()
+                .state,
+            expected_state,
+            "{rule}/E2-E3"
+        );
     }
 }
 
@@ -538,6 +749,133 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
 }
 
 #[tokio::test]
+async fn exact_create_replay_returns_durable_root_without_repeating_external_effects() {
+    // Application create-replay cause/effect table. C1 receipt absent creates a
+    // Worker-owned Session; C2 the same receipt is retried after a different
+    // lowering; C3 the durable root already advanced through activation. Effects:
+    // E1 first create installs/prepares once, performs one activation CAS, and
+    // dispatches one Work item; E2 replay returns the exact current durable root;
+    // E3 Runtime, activation revision, WorkQueue, and outbox counts do not change;
+    // C4 a concurrent winner has durably entered ActivationFailed before the
+    // replay result is returned; E4 the loser receives typed terminal conflict
+    // and still performs no external effect.
+    //
+    // | Rule | Receipt | Lowering | Durable root | Effect |
+    // |---|---|---|---|---|
+    // | R1 | absent | first | absent | E1 |
+    // | R2 | exact | changed | activated | E2+E3 |
+    // | R3 | exact | same | ActivationFailed | E3+E4 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("create replay repository"),
+    );
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let environments = Arc::new(RecordingEnvironmentSource::default());
+    let application = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repository.clone(),
+        environments.clone(),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+    let idempotency = awaken_session_contract::IdempotencyRecord {
+        key: "create-replay-effects".into(),
+        payload_hash: "stable-product-request".into(),
+    };
+    let mut first = creation_command("create-replay-effects");
+    first.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    first.idempotency = Some(idempotency.clone());
+    let created = application.create_session(first).await.expect("R1/E1");
+    let durable_before = repository
+        .get(&created.session_id)
+        .await
+        .expect("R1 durable");
+    let revision_before = durable_before.revision;
+    let outbox_before = repository.pending_lifecycle().await.expect("R1 outbox");
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R1/E1");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R1/E1");
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        1,
+        "R1/E1"
+    );
+
+    let mut replay = creation_command("create-replay-effects");
+    replay.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    replay.title = Some("changed lowering must not replace durable truth".into());
+    replay.idempotency = Some(idempotency);
+    let replayed = application.create_session(replay).await.expect("R2/E2");
+    assert_eq!(replayed, durable_before, "R2/E2");
+    assert_eq!(
+        repository.get(&replayed.session_id).await.unwrap().revision,
+        revision_before,
+        "R2/E3 no second activation CAS"
+    );
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R2/E3");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R2/E3");
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        1,
+        "R2/E3"
+    );
+    assert_eq!(
+        repository.pending_lifecycle().await.unwrap(),
+        outbox_before,
+        "R2/E3"
+    );
+
+    let mut failed = repository.get(&replayed.session_id).await.unwrap();
+    let expected_revision = failed.revision;
+    failed.execution = awaken_session_contract::SessionExecutionState::ActivationFailed;
+    let payload = awaken_session_contract::SessionMutationPayload::Replace(failed);
+    let payload_hash = payload.stable_hash();
+    assert!(matches!(
+        repository
+            .commit_mutation(
+                "workspace",
+                awaken_session_contract::SessionMutation {
+                    expected_revision,
+                    idempotency: awaken_session_contract::IdempotencyRecord {
+                        key: "test:create-replay-activation-failed".into(),
+                        payload_hash,
+                    },
+                    payload,
+                    lifecycle_facts: Vec::new(),
+                },
+            )
+            .await
+            .unwrap(),
+        awaken_session_contract::SessionMutationResult::Applied { .. }
+    ));
+    let mut terminal_replay = creation_command("create-replay-effects");
+    terminal_replay.intent.control.runtime_placement =
+        awaken_session_contract::SessionRuntimePlacement::Worker;
+    terminal_replay.idempotency = Some(awaken_session_contract::IdempotencyRecord {
+        key: "create-replay-effects".into(),
+        payload_hash: "stable-product-request".into(),
+    });
+    assert!(
+        matches!(
+            application.create_session(terminal_replay).await,
+            Err(SessionCreationError::Tombstoned)
+        ),
+        "R3/E4"
+    );
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "R3/E3");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "R3/E3");
+    assert_eq!(
+        environments.dispatch_calls.load(Ordering::SeqCst),
+        1,
+        "R3/E3"
+    );
+}
+
+#[tokio::test]
 async fn creation_persists_only_a_complete_frozen_root_before_later_cas_failure() {
     /* Cause/effect graph: C1 all creation inputs compile; C2 the first root
      * insert commits; C3 the later activation CAS is unavailable. Effects: E1
@@ -609,33 +947,11 @@ async fn session_application_admits_new_and_existing_protocol_threads() {
     );
 }
 
-/// Profiled-Session FMECA and cause/effect graph. Failure modes are FM1 a
-/// requested model bypasses the published Agent, FM2 an unavailable Agent is
-/// admitted. Causes: C1 profile exists, C2 Agent available, C3 requested model
-/// absent/equal, C4 requested model differs, C5 complete local inputs are
-/// supplied up front, C6 Agent and Session MCP candidates are distinct or
-/// overlap by name, and C7 equal-origin names conflict. Effects: E1 freeze the
-/// published execution identity and local inputs, E2 reject without a row, E3
-/// retain Agent-only and Session-only MCP while Session overrides Agent by
-/// logical name. Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2.
-///
-/// | Rule | Profile | Available | Requested model | Product MCP | Effect |
-/// |---|---|---|---|---|---|
-/// | P1 | yes | yes | absent/equal | distinct + Agent overlap | E1 + E3 |
-/// | P2 | yes | yes | different | any | E2 |
-/// | P3 | yes | no | any | any | E2 |
-/// | P4 | yes | yes | absent/equal | duplicate Session name | E2 |
-#[tokio::test]
-async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
-    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("profiled Session repository"),
-    );
-    let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
-    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
-    let command = |session_id: &str, model: Option<&str>| CreateProfiledSessionCommand {
+fn profiled_session_command(session_id: &str, model: Option<&str>) -> CreateProfiledSessionCommand {
+    CreateProfiledSessionCommand {
         owner_scope: "workspace".into(),
         session_id: session_id.into(),
+        mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
         agent_id: "profiled".into(),
         source_revision: None,
         environment_id: None,
@@ -643,6 +959,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         mounts: vec![profiled_mount("workspace")],
         env: vec![profiled_env("PROJECT")],
         prompts: vec!["project context".into()],
+        resource_inputs: Vec::new(),
         mcp_candidates: vec![
             McpAttachmentCandidate {
                 name: "session-only".into(),
@@ -668,9 +985,17 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         title: None,
         metadata: Default::default(),
         tools: None,
-    };
+        idempotency: None,
+    }
+}
 
-    let mut explicit_environment = command("profiled-realized", None);
+async fn assert_profiled_realization_and_environment_rules(
+    repository: Arc<dyn ManagedSessionRepository>,
+) {
+    let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+
+    let mut explicit_environment = profiled_session_command("profiled-realized", None);
     explicit_environment.environment_id = Some("project-environment".into());
     let realized = available
         .create_profiled_session(explicit_environment)
@@ -689,23 +1014,6 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     assert_eq!(
         baseline.environment.environment_id, "project-environment",
         "P1/E1"
-    );
-
-    let mut substituted_environment = command("profiled-environment-substitution", None);
-    substituted_environment.environment_id = Some("substitute-me".into());
-    assert!(
-        available
-            .create_profiled_session(substituted_environment)
-            .await
-            .is_err(),
-        "an Environment resolver cannot substitute another identity"
-    );
-    assert!(
-        matches!(
-            repository.get("profiled-environment-substitution").await,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound)
-        ),
-        "Environment substitution fails before Session persistence"
     );
     assert_eq!(
         baseline.environment.network,
@@ -746,7 +1054,30 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         "P1/E3"
     );
 
-    let mut historical_command = command("profiled-historical", None);
+    let mut substituted_environment =
+        profiled_session_command("profiled-environment-substitution", None);
+    substituted_environment.environment_id = Some("substitute-me".into());
+    assert!(
+        available
+            .create_profiled_session(substituted_environment)
+            .await
+            .is_err(),
+        "an Environment resolver cannot substitute another identity"
+    );
+    assert!(
+        matches!(
+            repository.get("profiled-environment-substitution").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "Environment substitution fails before Session persistence"
+    );
+}
+
+async fn assert_profiled_publication_revision_rules(repository: Arc<dyn ManagedSessionRepository>) {
+    let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+
+    let mut historical_command = profiled_session_command("profiled-historical", None);
     historical_command.source_revision = Some(7);
     let historical = available
         .create_profiled_session(historical_command)
@@ -779,7 +1110,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         Some("profiled-revision-7")
     );
 
-    let mut missing_command = command("profiled-missing", None);
+    let mut missing_command = profiled_session_command("profiled-missing", None);
     missing_command.source_revision = Some(8);
     assert!(
         available
@@ -791,7 +1122,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
 
     let mut substituting = application(repository.clone(), Arc::new(AdmissionEnvironment));
     substituting.set_config_source(Arc::new(SubstitutingProfileSource));
-    let mut substituted_command = command("profiled-substituted-revision", None);
+    let mut substituted_command = profiled_session_command("profiled-substituted-revision", None);
     substituted_command.source_revision = Some(7);
     assert!(
         substituting
@@ -817,7 +1148,8 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         },
     );
     worker.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
-    let mut profile_without_snapshot = command("profiled-worker-missing-snapshot", None);
+    let mut profile_without_snapshot =
+        profiled_session_command("profiled-worker-missing-snapshot", None);
     profile_without_snapshot.source_revision = Some(9);
     assert!(
         worker
@@ -826,7 +1158,9 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             .is_err(),
         "P2: a Worker effect cannot start without the complete immutable publication"
     );
+}
 
+async fn assert_profiled_override_projection(repository: Arc<dyn ManagedSessionRepository>) {
     // Override-projection cause/effect table:
     // | Rule | Agent snapshot | Override publication | Effect |
     // | O1 | exact revision | complete | replace the whole candidate roster and identity |
@@ -855,7 +1189,8 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
             candidates: vec![fallback.clone()],
         },
     }));
-    let mut override_command = command("profiled-override", Some("override-public-id"));
+    let mut override_command =
+        profiled_session_command("profiled-override", Some("override-public-id"));
     override_command.source_revision = Some(7);
     let overridden = override_application
         .create_profiled_session(override_command)
@@ -890,9 +1225,17 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
                 .starts_with("override-")),
         "O1 original Agent route must be absent"
     );
+}
+
+async fn assert_profiled_rejection_rules(repository: Arc<dyn ManagedSessionRepository>) {
+    let mut available = application(repository.clone(), Arc::new(AdmissionEnvironment));
+    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
 
     let mismatched = available
-        .create_profiled_session(command("profiled-mismatch", Some("unpublished-model")))
+        .create_profiled_session(profiled_session_command(
+            "profiled-mismatch",
+            Some("unpublished-model"),
+        ))
         .await;
     assert!(mismatched.is_err(), "P2/E2");
     assert!(
@@ -907,7 +1250,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
     unavailable.set_config_source(Arc::new(ProfiledAgent { unavailable: true }));
     assert!(
         unavailable
-            .create_profiled_session(command("profiled-unavailable", None))
+            .create_profiled_session(profiled_session_command("profiled-unavailable", None))
             .await
             .is_err(),
         "P3/E2"
@@ -920,7 +1263,7 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         "P3/E2"
     );
 
-    let mut conflicting = command("profiled-mcp-conflict", None);
+    let mut conflicting = profiled_session_command("profiled-mcp-conflict", None);
     conflicting.mcp_candidates.push(McpAttachmentCandidate {
         name: "session-only".into(),
         target: McpAttachmentCandidateTarget::HttpUrl(
@@ -944,4 +1287,194 @@ async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
         ),
         "P4/E2"
     );
+}
+
+async fn assert_profiled_direct_resource_rules() {
+    let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("direct resource repository"),
+    );
+    let capture = Arc::new(FaultingSessionRepository::new(durable.clone()));
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let mut available = application_with_runtime(
+        runtime.clone(),
+        capture.clone(),
+        Arc::new(AdmissionEnvironment),
+    );
+    available.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    let mut valid = profiled_session_command("profiled-direct-file", None);
+    valid.resource_inputs.push(direct_file_attachment(
+        "direct-file",
+        "file-direct",
+        "/workspace/direct-file",
+    ));
+    available
+        .create_profiled_session(valid)
+        .await
+        .expect("D2 valid direct File");
+    let roots = capture.applied_create_roots();
+    assert_eq!(roots.len(), 1, "D2 one original root");
+    assert_eq!(
+        roots[0].revision,
+        awaken_session_contract::SessionRevision(1),
+        "D2 original root revision"
+    );
+    assert!(
+        roots[0].resources.desired().inputs().iter().any(|input| {
+            input.binding_id.as_str() == "direct-file"
+                && matches!(
+                    &input.source,
+                    awaken_session_contract::ResolvedInputSource::File { file_id }
+                        if file_id.as_str() == "file-direct"
+                )
+        }),
+        "D2 direct File desired intent freezes in original root before realization"
+    );
+
+    let agent_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Agent collision repository"),
+    );
+    let agent_runtime = Arc::new(RecordingCreateRuntime::default());
+    let mut agent_collision = application_with_runtime(
+        agent_runtime.clone(),
+        agent_repo.clone(),
+        Arc::new(AdmissionEnvironment),
+    );
+    agent_collision.set_config_source(Arc::new(ResourceProfiledAgent));
+    let mut collides_agent = profiled_session_command("profiled-direct-agent-collision", None);
+    collides_agent.resource_inputs.push(direct_file_attachment(
+        "direct-collides-agent",
+        "file-collides-agent",
+        "/workspace/agent-input",
+    ));
+    assert!(
+        agent_collision
+            .create_profiled_session(collides_agent)
+            .await
+            .is_err(),
+        "D3 Agent collision"
+    );
+    assert_eq!(
+        agent_repo.get("profiled-direct-agent-collision").await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound),
+        "D3 no root"
+    );
+    assert_eq!(
+        agent_runtime.baseline_installs.load(Ordering::SeqCst),
+        0,
+        "D3"
+    );
+    assert_eq!(agent_runtime.preparations.load(Ordering::SeqCst), 0, "D3");
+
+    let repository_repo: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Repository collision Session store"),
+    );
+    let repository_runtime = Arc::new(RecordingCreateRuntime::default());
+    let resources = awaken_resource_persistence::ephemeral().expect("Resource authorities");
+    let registry = resources.authorities().resource_registry();
+    let mut repository_collision = application_with_runtime(
+        repository_runtime.clone(),
+        repository_repo.clone(),
+        Arc::new(AdmissionEnvironment),
+    );
+    repository_collision.set_config_source(Arc::new(ProfiledAgent { unavailable: false }));
+    repository_collision.set_resource_registry(registry.clone());
+    let mut collides_repository =
+        profiled_session_command("profiled-direct-repository-collision", None);
+    collides_repository
+        .resource_inputs
+        .push(direct_file_attachment(
+            "direct-collides-repository",
+            "file-collides-repository",
+            "/workspace/repository",
+        ));
+    collides_repository.repositories = vec![SessionRepositoryResourceInput {
+        id: "profiled-collision-repository".into(),
+        workspace_id: "workspace".into(),
+        name: "Collision Repository".into(),
+        description: "must not be registered".into(),
+        remote_url: "https://example.test/collision.git".into(),
+        authorization_token: None,
+        credential: None,
+        mount_path: "/workspace/repository".into(),
+        initial_branch: Some("main".into()),
+        initial_commit: None,
+    }];
+    assert!(
+        repository_collision
+            .create_profiled_session(collides_repository)
+            .await
+            .is_err(),
+        "D4 Repository collision"
+    );
+    assert_eq!(
+        registry
+            .find_repository("workspace", "profiled-collision-repository")
+            .expect("D4 inventory"),
+        None,
+        "D4 collision fails before Repository configuration"
+    );
+    assert_eq!(
+        repository_repo
+            .get("profiled-direct-repository-collision")
+            .await,
+        Err(awaken_session_contract::SessionRepositoryError::NotFound),
+        "D4 no root"
+    );
+    assert_eq!(
+        repository_runtime.baseline_installs.load(Ordering::SeqCst),
+        0,
+        "D4 no Runtime effect"
+    );
+    assert_eq!(
+        repository_runtime.preparations.load(Ordering::SeqCst),
+        0,
+        "D4"
+    );
+}
+
+#[tokio::test]
+async fn profiled_session_creation_enforces_publication_and_upfront_inputs() {
+    // Profiled-Session FMECA and cause/effect graph. Failure modes are FM1 a
+    // requested model bypasses the published Agent, FM2 an unavailable Agent is
+    // admitted. Causes: C1 profile exists, C2 Agent available, C3 requested model
+    // absent/equal, C4 requested model differs, C5 complete local inputs are
+    // supplied up front, C6 Agent and Session MCP candidates are distinct or
+    // overlap by name, C7 equal-origin names conflict, and C8 direct resources
+    // are none/valid/collide with Agent/collide with Repository. Effects: E1 freeze the
+    // published execution identity and local inputs, E2 reject without a row, E3
+    // retain Agent-only and Session-only MCP while Session overrides Agent by
+    // logical name. Graph: C1&&C2&&C3&&C5&&C6 -> E1+E3; C4||!C2||C7 -> E2.
+    //
+    // | Rule | Profile | Available | Requested model | Product MCP | Effect |
+    // |---|---|---|---|---|---|
+    // | P1 | yes | yes | absent/equal | distinct + Agent overlap | E1 + E3 |
+    // | P2 | yes | yes | different | any | E2 |
+    // | P3 | yes | no | any | any | E2 |
+    // | P4 | yes | yes | absent/equal | duplicate Session name | E2 |
+    // | D1 | yes | yes | absent/equal | no direct resource | existing P1-P4 semantics |
+    // | D2 | yes | yes | absent/equal | valid direct File | original rev1 root contains File |
+    // | D3 | yes | yes | absent/equal | direct collides Agent | E2 before root/effect |
+    // | D4 | yes | yes | absent/equal | direct collides Repository | E2 before registry/root/effect |
+    //
+    // Each cause/effect partition owns a separate boxed future. This keeps the
+    // test's large, deeply composed Session values out of one aggregate async
+    // frame without changing production stack limits or the decision oracles.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("profiled Session repository"),
+    );
+    Box::pin(assert_profiled_realization_and_environment_rules(
+        repository.clone(),
+    ))
+    .await;
+    Box::pin(assert_profiled_publication_revision_rules(
+        repository.clone(),
+    ))
+    .await;
+    Box::pin(assert_profiled_override_projection(repository.clone())).await;
+    Box::pin(assert_profiled_rejection_rules(repository)).await;
+    Box::pin(assert_profiled_direct_resource_rules()).await;
 }

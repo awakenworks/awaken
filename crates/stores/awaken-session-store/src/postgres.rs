@@ -23,6 +23,9 @@ impl PostgresManagedSessionRepository {
             .run_bundle(&bundle)
             .await
             .map_err(|e| e.to_string())?;
+        Self::rebuild_credential_source_index(&pool)
+            .await
+            .map_err(|e| e.to_string())?;
         Ok(Self {
             pool,
             handle: tokio::runtime::Handle::current(),
@@ -36,6 +39,9 @@ impl PostgresManagedSessionRepository {
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|e| e.to_string())?
             .verify_bundle(&bundle)
+            .await
+            .map_err(|e| e.to_string())?;
+        Self::rebuild_credential_source_index(&pool)
             .await
             .map_err(|e| e.to_string())?;
         Ok(Self {
@@ -64,6 +70,7 @@ impl PostgresManagedSessionRepository {
             .await
             .map_err(storage)?;
         }
+        Self::sync_credential_source_index(tx, session).await?;
         if session.needs_reconciliation() {
             sqlx::query(
                 "INSERT INTO managed_session_reconciliation_work \
@@ -85,6 +92,199 @@ impl PostgresManagedSessionRepository {
         }
         Ok(())
     }
+
+    async fn sync_credential_source_index(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        session: &PersistedSession,
+    ) -> Result<(), SessionRepositoryError> {
+        sqlx::query(
+            "DELETE FROM managed_session_credential_source_reference WHERE session_id = $1",
+        )
+        .bind(&session.session_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(storage)?;
+        for source_id in referenced_mcp_credential_source_ids(session) {
+            sqlx::query(
+                "INSERT INTO managed_session_credential_source_reference \
+                    (session_id, credential_source_id) VALUES ($1, $2)",
+            )
+            .bind(&session.session_id)
+            .bind(source_id)
+            .execute(&mut **tx)
+            .await
+            .map_err(storage)?;
+        }
+        Ok(())
+    }
+
+    async fn rebuild_credential_source_index(pool: &PgPool) -> Result<(), SessionRepositoryError> {
+        let mut tx = pool.begin().await.map_err(storage)?;
+        // Session-root writers take ROW EXCLUSIVE on managed_session before
+        // synchronizing its indexes. This stronger lock serializes startup
+        // rebuilds with those transactions and with other new-process rebuilds,
+        // so the scan and replacement are one deterministic snapshot.
+        sqlx::query("LOCK TABLE managed_session IN SHARE ROW EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        sqlx::query("LOCK TABLE managed_session_credential_source_reference IN EXCLUSIVE MODE")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        sqlx::query("DELETE FROM managed_session_credential_source_reference")
+            .execute(&mut *tx)
+            .await
+            .map_err(storage)?;
+        let rows = sqlx::query(
+            "SELECT session_id, aggregate_json, revision FROM managed_session ORDER BY session_id",
+        )
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(storage)?;
+        for row in rows {
+            let stored_session_id: String = row.try_get("session_id").map_err(storage)?;
+            let session = decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)?;
+            if session.session_id != stored_session_id {
+                return Err(corrupt(
+                    "managed Session aggregate id does not match its index",
+                ));
+            }
+            Self::sync_credential_source_index(&mut tx, &session).await?;
+        }
+        tx.commit().await.map_err(storage)
+    }
+
+    async fn is_tombstoned(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        session_id: &str,
+    ) -> Result<bool, SessionRepositoryError> {
+        sqlx::query("SELECT 1 FROM managed_session_tombstone WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&mut **tx)
+            .await
+            .map(|row| row.is_some())
+            .map_err(storage)
+    }
+
+    async fn session_identity(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        session_id: &str,
+    ) -> Result<TransactionalSessionIdentity, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "SELECT identity_kind, scope_id, revision, aggregate_json FROM (
+                SELECT 0::bigint AS identity_kind, scope_id, revision, aggregate_json
+                FROM managed_session WHERE session_id = $1
+                UNION ALL
+                SELECT 1::bigint AS identity_kind, scope_id,
+                       deleted_revision AS revision, NULL::text AS aggregate_json
+                FROM managed_session_tombstone WHERE session_id = $1
+             ) AS identity ORDER BY identity_kind",
+        )
+        .bind(session_id)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(storage)?;
+        transactional_session_identity(
+            rows.into_iter()
+                .map(|row| {
+                    Ok(RawSessionIdentity {
+                        kind: row.try_get("identity_kind").map_err(storage)?,
+                        owner_scope: row.try_get("scope_id").map_err(storage)?,
+                        revision: row.try_get("revision").map_err(storage)?,
+                        aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                    })
+                })
+                .collect::<Result<Vec<_>, SessionRepositoryError>>()?,
+        )
+    }
+
+    async fn create_replay(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+        missing_receipt: MissingCreateReceipt,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "WITH receipt AS (
+                SELECT payload_hash, committed_revision
+                FROM managed_session_idempotency
+                WHERE session_id = $1 AND idempotency_key = $2
+             ), identity AS (
+                SELECT 0::bigint AS identity_kind, scope_id, revision, aggregate_json
+                FROM managed_session WHERE session_id = $1
+                UNION ALL
+                SELECT 1::bigint AS identity_kind, scope_id,
+                       deleted_revision AS revision, NULL::text AS aggregate_json
+                FROM managed_session_tombstone WHERE session_id = $1
+             ), snapshot AS (
+                SELECT identity_kind, scope_id, revision, aggregate_json FROM identity
+                UNION ALL
+                SELECT -1::bigint, NULL::text, NULL::bigint, NULL::text
+                WHERE NOT EXISTS (SELECT 1 FROM identity)
+             )
+             SELECT (SELECT payload_hash FROM receipt) AS receipt_hash,
+                    (SELECT committed_revision FROM receipt) AS receipt_revision,
+                    identity_kind, scope_id, revision, aggregate_json
+             FROM snapshot ORDER BY identity_kind",
+        )
+        .bind(session_id)
+        .bind(&idempotency.key)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(storage)?;
+        let first = rows
+            .first()
+            .ok_or_else(|| corrupt("Session create replay snapshot is empty"))?;
+        let receipt_hash = first
+            .try_get::<Option<String>, _>("receipt_hash")
+            .map_err(storage)?;
+        let receipt_revision = first
+            .try_get::<Option<i64>, _>("receipt_revision")
+            .map_err(storage)?;
+        let receipt = match (receipt_hash, receipt_revision) {
+            (None, None) => None,
+            (Some(payload_hash), Some(committed_revision)) => Some(SessionIdempotencyReceipt {
+                payload_hash,
+                committed_revision: SessionRevision(
+                    u64::try_from(committed_revision)
+                        .map_err(|_| corrupt("negative committed Session revision"))?,
+                ),
+            }),
+            _ => return Err(corrupt("incomplete Session create receipt")),
+        };
+        let identity = transactional_session_identity(
+            rows.into_iter()
+                .map(|row| {
+                    Ok(RawSessionIdentity {
+                        kind: row.try_get("identity_kind").map_err(storage)?,
+                        owner_scope: row.try_get("scope_id").map_err(storage)?,
+                        revision: row.try_get("revision").map_err(storage)?,
+                        aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                    })
+                })
+                .filter_map(
+                    |row: Result<RawSessionIdentity, SessionRepositoryError>| match row {
+                        Ok(identity) if identity.kind < 0 => None,
+                        other => Some(other),
+                    },
+                )
+                .collect::<Result<Vec<_>, SessionRepositoryError>>()?,
+        )?;
+        classify_create_replay(
+            owner_scope,
+            session_id,
+            idempotency,
+            receipt,
+            identity,
+            missing_receipt,
+        )
+    }
 }
 
 #[async_trait]
@@ -95,8 +295,9 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         mut session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionRevision, SessionRepositoryError> {
-        if session.session_id.trim().is_empty()
+    ) -> Result<SessionCreateResult, SessionRepositoryError> {
+        if owner_scope.trim().is_empty()
+            || session.session_id.trim().is_empty()
             || idempotency.key.trim().is_empty()
             || idempotency.payload_hash.trim().is_empty()
             || session.revision != SessionRevision(0)
@@ -109,39 +310,18 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             ));
         }
         let mut tx = self.pool.begin().await.map_err(storage)?;
-        if let Some(row) = sqlx::query(
-            "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-             WHERE session_id = $1 AND idempotency_key = $2",
+        if let Some(replayed) = Self::create_replay(
+            &mut tx,
+            owner_scope,
+            &session.session_id,
+            &idempotency,
+            MissingCreateReceipt::AllowInsertFence,
         )
-        .bind(&session.session_id)
-        .bind(&idempotency.key)
-        .fetch_optional(&mut *tx)
-        .await
-        .map_err(storage)?
+        .await?
         {
-            let stored_hash: String = row.get("payload_hash");
-            if stored_hash != idempotency.payload_hash {
-                return Err(SessionRepositoryError::Conflict(
-                    SessionRepositoryConflict::IdempotencyMismatch,
-                ));
-            }
-            let committed_revision: i64 = row.get("committed_revision");
-            return u64::try_from(committed_revision)
-                .map(SessionRevision)
-                .map_err(|_| corrupt("negative committed Session revision"));
+            return Ok(SessionCreateResult::Replayed(replayed));
         }
-        if sqlx::query("SELECT 1 FROM managed_session_tombstone WHERE session_id = $1")
-            .bind(&session.session_id)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(storage)?
-            .is_some()
-        {
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::Tombstoned,
-            ));
-        }
-        let new_revision = SessionRevision(1);
+        let new_revision = SESSION_CREATE_REVISION;
         session.revision = new_revision;
         let inserted = sqlx::query(
             r#"INSERT INTO managed_session
@@ -158,8 +338,27 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(storage)?
         .rows_affected();
         if inserted != 1 {
+            if let Some(replayed) = Self::create_replay(
+                &mut tx,
+                owner_scope,
+                &session.session_id,
+                &idempotency,
+                MissingCreateReceipt::RejectOccupied,
+            )
+            .await?
+            {
+                return Ok(SessionCreateResult::Replayed(replayed));
+            }
             return Err(SessionRepositoryError::Conflict(
                 SessionRepositoryConflict::AlreadyExists,
+            ));
+        }
+        // PostgreSQL's ON CONFLICT wait can outlive a concurrent delete. A
+        // second tombstone fence in the same transaction prevents committing a
+        // resurrected live row beside the winner's tombstone.
+        if Self::is_tombstoned(&mut tx, &session.session_id).await? {
+            return Err(SessionRepositoryError::Conflict(
+                SessionRepositoryConflict::Tombstoned,
             ));
         }
         Self::sync_session_indexes(&mut tx, &session).await?;
@@ -187,7 +386,35 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .map_err(storage)?;
         }
         tx.commit().await.map_err(storage)?;
-        Ok(new_revision)
+        Ok(SessionCreateResult::Applied(session))
+    }
+
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        if owner_scope.trim().is_empty()
+            || session_id.trim().is_empty()
+            || idempotency.key.trim().is_empty()
+            || idempotency.payload_hash.trim().is_empty()
+        {
+            return Err(SessionRepositoryError::InvalidMutation(
+                "invalid Session create replay query".into(),
+            ));
+        }
+        let mut tx = self.pool.begin().await.map_err(storage)?;
+        let replay = Self::create_replay(
+            &mut tx,
+            owner_scope,
+            session_id,
+            idempotency,
+            MissingCreateReceipt::RejectOccupied,
+        )
+        .await?;
+        tx.commit().await.map_err(storage)?;
+        Ok(replay)
     }
 
     async fn commit_mutation(
@@ -211,16 +438,19 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
         .map_err(storage)?
         {
             let stored_hash: String = row.get("payload_hash");
-            if stored_hash != mutation.idempotency.payload_hash {
-                return Ok(SessionMutationResult::IdempotencyMismatch);
-            }
             let committed_revision: i64 = row.get("committed_revision");
-            return Ok(SessionMutationResult::Replayed {
-                new_revision: SessionRevision(
-                    u64::try_from(committed_revision)
-                        .map_err(|_| corrupt("negative committed Session revision"))?,
-                ),
-            });
+            let committed_revision = SessionRevision(
+                u64::try_from(committed_revision)
+                    .map_err(|_| corrupt("negative committed Session revision"))?,
+            );
+            return classify_mutation_replay(
+                owner_scope,
+                &stored_hash,
+                committed_revision,
+                next,
+                &mutation.idempotency.payload_hash,
+                &Self::session_identity(&mut tx, &session_id).await?,
+            );
         }
         let current = sqlx::query(
             "SELECT revision, scope_id, aggregate_json
@@ -534,6 +764,39 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             })
             .map_err(corrupt)?;
             if !session.is_terminal() {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let rows = sqlx::query(
+            "SELECT session.aggregate_json, session.revision \
+             FROM managed_session_credential_source_reference reference \
+             JOIN managed_session session ON session.session_id = reference.session_id \
+             WHERE reference.credential_source_id = $1 AND session.scope_id = $2 \
+             ORDER BY session.session_id",
+        )
+        .bind(&source_id.0)
+        .bind(workspace_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(storage)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let session = decode(EncodedSessionRow {
+                aggregate_json: row.try_get("aggregate_json").map_err(storage)?,
+                revision: row.try_get("revision").map_err(storage)?,
+            })
+            .map_err(corrupt)?;
+            if !session.is_terminal()
+                && referenced_mcp_credential_source_ids(&session).contains(&source_id.0)
+            {
                 sessions.push(session);
             }
         }

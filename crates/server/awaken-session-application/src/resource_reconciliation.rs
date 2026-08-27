@@ -15,8 +15,10 @@ use awaken_session_contract::{
 };
 
 use super::{
-    SessionApplication, SessionMutationError, SessionPreparationError, SessionReconciliation,
-    SessionReconciliationFailure, SessionRecoveryCandidates, mutation::repository_failure,
+    ConfiguredSessionRepository, SessionApplication, SessionMutationError,
+    SessionParticipantProvenance, SessionPreparationError, SessionReconciliation,
+    SessionReconciliationFailure, SessionRecoveryCandidates, SessionRepositoryOwner,
+    mutation::repository_failure,
 };
 
 #[derive(Clone)]
@@ -24,6 +26,19 @@ enum ResourceSettlement {
     Commit,
     Rollback(String),
     RetryableFailure(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OwnedRepositoryRetirement {
+    Retired,
+    NotOwned,
+    Pending,
+}
+
+impl OwnedRepositoryRetirement {
+    const fn is_complete(self) -> bool {
+        !matches!(self, Self::Pending)
+    }
 }
 
 /// Protocol-neutral whole-manifest command. The interface owns request
@@ -600,6 +615,17 @@ impl SessionApplication {
         {
             return Err(SessionResourceManifestError::Conflict);
         }
+        if let Some(baseline) = session.frozen_baseline()
+            && !baseline
+                .mutation_policy
+                .admits_resource_replacement(session.resources.desired(), &command.resources)
+        {
+            return Err(SessionResourceManifestError::Rejected(
+                RunError::bad_request(
+                    "profiled Session resource mutation is outside its immutable policy",
+                ),
+            ));
+        }
 
         let unchanged = session.resources.desired() == &command.resources;
         if !unchanged {
@@ -679,14 +705,19 @@ impl SessionApplication {
         &self,
         mut outcome: SessionResourceManifestOutcome,
     ) -> Result<SessionResourceManifestOutcome, SessionResourceManifestError> {
-        if outcome.session.resources.pending.is_none() {
+        if outcome.session.resources.pending.is_none()
+            && !outcome.session.resources.has_repository_retirements()
+        {
             return Ok(outcome);
         }
         let owner_scope = self
             .owner(&outcome.session.session_id)
             .await
             .map_err(SessionResourceManifestError::mutation)?;
-        let convergence = if self.requires_external_realization(&outcome.session) {
+        let convergence = if outcome.session.resources.pending.is_none() {
+            self.reconcile_repository_retirements(&owner_scope, outcome.session.clone())
+                .await
+        } else if self.requires_external_realization(&outcome.session) {
             self.dispatch_session_work(&outcome.session)
                 .await
                 .map(|_| outcome.session.clone())
@@ -718,16 +749,25 @@ impl SessionApplication {
         binding_id: &awaken_resource_contract::BindingId,
         token: awaken_agent_contract::RedactedString,
     ) -> Result<PersistedSession, SessionPreparationError> {
-        let ingress = self.repository_credential_ingress().ok_or_else(|| {
-            SessionPreparationError::Rejected(RunError::bad_request(
-                "repository authorization requires a configured credential Vault",
-            ))
-        })?;
         let mut persisted = self
             .session_repository()
             .get(session_id)
             .await
             .map_err(repository_preparation)?;
+        if let Some(baseline) = persisted.frozen_baseline()
+            && !baseline
+                .mutation_policy
+                .admits_repository_credential_mutation()
+        {
+            return Err(SessionPreparationError::Rejected(RunError::bad_request(
+                "profiled Session Repository credentials are immutable",
+            )));
+        }
+        let ingress = self.repository_credential_ingress().ok_or_else(|| {
+            SessionPreparationError::Rejected(RunError::bad_request(
+                "repository authorization requires a configured credential Vault",
+            ))
+        })?;
         let (credential_source, credential_revision, remote_url) = persisted
             .resources
             .active
@@ -1016,7 +1056,9 @@ impl SessionApplication {
                 });
                 continue;
             }
-            if (!session.is_terminal() && self.requires_external_realization(&session))
+            if (!session.is_terminal()
+                && self.requires_external_realization(&session)
+                && !session.resources.has_repository_retirements())
                 || !session.needs_resource_reconciliation()
             {
                 continue;
@@ -1053,6 +1095,23 @@ impl SessionApplication {
         let session = self
             .ensure_repository_credentials_pinned(owner_scope, session)
             .await?;
+        if !session.is_terminal() && !self.requires_external_realization(&session) {
+            if session.execution != SessionExecutionState::Idle {
+                // Resource changes remain deferred while a Run owns execution.
+                // Select that existing rule before constructing the complete
+                // activation/retirement future on the supervisor poll stack.
+                return Ok(session);
+            }
+            if !session.resources.needs_reconciliation()
+                && session.resources.active.inputs().is_empty()
+                && session.resources.activations.is_empty()
+            {
+                // This is the exact no-op branch below, selected before constructing
+                // the full activation/retirement future. `needs_reconciliation` is
+                // the canonical pending/activation/retirement-work predicate.
+                return Ok(session);
+            }
+        }
         self.reconcile_prepared_resources(owner_scope, session)
             .await
     }
@@ -1066,12 +1125,16 @@ impl SessionApplication {
         mut session: PersistedSession,
     ) -> Result<PersistedSession, SessionPreparationError> {
         if !session.is_terminal() && self.requires_external_realization(&session) {
-            return Ok(session);
+            return if session.resources.pending.is_none()
+                && session.resources.has_repository_retirements()
+            {
+                self.reconcile_repository_retirements(owner_scope, session)
+                    .await
+            } else {
+                Ok(session)
+            };
         }
         let session_id = session.session_id.clone();
-        if session.execution != SessionExecutionState::Idle && !session.is_terminal() {
-            return Ok(session);
-        }
         if session.execution == SessionExecutionState::Idle && !session.is_terminal() {
             if let Some(desired) = session.resources.pending.clone() {
                 let previous = session.resources.active.clone();
@@ -1114,7 +1177,7 @@ impl SessionApplication {
                     .await?;
                     return Err(SessionPreparationError::Rejected(error));
                 }
-                return self
+                let committed = self
                     .settle_resource_reconciliation(
                         owner_scope,
                         &session_id,
@@ -1122,7 +1185,13 @@ impl SessionApplication {
                         &desired,
                         ResourceSettlement::Commit,
                     )
-                    .await;
+                    .await?;
+                return if committed.resources.has_repository_retirements() {
+                    self.reconcile_repository_retirements(owner_scope, committed)
+                        .await
+                } else {
+                    Ok(committed)
+                };
             }
 
             if session
@@ -1138,7 +1207,12 @@ impl SessionApplication {
             if session.resources.active.inputs().is_empty()
                 && session.resources.activations.is_empty()
             {
-                return Ok(session);
+                return if session.resources.has_repository_retirements() {
+                    self.reconcile_repository_retirements(owner_scope, session)
+                        .await
+                } else {
+                    Ok(session)
+                };
             }
             let (active_revision, active_resources) = session.resources.active_generation();
             self.runtime()
@@ -1157,7 +1231,12 @@ impl SessionApplication {
                     .await
                     .map_err(mutation_failure)?;
             }
-            return Ok(session);
+            return if session.resources.has_repository_retirements() {
+                self.reconcile_repository_retirements(owner_scope, session)
+                    .await
+            } else {
+                Ok(session)
+            };
         }
 
         match self
@@ -1166,6 +1245,88 @@ impl SessionApplication {
         {
             Some(session) => Ok(session),
             None => Ok(session),
+        }
+    }
+
+    async fn reconcile_repository_retirements(
+        &self,
+        owner_scope: &str,
+        mut session: PersistedSession,
+    ) -> Result<PersistedSession, SessionPreparationError> {
+        loop {
+            let Some(retirement) = session.resources.repository_retirements().first().cloned()
+            else {
+                return Ok(session);
+            };
+            let ResolvedInputSource::Repository { repository_id, .. } = &retirement.source else {
+                return Err(internal(
+                    "Session Repository retirement intent contains another Resource kind",
+                ));
+            };
+            if session_resources_reference_repository_generation(
+                &session.resources.active,
+                repository_id.as_str(),
+            ) {
+                let mut candidate = session.clone();
+                candidate
+                    .resources
+                    .complete_repository_retirement(&retirement);
+                session = self
+                    .commit_resource_snapshot(
+                        owner_scope,
+                        candidate,
+                        "repository-retirement-cancelled",
+                        Vec::new(),
+                    )
+                    .await
+                    .map_err(mutation_failure)?;
+                continue;
+            }
+            if session.resources.pending.as_ref().is_some_and(|pending| {
+                session_resources_reference_repository_generation(pending, repository_id.as_str())
+            }) {
+                return Ok(session);
+            }
+            if !self
+                .retire_session_repository_input(
+                    owner_scope,
+                    &session.session_id,
+                    &retirement.source,
+                )
+                .await
+            {
+                return Err(internal(
+                    "Session-scoped Repository cleanup remains pending",
+                ));
+            }
+            let mut candidate = session.clone();
+            if !candidate
+                .resources
+                .complete_repository_retirement(&retirement)
+            {
+                return Err(internal(
+                    "Session Repository retirement intent disappeared before completion",
+                ));
+            }
+            match self
+                .commit_resource_snapshot(
+                    owner_scope,
+                    candidate,
+                    "repository-retirement-complete",
+                    Vec::new(),
+                )
+                .await
+            {
+                Ok(committed) => session = committed,
+                Err(SessionMutationError::Conflict) => {
+                    session = self
+                        .session_repository()
+                        .get(&session.session_id)
+                        .await
+                        .map_err(repository_preparation)?;
+                }
+                Err(error) => return Err(mutation_failure(error)),
+            }
         }
     }
 
@@ -1388,25 +1549,184 @@ impl SessionApplication {
         session_id: &str,
         resources: &awaken_session_contract::SessionResourceState,
     ) -> bool {
-        if self.resource_registry().is_none() {
-            return true;
-        }
-        let prefix = format!("managed:{session_id}:repository:");
-        let mut ids = std::collections::BTreeSet::new();
-        for manifest in std::iter::once(&resources.active).chain(resources.pending.iter()) {
-            for input in manifest.inputs() {
-                if let ResolvedInputSource::Repository { repository_id, .. } = &input.source
-                    && repository_id.as_str().starts_with(&prefix)
-                {
-                    ids.insert(repository_id.to_string());
-                }
-            }
+        let mut repositories = std::collections::BTreeMap::new();
+        for input in std::iter::once(&resources.active)
+            .chain(resources.pending.iter())
+            .flat_map(awaken_session_contract::ResolvedSessionResources::inputs)
+            .chain(resources.repository_retirements().iter())
+        {
+            let ResolvedInputSource::Repository { repository_id, .. } = &input.source else {
+                continue;
+            };
+            repositories
+                .entry(repository_id.to_string())
+                .and_modify(|entry: &mut ResolvedInputSource| {
+                    if repository_source_credential_revision(&input.source)
+                        > repository_source_credential_revision(entry)
+                    {
+                        entry.clone_from(&input.source);
+                    }
+                })
+                .or_insert_with(|| input.source.clone());
         }
         let mut retired = true;
-        for repository_id in ids {
-            retired &= self.retire_repository(owner_scope, &repository_id).await;
+        for source in repositories.into_values() {
+            retired &= self
+                .retire_session_repository_input(owner_scope, session_id, &source)
+                .await;
         }
         retired
+    }
+
+    /// Compensate only participants created by a command that failed before a
+    /// durable Session root adopted them. Exact replays belong to an earlier
+    /// command and are never inferred to be disposable.
+    pub async fn abort_unadopted_session_repositories(
+        &self,
+        configured: &[ConfiguredSessionRepository],
+    ) -> bool {
+        let mut retired = true;
+        for configured in configured.iter().rev() {
+            let adopted = match self
+                .session_repository()
+                .get(configured.owner.session_id())
+                .await
+            {
+                Ok(session) => session_resources_reference_repository(
+                    &session.resources,
+                    configured.repository_id.as_str(),
+                ),
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => false,
+                Err(_) => {
+                    // An unavailable/corrupt root read cannot prove that a
+                    // concurrent exact command did not adopt this participant.
+                    retired = false;
+                    continue;
+                }
+            };
+            if adopted {
+                continue;
+            }
+            if configured.registry_provenance == SessionParticipantProvenance::Applied {
+                retired &= self
+                    .retire_owned_repository(
+                        &configured.workspace_id,
+                        &configured.owner,
+                        configured.repository_id.as_str(),
+                    )
+                    .await;
+            }
+            if let Some(credential) = &configured.credential
+                && credential.provenance == SessionParticipantProvenance::Applied
+            {
+                retired &= self
+                    .retire_owned_repository_credential(
+                        &configured.workspace_id,
+                        &credential.credential,
+                    )
+                    .await;
+            }
+        }
+        retired
+    }
+
+    /// Retire one detached Repository input only when both its canonical
+    /// Session namespace and durable owner marker agree. Platform/shared
+    /// Repository inputs are intentionally a no-op.
+    pub async fn retire_session_repository_input(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        source: &ResolvedInputSource,
+    ) -> bool {
+        let ResolvedInputSource::Repository {
+            repository_id,
+            config,
+            credential,
+        } = source
+        else {
+            return true;
+        };
+        let Some(owner) = session_repository_owner(session_id, repository_id.as_str()) else {
+            return true;
+        };
+        let owned_credential_binding = format!("{}:credential", repository_id.as_str());
+        let owned_credential = credential
+            .as_deref()
+            .filter(|_| config.credential_binding.as_deref() == Some(&owned_credential_binding))
+            .map(|credential| &credential.access.credential);
+        self.retire_owned_repository_participants(
+            owner_scope,
+            &owner,
+            repository_id.as_str(),
+            owned_credential,
+        )
+        .await
+        .is_complete()
+    }
+
+    pub(crate) async fn retire_owned_repository(
+        &self,
+        owner_scope: &str,
+        owner: &SessionRepositoryOwner,
+        repository_id: &str,
+    ) -> bool {
+        self.retire_owned_repository_participants(owner_scope, owner, repository_id, None)
+            .await
+            .is_complete()
+    }
+
+    async fn retire_owned_repository_participants(
+        &self,
+        owner_scope: &str,
+        owner: &SessionRepositoryOwner,
+        repository_id: &str,
+        credential: Option<&awaken_credential_contract::CredentialRef>,
+    ) -> OwnedRepositoryRetirement {
+        let Some(catalog) = self.resource_registry() else {
+            return OwnedRepositoryRetirement::Pending;
+        };
+        let definition = match catalog.find_repository(owner_scope, repository_id) {
+            Ok(Some(definition)) => definition,
+            // The prior idempotent attempt may already have retired and purged
+            // the Registry participant before its Session-root completion CAS.
+            // Absence therefore completes without inferring credential authority.
+            Ok(None) => return OwnedRepositoryRetirement::NotOwned,
+            Err(_) => return OwnedRepositoryRetirement::Pending,
+        };
+        if !owner.matches_definition(&definition) {
+            // Namespace resemblance alone never grants delete authority. This
+            // is a successful no-op for platform/shared definitions so one
+            // terminal Session cannot be held open by a resource it does not
+            // own.
+            return OwnedRepositoryRetirement::NotOwned;
+        }
+        if let Some(credential) = credential
+            && !self
+                .retire_owned_repository_credential(owner_scope, credential)
+                .await
+        {
+            return OwnedRepositoryRetirement::Pending;
+        }
+        if self.retire_repository(owner_scope, repository_id).await {
+            OwnedRepositoryRetirement::Retired
+        } else {
+            OwnedRepositoryRetirement::Pending
+        }
+    }
+
+    async fn retire_owned_repository_credential(
+        &self,
+        owner_scope: &str,
+        credential: &awaken_credential_contract::CredentialRef,
+    ) -> bool {
+        let Some(ingress) = self.repository_credential_ingress() else {
+            return false;
+        };
+        ingress
+            .retire_repository_token(credential, owner_scope)
+            .await
+            .is_ok()
     }
 
     pub async fn retire_repository(&self, owner_scope: &str, repository_id: &str) -> bool {
@@ -1446,5 +1766,60 @@ impl SessionApplication {
                 state: awaken_resource_contract::ResourceState::Deleted,
             })
             .is_ok()
+    }
+}
+
+fn session_repository_owner(
+    session_id: &str,
+    repository_id: &str,
+) -> Option<SessionRepositoryOwner> {
+    [
+        SessionRepositoryOwner::managed(session_id),
+        SessionRepositoryOwner::profiled(session_id),
+    ]
+    .into_iter()
+    .find(|owner| owner.owns_repository_id(repository_id))
+}
+
+fn session_resources_reference_repository(
+    resources: &awaken_session_contract::SessionResourceState,
+    repository_id: &str,
+) -> bool {
+    std::iter::once(&resources.active)
+        .chain(resources.pending.iter())
+        .flat_map(awaken_session_contract::ResolvedSessionResources::inputs)
+        .chain(resources.repository_retirements().iter())
+        .any(|input| {
+            matches!(
+                &input.source,
+                ResolvedInputSource::Repository {
+                    repository_id: candidate,
+                    ..
+                } if candidate.as_str() == repository_id
+            )
+        })
+}
+
+fn session_resources_reference_repository_generation(
+    resources: &ResolvedSessionResources,
+    repository_id: &str,
+) -> bool {
+    resources.inputs().iter().any(|input| {
+        matches!(
+            &input.source,
+            ResolvedInputSource::Repository {
+                repository_id: candidate,
+                ..
+            } if candidate.as_str() == repository_id
+        )
+    })
+}
+
+fn repository_source_credential_revision(source: &ResolvedInputSource) -> Option<u64> {
+    match source {
+        ResolvedInputSource::Repository { credential, .. } => credential
+            .as_deref()
+            .map(|credential| credential.access.credential.revision),
+        ResolvedInputSource::File { .. } | ResolvedInputSource::MemoryStore { .. } => None,
     }
 }

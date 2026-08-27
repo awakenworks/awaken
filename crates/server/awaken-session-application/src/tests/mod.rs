@@ -1388,6 +1388,7 @@ impl SessionRuntime for RecordingCleanupRuntime {
 
 struct FaultingSessionRepository {
     inner: Arc<dyn ManagedSessionRepository>,
+    applied_create_roots: Mutex<Vec<PersistedSession>>,
     fail_operation_once: Mutex<Option<String>>,
     conflict_operation_once: Mutex<Option<String>>,
     running_conflict_operation_once: Mutex<Option<String>>,
@@ -1418,6 +1419,7 @@ impl FaultingSessionRepository {
     fn new(inner: Arc<dyn ManagedSessionRepository>) -> Self {
         Self {
             inner,
+            applied_create_roots: Mutex::new(Vec::new()),
             fail_operation_once: Mutex::new(None),
             conflict_operation_once: Mutex::new(None),
             running_conflict_operation_once: Mutex::new(None),
@@ -1430,6 +1432,10 @@ impl FaultingSessionRepository {
 
     fn fail_once(&self, operation: &str) {
         *self.fail_operation_once.lock().unwrap() = Some(operation.to_string());
+    }
+
+    fn applied_create_roots(&self) -> Vec<PersistedSession> {
+        self.applied_create_roots.lock().unwrap().clone()
     }
 
     fn commit_then_conflict_once(&self, operation: &str) {
@@ -1466,11 +1472,30 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         idempotency: awaken_session_contract::IdempotencyRecord,
         lifecycle_facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
     ) -> Result<
-        awaken_session_contract::SessionRevision,
+        awaken_session_contract::SessionCreateResult,
         awaken_session_contract::SessionRepositoryError,
     > {
-        self.inner
+        let result = self
+            .inner
             .create(owner_scope, session, idempotency, lifecycle_facts)
+            .await?;
+        if let awaken_session_contract::SessionCreateResult::Applied(session) = &result {
+            self.applied_create_roots
+                .lock()
+                .unwrap()
+                .push(session.clone());
+        }
+        Ok(result)
+    }
+
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        self.inner
+            .replay_create(owner_scope, session_id, idempotency)
             .await
     }
 
@@ -1675,6 +1700,16 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         self.inner.reconcilable_sessions().await
     }
 
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        self.inner
+            .sessions_referencing_credential_source(workspace_id, source_id)
+            .await
+    }
+
     async fn idempotency_receipt(
         &self,
         session_id: &str,
@@ -1733,6 +1768,7 @@ impl McpAttachmentRealizer for NoopMcpRealizer {
 #[derive(Default)]
 struct RecordingEnvironmentSource {
     dispatched: Mutex<BTreeSet<String>>,
+    dispatch_calls: AtomicUsize,
     awakened: Mutex<BTreeSet<String>>,
     retired: Mutex<Vec<String>>,
     failures: Mutex<BTreeSet<String>>,
@@ -1792,6 +1828,7 @@ impl SessionEnvironmentSource for RecordingEnvironmentSource {
             .lock()
             .unwrap()
             .insert(session_id.to_string());
+        self.dispatch_calls.fetch_add(1, Ordering::SeqCst);
         Ok(format!("work:{session_id}"))
     }
 
