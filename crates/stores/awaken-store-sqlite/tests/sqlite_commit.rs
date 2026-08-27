@@ -10,6 +10,7 @@ use awaken_agent_contract::agent::state::{Command as StateCommand, MergePolicy, 
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::audit::draft::Draft;
 use awaken_agent_contract::audit::kind::Kind as EventKind;
+use awaken_agent_contract::audit::run_event::RunEvent;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::{Coordinator, OperationCoordinator};
 use awaken_agent_contract::thread::commit::operation::{
@@ -180,6 +181,90 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
     assert_eq!(snapshot.resume_tickets.len(), 1);
 
     let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn consumed_resume_ticket_and_applied_receipt_rehydrate_atomically() {
+    // Cause/effect graph: C1 an Awaiting Run owns ticket T; C2 one accepted
+    // reply commits Running plus ResumeApplied(O1) in the same ThreadCommit; C3
+    // the process/store is reopened. Effects: E1 T is absent; E2 O1 remains;
+    // E3 both facts share one recovered Thread prefix/version.
+    //
+    // | Rule | Await | Resume commit | Reopen | Effect |
+    // |---|---|---|---|---|
+    // | SR1 | T active | Running + O1 | no | T absent, O1 present |
+    // | SR2 | T active | Running + O1 | yes | E1 + E2 + E3 |
+    //
+    // Constraint/invariant: the receipt is an audit fact in the canonical
+    // Thread commit, not a Session/UI recovery row that needs reconciliation.
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let database = directory.path().join("resume-receipt.db");
+    let thread = ThreadId("receipt-restart-thread".into());
+    let run = RunId("receipt-restart-run".into());
+    let operation_id = "managed-tool-reply-operation-1";
+    let correlation_id = "managed-tool-reply-correlation-1";
+    {
+        let store = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("open");
+        let active_ticket = ResumeTicket::new(
+            correlation_id,
+            run.clone(),
+            thread.clone(),
+            "receipt-restart-snapshot",
+            "receipt-restart-catalog",
+            AwaitTarget::Pause(PauseReason::Manual),
+        );
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::awaiting(active_ticket),
+                true,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            ))
+            .await
+            .expect("commit Awaiting ticket");
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::running(run.clone()),
+                true,
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    RunEvent::ResumeApplied {
+                        operation_id: operation_id.into(),
+                        correlation_id: correlation_id.into(),
+                    }
+                    .into(),
+                ],
+            ))
+            .await
+            .expect("atomically consume ticket and commit receipt");
+    }
+
+    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("reopen");
+    let snapshot = reopened
+        .recovery_snapshot(&thread, &run)
+        .await
+        .expect("recover receipt prefix");
+    assert!(snapshot.resume_tickets.is_empty(), "SR2/E1");
+    let receipts = snapshot
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::ResumeApplied)
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1, "SR2/E2");
+    assert_eq!(
+        receipts[0].payload,
+        serde_json::json!({
+            "operation_id": operation_id,
+            "correlation_id": correlation_id,
+        }),
+        "SR2/E2"
+    );
+    assert_eq!(snapshot.thread_version, 2, "SR2/E3");
+    assert_eq!(snapshot.next_commit_ordinal, 2, "SR2/E3");
 }
 
 // G13: before any commit the projection has no truth — no partial state is

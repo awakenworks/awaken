@@ -189,6 +189,7 @@ fn activation(plugin_ids: Vec<String>) -> RunActivation {
 
 fn resume_command() -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         correlation_id: TICKET_ID.to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),

@@ -306,17 +306,31 @@ impl SharedHost {
     /// staged resource mounts (ADR-0038), each realized read-only under `.mnt/`.
     pub(crate) fn sandbox_spec(&self, thread: &str) -> pc::SandboxSpec {
         let mounts = self.thread_session_mounts(thread);
+        let has_repositories = self
+            .session_slots
+            .read(thread, |slot| !slot.resources.repositories.is_empty())
+            .unwrap_or(false);
         let environment = self
             .session_slots
             .read(thread, |slot| slot.environment_projection.clone())
             .flatten();
-        sandbox_spec_from_projection(
+        let mut spec = sandbox_spec_from_projection(
             thread,
             mounts,
             self.thread_session_env(thread),
             environment.as_ref(),
             self.session_provider.capabilities().network_isolation,
-        )
+        );
+        // A Repository is addressed by one sandbox-absolute `/workspace/...`
+        // path through structured tools, Bash, Git, and opaque Agent processes.
+        // Workdir can only rewrite cooperative tool arguments, so admitting it
+        // here would create two path realities. Namespace is the minimum class;
+        // `create_session_environment` additionally checks the explicit
+        // tool-transparency/path-fidelity capability bits before any clone.
+        if has_repositories {
+            spec.isolation = spec.isolation.max(pc::IsolationClass::Namespace);
+        }
+        spec
     }
 
     /// Stage a thread's resources (mounts + prompt fragments); consumed by
@@ -551,15 +565,12 @@ impl SharedHost {
         }
     }
 
-    /// Publish a thread's Agent-authored commits through the Repository realizer.
-    /// The host never fabricates a commit or resolves another config; it only applies
-    /// the already-selected activation and its ephemeral transport credential.
-    ///
-    /// This is the sole publication path for a runtime-staged Repository. Agents
-    /// never receive the Git credential or perform a competing push. A no-op for
-    /// a thread with no repositories, no live environment, or no authored commit.
-    /// A transport failure keeps terminal cleanup pending so the live checkout
-    /// remains available for the same idempotent Git publication retry.
+    /// Explicitly publish a thread's Agent-authored commits through the existing
+    /// Repository realizer. Session provisioning, replacement, and terminal
+    /// cleanup never call this method: Managed publication must be initiated by
+    /// an authorized Agent/MCP or operator workflow, not hidden in lifecycle
+    /// cleanup. Keeping the established public port preserves callers that own
+    /// that explicit decision without adding another Git implementation.
     pub async fn publish_thread_repositories(
         &self,
         thread: &str,
@@ -971,6 +982,58 @@ mod provisioning_registry_tests {
     }
 
     #[tokio::test]
+    async fn repository_workspace_rejects_a_provider_with_split_tool_and_process_paths() {
+        // Cause/effect graph: C1 Session has/has-not a Repository; C2 provider
+        // has/has-not tool transparency plus sandbox-absolute path fidelity.
+        // Effects: E1 repository demand is promoted to Namespace requirements;
+        // E2 a Workdir provider is rejected before environment creation/clone;
+        // E3 a no-repository Workdir Session retains its supported local tier.
+        //
+        // | Rule | Repository | Provider path contract | Effect |
+        // |---|---|---|---|
+        // | W1 | yes | split Workdir paths | E1+E2 |
+        // | W2 | no | split Workdir paths | E3 |
+        // | W3 | yes | transparent/fidelitous | admitted (covered by the real Namespace Hand test) |
+        // Constraint/invariant: SandboxSpec plus provider capabilities are the
+        // single admission authority; no Bash command rewriting or alias mount
+        // is introduced as a second path mapping.
+        let host = host();
+        let local = crate::session_environment::SessionEnvironmentProvider::workdir(
+            tempfile::tempdir().unwrap().path(),
+        );
+        let bare = host.sandbox_spec("bare");
+        assert_eq!(bare.isolation, pc::IsolationClass::Workdir, "W2/E3");
+
+        host.register_thread_resources(
+            "repository-session",
+            StagedResources {
+                repositories: vec![repository_activation("repo")],
+                ..Default::default()
+            },
+        );
+        let repository_spec = host.sandbox_spec("repository-session");
+        assert_eq!(
+            repository_spec.isolation,
+            pc::IsolationClass::Namespace,
+            "W1/E1"
+        );
+        let error = match host
+            .create_session_environment(&local, &repository_spec)
+            .await
+        {
+            Ok(_) => panic!("W1/E2 Workdir cannot offer one /workspace path"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .message
+                .contains("one sandbox-absolute workspace path"),
+            "W1/E2: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
     async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
         // A jail-escaping logical path is rejected by `LocalSandbox::provision_repo`
         // BEFORE any git runs (deterministic, no git binary needed). The fail-closed
@@ -1021,7 +1084,6 @@ mod provisioning_registry_tests {
                 ..Default::default()
             },
         );
-        host.publish_thread_repositories("t").await.unwrap(); // no env → no publish
         host.harvest_thread_skills("t").await.unwrap(); // no env / no store → no persist
         assert!(host.harvest_thread_artifacts("t").await.unwrap().is_empty());
         assert!(

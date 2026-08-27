@@ -334,6 +334,24 @@ impl SessionRuntime for EventBatchRuntime {
         {
             return Err(RunError::bad_request("incomplete scripted reply"));
         }
+        let operation = command.activity_operation_id();
+        let staged = self.staged_tool_replies.lock().unwrap();
+        if staged.get(&operation) == Some(command) {
+            return Ok(SessionThreadToolReplyFence {
+                prior_session_activity_epoch: None,
+                already_applied: true,
+            });
+        }
+        if staged.values().any(|existing| {
+            existing.session_id == command.session_id
+                && existing.expected_run_id == command.expected_run_id
+                && existing.expected_correlation_id == command.expected_correlation_id
+        }) {
+            return Err(RunError::bad_request(
+                "scripted awaiting correlation was answered by another operation",
+            ));
+        }
+        drop(staged);
         let prior_session_activity_epoch = self.tool_reply_prior_epoch.load(Ordering::SeqCst);
         if prior_session_activity_epoch == 0 {
             return Err(RunError::internal(
@@ -342,6 +360,7 @@ impl SessionRuntime for EventBatchRuntime {
         }
         Ok(SessionThreadToolReplyFence {
             prior_session_activity_epoch: Some(prior_session_activity_epoch),
+            already_applied: false,
         })
     }
 
@@ -536,10 +555,11 @@ fn planned_session(session_id: &str, inputs: Vec<SessionEventInput>) -> Persiste
 
 fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
     SessionEventInput::ToolReply(SessionEventToolReply {
-        public_tool_use_event_id: format!("evt_{tool_use_id}"),
+        tool_request_event_id: format!("evt_{tool_use_id}"),
         target: SessionThreadTarget::Primary,
         expected_run_id: RunId("awaiting-run".into()),
         expected_correlation_id: "awaiting-correlation".into(),
+        expected_thread_version: None,
         runtime_tool_use_id: tool_use_id.into(),
         reply: SessionEventToolReplyKind::ToolResult {
             content: Some(vec![ContentBlock::text("tool result")]),
@@ -1055,7 +1075,8 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
     // processed marker. Effects: E1 first drive reports retryable failure and
     // leaves root unprocessed; E2 the one coordination/activity identity is
     // replayed; E3 Runtime owns one staged payload despite two delivery calls;
-    // E4 cold retry marks processed and later scans perform no delivery.
+    // E4 cold retry classifies the durable receipt before the consumed-ticket
+    // path, marks processed, and later scans perform no delivery.
     //
     // | Rule | Stage | Root marker | Drive | Effect |
     // | R1 | new success/response lost | false | warm | E1+E3 |

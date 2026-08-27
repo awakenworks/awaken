@@ -3,7 +3,8 @@
   "private": true,
   "packageManager": "pnpm@11.6.0",
   "scripts": {
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check": "pnpm check:managed-sdk && pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "check:managed-sdk": "pnpm --filter @awaken/managed-sdk-oracle check",
     "lint": "node web/scripts/lint.mjs",
     "typecheck": "pnpm --filter @awaken/managed-session-projection typecheck && pnpm -C web typecheck",
     "build": "pnpm --filter @awaken/managed-session-projection build && pnpm -C web build",

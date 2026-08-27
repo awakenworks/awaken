@@ -71,7 +71,12 @@ export function useSessionLog(
       }
     };
     for (const name of SSE_EVENT_NAMES) source.addEventListener(name, onAny);
-    source.onerror = () => source.close();
+    // EventSource reconnects automatically. Reconcile from the committed list
+    // on every disconnect so frames between the break and reconnect cannot
+    // leave Chat/Trace on a different projection.
+    source.onerror = () => {
+      void qc.invalidateQueries({ queryKey });
+    };
     return () => source.close();
   // `queryKey` is deliberately represented by `base` here. Callers often pass an
   // inline array; depending on its identity would tear down and reopen SSE on every

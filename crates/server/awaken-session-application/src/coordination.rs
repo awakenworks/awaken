@@ -629,7 +629,17 @@ impl SessionAgentCoordination for SessionApplication {
                 "Session Thread reply requires exact Run, correlation, and tool identities",
             ));
         }
-        if let SessionThreadTarget::Child(child_thread_id) = &command.target {
+        // Runtime first classifies a committed exact replay. Current topology
+        // and active-ticket checks apply only to a new delivery: a response lost
+        // after Runtime commit must remain finishable even if the child was
+        // archived or the ticket was consumed in the meantime.
+        let fence = self
+            .runtime()
+            .session_thread_tool_reply_fence(&command)
+            .await?;
+        if !fence.already_applied
+            && let SessionThreadTarget::Child(child_thread_id) = &command.target
+        {
             self.validate_coordinated_thread(&command.session_id, child_thread_id)
                 .await?;
             if self
@@ -641,14 +651,6 @@ impl SessionAgentCoordination for SessionApplication {
                 return Err(RunError::bad_request("Agent Thread is archived"));
             }
         }
-        // Runtime reads the exact committed Awaiting Run/correlation from the
-        // Session partition and checks it against the admission-time command.
-        // The Session owns activity admission; delivery revalidates the same
-        // command and transient activity coordinate after this root CAS.
-        let fence = self
-            .runtime()
-            .session_thread_tool_reply_fence(&command)
-            .await?;
         let operation_id = command.activity_operation_id();
         let session_id = command.session_id.clone();
         let (_, session_activity_epoch) = self

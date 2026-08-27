@@ -2,6 +2,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import {
   API_BETAS,
   ApiClientError,
+  IdempotencyScope,
   api,
   betaForPath,
   getToken,
@@ -10,6 +11,30 @@ import {
   workspaceIdForRequest,
   ws,
 } from "./client";
+
+describe("idempotent mutation identity", () => {
+  it("reuses an exact payload after timeout and rotates when intent changes", () => {
+    // Cause/effect graph: C1 retry payload is exact/changed; C2 no server
+    // receipt is available after a transport timeout. Effects: E1 exact retry
+    // keeps one key; E2 changed intent gets a new key; E3 known success closes
+    // the operation so a later identical user intent gets a new key. The
+    // backend remains the receipt/conflict authority.
+    // | Rule | Payload/lifecycle | Effect |
+    // |---|---|---|
+    // | I1 | same, result unknown | same Idempotency-Key |
+    // | I2 | changed | new Idempotency-Key |
+    // | I3 | same, after complete | new Idempotency-Key |
+    const scope = new IdempotencyScope("session-create");
+    const first = scope.headersFor({ agent: "a", title: "one" });
+    const retry = scope.headersFor({ agent: "a", title: "one" });
+    const changed = scope.headersFor({ agent: "a", title: "two" });
+    expect(retry).toEqual(first);
+    expect(changed["idempotency-key"]).not.toBe(first["idempotency-key"]);
+    scope.complete();
+    const later = scope.headersFor({ agent: "a", title: "two" });
+    expect(later["idempotency-key"]).not.toBe(changed["idempotency-key"]);
+  });
+});
 
 describe("cloud product session bearer", () => {
   // Cause/effect decision table:

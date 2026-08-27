@@ -59,6 +59,11 @@ pub struct ResumeCommand {
     pub snapshot_id: ExecutableAgentSnapshotId,
     pub catalog_fingerprint: CatalogFingerprint,
     pub result: ResumeResult,
+    /// Stable durable-ingress operation that delivered this resume. Direct
+    /// in-process callers omit it; durable workers bind the canonical
+    /// PendingInput message id so ticket consumption has a replay receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     /// Stable context accepted atomically with this resume. Session tool
     /// replies use Role::System Messages only; the runtime validates that
     /// restriction and commits them immediately before the resumed result.
@@ -83,6 +88,7 @@ impl ResumeCommand {
             snapshot_id: ExecutableAgentSnapshotId(ticket.snapshot_id.clone()),
             catalog_fingerprint: CatalogFingerprint(ticket.catalog_fingerprint.clone()),
             result,
+            operation_id: None,
             context_messages: Vec::new(),
             now_ms,
         }
@@ -95,6 +101,13 @@ impl ResumeCommand {
         context_messages: Vec<awaken_agent_contract::agent::message::Message>,
     ) -> Self {
         self.context_messages = context_messages;
+        self
+    }
+
+    /// Bind the durable-ingress identity receipted with ticket consumption.
+    #[must_use]
+    pub fn with_operation_id(mut self, operation_id: impl Into<String>) -> Self {
+        self.operation_id = Some(operation_id.into());
         self
     }
 }
@@ -244,6 +257,7 @@ mod tests {
 
     fn command() -> ResumeCommand {
         ResumeCommand {
+            operation_id: None,
             correlation_id: "c1".to_string(),
             run_id: RunId("run-1".to_string()),
             thread_id: ThreadId("thread-1".to_string()),
@@ -413,6 +427,40 @@ mod tests {
         assert_eq!(cmd.snapshot_id.0, "snap-1");
         assert_eq!(cmd.result, ResumeResult::allow());
         assert!(validate_resume(&ticket(), &cmd).is_ok());
+    }
+
+    #[test]
+    fn durable_operation_identity_is_optional_on_old_wires_and_exact_on_new_wires() {
+        // Cause/effect graph: C1 legacy serialized command omits operation_id;
+        // C2 durable ingress supplies O1; C3 ticket validation reads immutable
+        // resume coordinates. Effects: E1 legacy decodes None and remains valid;
+        // E2 O1 round-trips byte-for-value; E3 operation identity does not widen
+        // ticket authorization. Runtime uses it only to commit the replay receipt.
+        //
+        // | Rule | operation_id | Effect |
+        // |---|---|---|
+        // | O1 | omitted | None + valid |
+        // | O2 | O1 | exact round-trip + valid |
+        let mut legacy = serde_json::to_value(command()).expect("serialize command");
+        legacy
+            .as_object_mut()
+            .expect("command object")
+            .remove("operation_id");
+        let legacy: ResumeCommand = serde_json::from_value(legacy).expect("legacy command");
+        assert_eq!(legacy.operation_id, None, "O1/E1");
+        assert!(validate_resume(&ticket(), &legacy).is_ok(), "O1/E1");
+
+        let current = command().with_operation_id("delivery-o1");
+        let current: ResumeCommand = serde_json::from_value(
+            serde_json::to_value(&current).expect("serialize current command"),
+        )
+        .expect("deserialize current command");
+        assert_eq!(
+            current.operation_id.as_deref(),
+            Some("delivery-o1"),
+            "O2/E2"
+        );
+        assert!(validate_resume(&ticket(), &current).is_ok(), "O2/E3");
     }
 
     #[test]

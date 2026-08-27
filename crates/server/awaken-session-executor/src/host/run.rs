@@ -877,50 +877,6 @@ impl SharedHost {
         Ok(uid.0)
     }
 
-    pub(super) async fn validated_session_thread_tool_reply(
-        &self,
-        command: &awaken_session_contract::SessionThreadToolReplyCommand,
-    ) -> Result<(ThreadId, ResumeTicket), HostError> {
-        if command.session_id.trim().is_empty()
-            || command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
-            return Err(HostError::bad_request(
-                "Session Thread tool reply is incomplete",
-            ));
-        }
-        let thread_id = command.target.thread_id(&command.session_id);
-        if command
-            .target
-            .child_thread_id()
-            .is_some_and(|child| child.0 == command.session_id)
-        {
-            return Err(HostError::bad_request(
-                "a coordinated child Thread must differ from its parent Session",
-            ));
-        }
-        let commit = self.commit_for_read(&command.session_id).await?;
-        let (run_id, ticket) = commit
-            .open_wait_for_thread(&thread_id)
-            .await
-            .map_err(HostError::internal)?
-            .ok_or_else(|| HostError::bad_request("Session Thread has no awaiting Run"))?;
-        if run_id != command.expected_run_id
-            || ticket.correlation_id != command.expected_correlation_id
-        {
-            return Err(HostError::bad_request(
-                "Session Thread awaiting ticket changed after Event admission",
-            ));
-        }
-        self.check_pending(
-            &ticket,
-            &command.tool_use_id,
-            command.reply.client_executed(),
-        )?;
-        Ok((thread_id, ticket))
-    }
-
     /// Rebuild the sole durable resume target for a foreground root Run whose
     /// committed Awaiting ticket predates dispatch ownership. Budget and tool
     /// replies share this handoff; child Runs must already have a durable row.
@@ -1465,7 +1421,7 @@ impl SharedHost {
     /// run's pending tool, and that tool's binding must match the inbound resume
     /// — a client result may only answer a client-executed tool, a confirmation
     /// only a built-in one.
-    fn check_pending(
+    pub(super) fn check_pending(
         &self,
         ticket: &ResumeTicket,
         tool_use_id: &str,

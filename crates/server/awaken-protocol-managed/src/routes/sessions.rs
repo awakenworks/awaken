@@ -20,6 +20,10 @@ use axum::{Json, Router};
 use tokio::sync::broadcast;
 use tokio_stream::Stream;
 
+use crate::common::headers::{
+    ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, MEMORY_BETA, ManagedCapability,
+    SKILLS_BETA, USER_PROFILES_BETA_LATEST, has_capability,
+};
 use crate::preview::ThreadPreviewProjector;
 use crate::state::{ManagedState, RunError, RunErrorKind, StateError, internal_thread_id};
 use crate::types::{
@@ -255,23 +259,6 @@ pub(crate) fn error_response(err: StateError) -> (StatusCode, Json<ErrorResponse
     (status, Json(ErrorResponse::new(kind, message)))
 }
 
-/// The endpoint-specific beta required by the standalone Skills resource API.
-pub const SKILLS_BETA: &str = "skills-2025-10-02";
-/// The endpoint-specific beta used by current SDKs on Memory APIs. The
-/// preceding Managed beta remains a wire-compatible legacy selector for SDKs
-/// released before the Memory beta was added.
-pub const MEMORY_BETA: &str = "agent-memory-2026-07-22";
-pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
-
-fn has_beta(req: &Request, expected: &str) -> bool {
-    req.headers()
-        .get_all("anthropic-beta")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .any(|beta| beta.trim() == expected)
-}
-
 fn path_is_family(path: &str, family: &str) -> bool {
     let direct = path == family || path.starts_with(&format!("{family}/"));
     if direct {
@@ -327,18 +314,18 @@ pub async fn enforce_managed_beta(
     // or `/v1/workspaces/{id}/...` could bypass an endpoint beta gate.
     let is_family = |family: &str| path_is_family(path, family);
     if is_family("/v1/memory_stores") {
-        let has_memory = has_beta(&req, MEMORY_BETA);
-        let has_managed = has_beta(&req, crate::MANAGED_BETA);
+        let has_memory = has_capability(req.headers(), ManagedCapability::Memory);
+        let has_managed = has_capability(req.headers(), ManagedCapability::ManagedAgents);
         if has_memory == has_managed {
             let message = if has_memory {
                 format!(
                     "the {MEMORY_BETA} beta replaces {managed} on memory store endpoints; do not send both",
-                    managed = crate::MANAGED_BETA,
+                    managed = MANAGED_BETA,
                 )
             } else {
                 format!(
                     "a Memory beta is required: send `anthropic-beta: {MEMORY_BETA}`; legacy clients may send `{managed}` alone",
-                    managed = crate::MANAGED_BETA,
+                    managed = MANAGED_BETA,
                 )
             };
             return (
@@ -352,7 +339,10 @@ pub async fn enforce_managed_beta(
         form_urlencoded::parse(query.as_bytes())
             .any(|(name, value)| name == "beta" && value == "true")
     });
-    if is_family("/v1/skills") && query_requests_beta && !has_beta(&req, SKILLS_BETA) {
+    if is_family("/v1/skills")
+        && query_requests_beta
+        && !has_capability(req.headers(), ManagedCapability::Skills)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -362,22 +352,22 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
-    if is_family("/v1/dreams") && !has_beta(&req, super::dreams::DREAMING_BETA) {
+    if is_family("/v1/dreams") && !has_capability(req.headers(), ManagedCapability::Dreams) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
                     "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
-                    beta = super::dreams::DREAMING_BETA,
+                    beta = DREAMING_BETA,
                 ),
             )),
         )
             .into_response();
     }
     if is_family("/v1/user_profiles")
-        && !has_beta(&req, crate::USER_PROFILES_BETA)
-        && !has_beta(&req, crate::common::headers::USER_PROFILES_BETA_LATEST)
+        && !has_capability(req.headers(), ManagedCapability::UserProfilesLegacy)
+        && !has_capability(req.headers(), ManagedCapability::UserProfilesCurrent)
     {
         return (
             StatusCode::BAD_REQUEST,
@@ -386,13 +376,14 @@ pub async fn enforce_managed_beta(
                 format!(
                     "a User Profiles beta is required: send `anthropic-beta: {legacy}` or `anthropic-beta: {latest}`",
                     legacy = crate::USER_PROFILES_BETA,
-                    latest = crate::common::headers::USER_PROFILES_BETA_LATEST,
+                    latest = USER_PROFILES_BETA_LATEST,
                 ),
             )),
         )
             .into_response();
     }
-    if is_family("/v1/tunnels") && !has_beta(&req, crate::TUNNELS_BETA) {
+    if is_family("/v1/tunnels") && !has_capability(req.headers(), ManagedCapability::TunnelsCurrent)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -405,7 +396,9 @@ pub async fn enforce_managed_beta(
         )
             .into_response();
     }
-    if is_family("/v1/organizations/tunnels") && !has_beta(&req, crate::LEGACY_TUNNELS_BETA) {
+    if is_family("/v1/organizations/tunnels")
+        && !has_capability(req.headers(), ManagedCapability::TunnelsLegacy)
+    {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
@@ -428,14 +421,14 @@ pub async fn enforce_managed_beta(
     ]
     .into_iter()
     .any(is_family);
-    if is_managed && !has_beta(&req, crate::MANAGED_BETA) {
+    if is_managed && !has_capability(req.headers(), ManagedCapability::ManagedAgents) {
         return (
             StatusCode::BAD_REQUEST,
             Json(ErrorResponse::new(
                 "invalid_request_error",
                 format!(
                     "the {beta} beta is required: send the `anthropic-beta: {beta}` header",
-                    beta = crate::MANAGED_BETA,
+                    beta = MANAGED_BETA,
                 ),
             )),
         )

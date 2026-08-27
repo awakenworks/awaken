@@ -10,6 +10,7 @@
 
 use std::sync::Arc;
 
+use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
@@ -34,8 +35,6 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-
-const SKILLS_BETA: &str = "skills-2025-10-02";
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -350,7 +349,7 @@ async fn create_skill(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -407,7 +406,7 @@ async fn list_skills(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -500,7 +499,7 @@ async fn retrieve_skill(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -535,7 +534,7 @@ async fn delete_skill(
     if let Err(message) = resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
@@ -590,7 +589,7 @@ async fn create_version(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -651,7 +650,7 @@ async fn list_versions(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -725,7 +724,7 @@ async fn retrieve_version(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -750,7 +749,7 @@ async fn delete_version(
     if let Err(message) = resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
@@ -811,7 +810,7 @@ async fn version_content(
     match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
@@ -853,7 +852,7 @@ async fn version_file(
     match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        SKILLS_BETA,
+        ManagedCapability::Skills,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
@@ -983,7 +982,7 @@ mod tests {
         let separator = if uri.contains('?') { '&' } else { '?' };
         let mut request = Request::builder()
             .uri(format!("{uri}{separator}beta=true"))
-            .header("anthropic-beta", SKILLS_BETA)
+            .header("anthropic-beta", ManagedCapability::Skills.beta())
             .body(Body::empty())
             .unwrap();
         request

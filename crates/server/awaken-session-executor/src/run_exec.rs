@@ -862,6 +862,7 @@ mod tests {
 
     fn resume(activation: &RunActivation) -> ResumeCommand {
         ResumeCommand {
+            operation_id: None,
             correlation_id: "correlation".into(),
             run_id: activation.run_id.clone(),
             thread_id: activation.thread_id.clone(),

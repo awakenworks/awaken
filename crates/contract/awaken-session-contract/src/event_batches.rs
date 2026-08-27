@@ -172,12 +172,16 @@ pub enum SessionEventInput {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SessionEventToolReply {
     /// Public Agent Event id supplied by the SDK client.
-    pub public_tool_use_event_id: String,
+    #[serde(rename = "public_tool_use_event_id", alias = "tool_request_event_id")]
+    pub tool_request_event_id: String,
     /// Canonical logical target frozen during batch-wide validation.
     pub target: SessionThreadTarget,
     /// Exact Awaiting Run and ticket selected during validation.
     pub expected_run_id: RunId,
     pub expected_correlation_id: String,
+    /// Exact Thread commit version that exposed the selected ticket.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_thread_version: Option<u64>,
     /// Runtime call id carried by the committed ResumeTicket.
     pub runtime_tool_use_id: String,
     pub reply: SessionEventToolReplyKind,
@@ -238,6 +242,8 @@ impl SessionEventToolReply {
         };
         SessionThreadToolReplyCommand {
             session_id: session_id.to_string(),
+            tool_request_event_id: Some(self.tool_request_event_id.clone()),
+            expected_thread_version: self.expected_thread_version,
             target: self.target.clone(),
             expected_run_id: self.expected_run_id.clone(),
             expected_correlation_id: self.expected_correlation_id.clone(),
@@ -632,7 +638,7 @@ impl SessionEventBatch {
                     });
                 }
                 SessionEventInput::ToolReply(reply) => {
-                    if reply.public_tool_use_event_id.trim().is_empty()
+                    if reply.tool_request_event_id.trim().is_empty()
                         || reply.runtime_tool_use_id.trim().is_empty()
                         || reply.expected_run_id.0.trim().is_empty()
                         || reply.expected_correlation_id.trim().is_empty()
@@ -771,10 +777,11 @@ mod tests {
 
     fn tool_reply() -> SessionEventInput {
         SessionEventInput::ToolReply(SessionEventToolReply {
-            public_tool_use_event_id: "evt_tool".into(),
+            tool_request_event_id: "evt_tool".into(),
             target: SessionThreadTarget::Primary,
             expected_run_id: RunId("run-awaiting".into()),
             expected_correlation_id: "correlation-awaiting".into(),
+            expected_thread_version: None,
             runtime_tool_use_id: "tool-awaiting".into(),
             reply: SessionEventToolReplyKind::CustomToolResult {
                 content: None,
@@ -1291,6 +1298,40 @@ mod tests {
         let recovered_absent: SessionEventBatch =
             serde_json::from_value(absent_json).expect("T2 recover legacy-compatible row");
         assert_eq!(recovered_absent.traceparent, None, "T2/E2");
+    }
+
+    #[test]
+    fn tool_request_event_identity_renames_code_without_rewriting_durable_rows() {
+        // Causes: C1 an existing retained row uses the historical storage key;
+        // C2 a transitional producer uses the clearer Rust field name. Effects:
+        // E1 both decode to `tool_request_event_id`; E2 current writers retain
+        // the historical key so an older process can still read new rows.
+        // Decision table: N1=C1=>E1; N2=C2=>E1; N3=current write=>E2.
+        // Constraint/invariant: this is one occurrence identity with a clearer
+        // code name, not a schema fork or second compatibility field.
+        let SessionEventInput::ToolReply(reply) = tool_reply() else {
+            unreachable!("fixture is a tool reply")
+        };
+        let legacy = serde_json::to_value(&reply).expect("serialize retained reply");
+        assert_eq!(legacy["public_tool_use_event_id"], "evt_tool", "N3/E2");
+        assert!(legacy.get("tool_request_event_id").is_none(), "N3/E2");
+        let recovered: SessionEventToolReply =
+            serde_json::from_value(legacy.clone()).expect("N1 legacy row");
+        assert_eq!(recovered.tool_request_event_id, "evt_tool", "N1/E1");
+
+        let mut transitional = legacy;
+        let value = transitional
+            .as_object_mut()
+            .unwrap()
+            .remove("public_tool_use_event_id")
+            .unwrap();
+        transitional
+            .as_object_mut()
+            .unwrap()
+            .insert("tool_request_event_id".into(), value);
+        let recovered: SessionEventToolReply =
+            serde_json::from_value(transitional).expect("N2 transitional row");
+        assert_eq!(recovered.tool_request_event_id, "evt_tool", "N2/E1");
     }
 
     #[test]

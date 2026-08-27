@@ -13,8 +13,9 @@ import SessionIntegrations from "../components/session/SessionIntegrations";
 import SessionThreads from "../components/session/SessionThreads";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
 import { api, ws } from "../lib/api/client";
-import type { InboundEvent, SendEventsResponse, Session } from "../lib/api/types";
+import type { InboundEvent, ListEventsResponse, SendEventsResponse, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
+import { canSendToSession, projectSessionRuntime, sessionErrorText } from "../lib/session-log";
 
 /** The agent's model can arrive as a bare id or a `{ id }` object — coerce to text. */
 function modelText(m: unknown): string {
@@ -42,6 +43,21 @@ export default function SessionDetailSurface() {
     queryFn: () => api.get<Session>(base),
     refetchInterval: 15_000,
   });
+  // Same query key/data and same pure reducer as Transcript/Trace. React Query
+  // shares the request/cache; this observer lets header controls stay correct
+  // even when the Chat tab is not mounted.
+  const sessionEvents = useQuery({
+    queryKey: eventsKey,
+    queryFn: async () => (await api.get<ListEventsResponse>(`${base}/events`)).data,
+    refetchInterval: 5_000,
+  });
+  const runtime = projectSessionRuntime(sessionEvents.data ?? []);
+  const effectiveStatus = runtime.phase === "unknown" ? session.data?.status : runtime.phase;
+  const canInterrupt = runtime.phase === "running"
+    || runtime.pendingConfirmIds.size > 0
+    || session.data?.status === "running"
+    || session.data?.status === "rescheduling";
+  const canSend = canSendToSession(runtime, session.data?.status);
 
   const control = useMutation({
     mutationFn: (evs: InboundEvent[]) => api.post<SendEventsResponse>(`${base}/events`, { events: evs }),
@@ -118,7 +134,7 @@ export default function SessionDetailSurface() {
               ⌫ {archive.isPending ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
             </Button>
           )}
-          <Button variant="danger" disabled={session.data?.status !== "running" || control.isPending} onClick={() => void interruptSession()}>
+          <Button variant="danger" disabled={!canInterrupt || control.isPending} onClick={() => void interruptSession()}>
             ⏹ {app.t("Stop run", "停止运行")}
           </Button>
         </span>
@@ -188,7 +204,10 @@ export default function SessionDetailSurface() {
             </h2>
             <div className="mut" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }}>
               <span>{app.t("Created", "创建时间")} {session.data?.created_at ? new Date(session.data.created_at).toLocaleString() : "—"}</span>
-              <span>{app.t("Status", "状态")} {session.data?.status === "running" ? app.t("running", "运行中") : session.data?.status === "idle" ? app.t("idle", "空闲") : session.data?.status ?? "—"}</span>
+              <span>{app.t("Status", "状态")} {effectiveStatus === "running" ? app.t("running", "运行中") : effectiveStatus === "idle" ? app.t("idle", "空闲") : effectiveStatus ?? "—"}</span>
+              <span>{app.t("Pending tools", "待审批工具")} {runtime.pendingConfirmIds.size}</span>
+              <span>{app.t("Can send message", "允许发送消息")} {canSend ? app.t("yes", "是") : app.t("no", "否")}</span>
+              {runtime.latestError && <span className="err">{app.t("Last error", "最近错误")} {sessionErrorText(runtime.latestError)}</span>}
               <span>{app.t("Environment", "运行环境")} {session.data?.environment_id ?? app.t("Default", "默认")}</span>
               {/* Runtime provenance: which backend actually executed this run (native vs an
                   ACP CLI), read off the session metadata the environment stamped at create. */}
