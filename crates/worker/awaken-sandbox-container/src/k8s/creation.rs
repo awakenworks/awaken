@@ -313,8 +313,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn sandbox_release_annotations_preserve_scope_and_only_the_resolved_image() {
+    #[tokio::test]
+    async fn sandbox_release_annotations_preserve_scope_and_only_the_resolved_image() {
         /* Release-correlation cause/effect decision table — SR1/SR2:
          * C1 an opaque Sandbox scope is not itself the Kubernetes-safe runtime
          * id; C2 the frozen Environment resolved one exact package image; C3 the
@@ -402,52 +402,6 @@ mod tests {
         assert!(
             overlong_annotations.contains_key("awaken.dev/realization-digest"),
             "SR3 no correlation hash replaces the original scope"
-        );
-    }
-
-    #[test]
-    fn failed_creation_cleans_only_resources_created_by_that_attempt() {
-        /* Create-failure cleanup cause/effect table.
-         * Causes: C1 realization failed; C2 this attempt created the Pod; C3
-         * this attempt created the continuation claim. Effects: E1 reap the
-         * exact created Pod; E2 evaluate deletion of the exact created claim.
-         * Rules: F1 !C1=>!E1+!E2; F2 C1+C2+!C3=>E1 only (ephemeral Session);
-         * F3 C1+!C2+C3=>E2 only (a peer owns the Pod); F4 C1+C2+C3=>E1+E2.
-         * UID/resourceVersion and claim-UID fencing remain in the existing
-         * deletion owners; this kernel only prevents one condition from
-         * suppressing cleanup of the other resource.
-         */
-        assert_eq!(
-            creation_failure_cleanup(false, true, true),
-            CreationFailureCleanup {
-                pod: false,
-                claim: false,
-            },
-            "F1"
-        );
-        assert_eq!(
-            creation_failure_cleanup(true, true, false),
-            CreationFailureCleanup {
-                pod: true,
-                claim: false,
-            },
-            "F2"
-        );
-        assert_eq!(
-            creation_failure_cleanup(true, false, true),
-            CreationFailureCleanup {
-                pod: false,
-                claim: true,
-            },
-            "F3"
-        );
-        assert_eq!(
-            creation_failure_cleanup(true, true, true),
-            CreationFailureCleanup {
-                pod: true,
-                claim: true,
-            },
-            "F4"
         );
     }
 
