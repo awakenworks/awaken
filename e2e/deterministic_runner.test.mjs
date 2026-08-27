@@ -150,10 +150,14 @@ test('keeps the canonical prebuilt set visible to read-only namespace E2Es', () 
   assert.equal(prebuiltDirectory(undefined), 'target/e2e-prebuilt', 'R2');
 });
 
-// Artifact consistency boundary: C1 all four immutable artifacts exist, C2 only
-// one exists, C3 source/build fingerprint matches, C4 binary digests match.
-// R1 C1+C3+C4 -> reuse exact set without Cargo; R2 C2 -> fail before a shard
-// can combine builds; R3 C1+(!C3|!C4) -> reject reuse and rebuild the set.
+// Artifact consistency boundary: C1 all four immutable artifacts exist, C2 a
+// current-schema manifest publishes only a subset, C3 source/build fingerprint
+// matches, C4 binary digests match, C5 an older schema lacks a newly required
+// artifact. Effects: E1 reuse one exact set without Cargo; E2 fail before a
+// shard can combine a partially published current set; E3 invalidate stale or
+// mismatched caches through the sole builder. Rules: R1 C1+C3+C4=>E1;
+// R2 C2=>E2; R3 C1+(!C3|!C4)=>E3; R4 C5=>E3 (covered by the prebuild upgrade
+// integration gate, because the unit suite must not compile workspace bins).
 test('reuses only a complete explicit prebuilt artifact set', () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-runner-test-'));
   const suffix = process.platform === 'win32' ? '.exe' : '';
@@ -162,6 +166,7 @@ test('reuses only a complete explicit prebuilt artifact set', () => {
     const scenarioHost = path.join(directory, `awaken-scenario-host${suffix}`);
     const handCompanion = scenarioHandCompanionPath(scenarioHost);
     const worker = path.join(directory, `awaken-worker${suffix}`);
+    fs.writeFileSync(path.join(directory, 'manifest.json'), JSON.stringify({ version: 3 }));
     fs.writeFileSync(awaken, 'awaken');
     assert.throws(() => preparedEnvironment({}, directory), /incomplete E2E prebuilt directory/);
     fs.writeFileSync(scenarioHost, 'scenario');
