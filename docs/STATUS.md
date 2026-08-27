@@ -67,7 +67,7 @@ consistent vocabulary. This affects the documentation layers differently:
 | `design/managed-deployments.md` | Product-owned | Owns durable Managed Deployment/DeploymentRun scheduling, Workspace scope, Agent version freezing, occurrence claims, lifecycle facts, and Dream scheduler coordination |
 | `design/web-ui.md` | Product-owned | Web console blueprint: Oversight two-scope shell over the management plane, session surface, design tokens, contract-first frontend engineering plan |
 | `design/credentials-and-vaults.md` | Product-owned | Credential/product concern; runtime sees opaque refs only |
-| `design/resources-memory-files-skills.md` | Product-owned | Normative Resources application composition and File/Memory/Repository/Skill lifecycles, including command ownership, config resolution, activation, recovery, and reclamation |
+| `design/resources-memory-files-skills.md` | Product-owned | Normative Resources application composition and File/Memory/Repository/Skill lifecycles, including command ownership, config resolution, activation, explicit terminal Repository publication, recovery, and reclamation |
 | `design/runtime-persistence.md` | Runtime-owned | Expands ADR-0039: persistence bounded contexts (agent-truth / dispatch / config / protocol-projection), port surface, `awaken-store-<medium>` backend matrix, atomic staged commit (G13), and fact-authority reads (D4) |
 | `design/tool-state-machine.md` | Runtime-owned | Defines the tool call state machine: typed state cells over the untyped command store, the four runtime seams (state materialization, tool gate chain, tool-outcome reaction hook, run-end guard state), reminder emission via the conversation aggregate, capability bounds, and persistence/atomicity/transactionality/restart guarantees |
 | `design/plugin-configuration.md` | Runtime-owned | Defines per-plugin configuration: the raw config carrier on the resolved spec, config-aware resolve, validation as a dry run of resolve, schema derived from the config type via schemars, and delivery to the frontend on the capability catalog |
@@ -203,7 +203,7 @@ implementation. Meta, coverage, status, and wiki documents link to those owners.
 | `adr/0072-environment-definition-and-execution-boundary.md` | Accepted Environment definition/execution ownership target | Required | self |
 | `adr/0073-session-environment-owned-hand-and-worker-capability-placement.md` | Implemented decision record | Not required | n/a |
 | `adr/0074-session-environment-suspension-and-checkpointed-continuation.md` | Proposed Session Environment continuation decision | Not required | n/a |
-| `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker, complete-profiled-creation, and effect-fenced replay consolidation decision | Not required | n/a |
+| `adr/0075-unified-managed-session-worker-execution.md` | Implemented Session Worker, complete-profiled-creation, effect-fenced replay, and terminal Repository publication placement decision | Not required | n/a |
 | `adr/0076-session-owned-background-tool-execution.md` | Implemented Native BackgroundTask decision | Not required | n/a |
 | `adr/0077-iam-directory-product-space-placement.md` | Implemented product-space placement decision | Not required | n/a |
 

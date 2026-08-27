@@ -354,14 +354,26 @@ pub struct SessionRealizationDirective {
 /// One cold Worker assignment for an already-fenced terminal Session.
 ///
 /// Cleanup commands deliberately do not travel in this assignment. The Worker
-/// installs the frozen projection and then polls [`SessionRealizationControl::terminal_cleanup_commands`],
-/// keeping [`crate::SessionCleanupOperation`] as the only durable work queue and
-/// completion registry.
+/// installs the frozen projection and then polls
+/// [`SessionRealizationControl::terminal_cleanup_commands`] plus the root-only
+/// [`SessionRealizationControl::terminal_repository_publication_command`]
+/// projection, keeping [`crate::SessionCleanupOperation`] as the only durable
+/// work queue and completion registry.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SessionTerminalCleanupAssignment {
     pub session_id: String,
     pub projection: FrozenSessionProjection,
     pub lease: SessionRealizationLease,
+}
+
+/// One aggregate-derived terminal Repository publication together with the
+/// Session row's immutable owning Workspace. Coordinator adapters project both
+/// facts through the same Control read so an authenticated Worker cannot choose
+/// a different tenant coordinate for the Repository transport hop.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SessionRepositoryPublicationProjection {
+    pub workspace_id: String,
+    pub command: crate::SessionRepositoryPublicationCommand,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -542,6 +554,36 @@ pub trait SessionRealizationControl: Send + Sync {
         _lease: &SessionRealizationLease,
     ) -> Result<Option<Vec<crate::SessionCleanupCommand>>, SessionRealizationControlFailure> {
         Ok(None)
+    }
+
+    /// Project the one root Repository publication command already frozen in
+    /// the terminal cleanup operation together with the Session row's canonical
+    /// Workspace. `None` means there is no publication intent, a child cleanup
+    /// is still pending, or the exact receipt is already durable.
+    /// Implementations must validate the same realization lease used by ordinary
+    /// terminal cleanup commands.
+    async fn terminal_repository_publication_command(
+        &self,
+        _session_id: &str,
+        _lease: &SessionRealizationLease,
+    ) -> Result<Option<SessionRepositoryPublicationProjection>, SessionRealizationControlFailure>
+    {
+        Ok(None)
+    }
+
+    /// Admit one exact root Repository publication receipt into the existing
+    /// terminal cleanup operation. The explicit Session id is routing input,
+    /// not duplicated receipt authority; implementations re-derive the command
+    /// from that Session root before the root-CAS mutation.
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        _session_id: &str,
+        _lease: &SessionRealizationLease,
+        _receipt: crate::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        Err(SessionRealizationControlFailure::Invalid(
+            "remote Session Repository publication is unsupported".into(),
+        ))
     }
 
     /// Admit one exact Runtime completion into the existing durable terminal
@@ -757,11 +799,91 @@ pub async fn drive_session_realization(
 #[cfg(test)]
 mod tests {
     use super::{
-        SessionRealizationControlDisposition, SessionRealizationControlFailure,
+        AcknowledgeSessionRealization, ActivateSessionRealization, BeginSessionRealization,
+        FailSessionRealization, SessionRealizationControl, SessionRealizationControlDisposition,
+        SessionRealizationControlFailure, SessionRealizationDirective,
         realization_generation_authorizes, realization_lease_authorizes,
         realization_lease_is_live_at,
     };
     use crate::{McpAttachmentId, McpGeneration, McpGenerationRef, SessionRealizationLease};
+
+    struct MinimalControl;
+
+    #[async_trait::async_trait]
+    impl SessionRealizationControl for MinimalControl {
+        async fn begin_session_realization(
+            &self,
+            _command: BeginSessionRealization,
+        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+            unreachable!("not exercised by the terminal port-default tests")
+        }
+
+        async fn activate_session_realization(
+            &self,
+            _command: ActivateSessionRealization,
+        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+            unreachable!("not exercised by the terminal port-default tests")
+        }
+
+        async fn acknowledge_session_realization(
+            &self,
+            _command: AcknowledgeSessionRealization,
+        ) -> Result<SessionRealizationDirective, SessionRealizationControlFailure> {
+            unreachable!("not exercised by the terminal port-default tests")
+        }
+
+        async fn fail_session_realization(
+            &self,
+            _command: FailSessionRealization,
+        ) -> Result<(), SessionRealizationControlFailure> {
+            unreachable!("not exercised by the terminal port-default tests")
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_repository_publication_control_defaults_do_not_invent_work_or_receipts() {
+        // Control-default cause/effect table: C1 a topology has not implemented
+        // remote Repository publication; C2 it polls for a command or submits a
+        // receipt. Effects: E1 polling returns None (no parallel queue); E2
+        // receipt admission fails Invalid (no synthetic root-CAS evidence).
+        // Rules D1=C1+poll=>E1; D2=C1+record=>E2.
+        let control = MinimalControl;
+        let lease = SessionRealizationLease {
+            owner: "worker".into(),
+            runtime_incarnation: "worker/boot".into(),
+            epoch: 1,
+            expires_at_unix_ms: 2,
+        };
+        assert!(
+            control
+                .terminal_repository_publication_command("session", &lease)
+                .await
+                .unwrap()
+                .is_none(),
+            "D1/E1"
+        );
+        let receipt: crate::SessionRepositoryPublicationReceipt =
+            serde_json::from_value(serde_json::json!({
+                "command_fingerprint": "command",
+                "effect_receipt": {
+                    "repository_id": "repo",
+                    "source_remote_url": "https://example.test/repo.git",
+                    "branch": "awf/work",
+                    "commit": "0123456789abcdef0123456789abcdef01234567"
+                },
+                "receipt_fingerprint": "receipt"
+            }))
+            .unwrap();
+        assert!(
+            matches!(
+                control
+                    .record_terminal_repository_publication_receipt("session", &lease, receipt,)
+                    .await,
+                Err(SessionRealizationControlFailure::Invalid(_))
+            ),
+            "D2/E2"
+        );
+    }
 
     /// Cause C1: expiry is strictly after observation time. Only C1 authorizes
     /// another effect; equality is already outside the half-open lease.

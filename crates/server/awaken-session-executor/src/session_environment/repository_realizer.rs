@@ -18,7 +18,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
             }
             Self::Namespace { sandbox, .. } => sandbox.provision_repo(
                 &plan.mount_path,
-                &plan.remote_url,
+                &plan.transport_url,
                 plan.initial_branch.as_deref(),
                 plan.initial_commit.as_deref(),
                 credential,
@@ -27,7 +27,7 @@ impl pc::RepositoryRealizer for SessionEnvironment {
                 container_repositories::provision(
                     sandbox.as_ref(),
                     &plan.mount_path,
-                    &plan.remote_url,
+                    &plan.transport_url,
                     plan.initial_branch.as_deref(),
                     plan.initial_commit.as_deref(),
                     credential,
@@ -40,23 +40,22 @@ impl pc::RepositoryRealizer for SessionEnvironment {
     async fn publish_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
+        expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<bool, pc::SandboxError> {
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
         match self {
             Self::Workdir(sandbox) => {
-                pc::RepositoryRealizer::publish_repository(sandbox.as_ref(), plan, credential).await
-            }
-            Self::Namespace { sandbox, .. } => {
-                sandbox.push_repo(&plan.mount_path, &plan.remote_url, credential)
-            }
-            Self::Container { sandbox, .. } => {
-                container_repositories::push(
+                pc::RepositoryRealizer::publish_repository(
                     sandbox.as_ref(),
-                    &plan.mount_path,
-                    &plan.remote_url,
+                    plan,
+                    expectation,
                     credential,
                 )
                 .await
+            }
+            Self::Namespace { sandbox, .. } => sandbox.push_repo(plan, expectation, credential),
+            Self::Container { sandbox, .. } => {
+                container_repositories::push(sandbox.as_ref(), plan, expectation, credential).await
             }
         }
     }

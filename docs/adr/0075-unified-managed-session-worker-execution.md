@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-12
+- Amended: 2026-08-28 — terminal Repository publication uses the same Worker realization owner
 - Supersedes: the late Worker-authored Session-input path in ADR-0063,
   ADR-0065, and ADR-0066
 - Preserves: ADR-0065 claim recovery and attempt execution; ADR-0066 Session
@@ -548,3 +549,40 @@ defines the forward-only rule: no old profiled metadata/default-receipt adoption
 or backfill, and Flow uses a new post-cutover identity. Reader defaults preserve
 historical Managed rows but do not make mixed writers safe or infer a stricter
 policy for an old Session.
+
+## Amendment (2026-08-28): terminal Repository publication stays on the unified Worker path
+
+ADR-0063 owns the explicit terminal Repository publication decision. This
+amendment fixes its Worker placement: publication is one phase of the existing
+terminal Session realization and cleanup protocol, not a Run attempt and not a
+new Work item.
+
+Static ownership stays one-way. `SessionCleanupOperation` derives the immutable
+`SessionRepositoryPublicationCommand`; `SessionRealizationControl` exposes that
+command and records its exact receipt under the current
+`SessionRealizationLease`; the authority-store-free Worker receives the command
+separately from the frozen Session projection; and the existing
+`RepositoryBindingVerifier` plus `RepositoryRealizer` validate and execute the
+effect. The Worker never rereads a mutable Repository catalog, fabricates a
+`RunClaim`, stores a publication queue, or gains Session authoring authority.
+
+For an externally realized Session, the causal sequence is:
+
+```text
+terminal cleanup assignment under exact realization lease
+  -> execute and durably acknowledge every child cleanup command
+  -> poll the root-derived Repository publication command
+  -> re-derive exact command before transport authorization
+  -> verify frozen Workspace/Repository/config and live Worker/lease
+  -> authorize direct or Gateway transport without persisting capability
+  -> re-derive exact command after authorization
+  -> publish through the one RepositoryRealizer
+  -> record exact receipt through the Session root CAS
+  -> poll and execute the ordinary root cleanup command
+```
+
+A stale lease, changed command, wrong binding, unavailable verifier, or
+non-canonical receipt fails before durable acknowledgement and leaves the same
+operation retryable. A legacy or new cleanup with no explicit publication
+intent emits no publication command and retains the exact pre-amendment v1
+cleanup path.

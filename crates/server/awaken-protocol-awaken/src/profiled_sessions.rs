@@ -3,7 +3,9 @@
 use std::collections::BTreeMap;
 
 use awaken_credential_contract::CredentialRef;
-use awaken_provisioning_contract::{EnvVar, MountRequirement};
+use awaken_provisioning_contract::{
+    EnvVar, MountRequirement, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
+};
 use awaken_session_contract::{
     McpAttachmentOrigin, McpTarget, SessionNetworkPolicy, SessionToolConfiguration,
 };
@@ -31,6 +33,12 @@ pub struct ProfiledSessionMcpAttachment {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfiledSessionRepository {
+    /// Caller-owned binding identity retained in the canonical Session input.
+    /// Open still owns the internal Session-scoped Repository definition id.
+    /// `None` is the historical private wire and is lowered to its former
+    /// deterministic Session/index-derived binding by the adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binding_id: Option<String>,
     pub remote_url: String,
     pub mount_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -104,6 +112,43 @@ pub struct ProfiledSessionCreated {
     pub metadata: BTreeMap<String, String>,
 }
 
+/// Exact Repository selector and Git coordinate supplied by the product at the
+/// terminal release boundary. The adapter resolves `binding_id` against the
+/// Session root; callers cannot supply or reconstruct a `ResolvedInput`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRepositoryPublication {
+    pub binding_id: String,
+    pub expectation: RepositoryPublicationExpectation,
+}
+
+/// Private product-owned Session release. Absence of `repository_publication`
+/// preserves the established terminal cleanup behavior exactly.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRelease {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_publication: Option<ProfiledSessionRepositoryPublication>,
+}
+
+/// Protocol projection of the canonical Session-owned publication receipt.
+/// `binding_id` correlates the result to the product's frozen input; the receipt
+/// itself remains owned by the neutral provisioning contract.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionRepositoryPublished {
+    pub binding_id: String,
+    pub receipt: RepositoryPublicationReceipt,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProfiledSessionReleased {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_publication: Option<ProfiledSessionRepositoryPublished>,
+}
+
 /// Mount a caller-supplied lowering handler under Awaken's extension namespace.
 pub fn profiled_session_router<H, T, S>(handler: H) -> Router<S>
 where
@@ -112,6 +157,17 @@ where
     S: Clone + Send + Sync + 'static,
 {
     Router::new().route("/v1/awaken/sessions", post(handler))
+}
+
+/// Mount the private terminal-release adapter beside the create extension. It
+/// projects the existing Session cleanup operation and owns no release state.
+pub fn profiled_session_release_router<H, T, S>(handler: H) -> Router<S>
+where
+    H: Handler<T, S>,
+    T: 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    Router::new().route("/v1/awaken/sessions/{id}/release", post(handler))
 }
 
 #[cfg(test)]
@@ -129,7 +185,11 @@ mod tests {
         // R2 unknown wire field -> reject before the application handler;
         // R3 missing mode -> reject rather than silently selecting ordinary
         // Managed mutation; R4/R5 map the two closed product modes to Open's
-        // immutable Frozen/FileResources policies.
+        // immutable Frozen/FileResources policies; R6 a historical Repository
+        // without `binding_id` remains distinguishable as None and round-trips
+        // without changing its idempotency payload; R7 an explicitly empty
+        // binding remains Some("") so the application can reject it rather than
+        // treating it as the historical omission.
         // The protocol never accepts plaintext credential material.
         let request = ProfiledSessionCreate {
             session_id: "session-a".into(),
@@ -157,6 +217,7 @@ mod tests {
             resource_inputs: Vec::new(),
             mcp_attachments: Vec::new(),
             repositories: vec![ProfiledSessionRepository {
+                binding_id: Some("repository-input-a".into()),
                 remote_url: "https://github.com/acme/repository".into(),
                 mount_path: "repository".into(),
                 credential: Some(CredentialRef {
@@ -181,6 +242,33 @@ mod tests {
             encoded["repositories"][0]["credential"]["revision"], 7,
             "R1 exact Repository credential pin"
         );
+        let mut historical = encoded.clone();
+        historical["repositories"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("binding_id");
+        let historical_decoded =
+            serde_json::from_value::<ProfiledSessionCreate>(historical.clone()).unwrap();
+        assert_eq!(
+            historical_decoded.repositories[0].binding_id, None,
+            "R6 omitted historical binding"
+        );
+        assert_eq!(
+            serde_json::to_value(historical_decoded).unwrap(),
+            historical,
+            "R6 historical fingerprint shape"
+        );
+        let mut explicit_empty = encoded.clone();
+        explicit_empty["repositories"][0]["binding_id"] = serde_json::json!("");
+        assert_eq!(
+            serde_json::from_value::<ProfiledSessionCreate>(explicit_empty)
+                .unwrap()
+                .repositories[0]
+                .binding_id
+                .as_deref(),
+            Some(""),
+            "R7 explicit empty is not historical omission"
+        );
         let mut missing_mode = encoded.clone();
         missing_mode.as_object_mut().unwrap().remove("mode");
         assert!(
@@ -202,6 +290,55 @@ mod tests {
         assert!(
             serde_json::from_value::<ProfiledSessionCreate>(unknown).is_err(),
             "R2"
+        );
+    }
+
+    #[test]
+    fn profiled_release_wire_follows_the_publication_decision_table() {
+        // Causes: C1 publication is absent/present; C2 binding, branch, and
+        // commit are complete; C3 the wire adds an unknown field. Effects: E1
+        // no-publication release retains the exact empty object; E2 a present
+        // publication round-trips one typed selector/expectation; E3 missing or
+        // unknown authority is rejected before the handler. Rules: W1 !C1=>E1;
+        // W2 C1+C2+!C3=>E2; W3 C1+!C2=>E3; W4 C3=>E3.
+        let legacy = ProfiledSessionRelease::default();
+        assert_eq!(
+            serde_json::to_value(&legacy).unwrap(),
+            serde_json::json!({}),
+            "W1"
+        );
+
+        let request = ProfiledSessionRelease {
+            repository_publication: Some(ProfiledSessionRepositoryPublication {
+                binding_id: "repository-input-a".into(),
+                expectation: RepositoryPublicationExpectation {
+                    branch: "awf/work-unit-a".into(),
+                    commit: "0123456789abcdef0123456789abcdef01234567".into(),
+                },
+            }),
+        };
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            serde_json::from_value::<ProfiledSessionRelease>(encoded.clone()).unwrap(),
+            request,
+            "W2"
+        );
+
+        let mut missing = encoded.clone();
+        missing["repository_publication"]
+            .as_object_mut()
+            .unwrap()
+            .remove("binding_id");
+        assert!(
+            serde_json::from_value::<ProfiledSessionRelease>(missing).is_err(),
+            "W3"
+        );
+
+        let mut unknown = encoded;
+        unknown["publication_bypass"] = serde_json::json!(true);
+        assert!(
+            serde_json::from_value::<ProfiledSessionRelease>(unknown).is_err(),
+            "W4"
         );
     }
 }

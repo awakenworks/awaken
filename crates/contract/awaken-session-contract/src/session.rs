@@ -1107,6 +1107,21 @@ pub trait SessionRuntime: Send + Sync {
         Ok(None)
     }
 
+    /// Execute the exact root Repository publication command and return its
+    /// secret-free effect receipt. The caller verifies and durably records the
+    /// receipt before ordinary root cleanup may dispose the shared environment.
+    /// Hosts must opt in explicitly; a compatibility no-op cannot acknowledge a
+    /// requested publication.
+    async fn execute_terminal_repository_publication(
+        &self,
+        _command: crate::SessionRepositoryPublicationCommand,
+    ) -> Result<crate::SessionRepositoryPublicationReceipt, RunError> {
+        Err(RunError::unavailable_classified(
+            "session_repository_publication_runtime_unsupported",
+            "runtime does not implement terminal Repository publication",
+        ))
+    }
+
     /// Execute the exact durable cleanup command and return untrusted completion
     /// data for that same command. The application verifies that data before the
     /// durable operation can advance. Recovery calls this entry again with the
@@ -1427,6 +1442,42 @@ mod tests {
         async fn send(&self, _event: Event) -> Result<(), SinkError> {
             unreachable!("the default run_streaming ignores the sink")
         }
+    }
+
+    #[tokio::test]
+    async fn default_terminal_repository_publication_is_fail_closed() {
+        // Port-default cause/effect table: C1 a Runtime has not explicitly
+        // implemented the Repository publication effect; C2 a command is
+        // presented. E1 is a classified retryable failure and no synthetic
+        // receipt. Rule P1: C1+C2 => E1. There is deliberately no success rule
+        // for a compatibility/default Runtime.
+        let command: crate::SessionRepositoryPublicationCommand =
+            serde_json::from_value(serde_json::json!({
+                "session_id": "session",
+                "effect_id": "effect",
+                "intent": {
+                    "input": {
+                        "binding_id": "source",
+                        "source": { "kind": "file", "file_id": "file" },
+                        "mount_path": "/workspace/source",
+                        "access": "read_only"
+                    },
+                    "expectation": {
+                        "branch": "awf/work",
+                        "commit": "0123456789abcdef0123456789abcdef01234567"
+                    }
+                }
+            }))
+            .unwrap();
+        let error = MinimalRuntime
+            .execute_terminal_repository_publication(command)
+            .await
+            .expect_err("P1/E1");
+        assert_eq!(error.kind, RunErrorKind::Unavailable, "P1/E1");
+        assert_eq!(
+            error.code, "session_repository_publication_runtime_unsupported",
+            "P1/E1"
+        );
     }
 
     // Item 1: the fail-closed DEFAULT live-inbox methods all reject with `Inactive`.

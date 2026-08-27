@@ -102,15 +102,18 @@ fn realized_repository_matches(
 }
 
 struct RepositoryPublishSource {
-    branch: String,
-    commit: String,
     objects: PathBuf,
 }
 
 fn repository_publish_source(
     root: &IsolatedRoot,
     destination: &Path,
+    expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
 ) -> Result<RepositoryPublishSource, SandboxError> {
+    expectation
+        .validate()
+        .map_err(|error| SandboxError(error.0))?;
+    run_git(None, &["check-ref-format", "--branch", &expectation.branch])?;
     let destination_metadata =
         std::fs::symlink_metadata(destination).map_err(|error| SandboxError(error.to_string()))?;
     if destination_metadata.file_type().is_symlink() || !destination_metadata.is_dir() {
@@ -176,23 +179,30 @@ fn repository_publish_source(
             "cannot push a repository with detached HEAD".into(),
         ));
     }
-    run_git(None, &["check-ref-format", "--branch", branch])?;
+    if branch != expectation.branch {
+        return Err(SandboxError(format!(
+            "repository current branch `{branch}` does not match expected branch `{}`",
+            expectation.branch
+        )));
+    }
     let commit = git_stdout(
         Some(destination),
         &["rev-parse", "--verify", "HEAD^{commit}"],
     )?;
     let commit = commit.trim();
-    if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+    if commit.len() != 40 || !commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(SandboxError(
-            "repository HEAD did not resolve to an object identifier".into(),
+            "repository HEAD did not resolve to a full 40-hex object identifier".into(),
         ));
     }
+    if commit != expectation.commit {
+        return Err(SandboxError(format!(
+            "repository HEAD `{commit}` does not match expected commit `{}`",
+            expectation.commit
+        )));
+    }
 
-    Ok(RepositoryPublishSource {
-        branch: branch.to_owned(),
-        commit: commit.to_owned(),
-        objects,
-    })
+    Ok(RepositoryPublishSource { objects })
 }
 
 fn ephemeral_publish_git_dir(commit: &str) -> Result<tempfile::TempDir, SandboxError> {
@@ -216,46 +226,119 @@ fn ephemeral_publish_git_dir(commit: &str) -> Result<tempfile::TempDir, SandboxE
     Ok(temp)
 }
 
+/// Parse Git's total observation for one exact remote ref.
+fn observed_remote_commit(
+    output: &str,
+    expected_ref: &str,
+) -> Result<Option<String>, SandboxError> {
+    if output.is_empty() {
+        return Ok(None);
+    }
+    let mut lines = output.lines();
+    let line = lines.next().expect("non-empty output has one line");
+    if lines.next().is_some() {
+        return Err(SandboxError(
+            "repository remote returned multiple rows for one exact ref".into(),
+        ));
+    }
+    let Some((commit, remote_ref)) = line.split_once('\t') else {
+        return Err(SandboxError(
+            "repository remote returned a malformed exact-ref observation".into(),
+        ));
+    };
+    if commit.len() != 40
+        || !commit.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || remote_ref != expected_ref
+    {
+        return Err(SandboxError(
+            "repository remote returned a malformed exact-ref observation".into(),
+        ));
+    }
+    Ok(Some(commit.to_owned()))
+}
+
+fn observe_remote_commit(
+    remote_url: &str,
+    remote_ref: &str,
+    credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
+) -> Result<Option<String>, SandboxError> {
+    let output = credentialed_git_stdout(
+        remote_url,
+        &["ls-remote", "--", remote_url, remote_ref],
+        credential,
+    )?;
+    observed_remote_commit(&output, remote_ref)
+}
+
 /// Publish the Agent-authored current branch to the exact host-frozen remote.
 /// Agent-writable origin, URL rewrite, header, credential, and hook configuration
 /// is never consulted by a network Git process. The push runs from a temporary,
 /// config-free bare Git directory whose sole source ref names the exact observed
 /// commit and whose read-only object alternate is the in-tree clone object store.
+/// An explicit absent-ref lease also prevents a concurrent remote creator from
+/// turning the checked creation into an update.
 pub(crate) fn push_repo_to_at(
     root: &IsolatedRoot,
     logical: &str,
-    remote_url: &str,
+    plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
+    expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
     credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-) -> Result<bool, SandboxError> {
+) -> Result<awaken_provisioning_contract::RepositoryPublicationReceipt, SandboxError> {
+    expectation
+        .validate()
+        .map_err(|error| SandboxError(error.0))?;
+    if plan.access == awaken_provisioning_contract::MountAccess::ReadOnly {
+        return Err(SandboxError(
+            "read-only repository cannot be published".into(),
+        ));
+    }
     let dest = jailed_at(root, logical)?;
-    let source = repository_publish_source(root, &dest)?;
-    let remote_ref = format!("refs/heads/{}", source.branch);
-    let remote = credentialed_git_stdout(
-        remote_url,
-        &["ls-remote", "--", remote_url, &remote_ref],
-        credential,
-    )?;
-    if remote.split_whitespace().next() == Some(source.commit.as_str()) {
-        return Ok(false);
+    let source = repository_publish_source(root, &dest, expectation)?;
+    let remote_ref = format!("refs/heads/{}", expectation.branch);
+    match observe_remote_commit(&plan.transport_url, &remote_ref, credential)? {
+        Some(commit) if commit == expectation.commit => {
+            return Ok(
+                awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation),
+            );
+        }
+        Some(commit) => {
+            return Err(SandboxError(format!(
+                "repository remote branch `{}` is already bound to different commit `{commit}`",
+                expectation.branch
+            )));
+        }
+        None => {}
     }
 
-    let clean_git = ephemeral_publish_git_dir(&source.commit)?;
+    let clean_git = ephemeral_publish_git_dir(&expectation.commit)?;
     let git_dir = clean_git.path().join("git");
     let git_dir_arg = format!("--git-dir={}", git_dir.display());
-    let refspec = format!("refs/heads/awaken-publish:refs/heads/{}", source.branch);
+    let absent_ref_lease = format!("--force-with-lease={remote_ref}:");
+    let refspec = format!(
+        "refs/heads/awaken-publish:refs/heads/{}",
+        expectation.branch
+    );
     credentialed_git_run_with_alternate(
-        remote_url,
+        &plan.transport_url,
         &[
             git_dir_arg,
             "push".into(),
+            absent_ref_lease,
             "--".into(),
-            remote_url.into(),
+            plan.transport_url.clone(),
             refspec,
         ],
         credential,
         &source.objects,
     )?;
-    Ok(true)
+    match observe_remote_commit(&plan.transport_url, &remote_ref, credential)? {
+        Some(commit) if commit == expectation.commit => {
+            Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
+        }
+        _ => Err(SandboxError(
+            "repository remote did not confirm the expected commit after push".into(),
+        )),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1300,10 +1383,228 @@ mod tests {
             ],
         )
         .unwrap();
+        let commit = git_stdout(Some(&repo), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
         run_git(Some(&repo), &["checkout", "--detach"]).unwrap();
         let root = IsolatedRoot::new(tmp.path());
-        let error = push_repo_to_at(&root, "repo", "https://invalid.example/repo", None)
+        let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
+            repository_id: "repo".into(),
+            mount_path: "repo".into(),
+            source_remote_url: "https://invalid.example/repo".into(),
+            transport_url: "https://invalid.example/repo".into(),
+            initial_branch: None,
+            initial_commit: None,
+            access: awaken_provisioning_contract::MountAccess::ReadWrite,
+        };
+        let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "master".into(),
+            commit,
+        };
+        let error = push_repo_to_at(&root, "repo", &plan, &expectation, None)
             .expect_err("detached HEAD rejects before network");
         assert!(error.0.contains("detached HEAD"));
+    }
+
+    /// Explicit Repository publication cause/effect graph and decision table.
+    /// Causes: C1 plan is writable; C2 local symbolic branch matches; C3 local
+    /// full commit matches; C4 transport is admitted; C5 exact remote observation
+    /// is absent/current/different; C6 credential contains secret material.
+    /// Effects: E1 reject before network/effect; E2 push only the absent exact
+    /// ref; E3 confirm remote then return the canonical receipt; E4 replay returns
+    /// the identical receipt; E5 never overwrite a different remote ref; E6 no
+    /// credential value appears in errors. Rules: P1 !C1=>E1; P2 C1+!C2=>E1;
+    /// P3 C1+C2+!C3=>E1; P4 C1+C2+C3+!C4=>E1+E6; P5 absent=>E2+E3;
+    /// P6 current=>E4; P7 different=>E5; malformed observation=>E1.
+    #[test]
+    fn explicit_publication_is_exact_idempotent_and_non_overwriting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        run_git(Some(tmp.path()), &["init", "-q", "repo"]).unwrap();
+        run_git(Some(&repo), &["checkout", "-q", "-b", "awf/work"]).unwrap();
+        std::fs::write(repo.join("README.md"), "expected").unwrap();
+        run_git(
+            Some(&repo),
+            &[
+                "-c",
+                "user.name=Awaken Test",
+                "-c",
+                "user.email=test@awaken.local",
+                "add",
+                "README.md",
+            ],
+        )
+        .unwrap();
+        run_git(
+            Some(&repo),
+            &[
+                "-c",
+                "user.name=Awaken Test",
+                "-c",
+                "user.email=test@awaken.local",
+                "commit",
+                "-q",
+                "-m",
+                "expected",
+            ],
+        )
+        .unwrap();
+        let expected_commit = git_stdout(Some(&repo), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let remote = tmp.path().join("remote.git");
+        run_git(
+            Some(tmp.path()),
+            &["init", "-q", "--bare", remote.to_str().unwrap()],
+        )
+        .unwrap();
+        let root = IsolatedRoot::new(tmp.path());
+        let plan = awaken_provisioning_contract::RepositoryRealizationPlan {
+            repository_id: "repo-1".into(),
+            mount_path: "repo".into(),
+            source_remote_url: remote.to_string_lossy().into_owned(),
+            transport_url: remote.to_string_lossy().into_owned(),
+            initial_branch: None,
+            initial_commit: None,
+            access: awaken_provisioning_contract::MountAccess::ReadWrite,
+        };
+        let expectation = awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: expected_commit.clone(),
+        };
+
+        let readonly = awaken_provisioning_contract::RepositoryRealizationPlan {
+            access: awaken_provisioning_contract::MountAccess::ReadOnly,
+            transport_url: "ssh://network-must-not-run.invalid/repo".into(),
+            ..plan.clone()
+        };
+        let error = push_repo_to_at(&root, "repo", &readonly, &expectation, None)
+            .expect_err("P1 read-only fails before transport");
+        assert!(error.0.contains("read-only"), "P1: {error}");
+
+        let wrong_branch = awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/other".into(),
+            commit: expected_commit.clone(),
+        };
+        let error = push_repo_to_at(&root, "repo", &plan, &wrong_branch, None)
+            .expect_err("P2 wrong local branch fails before transport");
+        assert!(
+            error.0.contains("does not match expected branch"),
+            "P2: {error}"
+        );
+
+        let wrong_commit = awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "0000000000000000000000000000000000000000".into(),
+        };
+        let error = push_repo_to_at(&root, "repo", &plan, &wrong_commit, None)
+            .expect_err("P3 wrong local commit fails before transport");
+        assert!(
+            error.0.contains("does not match expected commit"),
+            "P3: {error}"
+        );
+
+        let rejected_transport = awaken_provisioning_contract::RepositoryRealizationPlan {
+            transport_url: "ssh://attacker.invalid/repo".into(),
+            ..plan.clone()
+        };
+        let credential = awaken_provisioning_contract::RepositoryHttpBasicCredential::new(
+            "publication-secret-user".to_owned(),
+            "publication-secret-password".to_owned(),
+        );
+        let error = push_repo_to_at(
+            &root,
+            "repo",
+            &rejected_transport,
+            &expectation,
+            Some(&credential),
+        )
+        .expect_err("P4 rejected transport cannot publish");
+        let rendered = error.to_string();
+        assert!(
+            rendered.contains("admitted HTTP transport"),
+            "P4: {rendered}"
+        );
+        assert!(!rendered.contains("publication-secret-user"), "P4/E6");
+        assert!(!rendered.contains("publication-secret-password"), "P4/E6");
+
+        let first = push_repo_to_at(&root, "repo", &plan, &expectation, None)
+            .expect("P5 absent ref is published and confirmed");
+        let replay = push_repo_to_at(&root, "repo", &plan, &expectation, None)
+            .expect("P6 current ref is an exact replay");
+        assert_eq!(first, replay, "P5/P6 identical receipt");
+        first.verify(&plan, &expectation).unwrap();
+
+        let divergent = tmp.path().join("divergent");
+        run_git(
+            Some(tmp.path()),
+            &[
+                "clone",
+                "-q",
+                "--branch",
+                "awf/work",
+                remote.to_str().unwrap(),
+                divergent.to_str().unwrap(),
+            ],
+        )
+        .unwrap();
+        std::fs::write(divergent.join("README.md"), "divergent").unwrap();
+        run_git(
+            Some(&divergent),
+            &[
+                "-c",
+                "user.name=Remote Writer",
+                "-c",
+                "user.email=remote@awaken.local",
+                "commit",
+                "-q",
+                "-am",
+                "divergent",
+            ],
+        )
+        .unwrap();
+        run_git(Some(&divergent), &["push", "-q", "origin", "awf/work"]).unwrap();
+        let divergent_commit = git_stdout(Some(&divergent), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let error = push_repo_to_at(&root, "repo", &plan, &expectation, None)
+            .expect_err("P7 different remote ref is never overwritten");
+        assert!(error.0.contains("different commit"), "P7: {error}");
+        let remote_commit = git_stdout(
+            None,
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/awf/work",
+            ],
+        )
+        .unwrap();
+        assert_eq!(remote_commit.trim(), divergent_commit, "P7/E5");
+    }
+
+    #[test]
+    fn exact_remote_observation_rejects_every_noncanonical_shape() {
+        // Exact-ref observation causes/effects: empty output means absent; one
+        // `<40-hex>\t<expected-ref>` row means present; malformed, multiple, or
+        // wrong-ref output fails closed before a push decision.
+        let expected_ref = "refs/heads/awf/work";
+        let commit = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(observed_remote_commit("", expected_ref).unwrap(), None);
+        assert_eq!(
+            observed_remote_commit(&format!("{commit}\t{expected_ref}\n"), expected_ref).unwrap(),
+            Some(commit.into())
+        );
+        for malformed in [
+            format!("{commit} {expected_ref}\n"),
+            format!("short\t{expected_ref}\n"),
+            format!("{commit}\trefs/heads/other\n"),
+            format!("{commit}\t{expected_ref}\n{commit}\t{expected_ref}\n"),
+        ] {
+            assert!(observed_remote_commit(&malformed, expected_ref).is_err());
+        }
     }
 }

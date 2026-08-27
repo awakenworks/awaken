@@ -82,11 +82,17 @@ pub(super) async fn provision(
 
 pub(super) async fn push(
     sandbox: &dyn awaken_sandbox_container::ContainerEnvironment,
-    logical: &str,
-    url: &str,
+    plan: &pc::RepositoryRealizationPlan,
+    expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
-) -> Result<bool, pc::SandboxError> {
-    let repo = super::container_files::logical_path(logical)?;
+) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+    expectation.validate()?;
+    if plan.access == pc::MountAccess::ReadOnly {
+        return Err(pc::SandboxError::new(
+            "read-only repository cannot be published",
+        ));
+    }
+    let repo = super::container_files::logical_path(&plan.mount_path)?;
     let process = sandbox
         .spawn_agent_process(pc::Command {
             argv: vec![
@@ -136,10 +142,17 @@ pub(super) async fn push(
     if bundle.len() > MAX_REPO_BUNDLE_BYTES {
         return Err(pc::SandboxError::new("repository bundle exceeds limit"));
     }
-    let url = url.to_string();
+    let plan = plan.clone();
+    let expectation = expectation.clone();
     let credential = credential.cloned();
     tokio::task::spawn_blocking(move || {
-        awaken_sandbox_local::push_repo_bundle(&bundle, &branch, &url, credential.as_ref())
+        awaken_sandbox_local::push_repo_bundle(
+            &bundle,
+            &branch,
+            &plan,
+            &expectation,
+            credential.as_ref(),
+        )
     })
     .await
     .map_err(|error| pc::SandboxError::new(error.to_string()))?

@@ -25,7 +25,10 @@ use crate::common::headers::{
     SKILLS_BETA, USER_PROFILES_BETA_LATEST, has_capability,
 };
 use crate::preview::ThreadPreviewProjector;
-use crate::state::{ManagedState, RunError, RunErrorKind, StateError, internal_thread_id};
+use crate::state::{
+    ManagedState, PROCESSED_AT, RunError, RunErrorKind, StateError, internal_thread_id,
+    lifecycle_event, lifecycle_fact,
+};
 use crate::types::{
     DeletedSession, ErrorResponse, ListEventsResponse, PageCursor, PageQuery, SendEventsRequest,
     SendEventsResponse, Session, SessionCreateParams, SessionThread,
@@ -1106,6 +1109,16 @@ pub async fn replace_resource_manifest(
 
 const PROFILED_SESSION_CREATE_RECEIPT_PREFIX: &str = "profiled:create";
 
+fn historical_profiled_repository_binding_id(
+    session_id: &str,
+    repository_id: &awaken_resource_contract::RepositoryId,
+) -> awaken_resource_contract::BindingId {
+    awaken_resource_contract::BindingId::new(format!(
+        "profiled:{session_id}:repository:{}",
+        repository_id.as_str()
+    ))
+}
+
 /// Lower Awaken's strongly typed extension request into the sole profiled
 /// Session composer. The handler owns no Session state or realization path.
 pub async fn create_profiled_session(
@@ -1169,20 +1182,31 @@ pub async fn create_profiled_session(
         .repositories
         .into_iter()
         .enumerate()
-        .map(
-            |(index, repository)| awaken_session_application::SessionRepositoryResourceInput {
-                id: format!("profiled:{}:repository:{index}", body.session_id),
-                workspace_id: owner_scope.clone(),
-                name: format!("Profiled Session repository {index}"),
-                description: "Product-authored profiled Session input".into(),
-                remote_url: repository.remote_url,
-                authorization_token: None,
-                credential: repository.credential,
-                mount_path: repository.mount_path,
-                initial_branch: repository.initial_branch,
-                initial_commit: repository.initial_commit,
-            },
-        )
+        .map(|(index, repository)| {
+            let repository_id = awaken_resource_contract::RepositoryId::from(format!(
+                "profiled:{}:repository:{index}",
+                body.session_id
+            ));
+            let binding_id = repository.binding_id.map_or_else(
+                || historical_profiled_repository_binding_id(&body.session_id, &repository_id),
+                awaken_resource_contract::BindingId::new,
+            );
+            awaken_session_application::ProfiledSessionRepositoryInput {
+                binding_id,
+                repository: awaken_session_application::SessionRepositoryResourceInput {
+                    id: repository_id.to_string(),
+                    workspace_id: owner_scope.clone(),
+                    name: format!("Profiled Session repository {index}"),
+                    description: "Product-authored profiled Session input".into(),
+                    remote_url: repository.remote_url,
+                    authorization_token: None,
+                    credential: repository.credential,
+                    mount_path: repository.mount_path,
+                    initial_branch: repository.initial_branch,
+                    initial_commit: repository.initial_commit,
+                },
+            }
+        })
         .collect();
     let session = state
         .session_application()
@@ -1215,6 +1239,90 @@ pub async fn create_profiled_session(
     Ok(Json(awaken_protocol_awaken::ProfiledSessionCreated {
         id: session.session_id,
         metadata: session.metadata,
+    }))
+}
+
+fn profiled_release_error_response(
+    error: awaken_session_application::SessionArchiveWithRepositoryPublicationError,
+) -> WireErr {
+    use awaken_session_application::SessionArchiveWithRepositoryPublicationError as Error;
+
+    match error {
+        Error::NotFound => error_response(StateError::NotFound),
+        Error::Conflict => error_response(StateError::Conflict),
+        Error::Pending(message) | Error::Unavailable(message) => {
+            error_response(StateError::Run(RunError::unavailable(message)))
+        }
+        Error::Rejected(error) => error_response(StateError::Run(error)),
+    }
+}
+
+/// Project the private product release onto the sole durable Session cleanup
+/// operation. The adapter selects an existing frozen binding and returns the
+/// canonical provisioning receipt; it owns neither a publication queue nor a
+/// Git transport implementation.
+pub async fn release_profiled_session(
+    State(state): State<Arc<ManagedState>>,
+    Path(id): Path<String>,
+    workspace: Option<axum::Extension<WorkspaceScope>>,
+    Json(body): Json<awaken_protocol_awaken::ProfiledSessionRelease>,
+) -> Result<Json<awaken_protocol_awaken::ProfiledSessionReleased>, WireErr> {
+    let owner_scope = workspace
+        .and_then(|scope| scope.0.non_empty().map(str::to_owned))
+        .ok_or_else(|| {
+            error_response(StateError::Run(RunError::bad_request(
+                "profiled Session release requires a Workspace scope",
+            )))
+        })?;
+    let request_scope = WorkspaceScope(owner_scope.clone());
+    ensure_session_scope(state.as_ref(), &id, Some(&request_scope)).await?;
+
+    let Some(publication) = body.repository_publication else {
+        state.archive_session(&id).await.map_err(error_response)?;
+        return Ok(Json(awaken_protocol_awaken::ProfiledSessionReleased {
+            id,
+            repository_publication: None,
+        }));
+    };
+    if publication.binding_id.trim().is_empty()
+        || publication.binding_id.trim() != publication.binding_id
+    {
+        return Err(error_response(StateError::Run(RunError::bad_request(
+            "Repository publication binding_id must be non-empty without surrounding whitespace",
+        ))));
+    }
+
+    let binding_id = publication.binding_id;
+    let outcome = Box::pin(
+        state
+            .session_application()
+            .archive_with_repository_publication(
+                awaken_session_application::SessionArchiveWithRepositoryPublicationCommand {
+                    owner_scope: owner_scope.clone(),
+                    session_id: id.clone(),
+                    archived_at: PROCESSED_AT.to_string(),
+                    lifecycle_fact: lifecycle_fact(
+                        format!("session:{id}:terminated"),
+                        &id,
+                        Some(owner_scope),
+                        lifecycle_event::SESSION_TERMINATED,
+                    ),
+                    repository: awaken_session_application::SessionRepositoryPublicationSelector {
+                        binding_id: awaken_resource_contract::BindingId::new(binding_id.clone()),
+                        expectation: publication.expectation,
+                    },
+                },
+            ),
+    )
+    .await
+    .map_err(profiled_release_error_response)?;
+
+    Ok(Json(awaken_protocol_awaken::ProfiledSessionReleased {
+        id,
+        repository_publication: Some(awaken_protocol_awaken::ProfiledSessionRepositoryPublished {
+            binding_id,
+            receipt: outcome.publication_receipt.effect_receipt,
+        }),
     }))
 }
 
