@@ -46,6 +46,9 @@ impl CatalogModelPublicationResolver {
             credentials,
             profiles: None,
             brokered_access_enabled: true,
+            direct_credential_policy:
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            direct_holder: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
@@ -66,6 +69,9 @@ impl CatalogModelPublicationResolver {
             credentials,
             profiles: None,
             brokered_access_enabled: true,
+            direct_credential_policy:
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            direct_holder: None,
             workers: None,
             a2a_cards: Arc::new(super::HttpA2aCardDiscovery),
             executor_capabilities,
@@ -120,6 +126,21 @@ impl CatalogModelPublicationResolver {
     #[must_use]
     pub fn with_brokered_access(mut self, enabled: bool) -> Self {
         self.brokered_access_enabled = enabled;
+        self
+    }
+
+    /// Select the already-authoritative Credential policy and exact plaintext
+    /// holder used for direct Provider publications in a hosted composition.
+    /// The resolver still validates source, usage, binding and holder
+    /// admission through the ordinary Vault compiler.
+    #[must_use]
+    pub fn with_direct_provider_credential_execution(
+        mut self,
+        policy: awaken_runtime_contract::CredentialExecutionPolicy,
+        holder: awaken_runtime_contract::PlaintextHolder,
+    ) -> Self {
+        self.direct_credential_policy = policy;
+        self.direct_holder = Some(holder);
         self
     }
 }

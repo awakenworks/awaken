@@ -22,6 +22,7 @@ use awaken_credential_vault::{
     CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
 };
 use awaken_model_catalog::{Offering, ProviderCatalog};
+use awaken_runtime_contract::CredentialExecutionPolicy;
 use awaken_runtime_contract::CredentialRef;
 use awaken_runtime_contract::resolved::{
     Backend, BackendModelSelection, ModelBinding, ResolvedModelCandidate,
@@ -52,6 +53,8 @@ pub struct CatalogModelPublicationResolver {
     credentials: Arc<dyn CredentialRepo>,
     profiles: Option<Arc<dyn InferenceProfileStore>>,
     brokered_access_enabled: bool,
+    direct_credential_policy: CredentialExecutionPolicy,
+    direct_holder: Option<awaken_runtime_contract::PlaintextHolder>,
     workers: Option<Arc<dyn awaken_worker_contract::WorkerObservationSource>>,
     a2a_cards: Arc<dyn A2aCardDiscovery>,
     executor_capabilities: Arc<Vec<ExecutorModelCapability>>,

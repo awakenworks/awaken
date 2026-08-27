@@ -2,6 +2,15 @@
 
 use std::sync::Arc;
 
+/// Existing Credential policy values selected by a hosted composition for
+/// direct Provider execution. This contains no secret and creates no custody
+/// authority; the open Vault compiler remains the sole admission owner.
+#[derive(Clone)]
+pub struct HostedProviderCredentialExecution {
+    pub policy: awaken_credential_contract::CredentialExecutionPolicy,
+    pub holder: awaken_credential_contract::PlaintextHolder,
+}
+
 #[async_trait::async_trait]
 pub trait ManagedBackgroundService: Send + Sync {
     fn name(&self) -> &'static str;
@@ -26,6 +35,7 @@ pub struct ManagedServiceAdapters {
     pub background_services: Vec<Arc<dyn ManagedBackgroundService>>,
     pub credential_material_delivery:
         Option<awaken_credential_contract::CredentialMaterialDelivery>,
+    pub provider_credential_execution: Option<HostedProviderCredentialExecution>,
     /// Hosted delivery of the durable Managed Credential outbox. The open
     /// Control remains the publication authority; a hosted composition may
     /// replace only the target-side rollout mechanism.
@@ -97,6 +107,19 @@ impl ManagedServiceAdapters {
         delivery: awaken_credential_contract::CredentialMaterialDelivery,
     ) -> Self {
         self.credential_material_delivery = Some(delivery);
+        self
+    }
+
+    /// Permit direct Provider publications to select one hosted plaintext
+    /// holder through the ordinary exact Credential compiler.
+    #[must_use]
+    pub fn with_provider_credential_execution(
+        mut self,
+        policy: awaken_credential_contract::CredentialExecutionPolicy,
+        holder: awaken_credential_contract::PlaintextHolder,
+    ) -> Self {
+        self.provider_credential_execution =
+            Some(HostedProviderCredentialExecution { policy, holder });
         self
     }
 

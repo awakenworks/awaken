@@ -189,6 +189,7 @@ fn executable_candidate_construction_is_a_closed_decision_table() {
                 awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
             ))),
             endpoint: Box::new(endpoint()),
+            unspecified_reasoning: Default::default(),
             acp: None,
         },
         "brokered provider provisioning cannot carry a Workspace credential",

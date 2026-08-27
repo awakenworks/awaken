@@ -23,6 +23,7 @@ mod exact_host_model;
 mod executable_agent_registration;
 mod executable_environment_registration;
 mod executable_projection_refresh;
+mod hosted_model_publication;
 mod identity;
 #[cfg(any(test, feature = "test-support"))]
 mod local_process_stores;
@@ -80,6 +81,7 @@ pub use deployment_process::migrate_deployment_schema;
 use deployment_process::{
     prepare_runtime_process, prepare_runtime_process_with_coordinator_services,
 };
+use hosted_model_publication::{HostedAndDirectModelPublicationResolver, PublicationModelSupply};
 use identity::identity_wiring;
 pub use managed_platform::{
     CoordinatorServiceAdapters, ManagedBackgroundService, ManagedServiceAdapters,
@@ -129,32 +131,6 @@ pub use awaken_control::{
 mod live_runtime_capabilities;
 mod managed_platform;
 use live_runtime_capabilities::LiveRuntimeCapabilities;
-
-/// The two legal startup modes are deliberately disjoint: production
-/// publishes catalog-backed provider candidates and installs their credential
-/// materializer; deterministic scenarios publish one exact host executor and do
-/// not install a provider materializer.
-enum PublicationModelSupply {
-    PublishedProviders,
-    /// A hosted startup owns provider custody and injects its resolver into
-    /// the same Awaken publication pipeline. This variant is legal only for the
-    /// control-only surface: the separate hosted Worker owns runtime
-    /// materialization.
-    HostedPublication {
-        resolver: Arc<dyn awaken_config_service::ModelPublicationResolver>,
-    },
-    #[cfg(any(test, feature = "test-support"))]
-    Host {
-        executor: Arc<dyn LlmExecutor>,
-        binding: awaken_runtime_contract::resolved::ModelBinding,
-    },
-}
-
-impl PublicationModelSupply {
-    fn needs_interactive_brokered_client(&self) -> bool {
-        matches!(self, Self::PublishedProviders)
-    }
-}
 
 /// Concrete wiring produced by one legal startup mode. Keeping these four
 /// values together prevents a provider resolver from being paired with a host
@@ -1131,10 +1107,33 @@ fn resolve_model_services(
             ),
             runtime: RuntimeModelServices::PublishedProviders,
         },
-        PublicationModelSupply::HostedPublication { resolver } => ResolvedModelServices {
-            publication_resolver: resolver,
-            runtime: RuntimeModelServices::NoModelConfigured,
-        },
+        PublicationModelSupply::HostedPublication {
+            resolver,
+            direct_credential_execution,
+        } => {
+            let publication_resolver = if let Some(execution) = direct_credential_execution {
+                let direct =
+                    awaken_control::model_publication::CatalogModelPublicationResolver::from_repo(
+                        control.catalog.clone(),
+                        control.credentials.clone(),
+                    )
+                    .with_acp_capabilities(acp_capabilities)
+                    .with_profiles(control.profiles.clone())
+                    .with_worker_observations(worker_observations)
+                    .with_brokered_access(false)
+                    .with_direct_provider_credential_execution(execution.policy, execution.holder);
+                Arc::new(HostedAndDirectModelPublicationResolver {
+                    hosted: resolver,
+                    direct: Arc::new(direct),
+                }) as Arc<dyn awaken_config_service::ModelPublicationResolver>
+            } else {
+                resolver
+            };
+            ResolvedModelServices {
+                publication_resolver,
+                runtime: RuntimeModelServices::NoModelConfigured,
+            }
+        }
         #[cfg(any(test, feature = "test-support"))]
         PublicationModelSupply::Host { executor, binding } => {
             let model_ref = binding.model_ref.clone();
@@ -1904,6 +1903,7 @@ mod process_role_surface_tests {
                 resolver: Arc::new(RecordingHostedResolver {
                     called: Arc::new(AtomicBool::new(false)),
                 }),
+                direct_credential_execution: None,
             }
             .needs_interactive_brokered_client(),
             "R2"
@@ -1933,6 +1933,7 @@ mod process_role_surface_tests {
                 resolver: Arc::new(RecordingHostedResolver {
                     called: called.clone(),
                 }),
+                direct_credential_execution: None,
             },
             ProcessStartup {
                 role: config::Role::Control,

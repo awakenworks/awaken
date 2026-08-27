@@ -235,16 +235,20 @@ impl CatalogModelPublicationResolver {
                         &(&provider_ref, &endpoint),
                         &usage,
                     );
+                    let holder_admission = match &self.direct_holder {
+                        Some(holder) => CredentialHolderAdmission::Selected(holder),
+                        None => CredentialHolderAdmission::Deferred(
+                            DeferredCredentialHolderSelection::ProviderPublication,
+                        ),
+                    };
                     compile_exact_credential_access(
                         credential,
                         ExactCredentialAccessRequest {
                             workspace_id: Some(workspace.as_str()),
                             target: None,
                             usage,
-                            policy: CredentialExecutionPolicy::self_hosted_provider(),
-                            holder_admission: CredentialHolderAdmission::Deferred(
-                                DeferredCredentialHolderSelection::ProviderPublication,
-                            ),
+                            policy: self.direct_credential_policy.clone(),
+                            holder_admission,
                             binding: &material_binding,
                             now_unix_ms: super::wall_clock_ms(),
                         },
