@@ -24,11 +24,10 @@ pub mod vaults;
 // The session surface defines the shared error-envelope conventions; re-export the
 // plumbing so sibling resource routers answer bad bodies and domain errors alike.
 pub(crate) use awaken_tenancy::WorkspaceScope;
-pub use dreams::{DREAMING_BETA, dreams_router};
+pub use dreams::dreams_router;
 pub(crate) use sessions::ManagedJson;
 pub use sessions::{
-    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, create_profiled_session, enforce_managed_beta,
-    replace_resource_manifest, router,
+    create_profiled_session, enforce_managed_beta, replace_resource_manifest, router,
 };
 pub use tunnels::tunnels_router;
 

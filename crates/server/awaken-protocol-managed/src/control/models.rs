@@ -17,7 +17,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use serde::Serialize;
 
-use crate::common::headers::MANAGED_BETA;
+use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor};
 use crate::types::{ErrorResponse, Page};
@@ -172,7 +172,7 @@ async fn list_models(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        MANAGED_BETA,
+        ManagedCapability::ManagedAgents,
         BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(flavor) => flavor,
@@ -209,7 +209,7 @@ async fn get_model(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        MANAGED_BETA,
+        ManagedCapability::ManagedAgents,
         BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(flavor) => flavor,
@@ -305,7 +305,7 @@ mod tests {
         for (rule, beta, fallback) in [("R1", false, false), ("R2", true, true)] {
             let mut request = axum::http::Request::builder().uri("/v1/models");
             if beta {
-                request = request.header("anthropic-beta", MANAGED_BETA);
+                request = request.header("anthropic-beta", ManagedCapability::ManagedAgents.beta());
             }
             let response = app
                 .clone()

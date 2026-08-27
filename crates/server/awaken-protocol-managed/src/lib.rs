@@ -38,8 +38,8 @@ pub mod types;
 pub mod test_support;
 
 pub use common::headers::{
-    LEGACY_TUNNELS_BETA, MANAGED_BETA, TUNNELS_BETA, USER_PROFILES_BETA,
-    parse_idempotency_key_header,
+    ANTHROPIC_API_VERSION, DREAMING_BETA, LEGACY_TUNNELS_BETA, MANAGED_BETA, MEMORY_BETA,
+    ManagedCapability, SKILLS_BETA, TUNNELS_BETA, USER_PROFILES_BETA, parse_idempotency_key_header,
 };
 pub use control::{ModelEntry, default_models, models_router, models_router_with_inventory};
 mod resources;
@@ -77,16 +77,16 @@ pub use routes::credential_rollouts::{
     HttpManagedCredentialRolloutTarget, credential_rollout_router_with_authenticator,
 };
 pub use routes::deployments::{ManagedDeploymentSessionLauncher, deployments_router};
+pub use routes::dreams_router;
 pub use routes::environments::{
     EnvironmentAuthoringState, environment_authoring_router, environment_work_router,
 };
 pub use routes::user_profiles::user_profiles_router;
 pub use routes::vaults::{VaultState, vault_router};
 pub use routes::{
-    ANTHROPIC_API_VERSION, MEMORY_BETA, SKILLS_BETA, create_profiled_session, enforce_managed_beta,
-    replace_resource_manifest, router, tunnels_router,
+    create_profiled_session, enforce_managed_beta, replace_resource_manifest, router,
+    tunnels_router,
 };
-pub use routes::{DREAMING_BETA, dreams_router};
 pub use state::{ManagedState, StateError, managed_session_id_from_idempotency};
 pub use tunnel::{ManagedTunnelApplication, ManagedTunnelApplicationError, ManagedTunnelScope};
 pub use work_session_access::{ManagedWorkSessionAccess, work_session_guard};

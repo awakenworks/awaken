@@ -4,6 +4,7 @@
 
 use std::sync::Arc;
 
+use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
@@ -22,8 +23,6 @@ use axum::{Json, Router};
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
-const FILES_BETA: &str = "files-api-2025-04-14";
-
 pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
@@ -78,7 +77,7 @@ async fn list_files(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        FILES_BETA,
+        ManagedCapability::Files,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -215,7 +214,7 @@ async fn upload_file(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        FILES_BETA,
+        ManagedCapability::Files,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -304,7 +303,7 @@ async fn get_file(
     let flavor = match resource_api_flavor(
         raw.as_deref(),
         &headers,
-        FILES_BETA,
+        ManagedCapability::Files,
         BetaQueryPolicy::RequireHeader,
     ) {
         Ok(flavor) => flavor,
@@ -334,7 +333,7 @@ async fn delete_file(
     if let Err(message) = resource_api_flavor(
         raw.as_deref(),
         &headers,
-        FILES_BETA,
+        ManagedCapability::Files,
         BetaQueryPolicy::RequireHeader,
     ) {
         return error(StatusCode::BAD_REQUEST, message);
@@ -367,7 +366,7 @@ async fn download_file(
     if let Err(message) = resource_api_flavor(
         raw.as_deref(),
         &headers,
-        FILES_BETA,
+        ManagedCapability::Files,
         BetaQueryPolicy::RequireHeader,
     ) {
         return error(StatusCode::BAD_REQUEST, message);

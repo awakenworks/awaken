@@ -3,6 +3,8 @@
 
 use axum::http::HeaderMap;
 
+use crate::common::headers::{ManagedCapability, has_capability};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ManagedResourceApiFlavor {
     Beta,
@@ -21,7 +23,7 @@ pub(crate) enum BetaQueryPolicy {
 pub(crate) fn resource_api_flavor(
     raw_query: Option<&str>,
     headers: &HeaderMap,
-    beta_name: &str,
+    capability: ManagedCapability,
     query_policy: BetaQueryPolicy,
 ) -> Result<ManagedResourceApiFlavor, String> {
     let query_beta = raw_query
@@ -34,19 +36,15 @@ pub(crate) fn resource_api_flavor(
     if query_beta.len() > 1 || query_beta.first().is_some_and(|value| value != "true") {
         return Err("the beta selector must be exactly `beta=true`".into());
     }
-    let header_beta = headers
-        .get_all("anthropic-beta")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .any(|value| value.trim() == beta_name);
+    let header_beta = has_capability(headers, capability);
     match (!query_beta.is_empty(), header_beta) {
         (true, true) | (false, true) => Ok(ManagedResourceApiFlavor::Beta),
         (true, false) if query_policy == BetaQueryPolicy::QuerySelectsBeta => {
             Ok(ManagedResourceApiFlavor::Beta)
         }
         (true, false) => Err(format!(
-            "`beta=true` requires `anthropic-beta: {beta_name}`"
+            "`beta=true` requires `anthropic-beta: {beta}`",
+            beta = capability.beta(),
         )),
         (false, false) => Ok(ManagedResourceApiFlavor::Ga),
     }
@@ -87,19 +85,22 @@ mod tests {
             resource_api_flavor(
                 None,
                 &headers,
-                "skills-beta",
+                ManagedCapability::Skills,
                 BetaQueryPolicy::RequireHeader,
             )
             .unwrap(),
             ManagedResourceApiFlavor::Ga,
             "R1"
         );
-        headers.insert("anthropic-beta", HeaderValue::from_static("skills-beta"));
+        headers.insert(
+            "anthropic-beta",
+            HeaderValue::from_static(ManagedCapability::Skills.beta()),
+        );
         assert_eq!(
             resource_api_flavor(
                 Some("beta=true"),
                 &headers,
-                "skills-beta",
+                ManagedCapability::Skills,
                 BetaQueryPolicy::RequireHeader,
             )
             .unwrap(),
@@ -110,7 +111,7 @@ mod tests {
             resource_api_flavor(
                 None,
                 &headers,
-                "skills-beta",
+                ManagedCapability::Skills,
                 BetaQueryPolicy::RequireHeader,
             )
             .unwrap(),
@@ -121,7 +122,7 @@ mod tests {
             resource_api_flavor(
                 Some("beta=true"),
                 &HeaderMap::new(),
-                "skills-beta",
+                ManagedCapability::Skills,
                 BetaQueryPolicy::RequireHeader,
             )
             .is_err(),
@@ -131,7 +132,7 @@ mod tests {
             resource_api_flavor(
                 Some("beta=false"),
                 &headers,
-                "skills-beta",
+                ManagedCapability::Skills,
                 BetaQueryPolicy::RequireHeader,
             )
             .is_err(),
@@ -146,7 +147,7 @@ mod tests {
             resource_api_flavor(
                 Some("beta=true"),
                 &HeaderMap::new(),
-                "managed-beta",
+                ManagedCapability::ManagedAgents,
                 BetaQueryPolicy::QuerySelectsBeta,
             )
             .unwrap(),

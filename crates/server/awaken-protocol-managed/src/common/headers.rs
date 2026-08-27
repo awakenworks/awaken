@@ -1,18 +1,59 @@
 //! Canonical public Managed API header vocabulary.
 
-/// The Managed Agents beta wire header accepted by every Managed endpoint.
-pub const MANAGED_BETA: &str = "managed-agents-2026-04-01";
-/// User Profiles beta emitted by the pinned SDK 0.117.1. It remains accepted
-/// for the legacy `relationship` vocabulary.
-pub const USER_PROFILES_BETA: &str = "user-profiles-2026-03-24";
-/// User Profiles beta emitted automatically by reviewed SDK 0.120.0. This is
-/// the same resource family with the `access_type` vocabulary.
-pub(crate) const USER_PROFILES_BETA_LATEST: &str = "user-profiles-2026-08-18";
-/// Research-preview MCP Tunnel API beta.
-pub const TUNNELS_BETA: &str = "mcp-tunnels-2026-06-22";
-/// Deprecated organization-scoped Tunnel beta retained during the official
-/// migration window. It is accepted only on `/v1/organizations/tunnels`.
-pub const LEGACY_TUNNELS_BETA: &str = "mcp-tunnels-2026-05-19";
+use axum::http::HeaderMap;
+
+pub const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+
+/// One official protocol capability selector. SDK package versions are
+/// telemetry and never select server behavior; only these wire tokens do.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ManagedCapability {
+    ManagedAgents,
+    Files,
+    Skills,
+    Memory,
+    UserProfilesLegacy,
+    UserProfilesCurrent,
+    Dreams,
+    TunnelsLegacy,
+    TunnelsCurrent,
+}
+
+impl ManagedCapability {
+    #[must_use]
+    pub const fn beta(self) -> &'static str {
+        match self {
+            Self::ManagedAgents => "managed-agents-2026-04-01",
+            Self::Files => "files-api-2025-04-14",
+            Self::Skills => "skills-2025-10-02",
+            Self::Memory => "agent-memory-2026-07-22",
+            Self::UserProfilesLegacy => "user-profiles-2026-03-24",
+            Self::UserProfilesCurrent => "user-profiles-2026-08-18",
+            Self::Dreams => "dreaming-2026-04-21",
+            Self::TunnelsLegacy => "mcp-tunnels-2026-05-19",
+            Self::TunnelsCurrent => "mcp-tunnels-2026-06-22",
+        }
+    }
+}
+
+pub const MANAGED_BETA: &str = ManagedCapability::ManagedAgents.beta();
+pub const SKILLS_BETA: &str = ManagedCapability::Skills.beta();
+pub const MEMORY_BETA: &str = ManagedCapability::Memory.beta();
+pub const USER_PROFILES_BETA: &str = ManagedCapability::UserProfilesLegacy.beta();
+pub(crate) const USER_PROFILES_BETA_LATEST: &str = ManagedCapability::UserProfilesCurrent.beta();
+pub const DREAMING_BETA: &str = ManagedCapability::Dreams.beta();
+pub const LEGACY_TUNNELS_BETA: &str = ManagedCapability::TunnelsLegacy.beta();
+pub const TUNNELS_BETA: &str = ManagedCapability::TunnelsCurrent.beta();
+
+#[must_use]
+pub fn has_capability(headers: &HeaderMap, capability: ManagedCapability) -> bool {
+    headers
+        .get_all("anthropic-beta")
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .any(|value| value.trim() == capability.beta())
+}
 
 const MAX_IDEMPOTENCY_KEY_BYTES: usize = 255;
 
@@ -199,6 +240,37 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("idempotency-key", value);
         headers
+    }
+
+    #[test]
+    fn capability_selection_has_one_parser_for_repeated_and_joined_headers() {
+        // Cause/effect graph: C1 one exact token, C2 comma-joined tokens, C3
+        // repeated fields, C4 substring/unknown token. Effects: E1 the typed
+        // capability is selected; E2 it is not selected. Decision table:
+        // R1 C1/C2/C3 containing the exact token -> E1; R2 C4 -> E2. Keeping
+        // this parser here prevents route and resource adapters from drifting.
+        let mut headers = HeaderMap::new();
+        headers.append(
+            "anthropic-beta",
+            HeaderValue::from_static("future-beta, skills-2025-10-02"),
+        );
+        headers.append(
+            "anthropic-beta",
+            HeaderValue::from_static("managed-agents-2026-04-01"),
+        );
+        assert!(has_capability(&headers, ManagedCapability::Skills), "R1");
+        assert!(
+            has_capability(&headers, ManagedCapability::ManagedAgents),
+            "R1"
+        );
+        assert!(!has_capability(&headers, ManagedCapability::Files), "R2");
+
+        let mut substring = HeaderMap::new();
+        substring.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("prefix-skills-2025-10-02"),
+        );
+        assert!(!has_capability(&substring, ManagedCapability::Skills), "R2");
     }
 
     #[test]
