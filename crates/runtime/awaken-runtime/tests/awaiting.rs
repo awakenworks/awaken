@@ -168,6 +168,7 @@ fn activation() -> RunActivation {
 
 fn resume_command(result: ResumeResult) -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         correlation_id: "ticket-1".to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId("thread-1".to_string()),
@@ -387,14 +388,16 @@ async fn permission_wait_rejects_a_client_result_bypass() {
 #[tokio::test]
 async fn declared_client_tool_awaits_external_result_without_entering_host_executor() {
     // Causal graph: a ClientExecuted descriptor creates a durable ExternalEvent
-    // wait; the exact ToolResult may carry one stable System Message. Effects:
-    // the Host executor is never entered, and Runtime commits System immediately
-    // before Tool in the same resumed progress delta before inference continues.
+    // wait; the exact ToolResult may carry one stable System Message; C3 durable
+    // ingress supplies operation O1. Effects: the Host executor is never entered,
+    // Runtime commits System immediately before Tool, and the same resumed
+    // ThreadCommit replaces the ticket with ResumeApplied(O1).
     //
     // | Rule | descriptor | resume context | Effect |
     // |---|---|---|---|
     // | C1 | regular | n/a | Host executes tool |
     // | C2 | client-executed | exact System + result | await, then System→Tool; Host never runs |
+    // | C3 | C2 + operation O1 | exact durable delivery | ticket absent + ResumeApplied(O1) |
     // Constraints/invariants: the client-executed descriptor is the sole owner;
     // System context and its correlated Tool result commit adjacently and once.
     let ran = Arc::new(AtomicUsize::new(0));
@@ -420,6 +423,7 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("external result ticket is durable");
     assert_eq!(ticket.reason(), AwaitReason::ExternalEvent);
     assert_eq!(ticket.call_id(), Some("call-1"));
+    let ticket_correlation_id = ticket.correlation_id.clone();
     let system = Message::text(
         MessageId("session-system-tool-reply".into()),
         Role::System,
@@ -429,6 +433,7 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
     let outcome = runtime
         .resume(
             ResumeCommand {
+                operation_id: Some("client-result-operation-1".into()),
                 correlation_id: ticket.correlation_id,
                 run_id: RunId("run-1".into()),
                 thread_id: ThreadId("thread-1".into()),
@@ -447,7 +452,25 @@ async fn declared_client_tool_awaits_external_result_without_entering_host_execu
         .expect("exact client result resumes the run");
     assert_eq!(outcome, RunState::Ended(EndCause::NaturalEnd));
     assert_eq!(ran.load(Ordering::SeqCst), 0);
+    assert!(
+        commit.resume_ticket_for(&RunId("run-1".into())).is_none(),
+        "C3 accepted delivery consumes its ticket"
+    );
     let committed = commit.committed();
+    let receipts = committed
+        .events
+        .iter()
+        .filter(|event| event.kind == EventKind::ResumeApplied)
+        .collect::<Vec<_>>();
+    assert_eq!(receipts.len(), 1, "C3 emits one durable receipt");
+    assert_eq!(
+        receipts[0].payload,
+        serde_json::json!({
+            "operation_id": "client-result-operation-1",
+            "correlation_id": ticket_correlation_id,
+        }),
+        "C3 receipt retains the exact ingress identity"
+    );
     assert!(
         committed.messages.windows(2).any(|messages| {
             messages[0] == system

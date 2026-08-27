@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
-import { api, workspaceQuery, ws } from "../lib/api/client";
+import { api, IdempotencyScope, workspaceQuery, ws } from "../lib/api/client";
 import type {
   AgentConfig,
   CatalogSyncResult,
@@ -98,6 +98,7 @@ function TestChat({ model }: { model: string }) {
   const [sid, setSid] = useState<string | null>(null);
   const [latencyMs, setLatencyMs] = useState<number | undefined>();
   const started = useRef(false);
+  const createIdentity = useRef(new IdempotencyScope("model-test-session-create"));
   const start = useMutation({
     mutationFn: async () => {
       const config = modelTestAgentConfig(model);
@@ -116,13 +117,21 @@ function TestChat({ model }: { model: string }) {
         ws(`/v1/config/agents/${config.id}/publish`),
         { source_revision: saved.generation, resource_revision: 0 },
       );
-      return api.post<Session>(ws("/v1/sessions"), {
+      const request = {
         agent: config.id,
         title: `test · ${model}`,
         metadata: { "awaken.session.origin": "model-test" },
-      });
+      };
+      return api.post<Session>(
+        ws("/v1/sessions"),
+        request,
+        createIdentity.current.headersFor(request),
+      );
     },
-    onSuccess: (s) => setSid(s.id),
+    onSuccess: (s) => {
+      createIdentity.current.complete();
+      setSid(s.id);
+    },
   });
   useEffect(() => {
     if (!started.current) {

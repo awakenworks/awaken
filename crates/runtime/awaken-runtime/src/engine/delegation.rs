@@ -543,6 +543,7 @@ pub(super) async fn resume_delegation(
         thread_id,
         ticket,
         synthetic,
+        None,
         context_messages,
         reader,
         context,

@@ -1233,6 +1233,7 @@ fn tool_reply_target_resolution_decision_table() {
                 client_executed: bool| PendingToolReplyCandidate {
         key: PendingToolReplyKey {
             target,
+            expected_thread_version: 7,
             expected_run_id: RunId(format!("run-{call_id}")),
             expected_correlation_id: format!("correlation-{call_id}"),
             runtime_call_id: call_id.into(),

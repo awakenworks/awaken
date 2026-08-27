@@ -29,6 +29,7 @@ import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
 import {
   api,
+  IdempotencyScope,
   isAbsent,
   workspaceQuery,
   ws,
@@ -68,6 +69,7 @@ export default function AgentEditorSurface() {
   const nav = useNavigate();
   const qc = useQueryClient();
   const toast = useToast();
+  const quickRunCreateIdentity = useRef(new IdempotencyScope("quick-run-session-create"));
   const deploymentCapabilities = useConfigCapabilities();
   const managedRuntime = hasSurface(deploymentCapabilities.data, "managed_runtime");
   const { ws: wsId = "default", id = "new" } = useParams();
@@ -447,7 +449,11 @@ export default function AgentEditorSurface() {
         environment_id: intent.environmentId,
         title: app.t("Quickstart first run", "Quickstart 首次运行"),
       };
-      const session = await api.post<Session>(ws("/v1/sessions"), request);
+      const session = await api.post<Session>(
+        ws("/v1/sessions"),
+        request,
+        quickRunCreateIdentity.current.headersFor(request),
+      );
       await api.post(ws(`/v1/sessions/${session.id}/events`), {
         events: [{
           type: "user.message",
@@ -457,6 +463,7 @@ export default function AgentEditorSurface() {
       return session;
     },
     onSuccess: (session) => {
+      quickRunCreateIdentity.current.complete();
       setDirty(false);
       setResourcesDirty(false);
       setQuickRunIntent(undefined);

@@ -11,7 +11,7 @@ import { useLocation, useNavigate, useParams } from "react-router";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Pill, Skeleton } from "../components/ui";
 import { assistantContextForLocation, type AssistantSurfaceContext } from "../lib/assistant-guidance";
-import { api, ws } from "../lib/api/client";
+import { api, IdempotencyScope, ws } from "../lib/api/client";
 import { presentApiProblem } from "../lib/api-problem";
 import type { AgentConfig, Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
@@ -186,16 +186,23 @@ export function AssistantPanel({
   const [promptRequest, setPromptRequest] = useState<{ id: string; text: string }>();
   const started = useRef(false);
   const ensureAttempted = useRef(false);
+  const createIdentity = useRef(new IdempotencyScope("assistant-session-create"));
   const ensureAssistant = useMutation({
     mutationFn: () => api.post<{ status: string }>(ws("/v1/config/agents/__admin_assistant/ensure")),
     onSuccess: () => gate.refetch(),
   });
   const start = useMutation({
-    mutationFn: () => api.post<Session>(ws("/v1/sessions"), {
+    mutationFn: () => {
+      const request = {
       agent: ASSISTANT_ID,
       title: `Assistant · ${targetAgentId || surfaceContext.label}`,
-    }),
-    onSuccess: (s) => setSid(s.id),
+      };
+      return api.post<Session>(ws("/v1/sessions"), request, createIdentity.current.headersFor(request));
+    },
+    onSuccess: (s) => {
+      createIdentity.current.complete();
+      setSid(s.id);
+    },
   });
   useEffect(() => {
     if (!started.current && models.ready.length > 0 && gate.status === "live") {

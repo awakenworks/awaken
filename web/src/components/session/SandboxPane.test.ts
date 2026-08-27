@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { UIMessage } from "ai";
-import { draftPreviewRequest, draftPreviewSignature, previewApplicationScope, uiMessageText } from "./SandboxPane";
+import {
+  draftPreviewRequest,
+  draftPreviewSignature,
+  previewApplicationScope,
+  selectDraftPreviewAttempt,
+  uiMessageText,
+} from "./SandboxPane";
 
 describe("AI SDK Live Preview helpers", () => {
   it("maps the selected workspace to an opaque application scope", () => {
@@ -54,5 +60,24 @@ describe("draft preview cause/effect graph", () => {
     const baseline = draftPreviewSignature(draft, resources);
     expect(draftPreviewSignature({ ...draft, system: "Changed" }, resources)).not.toBe(baseline);
     expect(draftPreviewSignature(draft, [{ ...resources[0], instructions: "Changed" }])).not.toBe(baseline);
+  });
+
+  it("retains an unknown create attempt and rotates a changed preview", () => {
+    // Cause/effect graph: C1 previous create result is unknown; C2 the draft
+    // signature is exact/changed. Effects: E1 exact retry retains preview,
+    // external Thread, and idempotency payload coordinates; E2 changed intent
+    // rotates all coordinates. Decision table: P1=C1+exact=>E1;
+    // P2=C1+changed=>E2. The IdempotencyScope test owns key closure on success.
+    let next = 0;
+    const randomId = () => `id-${++next}`;
+    const first = selectDraftPreviewAttempt(undefined, "draft-a", randomId);
+    const retry = selectDraftPreviewAttempt(first, "draft-a", randomId);
+    const changed = selectDraftPreviewAttempt(first, "draft-b", randomId);
+    expect(retry).toBe(first);
+    expect(changed).toEqual({
+      signature: "draft-b",
+      externalThreadId: "id-3",
+      nextPreviewId: "preview-id-4",
+    });
   });
 });

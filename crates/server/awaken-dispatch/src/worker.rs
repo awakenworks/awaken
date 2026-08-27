@@ -1120,6 +1120,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                 match matched {
                     Some(input) => {
                         let command = ResumeCommand::from_ticket(&ticket, input.result, now_ms)
+                            .with_operation_id(input.message_id.clone())
                             .with_context_messages(input.context_messages);
                         match attempt_executor
                             .resume(activation.clone(), command, execution_context.clone())

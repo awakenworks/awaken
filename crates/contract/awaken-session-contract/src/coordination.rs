@@ -267,6 +267,16 @@ pub enum SessionThreadToolReply {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionThreadToolReplyCommand {
     pub session_id: String,
+    /// Managed `agent.tool_use`/`agent.custom_tool_use` request Event answered by
+    /// this reply. Older/internal callers may omit it; current Managed lowering
+    /// retains the occurrence identity so a provider call id reused in a later
+    /// step is a new ingress operation rather than an exact-retry collision.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_request_event_id: Option<String>,
+    /// Thread commit version that owned the selected active ticket. This fences
+    /// delayed processing when the same Run/call id is reused by a later await.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_thread_version: Option<u64>,
     pub target: SessionThreadTarget,
     /// Exact committed Run selected when the inbound Event was admitted. A
     /// delayed command must never bind a reused tool id to a later Run.
@@ -294,12 +304,29 @@ impl SessionThreadToolReplyCommand {
             crate::stable_fingerprint(&(
                 "managed-session-thread-reply-activity-v3",
                 self.session_id.as_str(),
+                self.tool_request_event_id.as_deref(),
+                self.expected_thread_version,
                 &self.target,
                 self.expected_run_id.0.as_str(),
                 self.expected_correlation_id.as_str(),
                 self.tool_use_id.as_str(),
                 &self.reply,
                 &self.accompanying_system,
+            ))
+        )
+    }
+
+    /// Stable durable-ingress identity used by the existing Outbox/Inbox and
+    /// by Runtime's committed resume receipt. It is derived from the complete
+    /// immutable reply command, so exact retry is stable and changed payload is
+    /// a distinct operation against the same correlation.
+    #[must_use]
+    pub fn delivery_operation_id(&self) -> String {
+        format!(
+            "session-thread-reply-{}",
+            crate::stable_fingerprint(&(
+                "managed-session-thread-reply-v2",
+                self.activity_operation_id(),
             ))
         )
     }
@@ -323,6 +350,10 @@ pub struct SessionThreadToolReplyFence {
     /// Session root removes an existing coordinate while opening the new epoch
     /// in the same CAS, so staging may safely race a finishing Worker lease.
     pub prior_session_activity_epoch: Option<u64>,
+    /// The exact reply was already consumed in committed Runtime truth. The
+    /// Session may finish its retained EventBatch without requiring a now-gone
+    /// active ticket or restaging the durable input.
+    pub already_applied: bool,
 }
 
 /// Session-approved delivery handed to the Runtime owner after the root
@@ -464,10 +495,13 @@ mod tests {
         // | I2 | same | changed | same | E2 distinct id |
         // | I3 | changed | same | same | E3 distinct id |
         // | I4 | same | same | changed | E3 distinct id |
+        // | I5 | same call reused in same Run | same | same | distinct public occurrence/id |
         // Constraint/invariant: the committed Run/correlation fence and full
         // accepted payload bind identity; the transient prior epoch does not.
         let command = SessionThreadToolReplyCommand {
             session_id: "session".into(),
+            tool_request_event_id: Some("evt-tool-1".into()),
+            expected_thread_version: Some(7),
             target: SessionThreadTarget::Child(ThreadId("child".into())),
             expected_run_id: RunId("run-1".into()),
             expected_correlation_id: "correlation-1".into(),
@@ -482,6 +516,7 @@ mod tests {
         };
         let first = SessionThreadToolReplyFence {
             prior_session_activity_epoch: Some(7),
+            already_applied: false,
         };
         let replay = first.clone();
         assert_eq!(
@@ -517,6 +552,13 @@ mod tests {
             command.activity_operation_id(),
             primary.activity_operation_id(),
             "I4/E3"
+        );
+        let mut later_same_run = command.clone();
+        later_same_run.tool_request_event_id = Some("evt-tool-2".into());
+        assert_ne!(
+            command.activity_operation_id(),
+            later_same_run.activity_operation_id(),
+            "I5 provider call ids are not occurrence identities"
         );
     }
 

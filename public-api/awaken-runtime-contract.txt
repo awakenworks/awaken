@@ -1319,6 +1319,7 @@ pub awaken_runtime_contract::resume::ResumeCommand::catalog_fingerprint: awaken_
 pub awaken_runtime_contract::resume::ResumeCommand::context_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::resume::ResumeCommand::correlation_id: alloc::string::String
 pub awaken_runtime_contract::resume::ResumeCommand::now_ms: u64
+pub awaken_runtime_contract::resume::ResumeCommand::operation_id: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::resume::ResumeCommand::result: awaken_runtime_contract::resume::ResumeResult
 pub awaken_runtime_contract::resume::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::resume::ResumeCommand::snapshot_id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
@@ -1326,6 +1327,7 @@ pub awaken_runtime_contract::resume::ResumeCommand::thread_id: awaken_agent_cont
 impl awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 pub fn awaken_runtime_contract::resume::ResumeCommand::with_context_messages(self, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub fn awaken_runtime_contract::resume::ResumeCommand::with_operation_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn awaken_runtime_contract::resume::validate_resume(&awaken_agent_contract::agent::awaiting::ResumeTicket, &awaken_runtime_contract::resume::ResumeCommand) -> core::result::Result<(), awaken_runtime_contract::resume::ResumeError>
 pub mod awaken_runtime_contract::runtime_context
 pub enum awaken_runtime_contract::runtime_context::AttemptOwnershipError
@@ -2169,6 +2171,7 @@ pub awaken_runtime_contract::ResumeCommand::catalog_fingerprint: awaken_runtime_
 pub awaken_runtime_contract::ResumeCommand::context_messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_runtime_contract::ResumeCommand::correlation_id: alloc::string::String
 pub awaken_runtime_contract::ResumeCommand::now_ms: u64
+pub awaken_runtime_contract::ResumeCommand::operation_id: core::option::Option<alloc::string::String>
 pub awaken_runtime_contract::ResumeCommand::result: awaken_runtime_contract::resume::ResumeResult
 pub awaken_runtime_contract::ResumeCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_runtime_contract::ResumeCommand::snapshot_id: awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
@@ -2176,6 +2179,7 @@ pub awaken_runtime_contract::ResumeCommand::thread_id: awaken_agent_contract::ag
 impl awaken_runtime_contract::resume::ResumeCommand
 pub fn awaken_runtime_contract::resume::ResumeCommand::from_ticket(&awaken_agent_contract::agent::awaiting::ResumeTicket, awaken_runtime_contract::resume::ResumeResult, u64) -> Self
 pub fn awaken_runtime_contract::resume::ResumeCommand::with_context_messages(self, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> Self
+pub fn awaken_runtime_contract::resume::ResumeCommand::with_operation_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct awaken_runtime_contract::RunActivation
 pub awaken_runtime_contract::RunActivation::data_subject_id: core::option::Option<awaken_runtime_contract::data_subject::DataSubjectId>
 pub awaken_runtime_contract::RunActivation::delegation_origin: core::option::Option<awaken_agent_contract::agent::delegation::DelegationOrigin>

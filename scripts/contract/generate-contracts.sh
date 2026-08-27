@@ -17,7 +17,7 @@ schema_json="$out_dir/model-schemas.generated.json"
 openapi_json="$out_dir/openapi.generated.json"
 ts_out="$out_dir/model-config.d.ts"
 model_selection_ts="$out_dir/model-selection.generated.d.ts"
-managed_agents_json="$out_dir/anthropic-managed-agents-0.120.schemas.generated.json"
+managed_agents_json="$out_dir/anthropic-managed/canonical-wire.schemas.generated.json"
 check=0
 [ "${1:-}" = "--check" ] && check=1
 
@@ -106,6 +106,7 @@ if [ "$check" = 1 ]; then
         || { echo "✗ $model_selection_ts is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
     diff -u "$managed_agents_json" "$tmp/managed-agents.schemas.json" >/dev/null \
         || { echo "✗ $managed_agents_json is stale — run scripts/contract/generate-contracts.sh"; exit 1; }
+    pnpm --filter @awaken/managed-sdk-oracle check
     echo "OK - contracts up to date."
 else
     cp "$tmp/schemas.json" "$schema_json"
@@ -113,5 +114,6 @@ else
     cp "$tmp/final.d.ts" "$ts_out"
     cp "$tmp/model-selection.generated.d.ts" "$model_selection_ts"
     cp "$tmp/managed-agents.schemas.json" "$managed_agents_json"
+    pnpm --filter @awaken/managed-sdk-oracle generate
     echo "wrote $schema_json + $openapi_json + $ts_out + $model_selection_ts + $managed_agents_json"
 fi

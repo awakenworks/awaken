@@ -13,8 +13,6 @@ use crate::routes::ManagedJson;
 use crate::types::ErrorResponse;
 use awaken_dream_application::{DreamApiError, DreamApplication};
 
-pub const DREAMING_BETA: &str = "dreaming-2026-04-21";
-
 pub fn dreams_router(state: Arc<DreamApplication>) -> Router {
     Router::new()
         .route("/v1/dreams", post(create).get(list))

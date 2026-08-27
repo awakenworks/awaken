@@ -7,3 +7,4 @@ minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.27'
   - '@ai-sdk/react@4.0.39'
   - ai@7.0.36
+  - '@anthropic-ai/sdk@0.121.0'

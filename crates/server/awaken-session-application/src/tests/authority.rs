@@ -2376,6 +2376,8 @@ async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_ta
     }
     let command = |session_id: &str| awaken_session_contract::SessionThreadToolReplyCommand {
         session_id: session_id.to_string(),
+        tool_request_event_id: None,
+        expected_thread_version: None,
         target: awaken_session_contract::SessionThreadTarget::Child(ThreadId("reply-child".into())),
         expected_run_id: RunId("reply-run".into()),
         expected_correlation_id: "reply-correlation".into(),
@@ -2617,6 +2619,8 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         &app,
         awaken_session_contract::SessionThreadToolReplyCommand {
             session_id: "reached-valid-reply".into(),
+            tool_request_event_id: None,
+            expected_thread_version: None,
             target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),
@@ -2643,6 +2647,8 @@ async fn reached_budget_allows_only_the_exact_required_action_continuation() {
         &app,
         awaken_session_contract::SessionThreadToolReplyCommand {
             session_id: "reached-invalid-reply".into(),
+            tool_request_event_id: None,
+            expected_thread_version: None,
             target: awaken_session_contract::SessionThreadTarget::Child(ThreadId(
                 "reply-child".into(),
             )),

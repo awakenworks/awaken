@@ -26,6 +26,7 @@ use harness::{FP, SNAP, THREAD, TICKET, activation, tool_runtime};
 
 fn allow_resume() -> ResumeCommand {
     ResumeCommand {
+        operation_id: None,
         correlation_id: TICKET.to_string(),
         run_id: RunId("run-1".to_string()),
         thread_id: ThreadId(THREAD.to_string()),

@@ -763,6 +763,7 @@ impl SessionRuntime for RecordingReplyRuntime {
         }
         Ok(awaken_session_contract::SessionThreadToolReplyFence {
             prior_session_activity_epoch: Some(1),
+            already_applied: false,
         })
     }
 

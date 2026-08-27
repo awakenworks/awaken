@@ -173,6 +173,73 @@ impl FileContext {
     fn max_file_bytes(&self) -> Option<u64> {
         self.0.max_file_bytes
     }
+
+    /// Select the already-authorized root for one glob and return only the
+    /// pattern relative to that root. Absolute model paths are accepted only
+    /// when they are beneath the workdir or a trusted mount projection; this
+    /// gives glob the same logical path vocabulary as read/write/grep.
+    fn resolve_glob(
+        &self,
+        pattern: &str,
+        selected_root: Option<&str>,
+    ) -> Result<(ConfinedPath, String), ToolError> {
+        if !Path::new(pattern).is_absolute() {
+            return Ok((self.resolve(selected_root.unwrap_or("."))?, pattern.into()));
+        }
+        if selected_root.is_some() {
+            return Err(ToolError::InvalidArguments(
+                "glob: path must be omitted when pattern is absolute".into(),
+            ));
+        }
+
+        let pattern = lexical_normalize(Path::new(pattern));
+        let mut logical_roots = Vec::with_capacity(self.0.path_projections.len() * 2 + 2);
+        logical_roots.push(lexical_absolute(&self.0.workdir)?);
+        logical_roots.push(canonicalize_or_absolute(&self.0.workdir)?);
+        for (logical, physical) in &self.0.path_projections {
+            logical_roots.push(lexical_absolute(logical)?);
+            logical_roots.push(canonicalize_or_absolute(physical)?);
+        }
+        for allowed in &self.0.allowed_roots {
+            logical_roots.push(lexical_absolute(allowed)?);
+            logical_roots.push(canonicalize_or_absolute(allowed)?);
+        }
+        let logical_root = logical_roots
+            .into_iter()
+            .filter(|root| path_is_within(root, &pattern))
+            .max_by_key(|root| root.components().count())
+            .ok_or_else(|| ToolError::Execution("glob: pattern escapes workdir".into()))?;
+        let relative = pattern
+            .strip_prefix(&logical_root)
+            .expect("selected glob root contains its pattern")
+            .to_str()
+            .ok_or_else(|| ToolError::InvalidArguments("glob: pattern is not UTF-8".into()))?;
+        let root = self.resolve(&logical_root.to_string_lossy())?;
+        Ok((
+            root,
+            if relative.is_empty() { "." } else { relative }.into(),
+        ))
+    }
+
+    /// Reverse only a trusted provider projection for model-facing output.
+    /// Namespace/container mappings are normally identity mappings; Seatbelt
+    /// and local adapters must not leak their physical host path through glob.
+    fn logical_path(&self, physical: &Path) -> PathBuf {
+        self.0
+            .path_projections
+            .iter()
+            .filter_map(|(logical, projected)| {
+                let projected = canonicalize_or_absolute(projected).ok()?;
+                physical.strip_prefix(&projected).ok().map(|suffix| {
+                    (
+                        projected.components().count(),
+                        lexical_normalize(&logical.join(suffix)),
+                    )
+                })
+            })
+            .max_by_key(|(specificity, _)| *specificity)
+            .map_or_else(|| physical.to_path_buf(), |(_, logical)| logical)
+    }
 }
 
 /// A path bound to an already-open directory capability. String resolution is
@@ -224,15 +291,19 @@ impl Deref for ConfinedPath {
 }
 
 fn canonicalize_or_absolute(path: &Path) -> Result<PathBuf, ToolError> {
-    let absolute = if path.is_absolute() {
-        lexical_normalize(path)
+    let absolute = lexical_absolute(path)?;
+    canonicalize_with_missing(&absolute)
+        .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+}
+
+fn lexical_absolute(path: &Path) -> Result<PathBuf, ToolError> {
+    if path.is_absolute() {
+        Ok(lexical_normalize(path))
     } else {
         std::env::current_dir()
             .map(|cwd| lexical_normalize(&cwd.join(path)))
-            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))?
-    };
-    canonicalize_with_missing(&absolute)
-        .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+            .map_err(|error| ToolError::Execution(format!("workdir: {error}")))
+    }
 }
 
 fn canonicalize_with_missing(path: &Path) -> std::io::Result<PathBuf> {
@@ -434,7 +505,8 @@ impl GlobTool {
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct GlobArgs {
-    /// Doublestar glob pattern relative to the selected root.
+    /// Doublestar glob pattern relative to `path`, or an absolute pattern under
+    /// the sandbox workdir or one of its trusted logical mount roots.
     pub pattern: String,
     /// Optional directory root to search under.
     #[serde(default)]
@@ -454,11 +526,6 @@ impl Tool for GlobTool {
                 "glob: pattern is required".into(),
             ));
         }
-        if Path::new(&args.pattern).is_absolute() {
-            return Err(ToolError::Execution(
-                "glob: absolute pattern not permitted".into(),
-            ));
-        }
         if args
             .pattern
             .split(['/', '\\'])
@@ -468,9 +535,8 @@ impl Tool for GlobTool {
                 "glob: \"..\" is not permitted in the pattern".into(),
             ));
         }
-        let root_input = args.path.as_deref().unwrap_or(".");
-        let root = self.0.resolve(root_input)?;
-        let patterns = expand_glob_alternatives(&args.pattern)?;
+        let (root, relative_pattern) = self.0.resolve_glob(&args.pattern, args.path.as_deref())?;
+        let patterns = expand_glob_alternatives(&relative_pattern)?;
         let mut paths = Vec::new();
         let mut seen = BTreeSet::new();
         for relative_pattern in patterns {
@@ -501,7 +567,7 @@ impl Tool for GlobTool {
                 let modified = metadata
                     .modified()
                     .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-                paths.push((modified, path.display().to_string()));
+                paths.push((modified, self.0.logical_path(&path).display().to_string()));
             }
         }
         paths.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));

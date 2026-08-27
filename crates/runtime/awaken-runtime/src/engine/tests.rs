@@ -1894,6 +1894,7 @@ async fn attempt_resume_without_committed_history_fails_closed() {
         Vec::new(),
     );
     let command = ResumeCommand {
+        operation_id: None,
         correlation_id: "ticket-1".into(),
         run_id: activation.run_id.clone(),
         thread_id: activation.thread_id.clone(),
