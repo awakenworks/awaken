@@ -262,7 +262,8 @@ async function main(): Promise<void> {
       'delegate and wait for remote input',
     )).data[0];
     // Receipt rule R2: C4 the delegated command has an exact receipt; E3 its
-    // processed delta contains the input-required boundary; K1 earlier history
+    // processed delta contains the child Thread input-required boundary while
+    // the independently completed root Thread may end_turn; K1 earlier history
     // cannot satisfy E3. Decision R2=C1+C4=>E1+E3 via the canonical observer.
     const { delta: awaitingEvents } = await waitForSessionEventReceipt(
       client,
@@ -270,14 +271,15 @@ async function main(): Promise<void> {
       awaitingReceipt.id,
       BETAS,
       ({ delta }: { delta: any[] }) => delta.some(
-        (event: any) => event.type === 'session.status_idle'
+        (event: any) => event.type === 'session.thread_status_idle'
           && event.stop_reason?.type === 'requires_action',
       ),
       'remote child requires_action boundary',
       { timeoutMs: 30_000 },
     );
     const idle = awaitingEvents.find(
-      (event: any) => event.type === 'session.status_idle' && event.stop_reason?.type === 'requires_action',
+      (event: any) => event.type === 'session.thread_status_idle'
+        && event.stop_reason?.type === 'requires_action',
     );
     const pendingId = idle?.stop_reason?.event_ids?.[0];
     const toolUse = awaitingEvents.find(

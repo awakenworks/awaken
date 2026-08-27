@@ -144,7 +144,7 @@ async function waitForInitial(client, sessionId, marker, initialText) {
       && events.some((event) => event.type === 'user.message'
         && event.processed_at
         && event.content?.some((content) => content.text === initialText))
-      && events.some((event) => event.type === 'session.status_running')
+      && events.some((event) => event.type === 'session.thread_status_running')
       && [...events].reverse().some(
         (event) => event.type === 'session.status_idle'
           && event.stop_reason?.type === 'end_turn',
@@ -171,8 +171,11 @@ async function exerciseDirectMatrix() {
     // Test design D1, applied once to each of the six CASES rows.
     // Causes: C1=published backend identity; C2=create-time User input;
     // C3=one typed MemoryStore binding. Effects: E1=the exact runtime reply;
-    // E2=running -> idle/end_turn projection; E3=processed input, nonzero usage,
-    // and an unchanged resource manifest; E4=ACP completed tool call/result pair.
+    // E2=primary Thread running -> aggregate idle/end_turn projection;
+    // E3=processed input, nonzero usage, and an unchanged resource manifest;
+    // E4=ACP completed tool call/result pair. Aggregate Running is tested on the
+    // asynchronous Native path below; create-time ACP completion only shares
+    // the primary Thread opening across every runtime.
     // Constraint: Native has no ACP tool projection; all ACP rows use the same
     // fake codec and differ only through the production catalog route.
     // Decision rules: D1-N(C1=Native+C2+C3)->E1-E3;

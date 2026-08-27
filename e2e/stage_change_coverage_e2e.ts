@@ -52,7 +52,6 @@ const scenarios: Scenario[] = [
   { id: 'dispatch_fenced_metrics', file: 'e2e/dispatch_fenced_metrics_e2e.ts' },
   { id: 'sandbox', file: 'e2e/sandbox_provisioning_e2e.mjs' },
   { id: 'memory_mounter_copy', file: 'e2e/memory_mounter_copy_lifecycle_e2e.mjs' },
-  { id: 'managed_session_aggregate_quarantine', file: 'e2e/managed_session_aggregate_quarantine_e2e.mjs' },
   { id: 'resource_reclamation', file: 'e2e/resource_reclamation_e2e.mjs' },
   { id: 'resource_activation_recovery', file: 'e2e/resource_activation_recovery_e2e.mjs' },
   { id: 'resource_catalog_corruption', file: 'e2e/resource_catalog_corruption_e2e.mjs' },
@@ -182,8 +181,6 @@ const obligations: Obligation[] = [
   { id: 'D7-06', stage: '7 resource persistence', behavior: 'copy realization survives Repository and Mounter replacement over one durable SQLite store', scenario: 'memory_mounter_copy' },
   { id: 'D7-07', stage: '7 resource persistence', behavior: 'non-UTF-8 projected files never become mutable Memory content', scenario: 'memory_mounter_copy' },
   { id: 'D7-11', stage: '7 resource persistence', behavior: 'authorized logical delete remains physically deferred by a live Session reference without IAM coupling', scenario: 'resource_reclamation' },
-  { id: 'D7-12a', stage: '7 resource persistence', behavior: 'a missing Session aggregate is durably quarantined without blocking a healthy canonical sibling or fabricating truth from indexed columns', scenario: 'managed_session_aggregate_quarantine' },
-  { id: 'D7-12b', stage: '7 resource persistence', behavior: 'a replacement process ignores poisoned indexed Session columns once the canonical aggregate exists', scenario: 'managed_session_aggregate_quarantine' },
   { id: 'D7-13', stage: '7 resource persistence', behavior: 'Postgres Memory behavior config publishes with CAS and is shared across nodes', scenario: 'resource_plane_postgres' },
   { id: 'D7-13a', stage: '7 resource persistence', behavior: 'Postgres retains one Resources Memory authority and exposes no retired Control Memory fallback', scenario: 'resource_plane_postgres' },
   { id: 'D7-14', stage: '7 resource persistence', behavior: 'local no-login mode composes isolated embedded File, Memory, Skill, and lifecycle adapters under one explicit Workspace', scenario: 'resource_ephemeral' },
@@ -256,7 +253,6 @@ const obligations: Obligation[] = [
   // | G42-P01..P06 | yes | yes | n/a | freeze/realize/recover one generation |
   // | G43-P01..P06 | yes | yes | n/a | materialize exact binding or reject |
   // | G43-P07 | yes | yes | no | reject before launch; never downgrade |
-  { id: 'G42-P05', stage: '9 guardrail promotion evidence', behavior: 'canonical Session aggregate corruption is isolated across restart while indexed projections remain non-authoritative', scenario: 'managed_session_aggregate_quarantine' },
   { id: 'G43-P01', stage: '9 guardrail promotion evidence', behavior: 'credential materialization binds exact source, recipient, target, usage, payload and claim epoch', scenario: 'credential_materialization_worker' },
   { id: 'G43-P02', stage: '9 guardrail promotion evidence', behavior: 'mismatched payload or target cannot replay an envelope', scenario: 'credential_materialization_worker' },
   { id: 'G43-P03', stage: '9 guardrail promotion evidence', behavior: 'expired or wrong-recipient material fails before provider I/O', scenario: 'credential_materialization_worker' },

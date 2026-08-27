@@ -37,7 +37,11 @@ pub fn scenario_model(
             let model =
                 std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-2.5-flash".to_string());
             (
-                Arc::new(GenaiExecutor::from_resolved(AdapterKind::Gemini, None, key)),
+                Arc::new(GenaiExecutor::from_materialized_endpoint(
+                    AdapterKind::Gemini,
+                    "https://generativelanguage.googleapis.com/v1beta",
+                    key,
+                )),
                 model,
             )
         }

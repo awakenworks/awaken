@@ -15,7 +15,6 @@ use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, Error, LlmExecutor, Result, StopReason, TokenUsage,
     ToolCall,
 };
-use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use genai::Client;
 use genai::chat::{
     Binary, ChatMessage, ChatRequest as GenaiChatRequest, ContentPart, MessageContent,
@@ -73,16 +72,14 @@ mod default_timeout_tests {
     }
 }
 
-fn normalize_provider_base_url(adapter: AdapterKind, base_url: Option<String>) -> Option<String> {
-    base_url.map(|base_url| {
-        if adapter == AdapterKind::Anthropic {
-            // genai concatenates `messages` for this adapter instead of URL-joining
-            // it, so a custom path prefix must retain its trailing separator.
-            format!("{}/", base_url.trim_end_matches('/'))
-        } else {
-            base_url
-        }
-    })
+fn normalize_provider_base_url(adapter: AdapterKind, base_url: String) -> String {
+    if adapter == AdapterKind::Anthropic {
+        // genai concatenates `messages` for this adapter instead of URL-joining
+        // it, so a custom path prefix must retain its trailing separator.
+        format!("{}/", base_url.trim_end_matches('/'))
+    } else {
+        base_url
+    }
 }
 
 /// A `genai::Client` behind the neutral `LlmExecutor` port.
@@ -95,47 +92,8 @@ pub struct GenaiExecutor {
 }
 
 impl GenaiExecutor {
-    /// Construct the canonical provider adapter from an existing snapshot
-    /// candidate and caller-owned credential material.
-    pub fn from_snapshot_candidate(
-        candidate: &ResolvedModelCandidate,
-        credential: impl Into<String>,
-    ) -> std::result::Result<Self, String> {
-        let (endpoint, unspecified_reasoning) = match candidate.provisioning() {
-            ModelProvisioning::Provider {
-                endpoint,
-                unspecified_reasoning,
-                ..
-            } => (endpoint, *unspecified_reasoning),
-            _ => {
-                return Err(format!(
-                    "snapshot candidate `{}` has no provider endpoint",
-                    candidate.binding().model_ref
-                ));
-            }
-        };
-        let adapter = match endpoint.adapter_kind.trim().to_ascii_lowercase().as_str() {
-            "anthropic" => AdapterKind::Anthropic,
-            "openai" => AdapterKind::OpenAI,
-            "gemini" => AdapterKind::Gemini,
-            "vertex" => AdapterKind::Vertex,
-            _ => {
-                return Err(format!(
-                    "unsupported snapshot model adapter `{}`",
-                    endpoint.adapter_kind
-                ));
-            }
-        };
-        Ok(Self::from_resolved_with_reasoning(
-            adapter,
-            (!endpoint.base_url.trim().is_empty()).then(|| endpoint.base_url.clone()),
-            credential,
-            unspecified_reasoning,
-        ))
-    }
-
     /// Use an explicitly configured client. Product composition must prefer
-    /// [`Self::from_resolved`]; this constructor exists for adapters/tests with
+    /// [`Self::from_materialized_endpoint`]; this constructor exists for adapters/tests with
     /// another explicit `ServiceTargetResolver`. There is intentionally no
     /// `Default`/`new` path because the SDK default reads ambient provider env.
     pub fn with_client(client: Client) -> Self {
@@ -172,48 +130,44 @@ impl GenaiExecutor {
         self
     }
 
-    /// The single API-key executor path: inject the caller-supplied `key` (from a
-    /// config-plane credential, never the process env), force the declared `adapter`
-    /// (keeping the request's model name, G22), and override the endpoint only when a
-    /// gateway `base_url` is given (else genai's default for that adapter).
+    /// The single materialized transport path: inject the caller-supplied
+    /// authentication value, force the declared `adapter` (keeping the request's
+    /// model name, G22), and use the exact endpoint already selected by the
+    /// publication/materialization boundary.
     ///
-    /// **Every API-key provider routes through this one function** — Anthropic
-    /// (native or a compatible gateway), Gemini via AI Studio, OpenAI and its many
-    /// compatible vendors (Groq, Together, Moonshot, …). Adding a provider is a
-    /// catalog entry + an `adapter_kind` mapping, not a new constructor. (Vertex/OAuth
-    /// is a different auth shape — a Bearer token + a per-project URL — so it keeps
-    /// its own [`vertex_gemini`] constructor.)
-    pub fn from_resolved(
+    /// Every provider served by `genai` routes through this function. API key,
+    /// OAuth, broker, project, region, and default-endpoint decisions are already
+    /// reflected in the two opaque materialized strings; this adapter does not
+    /// receive or reconstruct those control-plane facts.
+    pub fn from_materialized_endpoint(
         adapter: genai::adapter::AdapterKind,
-        base_url: Option<String>,
-        key: impl Into<String>,
+        base_url: impl Into<String>,
+        authentication: impl Into<String>,
     ) -> Self {
-        Self::from_resolved_with_reasoning(
+        Self::from_materialized_endpoint_with_reasoning(
             adapter,
             base_url,
-            key,
+            authentication,
             awaken_runtime_contract::UnspecifiedReasoning::ProviderDefault,
         )
     }
 
-    fn from_resolved_with_reasoning(
+    fn from_materialized_endpoint_with_reasoning(
         adapter: genai::adapter::AdapterKind,
-        base_url: Option<String>,
-        key: impl Into<String>,
+        base_url: impl Into<String>,
+        authentication: impl Into<String>,
         unspecified_reasoning: awaken_runtime_contract::UnspecifiedReasoning,
     ) -> Self {
         use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
         use genai::{ModelIden, ServiceTarget};
 
-        let key = key.into();
-        let base_url = normalize_provider_base_url(adapter, base_url);
+        let authentication = authentication.into();
+        let base_url = normalize_provider_base_url(adapter, base_url.into());
         let resolver = ServiceTargetResolver::from_resolver_fn(
             move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
-                target.auth = AuthData::from_single(key.clone());
+                target.auth = AuthData::from_single(authentication.clone());
                 target.model = ModelIden::new(adapter, target.model.model_name.clone());
-                if let Some(base_url) = &base_url {
-                    target.endpoint = Endpoint::from_owned(base_url.clone());
-                }
+                target.endpoint = Endpoint::from_owned(base_url.clone());
                 Ok(target)
             },
         );
@@ -223,60 +177,6 @@ impl GenaiExecutor {
         let mut executor = Self::with_client_for_adapter(client, adapter);
         executor.unspecified_reasoning = unspecified_reasoning;
         executor
-    }
-
-    /// An executor pointed at a custom **Anthropic-compatible** endpoint (e.g.
-    /// `https://api.kimi.com/coding/v1/`). A thin wrapper over [`from_resolved`] kept
-    /// for the callers that name a base URL + key directly.
-    pub fn anthropic_compatible(base_url: impl Into<String>, api_key: impl Into<String>) -> Self {
-        Self::from_resolved(
-            genai::adapter::AdapterKind::Anthropic,
-            Some(base_url.into()),
-            api_key,
-        )
-    }
-
-    /// An executor for **Gemini on Vertex AI**, authenticated by a Google OAuth2
-    /// **Bearer token** (e.g. from `gcloud auth print-access-token`, or an ADC /
-    /// service-account token). Unlike `anthropic_compatible`, this speaks Gemini's
-    /// native `generateContent` wire; genai's Vertex adapter constructs the
-    /// `.../projects/{project}/locations/{location}/publishers/google/models/{model}:generateContent`
-    /// URL. `location` is a region (`us-central1`) or `global`. The model name still
-    /// comes from the request's `ModelBinding` (G22). The OAuth token is short-lived
-    /// — build a fresh executor after each refresh.
-    pub fn vertex_gemini(
-        project: impl Into<String>,
-        location: impl Into<String>,
-        oauth_token: impl Into<String>,
-    ) -> Self {
-        use genai::adapter::AdapterKind;
-        use genai::resolver::{AuthData, Endpoint, ServiceTargetResolver};
-        use genai::{ModelIden, ServiceTarget};
-
-        let project = project.into();
-        let location = location.into();
-        let token = oauth_token.into();
-        let base_url = if location == "global" {
-            format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/")
-        } else {
-            format!(
-                "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
-            )
-        };
-        let resolver = ServiceTargetResolver::from_resolver_fn(
-            move |mut target: ServiceTarget| -> std::result::Result<ServiceTarget, genai::resolver::Error> {
-                // Force the Vertex adapter + project/location endpoint + Bearer OAuth
-                // token, keeping the caller-selected Gemini model name.
-                target.endpoint = Endpoint::from_owned(base_url.clone());
-                target.auth = AuthData::from_single(token.clone());
-                target.model = ModelIden::new(AdapterKind::Vertex, target.model.model_name.clone());
-                Ok(target)
-            },
-        );
-        let client = Client::builder()
-            .with_service_target_resolver(resolver)
-            .build();
-        Self::with_client_for_adapter(client, AdapterKind::Vertex)
     }
 }
 
@@ -607,8 +507,9 @@ pub async fn probe_credential(
 ) -> CredentialProbe {
     use awaken_runtime_contract::resolved::ModelBinding;
 
-    let executor = GenaiExecutor::anthropic_compatible(base_url, api_key)
-        .with_timeout(Duration::from_secs(30));
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, api_key)
+            .with_timeout(Duration::from_secs(30));
     let request = ChatRequest {
         model_binding: ModelBinding {
             provider_identity_ref: "probe".into(),
@@ -1219,9 +1120,7 @@ pub fn map_usage(usage: &Usage) -> TokenUsage {
 mod classify_tests {
     use std::time::Duration;
 
-    use awaken_runtime_contract::resolved::ResolvedModelCandidate;
-
-    use super::{DEFAULT_IDLE_TIMEOUT, GenaiExecutor, classify_error};
+    use super::{DEFAULT_IDLE_TIMEOUT, classify_error};
 
     #[test]
     fn default_stream_idle_window_allows_long_reasoning_prefill() {
@@ -1272,64 +1171,6 @@ mod classify_tests {
         // A plain 401 with no re-auth phrasing stays a generic unauthorized.
         assert_eq!(classify_error("401 Unauthorized").code(), "unauthorized");
     }
-
-    /// Cause/effect rules for snapshot adapter construction: R1 an existing
-    /// Provider candidate with a supported adapter and explicit access kind =>
-    /// executor construction; R2 a missing access kind => fail-closed wire
-    /// rejection; R3 HostExecutor/no endpoint => explicit error; R4 unknown
-    /// adapter => error.
-    #[test]
-    fn snapshot_candidate_is_the_only_sdk_model_configuration() {
-        let provider: ResolvedModelCandidate = serde_json::from_value(serde_json::json!({
-            "provider_identity_ref": "local",
-            "model_ref": "model-a",
-            "backend_ref": "genai",
-            "provisioning": {
-                "type": "provider",
-                "provider_ref": "local",
-                "route_ref": "local",
-                "access_kind": "direct",
-                "scope_id": "local",
-                "endpoint": {
-                    "adapter_kind": "openai",
-                    "api_dialect": "chat_completions",
-                    "base_url": "https://gateway.example/v1",
-                    "upstream_model": "model-a"
-                }
-            }
-        }))
-        .unwrap();
-        assert!(GenaiExecutor::from_snapshot_candidate(&provider, "key").is_ok());
-
-        let mut incomplete_wire = serde_json::to_value(&provider).unwrap();
-        let removed_access_kind = incomplete_wire["provisioning"]
-            .as_object_mut()
-            .and_then(|provisioning| provisioning.remove("access_kind"));
-        assert_eq!(removed_access_kind, Some(serde_json::json!("direct")));
-        assert!(
-            serde_json::from_value::<ResolvedModelCandidate>(incomplete_wire).is_err(),
-            "provider access posture must never be inferred from credential presence"
-        );
-
-        let host = ResolvedModelCandidate::host(provider.binding().clone());
-        assert!(
-            GenaiExecutor::from_snapshot_candidate(&host, "key")
-                .err()
-                .unwrap()
-                .contains("no provider endpoint")
-        );
-
-        let mut unknown_wire = serde_json::to_value(&provider).unwrap();
-        unknown_wire["provisioning"]["endpoint"]["adapter_kind"] =
-            serde_json::Value::String("unknown".into());
-        let unknown: ResolvedModelCandidate = serde_json::from_value(unknown_wire).unwrap();
-        assert!(
-            GenaiExecutor::from_snapshot_candidate(&unknown, "key")
-                .err()
-                .unwrap()
-                .contains("unsupported snapshot model adapter")
-        );
-    }
 }
 
 #[cfg(test)]
@@ -1359,21 +1200,20 @@ mod hermetic_tests {
 
     #[test]
     fn anthropic_gateway_base_preserves_its_path_separator() {
+        // Causes: exact endpoint uses Anthropic concatenation or another adapter's
+        // ordinary URL handling. Effects: Anthropic receives one trailing slash;
+        // other adapters receive the exact materialized URL. Rules N1/N2 cover
+        // both adapter partitions without selecting a provider default.
         assert_eq!(
             normalize_provider_base_url(
                 AdapterKind::Anthropic,
-                Some("https://api.deepseek.com/anthropic".into()),
-            )
-            .as_deref(),
-            Some("https://api.deepseek.com/anthropic/")
+                "https://api.deepseek.com/anthropic".into(),
+            ),
+            "https://api.deepseek.com/anthropic/"
         );
         assert_eq!(
-            normalize_provider_base_url(
-                AdapterKind::OpenAI,
-                Some("https://api.deepseek.com".into()),
-            )
-            .as_deref(),
-            Some("https://api.deepseek.com")
+            normalize_provider_base_url(AdapterKind::OpenAI, "https://api.deepseek.com".into()),
+            "https://api.deepseek.com"
         );
     }
 
@@ -1536,7 +1376,7 @@ mod hermetic_tests {
             r#"{"data":[{"id":"model-a"}],"has_more":false,"last_id":"model-a"}"#,
         ])
         .await;
-        let models = discover_model_ids(AdapterKind::Anthropic, Some(&base), "private-key")
+        let models = discover_model_ids(AdapterKind::Anthropic, &base, "private-key")
             .await
             .unwrap();
         assert_eq!(models, vec!["model-a", "model-b"]);
@@ -1554,7 +1394,7 @@ mod hermetic_tests {
             r#"{"models":[{"name":"models/gemini-a"}]}"#,
         ])
         .await;
-        let models = discover_model_ids(AdapterKind::Gemini, Some(&base), "private-key")
+        let models = discover_model_ids(AdapterKind::Gemini, &base, "private-key")
             .await
             .unwrap();
         assert_eq!(models, vec!["gemini-a", "gemini-b"]);
@@ -1567,7 +1407,7 @@ mod hermetic_tests {
     async fn model_discovery_rejects_an_incomplete_pagination_contract() {
         let (base, _) =
             spawn_json_pages(vec![r#"{"data":[{"id":"partial"}],"has_more":true}"#]).await;
-        let error = discover_model_ids(AdapterKind::Anthropic, Some(&base), "private-key")
+        let error = discover_model_ids(AdapterKind::Anthropic, &base, "private-key")
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no last_id"));
@@ -1637,8 +1477,9 @@ mod hermetic_tests {
         // owner and slices only UTF-8 boundaries. Decision rule A1: cumulative
         // snapshots=>exact suffix sequence, one identical committed object.
         let base_url = spawn_sse_server(tool_stream_body()).await;
-        let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
-            .with_idle_timeout(Duration::from_secs(5));
+        let executor =
+            GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+                .with_idle_timeout(Duration::from_secs(5));
 
         let request = ChatRequest {
             model_binding: ModelBinding {
@@ -1747,38 +1588,5 @@ mod hermetic_tests {
             CredentialProbe::Unknown,
             "a transient 503 must probe Unknown, not Invalid"
         );
-    }
-
-    #[test]
-    fn vertex_gemini_global_and_regional_base_urls() {
-        // Contract for the Vertex endpoint `vertex_gemini` constructs: the global
-        // location uses the un-prefixed `aiplatform` host with a `.../global/` path,
-        // while a region prefixes both the host (`{location}-aiplatform`) and the
-        // trailing path segment. genai's Vertex adapter appends
-        // `publishers/google/models/{model}:generateContent` to this base.
-        let project = "my-proj";
-
-        let global =
-            format!("https://aiplatform.googleapis.com/v1/projects/{project}/locations/global/");
-        assert_eq!(
-            global,
-            "https://aiplatform.googleapis.com/v1/projects/my-proj/locations/global/"
-        );
-        assert!(
-            !global.contains("global-aiplatform"),
-            "global uses the un-prefixed host"
-        );
-
-        let location = "us-central1";
-        let regional = format!(
-            "https://{location}-aiplatform.googleapis.com/v1/projects/{project}/locations/{location}/"
-        );
-        assert_eq!(
-            regional,
-            "https://us-central1-aiplatform.googleapis.com/v1/projects/my-proj/locations/us-central1/"
-        );
-        // A region prefixes the host and closes the path with the same region.
-        assert!(regional.starts_with("https://us-central1-aiplatform.googleapis.com/"));
-        assert!(regional.ends_with("/locations/us-central1/"));
     }
 }

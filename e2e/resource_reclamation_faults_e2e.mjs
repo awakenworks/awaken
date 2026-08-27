@@ -6,7 +6,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   managedFileUploadForm,
@@ -169,21 +168,6 @@ async function waitForStderr(child, pattern, timeoutMs = 8_000) {
 
 function encoded(value) {
   return Buffer.from(value).toString('hex');
-}
-
-function seedRepository(root) {
-  const work = path.join(root, 'fenced-repository-work');
-  const remote = path.join(root, 'fenced-repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'reclamation@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'reclamation-faults'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'fenced repository');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
 }
 
 async function main() {
@@ -439,7 +423,7 @@ async function main() {
       `sessions/${repositorySession.body.id}/resources`,
       {
         type: 'github_repository',
-        url: seedRepository(directory),
+        url: 'https://example.invalid/reclamation-fixture.git',
         mount_path: '/workspace/fenced-repository',
       },
     );

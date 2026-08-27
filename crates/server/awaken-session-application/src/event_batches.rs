@@ -4,7 +4,7 @@
 //! log, execute a Run, or retain a completion registry.
 
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
-use awaken_agent_contract::agent::run::RunState;
+use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_session_contract::{
     OUTCOME_BUSY_CODE, PersistedSession, RunError, SessionAgentCoordination, SessionEventBatch,
     SessionEventCommand, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
@@ -94,6 +94,36 @@ impl SessionApplication {
         run_id: &awaken_agent_contract::agent::run::Id,
         message_id: &MessageId,
     ) -> Result<SessionEventProjectionAnchor, RunError> {
+        self.message_projection_anchor_with_cancelled_fallback(
+            session_id, thread_id, run_id, message_id, false,
+        )
+        .await
+    }
+
+    /// Anchor an accepted User receipt to its committed Message, or to the exact
+    /// cancelled Run when interruption won before that Message entered the
+    /// transcript. The latter terminal coordinate completes the retained command
+    /// without inventing transcript content and lets the existing FIFO advance.
+    async fn user_message_projection_anchor(
+        &self,
+        session_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        message_id: &MessageId,
+    ) -> Result<SessionEventProjectionAnchor, RunError> {
+        self.message_projection_anchor_with_cancelled_fallback(
+            session_id, session_id, run_id, message_id, true,
+        )
+        .await
+    }
+
+    async fn message_projection_anchor_with_cancelled_fallback(
+        &self,
+        session_id: &str,
+        thread_id: &str,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        message_id: &MessageId,
+        cancelled_run_may_anchor: bool,
+    ) -> Result<SessionEventProjectionAnchor, RunError> {
         let snapshot = self
             .runtime()
             .session_thread_run_recovery_snapshot(session_id, thread_id, run_id)
@@ -108,7 +138,7 @@ impl SessionApplication {
                 "committed Session Event message has no durable commit coordinate",
             ));
         }
-        snapshot
+        let message_anchor = snapshot
             .messages
             .iter()
             .zip(snapshot.message_commit_cursors.iter().copied())
@@ -116,12 +146,23 @@ impl SessionApplication {
                 (&message.id == message_id).then_some(SessionEventProjectionAnchor {
                     source_commit_cursor: cursor,
                 })
-            })
-            .ok_or_else(|| {
-                RunError::unavailable(
-                    "committed Session Event message is not yet visible in recovery",
-                )
-            })
+            });
+        if let Some(anchor) = message_anchor {
+            return Ok(anchor);
+        }
+        if cancelled_run_may_anchor
+            && snapshot
+                .runs
+                .iter()
+                .any(|run| &run.id == run_id && run.state == RunState::Ended(EndCause::Cancelled))
+        {
+            return Ok(SessionEventProjectionAnchor {
+                source_commit_cursor: snapshot.store_cursor,
+            });
+        }
+        Err(RunError::unavailable(
+            "committed Session Event message is not yet visible in recovery",
+        ))
     }
 
     async fn run_snapshot_projection_anchor(
@@ -544,8 +585,7 @@ impl SessionApplication {
                     {
                         Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
                             let anchor = self
-                                .message_projection_anchor(
-                                    &session.session_id,
+                                .user_message_projection_anchor(
                                     &session.session_id,
                                     &run_id,
                                     &MessageId::session_event_input(
@@ -611,8 +651,7 @@ impl SessionApplication {
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {
                                 let anchor = self
-                                    .message_projection_anchor(
-                                        &session.session_id,
+                                    .user_message_projection_anchor(
                                         &session.session_id,
                                         &run_id,
                                         &MessageId::session_event_input(
@@ -649,8 +688,7 @@ impl SessionApplication {
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {
                                 let anchor = self
-                                    .message_projection_anchor(
-                                        &session.session_id,
+                                    .user_message_projection_anchor(
                                         &session.session_id,
                                         &run_id,
                                         &MessageId::session_event_input(

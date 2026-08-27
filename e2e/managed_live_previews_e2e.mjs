@@ -94,43 +94,60 @@ async function streamRun(baseUrl, client, sessionId, text, query) {
     events: [{ type: 'user.message', content: [{ type: 'text', text }] }],
     betas: BETAS,
   });
+  // Preview observation decision table: C1=the POST and SSE tail run
+  // concurrently; C2=committed projection refresh is demand-driven; C3=the
+  // Runtime emits previews before the Event batch is visible. E1=the canonical
+  // receipt observer refreshes committed truth without becoming a second event
+  // source; E2=the SSE tail receives the matching committed Message and idle.
+  // Rule P0a=C1+C2+C3=>E1+E2. Waiting to observe the receipt only after SSE idle
+  // would deadlock the demand-driven refresh behind the very idle it publishes.
+  const committed = send.then(async (receipt) => ({
+    receipt,
+    observation: await waitForSessionEventReceipt(
+      client,
+      sessionId,
+      receipt.data[0]?.id,
+      BETAS,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'P0 streamed Run commits after its exact receipt',
+    ),
+  }));
 
   let buf = '';
   const frames = [];
   let idled = false;
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buf += decoder.decode(value, { stream: true });
-    let sep;
-    while ((sep = buf.indexOf('\n\n')) !== -1) {
-      const block = buf.slice(0, sep);
-      buf = buf.slice(sep + 2);
-      for (const line of block.split('\n')) {
-        const t = line.trim();
-        if (t.startsWith('data: ')) {
-          const frame = JSON.parse(t.slice('data: '.length));
-          frames.push(frame);
-          if (frame.type === 'session.status_idle') idled = true;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, sep);
+        buf = buf.slice(sep + 2);
+        for (const line of block.split('\n')) {
+          const t = line.trim();
+          if (t.startsWith('data: ')) {
+            const frame = JSON.parse(t.slice('data: '.length));
+            frames.push(frame);
+            if (frame.type === 'session.status_idle') idled = true;
+          }
         }
       }
+      if (idled) break;
     }
-    if (idled) break;
+  } catch (error) {
+    throw new Error(
+      `session preview stream did not reach status_idle; received ${JSON.stringify(frames.map((frame) => frame.type))}`,
+      { cause: error },
+    );
   }
-  const receipt = await send;
   // Preview rule P0: C1=stream witnesses idle; C2=the concurrent POST returns
   // its exact receipt; C3=its buffered Message/idle are committed. E1=return
   // stream frames plus authoritative history. Constraint: previews never satisfy
   // C3. C1+C2&&!C3=>observe; C1+C2+C3=>E1.
-  const observation = await waitForSessionEventReceipt(
-    client,
-    sessionId,
-    receipt.data[0]?.id,
-    BETAS,
-    ({ delta }) => delta.some((event) => event.type === 'agent.message')
-      && delta.some((event) => event.type === 'session.status_idle'),
-    'P0 streamed Run commits after its exact receipt',
-  );
+  const { observation } = await committed;
   return { frames, observation };
 }
 

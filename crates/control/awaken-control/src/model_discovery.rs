@@ -33,7 +33,11 @@ impl GenaiModelDiscovery {
     ) -> Result<Vec<DiscoveredModel>, ModelCatalogDiscoveryError> {
         awaken_provider_genai::discover_model_ids(
             Self::adapter(endpoint),
-            endpoint.base_url.as_deref(),
+            endpoint.base_url.as_deref().ok_or_else(|| {
+                ModelCatalogDiscoveryError::Provider(
+                    "model discovery requires a materialized endpoint URL".into(),
+                )
+            })?,
             secret.expose_secret(),
         )
         .await
@@ -107,5 +111,40 @@ mod tests {
             };
             assert_eq!(GenaiModelDiscovery::adapter(&endpoint), expected);
         }
+    }
+
+    #[tokio::test]
+    async fn discovery_requires_the_control_materialized_endpoint() {
+        // Cause/effect decision table:
+        // | endpoint URL | effect |
+        // | present      | transport adapter receives that exact URL (covered by provider tests) |
+        // | absent       | Control fails before transport; GenAI does not choose a default |
+        // This test owns the second rule. The first is covered by the GenAI HTTP
+        // request-capture tests, which assert the exact path and authentication.
+        let provider_id = awaken_model_catalog::ProviderId::new("provider");
+        let endpoint = ProtocolEndpoint {
+            id: awaken_model_catalog::ProtocolEndpointId::for_surface(
+                &provider_id,
+                ApiDialect::AnthropicMessages,
+                None,
+            ),
+            provider_id,
+            dialect: ApiDialect::AnthropicMessages,
+            base_url: None,
+            timeout_secs: 30,
+            display_name: "Provider".into(),
+            version: 1,
+        };
+        let secret = RedactedString::new("unused");
+
+        let error = GenaiModelDiscovery::discover_ids(&endpoint, &secret)
+            .await
+            .expect_err("an unresolved endpoint must fail before HTTP");
+
+        assert!(
+            error
+                .to_string()
+                .contains("requires a materialized endpoint URL")
+        );
     }
 }

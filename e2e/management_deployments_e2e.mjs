@@ -36,7 +36,7 @@ import { withScenarioServer, pass, waitForValue } from './harness.mjs';
  * | D8   | malformed query | absent        | absent          | 400; run store remains unchanged |
  * | D9   | boundary violation | any         | any             | 400; deployment aggregate unchanged |
  * | D10  | list filters | absent           | absent          | exact active/paused/archive/agent/time partition |
- * | D11  | sole define_outcome | absent     | absent          | launch Session with the exact initial outcome event |
+ * | D11  | sole define_outcome | absent     | absent          | launch Session; await exact committed initial outcome event |
  * | D12  | valid user | create/update/null budget | absent    | each new Session freezes only the current cap |
  * | D13  | valid user | low budget          | absent          | linked Session reaches budget_reached |
  * | D14  | valid user | create bucket exhausted | absent      | one typed rate-limit run; Deployment remains active |
@@ -406,9 +406,11 @@ async function main() {
       const outcomeRun = await client.beta.deployments.run(outcomeDeployment.id, { betas: BETAS });
       assert.equal(outcomeRun.error, null, 'D11 valid sole outcome launches');
       assert.ok(outcomeRun.session_id, 'D11 linked Session');
-      const outcomeEvents = await drain(client.beta.sessions.events.list(outcomeRun.session_id, {
-        betas: BETAS,
-      }));
+      const outcomeEvents = await waitForValue(
+        () => drain(client.beta.sessions.events.list(outcomeRun.session_id, { betas: BETAS })),
+        (events) => events.some((event) => event.type === 'user.define_outcome'),
+        'D11 initial Outcome Event to acquire its committed projection anchor',
+      );
       const defined = outcomeEvents.find((event) => event.type === 'user.define_outcome');
       assert.equal(defined?.description, 'Produce a verified report', 'D11 exact initial event');
       assert.equal(defined?.max_iterations, 3, 'D11 exact outcome bound');

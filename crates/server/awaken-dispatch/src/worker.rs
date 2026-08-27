@@ -131,11 +131,6 @@ impl AttemptOwnershipVerifier for ClaimBoundOwnershipVerifier {
     }
 }
 
-struct AttemptControlGuard {
-    runtime: Arc<Runtime>,
-    registration: awaken_runtime::AttemptControlRegistration,
-}
-
 /// One exact claim's renewal lifecycle. Renewal belongs beside the drive that
 /// owns the claim, rather than to each caller (pool, daemon, or foreground child),
 /// so every execution path has the same lease behavior.
@@ -162,12 +157,6 @@ impl CommittedTerminalSettlement {
             Self::Applied(run_id, state) => Some((run_id, state)),
             Self::Fenced => None,
         }
-    }
-}
-
-impl Drop for AttemptControlGuard {
-    fn drop(&mut self) {
-        self.runtime.deregister_attempt_controls(&self.registration);
     }
 }
 
@@ -1080,15 +1069,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         if let Some(executor) = &model_executor {
             execution_context = execution_context.with_model_executor(executor.clone());
         }
-        let registration = self.runtime.register_attempt_controls(
+        let _attempt_tracking = self.runtime.track_active_attempt(
             &run_id,
             claimed.request.thread_id(),
             &execution_context,
         );
-        let _attempt_control = AttemptControlGuard {
-            runtime: self.runtime.clone(),
-            registration,
-        };
         let mut state = match self.reader.resume_ticket(&run_id) {
             // A committed ScheduledAction (ADR-0020): the system performs the
             // deferred action, not waits for external input. This also covers a

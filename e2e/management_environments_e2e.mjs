@@ -21,8 +21,9 @@ async function drain(pagePromise) {
 
 async function main() {
   // Test design (Environment/work matrix). Causes: C1=create/update fields are
-  // omitted, valid, null, or invalid; C2=config/policy unions are canonical or
-  // private/unknown; C3=Work is queued, leased, reclaimed, stopped; C4=the
+  // omitted, valid, null, or invalid; C2=config/policy unions are canonical,
+  // internally inconsistent, or private/unknown; C3=Work is queued, leased,
+  // reclaimed, stopped; C4=the
   // Environment is archived. Effects: E1=valid CRUD round-trips one DTO;
   // E2=invalid input is 400 with no resource/work side effect; E3=C3 follows one
   // lease lifecycle; E4=C4 makes update/policy/Work/delete terminally unavailable.
@@ -30,7 +31,7 @@ async function main() {
   // Work availability. Descriptions retain the official nullable contract:
   // create omission/null projects null; update omission preserves, update null
   // clears to null, and an explicit empty string remains distinct.
-  // Decision rules: E1=C1(valid)+C2(valid); E2=C1/C2(invalid);
+  // Decision rules: E1=C1(valid)+C2(valid); E2=C1/C2(invalid or inconsistent);
   // E3=E1+C3; E4=E1+C4.
   try {
     await withScenarioServer('management', 'mcp', 38148, async (baseUrl) => {
@@ -121,7 +122,7 @@ async function main() {
             type: 'limited', allowed_hosts: null,
             allow_mcp_servers: null, allow_package_managers: null,
           },
-          packages: { type: 'packages', apt: null, npm: ['tsx'] },
+          packages: { type: 'packages', apt: null, npm: null },
         },
         betas: BETAS,
       });
@@ -129,7 +130,20 @@ async function main() {
       assert.equal(nullableCloud.config.networking.allow_mcp_servers, false);
       assert.equal(nullableCloud.config.networking.allow_package_managers, false);
       assert.deepEqual(nullableCloud.config.packages.apt, []);
-      assert.deepEqual(nullableCloud.config.packages.npm, ['tsx']);
+      assert.deepEqual(nullableCloud.config.packages.npm, []);
+      const deniedPackageNetwork = await fetch(`${baseUrl}/v1/environments`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        body: JSON.stringify({
+          name: 'packages-without-network-authority',
+          config: {
+            type: 'cloud',
+            networking: { type: 'limited', allow_package_managers: false },
+            packages: { type: 'packages', npm: ['tsx'] },
+          },
+        }),
+      });
+      assert.equal(deniedPackageNetwork.status, 422, 'cross-field package policy fails closed');
 
       // Environment update cause graph:
       // a present cloud config patches only present nested fields; omitted
@@ -183,6 +197,7 @@ async function main() {
       for (const rejectedName of [
         ...rejectedConfigs.map(([name]) => name),
         'must-not-exist',
+        'packages-without-network-authority',
       ]) {
         assert.ok(
           !namesAfterRejectedCreate.includes(rejectedName),

@@ -163,8 +163,9 @@ async fn stalled_stream_times_out_as_a_retryable_timeout() {
     // adjacent stream-deadline table: open+unfinished+idle=>retryable timeout,
     // with the outer guard proving the future cannot remain pending.
     let base_url = spawn_stalling_server().await;
-    let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
-        .with_idle_timeout(Duration::from_millis(300));
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .with_idle_timeout(Duration::from_millis(300));
 
     // Without the idle timeout the consumption loop would hang forever; the
     // 5s guard turns that hang into a test failure.
@@ -187,9 +188,10 @@ async fn heartbeating_unfinished_stream_obeys_the_total_call_deadline() {
     // total call budget nor terminal requirement. Decision rule S2 from the
     // adjacent table: C1+C2+C4+C5=>E2+E3.
     let base_url = spawn_heartbeating_server().await;
-    let executor = GenaiExecutor::anthropic_compatible(base_url, "test-key")
-        .with_timeout(Duration::from_millis(300))
-        .with_idle_timeout(Duration::from_secs(5));
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::Anthropic, base_url, "test-key")
+            .with_timeout(Duration::from_millis(300))
+            .with_idle_timeout(Duration::from_secs(5));
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),
@@ -211,8 +213,9 @@ async fn protocol_end_completes_without_waiting_for_transport_eof() {
     // Causal rule: terminal protocol event + retained HTTP connection => commit
     // the complete turn promptly. Transport EOF is neither required nor awaited.
     let base_url = spawn_completed_keep_alive_server().await;
-    let executor = GenaiExecutor::from_resolved(AdapterKind::OpenAI, Some(base_url), "test-key")
-        .with_idle_timeout(Duration::from_secs(5));
+    let executor =
+        GenaiExecutor::from_materialized_endpoint(AdapterKind::OpenAI, base_url, "test-key")
+            .with_idle_timeout(Duration::from_secs(5));
 
     let result = tokio::time::timeout(
         Duration::from_secs(2),

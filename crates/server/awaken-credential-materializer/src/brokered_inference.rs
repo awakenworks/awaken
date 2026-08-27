@@ -18,7 +18,6 @@ use awaken_runtime_contract::llm::{
 use crate::executor_from_materialized_endpoint_for_provider;
 
 pub const BROKERED_INFERENCE_ACCESS_CAPABILITY: &str = "inference.brokered_grant";
-pub const BROKERED_ROUTE_PREFIX: &str = "brokered:";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrokeredInferenceRequest {

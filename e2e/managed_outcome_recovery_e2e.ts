@@ -11,7 +11,7 @@
 // duplicate execution; E2=C3 remains unprocessed/retryable until C1 terminates;
 // E3=C4 resumes the exact id/binding without another define or repeated Worker;
 // E4=C5 causes no new work; E5=C6 projects one interrupted terminal report;
-// its exact interrupt receipt returns before any non-interrupted terminal report;
+// its exact interrupt receipt returns without any non-interrupted terminal report;
 // E6=decision failure is a terminal report, while infrastructure/schema failures
 // project no partial Outcome spans. Decision table:
 // | Rule | Cause | Effect |
@@ -36,7 +36,7 @@ import type {
   BetaManagedAgentsUserDefineOutcomeEvent,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
+import { committedEffectsAfterUnanchoredReceipt, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT);
@@ -161,15 +161,26 @@ async function interruptAt(
         event.result !== 'interrupted'),
       `${phase} interrupt receipt must precede a non-interrupted terminal Outcome`,
     );
-    const events = await terminalOutcomeEvents(
-      client,
-      session.id,
-      acceptedInterrupt.id,
-      accepted.outcome_id,
-      'interrupted',
+    // Interrupt projection rule: C1 the exact interrupt receipt is processed;
+    // C2 the synthetic interrupted cycle is anchored by the same terminal
+    // commit and canonical ordering may place C2 before C1. E1 both facts are
+    // present in committed history; E2 exactly one terminal is interrupted and
+    // no non-interrupted terminal is manufactured. I1 C1+C2=>E1+E2. Receipt
+    // delta is not a causal boundary for this terminal-owned projection.
+    const events = await waitForValue(
+      () => listEvents(client, session.id),
+      (history) => history.some((event) =>
+        event.id === acceptedInterrupt.id && event.processed_at != null)
+        && outcomeEnds(history, accepted.outcome_id).some((event) => event.result === 'interrupted'),
+      `${phase} interrupt receipt and terminal projection`,
+      { timeoutMs: 30_000, pollMs: 50 },
     );
     const ends = outcomeEnds(events, accepted.outcome_id);
-    assert.equal(ends.at(-1)?.result, 'interrupted', `${phase} did not project interruption`);
+    assert.deepEqual(
+      ends.map((event) => event.result),
+      ['interrupted'],
+      `${phase} projects one interrupted terminal and no competing result`,
+    );
     pass(`user.interrupt cancels an Outcome during ${phase}`);
   } finally {
     await stopServer(spawned.server).catch(() => {});
@@ -286,8 +297,9 @@ async function competingOutcomeCommands(port: number) {
 
     // R2/F2: the first retained command is in a real Provider request when the
     // second distinct command is accepted. Busy is retryable internal state:
-    // the second root Event remains unprocessed and has no Outcome spans until
-    // the first aggregate terminates, then the sole supervisor advances it.
+    // the second receipt remains unprocessed and absent from committed history,
+    // with no Outcome spans until the first aggregate terminates; the sole
+    // supervisor then anchors and advances it.
     const first = outcomeReceipt(await defineOutcome(client, session.id, 'FINAL', 3));
     await waitForValue(
       () => upstream.received,
@@ -295,17 +307,20 @@ async function competingOutcomeCommands(port: number) {
       'R2 first Outcome Worker to be active',
       { timeoutMs: 15_000, pollMs: 20 },
     );
+    const beforeSecond = await listEvents(client, session.id);
     const second = outcomeReceipt(
       await defineOutcome(client, session.id, 'NEVER_PRESENT_TOKEN', 1),
     );
     assert.notEqual(second.outcome_id, first.outcome_id, 'R2 competing root commands have distinct ids');
     assert.equal(second.processed_at, null, 'R2 Busy leaves the competing root Event unprocessed');
     const whileBusy = await listEvents(client, session.id);
-    assert.equal(
-      whileBusy.find((event) => event.id === second.id)?.processed_at,
-      null,
-      'R2 durable history preserves the unprocessed retry boundary',
-    );
+    committedEffectsAfterUnanchoredReceipt({
+      history: whileBusy,
+      priorHistory: beforeSecond,
+      receiptId: second.id,
+      forbiddenEventTypes: new Set(),
+      description: 'R2 Busy competing Outcome',
+    });
     assert.equal(outcomeEnds(whileBusy, second.outcome_id).length, 0, 'R2 no premature competing report');
 
     await terminalOutcomeEvents(client, session.id, first.id, first.outcome_id, 'satisfied');

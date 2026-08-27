@@ -222,6 +222,7 @@ struct ChildTranscriptProjection<'a> {
 /// One borrowed view of the already-read coordination facts consumed by the
 /// sole child projector. Grouping them prevents the caller and projector from
 /// drifting into parallel parameter lists without introducing another owner.
+#[derive(Clone, Copy)]
 struct DelegationProjectionEvidence<'a> {
     links: &'a [CoordinatedThreadLink],
     snapshots: &'a std::collections::HashMap<
