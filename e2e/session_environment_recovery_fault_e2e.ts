@@ -12,7 +12,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
-import { REPO_ROOT, stopServer, waitForPort, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  committedEffectsAfterUnanchoredReceipt,
+  REPO_ROOT,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+} from './harness.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
 import { sqliteRun, sqliteScalar } from './sqlite.mjs';
 // @ts-ignore -- shared Cargo artifact resolver intentionally serves TS scenarios.
@@ -181,6 +187,17 @@ async function expectRestoreFailure(
   sessionId: string,
   marker: string,
 ): Promise<void> {
+  const listHistory = async (): Promise<any[]> => {
+    const events: any[] = [];
+    for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
+      events.push(event);
+    }
+    return events;
+  };
+  // The Session already contains the successful realization command. Freeze
+  // that committed baseline before admitting the restoration attempt so the
+  // negative oracle cannot mistake old Agent/usage/idle events for new effects.
+  const priorHistory = await listHistory();
   const response = await fetch(`${BASE}/v1/sessions/${sessionId}/events`, {
     method: 'POST',
     headers: {
@@ -201,7 +218,7 @@ async function expectRestoreFailure(
   //
   // | Rule | Admission | Runtime restore | Observable outcome |
   // | F1 | reject | not run | HTTP 500 error |
-  // | F2 | accept | corrupt/unavailable | HTTP 200 + retained unprocessed receipt |
+  // | F2 | accept | corrupt/unavailable | HTTP 200 receipt; no unanchored list effect |
   if (response.status === 500) {
     assert.ok(body.includes('error'), `${marker} returned a structured error: ${body}`);
     return;
@@ -215,16 +232,12 @@ async function expectRestoreFailure(
   // would be the wrong oracle because retryable custody intentionally has no
   // terminal event until the damaged external binding is repaired.
   await new Promise((resolve) => setTimeout(resolve, 750));
-  const observed: any[] = [];
-  for await (const event of client.beta.sessions.events.list(sessionId, { betas: BETAS })) {
-    observed.push(event);
-  }
-  const acceptedAt = observed.findIndex((event) => event.id === acceptedId);
-  assert.notEqual(acceptedAt, -1, `${marker} retained its exact User Event`);
-  assert.equal(observed[acceptedAt].processed_at, null, `${marker} retained retryable custody`);
-  const delta = observed.slice(acceptedAt + 1);
-  assert.ok(
-    !delta.some((event) => [
+  const observed = await listHistory();
+  committedEffectsAfterUnanchoredReceipt({
+    history: observed,
+    priorHistory,
+    receiptId: acceptedId,
+    forbiddenEventTypes: new Set([
       'agent.message',
       'agent.tool_use',
       'agent.tool_result',
@@ -233,9 +246,9 @@ async function expectRestoreFailure(
       'session.usage',
       'span.model_request_start',
       'span.model_request_end',
-    ].includes(event.type)),
-    `${marker} fabricated no execution/terminal effect: ${JSON.stringify(delta)}`,
-  );
+    ]),
+    description: `${marker} retryable restoration fault`,
+  });
 }
 
 function removeContainers(ids: Iterable<string>): void {

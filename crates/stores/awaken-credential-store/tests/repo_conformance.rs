@@ -16,15 +16,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use awaken_agent_contract::RedactedString;
 use awaken_credential_contract::{CredentialRef, CredentialSourceId};
+#[cfg(feature = "postgres")]
+use awaken_credential_vault::catalog::ManagedVaultRepo;
 use awaken_credential_vault::catalog::{
     ManagedCredentialAuth, ManagedCredentialLifecycle, ManagedVault, ManagedVaultCredential,
-    ManagedVaultRepo,
 };
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+use awaken_credential_vault::repo::recover_managed_credential_mutations;
 use awaken_credential_vault::repo::{
     CredentialMaterialMutationPhase, CredentialMutationIntent, CredentialRepo,
     InMemoryCredentialRepo, ManagedCredentialOperation, ManagedCredentialRepository,
     PendingManagedCredentialMutation, ensure_worker_local, recover_credential_mutations,
-    recover_managed_credential_mutations,
 };
 use awaken_credential_vault::{
     CredentialError, CredentialKind, CredentialPool, CredentialPoolId, CredentialPoolMember,

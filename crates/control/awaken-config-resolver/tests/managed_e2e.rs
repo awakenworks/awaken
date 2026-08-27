@@ -187,7 +187,8 @@ async fn managed_full_chain_calls_real_model() {
     let (_, inference) = run_full_chain("https://api.anthropic.com/v1/", &model, &api_key).await;
 
     // Injection seam: the resolved base_url + secret build the provider adapter.
-    let executor = awaken_provider_genai::GenaiExecutor::anthropic_compatible(
+    let executor = awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
         inference.base_url.clone().unwrap(),
         inference.credential.as_ref().unwrap().expose_secret(),
     );

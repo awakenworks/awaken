@@ -31,9 +31,17 @@ pub fn build_executor() -> anyhow::Result<Arc<dyn LlmExecutor>> {
             AdapterKind::OpenAI,
         )
     } else if let Some(key) = env_nonempty("OPENAI_API_KEY") {
-        GenaiExecutor::from_resolved(AdapterKind::OpenAI, None, key)
+        GenaiExecutor::from_materialized_endpoint(
+            AdapterKind::OpenAI,
+            "https://api.openai.com/v1",
+            key,
+        )
     } else if let Some(key) = env_nonempty("ANTHROPIC_API_KEY") {
-        GenaiExecutor::from_resolved(AdapterKind::Anthropic, None, key)
+        GenaiExecutor::from_materialized_endpoint(
+            AdapterKind::Anthropic,
+            "https://api.anthropic.com/v1",
+            key,
+        )
     } else {
         anyhow::bail!("set an explicit provider credential for the coding-agent example")
     };

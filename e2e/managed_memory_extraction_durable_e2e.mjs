@@ -135,12 +135,14 @@ async function main() {
     const modelRequestsBeforeReadOnly = upstream.requests.length;
     // Read-only capability decision table: C1=the User batch is durably
     // admitted; C2=the local backend cannot enforce the frozen read-only mount;
-    // C3=one bounded reconciliation window elapses. E1=retain the exact
-    // unprocessed receipt; E2=keep the Session idle/nonterminal; E3=publish no
-    // model/tool/terminal effect; E4=enqueue no extraction or store mutation.
-    // K: admission owns the durable retryable command, so this fixture must not
-    // use the success-only receipt observer or fabricate a terminal error.
-    // Decision RO1 C1+C2=>E1+E2; RO2 C1+C2+C3=>E1+E2+E3+E4.
+    // C3=no committed projection anchor exists; C4=one bounded reconciliation
+    // window elapses. E1=return the exact unprocessed receipt from admission;
+    // E2=exclude that unanchored receipt from committed list history; E3=keep
+    // the Session idle/nonterminal; E4=publish no model/tool/terminal effect;
+    // E5=enqueue no extraction or store mutation. K: the Session root retains
+    // retryable command provenance, while events.list owns only committed
+    // history; this fixture must not invent a second pending-event surface.
+    // Decision RO1 C1+C2=>E1; RO2 C1+C2+C3+C4=>E2+E3+E4+E5.
     const readOnlyReceipt = await client.beta.sessions.events.send(readOnly.id, {
       betas: BETAS,
       events: [{
@@ -160,18 +162,12 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(readOnly.id, { betas: BETAS })) {
       readOnlyEvents.push(event);
     }
-    const acceptedReadOnlyAt = readOnlyEvents.findIndex(
-      (event) => event.id === acceptedReadOnly.id,
-    );
-    assert.notEqual(acceptedReadOnlyAt, -1, 'RO2 retains the exact User Event receipt');
-    assert.equal(
-      readOnlyEvents[acceptedReadOnlyAt].processed_at,
-      null,
-      'RO2 retained history preserves retryability',
-    );
-    const readOnlyDelta = readOnlyEvents.slice(acceptedReadOnlyAt + 1);
     assert.ok(
-      !readOnlyDelta.some((event) => [
+      readOnlyEvents.every((event) => event.id !== acceptedReadOnly.id),
+      'RO2 unanchored receipt is not fabricated as committed Event history',
+    );
+    assert.ok(
+      !readOnlyEvents.some((event) => [
         'agent.message',
         'agent.mcp_tool_use',
         'agent.mcp_tool_result',
@@ -184,7 +180,7 @@ async function main() {
         'span.model_request_start',
         'span.model_request_end',
       ].includes(event.type)),
-      `RO2 no execution or terminal effect is fabricated: ${readOnlyDelta.map((event) => event.type)}`,
+      `RO2 no execution or terminal effect is fabricated: ${readOnlyEvents.map((event) => event.type)}`,
     );
     assert.equal(
       (await client.beta.sessions.retrieve(readOnly.id, { betas: BETAS })).status,

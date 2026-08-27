@@ -44,7 +44,10 @@ const groups = [
     native: evidence('crates/runtime/awaken-ext-builtin-tools/src/hand.rs', 'Bash state cannot cross Sessions'),
     ...acpPartitions('e2e/managed_native_acp_runtime_matrix_e2e.mjs', 'ACP completed tool call/result pair'),
     a2a: evidence('e2e/a2a_hitl_decision_e2e.mjs', 'structured allow resumes the awaiting tool'),
-    negative: evidence('crates/runtime/awaken-ext-builtin-tools/src/hand.rs', 'absolute pattern not permitted'),
+    negative: evidence(
+      'crates/runtime/awaken-ext-builtin-tools/tests/hand.rs',
+      'G3 untrusted absolute pattern',
+    ),
   },
   {
     id: 'resources-memory-and-files',

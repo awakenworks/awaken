@@ -184,11 +184,13 @@ pub fn build_memory_resource_router() -> Router {
 
 /// A router for the github_repository RESOURCE e2e (ADR-0038): a deterministic model
 /// reads a host-cloned repo's file and writes a sandbox-local change. Remote publication
-/// remains an explicit operator workflow. `AWAKEN_MODEL_MODE=git-repo`.
-pub fn build_git_repo_router() -> Router {
+/// remains an explicit operator workflow. Repository execution requires one
+/// path-faithful environment across Hand, Bash, Git, and Agent, so this factory
+/// consumes the same typed Deployment environment selector as other
+/// provider-backed scenarios. `AWAKEN_MODEL_MODE=git-repo`.
+pub async fn build_git_repo_router(deployment: awaken_runtime_host::DeploymentConfig) -> Router {
     let (model, model_ref) = scenario_model(Arc::new(crate::models::GitRepoModel), "git-repo");
-    let host = resource_host(model, model_ref);
-    mount(host)
+    mount(runtime_resource_host_with_deployment(model, model_ref, deployment).await)
 }
 
 /// The combined-chain router (native full-chain e2e): one session configures a
@@ -542,7 +544,17 @@ pub async fn build_real_gemini_router() -> Router {
             .expose_secret()
             .to_string(),
     };
-    let executor = GenaiExecutor::vertex_gemini(project, location, token);
+    let host = if location == "global" {
+        "aiplatform.googleapis.com".to_string()
+    } else {
+        format!("{location}-aiplatform.googleapis.com")
+    };
+    let base_url = format!("https://{host}/v1/projects/{project}/locations/{location}/");
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Vertex,
+        base_url,
+        token,
+    );
     mount(
         runtime_resource_host_with_deployment(Arc::new(executor), model, scenario_deployment())
             .await,

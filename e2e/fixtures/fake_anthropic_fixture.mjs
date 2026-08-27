@@ -401,12 +401,12 @@ export const BEHAVIORS = {
   // the tool-result count).
   gitRepo(parsed) {
     switch (toolResults(parsed).length) {
-      case 0: return tool('r', 'read', { path: 'workspace/repo/README.md' });
-      case 1: return tool('w', 'write', { path: 'workspace/repo/NEW.txt', content: 'AGENT_REPO_MARKER_3390' });
+      case 0: return tool('r', 'read', { path: '/workspace/repo/README.md' });
+      case 1: return tool('w', 'write', { path: '/workspace/repo/NEW.txt', content: 'AGENT_REPO_MARKER_3390' });
       // The agent authors its OWN commit in the jail (ADR-0038: the host only pushes
       // what the agent committed — `push_repo_at` ships `@{u}..HEAD`). Inline identity
       // so a fresh host-side clone needs no prior git config.
-      case 2: return tool('c', 'bash', { command: "cd workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add NEW.txt'" });
+      case 2: return tool('c', 'bash', { command: "cd /workspace/repo && git add -A && git -c user.email=agent@awaken -c user.name=agent commit -m 'agent: add NEW.txt'" });
       default: return text('repo Run done');
     }
   },

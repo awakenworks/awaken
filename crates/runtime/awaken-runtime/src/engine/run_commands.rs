@@ -19,10 +19,8 @@ impl RunExecutor for Runtime {
         // Register the complete attempt-control bundle atomically and always
         // deregister this exact generation on the way out.
         let run_id = activation.run_id.clone();
-        let registration = self.register_attempt_controls(&run_id, &activation.thread_id, &context);
-        let result = run_agent_loop(self, activation, context).await;
-        self.deregister_attempt_controls(&registration);
-        result
+        let _attempt_tracking = self.track_active_attempt(&run_id, &activation.thread_id, &context);
+        run_agent_loop(self, activation, context).await
     }
 }
 

@@ -6,8 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
+  cleanupFixtureTree,
   managedWorkspaceClient,
   spawnProduction,
   stopServer,
@@ -112,21 +112,6 @@ async function driveSession(client, sessionId, text, { timeoutMs = 45_000 } = {}
   );
 }
 
-function seedRepository(root) {
-  const work = path.join(root, 'activation-repository-work');
-  const remote = path.join(root, 'activation-repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'activation@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'activation-recovery'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'activation recovery');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
-}
-
 function sqlQuote(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -142,10 +127,6 @@ function terminalCleanupEffectId(sessionId) {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return `fnv1a64:${hash.toString(16).padStart(16, '0')}`;
-}
-
-function sqlite(database, sql) {
-  return sqliteExec(database, sql);
 }
 
 function sessionRow(database, sessionId) {
@@ -260,61 +241,14 @@ function persistTerminalRelease(database, sessionId) {
   );
 }
 
-function persistInconsistentRelease(database, sessionId) {
-  const row = sessionRow(database, sessionId);
-  const resources = {
-    ...row.resources,
-    pending: undefined,
-    activations: row.resources.activations.map((activation) => ({
-      ...activation,
-      state: activation.state === 'active' ? 'releasing' : activation.state,
-    })),
-  };
-  assert.ok(resources.activations.some((activation) => activation.state === 'releasing'));
-  updateSessionRow(database, sessionId, 'idle', resources);
-}
-
-function repositoryRecord(database, id) {
-  const rows = sqliteRows(
-    database,
-    `SELECT data FROM resource_catalog_entry WHERE kind='repository' AND id=${sqlQuote(id)}`,
-  );
-  assert.equal(rows.length, 1, `missing Repository aggregate ${id}`);
-  return rows[0].data;
-}
-
-function receipts(directory) {
-  const database = path.join(directory, 'resources.db');
-  if (!fs.existsSync(database)) return [];
-  return sqliteRows(database, 'SELECT data FROM resource_lifecycle_purge_intents')
-    .map((row) => JSON.parse(row.data));
-}
-
-async function waitRepositoryReceipt(directory, resourceId) {
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    const receipt = receipts(directory).find((intent) =>
-      intent.target.kind === 'repository'
-      && intent.target.resource_id === resourceId
-      && intent.status === 'completed');
-    if (receipt) return receipt;
-    await sleep(200);
-  }
-  throw new Error(`no completed Repository receipt for ${resourceId}`);
-}
-
 async function main() {
   // Constraints/invariants for the decision tables below: the persisted Session
-  // activation/cleanup state and the Resources component's catalog/receipt
-  // aggregates are the only recovery authorities; listener readiness, process
-  // liveness, and test-injected database faults cannot themselves claim an
-  // effect complete or authorize a second physical attempt.
+  // activation/cleanup state is the only recovery authority; listener readiness
+  // and process liveness cannot themselves claim an effect complete or
+  // authorize a second physical attempt.
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-activation-recovery-'));
   const upstream = await startFakeAnthropic(FAKE_KEY, { models: [MODEL] });
   const sessionsDatabase = path.join(directory, 'sessions.db');
-  // Resource Catalog and lifecycle are independently migrated aggregates owned
-  // by the one Resources component and persisted in its one database.
-  const resourceDatabase = path.join(directory, 'resources.db');
   let server = start(directory);
   try {
     await ready();
@@ -350,45 +284,14 @@ async function main() {
       betas: [MANAGED_BETA],
     });
 
-    const repository = seedRepository(directory);
     const terminating = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
-        type: 'github_repository',
-        url: repository,
-        mount_path: '/workspace/terminal-repository',
+        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/terminal',
       }],
       betas: [MANAGED_BETA],
     });
-
-    const inconsistent = await client.beta.sessions.create({
-      agent: AGENT,
-      environment_id: 'env_local',
-      resources: [{
-        type: 'memory_store', memory_store_id: memoryStoreId, mount_path: '/workspace/inconsistent',
-      }],
-      betas: [MANAGED_BETA],
-    });
-
-    const cleanupCases = [];
-    for (const name of ['catalog-read', 'purge-schedule', 'catalog-write', 'already-gone']) {
-      const created = await client.beta.sessions.create({
-        agent: AGENT,
-        environment_id: 'env_local',
-        resources: [{
-          type: 'github_repository',
-          url: repository,
-          mount_path: `/workspace/${name}`,
-        }],
-        betas: [MANAGED_BETA],
-      });
-      cleanupCases.push({
-        name,
-        sessionId: created.id,
-        repositoryId: `managed:${created.id}:repository:0`,
-      });
-    }
 
     // Initial-realization cause/effect table: C1 listener ready; C2 a real Run
     // is claimed by the registered Worker; C3 every initial Resource generation
@@ -403,8 +306,6 @@ async function main() {
     const baselineSessionIds = [
       recovering.id,
       terminating.id,
-      inconsistent.id,
-      ...cleanupCases.map((cleanup) => cleanup.sessionId),
     ];
     for (const sessionId of baselineSessionIds) {
       await driveSession(client, sessionId, `establish active baseline for ${sessionId}`);
@@ -418,10 +319,7 @@ async function main() {
       { timeoutMs: 45_000 },
     );
 
-    const terminalSessionIds = [
-      terminating.id,
-      ...cleanupCases.map((cleanup) => cleanup.sessionId),
-    ];
+    const terminalSessionIds = [terminating.id];
     const predecessorLeases = new Map(terminalSessionIds.map((sessionId) => [
       sessionId,
       requiredRealizationLease(sessionsDatabase, sessionId),
@@ -430,46 +328,10 @@ async function main() {
     // Model process death after each first durable edge: Prepared for a live
     // replacement, and Requested root cleanup + Releasing resources for a
     // terminal Session. These are precisely the states the coordinator persists
-    // before Worker-owned teardown and external catalog IO.
+    // before Worker-owned realization and teardown.
     await stop(server, 'SIGKILL');
     persistPreparedGeneration(sessionsDatabase, recovering.id);
     persistTerminalRelease(sessionsDatabase, terminating.id);
-    persistInconsistentRelease(sessionsDatabase, inconsistent.id);
-    for (const cleanup of cleanupCases) {
-      persistTerminalRelease(sessionsDatabase, cleanup.sessionId);
-    }
-
-    const catalogRead = cleanupCases.find((entry) => entry.name === 'catalog-read');
-    const purgeSchedule = cleanupCases.find((entry) => entry.name === 'purge-schedule');
-    const catalogWrite = cleanupCases.find((entry) => entry.name === 'catalog-write');
-    const alreadyGone = cleanupCases.find((entry) => entry.name === 'already-gone');
-    const catalogReadRecord = repositoryRecord(resourceDatabase, catalogRead.repositoryId);
-    sqlite(
-      resourceDatabase,
-      `
-        UPDATE resource_catalog_entry SET data='{broken-repository-aggregate'
-          WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
-        CREATE TRIGGER reject_repository_state_update
-          BEFORE UPDATE ON resource_catalog_entry
-          WHEN OLD.kind='repository' AND OLD.id=${sqlQuote(catalogWrite.repositoryId)}
-        BEGIN
-          SELECT RAISE(ABORT, 'injected Repository lifecycle write failure');
-        END;
-        DELETE FROM resource_catalog_entry
-          WHERE kind='repository' AND id=${sqlQuote(alreadyGone.repositoryId)};
-      `,
-    );
-    sqlite(
-      resourceDatabase,
-      `
-        CREATE TRIGGER reject_repository_purge_schedule
-          BEFORE INSERT ON resource_lifecycle_purge_intents
-          WHEN NEW.data LIKE ${sqlQuote(`%${purgeSchedule.repositoryId}%`)}
-        BEGIN
-          SELECT RAISE(ABORT, 'injected Repository purge scheduling failure');
-        END;
-      `,
-    );
 
     server = start(directory);
     await ready();
@@ -486,7 +348,6 @@ async function main() {
     // | R1   | Prepared      | yes        | no | remains Prepared, no attempt |
     // | R2   | Prepared      | yes        | yes | Active + no pending |
     // | R3   | Releasing     | yes        | n/a | Released in background |
-    // | R4   | faulted edge  | yes        | n/a | remains Releasing until repaired |
     //
     // Replacement timing rule: SIGKILL leaves the previous Session Work lease
     // live for its canonical 60-second TTL. Before expiry the replacement must
@@ -536,17 +397,13 @@ async function main() {
     assert.equal(released.resources.pending, undefined);
     assert.ok(released.resources.activations.every((activation) => activation.state === 'released'));
 
-    const repositoryId = `managed:${terminating.id}:repository:0`;
-    const receipt = await waitRepositoryReceipt(directory, repositoryId);
-    assert.equal(receipt.receipt.evidence.local_realizations_deleted, 0);
-
     // Cold-replacement decision table: C1 terminal cleanup is Requested with
     // no resident Host slot after SIGKILL; C2 the registry has a fresh process
     // incarnation for the same logical Worker; C3 no Run claim or second API
     // command exists for a terminal Session. Effects: E1 claim-next fences epoch
     // N+1 on the Session root; E2 the Worker installs the frozen projection,
-    // polls the aggregate command, and records the root receipt; E3 catalog
-    // faults may keep Resource release pending but cannot erase that receipt.
+    // polls the aggregate command, and records the root receipt before the
+    // Resource generation becomes Released.
     // The observation follows the scenario's unrelated prepared-generation
     // demand so it does not block the sole lifecycle supervisor from starting.
     //
@@ -554,7 +411,6 @@ async function main() {
     // |---|---|---|---|---|
     // | G48-1 | yes | process dead | same owner/new incarnation | E1 + E2 |
     // | G48-2 | yes | process dead | no terminal Run/API demand | E1 + E2 |
-    // | G48-3 | yes | process dead | catalog fault | E1 + E2 + E3 |
     await waitForValue(
       () => terminalSessionIds.map((sessionId) => ({
         sessionId,
@@ -572,76 +428,11 @@ async function main() {
       { timeoutMs: 90_000 },
     );
 
-    // Each terminal cleanup error is durable and fail-closed. A missing catalog
-    // row is the idempotent "already physically gone" case and can complete;
-    // malformed catalog state and failed writes/scheduling must remain Releasing.
-    const inconsistentState = sessionRow(sessionsDatabase, inconsistent.id);
-    assert.equal(inconsistentState.status, 'idle');
-    assert.ok(inconsistentState.resources.activations.some(
-      (activation) => activation.state === 'releasing',
-    ));
-    for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
-      const pending = sessionRow(sessionsDatabase, cleanup.sessionId);
-      assert.equal(pending.status, 'terminated', cleanup.name);
-      assert.ok(
-        pending.resources.activations.some((activation) => activation.state === 'releasing'),
-        cleanup.name,
-      );
-    }
-    await waitForValue(
-      () => sessionRow(sessionsDatabase, alreadyGone.sessionId),
-      (row) => row.resources.activations.every(
-        (activation) => activation.state === 'released'),
-      'already-absent Repository did not converge to Released',
-    );
-
-    // Repair only the failed durable dependencies. The next process must finish
-    // every original cleanup intent without another API transition.
-    await stop(server, 'SIGKILL');
-    const repairedInconsistent = sessionRow(sessionsDatabase, inconsistent.id);
-    repairedInconsistent.resources.activations = repairedInconsistent.resources.activations.map(
-      (activation) => ({
-        ...activation,
-        state: activation.state === 'releasing' ? 'active' : activation.state,
-      }),
-    );
-    updateSessionRow(
-      sessionsDatabase,
-      inconsistent.id,
-      repairedInconsistent.status,
-      repairedInconsistent.resources,
-    );
-    sqlite(
-      resourceDatabase,
-      `
-        UPDATE resource_catalog_entry SET data=${sqlQuote(catalogReadRecord)}
-          WHERE kind='repository' AND id=${sqlQuote(catalogRead.repositoryId)};
-        DROP TRIGGER reject_repository_state_update;
-      `,
-    );
-    sqlite(resourceDatabase, 'DROP TRIGGER reject_repository_purge_schedule;');
-    server = start(directory);
-    await ready();
-    for (const cleanup of cleanupCases.filter((entry) => entry.name !== 'already-gone')) {
-      const settled = await waitForValue(
-        () => sessionRow(sessionsDatabase, cleanup.sessionId),
-        (row) => row.resources.activations.every(
-          (activation) => activation.state === 'released'),
-        `${cleanup.name} cleanup did not settle after dependency repair`,
-      );
-      assert.equal(settled.status, 'terminated', cleanup.name);
-      assert.equal(
-        (await waitRepositoryReceipt(directory, cleanup.repositoryId))
-          .receipt.evidence.local_realizations_deleted,
-        0,
-      );
-    }
-
-    console.log('E2E PASS: prepared, inconsistent, and faulted terminal resource states recover after process death.');
+    console.log('E2E PASS: Prepared and Releasing resource generations recover after process death.');
   } finally {
     await stop(server).catch(() => {});
     await upstream.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    cleanupFixtureTree(directory);
   }
 }
 

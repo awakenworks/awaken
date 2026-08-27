@@ -6,7 +6,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { withRealServer, pass, waitForSessionEventReceipt } from './harness.mjs';
+import {
+  committedEffectsAfterUnanchoredReceipt,
+  pass,
+  waitForSessionEventReceipt,
+  withRealServer,
+} from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_BETAS = ['agent-memory-2026-07-22'];
@@ -70,12 +75,12 @@ async function main() {
     );
     // Read-only realization causes: C1=the User batch is durably admitted;
     // C2=Workdir cannot enforce the frozen read-only File mount; C3=one bounded
-    // reconciliation window elapses. Effects: E1=the exact User receipt remains
-    // retained and unprocessed; E2=the Session remains idle/nonterminal; E3=no
-    // model/tool/terminal effect is published; E4=no MemoryStore mutation occurs.
-    // K: admission owns the retryable command, while mount capability belongs to
-    // later realization; the fixture must not expect an asynchronous effect error
-    // from events.send. Decision R2a C1+C2=>E1+E2; R2b C1+C2+C3=>E1+E2+E3+E4.
+    // reconciliation window elapses. Effects: E1=admission returns the exact
+    // unprocessed receipt; E2=the unanchored command is absent from committed
+    // history; E3=the Session remains idle/nonterminal; E4=no model/tool/terminal
+    // effect or MemoryStore mutation occurs. K: the Session root owns retryable
+    // command provenance while events.list owns committed history. Decision
+    // R2a C1+C2=>E1; R2b C1+C2+C3=>E2+E3+E4.
     const deniedReceipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'work with the files' }] }],
       betas: BETAS,
@@ -88,18 +93,12 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
       deniedEvents.push(event);
     }
-    const acceptedDeniedAt = deniedEvents.findIndex((event) => event.id === acceptedDenied.id);
-    assert.notEqual(acceptedDeniedAt, -1, 'R2b retains the exact User Event receipt');
-    assert.equal(
-      deniedEvents[acceptedDeniedAt].processed_at,
-      null,
-      'R2b retained history preserves retryability',
-    );
-    const deniedDelta = deniedEvents.slice(acceptedDeniedAt + 1);
-    assert.ok(
-      !deniedDelta.some((event) => EXECUTION_OR_TERMINAL_EVENT_TYPES.has(event.type)),
-      `R2b no execution or terminal effect is fabricated: ${deniedDelta.map((event) => event.type)}`,
-    );
+    committedEffectsAfterUnanchoredReceipt({
+      history: deniedEvents,
+      receiptId: acceptedDenied.id,
+      forbiddenEventTypes: EXECUTION_OR_TERMINAL_EVENT_TYPES,
+      description: 'R2b denied read-only activation',
+    });
     assert.equal(
       (await client.beta.sessions.retrieve(session.id, { betas: BETAS })).status,
       'idle',
@@ -151,14 +150,16 @@ async function main() {
     for await (const resource of client.beta.sessions.resources.list(memorySession.id, { betas: BETAS })) {
       resourcesBeforeArchiveDeny.push(resource);
     }
+    const eventsBeforeArchiveDeny = listed;
     // Archived-resource causes: C1=the next User batch is durably admitted;
     // C2=the frozen binding resolves to an archived MemoryStore; C3=one bounded
-    // reconciliation window elapses. Effects: E1=retain the exact unprocessed
-    // receipt; E2=keep the Session idle/nonterminal; E3=publish no new execution
+    // reconciliation window elapses. Effects: E1=return the exact unprocessed
+    // admission receipt; E2=exclude the unanchored command from committed
+    // history; E3=keep the Session idle/nonterminal and publish no new execution
     // or terminal effect; E4=leave the frozen Resource binding unchanged.
     // K: live Resource lifecycle is checked during realization, after admission;
     // archival does not revoke or delete the already accepted command. Decision
-    // R4a C1+C2=>E1+E2; R4b C1+C2+C3=>E1+E2+E3+E4.
+    // R4a C1+C2=>E1; R4b C1+C2+C3=>E2+E3+E4.
     const archiveDeniedReceipt = await client.beta.sessions.events.send(memorySession.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'try archived memory' }] }],
       betas: BETAS,
@@ -175,20 +176,13 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(memorySession.id, { betas: BETAS })) {
       afterArchive.push(event);
     }
-    const acceptedArchiveDeniedAt = afterArchive.findIndex(
-      (event) => event.id === acceptedArchiveDenied.id,
-    );
-    assert.notEqual(acceptedArchiveDeniedAt, -1, 'R4b retains the exact User Event receipt');
-    assert.equal(
-      afterArchive[acceptedArchiveDeniedAt].processed_at,
-      null,
-      'R4b retained history preserves retryability',
-    );
-    const archiveDeniedDelta = afterArchive.slice(acceptedArchiveDeniedAt + 1);
-    assert.ok(
-      !archiveDeniedDelta.some((event) => EXECUTION_OR_TERMINAL_EVENT_TYPES.has(event.type)),
-      `R4b no execution or terminal effect is fabricated: ${archiveDeniedDelta.map((event) => event.type)}`,
-    );
+    committedEffectsAfterUnanchoredReceipt({
+      history: afterArchive,
+      priorHistory: eventsBeforeArchiveDeny,
+      receiptId: acceptedArchiveDenied.id,
+      forbiddenEventTypes: EXECUTION_OR_TERMINAL_EVENT_TYPES,
+      description: 'R4b archived Resource reuse',
+    });
     assert.equal(
       (await client.beta.sessions.retrieve(memorySession.id, { betas: BETAS })).status,
       'idle',

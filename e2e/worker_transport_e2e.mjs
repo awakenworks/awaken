@@ -304,6 +304,7 @@ async function main() {
       binding: granted.activation.snapshot.resolved_spec.model_binding,
       providerRef: 'fixture-provider@1',
       routeRef: 'fixture-route@1',
+      accessKind: 'direct',
       scopeId: 'scope-ts-17',
       credential: {
         credential: { id: 'grant-ts-17', revision: 3 },

@@ -173,6 +173,7 @@ def main() -> int:
     _service_data_ownership_fitness.selftest()
     _execution_ownership_fitness.selftest()
     _managed_protocol_boundary.selftest()
+    _provider_env_fitness.selftest()
     errors = (
         _crate_dependency_fitness.check_all(dependency_fitness_specs())
         + check_neutral_code_boundaries()

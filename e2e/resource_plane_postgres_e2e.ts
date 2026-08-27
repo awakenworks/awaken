@@ -388,21 +388,6 @@ function removeReclamationFaults(
   `);
 }
 
-function seedRepository(root: string): string {
-  const work = path.join(root, 'repository-work');
-  const remote = path.join(root, 'repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'resource-e2e@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'resource-e2e'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'governed repository');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
-}
-
 async function publishAgent(endpoint: string, memoryStoreId: string): Promise<void> {
   const connected = await json('POST', scoped(WORKSPACE, 'config/provider-connections'), {
     idempotency_key: 'resource-postgres-provider-connection',
@@ -727,35 +712,19 @@ async function main(): Promise<void> {
     assert.equal((await json('GET', scoped(OTHER_WORKSPACE, `skills/${skillId}`))).status, 404);
     console.log('  ok: replacement process restored and isolated all PostgreSQL resource state');
 
-    // Drive the production Managed Session edge so Repository configuration uses
-    // this same PostgreSQL Resource Catalog rather than a scenario-host registry.
-    //
-    // Cause graph: public checkout choice -> managed resource DTO -> internal
-    // initial_branch plan -> PostgreSQL catalog reference -> realized repository.
-    //
-    // Decision table:
-    // | Public input                         | Expected result                 |
-    // | checkout omitted                     | repository default branch      |
-    // | checkout={type:branch,name:main}      | exact main branch realization  |
-    // | legacy top-level initial_branch       | 400 unknown-field fail-closed  |
+    // Drive the production Managed Session edge so Memory configuration and
+    // content use the same PostgreSQL Resource authorities already exercised
+    // above. Repository transport has its own HTTPS-focused scenarios and must
+    // not be duplicated here with a production-invalid local Git path.
     await publishAgent(upstream.url, memoryId);
-    const repository = seedRepository(secondDirectory);
     const client = managedWorkspaceClient(`http://127.0.0.1:${PORT}`, WORKSPACE);
     const session = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local',
-      resources: [
-        {
-          type: 'memory_store',
-          memory_store_id: memoryId,
-          mount_path: '/workspace/memory',
-        },
-        {
-          type: 'github_repository',
-          url: repository,
-          checkout: { type: 'branch', name: 'main' },
-          mount_path: '/workspace/create-time-repository',
-        },
-      ],
+      resources: [{
+        type: 'memory_store',
+        memory_store_id: memoryId,
+        mount_path: '/workspace/memory',
+      }],
       betas: [MANAGED_BETA],
     });
     // Registered-Worker activation cause/effect table. The public Resource list
@@ -773,11 +742,11 @@ async function main(): Promise<void> {
     // assertion detects both failures.
     assert.deepEqual(
       session.resources.map((resource: { type: string }) => resource.type),
-      ['memory_store', 'github_repository'],
+      ['memory_store'],
       'the canonical desired manifest is immediately readable',
     );
     assert.equal(session.status, 'rescheduling');
-    // Managed Run decision table: C1=official SDK create froze both resources;
+    // Managed Run decision table: C1=official SDK create froze the MemoryStore;
     // C2=official SDK send returns one exact User receipt; C3=the registered
     // Worker processes C2 and commits a later Agent reply plus idle. E1=C1 is
     // round-trippable; E2=C1+C2+C3 authorizes DB/resource-effect assertions.
@@ -811,15 +780,15 @@ async function main(): Promise<void> {
     assert.equal(activeSession.status, 200, JSON.stringify(activeSession.body));
     assert.deepEqual(
       activeSession.body.resources.map((resource: { type: string }) => resource.type),
-      ['memory_store', 'github_repository'],
+      ['memory_store'],
     );
-    console.log('  ok: registered Worker activated PostgreSQL-backed MemoryStore and Repository inputs');
+    console.log('  ok: registered Worker activated the PostgreSQL-backed MemoryStore input');
     console.log('  ok: Managed Run completed over the PostgreSQL-backed resource bindings');
     const realized = psql(
       pg.container,
       `SELECT count(*) FROM resource_lifecycle_references WHERE reference_id=${sqlLiteral(session.id)}`,
     );
-    assert.ok(Number(realized) >= 2, 'the Session activated both frozen resource bindings');
+    assert.ok(Number(realized) >= 1, 'the Session activated its frozen MemoryStore binding');
     const extraction = await waitForCompletedExtraction(pg.container, session.id);
     assert.equal(extraction.workspace_id, WORKSPACE);
     assert.equal(extraction.memory_store_id, memoryId);
@@ -850,117 +819,6 @@ async function main(): Promise<void> {
       ),
       'the completed Postgres receipt corresponds to content in the bound MemoryStore',
     );
-
-    // Frozen-snapshot cause/effect rule: C1 the Session already contains an exact
-    // resolved Repository generation; C2 its mutable Catalog row is later corrupt;
-    // C3 an unrelated File is attached. C1&&C2&&C3 -> E1 the File generation
-    // activates from Session truth and E2 no mutable Repository re-resolution is
-    // attempted. The dedicated resource_catalog_corruption scenario owns faults
-    // before a generation is frozen. FMECA: re-reading here would make an admitted
-    // Session depend on later Catalog drift and duplicate configuration authority;
-    // successful attach plus exact projection checks detect that regression.
-    const createTimeRepositoryIds = psql(
-      pg.container,
-      `SELECT id FROM resource_catalog_entry WHERE kind='repository' ` +
-        `AND id LIKE ${sqlLiteral(`managed:${session.id}:repository:%`)} ORDER BY id`,
-    ).split('\n').filter(Boolean);
-    assert.equal(
-      createTimeRepositoryIds.length,
-      1,
-      `expected one create-time Repository aggregate: ${JSON.stringify(createTimeRepositoryIds)}`,
-    );
-    const [createTimeRepositoryId] = createTimeRepositoryIds;
-    const canonicalRepositoryRecord = resourceCatalogRecord(
-      pg.container,
-      'repository',
-      createTimeRepositoryId,
-    );
-    const corruptRepositoryRecord = {
-      ...structuredClone(canonicalRepositoryRecord),
-      definition: { ...canonicalRepositoryRecord.definition, id: 'forged-repository-id' },
-    };
-    writeResourceCatalogRecord(
-      pg.container,
-      'repository',
-      createTimeRepositoryId,
-      corruptRepositoryRecord,
-    );
-    const probe = await json(
-      'POST',
-      scoped(WORKSPACE, `sessions/${session.id}/resources`),
-      {
-        type: 'file',
-        file_id: fileId,
-        mount_path: '/workspace/catalog-probe.txt',
-      },
-    );
-    assert.equal(probe.status, 200, JSON.stringify(probe.body));
-    assert.equal(server.exitCode, null, 'Catalog drift must not crash the process');
-    const withProbe = await json(
-      'GET',
-      scoped(WORKSPACE, `sessions/${session.id}/resources`),
-    );
-    assert.deepEqual(
-      withProbe.body.data.map((resource: { type: string }) => resource.type),
-      ['memory_store', 'github_repository', 'file'],
-      'E1/E2: the frozen Repository plus new File form one desired generation',
-    );
-    writeResourceCatalogRecord(
-      pg.container,
-      'repository',
-      createTimeRepositoryId,
-      canonicalRepositoryRecord,
-    );
-    assert.equal(
-      (await json(
-        'DELETE',
-        scoped(WORKSPACE, `sessions/${session.id}/resources/${probe.body.id}`),
-      )).status,
-      200,
-    );
-    const unchangedResources = await json(
-      'GET',
-      scoped(WORKSPACE, `sessions/${session.id}/resources`),
-    );
-    assert.equal(unchangedResources.status, 200, JSON.stringify(unchangedResources.body));
-    assert.deepEqual(
-      unchangedResources.body.data.map((resource: { type: string }) => resource.type),
-      ['memory_store', 'github_repository'],
-      'recovered probe generations were removed without changing original bindings',
-    );
-
-    // Post-create resource admission deliberately supports File only. Repository
-    // configuration is frozen at Session creation; that projected binding is
-    // immutable but can still be retired.
-    //
-    // | Resource operation           | File | Repository |
-    // | add after Session creation   | yes  | 400        |
-    // | update existing projection   | 400  | 400        |
-    // | retire existing projection   | yes  | yes        |
-    const repositoryResource = activeSession.body.resources.find(
-      (resource: { type: string }) => resource.type === 'github_repository',
-    );
-    assert.ok(repositoryResource?.id, 'create-time Repository projection is addressable');
-    const rawCredentialUpdate = await json(
-      'POST',
-      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
-      {
-        authorization_token: 'repository-rotated-token', // awaken-allow: secret
-      },
-    );
-    assert.equal(rawCredentialUpdate.status, 400, JSON.stringify(rawCredentialUpdate.body));
-    const unchangedRepository = await json(
-      'GET',
-      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
-    );
-    assert.equal(unchangedRepository.status, 200, JSON.stringify(unchangedRepository.body));
-    assert.equal(unchangedRepository.body.mount_path, '/workspace/create-time-repository');
-    const retiredRepository = await json(
-      'DELETE',
-      scoped(WORKSPACE, `sessions/${session.id}/resources/${repositoryResource.id}`),
-    );
-    assert.equal(retiredRepository.status, 200, JSON.stringify(retiredRepository.body));
-    assert.equal(retiredRepository.body.type, 'session_resource_deleted');
 
     // PostgreSQL workspace-ownership decision table:
     // C1 equal bytes are uploaded in another Workspace; C2 A deletes its logical

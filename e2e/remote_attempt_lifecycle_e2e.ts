@@ -14,7 +14,15 @@ import type {
   BetaManagedAgentsUserToolResultEventParams,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
-import { hasEndTurn, spawnServer, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
+import {
+  committedEffectsAfterUnanchoredReceipt,
+  hasEndTurn,
+  spawnServer,
+  stopServer,
+  waitForPort,
+  waitForSessionEventReceipt,
+  waitForValue,
+} from './harness.mjs';
 // @ts-ignore -- shared JavaScript HTTP fixture intentionally serves TS scenarios.
 import { closeHttpServer } from './http_server.mjs';
 // @ts-ignore -- shared JavaScript SQLite fixture intentionally serves TS scenarios.
@@ -832,7 +840,8 @@ async function main(): Promise<void> {
     // Effects: E1 every admitted User Event receives the exact HTTP 200 receipt,
     // whose processed_at is nullable while asynchronous admission is in flight;
     // E2 C1 commits the terminal a2a_error; E3 C2/C3 reach the exact remote
-    // task/context and retain the receipt plus a Running Session/Run;
+    // task/context while the unanchored receipt remains excluded from committed
+    // history and the Session/Run remains Running;
     // E4 no rule fabricates an Agent success or terminal Session boundary.
     // Constraint: ADR-0057 makes poll/cancel delivery failure and resume response
     // loss retryable after remote identity exists; only the rejected initial send
@@ -873,6 +882,7 @@ async function main(): Promise<void> {
     await waitForPort(PORT, 180_000, server);
     await publishRemote(peer.endpoint);
     const pollFailureThread = await createSession(client);
+    const pollPriorHistory = await sessionEvents(client, pollFailureThread);
     const pollReadStart = peer.reads.length;
     const pollFailure = await within(
       client.beta.sessions.events.send(pollFailureThread, {
@@ -904,16 +914,11 @@ async function main(): Promise<void> {
       'string',
       'F2/E1 assigns the durable Event identity',
     );
-    assert.ok(
-      pollFailureReceipt.processed_at === null ||
-        typeof pollFailureReceipt.processed_at === 'string',
-      `F2/E1 processed_at is nullable during admission: ${JSON.stringify(pollFailureReceipt)}`,
-    );
-    // F2 negative-observation rule: C1=the official SDK receipt is retained;
+    assert.equal(pollFailureReceipt.processed_at, null, 'F2/E1 retryable receipt is unprocessed');
+    // F2 negative-observation rule: C1=the official SDK receipt is admitted;
     // C2=the pinned task is polled and returns retryable 503; C3=Session remains
-    // Running. E1=no success/error/idle/terminated delta is fabricated. K1=the
-    // canonical receipt helper requires processed_at and is forbidden here
-    // because an unprocessed receipt is a valid retryable state. D1=C1+C2+C3=>E1.
+    // Running. E1=the unanchored receipt is absent from committed history and no
+    // success/error/idle/terminated delta is fabricated. D1=C1+C2+C3=>E1.
     const retryablePoll: {
       session: { status: string };
       events: BetaManagedAgentsSessionEvent[];
@@ -934,8 +939,7 @@ async function main(): Promise<void> {
         reads: string[];
       }) =>
         observed.session.status === 'running' &&
-        observed.reads.includes('poll-failure-task') &&
-        observed.events.some((event) => event.id === pollFailureReceipt.id),
+        observed.reads.includes('poll-failure-task'),
       'F2 retryable exact remote poll',
       { timeoutMs: 20_000, pollMs: 25 },
     );
@@ -944,34 +948,18 @@ async function main(): Promise<void> {
         retryablePoll.reads.every((taskId) => taskId === 'poll-failure-task'),
       `F2/E3 every new poll addresses the committed task: ${JSON.stringify(retryablePoll.reads)}`,
     );
-    const pollReceiptAt = retryablePoll.events.findIndex(
-      (event) => event.id === pollFailureReceipt.id,
-    );
-    assert.notEqual(
-      pollReceiptAt,
-      -1,
-      'F2/E3 retains the exact admitted Event',
-    );
-    const pollFailureDelta = retryablePoll.events.slice(pollReceiptAt + 1);
-    assert.equal(
-      [...retryablePoll.events]
-        .reverse()
-        .find((event) => event.type.startsWith('session.status_'))?.type,
-      'session.status_running',
-      'F2/E3 latest committed Session/Run boundary remains Running',
-    );
-    assert.ok(
-      !pollFailureDelta.some((event) =>
-        [
-          'agent.message',
-          'session.error',
-          'session.status_idle',
-          'session.status_terminated',
-        ].includes(event.type),
-      ),
-      `F2/E4 fabricated no success or terminal boundary: ${JSON.stringify(pollFailureDelta)}`,
-    );
-
+    committedEffectsAfterUnanchoredReceipt({
+      history: retryablePoll.events,
+      priorHistory: pollPriorHistory,
+      receiptId: pollFailureReceipt.id,
+      forbiddenEventTypes: new Set([
+        'agent.message',
+        'session.error',
+        'session.status_idle',
+        'session.status_terminated',
+      ]),
+      description: 'F2 retryable remote poll',
+    });
     const resumeFailureThread = await createSession(client);
     const resumeStartReceipt = await sendText(client, resumeFailureThread, 'resume remote failure');
     const resumeFailureToolUse = await waitForPendingTool(
@@ -979,6 +967,7 @@ async function main(): Promise<void> {
       resumeFailureThread,
       resumeStartReceipt.id,
     );
+    const resumePriorHistory = await sessionEvents(client, resumeFailureThread);
     const resumeSendStart = peer.sent.length;
     const resumeFailure = await within(
       client.beta.sessions.events.send(resumeFailureThread, {
@@ -1005,17 +994,18 @@ async function main(): Promise<void> {
       'string',
       'F3/E1 assigns the durable Event identity',
     );
-    assert.ok(
-      resumeFailureReceipt.processed_at === null ||
-        typeof resumeFailureReceipt.processed_at === 'string',
-      `F3/E1 processed_at is nullable during admission: ${JSON.stringify(resumeFailureReceipt)}`,
+    assert.equal(
+      typeof resumeFailureReceipt.processed_at,
+      'string',
+      'F3/E1 the result receipt is processed against the committed ToolUse anchor',
     );
     // F3 negative-observation rule: C1=the official SDK result receipt is
-    // retained; C2=retry reaches the exact remote context with stable identity;
-    // C3=Session remains Running. E1=no success/error/idle/terminated delta is
-    // fabricated. K1=processed_at may remain null, so use SDK retrieve/list with
-    // bounded waitForValue, never the canonical processed-receipt helper.
-    // Decision D1=C1+C2+C3=>E1.
+    // processed against the committed ToolUse anchor; C2=retry reaches the
+    // exact remote context with stable identity; C3=Session remains Running;
+    // C4=the remote response is lost with retryable 503; C5=the prior awaiting
+    // boundary can sort after the result receipt by its own causal anchor.
+    // E1=the exact receipt is committed; E2=no new success/error/idle/terminated
+    // event is fabricated. Decision D1=C1+C2+C3+C4+C5=>E1+E2.
     const retryableResume: {
       session: { status: string };
       events: BetaManagedAgentsSessionEvent[];
@@ -1040,8 +1030,7 @@ async function main(): Promise<void> {
           (message) =>
             message.text === 'continue' &&
             message.contextId === 'resume-failure-context',
-        ) &&
-        observed.events.some((event) => event.id === resumeFailureReceipt.id),
+        ),
       'F3 retryable exact remote resume',
       { timeoutMs: 20_000, pollMs: 25 },
     );
@@ -1060,36 +1049,28 @@ async function main(): Promise<void> {
       ),
       `F3/E3 every retry retains the committed context and stable identity shape: ${JSON.stringify(retryableResumeSends)}`,
     );
-    const resumeReceiptAt = retryableResume.events.findIndex(
-      (event) => event.id === resumeFailureReceipt.id,
-    );
-    assert.notEqual(
-      resumeReceiptAt,
-      -1,
-      'F3/E3 retains the exact admitted Event',
-    );
-    const resumeFailureDelta = retryableResume.events.slice(
-      resumeReceiptAt + 1,
-    );
-    assert.equal(
-      [...retryableResume.events]
-        .reverse()
-        .find((event) => event.type.startsWith('session.status_'))?.type,
-      'session.status_running',
-      'F3/E3 latest committed Session/Run boundary remains Running',
+    const committedResumeReceiptIndex = retryableResume.events.findIndex(
+      (event) => event.id === resumeFailureReceipt.id && event.processed_at,
     );
     assert.ok(
-      !resumeFailureDelta.some((event) =>
-        [
-          'agent.message',
-          'session.error',
-          'session.status_idle',
-          'session.status_terminated',
-        ].includes(event.type),
-      ),
-      `F3/E4 fabricated no success or terminal boundary: ${JSON.stringify(resumeFailureDelta)}`,
+      committedResumeReceiptIndex >= 0,
+      'F3/E1 exact processed result receipt is retained in committed history',
     );
-
+    const resumePriorEventIds = new Set(resumePriorHistory.map((event) => event.id));
+    const forbiddenResumeEventTypes = new Set([
+      'agent.message',
+      'session.error',
+      'session.status_idle',
+      'session.status_terminated',
+    ]);
+    const forbiddenResumeEffects = retryableResume.events
+      .filter((event) => !resumePriorEventIds.has(event.id))
+      .filter((event) => forbiddenResumeEventTypes.has(event.type));
+    assert.deepEqual(
+      forbiddenResumeEffects,
+      [],
+      'F3/E2 retryable resume does not fabricate execution or terminal effects',
+    );
     console.log(
       'REMOTE ATTEMPT TS API E2E PASS: crash reattach, input/auth resume, terminal states, send failure, and pinned-task cancellation.',
     );

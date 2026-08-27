@@ -90,6 +90,12 @@ async function createClaimableSession(client, name, agent = 'assistant', resourc
 }
 
 async function sendTask(client, sessionID) {
+  // Worker-consumption precondition. C1=the Event batch is durably accepted;
+  // C2=its asynchronous Run has committed one answerable custom tool and the
+  // matching requires_action boundary. E1=the official Worker starts from a
+  // stable replayable input, independent of poll/setup timing. Decision rules:
+  // P1=C1&&!C2=>observe only; P2=C1+C2=>return the exact receipt. Observation
+  // cannot execute or answer the tool, so SessionToolRunner remains sole owner.
   const receipt = await client.beta.sessions.events.send(sessionID, {
     events: [{
       type: 'user.message',
@@ -97,7 +103,19 @@ async function sendTask(client, sessionID) {
     }],
     betas: BETAS,
   });
-  return receipt.data[0]?.id;
+  const receiptId = receipt.data[0]?.id;
+  assert.equal(typeof receiptId, 'string', 'P1 exact EnvironmentWorker task receipt');
+  await waitForSessionEventReceipt(
+    client,
+    sessionID,
+    receiptId,
+    BETAS,
+    ({ delta }) => delta.some((event) => event.type === 'agent.custom_tool_use')
+      && [...delta].reverse().find((event) => event.type === 'session.status_idle')
+        ?.stop_reason?.type === 'requires_action',
+    'P1 custom tool task commits before the official Worker consumes it',
+  );
+  return receiptId;
 }
 
 async function assertExactlyOneResult(client, sessionID, receiptId, counters) {

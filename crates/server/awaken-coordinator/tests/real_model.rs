@@ -56,7 +56,11 @@ async fn a2a_message_send_over_a_live_kimi_model() {
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
     let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-for-coding".to_string());
 
-    let executor = GenaiExecutor::anthropic_compatible(base, key);
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
+        base,
+        key,
+    );
     let app = build_router(Arc::new(executor), model);
 
     // One A2A Run against the live model. The prompt steers a short, tool-free

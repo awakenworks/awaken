@@ -1,5 +1,5 @@
 // Resolver-backed provider path WITHOUT a live key: drives `real-resolved` mode
-// (executor built through resolve_inference + executor_from_resolved) against a
+// (executor built through resolve_inference + executor_from_materialized_endpoint) against a
 // fake Anthropic upstream. Exercises the config → resolve → run path end to end
 // (model-catalog + credential + config-resolver + genai over the wire) that the
 // key-gated managed_resolved_real e2e otherwise skips. Deterministic, CI-safe.

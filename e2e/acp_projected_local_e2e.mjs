@@ -419,16 +419,17 @@ async function main() {
     // Cause/effect graph for MCP on the local Namespace provider:
     // C1=credential is selected; C2=provider proves substitution + no bypass;
     // C3=a driving event wakes the registered Worker realization.
-    // C1 + !C2 + C3 -> M1 durably admit the exact command, then retain it
-    //                      unprocessed while the permanent custody failure
-    //                      projects one error, settles then terminates the root
-    //                      Thread, and terminates the Session.
+    // C1 + !C2 + C3 -> M1 durably admit the exact command, then mark it
+    //                      processed at the failed Run's durable terminal anchor
+    //                      while the permanent custody failure projects one
+    //                      error, settles then terminates the root Thread, and
+    //                      terminates the Session.
     // !C1       -> M2 isolate MCP custody from the independently unsupported
     //               provider/CLI launch failure; the Run reports that execution
     //               failure while the Session remains reusable.
     //
     // | Rule | credential | provider proof | driving event | result                    |
-    // | M1   | yes        | no             | yes           | exact receipt; retained/unprocessed; error + Thread settle/terminal; no launch |
+    // | M1   | yes        | no             | yes           | exact receipt; terminal-processed; error + Thread settle/terminal; no launch |
     // | M2   | no         | n/a            | yes           | failed Run event; Session idle; no MCP I/O |
     // FMECA: rolling M1 back into an HTTP error would erase the already committed
     // Session command. This missing no-bypass proof is classified permanently,
@@ -452,7 +453,11 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 750));
     const secureEvents = await listEvents(codexClient, secureSession.id);
     const retainedSecure = secureEvents.find((event) => event.id === acceptedSecure.id);
-    assert.equal(retainedSecure?.processed_at, null, 'M1 durable history retains the exact failed command');
+    assert.equal(
+      typeof retainedSecure?.processed_at,
+      'string',
+      'M1 durable history anchors the exact command to its failed Run terminal',
+    );
     const secureErrors = secureEvents.filter((event) => event.type === 'session.error');
     assert.equal(secureErrors.length, 1, 'M1 permanent custody failure projects exactly one error');
     assert.ok(

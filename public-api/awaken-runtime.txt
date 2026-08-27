@@ -6,7 +6,9 @@ pub awaken_runtime::DetachedToolError::NotAuthorized::reason: alloc::string::Str
 pub awaken_runtime::DetachedToolError::NotAuthorized::tool_id: alloc::string::String
 pub awaken_runtime::DetachedToolError::NotExecutable(alloc::string::String)
 pub awaken_runtime::DetachedToolError::Resolve(alloc::string::String)
-pub struct awaken_runtime::AttemptControlRegistration
+pub struct awaken_runtime::ActiveAttemptTracking<'a>
+impl core::ops::drop::Drop for awaken_runtime::ActiveAttemptTracking<'_>
+pub fn awaken_runtime::ActiveAttemptTracking<'_>::drop(&mut self)
 pub struct awaken_runtime::CircuitBreakerConfig
 pub awaken_runtime::CircuitBreakerConfig::cooldown: core::time::Duration
 pub awaken_runtime::CircuitBreakerConfig::failure_threshold: u32
@@ -59,16 +61,15 @@ pub async fn awaken_runtime::Runtime::active_attempt_live_inbox(&self, &awaken_a
 pub async fn awaken_runtime::Runtime::active_attempt_run_id(&self, &awaken_agent_contract::agent::thread::Id) -> core::option::Option<awaken_agent_contract::agent::run::Id>
 pub async fn awaken_runtime::Runtime::cancel_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::deliver_to_current_attempt(&self, awaken_runtime_contract::control::LiveCommand) -> core::result::Result<(), awaken_runtime_contract::control::Error>
-pub fn awaken_runtime::Runtime::deregister_attempt_controls(&self, &awaken_runtime::AttemptControlRegistration)
 pub async fn awaken_runtime::Runtime::interrupt_awaiting_tools(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub fn awaken_runtime::Runtime::metrics(&self) -> &dyn awaken_runtime_contract::metrics::MetricsRecorder
 pub fn awaken_runtime::Runtime::new() -> Self
 pub async fn awaken_runtime::Runtime::perform_scheduled_action(&self, &awaken_agent_contract::agent::run::Id, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, awaken_runtime_contract::runtime_context::RuntimeRunContext, u64) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::reconcile_delegation_cancellations(&self, &awaken_agent_contract::agent::thread::Id, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView) -> core::result::Result<usize, awaken_runtime_contract::execution::Error>
-pub fn awaken_runtime::Runtime::register_attempt_controls(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime::AttemptControlRegistration
 pub fn awaken_runtime::Runtime::register_snapshot(&self, awaken_runtime_contract::snapshot::ExecutableAgentSnapshot) -> awaken_runtime_contract::snapshot::ExecutableAgentSnapshotId
 pub async fn awaken_runtime::Runtime::resume(&self, awaken_runtime_contract::resume::ResumeCommand, &dyn awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
 pub async fn awaken_runtime::Runtime::stop_run(&self, awaken_agent_contract::agent::run::Id, awaken_agent_contract::agent::thread::Id, alloc::string::String, awaken_runtime_contract::runtime_context::RuntimeRunContext) -> core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_runtime_contract::execution::Error>
+pub fn awaken_runtime::Runtime::track_active_attempt(&self, &awaken_agent_contract::agent::run::Id, &awaken_agent_contract::agent::thread::Id, &awaken_runtime_contract::runtime_context::RuntimeRunContext) -> awaken_runtime::ActiveAttemptTracking<'_>
 pub fn awaken_runtime::Runtime::validate_plugins(&self, &awaken_runtime_contract::resolved::ResolvedSpec) -> core::result::Result<(), awaken_runtime_contract::plugin::env::MergeError>
 pub fn awaken_runtime::Runtime::with_circuit_breaker(self, awaken_runtime::CircuitBreakerConfig) -> Self
 pub fn awaken_runtime::Runtime::with_gate(self, alloc::sync::Arc<dyn awaken_runtime_contract::permission::ToolGateHook>) -> Self

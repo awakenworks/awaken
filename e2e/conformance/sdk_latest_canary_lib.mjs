@@ -4,7 +4,7 @@ function isExactVersion(value) {
   return typeof value === 'string' && EXACT_VERSION.test(value);
 }
 
-export function latestCanaryPlan(oracle, latest, installed) {
+export function latestCanaryPlan(oracle, latest, installed, releasePolicy = undefined) {
   if (!isExactVersion(oracle)) {
     throw new Error(
       `the generated Managed SDK current oracle must be exact; got ${JSON.stringify(oracle)}`,
@@ -19,6 +19,24 @@ export function latestCanaryPlan(oracle, latest, installed) {
     );
   }
   if (latest !== oracle) {
+    const publishedAt = Date.parse(releasePolicy?.latestPublishedAt);
+    const now = releasePolicy?.now;
+    const minimumReleaseAgeMinutes = releasePolicy?.minimumReleaseAgeMinutes;
+    if (!Number.isFinite(publishedAt)
+      || !Number.isFinite(now)
+      || !Number.isFinite(minimumReleaseAgeMinutes)
+      || minimumReleaseAgeMinutes <= 0) {
+      throw new Error('registry drift requires one valid minimum-release-age policy');
+    }
+    const eligibleAt = publishedAt + minimumReleaseAgeMinutes * 60_000;
+    if (now < eligibleAt) {
+      return Object.freeze({
+        oracle,
+        latest,
+        installed,
+        quarantinedUntil: new Date(eligibleAt).toISOString(),
+      });
+    }
     throw new Error(
       `registry latest @anthropic-ai/sdk ${JSON.stringify(latest)} does not match generated `
       + `current oracle ${oracle}; update the current anchor and regenerate the Managed SDK oracle`,

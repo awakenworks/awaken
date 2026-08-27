@@ -283,6 +283,7 @@ async function main() {
       },
       providerRef: 'unavailable-provider',
       routeRef: 'unavailable-route',
+      accessKind: 'direct',
       scopeId: source.workspace_id,
       credential: null,
       adapterKind: 'open_ai_chat',

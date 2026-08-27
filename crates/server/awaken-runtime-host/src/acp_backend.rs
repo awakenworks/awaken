@@ -54,8 +54,10 @@ fn namespace_hand_path(current_exe: &std::path::Path) -> std::path::PathBuf {
     let Some(parent) = current_exe.parent() else {
         return sibling;
     };
-    if parent.file_name() == Some(std::ffi::OsStr::new("deps"))
-        && let Some(profile_dir) = parent.parent()
+    if matches!(
+        parent.file_name().and_then(std::ffi::OsStr::to_str),
+        Some("deps" | "examples")
+    ) && let Some(profile_dir) = parent.parent()
     {
         let cargo_companion = profile_dir.join(binary_name);
         if cargo_companion.is_file() {
@@ -474,9 +476,10 @@ mod tests {
     fn namespace_companion_resolution_preserves_release_and_cargo_test_layouts() {
         // Cause/effect table: C1 a release executable and companion are siblings
         // -> E1 keep the sibling path; C2 Cargo runs a test from `debug/deps`
-        // while the built companion is in `debug` -> E2 use that profile-level
-        // companion. A missing profile companion falls back to the release
-        // sibling so validation owns the one fail-closed error path.
+        // or an example from `debug/examples` while the built companion is in
+        // `debug` -> E2 use that profile-level companion. A missing profile
+        // companion falls back to the release sibling so validation owns the
+        // one fail-closed error path.
         let root = std::env::temp_dir().join(format!(
             "awaken-namespace-companion-path-{}",
             std::process::id()
@@ -497,7 +500,12 @@ mod tests {
         assert_eq!(
             namespace_hand_path(&deps.join("awaken-test-hash")),
             companion,
-            "C2/E2"
+            "C2 test/E2"
+        );
+        assert_eq!(
+            namespace_hand_path(&profile.join("examples/awaken-example")),
+            companion,
+            "C2 example/E2"
         );
         std::fs::remove_file(&companion).unwrap();
         assert_eq!(

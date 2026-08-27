@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn t7_brokered_profile_publishes_a_marker_without_local_credential() {
+    async fn t7_brokered_profile_publishes_explicit_access_without_route_encoding() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let mut catalog = catalog(&["managed-model"]);
         catalog.offerings[0].source = awaken_model_catalog::OfferingSource::Brokered;
@@ -1100,13 +1100,18 @@ mod tests {
             .unwrap();
         let ModelProvisioning::Provider {
             route_ref,
+            access_kind,
             credential,
             ..
         } = resolved.primary.provisioning()
         else {
             panic!("brokered model remains a native Provider-protocol candidate")
         };
-        assert_eq!(route_ref, "brokered:ep1@4");
+        assert_eq!(route_ref, "ep1@4");
+        assert_eq!(
+            *access_kind,
+            awaken_runtime_contract::resolved::ProviderAccessKind::Brokered
+        );
         assert!(credential.is_none());
     }
 

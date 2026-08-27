@@ -20,7 +20,12 @@
 
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
-import { pass, waitForSessionEventReceipt, withScenarioServer } from './harness.mjs';
+import {
+  committedEffectsAfterUnanchoredReceipt,
+  pass,
+  waitForSessionEventReceipt,
+  withScenarioServer,
+} from './harness.mjs';
 import { startCalcFixture } from './fixtures/mcp_calc_fixture.mjs';
 
 const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
@@ -221,15 +226,15 @@ async function main() {
       assert.equal(acceptedMount?.type, 'user.message', 'R2 exact User Event receipt family');
       assert.equal(acceptedMount?.processed_at, null, 'R2 effect failure is not falsely processed');
       // The request/CAS is already durable, so a later capability repair retries
-      // this same command. Observe one bounded reconciliation window: it may expose
-      // nonterminal lifecycle state, but must not invent model/tool/terminal effects
-      // or compensate by deleting the retained command.
+      // this same command. Observe one bounded reconciliation window: the
+      // unanchored receipt must not appear in committed history, and the runtime
+      // must not invent model/tool/terminal effects.
       await new Promise((resolve) => setTimeout(resolve, 750));
       const pendingMount = await listEvents(client, resourceSession.id);
-      const retainedMount = pendingMount.find((event) => event.id === acceptedMount.id);
-      assert.equal(retainedMount?.processed_at, null, 'R2 retained history preserves retryability');
-      assert.ok(
-        !pendingMount.some((event) => [
+      committedEffectsAfterUnanchoredReceipt({
+        history: pendingMount,
+        receiptId: acceptedMount.id,
+        forbiddenEventTypes: new Set([
           'agent.message',
           'agent.mcp_tool_use',
           'agent.mcp_tool_result',
@@ -241,16 +246,16 @@ async function main() {
           'session.usage',
           'span.model_request_start',
           'span.model_request_end',
-        ].includes(event.type)),
-        `R2 no model/tool/terminal effect is fabricated: ${pendingMount.map((event) => event.type)}`,
-      );
+        ]),
+        description: 'R2 local read-only capability failure',
+      });
       assert.equal(upstream.requests.length, modelRequestsBeforeMount, 'R2 no Provider request');
       assert.equal(
         fixture.calls.filter((call) => call.method === 'tools/call').length,
         toolCallsBeforeMount,
         'R2 no MCP tool execution',
       );
-      pass('local read-only capability failure retains one retryable command without effects');
+      pass('local read-only capability failure keeps retryable root custody without effects');
 
       // The execution half of this broad API lifecycle has no mount requirement;
       // dedicated sandbox provisioning tests exercise actual resource mounts on

@@ -19,12 +19,14 @@ impl ManagedState {
         lifecycle_events: &[RunLifecycleEvent],
         root_snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         outcome_projections: &[AnchoredOutcomeProjection],
-        child_snapshots: &std::collections::HashMap<
-            String,
-            awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot,
-        >,
-        links: &[CoordinatedThreadLink],
+        delegation_evidence: DelegationProjectionEvidence<'_>,
     ) -> Result<(), StateError> {
+        let DelegationProjectionEvidence {
+            links,
+            snapshots: child_snapshots,
+            historical_pending,
+            ..
+        } = delegation_evidence;
         let mut orders = std::collections::HashMap::<String, CanonicalEventOrder>::new();
         let batch_stride = persisted
             .event_batches
@@ -60,6 +62,35 @@ impl ManagedState {
         }
 
         index_lifecycle_orders(&mut orders, &record.session.id, lifecycle_events);
+
+        // Synthetic pending-tool cause/effect table: C1 the Runtime has one
+        // committed ResumeTicket; C2 its owning Awaiting lifecycle fact is
+        // committed; C3 the ToolUse transcript block has not arrived yet.
+        // C1+C2+C3 projects one client-answerable tool event whose immutable
+        // order is the Awaiting fact; C1+!C2 remains unindexed and therefore
+        // fails the canonicalization guard below. A later transcript-owned
+        // occurrence has a message-qualified id and keeps its own message cursor.
+        for (cursor, pending) in historical_pending {
+            if let Some(awaiting) = lifecycle_events.iter().find(|event| {
+                event.cursor == *cursor && event.kind == RunLifecycleEventKind::Awaiting
+            }) {
+                let public_owner_thread_id =
+                    public_thread_id(&record.session.id, &awaiting.thread_id.0);
+                retain_earliest_order(
+                    &mut orders,
+                    managed_tool_event_id(
+                        &public_owner_thread_id,
+                        &awaiting.run_id.0,
+                        &pending.tool_use_id,
+                    ),
+                    CanonicalEventOrder {
+                        source_commit_cursor: awaiting.source_commit_cursor,
+                        phase: 50,
+                        ordinal: 0,
+                    },
+                );
+            }
+        }
 
         for interval in &persisted.closed_runtime_intervals {
             let Some(close) = interval_close_cursor(interval) else {
@@ -1368,20 +1399,18 @@ impl ManagedState {
         // the sole owner unless an exact failure source Run is correlated below.
         append_durable_outcome_projections(record, &durable_outcome_projections);
 
-        self.append_delegation_projections(
-            record,
-            DelegationProjectionEvidence {
-                links: &links,
-                snapshots: &child_snapshots,
-                transcripts: &transcripts,
-                lifecycle_events: &accepted_lifecycle,
-                latest_run_states: &child_latest_run_states,
-                pending: &child_pending,
-                historical_pending: &historical_pending,
-                dispositions: &child_dispositions,
-                usage: &child_thread_usage,
-            },
-        )?;
+        let delegation_evidence = DelegationProjectionEvidence {
+            links: &links,
+            snapshots: &child_snapshots,
+            transcripts: &transcripts,
+            lifecycle_events: &accepted_lifecycle,
+            latest_run_states: &child_latest_run_states,
+            pending: &child_pending,
+            historical_pending: &historical_pending,
+            dispositions: &child_dispositions,
+            usage: &child_thread_usage,
+        };
+        self.append_delegation_projections(record, delegation_evidence)?;
 
         let child_terminal = accepted_lifecycle.iter().rev().find(|event| {
             known_children.contains(event.thread_id.0.as_str())
@@ -1594,50 +1623,58 @@ impl ManagedState {
                         event_ids: pending_event_ids,
                     }
                 };
-                // Only a terminal lifecycle prefix not yet represented by an
-                // aggregate idle is replayable here. The shared terminal-cursor
-                // set covers root and children.
-                let aggregate_terminal_cursor = record
-                    .projected_terminal_cursors
-                    .iter()
-                    .max()
-                    .copied()
-                    .ok_or_else(|| {
-                        StateError::Run(RunError::internal(
-                            "idle aggregate has no committed terminal lifecycle boundary",
-                        ))
-                    })?;
-                let aggregate_usage_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "aggregate-usage",
-                    ManagedMultiagentEventProvenance::LifecyclePrefix {
-                        cursor: aggregate_terminal_cursor.0,
-                    },
-                );
-                let aggregate_idle_id = managed_multiagent_event_id(
-                    &record.session.id,
-                    &record.session.id,
-                    "aggregate-status-idle",
-                    ManagedMultiagentEventProvenance::LifecyclePrefix {
-                        cursor: aggregate_terminal_cursor.0,
-                    },
-                );
-                record.events.extend([
-                    Event {
-                        id: aggregate_usage_id,
-                        kind: OutboundKind::SessionUsage {
-                            usage: projected_usage,
-                            budget: record.session.budget.clone(),
+                // The durable BudgetReachTransition is the sole aggregate
+                // budget-pause authority. A lifecycle Awaiting fact may become
+                // visible one refresh before that transition, or after its
+                // generation was already projected; publishing it here would
+                // create a second `session.status_idle:budget_reached` for one
+                // cap transition. Thread lifecycle remains projected above.
+                if !matches!(stop_reason, StopReason::BudgetReached) {
+                    // Only a terminal lifecycle prefix not yet represented by an
+                    // aggregate idle is replayable here. The shared terminal-cursor
+                    // set covers root and children.
+                    let aggregate_terminal_cursor = record
+                        .projected_terminal_cursors
+                        .iter()
+                        .max()
+                        .copied()
+                        .ok_or_else(|| {
+                            StateError::Run(RunError::internal(
+                                "idle aggregate has no committed terminal lifecycle boundary",
+                            ))
+                        })?;
+                    let aggregate_usage_id = managed_multiagent_event_id(
+                        &record.session.id,
+                        &record.session.id,
+                        "aggregate-usage",
+                        ManagedMultiagentEventProvenance::LifecyclePrefix {
+                            cursor: aggregate_terminal_cursor.0,
                         },
-                        processed_at: Some(PROCESSED_AT.to_string()),
-                    },
-                    Event {
-                        id: aggregate_idle_id,
-                        kind: OutboundKind::SessionStatusIdle { stop_reason },
-                        processed_at: Some(PROCESSED_AT.to_string()),
-                    },
-                ]);
+                    );
+                    let aggregate_idle_id = managed_multiagent_event_id(
+                        &record.session.id,
+                        &record.session.id,
+                        "aggregate-status-idle",
+                        ManagedMultiagentEventProvenance::LifecyclePrefix {
+                            cursor: aggregate_terminal_cursor.0,
+                        },
+                    );
+                    record.events.extend([
+                        Event {
+                            id: aggregate_usage_id,
+                            kind: OutboundKind::SessionUsage {
+                                usage: projected_usage,
+                                budget: record.session.budget.clone(),
+                            },
+                            processed_at: Some(PROCESSED_AT.to_string()),
+                        },
+                        Event {
+                            id: aggregate_idle_id,
+                            kind: OutboundKind::SessionStatusIdle { stop_reason },
+                            processed_at: Some(PROCESSED_AT.to_string()),
+                        },
+                    ]);
+                }
             }
             record.deferred_session_stop_reason = None;
         }
@@ -1726,8 +1763,7 @@ impl ManagedState {
             &all_accepted_lifecycle,
             root_snapshot.as_ref(),
             &durable_outcome_projections,
-            &child_snapshots,
-            &links,
+            delegation_evidence,
         )?;
         self.broadcast_new_event_ids(session_id, record, &previous_event_ids);
         Ok(true)

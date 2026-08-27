@@ -203,6 +203,7 @@ async function main(): Promise<void> {
         binding: request.activation.snapshot.resolved_spec.model_binding,
         providerRef: 'fixture-provider@1',
         routeRef: 'fixture-worker-local@1',
+        accessKind: 'direct',
         scopeId: 'fixture-workspace',
         credential: {
           credential: { id: GRANT, revision: GRANT_REVISION },

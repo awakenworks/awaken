@@ -2,10 +2,38 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   cargoArguments,
+  checkoutLocalCargoEnvironment,
   parseCargoExecutable,
   renderedCargoDiagnostics,
   requirePrebuiltExecutable,
 } from './cargo_binary.mjs';
+
+// Cargo-target isolation cause/effect graph: C1 no target is selected, C2 an
+// explicit target is selected, C3 checkout roots differ. Effects: E1 default to
+// the invoking checkout's target, E2 preserve the explicit target, E3 unrelated
+// worktrees cannot consume same-version stale artifacts. Decision table:
+// R1 C1 -> E1; R2 C2 -> E2; R3 C1+C3 -> E1+E3. The returned environment keeps
+// all unrelated variables and never mutates the caller-owned input.
+test('keeps every E2E Cargo build inside its invoking checkout', () => {
+  const inherited = { PATH: '/bin' };
+  assert.deepEqual(checkoutLocalCargoEnvironment('/work/a', inherited), {
+    PATH: '/bin',
+    CARGO_TARGET_DIR: '/work/a/target',
+  }, 'R1');
+  assert.deepEqual(checkoutLocalCargoEnvironment('/work/a', {
+    ...inherited,
+    CARGO_TARGET_DIR: '/explicit/target',
+  }), {
+    PATH: '/bin',
+    CARGO_TARGET_DIR: '/explicit/target',
+  }, 'R2');
+  assert.notEqual(
+    checkoutLocalCargoEnvironment('/work/a', inherited).CARGO_TARGET_DIR,
+    checkoutLocalCargoEnvironment('/work/b', inherited).CARGO_TARGET_DIR,
+    'R3',
+  );
+  assert.deepEqual(inherited, { PATH: '/bin' }, 'caller environment remains immutable');
+});
 
 // Build-argument FMECA and cause/effect decision table:
 // C1 target is a binary, C2 target is an example, C3 default features are

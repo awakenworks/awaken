@@ -203,14 +203,7 @@ impl CatalogModelPublicationResolver {
             .base_url
             .clone()
             .ok_or_else(|| unavailable(format!("endpoint {} has no base URL", endpoint.id.0)))?;
-        let route_ref = if offering.source == awaken_model_catalog::OfferingSource::Brokered {
-            format!(
-                "brokered:{}@{}",
-                offering.protocol_endpoint_id.0, endpoint.version
-            )
-        } else {
-            format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version)
-        };
+        let route_ref = format!("{}@{}", offering.protocol_endpoint_id.0, endpoint.version);
         let reasoning = unspecified_reasoning(provider.slug.as_str(), endpoint.dialect);
         let endpoint = InferenceEndpoint {
             adapter_kind: endpoint.dialect.adapter_kind().to_string(),

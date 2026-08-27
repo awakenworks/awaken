@@ -16,7 +16,18 @@ const installed = resolveSdkPackage(oracle.current.module);
 const latest = JSON.parse(execFileSync(
   'npm', ['view', '@anthropic-ai/sdk', 'version', '--json'], { encoding: 'utf8' },
 ));
-const plan = latestCanaryPlan(oracle.current.version, latest, installed.version);
+const publicationTimes = JSON.parse(execFileSync(
+  'npm', ['view', '@anthropic-ai/sdk', 'time', '--json'], { encoding: 'utf8' },
+));
+const minimumReleaseAgeMinutes = Number(JSON.parse(execFileSync(
+  'pnpm', ['config', 'get', 'minimumReleaseAge', '--json'],
+  { cwd: REPO, encoding: 'utf8' },
+)));
+const plan = latestCanaryPlan(oracle.current.version, latest, installed.version, {
+  latestPublishedAt: publicationTimes[latest],
+  minimumReleaseAgeMinutes,
+  now: Date.now(),
+});
 
 execFileSync('pnpm', ['--filter', '@awaken/managed-sdk-oracle', 'check'], {
   cwd: REPO,
@@ -31,7 +42,10 @@ execFileSync(process.execPath, [resolve(HERE, 'sdk_latest_runtime_canary.mjs')],
   env: { ...process.env, ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: installed.root },
   stdio: 'inherit',
 });
+const registryStatus = plan.quarantinedUntil
+  ? `registry=${plan.latest} quarantined_until=${plan.quarantinedUntil}`
+  : `registry=${plan.latest}`;
 console.log(
-  `SDK LATEST CANARY PASS: oracle=${plan.oracle}, registry=${plan.latest}; `
+  `SDK LATEST CANARY PASS: oracle=${plan.oracle}, ${registryStatus}; `
   + 'the generated Managed SDK anchor owns declaration and runtime evidence.',
 );

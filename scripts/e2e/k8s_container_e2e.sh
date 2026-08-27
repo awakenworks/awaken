@@ -11,6 +11,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+source scripts/ci/_cargo_target.sh
+awaken_configure_cargo_target "$PWD"
 . e2e/k3d/harness.sh
 
 CLUSTER="${AWAKEN_K8S_CLUSTER:-awaken-k8s-e2e}"

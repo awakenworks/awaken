@@ -11,6 +11,13 @@ export const AWAKEN_BIN_ENV = 'AWAKEN_E2E_AWAKEN_BIN';
 export const SCENARIO_HOST_BIN_ENV = 'AWAKEN_E2E_SCENARIO_HOST_BIN';
 export const WORKER_BIN_ENV = 'AWAKEN_E2E_WORKER_BIN';
 
+export function checkoutLocalCargoEnvironment(cwd, environment = process.env) {
+  return {
+    ...environment,
+    CARGO_TARGET_DIR: environment.CARGO_TARGET_DIR || path.resolve(cwd, 'target'),
+  };
+}
+
 export function parseCargoExecutable(output, targetName, targetKind) {
   for (const line of String(output).split('\n')) {
     if (!line.trim()) continue;
@@ -128,7 +135,7 @@ export function cargoExecutable({
   try {
     output = execFileSync('cargo', args, {
       cwd,
-      env: environment,
+      env: checkoutLocalCargoEnvironment(cwd, environment),
       encoding: 'utf8',
       maxBuffer: 128 * 1024 * 1024,
     });

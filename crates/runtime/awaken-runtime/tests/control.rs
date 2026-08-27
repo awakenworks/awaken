@@ -13,13 +13,14 @@ use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_runtime::{DirectRunIngress, RunIngress, RunService, Runtime};
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::control::{Error as ControlError, LiveCommand, LiveRunControl};
-use awaken_runtime_contract::execution::{Error, RunExecutor};
+use awaken_runtime_contract::execution::{Error, RunAttemptExecutor, RunExecutor};
 use awaken_runtime_contract::live_inbox::{LiveInbox, Offer};
 use awaken_runtime_contract::llm::{AssistantOutput, ChatRequest, ChatResponse, LlmExecutor};
 use awaken_runtime_contract::pause::PauseSignal;
 use awaken_runtime_contract::resolved::{
     CatalogFingerprint, ContextPolicy, ModelBinding, ResolvedSpec, ToolDescriptor,
 };
+use awaken_runtime_contract::resume::ResumeCommand;
 use awaken_runtime_contract::runtime_context::{
     AttemptOwnershipError, AttemptOwnershipVerifier, RuntimeRunContext,
 };
@@ -51,6 +52,40 @@ impl LlmExecutor for TextLlm {
 struct GatedLlm {
     started: Arc<Notify>,
     release: Arc<Notify>,
+}
+
+struct BlockingExternalAttempt {
+    entered: Arc<Notify>,
+}
+
+#[async_trait::async_trait]
+impl RunExecutor for BlockingExternalAttempt {
+    async fn execute(
+        &self,
+        _activation: RunActivation,
+        context: RuntimeRunContext,
+    ) -> Result<RunState, Error> {
+        let cancellation = context
+            .cancellation
+            .ok_or_else(|| Error::Execution("external attempt has no cancellation".into()))?;
+        self.entered.notify_one();
+        cancellation.cancelled().await;
+        Ok(RunState::Ended(EndCause::Cancelled))
+    }
+}
+
+#[async_trait::async_trait]
+impl RunAttemptExecutor for BlockingExternalAttempt {
+    async fn resume(
+        &self,
+        _activation: RunActivation,
+        _command: ResumeCommand,
+        _context: RuntimeRunContext,
+    ) -> Result<RunState, Error> {
+        Err(Error::Execution(
+            "fresh direct-ingress test must not resume".into(),
+        ))
+    }
 }
 
 #[async_trait::async_trait]
@@ -161,6 +196,49 @@ async fn live_cancel_steers_an_in_flight_run() {
 
     let outcome = handle.await.expect("join").expect("runs");
     assert_eq!(outcome, RunState::Ended(EndCause::Cancelled));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn direct_ingress_tracks_external_attempt_for_live_cancellation() {
+    // Cause/effect graph: C1 Direct ingress selects an external executor; C2 its
+    // attempt context carries a cancellation token; C3 cancel addresses the exact
+    // active Run; C4 the executor returns. Effects: E1 Runtime exposes that token
+    // through its one active-attempt registry; E2 cancel reaches the blocked
+    // executor; E3 the Run ends Cancelled; E4 return removes the registration.
+    // Constraint: the ingress must reuse Runtime tracking, not add an ACP/private
+    // cancellation table. Decision rule D1=C1+C2+C3+C4 -> E1+E2+E3+E4.
+    let entered = Arc::new(Notify::new());
+    let runtime = Arc::new(Runtime::new());
+    let ingress = DirectRunIngress::with_attempt_executor(
+        runtime.clone(),
+        Arc::new(BlockingExternalAttempt {
+            entered: entered.clone(),
+        }),
+    );
+    let context = RuntimeRunContext::new().with_cancellation(CancellationToken::new());
+    let running = tokio::spawn({
+        let ingress = ingress.clone();
+        async move { ingress.start(activation(), context).await }
+    });
+
+    entered.notified().await;
+    ingress
+        .cancel(&RunId("run-1".into()))
+        .await
+        .expect("D1/E1+E2 exact live cancellation");
+    let state = tokio::time::timeout(std::time::Duration::from_secs(5), running)
+        .await
+        .expect("D1/E2 external attempt observes cancellation")
+        .expect("D1 executor task joins")
+        .expect("D1 executor returns a state");
+    assert_eq!(state, RunState::Ended(EndCause::Cancelled), "D1/E3");
+    assert_eq!(
+        runtime.deliver(LiveCommand::Cancel {
+            run_id: RunId("run-1".into()),
+        }),
+        Err(ControlError::NotActive),
+        "D1/E4",
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -607,7 +685,7 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
     let other_thread = ThreadId("other-thread".into());
 
     let old_inbox = LiveInbox::new();
-    let old = runtime.register_attempt_controls(
+    let old = runtime.track_active_attempt(
         &run_id,
         &thread_id,
         &RuntimeRunContext::new().with_live_inbox(old_inbox.clone()),
@@ -616,7 +694,7 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
     let ownership = Arc::new(SwitchableOwnership(AtomicUsize::new(0)));
     let replacement_inbox = LiveInbox::new();
     let replacement_pause = PauseSignal::new();
-    let replacement = runtime.register_attempt_controls(
+    let replacement = runtime.track_active_attempt(
         &run_id,
         &thread_id,
         &RuntimeRunContext::new()
@@ -624,7 +702,7 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
             .with_pause(replacement_pause.clone())
             .with_ownership(ownership.clone()),
     );
-    runtime.deregister_attempt_controls(&old);
+    drop(old);
 
     assert_eq!(
         runtime.active_attempt_run_id(&thread_id).await,
@@ -700,7 +778,7 @@ async fn active_attempt_registry_is_exact_generation_owned_and_thread_addressed(
         "A4/E3"
     );
 
-    runtime.deregister_attempt_controls(&replacement);
+    drop(replacement);
     assert!(
         runtime
             .active_attempt_live_inbox(&thread_id)

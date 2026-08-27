@@ -48,9 +48,27 @@ impl Default for FailureCeiling {
 ///
 /// The generation prevents a stale attempt's RAII guard from removing a newer
 /// claim for the same Run after ownership has moved.
-pub struct AttemptControlRegistration {
+struct AttemptControlRegistration {
     run_id: RunId,
     generation: u64,
+}
+
+/// RAII ownership of one process-local attempt-control registration.
+///
+/// Every execution topology uses this same lifetime boundary, so cancellation,
+/// pause, wake, and live-inbox handles disappear on every executor return path.
+pub struct ActiveAttemptTracking<'a> {
+    runtime: &'a Runtime,
+    registration: AttemptControlRegistration,
+}
+
+impl Drop for ActiveAttemptTracking<'_> {
+    fn drop(&mut self) {
+        self.runtime
+            .active_attempt_controls
+            .lock()
+            .deregister(&self.registration);
+    }
 }
 
 struct ActiveAttemptControl {
@@ -455,20 +473,20 @@ impl Runtime {
     /// The returned generation must be supplied to deregistration; an older claim
     /// is then unable to erase a replacement claim's handles for the same Run.
     #[must_use]
-    pub fn register_attempt_controls(
+    pub fn track_active_attempt(
         &self,
         run_id: &RunId,
         thread_id: &ThreadId,
         context: &RuntimeRunContext,
-    ) -> AttemptControlRegistration {
-        self.active_attempt_controls
+    ) -> ActiveAttemptTracking<'_> {
+        let registration = self
+            .active_attempt_controls
             .lock()
-            .register(run_id, thread_id, context)
-    }
-
-    /// Remove one exact attempt registration after any executor return path.
-    pub fn deregister_attempt_controls(&self, registration: &AttemptControlRegistration) {
-        self.active_attempt_controls.lock().deregister(registration);
+            .register(run_id, thread_id, context);
+        ActiveAttemptTracking {
+            runtime: self,
+            registration,
+        }
     }
 
     fn active_attempt_snapshot(&self, run_id: &RunId) -> Option<ActiveAttemptSnapshot> {

@@ -1,5 +1,5 @@
-// Consolidated Workdir sandbox-provisioning e2e: the resource kinds that this tier
-// can faithfully realize (writable memory_store + github_repository) share ONE
+// Consolidated Namespace sandbox-provisioning e2e: writable memory_store and
+// path-faithful github_repository share ONE
 // sandbox, plus artifact projection and every dangling-reference failure arm.
 //
 // The existing e2e cover one resource type each. This drives Memory + Repository
@@ -9,11 +9,10 @@
 //   • beta.files.list({scope_id}) (read-only artifact projection),
 //   • fail-closed for each resource type (missing file / missing memory_store / bad repo).
 //
-// A File input is deliberately absent from the Workdir success rule: its read-only
-// contract cannot be OS-enforced there and is already covered by the fail-closed
-// managed_resource_mount E2E. Namespace/container read-only success is validated by
-// the real substrate suites, avoiding a duplicate test that falsely grants Workdir
-// capabilities it does not own.
+// A File input is deliberately absent because its read-only success is already
+// validated by the real substrate suites; Workdir denial is covered by
+// managed_resource_mount. This test owns the combined writable Memory plus
+// path-faithful Repository rule without duplicating the File matrix.
 //
 // Deterministic + CI-safe: local bare git repo (no network), `echo` upstream.
 // Run: (from e2e/)  node sandbox_provisioning_e2e.mjs
@@ -26,6 +25,7 @@ import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
+  committedEffectsAfterUnanchoredReceipt,
   pass,
   waitForSessionEventReceipt,
   withRealServer,
@@ -66,7 +66,7 @@ async function createRaw(base, body) {
 async function main() {
   // Test design (Workdir resource matrix). Causes: C1=valid/dangling File and
   // Memory references; C2=reachable/unreachable Repository; C3=a Run executes in
-  // the realized writable Workdir. Effects: E1=valid Memory+Repository co-mount;
+  // the realized Namespace environment. Effects: E1=valid Memory+Repository co-mount;
   // E2=C3 commits output and listed artifact bytes; E3=dangling references fail
   // at create; E4=unresolvable Repository remains in retryable pre-Run custody
   // with no execution or terminal effect.
@@ -79,7 +79,7 @@ async function main() {
   await withRealServer('echo', PORT, async (base, upstream) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: base });
 
-    // ── supply the two writable Workdir resource families ──────────────────────
+    // ── supply writable Memory plus path-faithful Repository ───────────────────
     const mem = await client.post('/v1/memory_stores', {
       body: { name: 'sandbox-provisioning-memory' },
       headers: MEMORY_HEADERS,
@@ -89,8 +89,8 @@ async function main() {
 
     // Cause/effect table: valid Memory+Repository -> both realize and inference
     // runs; dangling File/Memory -> create rejects; unresolvable Repository ->
-    // realization rejects before an assistant fact. Read-only File success is a
-    // Namespace/Container substrate rule, not a Workdir rule.
+    // realization rejects before an assistant fact. Read-only File success has
+    // its own Namespace/Container substrate matrix.
     const session = await client.beta.sessions.create({
       agent: 'assistant',
       environment_id: 'env_local',
@@ -158,8 +158,9 @@ async function main() {
     // Run is reserved. Causes: C1=the frozen Repository is structurally valid but
     // physically unresolvable; C2=the User batch is accepted by the Session root;
     // C3=pre-Run clone fails; C4=one bounded reconciliation window elapses without
-    // external repair. Effects: E1=the exact receipt remains retained/unprocessed;
-    // E2=the Session remains idle/nonterminal; E3=no Run, model, assistant, tool,
+    // external repair. Effects: E1=admission returns the exact unprocessed receipt
+    // without listing it as unanchored committed history; E2=the Session remains
+    // idle/nonterminal; E3=no Run, model, assistant, tool,
     // or session.error fact is fabricated; E4=no fallback Repository is used and
     // the original command remains available to the lifecycle supervisor.
     // Constraints/invariants: accepted root CAS cannot be revoked by a later
@@ -187,18 +188,21 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(repoSession.id, { betas: BETAS })) {
       repoEvents.push(event);
     }
-    const acceptedRepoAt = repoEvents.findIndex((event) => event.id === acceptedRepoEvent.id);
-    assert.notEqual(acceptedRepoAt, -1, 'unresolvable Repository receipt remains durable');
-    assert.equal(
-      repoEvents[acceptedRepoAt].processed_at,
-      null,
-      'unresolvable Repository remains in retryable pre-Run custody',
-    );
-    assert.deepEqual(
-      repoEvents.slice(acceptedRepoAt + 1),
-      [],
-      'pre-Run clone failure fabricates no execution or terminal effect',
-    );
+    committedEffectsAfterUnanchoredReceipt({
+      history: repoEvents,
+      receiptId: acceptedRepoEvent.id,
+      forbiddenEventTypes: new Set([
+        'agent.message',
+        'agent.tool_use',
+        'agent.tool_result',
+        'session.error',
+        'session.status_idle',
+        'session.usage',
+        'span.model_request_start',
+        'span.model_request_end',
+      ]),
+      description: 'unresolvable Repository pre-Run failure',
+    });
     assert.equal(
       (await client.beta.sessions.retrieve(repoSession.id, { betas: BETAS })).status,
       'idle',
@@ -210,13 +214,15 @@ async function main() {
       'unresolvable Repository never reaches model inference',
     );
     pass('an unresolvable Repository remains safely retained before Run reservation');
+  }, {
+    extraEnv: { SESSION_DEPLOYMENT_SANDBOX_TIER: 'namespace' },
   });
 
   // The successful arm owns a writable Memory projection, while the failure
   // arms may stop during realization. One mount-aware cleanup path handles both
   // terminal effects and surfaces detach failure instead of retrying raw rmSync.
   cleanupFixtureTree(TMP);
-  console.log('E2E PASS: Workdir writable resources co-provision + artifact projection + fail-closed arms.');
+  console.log('E2E PASS: Namespace resources co-provision + artifact projection + fail-closed arms.');
   process.exitCode = 0;
 }
 

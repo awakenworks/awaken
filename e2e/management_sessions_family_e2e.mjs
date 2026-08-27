@@ -47,11 +47,17 @@
 // C13 the first logical request reaches the cap, then an exact MCP confirmation
 // allows the same Run's post-tool request; C14 the cap is raised or removed;
 // C15 a System Event trails that confirmation even though confirmations are not
-// valid System predecessors. Effects are U10 exact SDK
+// valid System predecessors; C18 lifecycle attempt boundaries may project
+// adjacent `running` observations without duplicating a domain effect. Effects are U10 exact SDK
 // create/retrieve/list projection, U11 exact update or removal, U12 rejection
 // before root mutation, U13 one budget pause, and U14 automatic continuation of
 // the same Run without a second User Event or duplicated tool effect; U15 is a
-// 400 atomic no-op before the later exact confirmation succeeds.
+// 400 atomic no-op before the later exact confirmation succeeds; U17 collapses
+// only adjacent equal observations when checking semantic status phases while
+// the exact Event/effect cardinalities remain independently asserted. Canonical
+// replay may place the preceding requires-action idle between a usage snapshot
+// and the later budget idle, so U13 requires relative order plus one budget
+// terminal rather than cross-phase physical adjacency.
 //
 // | Rule | Created budget | Update | Effect |
 // |---|---|---|---|
@@ -108,6 +114,17 @@ async function rawUpdate(baseUrl, sessionId, body, headers = {}) {
 
 const sessionEvents = (client, sessionId) =>
   drain(client.beta.sessions.events.list(sessionId, { betas: BETAS }));
+
+function semanticThreadStatusPhases(events, threadId) {
+  return events
+    .filter((event) =>
+      event.session_thread_id === threadId && event.type.startsWith('session.thread_status_'))
+    .map((event) =>
+      event.type === 'session.thread_status_idle'
+        ? `${event.type}:${event.stop_reason.type}`
+        : event.type)
+    .filter((status, index, statuses) => index === 0 || status !== statuses[index - 1]);
+}
 
 async function exerciseBudgetResume(client, updateKind) {
   const budgeted = await client.beta.sessions.create({
@@ -172,13 +189,8 @@ async function exerciseBudgetResume(client, updateKind) {
   const threads = await drain(client.beta.sessions.threads.list(budgeted.id, { betas: BETAS }));
   const primary = threads.find((thread) => thread.parent_thread_id == null);
   assert.ok(primary?.id.startsWith('sthr_'), `${updateKind} has one public primary Thread`);
-  const pausedThread = paused.filter((event) =>
-    event.session_thread_id === primary.id && event.type.startsWith('session.thread_status_'));
   assert.deepEqual(
-    pausedThread.map((event) =>
-      event.type === 'session.thread_status_idle'
-        ? `${event.type}:${event.stop_reason.type}`
-        : event.type),
+    semanticThreadStatusPhases(paused, primary.id),
     [
       'session.thread_status_running',
       'session.thread_status_idle:requires_action',
@@ -189,7 +201,18 @@ async function exerciseBudgetResume(client, updateKind) {
   );
   const pausedAggregate = paused.findIndex((event) =>
     event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached');
-  assert.equal(paused[pausedAggregate - 1]?.type, 'session.usage', `${updateKind} usage precedes budget idle`);
+  const budgetUsage = paused
+    .slice(0, pausedAggregate)
+    .findLastIndex((event) => event.type === 'session.usage');
+  assert.ok(budgetUsage >= 0, `${updateKind} usage precedes budget idle`);
+  assert.equal(
+    paused.filter((event) =>
+      event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached').length,
+    1,
+    `${updateKind} has one budget terminal for ${budgeted.id}: ${JSON.stringify(paused
+      .filter((event) => event.type === 'session.status_idle')
+      .map((event) => ({ id: event.id, stop_reason: event.stop_reason.type })))}`,
+  );
   assert.equal(
     paused.filter((event) => event.type === 'user.message').length,
     1,
@@ -209,13 +232,8 @@ async function exerciseBudgetResume(client, updateKind) {
       events.some((event) => event.type === 'agent.message'),
     `${updateKind} resumes the paused Run`,
   );
-  const primaryStatuses = completed.filter((event) =>
-    event.session_thread_id === primary.id && event.type.startsWith('session.thread_status_'));
   assert.deepEqual(
-    primaryStatuses.map((event) =>
-      event.type === 'session.thread_status_idle'
-        ? `${event.type}:${event.stop_reason.type}`
-        : event.type),
+    semanticThreadStatusPhases(completed, primary.id),
     [
       'session.thread_status_running',
       'session.thread_status_idle:requires_action',

@@ -114,7 +114,8 @@ async fn full_chain_resolves_credential_to_provider_seam() {
     // The resolved credential — an already-resolved RedactedString — is what
     // reaches the provider adapter's injection seam (D6/D9: no handle/resolver).
     let credential = resolved.credential.as_ref().expect("resolved credential");
-    let _executor = awaken_provider_genai::GenaiExecutor::anthropic_compatible(
+    let _executor = awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
         resolved.base_url.clone().unwrap(),
         credential.expose_secret(),
     );
@@ -135,7 +136,8 @@ async fn full_chain_live_model_call() {
         config_and_resolve(&model, "https://api.anthropic.com/v1/", &api_key).await;
 
     // Injection seam: hand the runtime adapter the resolved base_url + secret.
-    let executor = awaken_provider_genai::GenaiExecutor::anthropic_compatible(
+    let executor = awaken_provider_genai::GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
         resolved.base_url.clone().unwrap(),
         resolved.credential.as_ref().unwrap().expose_secret(),
     );

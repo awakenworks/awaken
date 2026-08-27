@@ -201,7 +201,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok("dream") => awaken_scenario_host::build_dream_runtime_router().await,
         Ok("resource-scope-boundary") => awaken_scenario_host::build_unscoped_resource_router(),
         Ok("resource-ephemeral") => awaken_scenario_host::build_ephemeral_resource_router(),
-        Ok("git-repo") => awaken_scenario_host::build_git_repo_router(),
+        Ok("git-repo") => {
+            awaken_scenario_host::build_git_repo_router(awaken_scenario_host::scenario_deployment())
+                .await
+        }
         Ok("compaction") => awaken_scenario_host::build_compaction_router(),
         Ok("error") => awaken_scenario_host::build_error_router(),
         Ok("worker") => awaken_scenario_host::build_worker_router(),
@@ -451,7 +454,10 @@ mod dispatch_tests {
             ("acp-gateway", sh::build_acp_gateway_router()),
             ("memory", sh::build_memory_router()),
             ("memory-resource", sh::build_memory_resource_router()),
-            ("git-repo", sh::build_git_repo_router()),
+            (
+                "git-repo",
+                sh::build_git_repo_router(local_test_deployment.clone()).await,
+            ),
             ("compaction", sh::build_compaction_router()),
             ("error", sh::build_error_router()),
             ("worker", sh::build_worker_router()),

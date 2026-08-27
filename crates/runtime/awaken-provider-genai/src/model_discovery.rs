@@ -30,22 +30,10 @@ pub enum ModelDiscoveryError {
 /// for these requests and the result is a normalized, secret-free list of ids.
 pub async fn discover_model_ids(
     adapter: AdapterKind,
-    base_url: Option<&str>,
-    api_key: &str,
+    base_url: &str,
+    authentication: &str,
 ) -> Result<Vec<String>, ModelDiscoveryError> {
-    let base = match (adapter, base_url) {
-        (AdapterKind::Anthropic, None) => "https://api.anthropic.com/v1",
-        (AdapterKind::OpenAI, None) => "https://api.openai.com/v1",
-        (AdapterKind::Gemini, None) => "https://generativelanguage.googleapis.com/v1beta",
-        (AdapterKind::Vertex, None) => {
-            return Err(ModelDiscoveryError::InvalidEndpoint(
-                "Vertex model discovery requires the authored project/location base URL".into(),
-            ));
-        }
-        (_, Some(base)) => base,
-        (other, None) => return Err(ModelDiscoveryError::Unsupported(other)),
-    };
-    let mut url = reqwest::Url::parse(base)
+    let mut url = reqwest::Url::parse(base_url)
         .map_err(|error| ModelDiscoveryError::InvalidEndpoint(error.to_string()))?;
     let model_path = if adapter == AdapterKind::Vertex {
         "publishers/google/models"
@@ -82,7 +70,7 @@ pub async fn discover_model_ids(
                         query.append_pair("pageToken", cursor);
                     }
                     if adapter == AdapterKind::Gemini {
-                        query.append_pair("key", api_key);
+                        query.append_pair("key", authentication);
                     }
                 }
                 _ => {}
@@ -91,9 +79,9 @@ pub async fn discover_model_ids(
         let mut request = client.get(page_url);
         request = match adapter {
             AdapterKind::Anthropic => request
-                .header("x-api-key", api_key)
+                .header("x-api-key", authentication)
                 .header("anthropic-version", "2023-06-01"),
-            AdapterKind::OpenAI | AdapterKind::Vertex => request.bearer_auth(api_key),
+            AdapterKind::OpenAI | AdapterKind::Vertex => request.bearer_auth(authentication),
             AdapterKind::Gemini => request,
             other => return Err(ModelDiscoveryError::Unsupported(other)),
         };

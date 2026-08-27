@@ -4,7 +4,7 @@
 // Cause/effect decision table:
 // | Rule | durable input | process | observable effect |
 // | U1 | dotted legacy Deployment event | restarted | SDK reads official dotted event |
-// | U2 | pre-event-batch Session aggregate | restarted | SDK reads Session, no quarantine |
+// | U2 | pre-event-batch Session + quarantine/work at one observed revision | restarted | SDK reads Session, no quarantine |
 // | U3 | U1/U2 then public updates | stopped | current versioned/internal storage encoding |
 // | U4 | current rewritten rows | restarted again | both SDK resources remain readable |
 // | U5 | internal snake_case API request | live | 400 before persistence |
@@ -77,9 +77,9 @@ async function main() {
 
     const sessionRow = sqliteRows(
       database,
-      'SELECT aggregate_json FROM managed_session WHERE session_id = ?',
+      'SELECT aggregate_json, revision FROM managed_session WHERE session_id = ?',
       session.id,
-    )[0] as { aggregate_json: string };
+    )[0] as { aggregate_json: string; revision: number };
     const envelope = JSON.parse(sessionRow.aggregate_json);
     assert.equal(envelope.format, 'awaken.session.v1', 'fixture starts from current explicit format');
     const legacySession = envelope.aggregate;
@@ -93,9 +93,16 @@ async function main() {
     );
     sqliteRun(
       database,
-      'INSERT INTO managed_session_quarantine (session_id, reason) VALUES (?, ?)',
+      'INSERT INTO managed_session_quarantine (session_id, reason, observed_revision) VALUES (?, ?, ?)',
       session.id,
       'missing field `event_batches` from the previous release',
+      sessionRow.revision,
+    );
+    sqliteRun(
+      database,
+      'INSERT INTO managed_session_reconciliation_work (session_id, observed_revision) VALUES (?, ?)',
+      session.id,
+      sessionRow.revision,
     );
 
     const deploymentRow = sqliteRows(

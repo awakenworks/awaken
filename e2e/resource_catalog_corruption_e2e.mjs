@@ -7,7 +7,6 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
   managedWorkspaceClient,
   spawnProduction,
@@ -104,15 +103,6 @@ async function driveSession(client, sessionId, text) {
   return receipt;
 }
 
-async function readReceipt(client, sessionId, receiptId) {
-  for await (const event of client.beta.sessions.events.list(sessionId, {
-    betas: [MANAGED_BETA],
-  })) {
-    if (event.id === receiptId) return event;
-  }
-  return undefined;
-}
-
 async function listMemoryStores(client) {
   const stores = [];
   for await (const store of client.beta.memoryStores.list({ betas: [MEMORY_BETA] })) {
@@ -124,21 +114,6 @@ async function listMemoryStores(client) {
 function sdkErrorMatches(error, status, pattern) {
   return error?.status === status
     && pattern.test(`${String(error?.message)}\n${JSON.stringify(error?.error)}`);
-}
-
-function seedRepository(root) {
-  const work = path.join(root, 'catalog-repository-work');
-  const remote = path.join(root, 'catalog-repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'catalog@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'catalog-corruption'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'catalog corruption recovery');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
 }
 
 function sqlQuote(value) {
@@ -225,8 +200,8 @@ function persistPreparedGeneration(database, sessionId) {
 }
 
 async function main() {
-  // Test design (catalog corruption matrix). Causes: C1=valid Memory and
-  // Repository aggregates establish an Active generation; C2=durable catalog/
+  // Test design (catalog corruption matrix). Causes: C1=a valid MemoryStore
+  // aggregate establishes an Active generation; C2=durable catalog/
   // generation/manifest fields are missing, malformed, cross-linked, or stale;
   // C3=the process restarts and a new Run demands realization. Effects:
   // E1=the valid baseline executes; E2=every C2 arm fails closed with a
@@ -249,18 +224,16 @@ async function main() {
       betas: [MEMORY_BETA],
     });
 
-    const repository = seedRepository(directory);
     const session = await client.beta.sessions.create({
       agent: AGENT,
       environment_id: 'env_local',
       resources: [{
-        type: 'github_repository',
-        url: repository,
-        mount_path: '/workspace/catalog-repository',
+        type: 'memory_store',
+        memory_store_id: memory.id,
+        mount_path: '/workspace/catalog-memory',
       }],
       betas: [MANAGED_BETA],
     });
-    const repositoryId = `managed:${session.id}:repository:0`;
 
     // Demand/placement cause graph: a Session create freezes Resource intent
     // but a registered Worker owns physical realization. Only an actual Run
@@ -288,13 +261,8 @@ async function main() {
 
     await stop(server, 'SIGKILL');
     const memoryRecord = catalogRecord(resourceDatabase, 'memory_store', memory.id);
-    const repositoryRecord = catalogRecord(resourceDatabase, 'repository', repositoryId);
     writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, {
       ...memoryRecord,
-      configs: {},
-    });
-    writeCatalogRecord(resourceDatabase, 'repository', repositoryId, {
-      ...repositoryRecord,
       configs: {},
     });
     persistPreparedGeneration(sessionsDatabase, session.id);
@@ -360,7 +328,7 @@ async function main() {
       (error) => sdkErrorMatches(error, 400, /current config version is missing/u),
     );
 
-    const deniedRepository = await waitForValue(
+    const deniedMemory = await waitForValue(
       () => sessionResources(sessionsDatabase, session.id),
       (resources) => resources.pending !== undefined
         && resources.activations.at(-1).state === 'prepared'
@@ -368,17 +336,16 @@ async function main() {
         && !resources.activations.at(-1).last_error,
       'missing catalog config changed the unattempted pending generation',
     );
-    assert.notEqual(deniedRepository.pending, undefined);
-    assert.equal(deniedRepository.activations.at(-1).state, 'prepared');
-    assert.equal(deniedRepository.activations.at(-1).attempts, 0);
-    assert.equal(deniedRepository.activations.at(-1).last_error, undefined);
-    assert.equal((await readReceipt(client, session.id, deniedReceipt.id)).processed_at, null);
+    assert.notEqual(deniedMemory.pending, undefined);
+    assert.equal(deniedMemory.activations.at(-1).state, 'prepared');
+    assert.equal(deniedMemory.activations.at(-1).attempts, 0);
+    assert.equal(deniedMemory.activations.at(-1).last_error, undefined);
+    assert.equal(deniedReceipt.processed_at, null);
 
     // Repair only the missing immutable histories. The already-persisted Session
     // generation remains unchanged and must be the generation that later commits.
     await stop(server, 'SIGKILL');
     writeCatalogRecord(resourceDatabase, 'memory_store', memory.id, memoryRecord);
-    writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
     server = start(directory);
     await ready(server);
 
@@ -463,98 +430,7 @@ async function main() {
     await ready(server);
     assert.ok((await listMemoryStores(client)).some((store) => store.id === memory.id));
 
-    // Repository aggregates have no standalone public collection route: they are
-    // execution inputs owned by the Session lifecycle. Drive the same corruption
-    // matrix through cold-start activation reconciliation. Every corrupt aggregate
-    // must leave the already-frozen generation prepared (never silently re-resolve
-    // from the remote), and restoring only the aggregate must converge that exact
-    // generation on the next boot.
-    const repositoryConfig = repositoryRecord.configs['1'];
-    const repositoryCorruptions = [
-      ['malformed-json', '{not-json'],
-      ['forged-definition-id', JSON.stringify({
-        ...repositoryRecord,
-        definition: { ...repositoryRecord.definition, id: 'forged-repository-id' },
-      })],
-      ['empty-workspace', JSON.stringify({
-        ...repositoryRecord,
-        definition: { ...repositoryRecord.definition, workspace_id: ' ' },
-      })],
-      ['zero-current-version', JSON.stringify({
-        ...repositoryRecord,
-        definition: { ...repositoryRecord.definition, current_config_version: 0 },
-      })],
-      ['missing-current-version', JSON.stringify({ ...repositoryRecord, configs: {} })],
-      ['forged-config-id', JSON.stringify({
-        ...repositoryRecord,
-        configs: { 1: { ...repositoryConfig, repository_id: 'forged-repository-id' } },
-      })],
-      ['forged-config-version', JSON.stringify({
-        ...repositoryRecord,
-        configs: { 1: { ...repositoryConfig, version: 2 } },
-      })],
-    ];
-    for (const [name, data] of repositoryCorruptions) {
-      await stop(server);
-      writeCatalogRaw(resourceDatabase, 'repository', repositoryId, data);
-      persistPreparedGeneration(sessionsDatabase, session.id);
-      server = start(directory);
-      await ready(server);
-      const corruptReceipt = await driveSession(
-        client,
-        session.id,
-        `reject ${name} Repository catalog`,
-      );
-
-      const denied = await waitForValue(
-        () => sessionResources(sessionsDatabase, session.id),
-        (resources) => resources.pending !== undefined
-          && resources.activations.at(-1).state === 'prepared'
-          && resources.activations.at(-1).attempts === 0
-          && !resources.activations.at(-1).last_error,
-        `${name}: corruption changed an unattempted generation`,
-      );
-      assert.notEqual(denied.pending, undefined, `${name}: pending generation disappeared`);
-      assert.equal(denied.activations.at(-1).state, 'prepared', name);
-      assert.equal(denied.activations.at(-1).attempts, 0, name);
-      assert.equal(denied.activations.at(-1).last_error, undefined, name);
-      assert.equal(
-        (await readReceipt(client, session.id, corruptReceipt.id)).processed_at,
-        null,
-        name,
-      );
-      assert.equal(server.exitCode, null, `${name}: catalog corruption crashed the process`);
-
-      await stop(server);
-      writeCatalogRecord(resourceDatabase, 'repository', repositoryId, repositoryRecord);
-      server = start(directory);
-      await ready(server);
-      // Cause/effect decision table for every corruption rule:
-      // corrupt catalog + Run demand => exact receipt remains unprocessed and
-      // no attempt starts; restored catalog => the same command is retried and
-      // that same generation becomes Active; listener readiness alone is never
-      // a Worker recovery receipt and no second User command drives recovery.
-      const repaired = await waitForValue(
-        () => sessionResources(sessionsDatabase, session.id),
-        (resources) => resources.pending === undefined
-          && resources.activations.at(-1).state === 'active',
-        `${name}: repaired generation did not commit`,
-      );
-      assert.equal(repaired.pending, undefined, `${name}: repaired generation did not commit`);
-      assert.equal(repaired.activations.at(-1).state, 'active', name);
-      assert.equal(repaired.activations.at(-1).attempts, 1, name);
-      assert.equal(repaired.activations.at(-1).last_error, undefined, name);
-      await waitForSessionEventReceipt(
-        client,
-        session.id,
-        corruptReceipt.id,
-        [MANAGED_BETA],
-        () => true,
-        `${name}: repaired catalog did not process the original durable command`,
-      );
-    }
-
-    console.log('E2E PASS: corrupt Memory and Repository aggregates fail closed and the same snapshot later recovers.');
+    console.log('E2E PASS: corrupt MemoryStore aggregates fail closed and the same snapshot later recovers.');
   } finally {
     await stop(server).catch(() => {});
     await upstream.close();

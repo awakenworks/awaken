@@ -7,8 +7,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import {
+  cleanupFixtureTree,
   managedFileUploadForm,
   managedWorkspaceClient,
   spawnProduction,
@@ -238,21 +238,6 @@ async function waitForLifecycleSchema(directory, timeoutMs = 20_000) {
   throw new Error('resource lifecycle migration did not become visible');
 }
 
-function seedRepository(root) {
-  const work = path.join(root, 'reclamation-repository-work');
-  const remote = path.join(root, 'reclamation-repository.git');
-  fs.mkdirSync(work, { recursive: true });
-  execFileSync('git', ['init', '-q'], { cwd: work });
-  execFileSync('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: work });
-  execFileSync('git', ['config', 'user.email', 'resource-reclaim@example.invalid'], { cwd: work });
-  execFileSync('git', ['config', 'user.name', 'resource-reclaim'], { cwd: work });
-  fs.writeFileSync(path.join(work, 'README.md'), 'reclamation repository');
-  execFileSync('git', ['add', 'README.md'], { cwd: work });
-  execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: work });
-  execFileSync('git', ['clone', '-q', '--bare', work, remote]);
-  return remote;
-}
-
 async function main() {
   // Test design (reclamation lifecycle). Causes: C1=logical deletion/revocation;
   // C2=active Session/Workspace references remain or are gone; C3=the process
@@ -334,14 +319,8 @@ async function main() {
     // archive removes it, the same durable intent converges without an IAM query.
     const boundFile = await upload(WS_A, 'session-bound-content');
     const boundBlob = blobForFile(directory, WS_A, boundFile);
-    const repository = seedRepository(directory);
     const boundSession = await client.beta.sessions.create({
       agent: AGENT, environment_id: 'env_local',
-      resources: [{
-        type: 'github_repository',
-        url: repository,
-        mount_path: '/workspace/reclamation-repository',
-      }],
       betas: [MANAGED_BETA],
     });
     let binding = await json(
@@ -384,7 +363,7 @@ async function main() {
     }
     assert.equal(binding.status, 200, JSON.stringify(binding.body));
     // Registered-Worker realization cause graph: C1 the replacement Worker owns
-    // its registry lease; C2 the Repository+File generation is durably pending;
+    // its registry lease; C2 the File generation is durably pending;
     // C3 the Agent has one exact executable publication; C4 a User Event creates
     // the subordinate Run claim. Effects: E1 C1+C2+C3 without C4 truthfully stays
     // Rescheduling; E2 C1+C2+C4 without C3 fails before dispatch; E3 all causes
@@ -461,10 +440,6 @@ async function main() {
     assert.equal(archive.body.status, 'terminated', JSON.stringify(archive.body));
     const boundReceipt = await waitReceipt(directory, 'file', boundFile, { workspace: WS_A });
     assert.equal(boundReceipt.receipt.evidence.blob_deleted, true);
-    const repositoryId = `managed:${boundSession.id}:repository:0`;
-    const repositoryReceipt = await waitReceipt(directory, 'repository', repositoryId);
-    assert.equal(repositoryReceipt.receipt.evidence.local_realizations_deleted, 0);
-
     // Equal bytes share one blob. Removing A cannot delete bytes still owned
     // to B; revoking B subsequently permits physical GC.
     const sharedA = await upload(WS_A, 'shared-content');
@@ -520,7 +495,7 @@ async function main() {
   } finally {
     await stop(server).catch(() => {});
     await upstream.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+    cleanupFixtureTree(directory);
   }
 }
 

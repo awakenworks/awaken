@@ -724,7 +724,11 @@ mod tests {
         };
 
         // Causal graph: verify -> read ledger -> serve/fail; only migrate may
-        // create ledger/tables. The table pins all three startup decisions:
+        // create ledger/tables. Portable INTEGER -> Postgres BIGINT, and a
+        // catalog write/read must bind and decode both boolean columns as i64.
+        // Effects: startup stays read-only or migrates as selected; the exact
+        // rendered column types are BIGINT; catalog records round-trip. The
+        // table pins all three startup decisions:
         // | ledger | operation | result  | schema write |
         // | absent | verify    | failure | none         |
         // | absent | migrate   | success | apply bundle |
@@ -741,6 +745,17 @@ mod tests {
 
         let store = PgFileStore::connect(&url).await.unwrap();
         PgFileStore::connect_existing(&url).await.unwrap();
+        let schema_pool = sqlx::PgPool::connect(&url).await.unwrap();
+        let boolean_column_types: Vec<String> = sqlx::query_scalar(
+            "SELECT data_type FROM information_schema.columns \
+             WHERE table_schema='t_file_store' AND table_name='file_store_file' \
+               AND column_name IN ('downloadable', 'deleted') ORDER BY column_name",
+        )
+        .fetch_all(&schema_pool)
+        .await
+        .unwrap();
+        assert_eq!(boolean_column_types, vec!["bigint", "bigint"]);
+        schema_pool.close().await;
         round_trip(&store).await;
         catalog_contract(&store).await;
         // Same id as the core, across the network backend too.

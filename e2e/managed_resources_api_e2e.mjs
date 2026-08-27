@@ -57,9 +57,10 @@ async function main() {
       assert.equal(meta.type, 'file');
       assert.equal(
         Object.hasOwn(meta, 'scope'),
-        false,
-        'the GA File contract omits beta-only Session scope metadata',
+        true,
+        'the Beta File contract retains explicit Session scope metadata',
       );
+      assert.equal(meta.scope, null, 'an uploaded Workspace input has no Session scope');
       assert.equal(meta.downloadable, false);
       pass('file metadata reflects stored size');
 

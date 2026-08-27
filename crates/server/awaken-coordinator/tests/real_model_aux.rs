@@ -31,7 +31,11 @@ fn live_host() -> Option<(SharedHost, String)> {
     let base = std::env::var("KIMI_BASE_URL")
         .unwrap_or_else(|_| "https://api.kimi.com/coding/v1/".to_string());
     let model = std::env::var("KIMI_MODEL").unwrap_or_else(|_| "kimi-for-coding".to_string());
-    let executor = GenaiExecutor::anthropic_compatible(base, key);
+    let executor = GenaiExecutor::from_materialized_endpoint(
+        awaken_provider_genai::AdapterKind::Anthropic,
+        base,
+        key,
+    );
     Some((SharedHost::new(Arc::new(executor), model.clone()), model))
 }
 

@@ -13779,15 +13779,13 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     assert!(direct.live_inbox("direct-live").await.is_none(), "L1/E2");
 
     let direct_inbox = direct_ctx.open_live_inbox();
-    let direct_registration = direct_ctx.runtime.register_attempt_controls(
+    let direct_tracking = direct_ctx.runtime.track_active_attempt(
         &RunId("run-direct".into()),
         &direct_ctx.thread_id,
         &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(direct_inbox.clone()),
     );
     assert!(direct.live_inbox("direct-live").await.is_some(), "L2/E1");
-    direct_ctx
-        .runtime
-        .deregister_attempt_controls(&direct_registration);
+    drop(direct_tracking);
     assert!(
         direct.live_inbox("direct-live").await.is_none(),
         "L3/E2+E3 an open lifecycle slot is not a fallback authority"
@@ -13795,7 +13793,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     direct_ctx.close_live_inbox();
 
     let event_inbox = awaken_runtime_contract::live_inbox::LiveInbox::new();
-    let event_registration = direct_ctx.runtime.register_attempt_controls(
+    let event_tracking = direct_ctx.runtime.track_active_attempt(
         &RunId("run-session-event".into()),
         &direct_ctx.thread_id,
         &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(event_inbox.clone()),
@@ -13810,9 +13808,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         "event",
     ));
     assert_eq!(event_inbox.list().len(), 1, "L4/E1 exact Event inbox");
-    direct_ctx
-        .runtime
-        .deregister_attempt_controls(&event_registration);
+    drop(event_tracking);
     assert!(direct.live_inbox("direct-live").await.is_none(), "L5/E3");
 
     let mut local_deployment = crate::DeploymentConfig::ephemeral();
@@ -13824,7 +13820,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
     ));
     let local_ctx = local.ctx_for("local-live", None).await.expect("L6 context");
     *local_ctx.active_run.lock().expect("active run mutex") = Some(RunId("run-local".into()));
-    let registration = local_ctx.runtime.register_attempt_controls(
+    let tracking = local_ctx.runtime.track_active_attempt(
         &RunId("run-local".into()),
         &local_ctx.thread_id,
         &awaken_runtime_contract::RuntimeRunContext::new().with_live_inbox(
@@ -13837,7 +13833,7 @@ async fn live_inbox_is_advertised_only_for_a_locally_reachable_active_attempt() 
         ),
     );
     assert!(local.live_inbox("local-live").await.is_some(), "L6/E1");
-    local_ctx.runtime.deregister_attempt_controls(&registration);
+    drop(tracking);
     assert!(
         local.live_inbox("local-live").await.is_none(),
         "L6/E3 settled"

@@ -1744,6 +1744,16 @@ mod tests {
             .await
             .unwrap();
 
+        // Fixture-isolation rule P3: C1 the invalid-update fixture remains active
+        // after proving rollback; C2 the following create/list parity rule assumes
+        // no pre-existing active Environment. E1 archive the fixture through the
+        // public contract (and therefore preserve its revision/outbox history);
+        // E2 the next active count observes only the Environment it creates.
+        r.archive(&valid.id)
+            .await
+            .expect("archive parity fixture")
+            .expect("parity fixture exists");
+
         let e = r
             .create("prod".into(), "d".into(), BTreeMap::new(), config())
             .await

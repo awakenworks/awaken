@@ -362,6 +362,115 @@ export async function waitForSessionEventReceipt(
   );
 }
 
+// Canonical negative oracle for a retryable command that failed before it
+// acquired a committed projection anchor. Causes: C1=admission returned an
+// exact receipt; C2=the command remains unanchored; C3=committed history may
+// already contain effects from older commands. Effects: E1=the receipt is not
+// fabricated as committed history; E2=only events added after C3 are checked;
+// E3=no forbidden execution/terminal effect is added. Decision rules:
+// U1 C1+C2=>E1; U2 C1+C2+C3=>E1+E2+E3.
+export function committedEffectsAfterUnanchoredReceipt({
+  history,
+  priorHistory = [],
+  receiptId,
+  forbiddenEventTypes,
+  description,
+}) {
+  if (history.some((event) => event.id === receiptId)) {
+    throw new Error(`${description} fabricated an unanchored receipt as committed history`);
+  }
+  const priorIds = new Set(priorHistory.map((event) => event.id));
+  const added = history.filter((event) => !priorIds.has(event.id));
+  const forbidden = added.filter((event) => forbiddenEventTypes.has(event.type));
+  if (forbidden.length > 0) {
+    throw new Error(
+      `${description} fabricated execution or terminal effects: ${forbidden.map((event) => event.type)}`,
+    );
+  }
+  return added;
+}
+
+// Canonical driver for deterministic scenarios whose built-in tools cross one
+// or more Managed approval boundaries. Causes: C1=the task receipt commits;
+// C2=the latest receipt-scoped boundary is requires_action; C3=its exact tool
+// ids have not already been approved; C4=an approval receipt commits; C5=the
+// Run reaches end_turn. Effects: E1=approve each qualified tool id exactly
+// once; E2=ignore an older requires_action that canonical history orders after
+// C4; E3=return terminal committed history. Constraints: this helper drives
+// only test-owned allow decisions and never retries a rejected send. Decision
+// rules: A1 C1+C2+C3=>E1; A2 C4+C2&&!C3=>E2; A3 C4+C5=>E3; A4 boundary limit
+// without C5=>fail with the last committed history.
+export async function allowManagedToolBoundaries({
+  client,
+  sessionId,
+  taskReceiptId,
+  betas,
+  description,
+  timeoutMs = 20_000,
+  maxBoundaries = 10,
+}) {
+  const approved = new Set();
+  const nextBoundary = ({ events, delta }) => {
+    if (hasEndTurn(events)) return true;
+    const idle = [...delta]
+      .reverse()
+      .find((event) => event.type === 'session.status_idle');
+    return idle?.stop_reason?.type === 'requires_action'
+      && idle.stop_reason.event_ids.some((id) => !approved.has(id));
+  };
+  let observation = await waitForSessionEventReceipt(
+    client,
+    sessionId,
+    taskReceiptId,
+    betas,
+    nextBoundary,
+    `${description} task reaches its first committed boundary`,
+    { timeoutMs },
+  );
+  for (let boundary = 0; boundary < maxBoundaries; boundary += 1) {
+    if (hasEndTurn(observation.events)) return observation.events;
+    const idle = [...observation.delta]
+      .reverse()
+      .find((event) => event.type === 'session.status_idle');
+    if (idle?.stop_reason?.type !== 'requires_action') {
+      throw new Error(`${description} nonterminal boundary does not require approval`);
+    }
+    const pendingIds = idle.stop_reason.event_ids.filter((id) => !approved.has(id));
+    if (pendingIds.length === 0) {
+      throw new Error(`${description} requires_action repeats only approved Event ids`);
+    }
+    const decisions = pendingIds.map((id) => {
+      const toolUse = observation.events.find(
+        (event) => event.id === id && event.type === 'agent.tool_use',
+      );
+      if (toolUse?.evaluated_permission !== 'ask') {
+        throw new Error(`${description} ${id} is not a gated tool call`);
+      }
+      return { type: 'user.tool_confirmation', tool_use_id: id, result: 'allow' };
+    });
+    const approval = await client.beta.sessions.events.send(sessionId, {
+      events: decisions,
+      betas,
+    });
+    pendingIds.forEach((id) => approved.add(id));
+    const receiptIds = approval.data.map((event) => event.id);
+    observation = await waitForSessionEventReceipt(
+      client,
+      sessionId,
+      receiptIds.at(-1),
+      betas,
+      ({ events, delta }) => receiptIds.every((id) => events.some(
+        (event) => event.id === id && event.processed_at,
+      )) && nextBoundary({ events, delta }),
+      `${description} approval batch reaches its next committed boundary`,
+      { timeoutMs },
+    );
+  }
+  throw new Error(
+    `${description} did not reach end_turn within ${maxBoundaries} approval boundaries`,
+  );
+}
+
 export function childDirectories(parent) {
   return fs.existsSync(parent)
     ? fs.readdirSync(parent, { withFileTypes: true })

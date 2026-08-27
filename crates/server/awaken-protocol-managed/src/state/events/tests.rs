@@ -333,9 +333,10 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
     // below-threshold interval has closed; C2 callers have already received its
     // complete prefix/cursors; C3 a later interval closes with cumulative usage
     // at the transition cursor; C4 an independent ManagedState cold-rebuilds.
-    // Effects: E1 C1 publishes no budget event; E2 C3 appends Usage/BudgetIdle
-    // at that interval's exact close without changing C2; E3 warm/cold full
-    // payloads and every C2 cursor suffix are equal. Decision table:
+    // Effects: E1 C1 publishes no budget event; E2 C3 appends exactly one
+    // transition-owned Usage/BudgetIdle pair at that interval's exact close,
+    // without an overlapping interval-owned terminal pair or any C2 change;
+    // E3 warm/cold full payloads and every C2 cursor suffix are equal. Decision table:
     // B1=C1=>E1; B2=C1+C2+C3=>E2; B3=B2+C4=>E3. An open or absent matching
     // interval is not replaced by transition index or latest-cursor fallback.
     let usage = |tokens| awaken_session_contract::ManagedBudgetUsageCursor {
@@ -482,12 +483,19 @@ async fn budget_reach_waits_for_its_interval_close_and_remains_in_every_old_curs
         .unwrap()
         .data;
     assert_eq!(&final_warm[..issued.len()], issued.as_slice(), "B2/E2");
-    assert!(final_warm.iter().any(|event| matches!(
-        &event.kind,
-        OutboundKind::SessionStatusIdle {
-            stop_reason: StopReason::BudgetReached
-        }
-    )));
+    assert_eq!(
+        final_warm
+            .iter()
+            .filter(|event| matches!(
+                &event.kind,
+                OutboundKind::SessionStatusIdle {
+                    stop_reason: StopReason::BudgetReached
+                }
+            ))
+            .count(),
+        1,
+        "B2/E2 one aggregate budget pause authority"
+    );
 
     let cold = ManagedState::new(runtime)
         .with_session_repo(repository)
@@ -715,6 +723,7 @@ impl awaken_executable_agent_contract::ExecutableAgentProfileSource for AdvisorP
 struct LifecycleRuntime {
     messages: Arc<Mutex<Vec<Message>>>,
     message_cursors: Arc<Mutex<Vec<u64>>>,
+    audit_events: Arc<Mutex<Vec<awaken_agent_contract::audit::record::Record>>>,
     lifecycle: Arc<Mutex<Vec<RunLifecycleEvent>>>,
     state: Arc<Mutex<Vec<awaken_agent_contract::agent::state::Command>>>,
     state_cursors: Arc<Mutex<Vec<u64>>>,
@@ -881,7 +890,7 @@ impl SessionRuntime for LifecycleRuntime {
                 message_commit_cursors,
                 state,
                 state_commit_cursors,
-                events: Vec::new(),
+                events: self.audit_events.lock().unwrap().clone(),
                 resume_tickets,
                 thread_version: lifecycle.len() as u64,
                 store_cursor,
@@ -1042,6 +1051,122 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     assert!(
         ManagedState::pending_from_recovery_snapshot(&one).is_err(),
         "P3/E3"
+    );
+}
+
+#[tokio::test]
+async fn pending_without_transcript_uses_awaiting_lifecycle_anchor() {
+    // Synthetic pending projection cause/effect graph: C1 one Runtime
+    // ResumeTicket exists; C2 its exact Run has a committed Awaiting lifecycle
+    // fact; C3 no ToolUse transcript message exists. Effects: E1 publish one
+    // qualified client-answerable tool event; E2 canonical ordering uses C2 and
+    // does not reject the event as unanchored. Decision table: S1 C1+C2+C3 =>
+    // E1+E2. The converse C1+!C2 remains covered by the global unanchored-event
+    // fail-closed guard and must not acquire a guessed cursor.
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
+        FrozenToolFamilyProfiles::uniform(
+            "coder",
+            &[],
+            FrozenTestToolFamily::Custom,
+            "client_lookup",
+        ),
+    ));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let run_id = RunId("run-synthetic-pending".into());
+    let call_id = "call-synthetic-pending";
+    *runtime.pending.lock().unwrap() = Some(Pending {
+        tool_use_id: call_id.into(),
+        name: "agent_input".into(),
+        input: serde_json::json!({"reason":"input_required"}),
+        client_executed: true,
+    });
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            10,
+            &session.id,
+            &run_id,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            20,
+            &session.id,
+            &run_id,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+    ]);
+    runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(awaken_agent_contract::audit::record::Record {
+            sequence: lifecycle_cursor(20).0,
+            run_id: run_id.clone(),
+            kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+            payload: serde_json::json!({
+                "state": RunState::Awaiting,
+                "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::RemoteInput {
+                    reason: awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput,
+                    call_id: call_id.to_string(),
+                },
+            }),
+        });
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let tools = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data
+        .into_iter()
+        .filter(|event| event.type_str() == "agent.tool_use")
+        .collect::<Vec<_>>();
+    assert_eq!(tools.len(), 1, "S1/E1 one synthetic pending tool");
+    let identity = decode_managed_tool_event_id(&tools[0].id).expect("S1/E2 qualified id");
+    assert_eq!(identity.source_id, run_id.0, "S1/E2 Awaiting Run owner");
+    assert_eq!(identity.call_id, call_id, "S1/E1 exact Runtime call");
+
+    // S2: consuming the active ticket cannot erase the historical coordinate
+    // of the already-public tool event. The Awaiting audit fact remains its one
+    // anchor through resume and terminal projection.
+    *runtime.pending.lock().unwrap() = None;
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            30,
+            &session.id,
+            &run_id,
+            RunLifecycleEventKind::Resumed,
+            RunState::Running,
+        ),
+        lifecycle(
+            40,
+            &session.id,
+            &run_id,
+            RunLifecycleEventKind::Completed,
+            RunState::Ended(EndCause::NaturalEnd),
+        ),
+    ]);
+    state.refresh_committed_events(&session.id).await.unwrap();
+    assert_eq!(
+        state
+            .list_events(&session.id, None, None, false)
+            .unwrap()
+            .data
+            .iter()
+            .filter(|event| event.id == tools[0].id)
+            .count(),
+        1,
+        "S2 historical Awaiting anchor retains one public tool event"
     );
 }
 

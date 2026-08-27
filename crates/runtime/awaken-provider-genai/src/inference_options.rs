@@ -145,9 +145,9 @@ mod tests {
             Some(GenaiReasoningEffort::High)
         ));
 
-        let compatible = GenaiExecutor::from_resolved(
+        let compatible = GenaiExecutor::from_materialized_endpoint(
             AdapterKind::OpenAI,
-            Some("https://api.deepseek.com".into()),
+            "https://api.deepseek.com",
             "fixture-key",
         );
         assert!(

@@ -8,13 +8,13 @@ use awaken_agent_contract::agent::{
     thread::Id as ThreadId,
 };
 use awaken_session_contract::{
-    CoordinatedThreadLink, CoordinatedThreadTarget, OutcomeDrive, OutcomeReport, SessionEventInput,
-    SessionEventInterrupt, SessionEventToolReply, SessionEventToolReplyKind,
-    SessionInitialEventPlan, SessionOutcomeRubric, SessionRuntime, SessionThreadTarget,
-    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, SessionThreadToolReplyFence,
-    SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
-    SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput, StepOutcome,
-    ToolPermissionDecision,
+    CoordinatedThreadLink, CoordinatedThreadTarget, OutcomeDrive, OutcomeReport,
+    SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
+    SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric, SessionRuntime,
+    SessionThreadTarget, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
+    SessionThreadToolReplyFence, SessionUserRunActivation, SessionUserRunAdmission,
+    SessionUserRunCommand, SessionUserRunDelivery, SessionUserRunReservation,
+    SessionUserRunSystemInput, StepOutcome, ToolPermissionDecision,
 };
 
 use super::*;
@@ -573,6 +573,64 @@ fn running_session_with_activity(session_id: &str, epoch: u64) -> PersistedSessi
     session.activity_epoch = epoch;
     session.active_activity_epochs.insert(epoch);
     session
+}
+
+#[tokio::test]
+async fn cancelled_user_run_anchors_its_receipt_without_inventing_a_message() {
+    // Cause/effect graph: C1 an accepted User command owns exact Run R; C2
+    // interruption ends R as Cancelled before its input Message commits; C3 the
+    // same shape ends for another cause. Effects: E1 C1+C2 anchors the receipt at
+    // R's terminal store cursor and completes the FIFO; E2 no Message is invented;
+    // E3 C1+C3 remains pending/fail-closed because only cancellation explains the
+    // absent Message. Constraint: the retained Session command and Runtime Run
+    // snapshot remain the only authorities; no abandonment ledger is introduced.
+    // Decision table: U1=C1+C2 -> E1+E2; U2=C1+C3 -> E2+E3.
+    for (session_id, end, should_complete) in [
+        ("cancelled-user-receipt", EndCause::Cancelled, true),
+        ("noncancelled-user-receipt", EndCause::NaturalEnd, false),
+    ] {
+        let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("U1-U2 repository"),
+        );
+        let session = planned_session(
+            session_id,
+            vec![SessionEventInput::UserMessage {
+                content: vec![ContentBlock::text("accepted input")],
+            }],
+        );
+        let run_id = match &session.event_batches[0].events[0].event {
+            SessionEventCommand::UserMessage { run_id, .. } => run_id.clone(),
+            _ => unreachable!("fixture compiles one User command"),
+        };
+        create(repository.as_ref(), session).await;
+        let runtime = Arc::new(EventBatchRuntime::default());
+        runtime
+            .states
+            .lock()
+            .unwrap()
+            .insert(run_id.0.clone(), RunState::Ended(end));
+        *runtime.latest_run.lock().unwrap() = Some(run_id);
+        let app = application_with_runtime(
+            runtime.clone(),
+            repository.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        );
+
+        let result = app.drive_session_event_batches(session_id, None).await;
+        assert_eq!(result.is_ok(), should_complete, "U1-U2 reconciliation");
+        let persisted = repository.get(session_id).await.expect("U1-U2 root");
+        let entry = &persisted.event_batches[0].events[0];
+        assert_eq!(entry.processed, should_complete, "U1/E1 or U2/E3");
+        assert_eq!(
+            entry
+                .projection_anchor
+                .map(|anchor| anchor.source_commit_cursor),
+            should_complete.then_some(1),
+            "U1/E1 exact Run cursor; U2/E3 no guessed anchor",
+        );
+        assert!(runtime.committed.lock().unwrap().is_empty(), "U1-U2/E2");
+    }
 }
 
 #[tokio::test]

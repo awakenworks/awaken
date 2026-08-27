@@ -8,6 +8,7 @@
  *   binding: Record<string, unknown>,
  *   providerRef: string,
  *   routeRef: string,
+ *   accessKind: 'direct' | 'brokered',
  *   scopeId: string,
  *   credential: unknown,
  *   adapterKind: string,
@@ -20,6 +21,7 @@ export function nativeProviderCandidateFixture({
   binding,
   providerRef,
   routeRef,
+  accessKind,
   scopeId,
   credential,
   adapterKind,
@@ -33,6 +35,7 @@ export function nativeProviderCandidateFixture({
       type: 'provider',
       provider_ref: providerRef,
       route_ref: routeRef,
+      access_kind: accessKind,
       scope_id: scopeId,
       credential: structuredClone(credential),
       endpoint: {
