@@ -38,8 +38,13 @@ impl RevisionedProfiles {
             description: Some(format!("revision {revision}")),
             source_revision: revision,
             model: Some("test-model".into()),
+            inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
+                speed: Some(awaken_runtime_contract::agent_bindings::InferenceSpeed::Fast),
+                ..Default::default()
+            },
             execution_model_ref: Some("test-model".into()),
             backend_ref: "native".into(),
+            system: Some(format!("{agent_id}-v{revision} system")),
             delegates,
             ..Default::default()
         }
@@ -151,6 +156,107 @@ async fn cold_projection_uses_the_session_pinned_agent_revision() {
     );
 }
 
+#[test]
+fn cold_projection_restores_every_frozen_agent_hidden_axis() {
+    // Cause/effect graph: C1 exact Agent publication is pinned; C2 model
+    // inference inherits or has a Session override; C3 system selection is
+    // inherit/clear/replace; C4 durable resolved Skill pins and Vault ids exist;
+    // C5 Runtime capabilities are empty. Effects: E1 inherited inference/system
+    // come from the exact publication; E2 overrides replace rather than merge
+    // inference and preserve clear versus value; E3 Skill/Vault projection comes
+    // only from the Session root, never C5. Decision rules H1=inherit=>E1+E3,
+    // H2=override+clear=>E2+E3, H3=override+replace=>E2+E3.
+    let state = ManagedState::new_with_mcp(RehydrateFake::default()).with_config_source(Arc::new(
+        RevisionedProfiles(std::sync::atomic::AtomicU64::new(8)),
+    ));
+    let mut persisted = sample_persisted("cold-hidden-axes");
+    let (inputs, _) = persisted.resources.desired().clone().into_parts();
+    persisted.resources = awaken_session_contract::SessionResourceState::from_active(
+        awaken_session_contract::ResolvedSessionResources::try_new(
+            inputs,
+            vec![awaken_session_contract::ResolvedSkillBinding {
+                kind: awaken_agent_contract::AgentSkillKind::Custom,
+                skill_id: "pinned-skill".into(),
+                version: 9,
+                bundle_sha256: "sha-pinned-9".into(),
+            }],
+        )
+        .unwrap(),
+    );
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.agent_revision = Some(7);
+    baseline.model = "test-model".into();
+    baseline.mcp_authoring.ordered_vault_ids = vec!["vault-a".into(), "vault-b".into()];
+
+    let inherited = state
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted.clone()))
+        .expect("H1 exact cold projection");
+    assert_eq!(
+        inherited.agent.model.speed,
+        Some(crate::types::ModelSpeed::Fast),
+        "H1/E1"
+    );
+    assert_eq!(inherited.agent.model.effort, None, "H1/E1");
+    assert_eq!(
+        inherited.agent.system.as_deref(),
+        Some("coder-v7 system"),
+        "H1/E1"
+    );
+    assert!(
+        matches!(
+            &inherited.agent.skills[..],
+            [crate::types::agent::AgentSkill::Custom { skill_id, version }]
+                if skill_id == "pinned-skill" && version.as_deref() == Some("9")
+        ),
+        "H1/E3"
+    );
+    assert_eq!(inherited.vault_ids, ["vault-a", "vault-b"], "H1/E3");
+
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.model_override = Some(awaken_session_contract::SessionModelOverride {
+        publication: None,
+        inference: awaken_runtime_contract::agent_bindings::InferenceOptions {
+            effort: Some(awaken_runtime_contract::agent_bindings::ReasoningEffort::High),
+            ..Default::default()
+        },
+    });
+    *baseline.system_prompt = awaken_session_contract::SessionSystemPromptSelection::Clear;
+    let cleared = state
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted.clone()))
+        .expect("H2 exact cold projection");
+    assert_eq!(cleared.agent.model.speed, None, "H2/E2 replace, not merge");
+    assert_eq!(
+        cleared.agent.model.effort,
+        Some(crate::types::ModelEffort::High),
+        "H2/E2"
+    );
+    assert_eq!(cleared.agent.system, None, "H2/E2 clear");
+    assert_eq!(cleared.vault_ids, inherited.vault_ids, "H2/E3");
+
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut persisted.baseline
+    else {
+        unreachable!("fixture baseline is frozen")
+    };
+    *baseline.system_prompt = awaken_session_contract::SessionSystemPromptSelection::Replace(
+        "session-only system".into(),
+    );
+    let replaced = state
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted))
+        .expect("H3 exact cold projection");
+    assert_eq!(
+        replaced.agent.system.as_deref(),
+        Some("session-only system"),
+        "H3/E2"
+    );
+    assert_eq!(replaced.vault_ids, inherited.vault_ids, "H3/E3");
+}
+
 #[tokio::test]
 async fn immediate_environment_binding_sink_is_durable_and_idempotent() {
     // Cause/effect table: C1 durable Session exists, C2 binding absent,
@@ -196,11 +302,22 @@ impl ManagedSessionRepository for ConflictInjectingRepo {
         idempotency: awaken_session_contract::IdempotencyRecord,
         facts: Vec<awaken_session_contract::ManagedLifecycleFact>,
     ) -> Result<
-        awaken_session_contract::SessionRevision,
+        awaken_session_contract::SessionCreateResult,
         awaken_session_contract::SessionRepositoryError,
     > {
         self.inner
             .create(owner_scope, session, idempotency, facts)
+            .await
+    }
+
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        self.inner
+            .replay_create(owner_scope, session_id, idempotency)
             .await
     }
 
@@ -265,6 +382,16 @@ impl ManagedSessionRepository for ConflictInjectingRepo {
         self.inner.reconcilable_sessions().await
     }
 
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        self.inner
+            .sessions_referencing_credential_source(workspace_id, source_id)
+            .await
+    }
+
     async fn idempotency_receipt(
         &self,
         session_id: &str,
@@ -282,6 +409,177 @@ impl ManagedSessionRepository for ConflictInjectingRepo {
     ) -> Result<String, awaken_session_contract::SessionRepositoryError> {
         self.inner.owner(session_id).await
     }
+}
+
+fn persisted_with_mcp_source(
+    session_id: &str,
+    source_id: &str,
+    authored_vault_id: &str,
+) -> PersistedSession {
+    let mut session = sample_persisted(session_id);
+    session.mcp.attachments[0].credential =
+        Some(awaken_credential_contract::CredentialAccess::new(
+            awaken_credential_contract::CredentialRef {
+                id: source_id.into(),
+                revision: 1,
+            },
+            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_credential_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
+        ));
+    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
+    else {
+        unreachable!("fixture baseline is frozen")
+    };
+    baseline.mcp_authoring.ordered_vault_ids = vec![authored_vault_id.into()];
+    session
+}
+
+#[tokio::test]
+async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roots() {
+    // Vault rollout cause/effect graph. C1 a committed Vault event proves
+    // Workspace A + source A while the affected Session's immutable authoring
+    // baseline names a different Vault; C2 a Workspace-A Session names the
+    // event Vault but actually pins source B; C3 a Workspace-B Session pins
+    // source A; C4 operation is update/archive/delete. Effects: E1 update only
+    // advances the Workspace-A source-A pin; E2 archive removes only that
+    // dependency; E3 delete replay finds no remaining target and stutters; E4
+    // source B and other-Workspace roots remain byte-for-byte unchanged.
+    //
+    // | Rule | Workspace | actual source | operation | Effect |
+    // | V1 | A | A | update | E1 |
+    // | V2 | A | B | any | E4 unrelated |
+    // | V3 | B | A | any | E4 scope fence |
+    // | V4 | A | A | archive | E2 |
+    // | V5 | A | A absent | delete | E3 |
+    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-a",
+        persisted_with_mcp_source("source-affected", "source-a", "authored-vault-other"),
+    )
+    .await;
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-a",
+        persisted_with_mcp_source("source-unrelated", "source-b", "vault-event"),
+    )
+    .await;
+    create_session_fixture(
+        repo.as_ref(),
+        "workspace-b",
+        persisted_with_mcp_source("source-other-workspace", "source-a", "vault-event"),
+    )
+    .await;
+    let unrelated_before = repo.get("source-unrelated").await.unwrap();
+    let other_workspace_before = repo.get("source-other-workspace").await.unwrap();
+    let state =
+        ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
+    let event =
+        |id: &str,
+         version: u64,
+         operation: awaken_credential_vault::repo::ManagedCredentialOperation| {
+            awaken_credential_vault::repo::ManagedCredentialRollout {
+                id: id.into(),
+                workspace_id: "workspace-a".into(),
+                vault_id: "vault-event".into(),
+                credential_id: "credential-a".into(),
+                source_id: awaken_credential_contract::CredentialSourceId("source-a".into()),
+                source_version: version,
+                credential_revision: version,
+                operation,
+            }
+        };
+
+    let updated = event(
+        "rollout-source-update",
+        2,
+        awaken_credential_vault::repo::ManagedCredentialOperation::Update,
+    );
+    assert!(
+        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &updated)
+            .await
+            .unwrap()
+            .is_converged(),
+        "V1/E1"
+    );
+    let affected = repo.get("source-affected").await.unwrap();
+    assert_eq!(
+        affected.mcp.desired_attachments()[0]
+            .credential
+            .as_ref()
+            .unwrap()
+            .credential
+            .revision,
+        2,
+        "V1/E1"
+    );
+    assert_eq!(
+        repo.get("source-unrelated").await.unwrap(),
+        unrelated_before,
+        "V2/E4"
+    );
+    assert_eq!(
+        repo.get("source-other-workspace").await.unwrap(),
+        other_workspace_before,
+        "V3/E4"
+    );
+
+    let archived = event(
+        "rollout-source-archive",
+        3,
+        awaken_credential_vault::repo::ManagedCredentialOperation::Archive,
+    );
+    assert!(
+        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &archived)
+            .await
+            .unwrap()
+            .is_converged(),
+        "V4/E2"
+    );
+    assert!(
+        repo.sessions_referencing_credential_source(
+            "workspace-a",
+            &awaken_credential_contract::CredentialSourceId("source-a".into()),
+        )
+        .await
+        .unwrap()
+        .is_empty(),
+        "V4/E2"
+    );
+    let after_archive = repo.get("source-affected").await.unwrap();
+    assert!(after_archive.mcp.desired_attachments().is_empty(), "V4/E2");
+
+    let deleted = event(
+        "rollout-source-delete",
+        4,
+        awaken_credential_vault::repo::ManagedCredentialOperation::Delete,
+    );
+    assert!(
+        awaken_credential_vault::repo::ManagedCredentialRolloutTarget::rollout(&state, &deleted)
+            .await
+            .unwrap()
+            .is_converged(),
+        "V5/E3"
+    );
+    assert_eq!(
+        repo.get("source-affected").await.unwrap(),
+        after_archive,
+        "V5/E3"
+    );
+    assert_eq!(
+        repo.get("source-unrelated").await.unwrap(),
+        unrelated_before,
+        "V2/E4"
+    );
+    assert_eq!(
+        repo.get("source-other-workspace").await.unwrap(),
+        other_workspace_before,
+        "V3/E4"
+    );
 }
 
 #[tokio::test]
@@ -1222,101 +1520,104 @@ async fn live_file_attach_and_delete_survive_restart_without_projection_truth() 
     // | Rule | Command | Runtime | Durable state | Restart behavior |
     // | R1 | add | success | revision +1, one Active | exact id/path restored |
     // | R2 | delete | success | revision +1, no Active | resource absent |
-    let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
-    let catalog = Arc::new(ephemeral_resource_registry());
-    let state = ManagedState::new_with_mcp(RehydrateFake::default())
-        .with_session_repo(repo.clone())
-        .with_resource_registry(catalog.clone());
-    let id = state
-        .create_session(bare_create_params(), None)
-        .await
-        .expect("create")
-        .id;
+    let (repo, catalog, restarted, id, resource_id) = Box::pin(async {
+        let repo: Arc<dyn ManagedSessionRepository> = Arc::new(ephemeral_session_repo());
+        let catalog = Arc::new(ephemeral_resource_registry());
+        let state = ManagedState::new_with_mcp(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_registry(catalog.clone());
+        let id = state
+            .create_session(bare_create_params(), None)
+            .await
+            .expect("create")
+            .id;
 
-    let resource = state
-        .create_resource(
-            &id,
-            serde_json::from_value(serde_json::json!({
-                "type": "file",
-                "file_id": "immutable-file-hash",
-                "mount_path": "/input.txt"
-            }))
-            .unwrap(),
-        )
-        .await
-        .expect("attach");
-    let resource_id = resource.id().unwrap().to_string();
-    let mut after_attach = repo.get(&id).await.unwrap();
-    assert_eq!(after_attach.resources.revision, 2);
-    assert_eq!(
+        let resource = state
+            .create_resource(
+                &id,
+                serde_json::from_value(serde_json::json!({
+                    "type": "file",
+                    "file_id": "immutable-file-hash",
+                    "mount_path": "/input.txt"
+                }))
+                .unwrap(),
+            )
+            .await
+            .expect("attach");
+        let resource_id = resource.id().unwrap().to_string();
+        let mut after_attach = repo.get(&id).await.unwrap();
+        assert_eq!(after_attach.resources.revision, 2);
+        assert_eq!(
+            after_attach
+                .resources
+                .activations
+                .iter()
+                .filter(|activation| {
+                    activation.state == awaken_session_contract::ActivationState::Active
+                })
+                .count(),
+            1
+        );
+        // Crash recovery may replace a process-local physical owner only after
+        // its lease expires. Expire the fixture explicitly; a still-live owner
+        // is the fail-closed row covered by the realization ownership table.
         after_attach
-            .resources
-            .activations
-            .iter()
-            .filter(|activation| {
-                activation.state == awaken_session_contract::ActivationState::Active
-            })
-            .count(),
-        1
-    );
-    // Crash recovery may replace a process-local physical owner only after
-    // its lease expires. Expire the fixture explicitly; a still-live owner
-    // is the fail-closed row covered by the realization ownership table.
-    after_attach
-        .realization
-        .as_mut()
-        .expect("local realization lease")
-        .expires_at_unix_ms = 0;
-    state
-        .commit_session_snapshot(DEFAULT_SCOPE, after_attach, "expire-test-owner", Vec::new())
-        .await
-        .expect("expire the crashed Runtime owner");
+            .realization
+            .as_mut()
+            .expect("local realization lease")
+            .expires_at_unix_ms = 0;
+        state
+            .commit_session_snapshot(DEFAULT_SCOPE, after_attach, "expire-test-owner", Vec::new())
+            .await
+            .expect("expire the crashed Runtime owner");
 
-    let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
-        .with_session_repo(repo.clone())
-        .with_resource_registry(catalog.clone());
-    restarted.ensure_session(&id).await.expect("rehydrate");
-    let restored = restarted.list_resources(&id).expect("list restored");
-    assert_eq!(restored.len(), 1);
-    assert!(matches!(
-        &restored[0],
-        crate::types::resource::SessionResource::File { id, mount_path, .. }
-            if id == &resource_id && mount_path == "/input.txt"
-    ));
+        let restarted = ManagedState::new_with_mcp(RehydrateFake::default())
+            .with_session_repo(repo.clone())
+            .with_resource_registry(catalog.clone());
+        restarted.ensure_session(&id).await.expect("rehydrate");
+        let restored = restarted.list_resources(&id).expect("list restored");
+        assert_eq!(restored.len(), 1);
+        assert!(matches!(
+            &restored[0],
+            crate::types::resource::SessionResource::File { id, mount_path, .. }
+                if id == &resource_id && mount_path == "/input.txt"
+        ));
+        (repo, catalog, restarted, id, resource_id)
+    })
+    .await;
 
-    restarted
-        .delete_resource(&id, &resource_id)
-        .await
-        .expect("detach");
-    let mut after_delete = repo.get(&id).await.unwrap();
-    assert_eq!(after_delete.resources.revision, 3);
-    assert!(
+    Box::pin(async move {
+        restarted
+            .delete_resource(&id, &resource_id)
+            .await
+            .expect("detach");
+        let mut after_delete = repo.get(&id).await.unwrap();
+        assert_eq!(after_delete.resources.revision, 3);
+        assert!(after_delete.resources.activations.iter().all(|activation| {
+            activation.state != awaken_session_contract::ActivationState::Active
+        }));
         after_delete
-            .resources
-            .activations
-            .iter()
-            .all(|activation| activation.state != awaken_session_contract::ActivationState::Active)
-    );
-    after_delete
-        .realization
-        .as_mut()
-        .expect("replacement realization lease")
-        .expires_at_unix_ms = 0;
-    restarted
-        .commit_session_snapshot(
-            DEFAULT_SCOPE,
-            after_delete,
-            "expire-second-test-owner",
-            Vec::new(),
-        )
-        .await
-        .expect("expire the second crashed Runtime owner");
-    let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
-        .with_session_repo(repo)
-        .with_resource_registry(catalog);
-    second_restart
-        .ensure_session(&id)
-        .await
-        .expect("rehydrate after delete");
-    assert!(second_restart.list_resources(&id).unwrap().is_empty());
+            .realization
+            .as_mut()
+            .expect("replacement realization lease")
+            .expires_at_unix_ms = 0;
+        restarted
+            .commit_session_snapshot(
+                DEFAULT_SCOPE,
+                after_delete,
+                "expire-second-test-owner",
+                Vec::new(),
+            )
+            .await
+            .expect("expire the second crashed Runtime owner");
+        let second_restart = ManagedState::new_with_mcp(RehydrateFake::default())
+            .with_session_repo(repo)
+            .with_resource_registry(catalog);
+        second_restart
+            .ensure_session(&id)
+            .await
+            .expect("rehydrate after delete");
+        assert!(second_restart.list_resources(&id).unwrap().is_empty());
+    })
+    .await;
 }

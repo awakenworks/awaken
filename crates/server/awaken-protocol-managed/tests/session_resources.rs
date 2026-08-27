@@ -9,6 +9,7 @@ mod support;
 
 use awaken_agent_contract::ClientToolDescriptor;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::{
     ExecutableAgentProfileSource, ExecutableAgentSessionProfile,
@@ -667,6 +668,7 @@ impl awaken_session_contract::ManagedListPriceProvider for RecordingListPricePro
 #[derive(Default)]
 struct CountingRepositoryCredentialIngress {
     writes: std::sync::atomic::AtomicUsize,
+    retirements: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait::async_trait]
@@ -679,10 +681,26 @@ impl awaken_session_application::RepositoryCredentialIngress
         _workspace_id: &str,
         _target: awaken_credential_contract::CredentialTarget,
         _token: awaken_agent_contract::RedactedString,
-    ) -> Result<awaken_credential_contract::CredentialSourceId, String> {
+    ) -> Result<awaken_session_application::RepositoryCredentialEntry, String> {
         self.writes
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Ok(source_id)
+        Ok(awaken_session_application::RepositoryCredentialEntry {
+            credential: awaken_credential_contract::CredentialRef {
+                id: source_id.0,
+                revision: 1,
+            },
+            provenance: awaken_session_application::SessionParticipantProvenance::Applied,
+        })
+    }
+
+    async fn retire_repository_token(
+        &self,
+        _credential: &awaken_credential_contract::CredentialRef,
+        _workspace_id: &str,
+    ) -> Result<(), String> {
+        self.retirements
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
     }
 
     async fn rotate_repository_token(
@@ -2788,13 +2806,24 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
     else {
         panic!("expected compatibility Repository")
     };
+    let definition = catalog
+        .find_repository("default", repository_id.as_str())
+        .unwrap()
+        .unwrap();
+    assert_eq!(definition.state, ResourceState::Active);
     assert_eq!(
-        catalog
-            .find_repository("default", repository_id.as_str())
-            .unwrap()
-            .unwrap()
-            .state,
-        ResourceState::Active
+        definition
+            .metadata
+            .get("awaken.session_repository.owner_kind")
+            .map(String::as_str),
+        Some("managed")
+    );
+    assert_eq!(
+        definition
+            .metadata
+            .get("awaken.session_repository.session_id")
+            .map(String::as_str),
+        Some(id.as_str())
     );
 
     state.archive_session(&id).await.unwrap();
@@ -2807,6 +2836,180 @@ async fn terminal_session_retires_only_its_compatibility_repository_definition()
         ResourceState::Deleted,
         "Session cleanup tombstones only the generated compatibility definition"
     );
+}
+
+#[tokio::test]
+async fn terminal_profiled_session_retires_its_marked_repository_definition() {
+    // Cause/effect graph: C1 profiled namespace matches the durable Session;
+    // C2 Registry metadata independently records kind=profiled and the same
+    // Session id; C3 terminal root owns cleanup. C1+C2+C3 -> E1 Deleted. The
+    // adjacent shared-resource tests cover either ownership proof missing.
+    //
+    // | Rule | Namespace | Marker | Terminal | Registry state |
+    // | P1 | profiled exact | profiled exact | yes | Deleted |
+    let catalog = resource_registry();
+    let repository = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let state = ManagedState::new(AcceptingFake::default())
+        .with_session_repo(repository)
+        .with_config_source(std::sync::Arc::new(AgentWithResources))
+        .with_resource_registry(catalog.clone());
+    let application = state.session_application();
+    let session_id = "profiled-terminal-repository";
+    let repository_id = format!("profiled:{session_id}:repository:0");
+    application
+        .create_profiled_session(awaken_session_application::CreateProfiledSessionCommand {
+            owner_scope: "default".into(),
+            session_id: session_id.into(),
+            mutation_policy: awaken_session_contract::SessionMutationPolicy::Frozen,
+            agent_id: "a".into(),
+            source_revision: None,
+            environment_id: Some(awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.into()),
+            model: None,
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            resource_inputs: Vec::new(),
+            mcp_candidates: Vec::new(),
+            repositories: vec![awaken_session_application::SessionRepositoryResourceInput {
+                id: repository_id.clone(),
+                workspace_id: "default".into(),
+                name: "Profiled Repository".into(),
+                description: String::new(),
+                remote_url: "https://github.com/awaken/profiled.git".into(),
+                authorization_token: None,
+                credential: None,
+                mount_path: "/workspace/profiled".into(),
+                initial_branch: Some("main".into()),
+                initial_commit: None,
+            }],
+            network_restriction: None,
+            title: None,
+            metadata: Default::default(),
+            tools: None,
+            idempotency: None,
+        })
+        .await
+        .expect("P1 create");
+    let definition = catalog
+        .find_repository("default", &repository_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        definition
+            .metadata
+            .get("awaken.session_repository.owner_kind")
+            .map(String::as_str),
+        Some("profiled"),
+        "P1/C2"
+    );
+    application
+        .terminate_session(
+            session_id,
+            "2026-08-27T00:00:00Z",
+            awaken_session_contract::ManagedLifecycleFact {
+                id: format!("session:{session_id}:terminated"),
+                object_id: session_id.into(),
+                workspace_id: Some("default".into()),
+                event_type: "session.terminated".into(),
+                timestamp: 1,
+                runtime_interval: None,
+            },
+        )
+        .await
+        .expect("P1 terminal cleanup");
+    assert_eq!(
+        catalog
+            .find_repository("default", &repository_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "P1/E1"
+    );
+}
+
+#[tokio::test]
+async fn terminal_repository_reclaims_only_its_exact_inline_credential() {
+    // Cause/effect graph: C1 Managed create supplies inline Repository material;
+    // C2 Registry namespace and both owner markers match the Session; C3 the
+    // terminal root still freezes the exact credential revision. Effects: E1
+    // Repository becomes Deleted; E2 that exact source becomes Archived at the
+    // successor revision; E3 its material is reclaimed through Vault WAL/CAS.
+    //
+    // | Rule | Inline source | Owned marker | Terminal | Repository | Credential/material |
+    // | T1 | Applied r1 | exact | yes | Deleted | Archived r2 / reclaimed |
+    let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credentials =
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        secrets.clone(),
+        credentials.clone(),
+    ));
+    let catalog = resource_registry();
+    let repository = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_vaults(vaults)
+            .with_resource_registry(catalog.clone())
+            .with_session_repo(repository.clone()),
+    );
+    let app = router(state.clone());
+    let (status, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/private.git",
+                "authorization_token": "terminal-secret" // awaken-allow: secret
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "T1 create: {session}");
+    let session_id = session["id"].as_str().unwrap();
+    let persisted = repository.get(session_id).await.unwrap();
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        repository_id,
+        credential: Some(credential),
+        ..
+    } = &persisted.resources.active.inputs()[0].source
+    else {
+        panic!("T1 exact authenticated Repository")
+    };
+    let source_id =
+        awaken_credential_contract::CredentialSourceId(credential.access.credential.id.clone());
+    let source = credentials.get(&source_id).await.unwrap();
+    let material_ref = source.material_ref.clone().expect("T1 sealed material");
+    assert_eq!(source.version, 1, "T1 precondition");
+    assert!(secrets.get(&material_ref).await.is_ok(), "T1 precondition");
+
+    state.archive_session(session_id).await.unwrap();
+
+    assert_eq!(
+        catalog
+            .find_repository("default", repository_id.as_str())
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "T1/E1"
+    );
+    let archived = credentials.get(&source_id).await.unwrap();
+    assert_eq!(archived.version, 2, "T1/E2");
+    assert_eq!(
+        archived.status,
+        awaken_credential_vault::CredentialStatus::Archived,
+        "T1/E2"
+    );
+    assert!(archived.material_ref.is_none(), "T1/E2");
+    assert!(secrets.get(&material_ref).await.is_err(), "T1/E3");
 }
 
 #[tokio::test]
@@ -2852,6 +3055,68 @@ async fn terminal_session_never_deletes_a_platform_repository_definition() {
             .unwrap()
             .state,
         ResourceState::Active
+    );
+}
+
+#[tokio::test]
+async fn session_namespace_without_owner_marker_is_shared_and_never_deleted() {
+    // Cause/effect graph: C1 Repository id resembles a Managed Session child;
+    // C2 canonical owner metadata is absent; C3 the Session cleanup helper sees
+    // the detached Repository. C1 without C2 is not ownership, so E1 cleanup is
+    // a successful no-op and E2 the shared definition remains Active.
+    //
+    // | Rule | Namespace | Owner marker | Result | Registry state |
+    // | S1 | managed Session | absent | no-op | Active |
+    let catalog = resource_registry();
+    let repository_id = "managed:session-shared:repository:0";
+    let config = RepositoryConfigVersion {
+        repository_id: repository_id.into(),
+        version: ConfigVersion::INITIAL,
+        remote_url: "https://github.com/awaken/shared.git".into(),
+        credential_binding: None,
+        initial_branch: None,
+        initial_commit: None,
+        clone_policy: ClonePolicy::default(),
+    };
+    catalog
+        .register_repository(RegisterRepository {
+            definition: RepositoryDefinition {
+                id: repository_id.into(),
+                workspace_id: "default".into(),
+                name: "Shared Repository".into(),
+                description: String::new(),
+                metadata: Default::default(),
+                state: ResourceState::Active,
+                current_config_version: ConfigVersion::INITIAL,
+                timestamps: Default::default(),
+            },
+            initial_config: config.clone(),
+        })
+        .unwrap();
+    let state = ManagedState::new(AcceptingFake::default()).with_resource_registry(catalog.clone());
+    assert!(
+        state
+            .session_application()
+            .retire_session_repository_input(
+                "default",
+                "session-shared",
+                &awaken_session_contract::ResolvedInputSource::Repository {
+                    repository_id: repository_id.into(),
+                    config,
+                    credential: None,
+                },
+            )
+            .await,
+        "S1/E1"
+    );
+    assert_eq!(
+        catalog
+            .find_repository("default", repository_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Active,
+        "S1/E2"
     );
 }
 
@@ -3051,7 +3316,7 @@ enum ResourceCasRule {
 /// Resource commands use the repository root CAS as their only serializer.
 /// The cases are generated from this cause graph:
 ///
-/// unchanged Resource state + prepare CAS conflict -> reload/rebase before I/O;
+/// item command + prepare CAS conflict -> reject the stale read before I/O;
 /// durable Prepared + attempt fence + runtime effect + root-only conflict ->
 /// settle the same Resource revision on the latest aggregate; a changed or
 /// exhausted fence leaves durable pending work for recovery. Runtime failure
@@ -3060,13 +3325,13 @@ enum ResourceCasRule {
 /// | Rule | Runtime | Intent CAS | Attempt CAS | Settlement CAS | Result | Runtime applies | Durable Resource |
 /// |------|---------|------------|-------------|----------------|--------|-----------------|------------------|
 /// | C1 | success | apply | apply | apply | success | 1 | Active |
-/// | C2 | success | conflict once | apply | apply | success | 1 | Active |
+/// | C2 | success | conflict once | - | - | conflict | 0 | unchanged |
 /// | C3 | success | apply | conflict once | apply | success | 1 | Active |
 /// | C4 | success | apply | apply | conflict once | success | 1 | Active |
 /// | C5 | success | apply | conflict x3 | - | conflict | 0 | unattempted pending |
 /// | C6 | success | apply | apply | conflict x3 | conflict | 1 | attempted pending |
 /// | C7 | fail then rollback | apply | apply | conflict once | runtime error | 2 | Failed/no pending |
-/// | C8 | success | another unattempted intent wins | revise same generation | apply | success | 1 | requested Active |
+/// | C8 | success | another unattempted intent wins | - | - | conflict | 0 | winner pending |
 #[tokio::test]
 async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_lock() {
     for (index, rule) in [
@@ -3082,102 +3347,215 @@ async fn resource_root_cas_cases_follow_the_decision_table_without_a_process_loc
     .into_iter()
     .enumerate()
     {
-        let runtime = AcceptingFake::default();
-        let applied = runtime.applied.clone();
-        let fail_next = runtime.fail_next_apply.clone();
-        let inner = std::sync::Arc::new(
-            SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
-        );
-        let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
-        let state = ManagedState::new(runtime)
-            .with_session_repo(repo.clone())
-            .with_resource_registry(resource_registry());
-        let request =
-            serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
-        let id = state.create_session(request, None).await.unwrap().id;
+        Box::pin(assert_resource_root_cas_rule(index, rule)).await;
+    }
+}
 
-        match rule {
-            ResourceCasRule::NoConflict => {}
-            ResourceCasRule::PrepareConflictOnce => repo.conflict_on_next(1),
-            ResourceCasRule::AttemptConflictOnce => repo.conflict_on_next(2),
-            ResourceCasRule::SettlementConflictOnce => repo.conflict_on_next(3),
-            ResourceCasRule::AttemptConflictsExhausted => {
-                repo.conflicts_on_next(&[2, 3, 4]);
-            }
-            ResourceCasRule::SettlementConflictsExhausted => {
-                repo.conflicts_on_next(&[3, 4, 5]);
-            }
-            ResourceCasRule::RollbackSettlementConflictOnce => {
-                fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
-                repo.conflict_on_next(3);
-            }
-            ResourceCasRule::ConcurrentUnattemptedResourceChange => repo.resource_change_on_next(1),
+async fn assert_resource_root_cas_rule(index: usize, rule: ResourceCasRule) {
+    let runtime = AcceptingFake::default();
+    let applied = runtime.applied.clone();
+    let fail_next = runtime.fail_next_apply.clone();
+    let inner = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
+    let state = ManagedState::new(runtime)
+        .with_session_repo(repo.clone())
+        .with_resource_registry(resource_registry());
+    let request =
+        serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+
+    match rule {
+        ResourceCasRule::NoConflict => {}
+        ResourceCasRule::PrepareConflictOnce => repo.conflict_on_next(1),
+        ResourceCasRule::AttemptConflictOnce => repo.conflict_on_next(2),
+        ResourceCasRule::SettlementConflictOnce => repo.conflict_on_next(3),
+        ResourceCasRule::AttemptConflictsExhausted => {
+            repo.conflicts_on_next(&[2, 3, 4]);
         }
+        ResourceCasRule::SettlementConflictsExhausted => {
+            repo.conflicts_on_next(&[3, 4, 5]);
+        }
+        ResourceCasRule::RollbackSettlementConflictOnce => {
+            fail_next.store(true, std::sync::atomic::Ordering::SeqCst);
+            repo.conflict_on_next(3);
+        }
+        ResourceCasRule::ConcurrentUnattemptedResourceChange => repo.resource_change_on_next(1),
+    }
 
-        let result = state
-            .create_resource(
-                &id,
-                serde_json::from_value(json!({
-                    "type": "file",
-                    "file_id": format!("file-cas-{index}"),
-                    "mount_path": format!("/cas-{index}.txt")
-                }))
-                .unwrap(),
-            )
-            .await;
-        let durable = repo.get(&id).await.unwrap();
-        let apply_count = applied.lock().unwrap().len();
+    let result = state
+        .create_resource(
+            &id,
+            serde_json::from_value(json!({
+                "type": "file",
+                "file_id": format!("file-cas-{index}"),
+                "mount_path": format!("/cas-{index}.txt")
+            }))
+            .unwrap(),
+        )
+        .await;
+    let durable = repo.get(&id).await.unwrap();
+    let apply_count = applied.lock().unwrap().len();
 
-        match rule {
-            ResourceCasRule::NoConflict
-            | ResourceCasRule::PrepareConflictOnce
-            | ResourceCasRule::AttemptConflictOnce
-            | ResourceCasRule::SettlementConflictOnce => {
-                assert!(result.is_ok(), "C{}: {result:?}", index + 1);
-                assert_eq!(apply_count, 1, "C{}", index + 1);
-                assert!(durable.resources.pending.is_none(), "C{}", index + 1);
-                assert_eq!(durable.resources.active.inputs().len(), 1, "C{}", index + 1);
-            }
-            ResourceCasRule::AttemptConflictsExhausted => {
-                assert!(
-                    matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
-                    "C5: {result:?}"
-                );
-                assert_eq!(apply_count, 0, "C5");
-                assert!(durable.resources.pending.is_some(), "C5");
-                assert!(durable.resources.needs_reconciliation(), "C5");
-            }
-            ResourceCasRule::SettlementConflictsExhausted => {
-                assert!(
-                    matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
-                    "C6: {result:?}"
-                );
-                assert_eq!(apply_count, 1, "C6");
-                assert!(durable.resources.pending.is_some(), "C6");
-                assert!(durable.resources.needs_reconciliation(), "C6");
-            }
-            ResourceCasRule::RollbackSettlementConflictOnce => {
-                assert!(
-                    format!("{result:?}").contains("injected activation failure"),
-                    "C7"
-                );
-                assert_eq!(apply_count, 2, "C7");
-                assert!(durable.resources.pending.is_none(), "C7");
-                assert_eq!(
-                    durable.resources.activations.last().unwrap().state,
-                    awaken_session_contract::ActivationState::Failed,
-                    "C7"
-                );
-            }
-            ResourceCasRule::ConcurrentUnattemptedResourceChange => {
-                assert!(result.is_ok(), "C8: {result:?}");
-                assert_eq!(apply_count, 1, "C8");
-                assert!(durable.resources.pending.is_none(), "C8");
-                assert_eq!(durable.resources.revision, 2, "C8 same generation");
-                assert_eq!(durable.resources.active.inputs().len(), 1, "C8");
-            }
+    match rule {
+        ResourceCasRule::NoConflict
+        | ResourceCasRule::AttemptConflictOnce
+        | ResourceCasRule::SettlementConflictOnce => {
+            assert!(result.is_ok(), "C{}: {result:?}", index + 1);
+            assert_eq!(apply_count, 1, "C{}", index + 1);
+            assert!(durable.resources.pending.is_none(), "C{}", index + 1);
+            assert_eq!(durable.resources.active.inputs().len(), 1, "C{}", index + 1);
+        }
+        ResourceCasRule::PrepareConflictOnce => {
+            assert!(
+                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                "C2: {result:?}"
+            );
+            assert_eq!(apply_count, 0, "C2");
+            assert!(durable.resources.pending.is_none(), "C2");
+            assert!(durable.resources.active.inputs().is_empty(), "C2");
+        }
+        ResourceCasRule::AttemptConflictsExhausted => {
+            assert!(
+                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                "C5: {result:?}"
+            );
+            assert_eq!(apply_count, 0, "C5");
+            assert!(durable.resources.pending.is_some(), "C5");
+            assert!(durable.resources.needs_reconciliation(), "C5");
+        }
+        ResourceCasRule::SettlementConflictsExhausted => {
+            assert!(
+                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                "C6: {result:?}"
+            );
+            assert_eq!(apply_count, 1, "C6");
+            assert!(durable.resources.pending.is_some(), "C6");
+            assert!(durable.resources.needs_reconciliation(), "C6");
+        }
+        ResourceCasRule::RollbackSettlementConflictOnce => {
+            assert!(
+                format!("{result:?}").contains("injected activation failure"),
+                "C7"
+            );
+            assert_eq!(apply_count, 2, "C7");
+            assert!(durable.resources.pending.is_none(), "C7");
+            assert_eq!(
+                durable.resources.activations.last().unwrap().state,
+                awaken_session_contract::ActivationState::Failed,
+                "C7"
+            );
+        }
+        ResourceCasRule::ConcurrentUnattemptedResourceChange => {
+            assert!(
+                matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+                "C8: {result:?}"
+            );
+            assert_eq!(apply_count, 0, "C8");
+            assert!(durable.resources.pending.is_some(), "C8 winner retained");
+            assert!(
+                durable.resources.active.inputs().is_empty(),
+                "C8 loser absent"
+            );
         }
     }
+}
+
+#[tokio::test]
+async fn file_item_race_loser_is_http_409_without_overwriting_the_winner() {
+    // Cause/effect graph: C1 create/delete reads root revision R; C2 another
+    // valid root mutation commits R+1 before the item intent; C3 the item verb
+    // carries R into the canonical Manifest CAS. E1 the item command is the
+    // sole loser and returns 409; E2 the winner remains durable; E3 the stale
+    // File add/delete is absent and Runtime never realizes it.
+    //
+    // | Rule | Item | Concurrent winner | Item result | Durable File |
+    // | F1 | create | Resource generation | 409 | absent |
+    // | F2 | delete | metadata root fact | 409 | retained |
+    let runtime = AcceptingFake::default();
+    let inner = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(repo.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = router(state.clone());
+    let (status, session) = call(&app, "POST", "/v1/sessions", Some(json!({"agent": "a"}))).await;
+    assert_eq!(status, StatusCode::OK);
+    let id = session["id"].as_str().unwrap();
+
+    repo.resource_change_on_next(1);
+    let (status, error) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/resources"),
+        Some(json!({
+            "type": "file",
+            "file_id": "file-race",
+            "mount_path": "/race.txt"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "F1: {error}");
+    assert!(
+        repo.get(id)
+            .await
+            .unwrap()
+            .resources
+            .desired()
+            .inputs()
+            .iter()
+            .all(|input| !matches!(
+                &input.source,
+                awaken_session_contract::ResolvedInputSource::File { file_id }
+                    if file_id.as_str() == "file-race"
+            )),
+        "F1 stale File create is absent"
+    );
+
+    state.reconcile_resource_activations().await;
+    let (status, file) = call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}/resources"),
+        Some(json!({
+            "type": "file",
+            "file_id": "file-delete-race",
+            "mount_path": "/delete-race.txt"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "prepare F2: {file}");
+    let resource_id = file["id"].as_str().unwrap();
+
+    repo.metadata_change_on_next(1, "concurrent", "winner");
+    let (status, error) = call(
+        &app,
+        "DELETE",
+        &format!("/v1/sessions/{id}/resources/{resource_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "F2: {error}");
+    let durable = repo.get(id).await.unwrap();
+    assert_eq!(
+        durable.metadata.get("concurrent").map(String::as_str),
+        Some("winner")
+    );
+    assert!(
+        durable.resources.desired().inputs().iter().any(|input| {
+            matches!(
+                &input.source,
+                awaken_session_contract::ResolvedInputSource::File { file_id }
+                    if file_id.as_str() == "file-delete-race"
+            )
+        }),
+        "F2 stale File delete cannot erase the winner's root"
+    );
 }
 
 #[tokio::test]
@@ -3238,6 +3616,156 @@ async fn a_file_resource_can_be_detached_from_a_live_session() {
     let (s, listed) = call(&app, "GET", &format!("/v1/sessions/{id}/resources"), None).await;
     assert_eq!(s, StatusCode::OK);
     assert!(listed["data"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn repository_item_delete_uses_durable_manifest_retirement() {
+    // Item-adapter cause/effect graph: C1 a Session-owned Repository is removed
+    // by item DELETE; C2 local realization succeeds; C3 the Registry owner marker
+    // matches. Effects: E1 DELETE commits omission through the canonical manifest
+    // root CAS; E2 the application consumes its durable retirement intent; E3
+    // the Repository is Deleted and no completed queue entry remains. The
+    // adapter performs no transient post-response cleanup saga.
+    //
+    // | Rule | Removal adapter | Root omission | Queue consumed | Registry |
+    // |---|---|---|---|---|
+    // | U1 | item DELETE | yes | yes | Deleted |
+    //
+    let catalog = resource_registry();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(catalog.clone()),
+    ));
+    let (_, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/item-delete.git"
+            }]
+        })),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap();
+    let resource_id = session["resources"][0]["id"].as_str().unwrap();
+    let repository_id = match &sessions
+        .get(session_id)
+        .await
+        .unwrap()
+        .resources
+        .active
+        .inputs()[0]
+        .source
+    {
+        awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } => {
+            repository_id.clone()
+        }
+        _ => panic!("U1 Repository fixture"),
+    };
+    let (status, body) = call(
+        &app,
+        "DELETE",
+        &format!("/v1/sessions/{session_id}/resources/{resource_id}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "U1/E1: {body}");
+    let durable = sessions.get(session_id).await.unwrap();
+    assert!(durable.resources.active.inputs().is_empty(), "U1/E1");
+    assert!(
+        durable.resources.repository_retirements().is_empty(),
+        "U1/E2"
+    );
+    assert_eq!(
+        catalog
+            .find_repository("default", repository_id.as_str())
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "U1/E3"
+    );
+}
+
+#[tokio::test]
+async fn whole_manifest_omission_uses_durable_repository_retirement() {
+    // Whole-manifest cause/effect graph: C1 a Session-owned Repository is absent
+    // from the accepted successor; C2 local realization succeeds; C3 the durable
+    // Registry owner marker matches. Effects: E1 the root commit atomically owns
+    // exact retirement intent; E2 the application consumes that intent; E3 the
+    // Repository is Deleted and the completed queue entry is cleared.
+    //
+    // | Rule | Removal adapter | Root omission | Queue consumed | Registry |
+    // |---|---|---|---|---|
+    // | U2 | whole manifest | yes | yes | Deleted |
+    let catalog = resource_registry();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let app = router(std::sync::Arc::new(
+        ManagedState::new(AcceptingFake::default())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(catalog.clone()),
+    ));
+    let (_, session) = call(
+        &app,
+        "POST",
+        "/v1/sessions",
+        Some(json!({
+            "agent": "a",
+            "resources": [{
+                "type": "github_repository",
+                "url": "https://github.com/awaken/manifest-omission.git"
+            }]
+        })),
+    )
+    .await;
+    let session_id = session["id"].as_str().unwrap();
+    let repository_id = match &sessions
+        .get(session_id)
+        .await
+        .unwrap()
+        .resources
+        .active
+        .inputs()[0]
+        .source
+    {
+        awaken_session_contract::ResolvedInputSource::Repository { repository_id, .. } => {
+            repository_id.clone()
+        }
+        _ => panic!("U2 Repository fixture"),
+    };
+    let (status, _, body) = call_with_headers(
+        &app,
+        "PUT",
+        &format!("/v1/awaken/sessions/{session_id}/resources"),
+        Some(json!({ "resources": [] })),
+        &[("idempotency-key", "repository-omission")],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "U2/E1: {body}");
+    let durable = sessions.get(session_id).await.unwrap();
+    assert!(durable.resources.active.inputs().is_empty(), "U2/E1");
+    assert!(
+        durable.resources.repository_retirements().is_empty(),
+        "U2/E2"
+    );
+    assert_eq!(
+        catalog
+            .find_repository("default", repository_id.as_str())
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "U2/E3"
+    );
 }
 
 #[tokio::test]
@@ -3333,6 +3861,85 @@ async fn complete_manifest_is_atomic_idempotent_and_queryable() {
     let (status, listed) = call(&app, "GET", &compatibility_uri, None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(listed["data"].as_array().unwrap().len(), 2, "M1/E1");
+}
+
+#[tokio::test]
+async fn whole_manifest_root_loser_compensates_its_applied_repository() {
+    // Cause/effect graph: C1 whole-manifest lowering creates an Applied
+    // Session-owned Repository; C2 a concurrent root fact wins after the read;
+    // C3 expected_revision prevents rebase/overwrite; C4 the winner does not
+    // reference the candidate Repository. Effects: E1 Conflict is preserved;
+    // E2 winner metadata remains; E3 the Applied Repository is tombstoned.
+    //
+    // | Rule | Participant | Root race | Root reference | Result | Repository |
+    // | W1 | Applied | winner R+1 | absent | Conflict | Deleted |
+    let runtime = AcceptingFake::default();
+    let inner = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("open ephemeral Session store"),
+    );
+    let repo = std::sync::Arc::new(ScheduledConflictRepository::new(inner));
+    let catalog = resource_registry();
+    let state = ManagedState::new(runtime)
+        .with_session_repo(repo.clone())
+        .with_resource_registry(catalog.clone());
+    let request =
+        serde_json::from_value(with_session_environment(json!({ "agent": "a" }))).unwrap();
+    let id = state.create_session(request, None).await.unwrap().id;
+    let read_revision = repo.get(&id).await.unwrap().revision;
+    let remote_url = "https://github.com/awaken/manifest-race.git";
+    let normalized_mount = "manifest-race";
+    let initial_branch = Some("main".to_string());
+    let initial_commit: Option<String> = None;
+    let repository_id = format!(
+        "managed:{id}:repository:{}",
+        awaken_session_contract::stable_fingerprint(&(
+            normalized_mount,
+            remote_url,
+            &initial_branch,
+            &initial_commit,
+        ))
+    );
+    repo.metadata_change_on_next(1, "manifest-winner", "durable");
+    let result = state
+        .replace_resource_manifest(
+            &id,
+            serde_json::from_value(json!({
+                "resources": [{
+                    "type": "github_repository",
+                    "url": remote_url,
+                    "mount_path": format!("/{normalized_mount}"),
+                    "checkout": {"type": "branch", "name": "main"}
+                }]
+            }))
+            .unwrap(),
+            None,
+            Some(read_revision),
+            "manifest-race-request".into(),
+        )
+        .await;
+    assert!(
+        matches!(result, Err(awaken_protocol_managed::StateError::Conflict)),
+        "W1/E1: {result:?}"
+    );
+    assert_eq!(
+        repo.get(&id)
+            .await
+            .unwrap()
+            .metadata
+            .get("manifest-winner")
+            .map(String::as_str),
+        Some("durable"),
+        "W1/E2"
+    );
+    assert_eq!(
+        catalog
+            .find_repository("default", &repository_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        ResourceState::Deleted,
+        "W1/E3"
+    );
 }
 
 #[tokio::test]

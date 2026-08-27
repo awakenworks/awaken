@@ -17,6 +17,108 @@ use awaken_session_contract::{
     StepOutcome, ToolPermissionDecision,
 };
 
+use crate::{RepositoryCredentialEntry, SessionParticipantProvenance};
+
+const SESSION_REPOSITORY_OWNER_KIND: &str = "awaken.session_repository.owner_kind";
+const SESSION_REPOSITORY_OWNER_SESSION: &str = "awaken.session_repository.session_id";
+
+/// Closed owner namespace for a Repository definition created exclusively for
+/// one Session. Platform and Agent-default Repository definitions never carry
+/// this marker.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SessionRepositoryOwner {
+    Managed { session_id: String },
+    Profiled { session_id: String },
+}
+
+impl SessionRepositoryOwner {
+    #[must_use]
+    pub fn from_repository_id(repository_id: &str) -> Option<Self> {
+        let (owner, suffix) = repository_id.rsplit_once(":repository:")?;
+        if suffix.is_empty() {
+            return None;
+        }
+        if let Some(session_id) = owner.strip_prefix("managed:")
+            && !session_id.is_empty()
+        {
+            return Some(Self::managed(session_id));
+        }
+        owner
+            .strip_prefix("profiled:")
+            .filter(|session_id| !session_id.is_empty())
+            .map(Self::profiled)
+    }
+
+    #[must_use]
+    pub fn managed(session_id: impl Into<String>) -> Self {
+        Self::Managed {
+            session_id: session_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn profiled(session_id: impl Into<String>) -> Self {
+        Self::Profiled {
+            session_id: session_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn session_id(&self) -> &str {
+        match self {
+            Self::Managed { session_id } | Self::Profiled { session_id } => session_id,
+        }
+    }
+
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Managed { .. } => "managed",
+            Self::Profiled { .. } => "profiled",
+        }
+    }
+
+    #[must_use]
+    pub fn owns_repository_id(&self, repository_id: &str) -> bool {
+        repository_id
+            .strip_prefix(&format!(
+                "{}:{}:repository:",
+                self.kind(),
+                self.session_id()
+            ))
+            .is_some_and(|suffix| !suffix.is_empty())
+    }
+
+    #[must_use]
+    pub(crate) fn marker(&self) -> std::collections::BTreeMap<String, String> {
+        std::collections::BTreeMap::from([
+            (SESSION_REPOSITORY_OWNER_KIND.into(), self.kind().into()),
+            (
+                SESSION_REPOSITORY_OWNER_SESSION.into(),
+                self.session_id().into(),
+            ),
+        ])
+    }
+
+    #[must_use]
+    pub(crate) fn matches_definition(
+        &self,
+        definition: &awaken_resource_contract::RepositoryDefinition,
+    ) -> bool {
+        self.owns_repository_id(definition.id.as_str())
+            && definition
+                .metadata
+                .get(SESSION_REPOSITORY_OWNER_KIND)
+                .map(String::as_str)
+                == Some(self.kind())
+            && definition
+                .metadata
+                .get(SESSION_REPOSITORY_OWNER_SESSION)
+                .map(String::as_str)
+                == Some(self.session_id())
+    }
+}
+
 /// Application command payload for a Repository attached as a Session input.
 pub struct SessionRepositoryResourceInput {
     pub id: String,
@@ -29,6 +131,17 @@ pub struct SessionRepositoryResourceInput {
     pub mount_path: String,
     pub initial_branch: Option<String>,
     pub initial_commit: Option<String>,
+}
+
+/// Transient participant receipt carried only until a Session root adopts the
+/// configured Repository. Registry and Vault provenance remain independent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfiguredSessionRepository {
+    pub owner: SessionRepositoryOwner,
+    pub workspace_id: String,
+    pub repository_id: awaken_resource_contract::RepositoryId,
+    pub registry_provenance: SessionParticipantProvenance,
+    pub credential: Option<RepositoryCredentialEntry>,
 }
 
 use crate::SessionApplication;
@@ -261,7 +374,7 @@ impl SessionApplication {
     pub async fn configure_session_repository(
         &self,
         input: SessionRepositoryResourceInput,
-    ) -> Result<awaken_resource_contract::RepositoryId, RunError> {
+    ) -> Result<ConfiguredSessionRepository, RunError> {
         let SessionRepositoryResourceInput {
             id,
             workspace_id,
@@ -274,6 +387,16 @@ impl SessionApplication {
             initial_branch,
             initial_commit,
         } = input;
+        let owner = SessionRepositoryOwner::from_repository_id(&id).ok_or_else(|| {
+            RunError::bad_request(
+                "Session-owned Repository identity does not match its Managed/Profiled owner",
+            )
+        })?;
+        if !owner.owns_repository_id(&id) {
+            return Err(RunError::bad_request(
+                "Session-owned Repository identity does not match its Managed/Profiled owner",
+            ));
+        }
         if authorization_token.is_some() && credential.is_some() {
             return Err(RunError::bad_request(
                 "repository cannot carry both an authorization token and credential reference",
@@ -328,7 +451,7 @@ impl SessionApplication {
             workspace_id,
             name,
             description,
-            metadata: Default::default(),
+            metadata: owner.marker(),
             state: initial_state,
             current_config_version: awaken_resource_contract::ConfigVersion::INITIAL,
             timestamps: Default::default(),
@@ -355,13 +478,13 @@ impl SessionApplication {
             initial_config.clone(),
         )
         .map_err(&map_registry_error)?;
-        let registered_state = match catalog.register_repository(
+        let (registered_state, registry_provenance) = match catalog.register_repository(
             awaken_resource_contract::RegisterRepository {
                 definition: definition.clone(),
                 initial_config: initial_config.clone(),
             },
         ) {
-            Ok(()) => initial_state,
+            Ok(()) => (initial_state, SessionParticipantProvenance::Applied),
             Err(awaken_resource_contract::ResourceRegistryError::AlreadyRegistered(_)) => {
                 let stored_definition = catalog
                     .find_repository(&definition.workspace_id, definition.id.as_str())
@@ -401,14 +524,23 @@ impl SessionApplication {
                         "repository resource could not be configured: existing Repository does not exactly match the requested definition and initial config",
                     ));
                 }
-                stored_definition.state
+                (
+                    stored_definition.state,
+                    SessionParticipantProvenance::Replayed,
+                )
             }
             Err(error) => return Err(map_registry_error(error)),
         };
         let Some((ingress, source_id, credential_target, token)) = token_ingress else {
-            return Ok(repository_id);
+            return Ok(ConfiguredSessionRepository {
+                owner,
+                workspace_id: definition.workspace_id,
+                repository_id,
+                registry_provenance,
+                credential: None,
+            });
         };
-        let entered_source = ingress
+        let credential_entry = match ingress
             .enter_repository_token(
                 source_id.clone(),
                 &definition.workspace_id,
@@ -416,27 +548,93 @@ impl SessionApplication {
                 token,
             )
             .await
-            .map_err(|error| {
-                RunError::bad_request(format!(
+        {
+            Ok(entry) => entry,
+            Err(error) => {
+                let first = RunError::bad_request(format!(
                     "repository authorization could not be sealed: {error}"
-                ))
-            })?;
-        if entered_source != source_id {
-            return Err(RunError::bad_request(
+                ));
+                if registry_provenance == SessionParticipantProvenance::Applied
+                    && !self
+                        .retire_owned_repository(
+                            &definition.workspace_id,
+                            &owner,
+                            repository_id.as_str(),
+                        )
+                        .await
+                {
+                    tracing::warn!(
+                        repository = %repository_id,
+                        "Session Repository compensation remains pending after credential ingress failure"
+                    );
+                }
+                return Err(first);
+            }
+        };
+        if credential_entry.credential.id != source_id.0
+            || credential_entry.credential.revision == 0
+        {
+            let first = RunError::bad_request(
                 "repository authorization returned another credential binding",
-            ));
+            );
+            if registry_provenance == SessionParticipantProvenance::Applied
+                && !self
+                    .retire_owned_repository(
+                        &definition.workspace_id,
+                        &owner,
+                        repository_id.as_str(),
+                    )
+                    .await
+            {
+                tracing::warn!(
+                    repository = %repository_id,
+                    "Session Repository compensation remains pending after invalid credential ingress"
+                );
+            }
+            return Err(first);
         }
         if registered_state == awaken_resource_contract::ResourceState::Active {
-            return Ok(repository_id);
+            return Ok(ConfiguredSessionRepository {
+                owner,
+                workspace_id: definition.workspace_id,
+                repository_id,
+                registry_provenance,
+                credential: Some(credential_entry),
+            });
         }
-        catalog
-            .change_repository_state(awaken_resource_contract::ChangeRepositoryState {
+        if let Err(error) =
+            catalog.change_repository_state(awaken_resource_contract::ChangeRepositoryState {
                 workspace_id: definition.workspace_id.clone(),
                 id: repository_id.clone(),
                 state: awaken_resource_contract::ResourceState::Active,
             })
-            .map_err(map_registry_error)?;
-        Ok(repository_id)
+        {
+            let first = map_registry_error(error);
+            let configured = ConfiguredSessionRepository {
+                owner,
+                workspace_id: definition.workspace_id,
+                repository_id,
+                registry_provenance,
+                credential: Some(credential_entry),
+            };
+            if !self
+                .abort_unadopted_session_repositories(std::slice::from_ref(&configured))
+                .await
+            {
+                tracing::warn!(
+                    repository = %configured.repository_id,
+                    "Session Repository compensation remains pending after activation failure"
+                );
+            }
+            return Err(first);
+        }
+        Ok(ConfiguredSessionRepository {
+            owner,
+            workspace_id: definition.workspace_id,
+            repository_id,
+            registry_provenance,
+            credential: Some(credential_entry),
+        })
     }
 
     pub fn notify_lifecycle_fact(&self) {

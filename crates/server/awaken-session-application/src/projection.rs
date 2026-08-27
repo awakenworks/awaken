@@ -91,6 +91,7 @@ impl SessionApplication {
                 }
                 snapshot
                     .map(|mut snapshot| {
+                        let mut session_local_publication = false;
                         if let Some(model_override) = &baseline.model_override {
                             if let Some(publication) = &model_override.publication {
                                 snapshot.resolved_spec.model_binding = publication.primary.clone();
@@ -99,9 +100,19 @@ impl SessionApplication {
                             }
                             snapshot.resolved_spec.plugin_config.inference =
                                 model_override.inference.clone();
+                            session_local_publication = true;
+                        }
+                        if !baseline.system_prompt.is_inherit() {
+                            snapshot.resolved_spec.instructions = baseline
+                                .system_prompt
+                                .resolve(Some(snapshot.resolved_spec.instructions.clone()))
+                                .unwrap_or_default();
+                            session_local_publication = true;
+                        }
+                        if session_local_publication {
                             snapshot.recompute_fingerprint().map_err(|error| {
                                 RunError::internal(format!(
-                                    "Session model override publication is invalid: {error}"
+                                    "Session-local Agent publication is invalid: {error}"
                                 ))
                             })?;
                         }

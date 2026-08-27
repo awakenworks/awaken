@@ -17,8 +17,9 @@ use awaken_session_contract::{
 };
 
 use crate::{
-    CreateSessionCommand, McpAttachmentCandidate, McpAttachmentCandidateTarget, SessionApplication,
-    SessionCreationError, SessionMutationError, SessionPreparationError, SessionRealizationError,
+    ConfiguredSessionRepository, CreateSessionCommand, McpAttachmentCandidate,
+    McpAttachmentCandidateTarget, SessionApplication, SessionCreationError, SessionMutationError,
+    SessionPreparationError, SessionRealizationError, SessionRepositoryOwner,
     SessionRepositoryResourceInput,
 };
 
@@ -61,6 +62,7 @@ pub trait SessionRunAdmission: Send + Sync {
 pub struct CreateProfiledSessionCommand {
     pub owner_scope: String,
     pub session_id: String,
+    pub mutation_policy: awaken_session_contract::SessionMutationPolicy,
     pub agent_id: String,
     /// Exact executable publication source revision. `None` selects the current
     /// publication for ordinary interactive authoring.
@@ -73,6 +75,10 @@ pub struct CreateProfiledSessionCommand {
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,
+    /// Session-local typed attachments supplied by the product. They join the
+    /// published Agent defaults inside this sole composer and therefore freeze
+    /// in the original root rather than through a post-create Manifest write.
+    pub resource_inputs: Vec<awaken_session_contract::SessionInputAttachment>,
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
     pub mcp_candidates: Vec<McpAttachmentCandidate>,
@@ -81,6 +87,7 @@ pub struct CreateProfiledSessionCommand {
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub tools: Option<SessionToolConfiguration>,
+    pub idempotency: Option<awaken_session_contract::IdempotencyRecord>,
 }
 
 pub struct RecoveredSessionProjection {
@@ -131,10 +138,34 @@ fn creation_error(error: SessionCreationError) -> RunError {
     match error {
         SessionCreationError::Rejected(error) => error,
         SessionCreationError::Conflict => RunError::unavailable("Session creation conflicted"),
+        SessionCreationError::Tombstoned => {
+            RunError::bad_request("Session identity is terminally occupied")
+        }
         SessionCreationError::IdempotencyMismatch => {
-            RunError::internal("Session creation idempotency mismatch")
+            RunError::bad_request("Session creation idempotency mismatch")
         }
         SessionCreationError::Unavailable(message) => RunError::unavailable(message),
+        SessionCreationError::Internal(message) => RunError::internal(message),
+    }
+}
+
+fn profiled_repository_attachment(
+    session_id: &str,
+    repository_id: awaken_resource_contract::RepositoryId,
+    mount_path: String,
+) -> awaken_session_contract::SessionInputAttachment {
+    awaken_session_contract::SessionInputAttachment {
+        binding: awaken_resource_contract::InputBinding {
+            binding_id: awaken_resource_contract::BindingId::new(format!(
+                "profiled:{session_id}:repository:{}",
+                repository_id.as_str()
+            )),
+            target: awaken_resource_contract::InputResourceId::Repository(repository_id),
+            mount_path,
+            access: awaken_resource_contract::ResourceAccess::ReadWrite,
+            instructions: None,
+        },
+        replaces: None,
     }
 }
 
@@ -304,7 +335,7 @@ impl SessionApplication {
     pub async fn create_profiled_session(
         &self,
         command: CreateProfiledSessionCommand,
-    ) -> Result<awaken_session_contract::PersistedSession, RunError> {
+    ) -> Result<awaken_session_contract::PersistedSession, SessionCreationError> {
         self.refresh_executable_projections()
             .await
             .map_err(|error| {
@@ -316,6 +347,7 @@ impl SessionApplication {
         let CreateProfiledSessionCommand {
             owner_scope,
             session_id,
+            mutation_policy,
             agent_id,
             source_revision,
             environment_id: requested_environment_id,
@@ -323,12 +355,14 @@ impl SessionApplication {
             mounts,
             env,
             prompts,
+            resource_inputs,
             mut mcp_candidates,
             repositories,
             network_restriction,
             title,
             metadata,
             tools: requested_tools,
+            idempotency,
         } = command;
         let profile = source_revision.map_or_else(
             || self.session_profile(&owner_scope, &agent_id),
@@ -343,19 +377,20 @@ impl SessionApplication {
             return Err(RunError::bad_request(format!(
                 "agent_version_mismatch: agent `{agent_id}` returned version {} for requested version {requested}",
                 resolved.source_revision
-            )));
+            )).into());
         }
         if let Some(revision) = source_revision
             && profile.is_none()
         {
             return Err(RunError::bad_request(format!(
                 "agent_version_unavailable: agent `{agent_id}` has no executable publication at version {revision}"
-            )));
+            )).into());
         }
         if source_revision.is_none() && self.agent_unavailable(&owner_scope, &agent_id) {
             return Err(RunError::bad_request(format!(
                 "agent_unavailable: agent `{agent_id}` cannot start a new session"
-            )));
+            ))
+            .into());
         }
         // Model-override cause/effect rules: R1 absent -> inherit the Agent
         // publication; R2 equal -> reuse it; R3 different + resolvable -> freeze
@@ -471,41 +506,131 @@ impl SessionApplication {
             .as_ref()
             .map(|profile| profile.resources.as_slice())
             .unwrap_or_default();
-        let mut repository_attachments = Vec::with_capacity(repositories.len());
+        let repository_owner = SessionRepositoryOwner::profiled(&session_id);
+        for repository in &repositories {
+            if repository.workspace_id != owner_scope
+                || !repository_owner.owns_repository_id(&repository.id)
+            {
+                return Err(RunError::bad_request(
+                    "Profiled Session Repository identity is outside its Session or Workspace",
+                )
+                .into());
+            }
+            if !mutation_policy.admits_repository_credential_mutation()
+                && repository.authorization_token.is_some()
+            {
+                return Err(RunError::bad_request(
+                    "profiled Session Repository credentials must be pre-existing Vault references",
+                )
+                .into());
+            }
+        }
+        let mut collision_preflight = resource_inputs.clone();
+        collision_preflight.extend(repositories.iter().map(|repository| {
+            profiled_repository_attachment(
+                &session_id,
+                awaken_resource_contract::RepositoryId::from(repository.id.clone()),
+                repository.mount_path.clone(),
+            )
+        }));
+        awaken_session_contract::SessionInputResolver::effective_bindings(
+            agent_resources,
+            &collision_preflight,
+        )
+        .map_err(|error| RunError::bad_request(error.to_string()))?;
+        let resolved_skills = if skills.is_empty() {
+            None
+        } else {
+            Some(self.resolve_session_skills(&owner_scope, &skills).await?)
+        };
+        let mut repository_attachments = resource_inputs;
+        repository_attachments.reserve(repositories.len());
         let mut expected_repository_credentials = BTreeMap::new();
+        let mut repository_configurations = Vec::<ConfiguredSessionRepository>::new();
         for repository in repositories {
             let mount_path = repository.mount_path.clone();
             let expected_credential = repository.credential.clone();
-            let repository_id = self.configure_session_repository(repository).await?;
+            let configured = match self.configure_session_repository(repository).await {
+                Ok(configured) => configured,
+                Err(first) => {
+                    if !self
+                        .abort_unadopted_session_repositories(&repository_configurations)
+                        .await
+                    {
+                        tracing::warn!(
+                            session = %session_id,
+                            "Profiled Session Repository compensation remains pending after configuration failure"
+                        );
+                    }
+                    return Err(first.into());
+                }
+            };
+            let repository_id = configured.repository_id.clone();
             expected_repository_credentials.insert(repository_id.clone(), expected_credential);
-            repository_attachments.push(awaken_session_contract::SessionInputAttachment {
-                binding: awaken_resource_contract::InputBinding {
-                    binding_id: awaken_resource_contract::BindingId::new(format!(
-                        "profiled:{session_id}:repository:{}",
-                        repository_id.as_str()
-                    )),
-                    target: awaken_resource_contract::InputResourceId::Repository(repository_id),
-                    mount_path,
-                    access: awaken_resource_contract::ResourceAccess::ReadWrite,
-                    instructions: None,
-                },
-                replaces: None,
-            });
+            repository_attachments.push(profiled_repository_attachment(
+                &session_id,
+                repository_id,
+                mount_path,
+            ));
+            repository_configurations.push(configured);
         }
-        let mut resources =
-            self.resolve_session_inputs(&owner_scope, agent_resources, &repository_attachments)?;
-        if !skills.is_empty() {
-            resources = resources
-                .with_skills(self.resolve_session_skills(&owner_scope, &skills).await?)
-                .map_err(|error| RunError::bad_request(error.to_string()))?;
-        }
-        self.pin_repository_credentials(
+        let mut resources = match self.resolve_session_inputs(
             &owner_scope,
-            &environment.credential_realization.resource_holder,
-            &mut resources,
-        )
-        .await
-        .map_err(preparation_error)?;
+            agent_resources,
+            &repository_attachments,
+        ) {
+            Ok(resources) => resources,
+            Err(first) => {
+                if !self
+                    .abort_unadopted_session_repositories(&repository_configurations)
+                    .await
+                {
+                    tracing::warn!(
+                        session = %session_id,
+                        "Profiled Session Repository compensation remains pending after input resolution"
+                    );
+                }
+                return Err(first.into());
+            }
+        };
+        if let Some(resolved_skills) = resolved_skills {
+            resources = match resources.with_skills(resolved_skills) {
+                Ok(resources) => resources,
+                Err(error) => {
+                    let first = RunError::bad_request(error.to_string());
+                    if !self
+                        .abort_unadopted_session_repositories(&repository_configurations)
+                        .await
+                    {
+                        tracing::warn!(
+                            session = %session_id,
+                            "Profiled Session Repository compensation remains pending after Skill binding"
+                        );
+                    }
+                    return Err(first.into());
+                }
+            };
+        }
+        if let Err(error) = self
+            .pin_repository_credentials(
+                &owner_scope,
+                &environment.credential_realization.resource_holder,
+                &mut resources,
+            )
+            .await
+        {
+            let first = preparation_error(error);
+            if !self
+                .abort_unadopted_session_repositories(&repository_configurations)
+                .await
+            {
+                tracing::warn!(
+                    session = %session_id,
+                    "Profiled Session Repository compensation remains pending after credential pinning"
+                );
+            }
+            return Err(first.into());
+        }
         for input in resources.inputs() {
             let awaken_session_contract::ResolvedInputSource::Repository {
                 repository_id,
@@ -519,13 +644,24 @@ impl SessionApplication {
                 continue;
             };
             if credential.as_deref().map(|pin| &pin.access.credential) != expected.as_ref() {
-                return Err(RunError::bad_request(format!(
+                let first = RunError::bad_request(format!(
                     "repository `{repository_id}` credential revision changed before Session admission"
-                )));
+                ));
+                if !self
+                    .abort_unadopted_session_repositories(&repository_configurations)
+                    .await
+                {
+                    tracing::warn!(
+                        session = %session_id,
+                        "Profiled Session Repository compensation remains pending after credential drift"
+                    );
+                }
+                return Err(first.into());
             }
         }
         let intent = SessionCreationIntent {
             control: ControlSessionCreationInputs {
+                mutation_policy,
                 environment,
                 runtime_placement: self.runtime_placement(),
                 agent_id,
@@ -533,6 +669,7 @@ impl SessionApplication {
                 model,
                 execution_model_ref,
                 model_override,
+                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
                 runtime: published_backend_ref,
                 mcp_authoring: SessionMcpAuthoringContext::default(),
                 delegate_ids: profile
@@ -562,10 +699,11 @@ impl SessionApplication {
             metadata,
             tools,
             budget: awaken_session_contract::SessionBudgetState::Absent,
+            repository_configurations,
+            idempotency,
             initial_events: None,
         })
         .await
-        .map_err(creation_error)
     }
 
     async fn create_default_run_session(
@@ -577,6 +715,7 @@ impl SessionApplication {
         self.create_profiled_session(CreateProfiledSessionCommand {
             owner_scope: workspace_id.to_string(),
             session_id: thread_id.to_string(),
+            mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
             agent_id: agent_id.to_string(),
             source_revision: None,
             environment_id: None,
@@ -584,14 +723,17 @@ impl SessionApplication {
             mounts: Vec::new(),
             env: Vec::new(),
             prompts: Vec::new(),
+            resource_inputs: Vec::new(),
             mcp_candidates: Vec::new(),
             repositories: Vec::new(),
             network_restriction: None,
             title: None,
             metadata: Default::default(),
             tools: None,
+            idempotency: None,
         })
         .await
+        .map_err(creation_error)
         .map(|_| ())
     }
 

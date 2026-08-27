@@ -253,6 +253,33 @@ impl ResolvedSessionResources {
         (self.inputs, self.skills)
     }
 
+    /// Whether two complete manifests differ only in File bindings.
+    ///
+    /// Interactive profiled Sessions use this pure comparison before the
+    /// canonical manifest CAS. Binding identity, not vector position, owns the
+    /// comparison; every non-File input and every exact Skill pin remains
+    /// immutable while File bindings may be attached, replaced, or removed.
+    #[must_use]
+    pub(crate) fn preserves_profiled_resources_except_files(&self, next: &Self) -> bool {
+        fn protected_inputs(
+            resources: &ResolvedSessionResources,
+        ) -> std::collections::BTreeMap<&str, &ResolvedInput> {
+            resources
+                .inputs
+                .iter()
+                .filter(|input| !matches!(input.source, ResolvedInputSource::File { .. }))
+                .map(|input| (input.binding_id.as_str(), input))
+                .collect()
+        }
+
+        protected_inputs(self) == protected_inputs(next)
+            && self.skills.len() == next.skills.len()
+            && self
+                .skills
+                .iter()
+                .all(|skill| next.skills.iter().any(|candidate| candidate == skill))
+    }
+
     /// Replace the complete resolved Skill set without opening the input
     /// collection or allowing duplicate/invalid pins to be installed.
     pub fn with_skills(
@@ -900,6 +927,86 @@ mod tests {
             access: awaken_resource_contract::ResourceAccess::ReadOnly,
             instructions: None,
         }
+    }
+
+    #[test]
+    fn profiled_resource_policy_compares_complete_manifests_by_authoritative_kind() {
+        // Cause/effect graph: C1 policy Managed/Frozen/FileResources; C2 the
+        // candidate changes only File bindings; C3 it changes a non-File input;
+        // C4 it changes an exact Skill pin. Effects: E1 Managed admits every
+        // valid manifest; E2 Frozen rejects even an unchanged new command; E3
+        // FileResources admits C2 but rejects C3/C4. Constraint: non-File
+        // identity is keyed by binding id, never vector position.
+        // Decision rules R1=Managed=>E1, R2=Frozen=>E2,
+        // R3=FileResources+C2=>admit, R4/R5=FileResources+(C3|C4)=>reject.
+        let protected = binding(
+            "memory",
+            InputResourceId::MemoryStore(MemoryStoreId::from("memory-1")),
+            "/mnt/memory",
+            awaken_resource_contract::ResourceAccess::ReadWrite,
+        );
+        let current = SessionInputResolver::resolve_inputs(
+            "workspace-a",
+            Some(&Registry::default()),
+            &[protected],
+            &[],
+        )
+        .expect("resolved protected input")
+        .with_skills(vec![ResolvedSkillBinding {
+            kind: awaken_agent_contract::AgentSkillKind::Custom,
+            skill_id: "review".into(),
+            version: 7,
+            bundle_sha256: "sha-review-7".into(),
+        }])
+        .expect("exact Skill pin")
+        .attach(resolved_file("file", "file-a", "/mnt/file"))
+        .expect("initial File");
+        let file_only = current
+            .replace(resolved_file("file", "file-b", "/mnt/file"))
+            .expect("R3 File replacement");
+        let mut changed_non_file_inputs = current.inputs().to_vec();
+        changed_non_file_inputs
+            .iter_mut()
+            .find(|input| input.binding_id.as_str() == "memory")
+            .expect("protected input")
+            .instructions = Some("changed".into());
+        let changed_non_file =
+            ResolvedSessionResources::try_new(changed_non_file_inputs, current.skills().to_vec())
+                .expect("valid non-File candidate");
+        let changed_skill = ResolvedSessionResources::try_new(
+            current.inputs().to_vec(),
+            vec![ResolvedSkillBinding {
+                version: 8,
+                bundle_sha256: "sha-review-8".into(),
+                ..current.skills()[0].clone()
+            }],
+        )
+        .expect("valid Skill candidate");
+
+        assert!(
+            crate::SessionMutationPolicy::Managed
+                .admits_resource_replacement(&current, &changed_non_file),
+            "R1/E1"
+        );
+        assert!(
+            !crate::SessionMutationPolicy::Frozen.admits_resource_replacement(&current, &current),
+            "R2/E2"
+        );
+        assert!(
+            crate::SessionMutationPolicy::FileResources
+                .admits_resource_replacement(&current, &file_only),
+            "R3/E3"
+        );
+        assert!(
+            !crate::SessionMutationPolicy::FileResources
+                .admits_resource_replacement(&current, &changed_non_file),
+            "R4/E3"
+        );
+        assert!(
+            !crate::SessionMutationPolicy::FileResources
+                .admits_resource_replacement(&current, &changed_skill),
+            "R5/E3"
+        );
     }
 
     #[test]

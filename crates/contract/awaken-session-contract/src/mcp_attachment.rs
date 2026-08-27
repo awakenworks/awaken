@@ -429,6 +429,35 @@ impl SessionMcpAttachmentSet {
             .collect()
     }
 
+    /// Select the one current desired generation for every logical attachment
+    /// name. Legacy rows without `desired_names` retain every nonterminal name;
+    /// explicit desired sets retain named Failed generations so an exact retry
+    /// allocates N+1, while Removed generations can never become desired again.
+    /// The returned order is canonical by logical name.
+    #[must_use]
+    pub fn desired_attachments(&self) -> Vec<&SessionMcpAttachment> {
+        let mut desired = BTreeMap::new();
+        for attachment in &self.attachments {
+            let is_desired = self.desired_names.as_ref().map_or_else(
+                || !attachment.state.is_terminal(),
+                |names| names.contains(&attachment.name),
+            );
+            if !is_desired || attachment.state == McpAttachmentState::Removed {
+                continue;
+            }
+            let replace =
+                desired
+                    .get(&attachment.name)
+                    .is_none_or(|current: &&SessionMcpAttachment| {
+                        current.generation < attachment.generation
+                    });
+            if replace {
+                desired.insert(attachment.name.clone(), attachment);
+            }
+        }
+        desired.into_values().collect()
+    }
+
     /// Any nonterminal generation is durable reconciliation work. `Active` is
     /// included because Runtime projections are process-local and must be
     /// restaged/published after ownership replacement.
@@ -1204,6 +1233,113 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "z"],
             "P5"
+        );
+    }
+
+    #[test]
+    fn desired_attachment_selection_follows_legacy_and_explicit_set_rules() {
+        // Cause/effect graph: C1 desired_names is legacy None, explicit empty,
+        // or an explicit name set; C2 one name has multiple generations; C3 the
+        // newest generation is Failed or Removed. Effects: E1 legacy selects the
+        // highest nonterminal generation, E2 explicit empty selects nothing, E3
+        // an explicit desired Failed generation remains selected for N+1 retry,
+        // E4 Removed is never selected and cannot hide an older live generation,
+        // E5 results use canonical logical-name order.
+        //
+        // | Rule | desired_names | Generations | Effect |
+        // |---|---|---|---|
+        // | D1 | None | Active + Failed/Removed | E1 + E4 + E5 |
+        // | D2 | Some(empty) | any | E2 |
+        // | D3 | Some(names) | Active + Failed | E3 + E5 |
+        // | D4 | Some(names) | Active + Removed | E4 + E5 |
+        let mut set = SessionMcpAttachmentSet::from_initial(
+            vec![
+                draft("alpha", "https://alpha.test/mcp", None),
+                draft("beta", "https://beta.test/mcp", None),
+                draft("gamma", "https://gamma.test/mcp", None),
+            ],
+            None,
+        )
+        .expect("D1-D4 fixture");
+        for attachment in &mut set.attachments {
+            attachment.state = McpAttachmentState::Active;
+        }
+        let mut failed = set.attachments[0].clone();
+        failed.generation = McpGeneration(2);
+        failed.state = McpAttachmentState::Failed;
+        let mut removed = set.attachments[1].clone();
+        removed.generation = McpGeneration(2);
+        removed.state = McpAttachmentState::Removed;
+        let mut realizing = set.attachments[2].clone();
+        realizing.generation = McpGeneration(3);
+        realizing.state = McpAttachmentState::Realizing;
+        set.attachments.extend([failed, removed, realizing]);
+
+        let selected = |set: &SessionMcpAttachmentSet| {
+            set.desired_attachments()
+                .into_iter()
+                .map(|attachment| {
+                    (
+                        attachment.name.clone(),
+                        attachment.generation,
+                        attachment.state,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+
+        set.desired_names = None;
+        assert_eq!(
+            selected(&set),
+            [
+                (
+                    "alpha".to_string(),
+                    McpGeneration(1),
+                    McpAttachmentState::Active,
+                ),
+                (
+                    "beta".to_string(),
+                    McpGeneration(1),
+                    McpAttachmentState::Active,
+                ),
+                (
+                    "gamma".to_string(),
+                    McpGeneration(3),
+                    McpAttachmentState::Realizing,
+                ),
+            ],
+            "D1/E1+E4+E5"
+        );
+
+        set.desired_names = Some(BTreeSet::new());
+        assert!(selected(&set).is_empty(), "D2/E2");
+
+        set.desired_names = Some(
+            ["alpha", "beta", "gamma"]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+        );
+        assert_eq!(
+            selected(&set),
+            [
+                (
+                    "alpha".to_string(),
+                    McpGeneration(2),
+                    McpAttachmentState::Failed,
+                ),
+                (
+                    "beta".to_string(),
+                    McpGeneration(1),
+                    McpAttachmentState::Active,
+                ),
+                (
+                    "gamma".to_string(),
+                    McpGeneration(3),
+                    McpAttachmentState::Realizing,
+                ),
+            ],
+            "D3-D4/E3-E5"
         );
     }
 

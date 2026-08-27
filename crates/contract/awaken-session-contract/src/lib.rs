@@ -52,8 +52,8 @@ pub use baseline::{
     EnvironmentFingerprint, EnvironmentIdleRetentionMode, EnvironmentIdleRetentionPolicy,
     EnvironmentSnapshot, SandboxProvisioning, SessionBaseline, SessionBaselineFingerprint,
     SessionBaselineInputs, SessionBaselineState, SessionCreationFinalizeError,
-    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
-    SessionRuntimePlacement, resolved_environment_snapshot_is_exact,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionMutationPolicy, SessionNetworkPolicy,
+    SessionRuntimePlacement, SessionSystemPromptSelection, resolved_environment_snapshot_is_exact,
 };
 pub use budget::{
     BudgetReachTransition, ManagedBudgetUsageCursor, ManagedListPriceError,
@@ -164,12 +164,12 @@ pub use session_realization::{
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionDisposition, SessionDispositionTransitionError, SessionExecutionState,
-    SessionExecutionStateError, SessionExecutionTransitionError, SessionIdempotencyReceipt,
-    SessionMutation, SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
-    SessionRealizationLease, SessionRecoveryQuarantine, SessionRecoveryScan,
-    SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
-    SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionCreateResult, SessionDisposition, SessionDispositionTransitionError,
+    SessionExecutionState, SessionExecutionStateError, SessionExecutionTransitionError,
+    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
+    SessionMutationValidationError, SessionRealizationLease, SessionRecoveryQuarantine,
+    SessionRecoveryScan, SessionRepositoryConflict, SessionRepositoryError,
+    SessionRepositoryRecoveryAction, SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,

@@ -22,12 +22,13 @@ impl SqliteManagedSessionRepository {
         Self::from_connection(conn)
     }
 
-    fn from_connection(conn: Connection) -> Result<Self, String> {
+    fn from_connection(mut conn: Connection) -> Result<Self, String> {
         let bundle = session_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration_sqlite::SqliteMigrationRunner::with_prefix(NS)
             .map_err(|e| e.to_string())?
             .run_bundle(&conn, &bundle)
             .map_err(|e| e.to_string())?;
+        Self::rebuild_credential_source_index(&mut conn).map_err(|e| e.to_string())?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
         })
@@ -50,6 +51,7 @@ impl SqliteManagedSessionRepository {
             )
             .map_err(storage)?;
         }
+        Self::sync_credential_source_index(tx, session)?;
         if session.needs_reconciliation() {
             tx.execute(
                 "INSERT INTO managed_session_reconciliation_work \
@@ -68,6 +70,196 @@ impl SqliteManagedSessionRepository {
         }
         Ok(())
     }
+
+    fn sync_credential_source_index(
+        tx: &rusqlite::Transaction<'_>,
+        session: &PersistedSession,
+    ) -> Result<(), SessionRepositoryError> {
+        tx.execute(
+            "DELETE FROM managed_session_credential_source_reference WHERE session_id = ?1",
+            params![session.session_id],
+        )
+        .map_err(storage)?;
+        for source_id in referenced_mcp_credential_source_ids(session) {
+            tx.execute(
+                "INSERT INTO managed_session_credential_source_reference \
+                    (session_id, credential_source_id) VALUES (?1, ?2)",
+                params![session.session_id, source_id],
+            )
+            .map_err(storage)?;
+        }
+        Ok(())
+    }
+
+    fn rebuild_credential_source_index(
+        conn: &mut Connection,
+    ) -> Result<(), SessionRepositoryError> {
+        // Startup owns one full deterministic rebuild. BEGIN IMMEDIATE is both
+        // the SQLite writer fence and the crash boundary: a decode failure or
+        // process exit restores the preceding complete index, and the
+        // constructor never returns a repository with partial dependencies.
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(storage)?;
+        tx.execute(
+            "DELETE FROM managed_session_credential_source_reference",
+            [],
+        )
+        .map_err(storage)?;
+        let rows = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT session_id, aggregate_json, revision FROM managed_session \
+                     ORDER BY session_id",
+                )
+                .map_err(storage)?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        EncodedSessionRow {
+                            aggregate_json: row.get(1)?,
+                            revision: row.get(2)?,
+                        },
+                    ))
+                })
+                .map_err(storage)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(storage)?
+        };
+        for (stored_session_id, row) in rows {
+            let session = decode(row).map_err(corrupt)?;
+            if session.session_id != stored_session_id {
+                return Err(corrupt(
+                    "managed Session aggregate id does not match its index",
+                ));
+            }
+            Self::sync_credential_source_index(&tx, &session)?;
+        }
+        tx.commit().map_err(storage)
+    }
+
+    fn is_tombstoned(
+        tx: &rusqlite::Transaction<'_>,
+        session_id: &str,
+    ) -> Result<bool, SessionRepositoryError> {
+        tx.query_row(
+            "SELECT 1 FROM managed_session_tombstone WHERE session_id = ?1",
+            params![session_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map(|row| row.is_some())
+        .map_err(storage)
+    }
+
+    fn session_identity(
+        tx: &rusqlite::Transaction<'_>,
+        session_id: &str,
+    ) -> Result<TransactionalSessionIdentity, SessionRepositoryError> {
+        let mut statement = tx
+            .prepare(
+                "SELECT identity_kind, scope_id, revision, aggregate_json FROM (
+                    SELECT 0 AS identity_kind, scope_id, revision, aggregate_json
+                    FROM managed_session WHERE session_id = ?1
+                    UNION ALL
+                    SELECT 1 AS identity_kind, scope_id, deleted_revision AS revision,
+                           NULL AS aggregate_json
+                    FROM managed_session_tombstone WHERE session_id = ?1
+                 ) ORDER BY identity_kind",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![session_id], |row| {
+                Ok(RawSessionIdentity {
+                    kind: row.get(0)?,
+                    owner_scope: row.get(1)?,
+                    revision: row.get(2)?,
+                    aggregate_json: row.get(3)?,
+                })
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        transactional_session_identity(rows)
+    }
+
+    fn create_replay(
+        tx: &rusqlite::Transaction<'_>,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+        missing_receipt: MissingCreateReceipt,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        let mut statement = tx
+            .prepare(
+                "WITH receipt AS (
+                    SELECT payload_hash, committed_revision
+                    FROM managed_session_idempotency
+                    WHERE session_id = ?1 AND idempotency_key = ?2
+                 ), identity AS (
+                    SELECT 0 AS identity_kind, scope_id, revision, aggregate_json
+                    FROM managed_session WHERE session_id = ?1
+                    UNION ALL
+                    SELECT 1 AS identity_kind, scope_id, deleted_revision AS revision,
+                           NULL AS aggregate_json
+                    FROM managed_session_tombstone WHERE session_id = ?1
+                 ), snapshot AS (
+                    SELECT identity_kind, scope_id, revision, aggregate_json FROM identity
+                    UNION ALL
+                    SELECT -1, NULL, NULL, NULL WHERE NOT EXISTS (SELECT 1 FROM identity)
+                 )
+                 SELECT (SELECT payload_hash FROM receipt),
+                        (SELECT committed_revision FROM receipt),
+                        identity_kind, scope_id, revision, aggregate_json
+                 FROM snapshot ORDER BY identity_kind",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![session_id, idempotency.key], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    RawSessionIdentity {
+                        kind: row.get(2)?,
+                        owner_scope: row.get(3)?,
+                        revision: row.get(4)?,
+                        aggregate_json: row.get(5)?,
+                    },
+                ))
+            })
+            .map_err(storage)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(storage)?;
+        let receipt = rows
+            .first()
+            .ok_or_else(|| corrupt("Session create replay snapshot is empty"))?;
+        let receipt = match (&receipt.0, receipt.1) {
+            (None, None) => None,
+            (Some(payload_hash), Some(committed_revision)) => Some(SessionIdempotencyReceipt {
+                payload_hash: payload_hash.clone(),
+                committed_revision: SessionRevision(
+                    u64::try_from(committed_revision)
+                        .map_err(|_| corrupt("negative committed Session revision"))?,
+                ),
+            }),
+            _ => return Err(corrupt("incomplete Session create receipt")),
+        };
+        let identity = transactional_session_identity(
+            rows.into_iter()
+                .map(|(_, _, identity)| identity)
+                .filter(|identity| identity.kind >= 0)
+                .collect(),
+        )?;
+        classify_create_replay(
+            owner_scope,
+            session_id,
+            idempotency,
+            receipt,
+            identity,
+            missing_receipt,
+        )
+    }
 }
 
 #[async_trait]
@@ -78,8 +270,9 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         mut session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionRevision, SessionRepositoryError> {
-        if session.session_id.trim().is_empty()
+    ) -> Result<SessionCreateResult, SessionRepositoryError> {
+        if owner_scope.trim().is_empty()
+            || session.session_id.trim().is_empty()
             || idempotency.key.trim().is_empty()
             || idempotency.payload_hash.trim().is_empty()
             || session.revision != SessionRevision(0)
@@ -98,40 +291,16 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(storage)?;
-        if let Some((stored_hash, committed_revision)) = tx
-            .query_row(
-                "SELECT payload_hash, committed_revision FROM managed_session_idempotency
-                 WHERE session_id = ?1 AND idempotency_key = ?2",
-                params![session.session_id, idempotency.key],
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?)),
-            )
-            .optional()
-            .map_err(storage)?
-        {
-            if stored_hash != idempotency.payload_hash {
-                return Err(SessionRepositoryError::Conflict(
-                    SessionRepositoryConflict::IdempotencyMismatch,
-                ));
-            }
-            return u64::try_from(committed_revision)
-                .map(SessionRevision)
-                .map_err(|_| corrupt("negative committed Session revision"));
+        if let Some(replayed) = Self::create_replay(
+            &tx,
+            owner_scope,
+            &session.session_id,
+            &idempotency,
+            MissingCreateReceipt::AllowInsertFence,
+        )? {
+            return Ok(SessionCreateResult::Replayed(replayed));
         }
-        let tombstoned = tx
-            .query_row(
-                "SELECT 1 FROM managed_session_tombstone WHERE session_id = ?1",
-                params![session.session_id],
-                |_| Ok(()),
-            )
-            .optional()
-            .map_err(storage)?
-            .is_some();
-        if tombstoned {
-            return Err(SessionRepositoryError::Conflict(
-                SessionRepositoryConflict::Tombstoned,
-            ));
-        }
-        let new_revision = SessionRevision(1);
+        let new_revision = SESSION_CREATE_REVISION;
         session.revision = new_revision;
         let inserted = tx
             .execute(
@@ -148,8 +317,25 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             )
             .map_err(storage)?;
         if inserted != 1 {
+            if let Some(replayed) = Self::create_replay(
+                &tx,
+                owner_scope,
+                &session.session_id,
+                &idempotency,
+                MissingCreateReceipt::RejectOccupied,
+            )? {
+                return Ok(SessionCreateResult::Replayed(replayed));
+            }
             return Err(SessionRepositoryError::Conflict(
                 SessionRepositoryConflict::AlreadyExists,
+            ));
+        }
+        // A concurrent delete can win after the first tombstone read. Recheck
+        // in this same write transaction before any index, receipt, or outbox
+        // row makes a deleted identity live again.
+        if Self::is_tombstoned(&tx, &session.session_id)? {
+            return Err(SessionRepositoryError::Conflict(
+                SessionRepositoryConflict::Tombstoned,
             ));
         }
         Self::sync_session_indexes(&tx, &session)?;
@@ -173,7 +359,35 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .map_err(storage)?;
         }
         tx.commit().map_err(storage)?;
-        Ok(new_revision)
+        Ok(SessionCreateResult::Applied(session))
+    }
+
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError> {
+        if owner_scope.trim().is_empty()
+            || session_id.trim().is_empty()
+            || idempotency.key.trim().is_empty()
+            || idempotency.payload_hash.trim().is_empty()
+        {
+            return Err(SessionRepositoryError::InvalidMutation(
+                "invalid Session create replay query".into(),
+            ));
+        }
+        let mut conn = self.conn.lock().map_err(storage)?;
+        let tx = conn.transaction().map_err(storage)?;
+        let replay = Self::create_replay(
+            &tx,
+            owner_scope,
+            session_id,
+            idempotency,
+            MissingCreateReceipt::RejectOccupied,
+        )?;
+        tx.commit().map_err(storage)?;
+        Ok(replay)
     }
 
     async fn commit_mutation(
@@ -199,16 +413,18 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
             .optional()
             .map_err(storage)?
         {
-            if stored_hash != mutation.idempotency.payload_hash {
-                return Ok(SessionMutationResult::IdempotencyMismatch);
-            }
             let committed_revision = SessionRevision(
                 u64::try_from(committed_revision)
                     .map_err(|_| corrupt("negative committed Session revision"))?,
             );
-            return Ok(SessionMutationResult::Replayed {
-                new_revision: committed_revision,
-            });
+            return classify_mutation_replay(
+                owner_scope,
+                &stored_hash,
+                committed_revision,
+                next,
+                &mutation.idempotency.payload_hash,
+                &Self::session_identity(&tx, &session_id)?,
+            );
         }
         let current = tx
             .query_row(
@@ -547,6 +763,41 @@ impl ManagedSessionRepository for SqliteManagedSessionRepository {
         for row in rows {
             let session = decode(row.map_err(storage)?).map_err(corrupt)?;
             if !session.is_terminal() {
+                sessions.push(session);
+            }
+        }
+        Ok(sessions)
+    }
+
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError> {
+        let conn = self.conn.lock().map_err(storage)?;
+        let mut statement = conn
+            .prepare(
+                "SELECT session.aggregate_json, session.revision \
+                 FROM managed_session_credential_source_reference reference \
+                 JOIN managed_session session ON session.session_id = reference.session_id \
+                 WHERE reference.credential_source_id = ?1 AND session.scope_id = ?2 \
+                 ORDER BY session.session_id",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![source_id.0.as_str(), workspace_id], |row| {
+                Ok(EncodedSessionRow {
+                    aggregate_json: row.get(0)?,
+                    revision: row.get(1)?,
+                })
+            })
+            .map_err(storage)?;
+        let mut sessions = Vec::new();
+        for row in rows {
+            let session = decode(row.map_err(storage)?).map_err(corrupt)?;
+            if !session.is_terminal()
+                && referenced_mcp_credential_source_ids(&session).contains(&source_id.0)
+            {
                 sessions.push(session);
             }
         }

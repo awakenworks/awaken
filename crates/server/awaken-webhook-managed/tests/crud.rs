@@ -61,9 +61,22 @@ impl ManagedSessionRepository for SessionOutbox {
         _idempotency: awaken_session_contract::IdempotencyRecord,
         _lifecycle_facts: Vec<ManagedLifecycleFact>,
     ) -> Result<
-        awaken_session_contract::SessionRevision,
+        awaken_session_contract::SessionCreateResult,
         awaken_session_contract::SessionRepositoryError,
     > {
+        Err(
+            awaken_session_contract::SessionRepositoryError::Unavailable(
+                "SessionOutbox test double does not own aggregate creation".into(),
+            ),
+        )
+    }
+
+    async fn replay_create(
+        &self,
+        _owner_scope: &str,
+        _session_id: &str,
+        _idempotency: &awaken_session_contract::IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
         Err(
             awaken_session_contract::SessionRepositoryError::Unavailable(
                 "SessionOutbox test double does not own aggregate creation".into(),
@@ -130,6 +143,18 @@ impl ManagedSessionRepository for SessionOutbox {
         awaken_session_contract::SessionRepositoryError,
     > {
         Ok(awaken_session_contract::SessionRecoveryScan::default())
+    }
+
+    async fn sessions_referencing_credential_source(
+        &self,
+        _workspace_id: &str,
+        _source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError> {
+        Err(
+            awaken_session_contract::SessionRepositoryError::Unavailable(
+                "SessionOutbox test double does not own credential dependency indexing".into(),
+            ),
+        )
     }
 
     async fn idempotency_receipt(

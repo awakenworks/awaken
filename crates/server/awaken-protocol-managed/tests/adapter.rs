@@ -741,6 +741,16 @@ async fn session_initial_events_decision_table_case() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
+    Box::pin(initial_events_idle_case()).await;
+
+    Box::pin(initial_events_message_case()).await;
+
+    Box::pin(initial_events_outcome_case()).await;
+
+    Box::pin(initial_events_rejected_cases()).await;
+}
+
+async fn initial_events_idle_case() {
     let idle_app = router(Arc::new(ManagedState::new(EchoFake::default())));
     for (rule, body) in [
         (
@@ -756,7 +766,9 @@ async fn session_initial_events_decision_table_case() {
         assert_eq!(status, StatusCode::OK, "{rule}");
         assert_eq!(session["status"], "idle", "{rule}");
     }
+}
 
+async fn initial_events_message_case() {
     let running_state = Arc::new(ManagedState::new(EchoFake::default()));
     let running_app = router(running_state.clone());
     let (status, session) = json_response(
@@ -775,9 +787,6 @@ async fn session_initial_events_decision_table_case() {
     assert_eq!(status, StatusCode::OK, "C2 message admitted");
     assert_eq!(session["status"], "running", "C2 starts immediately");
     let id = session["id"].as_str().unwrap();
-    // This adapter table owns atomic create/Event effects, not supervisor
-    // scheduling. Reuse the canonical application test driver once so no
-    // parallel test-only lifecycle loop competes with the retained batch.
     support::drive_retained_session_events(&running_state, id).await;
     let completed = json_call(
         &running_app,
@@ -800,7 +809,9 @@ async fn session_initial_events_decision_table_case() {
         "C2 preserves inbound-before-output ordering"
     );
     assert!(completed["data"][0]["processed_at"].is_string());
+}
 
+async fn initial_events_outcome_case() {
     let outcome_app = router(Arc::new(ManagedState::new(OutcomeFake::default())));
     let (status, session) = json_response(
         &outcome_app,
@@ -822,7 +833,9 @@ async fn session_initial_events_decision_table_case() {
         session["status"], "running",
         "C2 outcome starts immediately"
     );
+}
 
+async fn initial_events_rejected_cases() {
     let rejected_app = router(Arc::new(ManagedState::new(EchoFake::default())));
     let message = serde_json::json!({
         "type": "user.message",
@@ -849,15 +862,13 @@ async fn session_initial_events_decision_table_case() {
         (
             "C5 over maximum",
             session_request(serde_json::json!({
-                "agent":"coder",
-                "initial_events": vec![message.clone(); 51]
+                "agent":"coder", "initial_events": vec![message.clone(); 51]
             })),
         ),
         (
             "C6 two outcomes",
             session_request(serde_json::json!({
-                "agent":"coder",
-                "initial_events":[outcome.clone(), outcome]
+                "agent":"coder", "initial_events":[outcome.clone(), outcome]
             })),
         ),
         (

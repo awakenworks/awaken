@@ -13,9 +13,9 @@ use awaken_deployment_contract::{
 };
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, ManagedSessionRepository, McpAttachmentDraft,
-    McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession,
+    McpAttachmentOrigin, McpTarget, PersistedSession, ScopedPersistedSession, SessionCreateResult,
     SessionExecutionState, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionRepositoryError, SessionRevision, SessionTombstone,
+    SessionRepositoryConflict, SessionRepositoryError, SessionRevision, SessionTombstone,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use serde_json::json;
@@ -148,7 +148,7 @@ async fn create_session<R: ManagedSessionRepository>(
 ) -> PersistedSession {
     value.revision = SessionRevision(0);
     let payload = SessionMutationPayload::Replace(value.clone());
-    value.revision = repo
+    match repo
         .create(
             owner,
             value.clone(),
@@ -156,8 +156,11 @@ async fn create_session<R: ManagedSessionRepository>(
             facts,
         )
         .await
-        .expect("create Session fixture");
-    value
+        .expect("create Session fixture")
+    {
+        awaken_session_contract::SessionCreateResult::Applied(value)
+        | awaken_session_contract::SessionCreateResult::Replayed(value) => value,
+    }
 }
 
 async fn replace_session<R: ManagedSessionRepository>(
@@ -357,6 +360,132 @@ async fn vault_reference_index_returns_only_live_scoped_sessions<R: ManagedSessi
     );
 }
 
+fn with_mcp_credential_source(mut value: PersistedSession, source_id: &str) -> PersistedSession {
+    value.mcp.attachments[0]
+        .credential
+        .as_mut()
+        .expect("fixture MCP credential")
+        .credential
+        .id = source_id.to_string();
+    value
+}
+
+async fn credential_source_dependency_decision_table<R: ManagedSessionRepository>(r: &R) {
+    // Actual-source dependency cause/effect graph. C1 root is live and its
+    // current desired MCP generation pins source A; C2 the same source belongs
+    // to another Workspace; C3 a same-Workspace root pins unrelated source B;
+    // C4 a root CAS replaces A with C; C5 that root becomes archived; C6 a
+    // second A root is tombstoned. Effects: E1 discovery returns only exact
+    // Workspace+source live roots; E2 unrelated roots are unchanged; E3 replace
+    // removes A and adds C in the same root transaction; E4 archive is excluded;
+    // E5 delete cascades its dependency. The immutable Vault-authoring index is
+    // deliberately absent from every cause and retains its separate contract.
+    //
+    // | Rule | Workspace | desired source | root transition | Effect |
+    // | S1 | match | A | live | E1 include |
+    // | S2 | other | A | live | E1 exclude |
+    // | S3 | match | B | live | E1 exclude A + E2 preserve B |
+    // | S4 | match | A -> C | replace | E3 |
+    // | S5 | match | C | archive | E4 |
+    // | S6 | match | A | delete | E5 |
+    let source = |id: &str| awaken_credential_contract::CredentialSourceId(id.into());
+    let updated = create_session(
+        r,
+        "ws_a",
+        with_mcp_credential_source(session("sesn_source_update", "update"), "source-a"),
+        Vec::new(),
+    )
+    .await;
+    let deleted = create_session(
+        r,
+        "ws_a",
+        with_mcp_credential_source(session("sesn_source_delete", "delete"), "source-a"),
+        Vec::new(),
+    )
+    .await;
+    create_session(
+        r,
+        "ws_b",
+        with_mcp_credential_source(session("sesn_source_other_ws", "other ws"), "source-a"),
+        Vec::new(),
+    )
+    .await;
+    let unrelated = create_session(
+        r,
+        "ws_a",
+        with_mcp_credential_source(session("sesn_source_unrelated", "unrelated"), "source-b"),
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-a"))
+            .await
+            .unwrap(),
+        vec![deleted.clone(), updated.clone()],
+        "S1-S3/E1"
+    );
+
+    let updated = replace_session(
+        r,
+        "ws_a",
+        with_mcp_credential_source(updated, "source-c"),
+        "test:source:a-to-c",
+        Vec::new(),
+    )
+    .await;
+    assert_eq!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-a"))
+            .await
+            .unwrap(),
+        vec![deleted.clone()],
+        "S4/E3 old dependency removed"
+    );
+    assert_eq!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-c"))
+            .await
+            .unwrap(),
+        vec![updated.clone()],
+        "S4/E3 new dependency added"
+    );
+
+    let mut archived = updated;
+    archived.archive("2026-08-27T00:00:00Z").unwrap();
+    replace_session(r, "ws_a", archived, "test:source:archive", Vec::new()).await;
+    assert!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-c"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "S5/E4"
+    );
+
+    let mut deleting = deleted;
+    assert!(deleting.request_delete());
+    complete_terminal_cleanup(&mut deleting);
+    let deleting =
+        replace_session(r, "ws_a", deleting, "test:source:delete-ready", Vec::new()).await;
+    assert!(matches!(
+        r.commit_mutation("ws_a", delete_mutation(&deleting, "test:source:delete"))
+            .await
+            .unwrap(),
+        SessionMutationResult::Applied { .. }
+    ));
+    assert!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-a"))
+            .await
+            .unwrap()
+            .is_empty(),
+        "S6/E5"
+    );
+    assert_eq!(
+        r.sessions_referencing_credential_source("ws_a", &source("source-b"))
+            .await
+            .unwrap(),
+        vec![unrelated],
+        "S3/E2"
+    );
+}
+
 /// The lifecycle fact is committed in the same repository transaction as the
 /// aggregate and owner. Notification may crash afterwards without losing the fact.
 async fn lifecycle_outbox_tracks_every_committed_transition<R: ManagedSessionRepository>(r: &R) {
@@ -521,8 +650,11 @@ enum CasRule {
     Create,
     CreateReplay,
     CreateIdempotencyMismatch,
+    CreateReceiptAsMutation,
     Replace,
     ReplaceReplay,
+    ReplaceReplayWrongExpected,
+    ReplaceReplayWrongOwner,
     ReplaceIdempotencyMismatch,
     StaleRevision,
     WrongOwner,
@@ -647,17 +779,23 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
     // | R3 | create retry | mismatch | - | - | - | idempotency error |
     // | R4 | replace | absent | T | T | T | applied revision 2 |
     // | R5 | replace retry | equal | T | T | T | replayed revision 2 |
-    // | R6 | replace retry | mismatch | T | T | T | idempotency mismatch |
-    // | R7 | replace | absent | T | T | F | conflict revision 1 |
-    // | R8 | replace | absent | T | F | T | conflict revision 1 |
-    // | R9 | delete | absent | T | T | T | applied revision 2 + hidden |
-    // | R10 | delete retry | equal | tombstone | T | old | replayed revision 2 |
+    // | R6 | replace retry | equal | T | F | T | conflict revision 2 |
+    // | R7 | replace retry | mismatch | T | T | T | idempotency mismatch |
+    // | R8 | replace | absent | T | T | F | conflict revision 1 |
+    // | R9 | replace | absent | T | F | T | conflict revision 1 |
+    // | R10 | delete | absent | T | T | T | applied revision 2 + hidden |
+    // | R11 | delete retry | equal | tombstone | T | old | replayed revision 2 |
+    // | R12 | mutation with create receipt | equal | T | T | next differs | mismatch |
+    // | R13 | replace retry | equal | T | T | wrong expected | mismatch |
     let rules = [
         CasRule::Create,
         CasRule::CreateReplay,
         CasRule::CreateIdempotencyMismatch,
+        CasRule::CreateReceiptAsMutation,
         CasRule::Replace,
         CasRule::ReplaceReplay,
+        CasRule::ReplaceReplayWrongExpected,
+        CasRule::ReplaceReplayWrongOwner,
         CasRule::ReplaceIdempotencyMismatch,
         CasRule::StaleRevision,
         CasRule::WrongOwner,
@@ -677,7 +815,18 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
             .create("ws_a", initial, create_record.clone(), Vec::new())
             .await
             .expect("initial CAS create");
-        assert_eq!(created, SessionRevision(1));
+        assert_eq!(
+            created,
+            awaken_session_contract::SessionCreateResult::Applied({
+                let mut expected = session(&id, "initial");
+                if matches!(rule, CasRule::Delete | CasRule::DeleteReplay) {
+                    assert!(expected.request_delete());
+                    complete_terminal_cleanup(&mut expected);
+                }
+                expected.revision = SessionRevision(1);
+                expected
+            })
+        );
         assert_eq!(
             repo.idempotency_receipt(&id, "create").await,
             Ok(Some(awaken_session_contract::SessionIdempotencyReceipt {
@@ -692,11 +841,13 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
             CasRule::CreateReplay => {
                 let mut replay = session(&id, "initial");
                 replay.revision = SessionRevision(0);
+                let mut expected = replay.clone();
+                expected.revision = SessionRevision(1);
                 assert_eq!(
                     repo.create("ws_a", replay, create_record, Vec::new())
                         .await
                         .unwrap(),
-                    SessionRevision(1)
+                    awaken_session_contract::SessionCreateResult::Replayed(expected)
                 );
             }
             CasRule::CreateIdempotencyMismatch => {
@@ -719,8 +870,29 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
                     )
                 );
             }
+            CasRule::CreateReceiptAsMutation => {
+                let mut replacement = repo.get(&id).await.unwrap();
+                replacement.revision = SessionRevision(0);
+                assert_eq!(
+                    repo.commit_mutation(
+                        "ws_a",
+                        SessionMutation {
+                            expected_revision: SessionRevision(0),
+                            idempotency: create_record,
+                            payload: SessionMutationPayload::Replace(replacement),
+                            lifecycle_facts: Vec::new(),
+                        },
+                    )
+                    .await
+                    .unwrap(),
+                    SessionMutationResult::IdempotencyMismatch,
+                    "R12 a revision-one create receipt cannot replay even a forged revision-zero mutation"
+                );
+            }
             CasRule::Replace
             | CasRule::ReplaceReplay
+            | CasRule::ReplaceReplayWrongExpected
+            | CasRule::ReplaceReplayWrongOwner
             | CasRule::ReplaceIdempotencyMismatch
             | CasRule::StaleRevision
             | CasRule::WrongOwner => {
@@ -769,6 +941,29 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
                         }
                     );
                 }
+                if matches!(rule, CasRule::ReplaceReplayWrongExpected) {
+                    let mut wrong_expected = mutation.clone();
+                    wrong_expected.expected_revision = SessionRevision(0);
+                    if let SessionMutationPayload::Replace(session) = &mut wrong_expected.payload {
+                        session.revision = SessionRevision(0);
+                    }
+                    assert_eq!(
+                        repo.commit_mutation(owner, wrong_expected).await.unwrap(),
+                        SessionMutationResult::IdempotencyMismatch,
+                        "R13 a receipt cannot replay under another expected revision"
+                    );
+                }
+                if matches!(rule, CasRule::ReplaceReplayWrongOwner) {
+                    assert_eq!(
+                        repo.commit_mutation("ws_b", mutation.clone())
+                            .await
+                            .unwrap(),
+                        SessionMutationResult::Conflict {
+                            current_revision: SessionRevision(2)
+                        },
+                        "a foreign owner cannot adopt an exact mutation receipt"
+                    );
+                }
                 if matches!(rule, CasRule::ReplaceIdempotencyMismatch) {
                     let mut mismatched = mutation;
                     mismatched.idempotency.payload_hash = "different".into();
@@ -812,6 +1007,295 @@ async fn root_cas_decision_table<R: ManagedSessionRepository>(repo: &R) {
     }
 }
 
+async fn create_receipt_decision_table<R: ManagedSessionRepository>(repo: &R) {
+    // Create-receipt cause/effect table. C1 receipt absent/present; C2 durable
+    // identity absent/live/tombstoned; C3 owner exact/foreign; C4 hash exact/
+    // mismatched; C5 the live aggregate advanced after create. Effects: E1 a
+    // new root is Applied once; E2 exact replay returns the current durable
+    // aggregate, never the caller's newly lowered candidate; E3 wrong owner or
+    // another key conflicts; E4 hash reuse mismatches; E5 tombstone is terminal;
+    // E6 invalid owner is rejected before writes.
+    //
+    // | Rule | Receipt | Identity | Owner | Hash | Effect |
+    // |---|---|---|---|---|---|
+    // | C1 | absent | absent | exact | valid | E1 |
+    // | C2 | exact | live+advanced | exact | exact | E2 |
+    // | C3 | exact/absent | live | foreign/exact | exact/other key | E3 |
+    // | C4 | present | live | exact | mismatch | E4 |
+    // | C5 | exact | tombstone | exact | exact | E5 |
+    // | C6 | any | any | empty | any | E6 |
+    let id = "sesn_create_receipt_table";
+    let candidate = session(id, "original lowering");
+    let create_record = IdempotencyRecord {
+        key: "create-receipt-table".into(),
+        payload_hash: "stable-request-fingerprint".into(),
+    };
+    let applied = repo
+        .create("ws_a", candidate.clone(), create_record.clone(), Vec::new())
+        .await
+        .expect("C1/E1");
+    let SessionCreateResult::Applied(mut durable) = applied else {
+        panic!("C1/E1 must apply")
+    };
+    durable.title = Some("durable revision two".into());
+    durable = replace_session(repo, "ws_a", durable, "advance-after-create", Vec::new()).await;
+
+    assert_eq!(
+        repo.replay_create("ws_a", id, &create_record).await,
+        Ok(Some(durable.clone())),
+        "C2/E2 atomic preflight returns current durable aggregate"
+    );
+    let mut changed_lowering = candidate;
+    changed_lowering.title = Some("new lowering must not escape".into());
+    assert_eq!(
+        repo.create("ws_a", changed_lowering, create_record.clone(), Vec::new(),)
+            .await,
+        Ok(SessionCreateResult::Replayed(durable.clone())),
+        "C2/E2 create replay returns repository truth"
+    );
+    assert_eq!(
+        repo.replay_create("ws_b", id, &create_record).await,
+        Err(SessionRepositoryError::Conflict(
+            SessionRepositoryConflict::AlreadyExists
+        )),
+        "C3/E3 owner-bound receipt"
+    );
+    assert_eq!(
+        repo.replay_create(
+            "ws_a",
+            id,
+            &IdempotencyRecord {
+                payload_hash: "another-request".into(),
+                ..create_record.clone()
+            },
+        )
+        .await,
+        Err(SessionRepositoryError::Conflict(
+            SessionRepositoryConflict::IdempotencyMismatch
+        )),
+        "C4/E4"
+    );
+    assert_eq!(
+        repo.replay_create(
+            "ws_a",
+            id,
+            &IdempotencyRecord {
+                key: "another-key".into(),
+                payload_hash: create_record.payload_hash.clone(),
+            },
+        )
+        .await,
+        Err(SessionRepositoryError::Conflict(
+            SessionRepositoryConflict::AlreadyExists
+        )),
+        "C3/E3 another key cannot adopt an occupied identity"
+    );
+
+    let tombstoned_id = "sesn_create_receipt_tombstone";
+    let mut tombstoned = session(tombstoned_id, "terminal");
+    assert!(tombstoned.request_delete());
+    complete_terminal_cleanup(&mut tombstoned);
+    let tombstone_record = IdempotencyRecord {
+        key: "create-receipt-tombstone".into(),
+        payload_hash: "terminal-request".into(),
+    };
+    let SessionCreateResult::Applied(tombstoned) = repo
+        .create("ws_a", tombstoned, tombstone_record.clone(), Vec::new())
+        .await
+        .expect("C5 setup")
+    else {
+        panic!("C5 setup applies")
+    };
+    repo.commit_mutation(
+        "ws_a",
+        delete_mutation(&tombstoned, "delete-create-receipt-tombstone"),
+    )
+    .await
+    .expect("C5 tombstone");
+    assert_eq!(
+        repo.replay_create("ws_a", tombstoned_id, &tombstone_record)
+            .await,
+        Err(SessionRepositoryError::Conflict(
+            SessionRepositoryConflict::Tombstoned
+        )),
+        "C5/E5"
+    );
+    assert!(matches!(
+        repo.create(
+            "",
+            session("sesn_empty_owner", "invalid"),
+            IdempotencyRecord {
+                key: "invalid-owner".into(),
+                payload_hash: "invalid-owner".into(),
+            },
+            Vec::new(),
+        )
+        .await,
+        Err(SessionRepositoryError::InvalidMutation(_))
+    ));
+    assert_eq!(
+        repo.get("sesn_empty_owner").await,
+        Err(SessionRepositoryError::NotFound),
+        "C6/E6"
+    );
+}
+
+async fn create_receipt_race_decision_table<R: ManagedSessionRepository>(repo: std::sync::Arc<R>) {
+    // Concurrent create cause/effect table. C1 same key+hash with different
+    // lowerings; C2 same key with different hashes; C3 delete races a create on
+    // the same durable identity. Effects: E1 exactly one Applied plus one
+    // Replayed carrying the winner; E2 exactly one Applied plus one mismatch;
+    // E3 delete never leaves both a live aggregate and tombstone and the create
+    // cannot resurrect the identity. A two-party barrier makes every row enter
+    // the repository concurrently; the repository transaction is the sole arbiter.
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let same_id = "sesn_create_race_same";
+    let same_record = IdempotencyRecord {
+        key: "race-same".into(),
+        payload_hash: "same-request".into(),
+    };
+    let left = {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        let record = same_record.clone();
+        async move {
+            barrier.wait().await;
+            repo.create("ws_a", session(same_id, "left"), record, Vec::new())
+                .await
+        }
+    };
+    let right = {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        let record = same_record;
+        async move {
+            barrier.wait().await;
+            repo.create("ws_a", session(same_id, "right"), record, Vec::new())
+                .await
+        }
+    };
+    let (left, right) = tokio::join!(left, right);
+    let outcomes = [left.expect("C1 left"), right.expect("C1 right")];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, SessionCreateResult::Applied(_)))
+            .count(),
+        1,
+        "C1/E1 one Applied"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, SessionCreateResult::Replayed(_)))
+            .count(),
+        1,
+        "C1/E1 one Replayed"
+    );
+    let durable = repo.get(same_id).await.expect("C1 durable winner");
+    assert!(outcomes.iter().all(|outcome| match outcome {
+        SessionCreateResult::Applied(session) | SessionCreateResult::Replayed(session) =>
+            session == &durable,
+    }));
+
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let different_id = "sesn_create_race_different";
+    let create = |title: &'static str, hash: &'static str| {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        async move {
+            barrier.wait().await;
+            repo.create(
+                "ws_a",
+                session(different_id, title),
+                IdempotencyRecord {
+                    key: "race-different".into(),
+                    payload_hash: hash.into(),
+                },
+                Vec::new(),
+            )
+            .await
+        }
+    };
+    let (left, right) = tokio::join!(create("left", "left-hash"), create("right", "right-hash"));
+    let outcomes = [left, right];
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, Ok(SessionCreateResult::Applied(_))))
+            .count(),
+        1,
+        "C2/E2 one Applied"
+    );
+    assert_eq!(
+        outcomes
+            .iter()
+            .filter(|outcome| {
+                matches!(
+                    outcome,
+                    Err(SessionRepositoryError::Conflict(
+                        SessionRepositoryConflict::IdempotencyMismatch
+                    ))
+                )
+            })
+            .count(),
+        1,
+        "C2/E2 one mismatch"
+    );
+
+    let delete_id = "sesn_delete_create_race";
+    let mut deletable = session(delete_id, "delete winner");
+    assert!(deletable.request_delete());
+    complete_terminal_cleanup(&mut deletable);
+    let deletable = create_session(repo.as_ref(), "ws_a", deletable, Vec::new()).await;
+    let delete = delete_mutation(&deletable, "delete-create-race");
+    let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(2));
+    let delete_future = {
+        let repo = repo.clone();
+        let barrier = barrier.clone();
+        async move {
+            barrier.wait().await;
+            repo.commit_mutation("ws_a", delete).await
+        }
+    };
+    let create_future = {
+        let repo = repo.clone();
+        let barrier = barrier;
+        async move {
+            barrier.wait().await;
+            repo.create(
+                "ws_a",
+                session(delete_id, "must not resurrect"),
+                IdempotencyRecord {
+                    key: "create-after-delete-race".into(),
+                    payload_hash: "create-after-delete-race".into(),
+                },
+                Vec::new(),
+            )
+            .await
+        }
+    };
+    let (deleted, created) = tokio::join!(delete_future, create_future);
+    assert!(
+        matches!(deleted, Ok(SessionMutationResult::Applied { .. })),
+        "C3/E3"
+    );
+    assert!(
+        matches!(
+            created,
+            Err(SessionRepositoryError::Conflict(
+                SessionRepositoryConflict::AlreadyExists | SessionRepositoryConflict::Tombstoned
+            ))
+        ),
+        "C3/E3"
+    );
+    assert_eq!(
+        repo.get(delete_id).await,
+        Err(SessionRepositoryError::NotFound),
+        "C3/E3"
+    );
+}
+
 async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     save_get_round_trips(&fresh()).await;
     absent_id_reads_none(&fresh()).await;
@@ -819,11 +1303,13 @@ async fn run_suite<R: ManagedSessionRepository>(fresh: impl Fn() -> R) {
     ownership_is_one_atomic_repository_fact(&fresh()).await;
     environment_state_is_atomic_and_non_destructive(&fresh()).await;
     vault_reference_index_returns_only_live_scoped_sessions(&fresh()).await;
+    credential_source_dependency_decision_table(&fresh()).await;
     lifecycle_outbox_tracks_every_committed_transition(&fresh()).await;
     pending_resource_activation_index_is_durable(&fresh()).await;
     tombstone_requires_hidden_completed_cleanup(&fresh()).await;
     let cas_repo = fresh();
     root_cas_decision_table(&cas_repo).await;
+    create_receipt_decision_table(&fresh()).await;
 }
 
 fn deployment_record(id: &str, revision: u64, scheduled: bool) -> DeploymentView {
@@ -1040,6 +1526,10 @@ fn sqlite_backend_conforms() {
             SqliteManagedSessionRepository::open_in_memory().expect("sqlite in-memory repo")
         })
         .await;
+        create_receipt_race_decision_table(std::sync::Arc::new(
+            SqliteManagedSessionRepository::open_in_memory().expect("sqlite create-race repo"),
+        ))
+        .await;
         deployment_cas_decision_table(
             &SqliteManagedSessionRepository::open_in_memory().expect("sqlite deployment repo"),
         )
@@ -1152,9 +1642,14 @@ async fn postgres_root_cas_conforms_to_the_same_decision_table() {
         .connect(&url)
         .await
         .expect("connect Session CAS schema");
-    let repo = PostgresManagedSessionRepository::with_pool(pool)
-        .await
-        .expect("open Postgres Session repository");
-    root_cas_decision_table(&repo).await;
-    deployment_cas_decision_table(&repo).await;
+    let repo = std::sync::Arc::new(
+        PostgresManagedSessionRepository::with_pool(pool)
+            .await
+            .expect("open Postgres Session repository"),
+    );
+    root_cas_decision_table(repo.as_ref()).await;
+    create_receipt_decision_table(repo.as_ref()).await;
+    create_receipt_race_decision_table(repo.clone()).await;
+    credential_source_dependency_decision_table(repo.as_ref()).await;
+    deployment_cas_decision_table(repo.as_ref()).await;
 }

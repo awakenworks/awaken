@@ -65,8 +65,13 @@ impl ManagedState {
         owner_scope: &str,
         resources: &[ParsedSessionInput],
         agent_defaults: &[awaken_resource_contract::InputBinding],
-    ) -> Result<Vec<awaken_session_contract::SessionInputAttachment>, StateError> {
-        let mut attachments = Vec::with_capacity(resources.len());
+    ) -> Result<
+        (
+            Vec<awaken_session_contract::SessionInputAttachment>,
+            Vec<awaken_session_application::ConfiguredSessionRepository>,
+        ),
+        StateError,
+    > {
         let mut used_mounts = agent_defaults
             .iter()
             .map(|binding| binding.mount_path.trim_start_matches('/').to_string())
@@ -77,7 +82,11 @@ impl ManagedState {
                     .map(|resource| resource.mount_path.trim_start_matches('/').to_string()),
             )
             .collect::<std::collections::BTreeSet<_>>();
-        for (index, resource) in resources.iter().enumerate() {
+        // Resolve every definition-owned mount before entering either durable
+        // Repository participant. A later malformed Memory/File input cannot
+        // strand an earlier Registry/Vault participant.
+        let mut normalized_resources = Vec::with_capacity(resources.len());
+        for resource in resources {
             let mut resource = resource.clone();
             if resource.implicit_memory_mount {
                 let ParsedInputTarget::MemoryStore(memory_store_id) = &resource.target else {
@@ -93,6 +102,13 @@ impl ManagedState {
                     &used_mounts,
                 );
             }
+            used_mounts.insert(resource.mount_path.trim_start_matches('/').to_string());
+            normalized_resources.push(resource);
+        }
+
+        let mut attachments = Vec::with_capacity(normalized_resources.len());
+        let mut repository_configurations = Vec::new();
+        for (index, resource) in normalized_resources.iter().enumerate() {
             let repository_id = if let ParsedInputTarget::Repository {
                 remote_url,
                 authorization_token,
@@ -101,36 +117,52 @@ impl ManagedState {
             } = &resource.target
             {
                 let repository_id = format!("managed:{session_id}:repository:{index}");
-                Some(
-                    self.application
-                        .configure_session_repository(
-                            awaken_session_application::SessionRepositoryResourceInput {
-                                id: repository_id,
-                                workspace_id: owner_scope.to_string(),
-                                name: format!("Session repository {index}"),
-                                description: "Managed compatibility Session input".into(),
-                                remote_url: remote_url.clone(),
-                                authorization_token: authorization_token
-                                    .clone()
-                                    .map(|token| token.into_redacted()),
-                                credential: None,
-                                mount_path: resource.mount_path.clone(),
-                                initial_branch: initial_branch.clone(),
-                                initial_commit: initial_commit.clone(),
-                            },
-                        )
-                        .await
-                        .map_err(StateError::Run)?,
-                )
+                let configured = match self
+                    .application
+                    .configure_session_repository(
+                        awaken_session_application::SessionRepositoryResourceInput {
+                            id: repository_id,
+                            workspace_id: owner_scope.to_string(),
+                            name: format!("Session repository {index}"),
+                            description: "Managed compatibility Session input".into(),
+                            remote_url: remote_url.clone(),
+                            authorization_token: authorization_token
+                                .clone()
+                                .map(|token| token.into_redacted()),
+                            credential: None,
+                            mount_path: resource.mount_path.clone(),
+                            initial_branch: initial_branch.clone(),
+                            initial_commit: initial_commit.clone(),
+                        },
+                    )
+                    .await
+                {
+                    Ok(configured) => configured,
+                    Err(first) => {
+                        if !self
+                            .application
+                            .abort_unadopted_session_repositories(&repository_configurations)
+                            .await
+                        {
+                            tracing::warn!(
+                                session = %session_id,
+                                "Managed Session Repository compensation remains pending after lowering failure"
+                            );
+                        }
+                        return Err(StateError::Run(first));
+                    }
+                };
+                let repository_id = configured.repository_id.clone();
+                repository_configurations.push(configured);
+                Some(repository_id)
             } else {
                 None
             };
             let mut binding = input_binding(
                 format!("session:{session_id}:input:{index}"),
-                &resource,
+                resource,
                 repository_id,
             );
-            used_mounts.insert(binding.mount_path.trim_start_matches('/').to_string());
             let normalized = binding.mount_path.trim_start_matches('/');
             let replaces = agent_defaults
                 .iter()
@@ -144,7 +176,7 @@ impl ManagedState {
             }
             attachments.push(awaken_session_contract::SessionInputAttachment { binding, replaces });
         }
-        Ok(attachments)
+        Ok((attachments, repository_configurations))
     }
 }
 

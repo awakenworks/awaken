@@ -705,6 +705,15 @@ pub struct SessionIdempotencyReceipt {
     pub committed_revision: SessionRevision,
 }
 
+/// Atomic outcome of one Session-root create command. Both variants carry the
+/// repository's durable aggregate; callers must never continue from their
+/// locally compiled candidate after the repository classified a replay.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SessionCreateResult {
+    Applied(PersistedSession),
+    Replayed(PersistedSession),
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[allow(
     clippy::large_enum_variant,
@@ -926,14 +935,26 @@ impl SessionMutation {
 /// and be reported faithfully by another process.
 #[async_trait]
 pub trait ManagedSessionRepository: Send + Sync {
-    /// Insert one new aggregate together with owner, idempotency and outbox.
+    /// Insert one new aggregate together with owner, idempotency and outbox, or
+    /// atomically return the exact durable aggregate for an owner-bound replay.
     async fn create(
         &self,
         owner_scope: &str,
         session: PersistedSession,
         idempotency: IdempotencyRecord,
         lifecycle_facts: Vec<ManagedLifecycleFact>,
-    ) -> Result<SessionRevision, SessionRepositoryError>;
+    ) -> Result<SessionCreateResult, SessionRepositoryError>;
+
+    /// Atomically classify a deterministic create identity without inserting.
+    /// `Ok(None)` means both receipt and identity are absent. An exact receipt
+    /// returns the current durable aggregate; occupied, tombstoned, mismatched,
+    /// or corrupt identities retain the same typed result as [`Self::create`].
+    async fn replay_create(
+        &self,
+        owner_scope: &str,
+        session_id: &str,
+        idempotency: &IdempotencyRecord,
+    ) -> Result<Option<PersistedSession>, SessionRepositoryError>;
 
     /// Commit the one root-revision CAS transaction.
     async fn commit_mutation(
@@ -990,6 +1011,18 @@ pub trait ManagedSessionRepository: Send + Sync {
         ))
     }
 
+    /// Healthy Sessions whose current desired MCP attachments reference one
+    /// exact credential source. The Workspace comes from the Session root row;
+    /// callers supply a source id only from the credential authority's exact
+    /// committed rollout provenance. This index is additive to immutable Vault
+    /// authoring references: neither can be inferred from or substituted for the
+    /// other.
+    async fn sessions_referencing_credential_source(
+        &self,
+        workspace_id: &str,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+    ) -> Result<Vec<PersistedSession>, SessionRepositoryError>;
+
     /// Durable application-command receipt. This is a read of the same
     /// idempotency table written atomically by `create`/`commit_mutation`, not a
     /// second command registry.
@@ -1040,6 +1073,7 @@ mod mutation_tests {
             revision,
             baseline: crate::SessionBaselineState::Preparing(crate::SessionCreationIntent {
                 control: crate::ControlSessionCreationInputs {
+                    mutation_policy: crate::SessionMutationPolicy::Managed,
                     environment: crate::EnvironmentSnapshot {
                         environment_id: "environment".into(),
                         revision: awaken_environment_contract::EnvironmentRevision(1),
@@ -1072,6 +1106,7 @@ mod mutation_tests {
                     model: "model".into(),
                     execution_model_ref: "model".into(),
                     model_override: None,
+                    system_prompt: crate::SessionSystemPromptSelection::Inherit,
                     runtime: None,
                     mcp_authoring: Default::default(),
                     toolsets: Vec::new(),

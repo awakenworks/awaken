@@ -52,8 +52,9 @@ mod mutation;
 pub use mutation::SessionMutationError;
 mod session_services;
 pub use session_services::{
-    RepositoryCredentialIngress, ResolvedSessionEnvironment, SessionCredentialAccessRequest,
-    SessionCredentialSource, SessionEnvironmentSource,
+    RepositoryCredentialEntry, RepositoryCredentialIngress, ResolvedSessionEnvironment,
+    SessionCredentialAccessRequest, SessionCredentialSource, SessionEnvironmentSource,
+    SessionParticipantProvenance,
 };
 mod event_batch_cutover_validation;
 pub use event_batch_cutover_validation::{
@@ -93,11 +94,13 @@ pub use run_admission::{
     AdmittedRunApplication, CreateProfiledSessionCommand, RecoveredSessionProjection,
     SessionProjectionRecoveryError, SessionRunAdmission,
 };
-pub use runtime_commands::SessionRepositoryResourceInput;
+pub use runtime_commands::{
+    ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryResourceInput,
+};
 mod update;
 pub use update::{
-    SessionFieldUpdate, SessionMetadataUpdate, SessionUpdateChanges, SessionUpdateCommand,
-    SessionUpdateError, SessionUpdateOutcome,
+    SessionFieldUpdate, SessionMcpUpdate, SessionMetadataUpdate, SessionUpdateChanges,
+    SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 mod terminal;
 pub use terminal::{SessionDeleteCommand, SessionDispositionMutation};

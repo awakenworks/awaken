@@ -2518,6 +2518,7 @@ dependencies = [
  "awaken-agent-contract",
  "awaken-authz-enforce",
  "awaken-config-resolver",
+ "awaken-credential-contract",
  "awaken-credential-vault",
  "awaken-service-lifecycle",
  "awaken-session-contract",

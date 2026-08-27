@@ -34,18 +34,19 @@ use tower::ServiceExt;
 // --- State-level helpers (deterministic broadcast driving) -------------------
 
 async fn state_create(state: &ManagedState) -> String {
-    state
-        .create_session(
+    Box::pin(
+        state.create_session(
             serde_json::from_value(serde_json::json!({
                 "agent": "coder",
                 "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID
             }))
             .unwrap(),
             None,
-        )
-        .await
-        .expect("create")
-        .id
+        ),
+    )
+    .await
+    .expect("create")
+    .id
 }
 
 async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
@@ -54,7 +55,7 @@ async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
     // application-owned activity here; no test transcript or lifecycle state is
     // synthesized beside the production authority.
     let application = state.session_application();
-    support::drive_retained_session_events(state, session_id).await;
+    Box::pin(support::drive_retained_session_events(state, session_id)).await;
     let session = Box::pin(application.session(session_id))
         .await
         .expect("read the retained activity epochs");
@@ -66,7 +67,7 @@ async fn reconcile_published_run(state: &ManagedState, session_id: &str) {
     // The completion callback wakes a subsequent supervisor turn. The fake
     // commits terminal truth synchronously but has no Runtime Host callback, so
     // drive that exact second turn explicitly before asking GET to project it.
-    support::drive_retained_session_events(state, session_id).await;
+    Box::pin(support::drive_retained_session_events(state, session_id)).await;
 }
 
 async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
@@ -74,18 +75,18 @@ async fn state_send_user(state: &Arc<ManagedState>, id: &str, text: &str) {
         "events": [{ "type": "user.message", "content": [{ "type": "text", "text": text }] }]
     }))
     .unwrap();
-    state.send_events(id, req).await.expect("send");
-    reconcile_published_run(state, id).await;
+    Box::pin(state.send_events(id, req)).await.expect("send");
+    Box::pin(reconcile_published_run(state, id)).await;
     // GET owns warm projection in production. Calling the route after the
     // committed Run keeps this integration helper on that same projector and
     // publishes its appended suffix to an already-open receiver.
     let app = router(state.clone());
-    let _ = http_json(
+    let _ = Box::pin(http_json(
         &app,
         "GET",
         &format!("/v1/sessions/{id}/events"),
         serde_json::Value::Null,
-    )
+    ))
     .await;
 }
 
@@ -127,9 +128,12 @@ async fn http_json(
             Body::from(serde_json::to_vec(&body).unwrap())
         })
         .unwrap();
-    let resp = app.clone().oneshot(req).await.unwrap();
+    let resp = Box::pin(app.clone().oneshot(req)).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK, "{method} {uri}");
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let bytes = Box::pin(resp.into_body().collect())
+        .await
+        .unwrap()
+        .to_bytes();
     if bytes.is_empty() {
         serde_json::Value::Null
     } else {
@@ -143,13 +147,14 @@ async fn http_sse(app: &Router, uri: &str, headers: &[(&str, &str)]) -> (StatusC
     for (k, v) in headers {
         b = b.header(*k, *v);
     }
-    let resp = app
-        .clone()
-        .oneshot(b.body(Body::empty()).unwrap())
+    let resp = Box::pin(app.clone().oneshot(b.body(Body::empty()).unwrap()))
         .await
         .unwrap();
     let status = resp.status();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let bytes = Box::pin(resp.into_body().collect())
+        .await
+        .unwrap()
+        .to_bytes();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
 }
 

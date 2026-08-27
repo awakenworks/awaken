@@ -2821,293 +2821,317 @@ async fn two_closed_turns_have_one_canonical_payload_and_every_cross_replica_suf
     // Constraint: admitted_revision is written by the existing root CAS;
     // interval observations and message/lifecycle cursors remain existing
     // Runtime facts. The disposable Managed vector owns no persistence.
-    let runtime = LifecycleRuntime::default();
-    let repository = Arc::new(ephemeral_session_repo());
-    let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
-    let session = warm
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
+    let (runtime, repository, warm, session_id, first_visible_prefix, first_turn_cursor) =
+        Box::pin(async move {
+            let runtime = LifecycleRuntime::default();
+            let repository = Arc::new(ephemeral_session_repo());
+            let warm = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+            let session = warm
+                .create_session(
+                    serde_json::from_value(serde_json::json!({
+                        "agent":"coder", "environment_id":"env_local"
+                    }))
+                    .unwrap(),
+                    None,
+                )
+                .await
+                .unwrap();
 
-    let first_batch = warm
-        .application
-        .append_session_event_batch(
-            &session.id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("turn one")],
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    let first_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let SessionEventCommand::UserMessage {
-        run_id: first_run, ..
-    } = &first_batch.events[0].event
-    else {
-        unreachable!("first batch owns a User Run")
-    };
-    let first_run = first_run.clone();
-    let overlapping_batch = warm
-        .application
-        .append_session_event_batch(
-            &session.id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("turn one overlap")],
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    let overlapping_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let SessionEventCommand::UserMessage {
-        run_id: overlapping_run,
-        ..
-    } = &overlapping_batch.events[0].event
-    else {
-        unreachable!("overlapping batch owns a User Run")
-    };
-    let overlapping_run = overlapping_run.clone();
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            10,
-            &session.id,
-            &first_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            12,
-            &session.id,
-            &overlapping_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            14,
-            &session.id,
-            &first_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-        lifecycle(
-            16,
-            &session.id,
-            &overlapping_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-    ]);
-    *runtime.messages.lock().unwrap() = vec![
-        Message::new(
-            MessageId::session_event_input(&session.id, first_batch.events[0].event.operation_id()),
-            Role::User,
-            vec![ContentBlock::text("turn one")],
-        ),
-        Message::text(
-            MessageId("canonical-turn-one-output".into()),
-            Role::Assistant,
-            "one complete",
-        ),
-        Message::new(
-            MessageId::session_event_input(
-                &session.id,
-                overlapping_batch.events[0].event.operation_id(),
-            ),
-            Role::User,
-            vec![ContentBlock::text("turn one overlap")],
-        ),
-        Message::text(
-            MessageId("canonical-turn-one-overlap-output".into()),
-            Role::Assistant,
-            "overlap complete",
-        ),
-    ];
-    *runtime.message_cursors.lock().unwrap() = vec![9, 11, 11, 13];
-    persist_batch_projection_anchors(&warm, &session.id, &first_batch.batch_id, &[9]).await;
-    persist_batch_projection_anchors(&warm, &session.id, &overlapping_batch.batch_id, &[11]).await;
-    warm.application
-        .settle_activity_observed(
-            &session.id,
-            first_activity.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: first_activity.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
-                run_id: first_run,
-                lifecycle_cursor: lifecycle_cursor(14),
-                source_commit_cursor: 14,
-            }),
-        )
-        .await
-        .unwrap();
-    warm.application
-        .settle_activity_observed(
-            &session.id,
-            overlapping_activity.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: overlapping_activity.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
+            let first_batch = warm
+                .application
+                .append_session_event_batch(
+                    &session.id,
+                    vec![SessionEventInput::UserMessage {
+                        content: vec![ContentBlock::text("turn one")],
+                    }],
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            let first_activity = warm.application.begin_activity(&session.id).await.unwrap();
+            let SessionEventCommand::UserMessage {
+                run_id: first_run, ..
+            } = &first_batch.events[0].event
+            else {
+                unreachable!("first batch owns a User Run")
+            };
+            let first_run = first_run.clone();
+            let overlapping_batch = warm
+                .application
+                .append_session_event_batch(
+                    &session.id,
+                    vec![SessionEventInput::UserMessage {
+                        content: vec![ContentBlock::text("turn one overlap")],
+                    }],
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+            let overlapping_activity = warm.application.begin_activity(&session.id).await.unwrap();
+            let SessionEventCommand::UserMessage {
                 run_id: overlapping_run,
-                lifecycle_cursor: lifecycle_cursor(16),
-                source_commit_cursor: 16,
-            }),
-        )
-        .await
-        .unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    let first_visible_prefix = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    let first_turn_cursor = first_visible_prefix
-        .last()
-        .expect("R1 first closed interval cursor")
-        .id
-        .clone();
-
-    let second_batch = warm
-        .application
-        .append_session_event_batch(
-            &session.id,
-            vec![SessionEventInput::UserMessage {
-                content: vec![ContentBlock::text("turn two")],
-            }],
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    let second_activity = warm.application.begin_activity(&session.id).await.unwrap();
-    let SessionEventCommand::UserMessage {
-        run_id: second_run, ..
-    } = &second_batch.events[0].event
-    else {
-        unreachable!("second batch owns a User Run")
-    };
-    let second_run = second_run.clone();
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            20,
-            &session.id,
-            &second_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            22,
-            &session.id,
-            &second_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-    ]);
-    runtime.messages.lock().unwrap().extend([
-        Message::new(
-            MessageId::session_event_input(
+                ..
+            } = &overlapping_batch.events[0].event
+            else {
+                unreachable!("overlapping batch owns a User Run")
+            };
+            let overlapping_run = overlapping_run.clone();
+            runtime.lifecycle.lock().unwrap().extend([
+                lifecycle(
+                    10,
+                    &session.id,
+                    &first_run,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ),
+                lifecycle(
+                    12,
+                    &session.id,
+                    &overlapping_run,
+                    RunLifecycleEventKind::Running,
+                    RunState::Running,
+                ),
+                lifecycle(
+                    14,
+                    &session.id,
+                    &first_run,
+                    RunLifecycleEventKind::Completed,
+                    RunState::Ended(EndCause::NaturalEnd),
+                ),
+                lifecycle(
+                    16,
+                    &session.id,
+                    &overlapping_run,
+                    RunLifecycleEventKind::Completed,
+                    RunState::Ended(EndCause::NaturalEnd),
+                ),
+            ]);
+            *runtime.messages.lock().unwrap() = vec![
+                Message::new(
+                    MessageId::session_event_input(
+                        &session.id,
+                        first_batch.events[0].event.operation_id(),
+                    ),
+                    Role::User,
+                    vec![ContentBlock::text("turn one")],
+                ),
+                Message::text(
+                    MessageId("canonical-turn-one-output".into()),
+                    Role::Assistant,
+                    "one complete",
+                ),
+                Message::new(
+                    MessageId::session_event_input(
+                        &session.id,
+                        overlapping_batch.events[0].event.operation_id(),
+                    ),
+                    Role::User,
+                    vec![ContentBlock::text("turn one overlap")],
+                ),
+                Message::text(
+                    MessageId("canonical-turn-one-overlap-output".into()),
+                    Role::Assistant,
+                    "overlap complete",
+                ),
+            ];
+            *runtime.message_cursors.lock().unwrap() = vec![9, 11, 11, 13];
+            persist_batch_projection_anchors(&warm, &session.id, &first_batch.batch_id, &[9]).await;
+            persist_batch_projection_anchors(
+                &warm,
                 &session.id,
-                second_batch.events[0].event.operation_id(),
-            ),
-            Role::User,
-            vec![ContentBlock::text("turn two")],
-        ),
-        Message::text(
-            MessageId("canonical-turn-two-output".into()),
-            Role::Assistant,
-            "two complete",
-        ),
-    ]);
-    *runtime.message_cursors.lock().unwrap() = vec![9, 11, 11, 13, 19, 21];
-    persist_batch_projection_anchors(&warm, &session.id, &second_batch.batch_id, &[19]).await;
-    warm.application
-        .settle_activity_observed(
-            &session.id,
-            second_activity.activity_epoch,
-            Some(awaken_session_contract::SessionRuntimeIntervalObservation {
-                activity_epoch: second_activity.activity_epoch,
-                thread_id: ThreadId(session.id.clone()),
-                run_id: second_run,
-                lifecycle_cursor: lifecycle_cursor(22),
-                source_commit_cursor: 22,
-            }),
-        )
-        .await
-        .unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
-    warm.refresh_committed_events(&session.id).await.unwrap();
+                &overlapping_batch.batch_id,
+                &[11],
+            )
+            .await;
+            warm.application
+                .settle_activity_observed(
+                    &session.id,
+                    first_activity.activity_epoch,
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: first_activity.activity_epoch,
+                        thread_id: ThreadId(session.id.clone()),
+                        run_id: first_run,
+                        lifecycle_cursor: lifecycle_cursor(14),
+                        source_commit_cursor: 14,
+                    }),
+                )
+                .await
+                .unwrap();
+            warm.application
+                .settle_activity_observed(
+                    &session.id,
+                    overlapping_activity.activity_epoch,
+                    Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                        activity_epoch: overlapping_activity.activity_epoch,
+                        thread_id: ThreadId(session.id.clone()),
+                        run_id: overlapping_run,
+                        lifecycle_cursor: lifecycle_cursor(16),
+                        source_commit_cursor: 16,
+                    }),
+                )
+                .await
+                .unwrap();
+            warm.refresh_committed_events(&session.id).await.unwrap();
+            let first_visible_prefix = warm
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data;
+            let first_turn_cursor = first_visible_prefix
+                .last()
+                .expect("R1 first closed interval cursor")
+                .id
+                .clone();
+            (
+                runtime,
+                repository,
+                warm,
+                session.id,
+                first_visible_prefix,
+                first_turn_cursor,
+            )
+        })
+        .await;
 
-    let cold = ManagedState::new(runtime).with_session_repo(repository);
-    cold.refresh_committed_events(&session.id).await.unwrap();
-    let warm_events = warm
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    let cold_events = cold
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data;
-    assert_eq!(
-        &warm_events[..first_visible_prefix.len()],
-        first_visible_prefix.as_slice(),
-        "R1-R2 first-visible prefix is immutable after a later turn"
-    );
-    assert!(
-        !warm
-            .list_events(&session.id, Some(&first_turn_cursor), None, false)
+    Box::pin(async move {
+        let second_batch = warm
+            .application
+            .append_session_event_batch(
+                &session_id,
+                vec![SessionEventInput::UserMessage {
+                    content: vec![ContentBlock::text("turn two")],
+                }],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let second_activity = warm.application.begin_activity(&session_id).await.unwrap();
+        let SessionEventCommand::UserMessage {
+            run_id: second_run, ..
+        } = &second_batch.events[0].event
+        else {
+            unreachable!("second batch owns a User Run")
+        };
+        let second_run = second_run.clone();
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                20,
+                &session_id,
+                &second_run,
+                RunLifecycleEventKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(
+                22,
+                &session_id,
+                &second_run,
+                RunLifecycleEventKind::Completed,
+                RunState::Ended(EndCause::NaturalEnd),
+            ),
+        ]);
+        runtime.messages.lock().unwrap().extend([
+            Message::new(
+                MessageId::session_event_input(
+                    &session_id,
+                    second_batch.events[0].event.operation_id(),
+                ),
+                Role::User,
+                vec![ContentBlock::text("turn two")],
+            ),
+            Message::text(
+                MessageId("canonical-turn-two-output".into()),
+                Role::Assistant,
+                "two complete",
+            ),
+        ]);
+        *runtime.message_cursors.lock().unwrap() = vec![9, 11, 11, 13, 19, 21];
+        persist_batch_projection_anchors(&warm, &session_id, &second_batch.batch_id, &[19]).await;
+        warm.application
+            .settle_activity_observed(
+                &session_id,
+                second_activity.activity_epoch,
+                Some(awaken_session_contract::SessionRuntimeIntervalObservation {
+                    activity_epoch: second_activity.activity_epoch,
+                    thread_id: ThreadId(session_id.clone()),
+                    run_id: second_run,
+                    lifecycle_cursor: lifecycle_cursor(22),
+                    source_commit_cursor: 22,
+                }),
+            )
+            .await
+            .unwrap();
+        warm.refresh_committed_events(&session_id).await.unwrap();
+        warm.refresh_committed_events(&session_id).await.unwrap();
+
+        let cold = ManagedState::new(runtime).with_session_repo(repository);
+        cold.refresh_committed_events(&session_id).await.unwrap();
+        let warm_events = warm
+            .list_events(&session_id, None, None, false)
             .unwrap()
-            .data
-            .is_empty(),
-        "R2 late turn remains in the suffix of an already-issued cursor"
-    );
-    assert_eq!(
-        serde_json::to_value(&cold_events).unwrap(),
-        serde_json::to_value(&warm_events).unwrap(),
-        "R3/E3 full ordered payload"
-    );
-    assert_eq!(
-        warm_events.iter().map(Event::type_str).collect::<Vec<_>>(),
-        [
-            "user.message",
-            "session.status_running",
-            "session.thread_status_running",
-            "user.message",
-            "agent.message",
-            "session.thread_status_running",
-            "agent.message",
-            "session.thread_status_idle",
-            "session.thread_status_idle",
-            "session.usage",
-            "session.status_idle",
-            "user.message",
-            "session.status_running",
-            "session.thread_status_running",
-            "agent.message",
-            "session.thread_status_idle",
-            "session.usage",
-            "session.status_idle",
-        ],
-        "R1-R3/E1+E2"
-    );
-    for cursor in warm_events.iter().map(|event| event.id.as_str()) {
-        let warm_suffix = warm
-            .list_events(&session.id, Some(cursor), None, false)
-            .unwrap();
-        let cold_suffix = cold
-            .list_events(&session.id, Some(cursor), None, false)
-            .unwrap();
+            .data;
+        let cold_events = cold
+            .list_events(&session_id, None, None, false)
+            .unwrap()
+            .data;
         assert_eq!(
-            serde_json::to_value(cold_suffix).unwrap(),
-            serde_json::to_value(warm_suffix).unwrap(),
-            "R4/E3 suffix after {cursor}"
+            &warm_events[..first_visible_prefix.len()],
+            first_visible_prefix.as_slice(),
+            "R1-R2 first-visible prefix is immutable after a later turn"
         );
-    }
+        assert!(
+            !warm
+                .list_events(&session_id, Some(&first_turn_cursor), None, false)
+                .unwrap()
+                .data
+                .is_empty(),
+            "R2 late turn remains in the suffix of an already-issued cursor"
+        );
+        assert_eq!(
+            serde_json::to_value(&cold_events).unwrap(),
+            serde_json::to_value(&warm_events).unwrap(),
+            "R3/E3 full ordered payload"
+        );
+        assert_eq!(
+            warm_events.iter().map(Event::type_str).collect::<Vec<_>>(),
+            [
+                "user.message",
+                "session.status_running",
+                "session.thread_status_running",
+                "user.message",
+                "agent.message",
+                "session.thread_status_running",
+                "agent.message",
+                "session.thread_status_idle",
+                "session.thread_status_idle",
+                "session.usage",
+                "session.status_idle",
+                "user.message",
+                "session.status_running",
+                "session.thread_status_running",
+                "agent.message",
+                "session.thread_status_idle",
+                "session.usage",
+                "session.status_idle",
+            ],
+            "R1-R3/E1+E2"
+        );
+        for cursor in warm_events.iter().map(|event| event.id.as_str()) {
+            let warm_suffix = warm
+                .list_events(&session_id, Some(cursor), None, false)
+                .unwrap();
+            let cold_suffix = cold
+                .list_events(&session_id, Some(cursor), None, false)
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(cold_suffix).unwrap(),
+                serde_json::to_value(warm_suffix).unwrap(),
+                "R4/E3 suffix after {cursor}"
+            );
+        }
+    })
+    .await;
 }
 
 #[tokio::test]
@@ -3692,7 +3716,7 @@ async fn local_session_update_waits_for_its_accepted_input_predecessor() {
                 metadata: None,
                 budget: None,
                 tools: None,
-                mcp_candidates: None,
+                mcp_update: None,
                 idempotency_key: None,
                 request_fingerprint: awaken_session_contract::stable_fingerprint(&(
                     "local-update-after-receipt",
@@ -4813,270 +4837,286 @@ async fn child_pending_tool_projects_and_replies_through_the_parent_partition() 
     // | P4 | present | yes | exact | no | no | E4 |
     // | P5 | present | yes | exact | exact | no | E5 |
     // | P6 | present | yes | consumed | repeat | yes | E6 |
-    let runtime = RehydrateFake::default();
-    let state = Arc::new(
-        ManagedState::new(runtime.clone()).with_config_source(Arc::new(
-            FrozenToolFamilyProfiles::uniform(
-                "coder",
-                &["researcher"],
-                FrozenTestToolFamily::Custom,
-                "client_lookup",
-            ),
-        )),
-    );
-    let session = state
-        .create_session(
-            serde_json::from_value(serde_json::json!({
-                "agent":"coder", "environment_id":"env_local"
-            }))
-            .unwrap(),
-            None,
-        )
-        .await
-        .unwrap();
-    let child_id = "sthr_pending_child";
-    let child_run = RunId("run-pending-child".into());
-    runtime.install_agent_coordination_prefix(
-        &session.id,
-        RunId("root".into()),
-        0,
-        "call-child",
-        CoordinatedThreadLink {
-            session_id: session.id.clone(),
-            thread_id: ThreadId(child_id.into()),
-            target: CoordinatedThreadTarget::Agent {
-                agent_id: "researcher".into(),
+    let (runtime, state, session_id, child_id, call_id, public_call_id) = Box::pin(async {
+        let runtime = RehydrateFake::default();
+        let state = Arc::new(
+            ManagedState::new(runtime.clone()).with_config_source(Arc::new(
+                FrozenToolFamilyProfiles::uniform(
+                    "coder",
+                    &["researcher"],
+                    FrozenTestToolFamily::Custom,
+                    "client_lookup",
+                ),
+            )),
+        );
+        let session = state
+            .create_session(
+                serde_json::from_value(serde_json::json!({
+                    "agent":"coder", "environment_id":"env_local"
+                }))
+                .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        let child_id = "sthr_pending_child";
+        let child_run = RunId("run-pending-child".into());
+        runtime.install_agent_coordination_prefix(
+            &session.id,
+            RunId("root".into()),
+            0,
+            "call-child",
+            CoordinatedThreadLink {
+                session_id: session.id.clone(),
+                thread_id: ThreadId(child_id.into()),
+                target: CoordinatedThreadTarget::Agent {
+                    agent_id: "researcher".into(),
+                },
+                created_by_operation_id: ToolBatch::operation_id_for_step(
+                    &RunId("root".into()),
+                    0,
+                    "call-child",
+                ),
+                latest_run_id: Some(child_run.clone()),
             },
-            created_by_operation_id: ToolBatch::operation_id_for_step(
-                &RunId("root".into()),
-                0,
-                "call-child",
+        );
+        let root_run = RunId("run-primary-with-active-child".into());
+        runtime.lifecycle.lock().unwrap().extend([
+            lifecycle(
+                1,
+                child_id,
+                &child_run,
+                RunLifecycleEventKind::Running,
+                RunState::Running,
             ),
-            latest_run_id: Some(child_run.clone()),
-        },
-    );
-    let root_run = RunId("run-primary-with-active-child".into());
-    runtime.lifecycle.lock().unwrap().extend([
-        lifecycle(
-            1,
+            lifecycle(
+                2,
+                &session.id,
+                &root_run,
+                RunLifecycleEventKind::Running,
+                RunState::Running,
+            ),
+            lifecycle(
+                3,
+                &session.id,
+                &root_run,
+                RunLifecycleEventKind::Completed,
+                RunState::Ended(EndCause::NaturalEnd),
+            ),
+        ]);
+        state.refresh_committed_events(&session.id).await.unwrap();
+        assert!(
+            !state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data
+                .iter()
+                .any(|event| event.type_str() == "session.status_idle"),
+            "P1/E1"
+        );
+
+        let call_id = "call-child-client";
+        runtime.committed_by_thread.lock().unwrap().insert(
+            child_id.into(),
+            vec![Message::new(
+                MessageId("child-client-tool".into()),
+                Role::Assistant,
+                vec![ContentBlock::tool_use(
+                    call_id,
+                    "client_lookup",
+                    serde_json::json!({"query":"facts"}),
+                )],
+            )],
+        );
+        state.refresh_committed_events(&session.id).await.unwrap();
+        assert_eq!(
+            state.lifecycle_cursor(&session.id).unwrap(),
+            lifecycle_cursor(3),
+            "P2/E2 message-only prefix advances no lifecycle"
+        );
+        let message_first = state
+            .list_thread_events(&session.id, child_id, None, None)
+            .unwrap()
+            .data;
+        assert!(
+            message_first.iter().all(|event| {
+                !matches!(
+                    event.type_str(),
+                    "agent.custom_tool_use"
+                        | "agent.tool_use"
+                        | "agent.mcp_tool_use"
+                        | "session.thread_status_idle"
+                )
+            }),
+            "P2/E2 no premature tool or terminal"
+        );
+        runtime.lifecycle.lock().unwrap().push(lifecycle(
+            4,
             child_id,
             &child_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            2,
-            &session.id,
-            &root_run,
-            RunLifecycleEventKind::Running,
-            RunState::Running,
-        ),
-        lifecycle(
-            3,
-            &session.id,
-            &root_run,
-            RunLifecycleEventKind::Completed,
-            RunState::Ended(EndCause::NaturalEnd),
-        ),
-    ]);
-    state.refresh_committed_events(&session.id).await.unwrap();
-    assert!(
-        !state
-            .list_events(&session.id, None, None, false)
-            .unwrap()
-            .data
-            .iter()
-            .any(|event| event.type_str() == "session.status_idle"),
-        "P1/E1"
-    );
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ));
+        state.refresh_committed_events(&session.id).await.unwrap();
 
-    let call_id = "call-child-client";
-    runtime.committed_by_thread.lock().unwrap().insert(
-        child_id.into(),
-        vec![Message::new(
-            MessageId("child-client-tool".into()),
-            Role::Assistant,
-            vec![ContentBlock::tool_use(
-                call_id,
-                "client_lookup",
-                serde_json::json!({"query":"facts"}),
-            )],
-        )],
-    );
-    state.refresh_committed_events(&session.id).await.unwrap();
-    assert_eq!(
-        state.lifecycle_cursor(&session.id).unwrap(),
-        lifecycle_cursor(3),
-        "P2/E2 message-only prefix advances no lifecycle"
-    );
-    let message_first = state
-        .list_thread_events(&session.id, child_id, None, None)
-        .unwrap()
-        .data;
-    assert!(
-        message_first.iter().all(|event| {
-            !matches!(
-                event.type_str(),
-                "agent.custom_tool_use"
-                    | "agent.tool_use"
-                    | "agent.mcp_tool_use"
-                    | "session.thread_status_idle"
-            )
-        }),
-        "P2/E2 no premature tool or terminal"
-    );
-    runtime.lifecycle.lock().unwrap().push(lifecycle(
-        4,
-        child_id,
-        &child_run,
-        RunLifecycleEventKind::Awaiting,
-        RunState::Awaiting,
-    ));
-    state.refresh_committed_events(&session.id).await.unwrap();
-
-    assert_eq!(
-        state.lifecycle_cursor(&session.id).unwrap(),
-        lifecycle_cursor(3),
-        "P3/E3 Awaiting remains behind the exact-ticket fence"
-    );
-    assert!(
-        state
-            .list_events(&session.id, None, None, false)
-            .unwrap()
-            .data
-            .iter()
-            .all(|event| event.type_str() != "agent.custom_tool_use"),
-        "P3/E3 transcript cannot be marked/projected ahead of its ticket"
-    );
-    runtime.pending_by_thread.lock().unwrap().insert(
-        child_id.into(),
-        Pending {
-            tool_use_id: call_id.into(),
-            name: "client_lookup".into(),
-            input: serde_json::json!({"query":"facts"}),
-            client_executed: true,
-        },
-    );
-    state.refresh_committed_events(&session.id).await.unwrap();
-
-    let primary =
-        serde_json::to_value(state.list_events(&session.id, None, None, false).unwrap()).unwrap();
-    let primary_tool = primary["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|event| {
-            event["type"] == "agent.custom_tool_use" && event["session_thread_id"] == child_id
-        })
-        .expect("P4/E4 primary cross-post");
-    let public_call_id = primary_tool["id"].as_str().unwrap().to_string();
-    assert_eq!(primary_tool["type"], "agent.custom_tool_use", "P4/E4");
-    assert_eq!(primary_tool["session_thread_id"], child_id, "P4/E4");
-    assert_eq!(
-        decode_managed_tool_event_id(&public_call_id)
-            .expect("P4/E4 qualified id")
-            .call_id,
-        call_id,
-        "P4/E4"
-    );
-    let aggregate_idle = primary["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .rev()
-        .find(|event| event["type"] == "session.status_idle")
-        .expect("P4/E4 aggregate idle");
-    assert_eq!(
-        aggregate_idle["stop_reason"]["event_ids"],
-        serde_json::json!([public_call_id.clone()]),
-        "P4/E4"
-    );
-    let child = serde_json::to_value(
-        state
-            .list_thread_events(&session.id, child_id, None, None)
-            .unwrap(),
-    )
-    .unwrap();
-    let child_tool = child["data"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|event| event["id"] == public_call_id)
-        .expect("P4/E4 child owner projection");
-    assert!(
-        child_tool.get("session_thread_id").is_none(),
-        "P4/E4 child-local event needs no routing hint"
-    );
-
-    let reply = || SendEventsRequest {
-        events: vec![InboundEvent::UserCustomToolResult {
-            custom_tool_use_id: public_call_id.clone(),
-            content: Some(vec![ContentBlock::text("found")]),
-            is_error: false,
-        }],
-    };
-    state.send_events(&session.id, reply()).await.unwrap();
-    {
-        let replies = runtime.thread_tool_replies.lock().unwrap();
-        assert_eq!(replies.len(), 1, "P5/E5");
-        assert_eq!(replies[0].session_id, session.id, "P5/E5");
         assert_eq!(
-            replies[0].target,
-            SessionThreadTarget::Child(ThreadId(child_id.into())),
-            "P5/E5"
+            state.lifecycle_cursor(&session.id).unwrap(),
+            lifecycle_cursor(3),
+            "P3/E3 Awaiting remains behind the exact-ticket fence"
         );
-        assert_eq!(replies[0].tool_use_id, call_id, "P5/E5");
         assert!(
-            matches!(
-                &replies[0].reply,
-                SessionThreadToolReply::Custom { content, is_error }
-                    if !is_error && content == &vec![ContentBlock::text("found")]
-            ),
+            state
+                .list_events(&session.id, None, None, false)
+                .unwrap()
+                .data
+                .iter()
+                .all(|event| event.type_str() != "agent.custom_tool_use"),
+            "P3/E3 transcript cannot be marked/projected ahead of its ticket"
+        );
+        runtime.pending_by_thread.lock().unwrap().insert(
+            child_id.into(),
+            Pending {
+                tool_use_id: call_id.into(),
+                name: "client_lookup".into(),
+                input: serde_json::json!({"query":"facts"}),
+                client_executed: true,
+            },
+        );
+        state.refresh_committed_events(&session.id).await.unwrap();
+
+        let primary =
+            serde_json::to_value(state.list_events(&session.id, None, None, false).unwrap())
+                .unwrap();
+        let primary_tool = primary["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| {
+                event["type"] == "agent.custom_tool_use" && event["session_thread_id"] == child_id
+            })
+            .expect("P4/E4 primary cross-post");
+        let public_call_id = primary_tool["id"].as_str().unwrap().to_string();
+        assert_eq!(primary_tool["type"], "agent.custom_tool_use", "P4/E4");
+        assert_eq!(primary_tool["session_thread_id"], child_id, "P4/E4");
+        assert_eq!(
+            decode_managed_tool_event_id(&public_call_id)
+                .expect("P4/E4 qualified id")
+                .call_id,
+            call_id,
+            "P4/E4"
+        );
+        let aggregate_idle = primary["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|event| event["type"] == "session.status_idle")
+            .expect("P4/E4 aggregate idle");
+        assert_eq!(
+            aggregate_idle["stop_reason"]["event_ids"],
+            serde_json::json!([public_call_id.clone()]),
+            "P4/E4"
+        );
+        let child = serde_json::to_value(
+            state
+                .list_thread_events(&session.id, child_id, None, None)
+                .unwrap(),
+        )
+        .unwrap();
+        let child_tool = child["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|event| event["id"] == public_call_id)
+            .expect("P4/E4 child owner projection");
+        assert!(
+            child_tool.get("session_thread_id").is_none(),
+            "P4/E4 child-local event needs no routing hint"
+        );
+
+        (
+            runtime,
+            state,
+            session.id,
+            child_id,
+            call_id,
+            public_call_id,
+        )
+    })
+    .await;
+
+    Box::pin(async {
+        let reply = || SendEventsRequest {
+            events: vec![InboundEvent::UserCustomToolResult {
+                custom_tool_use_id: public_call_id.clone(),
+                content: Some(vec![ContentBlock::text("found")]),
+                is_error: false,
+            }],
+        };
+        state.send_events(&session_id, reply()).await.unwrap();
+        {
+            let replies = runtime.thread_tool_replies.lock().unwrap();
+            assert_eq!(replies.len(), 1, "P5/E5");
+            assert_eq!(replies[0].session_id, session_id, "P5/E5");
+            assert_eq!(
+                replies[0].target,
+                SessionThreadTarget::Child(ThreadId(child_id.into())),
+                "P5/E5"
+            );
+            assert_eq!(replies[0].tool_use_id, call_id, "P5/E5");
+            assert!(
+                matches!(
+                    &replies[0].reply,
+                    SessionThreadToolReply::Custom { content, is_error }
+                        if !is_error && content == &vec![ContentBlock::text("found")]
+                ),
+                "P5/E5"
+            );
+        }
+        assert!(
+            state
+                .list_thread_events(&session_id, child_id, None, None)
+                .unwrap()
+                .data
+                .iter()
+                .any(|event| matches!(
+                    &event.kind,
+                    OutboundKind::UserCustomToolResult {
+                        session_thread_id: Some(target), ..
+                    } if target == child_id
+                )),
             "P5/E5"
         );
-    }
-    assert!(
-        state
-            .list_thread_events(&session.id, child_id, None, None)
-            .unwrap()
-            .data
-            .iter()
-            .any(|event| matches!(
-                &event.kind,
-                OutboundKind::UserCustomToolResult {
-                    session_thread_id: Some(target), ..
-                } if target == child_id
-            )),
-        "P5/E5"
-    );
 
-    let before = state
-        .list_events(&session.id, None, None, false)
-        .unwrap()
-        .data
-        .iter()
-        .filter(|event| event.type_str() == "user.custom_tool_result")
-        .count();
-    assert!(
-        state.send_events(&session.id, reply()).await.is_err(),
-        "P6/E6"
-    );
-    assert_eq!(
-        state
-            .list_events(&session.id, None, None, false)
+        let before = state
+            .list_events(&session_id, None, None, false)
             .unwrap()
             .data
             .iter()
             .filter(|event| event.type_str() == "user.custom_tool_result")
-            .count(),
-        before,
-        "P6/E6 no duplicate matching receipt"
-    );
-    assert_eq!(
-        runtime.thread_tool_replies.lock().unwrap().len(),
-        1,
-        "P6/E6"
-    );
+            .count();
+        assert!(
+            state.send_events(&session_id, reply()).await.is_err(),
+            "P6/E6"
+        );
+        assert_eq!(
+            state
+                .list_events(&session_id, None, None, false)
+                .unwrap()
+                .data
+                .iter()
+                .filter(|event| event.type_str() == "user.custom_tool_result")
+                .count(),
+            before,
+            "P6/E6 no duplicate matching receipt"
+        );
+        assert_eq!(
+            runtime.thread_tool_replies.lock().unwrap().len(),
+            1,
+            "P6/E6"
+        );
+    })
+    .await;
 }
 
 #[tokio::test]

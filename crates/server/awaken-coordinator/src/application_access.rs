@@ -356,9 +356,23 @@ mod tests {
             _idempotency: awaken_session_contract::IdempotencyRecord,
             _lifecycle_facts: Vec<ManagedLifecycleFact>,
         ) -> Result<
-            awaken_session_contract::SessionRevision,
+            awaken_session_contract::SessionCreateResult,
             awaken_session_contract::SessionRepositoryError,
         > {
+            Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "read-only TestSessions".into(),
+                ),
+            )
+        }
+
+        async fn replay_create(
+            &self,
+            _owner_scope: &str,
+            _session_id: &str,
+            _idempotency: &awaken_session_contract::IdempotencyRecord,
+        ) -> Result<Option<PersistedSession>, awaken_session_contract::SessionRepositoryError>
+        {
             Err(
                 awaken_session_contract::SessionRepositoryError::Unavailable(
                     "read-only TestSessions".into(),
@@ -424,6 +438,19 @@ mod tests {
             awaken_session_contract::SessionRepositoryError,
         > {
             Ok(awaken_session_contract::SessionRecoveryScan::default())
+        }
+
+        async fn sessions_referencing_credential_source(
+            &self,
+            _workspace_id: &str,
+            _source_id: &awaken_credential_contract::CredentialSourceId,
+        ) -> Result<Vec<PersistedSession>, awaken_session_contract::SessionRepositoryError>
+        {
+            Err(
+                awaken_session_contract::SessionRepositoryError::Unavailable(
+                    "read-only TestSessions does not own credential dependency indexing".into(),
+                ),
+            )
         }
 
         async fn idempotency_receipt(
@@ -523,11 +550,13 @@ mod tests {
         session.baseline =
             SessionBaselineState::Preparing(awaken_session_contract::SessionCreationIntent {
                 control: awaken_session_contract::ControlSessionCreationInputs {
+                    mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
                     environment: baseline.environment,
                     runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
                     agent_id: baseline.agent_id,
                     agent_revision: baseline.agent_revision,
                     model_override: baseline.model_override,
+                    system_prompt: *baseline.system_prompt,
                     model: baseline.model.clone(),
                     execution_model_ref: baseline.model,
                     runtime: baseline.runtime,

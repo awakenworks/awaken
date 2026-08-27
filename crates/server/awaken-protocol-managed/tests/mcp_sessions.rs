@@ -1705,7 +1705,7 @@ async fn publication_and_drain_gap_tests_are_generated_from_decision_table() {
 /// |---|---|---|---|---|
 /// | I1 | new | same | exact | apply once + ETag + internal durable receipt |
 /// | I2 | same | same | omitted | replay; revision/effects unchanged |
-/// | I2b | same | same | later root revision | replay original command revision |
+/// | I2b | same | same | later root revision | replay original command revision + current body |
 /// | I2c | pre-upgrade namespace/hash | same | omitted | replay remains compatible |
 /// | I3 | same | different | omitted | 409; no effect |
 /// | I4 | absent | - | stale | 409 before Runtime effect |
@@ -1821,12 +1821,41 @@ async fn update_precondition_and_idempotency_tests_are_generated_from_decision_t
         );
     }
 
+    // I2b setup reads the current root fence. The command response/replay ETag
+    // deliberately names the durable receipt revision, while MCP realization
+    // has advanced the same aggregate through later root revisions. Reusing
+    // that historical receipt as a new-command precondition would correctly
+    // select I4 instead of establishing I2b's later durable fact.
+    let durable_after_replay = h.repo.get(id).await.expect("I2b durable root");
+    assert!(
+        durable_after_replay.revision > legacy_receipt.committed_revision,
+        "I2b realization advances beyond the command receipt"
+    );
+    assert_eq!(
+        applied_headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", legacy_receipt.committed_revision.0),
+        "I2b response ETag names the durable receipt"
+    );
+    let (status, current_headers, current) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
+    assert_eq!(status, StatusCode::OK, "I2b current root");
+    assert_eq!(
+        current_headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", durable_after_replay.revision.0),
+        "I2b GET ETag names current durable root"
+    );
+    assert_eq!(
+        current["agent"]["mcp_servers"],
+        json!([desired.clone()]),
+        "I2b current body"
+    );
+    let current_root_etag = current_headers["etag"].to_str().unwrap();
     let (status, later_headers, later) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"title": "later root fact"})),
-        &[("if-match", replay_headers["etag"].to_str().unwrap())],
+        &[("if-match", current_root_etag)],
     )
     .await;
     assert_eq!(status, StatusCode::OK, "I2b setup");
@@ -2020,17 +2049,25 @@ async fn idempotent_update_repairs_a_failed_post_commit_runtime_projection() {
     assert_eq!(h.state.lock().unwrap().replaced_tools.len(), 2, "T3");
 }
 
-/// CAS retry decisions are generated from `conflict × explicit precondition`:
+/// CAS retry decisions are generated from `conflict phase × command fence`.
+/// Causes are C1 the command root CAS conflicts or Applies, C2 `If-Match` is
+/// absent or exact at request start, C3 a later realization CAS conflicts, and
+/// C4 an idempotency key is present or absent. Effects are E1 bounded command
+/// retry, E2 pre-commit 409, E3 post-commit 500 with current durable desired
+/// truth, E4 exact receipt repair when C4 is present, and E5 compensation while
+/// the public wire projection keeps the prior canonical visible/Active generation.
 ///
-/// | Rule | First root CAS | If-Match | Effect |
-/// |---|---|---|---|
-/// | C1 | conflict | absent | re-read, reapply same command, one generation/effect |
-/// | C2 | conflict | exact at request start | return 409; do not weaken caller fence |
-/// | C3 | publication-ack CAS conflict | absent | recover same generation; no duplicate |
-/// | C4 | activation CAS conflict | exact at request start | drain staged generation + 409 |
+/// | Rule | Command CAS | If-Match | Later phase | Effect |
+/// |---|---|---|---|---|
+/// | C1 | conflict | absent | - | re-read, reapply same command, one generation/effect |
+/// | C2 | conflict | exact at request start | - | return 409; do not weaken caller fence |
+/// | C3 | applied + receipt | absent | publication-ack conflict | committed 500; exact receipt replay repairs same generation to 200 |
+/// | C4 | applied | exact at request start | activation conflict | committed 500; retain desired/Realizing + drain once; GET keeps prior Active |
 ///
-/// Constraint K0: every CAS rule is Session/MCP-only and commits no Run, so the
-/// authoritative Thread recovery query returns `None` without a split fallback.
+/// Constraints: `If-Match` fences only the command root CAS; a later projection
+/// failure cannot roll back Applied truth or masquerade as a precondition 409.
+/// Every rule is Session/MCP-only and commits no Run, so the authoritative
+/// Thread recovery query returns `None` without a split fallback.
 #[tokio::test]
 async fn update_cas_retry_tests_are_generated_from_decision_table() {
     let inner = Arc::new(
@@ -2087,17 +2124,85 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
 
     let replacement = json!({"name": "cas", "type": "url", "url": "https://cas-2.example/mcp"});
+    let c3_idempotency_key = "cas-publication-ack-repair";
+    let c3_receipt_key = format!(
+        "managed:update-command:{id}:{}",
+        awaken_session_application::SessionApplication::update_operation_id(id, c3_idempotency_key)
+    );
+    let durable_before_c3 = h.repo.get(id).await.expect("C3 root before command");
     conflicts.conflict_on_next(4);
     let staged_before = h.state.lock().unwrap().staged.len();
-    let (status, _, updated) = call_with_headers(
+    let (status, failed_headers, failed) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
         Some(json!({"agent": {"mcp_servers": [replacement.clone()]}})),
-        &[],
+        &[("idempotency-key", c3_idempotency_key)],
     )
     .await;
-    assert_eq!(status, StatusCode::OK, "C3");
+    assert_eq!(
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "C3 post-commit projection failure: {failed}"
+    );
+    assert!(!failed_headers.contains_key("etag"), "C3 error has no ETag");
+    assert_eq!(failed["type"], "error", "C3 error envelope");
+    assert_eq!(failed["error"]["type"], "api_error", "C3 error class");
+    assert_eq!(
+        failed["error"]["message"], "Session changed concurrently",
+        "C3 exact post-commit cause"
+    );
+    let committed_receipt = h
+        .repo
+        .idempotency_receipt(id, &c3_receipt_key)
+        .await
+        .expect("C3 receipt read")
+        .expect("C3 command receipt committed before realization");
+    assert_eq!(
+        committed_receipt.committed_revision.0,
+        durable_before_c3.revision.0 + 1,
+        "C3 one command root CAS"
+    );
+    let durable_after_conflict = h.repo.get(id).await.expect("C3 committed durable root");
+    assert_eq!(
+        durable_after_conflict.revision.0,
+        committed_receipt.committed_revision.0 + 2,
+        "C3 begin and activation precede the injected acknowledgement conflict"
+    );
+    assert_eq!(
+        durable_after_conflict.mcp.attachments.len(),
+        2,
+        "C3 desired generation committed once"
+    );
+    assert_eq!(
+        durable_after_conflict.mcp.attachments[1].state,
+        awaken_session_contract::McpAttachmentState::Active,
+        "C3 publication occurred before acknowledgement"
+    );
+    assert!(
+        !durable_after_conflict.mcp.attachments[1].publication_acknowledged,
+        "C3 acknowledgement remains recoverable"
+    );
+    assert_eq!(
+        h.state.lock().unwrap().staged.len(),
+        staged_before + 1,
+        "C3 first attempt stages generation 2 once"
+    );
+
+    let (status, replay_headers, updated) = call_with_headers(
+        &h.app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        Some(json!({"agent": {"mcp_servers": [replacement.clone()]}})),
+        &[("idempotency-key", c3_idempotency_key)],
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "C3 exact receipt replay repairs");
+    assert_eq!(
+        replay_headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", committed_receipt.committed_revision.0),
+        "C3 replay keeps the original command revision"
+    );
     assert_eq!(updated["agent"]["mcp_servers"], json!([replacement]), "C3");
     let durable = h.repo.get(id).await.unwrap();
     assert_eq!(
@@ -2116,27 +2221,83 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
         call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
     assert_eq!(status, StatusCode::OK);
     let etag = get_headers["etag"].to_str().unwrap();
+    let durable_before_c4 = h.repo.get(id).await.expect("C4 root before command");
+    assert_eq!(
+        etag,
+        format!("\"{}\"", durable_before_c4.revision.0),
+        "C4 exact If-Match names current command root"
+    );
     conflicts.conflict_on_next(3);
+    let staged_before_c4 = h.state.lock().unwrap().staged.len();
     let drain_before = h.state.lock().unwrap().drained.len();
-    let (status, _, _) = call_with_headers(
+    let c4_replacement = json!({"type": "url", "name": "cas", "url": "https://cas-3.example/mcp"});
+    let (status, failed_headers, failed) = call_with_headers(
         &h.app,
         "POST",
         &format!("/v1/sessions/{id}"),
-        Some(json!({"agent": {"mcp_servers": [{"type": "url", "name": "cas", "url": "https://cas-3.example/mcp"}]}})),
+        Some(json!({"agent": {"mcp_servers": [c4_replacement.clone()]}})),
         &[("if-match", etag)],
     )
     .await;
-    assert_eq!(status, StatusCode::CONFLICT, "C4");
-    let durable = h.repo.get(id).await.unwrap();
     assert_eq!(
-        durable.mcp.attachments.last().unwrap().state,
+        status,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "C4 post-commit projection failure: {failed}"
+    );
+    assert!(!failed_headers.contains_key("etag"), "C4 error has no ETag");
+    assert_eq!(failed["type"], "error", "C4 error envelope");
+    assert_eq!(failed["error"]["type"], "api_error", "C4 error class");
+    assert_eq!(
+        failed["error"]["message"], "Session changed concurrently",
+        "C4 exact post-commit cause"
+    );
+    let durable = h.repo.get(id).await.unwrap();
+    let desired_after_c4 = durable.mcp.desired_attachments();
+    assert_eq!(
+        desired_after_c4.len(),
+        1,
+        "C4 one durable desired attachment"
+    );
+    assert_eq!(
+        desired_after_c4[0].state,
         awaken_session_contract::McpAttachmentState::Realizing,
-        "C4"
+        "C4 desired generation remains recoverable"
+    );
+    let awaken_session_contract::McpTarget::Http(desired_target) = &desired_after_c4[0].target
+    else {
+        panic!("C4 desired target must remain HTTP")
+    };
+    assert_eq!(
+        desired_target.url, "https://cas-3.example/mcp",
+        "C4 durable desired target is the committed replacement"
+    );
+    assert_eq!(
+        durable.revision.0,
+        durable_before_c4.revision.0 + 2,
+        "C4 command and begin roots committed before activation conflict"
+    );
+    assert_eq!(
+        h.state.lock().unwrap().staged.len(),
+        staged_before_c4 + 1,
+        "C4 staged the committed desired generation once"
     );
     assert_eq!(
         h.state.lock().unwrap().drained.len(),
         drain_before + 1,
         "C4 compensation"
+    );
+    let (status, current_headers, current) =
+        call_with_headers(&h.app, "GET", &format!("/v1/sessions/{id}"), None, &[]).await;
+    assert_eq!(status, StatusCode::OK, "C4 GET current truth");
+    assert_eq!(
+        current_headers["etag"].to_str().unwrap(),
+        format!("\"{}\"", durable.revision.0),
+        "C4 GET ETag names current durable root"
+    );
+    assert_eq!(
+        current["agent"]["mcp_servers"],
+        json!([{"type": "url", "name": "cas", "url": "https://cas-2.example/mcp"}]),
+        "C4 GET keeps the prior canonical visible/Active generation"
     );
 }
 

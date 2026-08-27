@@ -224,9 +224,14 @@ impl ManagedState {
         }
     }
 
-    fn map_creation_error(error: awaken_session_application::SessionCreationError) -> StateError {
+    pub(crate) fn map_creation_error(
+        error: awaken_session_application::SessionCreationError,
+    ) -> StateError {
         match error {
             awaken_session_application::SessionCreationError::Conflict => StateError::Conflict,
+            awaken_session_application::SessionCreationError::Tombstoned => {
+                StateError::TerminalCreateConflict
+            }
             awaken_session_application::SessionCreationError::IdempotencyMismatch => {
                 StateError::IdempotencyMismatch
             }
@@ -236,6 +241,24 @@ impl ManagedState {
             awaken_session_application::SessionCreationError::Unavailable(message) => {
                 StateError::Run(RunError::unavailable(message))
             }
+            awaken_session_application::SessionCreationError::Internal(message) => {
+                StateError::Run(RunError::internal(message))
+            }
+        }
+    }
+
+    pub(super) fn map_create_replay_error(
+        error: awaken_session_application::SessionCreationError,
+    ) -> StateError {
+        // An occupied identity without this exact profiled receipt and a foreign
+        // owner are both deterministic-request mismatches at preflight. Fresh
+        // create races retain the ordinary Conflict classification; terminal,
+        // outage, and corrupt states keep the canonical creation mapping.
+        match error {
+            awaken_session_application::SessionCreationError::Conflict => {
+                StateError::IdempotencyMismatch
+            }
+            error => Self::map_creation_error(error),
         }
     }
 
@@ -627,16 +650,10 @@ impl ManagedState {
                 super::resource::MAX_SESSION_FILE_RESOURCES
             ))));
         }
-        // Lower compatibility Repository URLs/tokens before the neutral resolver:
-        // the catalog receives a Session-scoped definition and a Vault reference,
-        // never the token. File/Memory already carry platform identities on wire.
         let agent_defaults = config_view
             .as_ref()
             .map(|view| view.resources.as_slice())
             .unwrap_or_default();
-        let attachments = self
-            .lower_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
-            .await?;
         // Resolve the SDK-required Environment and networking policy once, for both
         // SessionInit and the echoed Session object. Managed never invokes the
         // native application's optional local-environment fallback.
@@ -655,14 +672,6 @@ impl ManagedState {
                 &mcp_targets,
             )
             .await?;
-        // Sole protocol-neutral Session input resolution point. Environment
-        // selection has already produced one exact snapshot above; the final
-        // SessionCreationIntent is the only value that combines and freezes both
-        // families. Runtime never re-opens Agent or Resource stores.
-        let mut resolved_resources = self
-            .application
-            .resolve_session_inputs(&owner_scope, agent_defaults, &attachments)
-            .map_err(StateError::Run)?;
         let effective_skills = req
             .agent
             .skills_override()
@@ -682,24 +691,15 @@ impl ManagedState {
                 effective_skills.as_deref().unwrap_or_default(),
             )
             .map_err(StateError::Run)?;
-        if let Some(skills) = &effective_skills {
-            resolved_resources = resolved_resources
-                .with_skills(
-                    self.application
-                        .resolve_session_skills(&owner_scope, skills)
-                        .await
-                        .map_err(StateError::Run)?,
-                )
-                .map_err(|error| StateError::Run(RunError::bad_request(error.to_string())))?;
-        }
-        self.application
-            .pin_repository_credentials(
-                &owner_scope,
-                &environment.credential_realization.resource_holder,
-                &mut resolved_resources,
-            )
-            .await
-            .map_err(Self::map_preparation_error)?;
+        let resolved_skills = match &effective_skills {
+            Some(skills) => Some(
+                self.application
+                    .resolve_session_skills(&owner_scope, skills)
+                    .await
+                    .map_err(StateError::Run)?,
+            ),
+            None => None,
+        };
         // Validate the advertised tool surface before persisting an activation or
         // touching a Host. A definition error cannot strand Prepared resources.
         let caps = self.application.capabilities_for(&id);
@@ -757,8 +757,83 @@ impl ManagedState {
             }
             None => awaken_session_contract::SessionBudgetState::Absent,
         };
+        // Cause/effect rules for Session-owned Repository participants:
+        // R1 all pure Environment/Skill/tool/budget validation succeeds ->
+        // enter Registry/Vault; R2 lowering fails -> compensate only prior
+        // Applied participants; R3 later resolve/pin fails -> compensate every
+        // Applied participant; R4 root Applied/Replayed -> creation owns the
+        // participants and terminal reconciliation becomes the only retire path.
+        let (attachments, repository_configurations) = self
+            .lower_session_input_attachments(&id, &owner_scope, &resources, agent_defaults)
+            .await?;
+        // Sole protocol-neutral Session input resolution point. Environment
+        // selection has already produced one exact snapshot above; the final
+        // SessionCreationIntent is the only value that combines and freezes both
+        // families. Runtime never re-opens Agent or Resource stores.
+        let mut resolved_resources = match self.application.resolve_session_inputs(
+            &owner_scope,
+            agent_defaults,
+            &attachments,
+        ) {
+            Ok(resources) => resources,
+            Err(first) => {
+                if !self
+                    .application
+                    .abort_unadopted_session_repositories(&repository_configurations)
+                    .await
+                {
+                    tracing::warn!(
+                        session = %id,
+                        "Managed Session Repository compensation remains pending after input resolution"
+                    );
+                }
+                return Err(StateError::Run(first));
+            }
+        };
+        if let Some(resolved_skills) = resolved_skills {
+            resolved_resources = match resolved_resources.with_skills(resolved_skills) {
+                Ok(resources) => resources,
+                Err(error) => {
+                    let first = StateError::Run(RunError::bad_request(error.to_string()));
+                    if !self
+                        .application
+                        .abort_unadopted_session_repositories(&repository_configurations)
+                        .await
+                    {
+                        tracing::warn!(
+                            session = %id,
+                            "Managed Session Repository compensation remains pending after Skill binding"
+                        );
+                    }
+                    return Err(first);
+                }
+            };
+        }
+        if let Err(error) = self
+            .application
+            .pin_repository_credentials(
+                &owner_scope,
+                &environment.credential_realization.resource_holder,
+                &mut resolved_resources,
+            )
+            .await
+        {
+            let first = Self::map_preparation_error(error);
+            if !self
+                .application
+                .abort_unadopted_session_repositories(&repository_configurations)
+                .await
+            {
+                tracing::warn!(
+                    session = %id,
+                    "Managed Session Repository compensation remains pending after credential pinning"
+                );
+            }
+            return Err(first);
+        }
         let creation_intent = awaken_session_contract::SessionCreationIntent {
             control: awaken_session_contract::ControlSessionCreationInputs {
+                mutation_policy: awaken_session_contract::SessionMutationPolicy::Managed,
                 environment,
                 runtime_placement: self.application.runtime_placement(),
                 mcp_authoring: awaken_session_contract::SessionMcpAuthoringContext {
@@ -771,6 +846,15 @@ impl ManagedState {
                 model: resolved_model.id.clone(),
                 execution_model_ref,
                 model_override,
+                system_prompt: match req.agent.system_override() {
+                    None => awaken_session_contract::SessionSystemPromptSelection::Inherit,
+                    Some(None) => awaken_session_contract::SessionSystemPromptSelection::Clear,
+                    Some(Some(value)) => {
+                        awaken_session_contract::SessionSystemPromptSelection::Replace(
+                            value.to_owned(),
+                        )
+                    }
+                },
                 runtime: published_backend_ref,
                 delegate_ids: delegate_ids.clone(),
                 toolsets: effective_tools.toolsets.clone(),
@@ -794,6 +878,8 @@ impl ManagedState {
                 metadata: req.metadata.clone(),
                 tools: effective_tools.clone(),
                 budget: budget_state,
+                repository_configurations,
+                idempotency: None,
                 initial_events,
             })
             .await
@@ -939,12 +1025,16 @@ impl ManagedState {
             metadata,
             agent_tools,
             mcp_servers,
+            model_inference,
+            system_prompt,
+            agent_skills,
+            vault_ids,
             status,
             archived_at,
         ) = match persisted {
             Some(p) => {
-                let (agent_id, agent_revision, model, environment_id) = p
-                    .frozen_baseline()
+                let baseline = p.frozen_baseline();
+                let (agent_id, agent_revision, model, environment_id) = baseline
                     .map(|baseline| {
                         (
                             baseline.agent_id.clone(),
@@ -961,6 +1051,25 @@ impl ManagedState {
                             p.environment_id().to_string(),
                         )
                     });
+                let model_inference = baseline.and_then(|baseline| {
+                    baseline
+                        .model_override
+                        .as_ref()
+                        .map(|model_override| model_override.inference.clone())
+                });
+                let system_prompt = baseline
+                    .map(|baseline| baseline.system_prompt.as_ref().clone())
+                    .unwrap_or_default();
+                let agent_skills = p
+                    .resources
+                    .desired()
+                    .skills()
+                    .iter()
+                    .map(crate::types::agent::AgentSkill::from_resolved_binding)
+                    .collect();
+                let vault_ids = baseline
+                    .map(|baseline| baseline.mcp_authoring.ordered_vault_ids.clone())
+                    .unwrap_or_default();
                 let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
                 let archived_at = p.archived_at().map(str::to_owned);
                 (
@@ -972,6 +1081,10 @@ impl ManagedState {
                     p.metadata,
                     project::managed_tools(&p.tools),
                     mcp_servers,
+                    model_inference,
+                    system_prompt,
+                    agent_skills,
+                    vault_ids,
                     Self::wire_session_status(p.execution),
                     archived_at,
                 )
@@ -984,6 +1097,10 @@ impl ManagedState {
                 None,
                 Default::default(),
                 default_tools,
+                Vec::new(),
+                None,
+                awaken_session_contract::SessionSystemPromptSelection::Inherit,
+                project::agent_skills(&caps),
                 Vec::new(),
                 SessionStatus::Idle,
                 None,
@@ -1032,7 +1149,12 @@ impl ManagedState {
                     .or(agent_revision)
                     .unwrap_or(1)
                     .max(1),
-                model: ModelConfig::new(model),
+                model: ModelConfig::from_inference(
+                    model,
+                    model_inference
+                        .or_else(|| profile.as_ref().map(|profile| profile.inference.clone()))
+                        .unwrap_or_default(),
+                ),
                 name: profile
                     .as_ref()
                     .and_then(|profile| profile.name.clone())
@@ -1040,10 +1162,11 @@ impl ManagedState {
                 description: profile
                     .as_ref()
                     .and_then(|profile| profile.description.clone()),
-                system: profile.as_ref().and_then(|profile| profile.system.clone()),
+                system: system_prompt
+                    .resolve(profile.as_ref().and_then(|profile| profile.system.clone())),
                 tools: agent_tools,
                 mcp_servers,
-                skills: project::agent_skills(&caps),
+                skills: agent_skills,
                 multiagent,
             },
             budget: projected_budget,
@@ -1058,7 +1181,7 @@ impl ManagedState {
             status,
             stats: SessionStats::default(),
             usage: Usage::default(),
-            vault_ids: Vec::new(),
+            vault_ids,
             deployment_id,
         })
     }

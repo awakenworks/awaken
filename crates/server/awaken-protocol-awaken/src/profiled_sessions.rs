@@ -41,12 +41,32 @@ pub struct ProfiledSessionRepository {
     pub initial_commit: Option<String>,
 }
 
+/// Product intent projected into Open's neutral immutable mutation policy.
+/// The private extension deliberately has no ordinary Managed variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfiledSessionMode {
+    WorkUnit,
+    Interactive,
+}
+
+impl ProfiledSessionMode {
+    #[must_use]
+    pub const fn mutation_policy(self) -> awaken_session_contract::SessionMutationPolicy {
+        match self {
+            Self::WorkUnit => awaken_session_contract::SessionMutationPolicy::Frozen,
+            Self::Interactive => awaken_session_contract::SessionMutationPolicy::FileResources,
+        }
+    }
+}
+
 /// Complete, strongly typed Session input delivered to Awaken's sole profiled
 /// Session composer. Secret material is forbidden; mounts carry only references.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProfiledSessionCreate {
     pub session_id: String,
+    pub mode: ProfiledSessionMode,
     pub agent_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_revision: Option<u64>,
@@ -58,6 +78,10 @@ pub struct ProfiledSessionCreate {
     pub env: Vec<EnvVar>,
     #[serde(default)]
     pub prompts: Vec<String>,
+    /// Complete Session-local resource inputs. Open resolves these together
+    /// with published Agent defaults before the original root insert.
+    #[serde(default)]
+    pub resource_inputs: Vec<awaken_session_contract::SessionInputAttachment>,
     #[serde(default)]
     pub mcp_attachments: Vec<ProfiledSessionMcpAttachment>,
     #[serde(default)]
@@ -102,10 +126,14 @@ mod tests {
         // Cause/effect decision table:
         // R1 typed Secret mount + Repository credential reference + inline
         // environment -> exact round trip;
-        // R2 unknown wire field -> reject before the application handler.
+        // R2 unknown wire field -> reject before the application handler;
+        // R3 missing mode -> reject rather than silently selecting ordinary
+        // Managed mutation; R4/R5 map the two closed product modes to Open's
+        // immutable Frozen/FileResources policies.
         // The protocol never accepts plaintext credential material.
         let request = ProfiledSessionCreate {
             session_id: "session-a".into(),
+            mode: ProfiledSessionMode::WorkUnit,
             agent_id: "agent-a".into(),
             source_revision: Some(2),
             environment_id: Some("environment-a".into()),
@@ -126,6 +154,7 @@ mod tests {
                 visibility: EnvVisibility::Process,
             }],
             prompts: Vec::new(),
+            resource_inputs: Vec::new(),
             mcp_attachments: Vec::new(),
             repositories: vec![ProfiledSessionRepository {
                 remote_url: "https://github.com/acme/repository".into(),
@@ -151,6 +180,22 @@ mod tests {
         assert_eq!(
             encoded["repositories"][0]["credential"]["revision"], 7,
             "R1 exact Repository credential pin"
+        );
+        let mut missing_mode = encoded.clone();
+        missing_mode.as_object_mut().unwrap().remove("mode");
+        assert!(
+            serde_json::from_value::<ProfiledSessionCreate>(missing_mode).is_err(),
+            "R3"
+        );
+        assert_eq!(
+            ProfiledSessionMode::WorkUnit.mutation_policy(),
+            awaken_session_contract::SessionMutationPolicy::Frozen,
+            "R4"
+        );
+        assert_eq!(
+            ProfiledSessionMode::Interactive.mutation_policy(),
+            awaken_session_contract::SessionMutationPolicy::FileResources,
+            "R5"
         );
         let mut unknown = encoded;
         unknown["credential"] = serde_json::json!("plaintext");
