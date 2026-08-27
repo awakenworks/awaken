@@ -1,6 +1,7 @@
 pub mod awaken_environment_contract
 pub enum awaken_environment_contract::CreateEnvironmentError
 pub awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
+pub awaken_environment_contract::CreateEnvironmentError::InvalidConfig(awaken_environment_contract::InvalidEnvironmentConfig)
 pub awaken_environment_contract::CreateEnvironmentError::Store(alloc::string::String)
 pub enum awaken_environment_contract::CreateEnvironmentOutcome
 pub awaken_environment_contract::CreateEnvironmentOutcome::Created(awaken_environment_contract::EnvItem)
@@ -16,6 +17,7 @@ pub awaken_environment_contract::EnvironmentConfig::SelfHosted
 impl awaken_environment_contract::EnvironmentConfig
 pub fn awaken_environment_contract::EnvironmentConfig::is_self_hosted(&self) -> bool
 pub fn awaken_environment_contract::EnvironmentConfig::packages(&self) -> awaken_environment_contract::EnvironmentPackages
+pub fn awaken_environment_contract::EnvironmentConfig::validate(&self) -> core::result::Result<(), awaken_environment_contract::InvalidEnvironmentConfig>
 pub enum awaken_environment_contract::EnvironmentConfigMutation
 pub awaken_environment_contract::EnvironmentConfigMutation::PatchCloud
 pub awaken_environment_contract::EnvironmentConfigMutation::PatchCloud::networking: core::option::Option<awaken_environment_contract::EnvironmentNetworkingMutation>
@@ -45,6 +47,11 @@ pub awaken_environment_contract::EnvironmentRegistrationIntentFilter::Pending
 pub enum awaken_environment_contract::EnvironmentRegistrationOperation
 pub awaken_environment_contract::EnvironmentRegistrationOperation::Register
 pub awaken_environment_contract::EnvironmentRegistrationOperation::Withdraw
+pub enum awaken_environment_contract::EnvironmentStoreError
+pub awaken_environment_contract::EnvironmentStoreError::Backend(alloc::string::String)
+pub awaken_environment_contract::EnvironmentStoreError::InvalidConfig(awaken_environment_contract::InvalidEnvironmentConfig)
+pub enum awaken_environment_contract::InvalidEnvironmentConfig
+pub awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager
 pub struct awaken_environment_contract::CreateEnvironmentCommand
 pub awaken_environment_contract::CreateEnvironmentCommand::command_id: alloc::string::String
 pub awaken_environment_contract::CreateEnvironmentCommand::config: awaken_environment_contract::EnvironmentConfig
@@ -65,7 +72,7 @@ pub awaken_environment_contract::EnvItem::revision: awaken_environment_contract:
 pub awaken_environment_contract::EnvItem::sandbox_policy: core::option::Option<awaken_environment_contract::EnvironmentSandboxPolicyRef>
 pub awaken_environment_contract::EnvItem::scope: core::option::Option<alloc::string::String>
 impl awaken_environment_contract::EnvItem
-pub fn awaken_environment_contract::EnvItem::apply(&mut self, awaken_environment_contract::EnvUpdate) -> bool
+pub fn awaken_environment_contract::EnvItem::apply(&mut self, awaken_environment_contract::EnvUpdate) -> core::result::Result<bool, awaken_environment_contract::InvalidEnvironmentConfig>
 pub fn awaken_environment_contract::EnvItem::is_self_hosted(&self) -> bool
 pub struct awaken_environment_contract::EnvUpdate
 pub awaken_environment_contract::EnvUpdate::config: core::option::Option<awaken_environment_contract::EnvironmentConfigMutation>
@@ -106,7 +113,6 @@ pub struct awaken_environment_contract::EnvironmentRevision(pub u64)
 pub struct awaken_environment_contract::EnvironmentSandboxPolicyRef
 pub awaken_environment_contract::EnvironmentSandboxPolicyRef::policy_id: alloc::string::String
 pub awaken_environment_contract::EnvironmentSandboxPolicyRef::version: u64
-pub struct awaken_environment_contract::EnvironmentStoreError(pub alloc::string::String)
 pub const awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID: &str
 pub const awaken_environment_contract::OBJECT_AT: &str
 pub const awaken_environment_contract::PUBLIC_PACKAGE_REGISTRY_HOSTS: &[&str]
