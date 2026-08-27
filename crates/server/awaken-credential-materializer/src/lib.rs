@@ -36,6 +36,7 @@ mod material_error;
 use material_error::classify_secret_store_error;
 
 use awaken_agent_contract::RedactedString;
+#[cfg(feature = "authority")]
 use awaken_credential_contract::CredentialSourceId;
 #[cfg(feature = "authority")]
 use awaken_credential_vault::repo::CredentialRepo;

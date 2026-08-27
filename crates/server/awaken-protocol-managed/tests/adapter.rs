@@ -63,6 +63,26 @@ async fn json_response(
     (status, json)
 }
 
+async fn post_events_with_idempotency(
+    app: &Router,
+    uri: &str,
+    key: &str,
+    body: &serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
+    let request = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("idempotency-key", key)
+        .body(Body::from(serde_json::to_vec(body).unwrap()))
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let body = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+    (status, body)
+}
+
 fn types(list: &serde_json::Value) -> Vec<String> {
     list["data"]
         .as_array()
@@ -2121,15 +2141,23 @@ async fn hitl_await_confirm_resume() {
     // This narrow adapter fixture intentionally has no Host settlement observer,
     // so H6 asserts Thread terminal truth only; the official SDK E2E and Host
     // decision table own aggregate Session activity/usage settlement.
-    let confirmation = json_call(
+    // Transport-retry extension of H6: C1 a key is new while the exact tool
+    // ticket is pending => E1 append once and return one receipt; C2 the same
+    // key/body arrives after the ticket was consumed => E2 replay that byte-wise
+    // JSON receipt without re-admission or another reply; C3 same key/different
+    // decision => E3 409 without mutation. These three rules cover response loss
+    // at the HTTP/Runtime boundary while the application test owns restart/CAS.
+    let confirmation_body = serde_json::json!({ "events": [
+        { "type": "user.tool_confirmation", "tool_use_id": public_tool_id, "result": "allow" }
+    ] });
+    let (confirmation_status, confirmation) = post_events_with_idempotency(
         &app,
-        "POST",
         &format!("/v1/sessions/{id}/events"),
-        serde_json::json!({ "events": [
-            { "type": "user.tool_confirmation", "tool_use_id": public_tool_id, "result": "allow" }
-        ] }),
+        "hitl-confirmation-1",
+        &confirmation_body,
     )
     .await;
+    assert_eq!(confirmation_status, StatusCode::OK, "H6/E1");
     assert_eq!(confirmation["data"][0]["type"], "user.tool_confirmation");
     assert_eq!(confirmation["data"][0]["tool_use_id"], public_tool_id);
     assert_eq!(confirmation["data"][0]["result"], "allow");
@@ -2167,6 +2195,41 @@ async fn hitl_await_confirm_resume() {
         .find(|event| event["type"] == "session.thread_status_idle")
         .unwrap();
     assert_eq!(last_idle["stop_reason"]["type"], "end_turn");
+
+    let (replay_status, replay) = post_events_with_idempotency(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        "hitl-confirmation-1",
+        &confirmation_body,
+    )
+    .await;
+    assert_eq!(replay_status, StatusCode::OK, "H6/E2");
+    assert_eq!(replay, confirmation, "H6/E2 exact receipt");
+    let (conflict_status, _) = post_events_with_idempotency(
+        &app,
+        &format!("/v1/sessions/{id}/events"),
+        "hitl-confirmation-1",
+        &serde_json::json!({ "events": [
+            { "type": "user.tool_confirmation", "tool_use_id": public_tool_id, "result": "deny" }
+        ] }),
+    )
+    .await;
+    assert_eq!(conflict_status, StatusCode::CONFLICT, "H6/E3");
+    let after_retry = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&after_retry)
+            .iter()
+            .filter(|kind| kind.as_str() == "user.tool_confirmation")
+            .count(),
+        1,
+        "H6/E2+E3 no duplicate reply"
+    );
 }
 
 #[tokio::test]

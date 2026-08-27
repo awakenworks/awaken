@@ -17,7 +17,7 @@ fn resolved_non_memory_prompt(input: &awaken_session_contract::ResolvedInput) ->
         }
         ResolvedInputSource::MemoryStore { .. } => return None,
         ResolvedInputSource::Repository { .. } => format!(
-            "A git repository is checked out at `{}` ({access}); use git there to read, edit, commit, and push.",
+            "A git repository is checked out at `{}` ({access}); use git there to read, edit, commit, and export a reviewable patch. Remote publication requires an explicit operator workflow.",
             input.mount_path
         ),
     };
