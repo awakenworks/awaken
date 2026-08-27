@@ -133,6 +133,7 @@ pub fn awaken_control::model_publication::CatalogModelPublicationResolver::new(a
 pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_a2a_card_discovery(self, alloc::sync::Arc<dyn awaken_control::model_publication::A2aCardDiscovery>) -> Self
 pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_acp_capabilities(self, alloc::sync::Arc<alloc::vec::Vec<awaken_acp_contract::AcpPublicationCapability>>) -> Self
 pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_brokered_access(self, bool) -> Self
+pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_direct_provider_credential_execution(self, awaken_credential_contract::CredentialExecutionPolicy, awaken_credential_contract::PlaintextHolder) -> Self
 pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_profiles(self, alloc::sync::Arc<dyn awaken_config_resolver::stores::InferenceProfileStore>) -> Self
 pub fn awaken_control::model_publication::CatalogModelPublicationResolver::with_worker_observations(self, alloc::sync::Arc<dyn awaken_worker_contract::WorkerObservationSource>) -> Self
 impl awaken_config_service::binding_resolver::ModelPublicationResolver for awaken_control::model_publication::CatalogModelPublicationResolver

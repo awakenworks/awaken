@@ -193,6 +193,7 @@ pub awaken_cli::ManagedServiceAdapters::credential_rollout_target: core::option:
 pub awaken_cli::ManagedServiceAdapters::entitlement_provider: core::option::Option<alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>>
 pub awaken_cli::ManagedServiceAdapters::inference_geo_policy: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>>
 pub awaken_cli::ManagedServiceAdapters::list_price_provider: core::option::Option<alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>>
+pub awaken_cli::ManagedServiceAdapters::provider_credential_execution: core::option::Option<awaken_cli::managed_platform::HostedProviderCredentialExecution>
 pub awaken_cli::ManagedServiceAdapters::request_limiter: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>>
 pub awaken_cli::ManagedServiceAdapters::same_origin_managed_runtime: bool
 pub awaken_cli::ManagedServiceAdapters::tunnel_application: core::option::Option<alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>>
@@ -203,6 +204,7 @@ pub fn awaken_cli::ManagedServiceAdapters::with_credential_rollout_target(self, 
 pub fn awaken_cli::ManagedServiceAdapters::with_entitlement_provider(self, alloc::boxed::Box<dyn awaken_iam_core::entitlement::EntitlementProvider>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_inference_geo_policy(self, alloc::sync::Arc<dyn awaken_protocol_managed::inference_policy::ManagedInferenceGeoPolicy>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_list_price_provider(self, alloc::sync::Arc<dyn awaken_session_contract::budget::ManagedListPriceProvider>) -> Self
+pub fn awaken_cli::ManagedServiceAdapters::with_provider_credential_execution(self, awaken_credential_contract::CredentialExecutionPolicy, awaken_credential_contract::PlaintextHolder) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_request_limiter(self, alloc::sync::Arc<dyn awaken_protocol_managed::rate_limit::ManagedRequestLimiter>) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_same_origin_managed_runtime(self) -> Self
 pub fn awaken_cli::ManagedServiceAdapters::with_tunnel_application(self, alloc::sync::Arc<dyn awaken_protocol_managed::tunnel::ManagedTunnelApplication>) -> Self
