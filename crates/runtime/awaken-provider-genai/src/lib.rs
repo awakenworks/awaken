@@ -1435,8 +1435,10 @@ mod classify_tests {
     }
 
     /// Cause/effect rules for snapshot adapter construction: R1 an existing
-    /// Provider candidate with a supported adapter => executor construction;
-    /// R2 HostExecutor/no endpoint => explicit error; R3 unknown adapter => error.
+    /// Provider candidate with a supported adapter and explicit access kind =>
+    /// executor construction; R2 a missing access kind => fail-closed wire
+    /// rejection; R3 HostExecutor/no endpoint => explicit error; R4 unknown
+    /// adapter => error.
     #[test]
     fn snapshot_candidate_is_the_only_sdk_model_configuration() {
         let provider: ResolvedModelCandidate = serde_json::from_value(serde_json::json!({
@@ -1447,6 +1449,7 @@ mod classify_tests {
                 "type": "provider",
                 "provider_ref": "local",
                 "route_ref": "local",
+                "access_kind": "direct",
                 "scope_id": "local",
                 "endpoint": {
                     "adapter_kind": "openai",
@@ -1458,6 +1461,16 @@ mod classify_tests {
         }))
         .unwrap();
         assert!(GenaiExecutor::from_snapshot_candidate(&provider, "key").is_ok());
+
+        let mut incomplete_wire = serde_json::to_value(&provider).unwrap();
+        let removed_access_kind = incomplete_wire["provisioning"]
+            .as_object_mut()
+            .and_then(|provisioning| provisioning.remove("access_kind"));
+        assert_eq!(removed_access_kind, Some(serde_json::json!("direct")));
+        assert!(
+            serde_json::from_value::<ResolvedModelCandidate>(incomplete_wire).is_err(),
+            "provider access posture must never be inferred from credential presence"
+        );
 
         let host = ResolvedModelCandidate::host(provider.binding().clone());
         assert!(
