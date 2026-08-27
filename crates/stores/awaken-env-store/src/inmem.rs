@@ -63,9 +63,9 @@ impl InMemoryEnvRegistry {
     fn state(
         &self,
     ) -> Result<std::sync::MutexGuard<'_, InMemoryEnvRegistryState>, EnvironmentStoreError> {
-        self.state
-            .lock()
-            .map_err(|_| EnvironmentStoreError("Environment registry mutex poisoned".into()))
+        self.state.lock().map_err(|_| {
+            EnvironmentStoreError::Backend("Environment registry mutex poisoned".into())
+        })
     }
 }
 
@@ -75,6 +75,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
+        command.config.validate()?;
         let fingerprint = command.fingerprint();
         let mut state = self
             .state()
@@ -167,7 +168,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
         if item.archived_at.is_some() {
             return Ok(None);
         }
-        if !item.apply(patch) {
+        if !item.apply(patch)? {
             return Ok(Some(item.clone()));
         }
         let item = item.clone();
@@ -190,12 +191,9 @@ impl EnvRegistry for InMemoryEnvRegistry {
             return Ok(Some(item.clone()));
         }
         item.archived_at = Some(OBJECT_AT.to_string());
-        item.revision = EnvironmentRevision(
-            item.revision
-                .0
-                .checked_add(1)
-                .ok_or_else(|| EnvironmentStoreError("Environment revision exhausted".into()))?,
-        );
+        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
+            EnvironmentStoreError::Backend("Environment revision exhausted".into())
+        })?);
         let item = item.clone();
         state
             .revisions
@@ -225,7 +223,9 @@ impl EnvRegistry for InMemoryEnvRegistry {
     ) -> Result<Vec<EnvironmentRegistrationIntent>, EnvironmentStoreError> {
         self.intent_filters
             .lock()
-            .map_err(|_| EnvironmentStoreError("Environment intent filter mutex poisoned".into()))?
+            .map_err(|_| {
+                EnvironmentStoreError::Backend("Environment intent filter mutex poisoned".into())
+            })?
             .push(filter);
         Ok(self
             .state()?
@@ -249,7 +249,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
             })
             .is_ok()
         {
-            return Err(EnvironmentStoreError(
+            return Err(EnvironmentStoreError::Backend(
                 "injected Environment registration acknowledgement failure".into(),
             ));
         }
@@ -261,7 +261,7 @@ impl EnvRegistry for InMemoryEnvRegistry {
             return Ok(false);
         };
         if stored.operation != intent.operation {
-            return Err(EnvironmentStoreError(
+            return Err(EnvironmentStoreError::Backend(
                 "Environment registration intent operation mismatch".into(),
             ));
         }
