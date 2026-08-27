@@ -120,6 +120,15 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             StatusCode::CONFLICT,
             Json(ErrorResponse::new("conflict_error", message)),
         ),
+        EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::InvalidConfig(_),
+        )
+        | EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::InvalidConfig(_),
+        ) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse::new("invalid_request_error", message)),
+        ),
         EnvironmentApplicationError::NotFound => not_found("environment"),
         EnvironmentApplicationError::BuiltinImmutable | EnvironmentApplicationError::Archived => (
             StatusCode::CONFLICT,
@@ -152,7 +161,9 @@ fn map_environment_application_error(error: EnvironmentApplicationError) -> Wire
             awaken_environment_contract::CreateEnvironmentError::Store(_),
         )
         | EnvironmentApplicationError::Registration(_)
-        | EnvironmentApplicationError::Store(_)
+        | EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::Backend(_),
+        )
         | EnvironmentApplicationError::RegistrationInvariant(_) => (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(ErrorResponse::new("api_error", message)),
@@ -483,7 +494,7 @@ mod tests {
             (
                 "P5a",
                 EnvironmentApplicationError::Store(
-                    awaken_environment_contract::EnvironmentStoreError("x".into()),
+                    awaken_environment_contract::EnvironmentStoreError::Backend("x".into()),
                 ),
                 StatusCode::SERVICE_UNAVAILABLE,
             ),
@@ -491,6 +502,24 @@ mod tests {
                 "P5b",
                 EnvironmentApplicationError::RegistrationInvariant("x".into()),
                 StatusCode::SERVICE_UNAVAILABLE,
+            ),
+            (
+                "P6a",
+                EnvironmentApplicationError::Create(
+                    awaken_environment_contract::CreateEnvironmentError::InvalidConfig(
+                        awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    ),
+                ),
+                StatusCode::UNPROCESSABLE_ENTITY,
+            ),
+            (
+                "P6b",
+                EnvironmentApplicationError::Store(
+                    awaken_environment_contract::EnvironmentStoreError::InvalidConfig(
+                        awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                    ),
+                ),
+                StatusCode::UNPROCESSABLE_ENTITY,
             ),
         ] {
             assert_eq!(

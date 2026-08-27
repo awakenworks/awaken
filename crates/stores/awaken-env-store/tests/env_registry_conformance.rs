@@ -14,7 +14,8 @@ use awaken_environment_contract::{
     CreateEnvironmentCommand, CreateEnvironmentError, CreateEnvironmentOutcome, EnvRegistry,
     EnvUpdate, EnvironmentConfig, EnvironmentConfigMutation, EnvironmentFieldUpdate,
     EnvironmentNetworking, EnvironmentNetworkingMutation, EnvironmentPackages,
-    EnvironmentPackagesMutation, EnvironmentRevision, EnvironmentSandboxPolicyRef,
+    EnvironmentPackagesMutation, EnvironmentRegistrationIntentFilter, EnvironmentRevision,
+    EnvironmentSandboxPolicyRef, EnvironmentStoreError, InvalidEnvironmentConfig,
 };
 
 fn block<F: std::future::Future>(f: F) -> F::Output {
@@ -369,6 +370,165 @@ async fn nested_config_patch_is_atomic_and_durable<R: EnvRegistry>(r: &R) {
     assert_eq!(packages.pip, vec!["httpx"], "P2");
 }
 
+async fn package_network_invariant_is_atomic<R: EnvRegistry>(r: &R) {
+    // Cause/effect graph for the only cross-field Environment invariant:
+    // C1 packages configured; C2 limited networking; C3 package-manager access;
+    // C4 one atomic patch changes both package and network fields. E1 accepts a
+    // reachable package plan; E2 rejects an unreachable plan; E3 leaves current
+    // state, revision history, and delivery intent unchanged on rejection.
+    //
+    // | Rule | packages | networking | manager access | effect |
+    // | I1 | empty    | limited | false | accept |
+    // | I2 | nonempty | limited | false | reject, persist nothing |
+    // | I3 | nonempty | limited | true  | accept |
+    // | I4 | add      | limited | false | reject update atomically (E3) |
+    // | I5 | clear    | limited | false | accept atomic two-field update |
+    // | I6 | add      | limited | true  | accept atomic two-field update |
+    let limited = |allow_package_managers, packages| EnvironmentConfig::Cloud {
+        networking: EnvironmentNetworking::Limited {
+            allowed_hosts: Vec::new(),
+            allow_mcp_servers: false,
+            allow_package_managers,
+        },
+        packages,
+    };
+    let packages = || EnvironmentPackages {
+        npm: vec!["tsx".into()],
+        ..Default::default()
+    };
+
+    let empty = r
+        .create(
+            "I1".into(),
+            String::new(),
+            Default::default(),
+            limited(false, EnvironmentPackages::default()),
+        )
+        .await
+        .expect("I1 empty packages do not need package-manager access");
+
+    let invalid = CreateEnvironmentCommand {
+        command_id: "invalid-package-network".into(),
+        name: "I2".into(),
+        description: None,
+        metadata: Default::default(),
+        scope: None,
+        config: limited(false, packages()),
+    };
+    assert_eq!(
+        r.create_once(invalid).await.unwrap_err(),
+        CreateEnvironmentError::InvalidConfig(
+            InvalidEnvironmentConfig::PackagesRequirePackageManager
+        ),
+        "I2"
+    );
+    assert_eq!(r.list_active().await.unwrap().len(), 1, "I2 no row");
+
+    let configured = r
+        .create(
+            "I3".into(),
+            String::new(),
+            Default::default(),
+            limited(true, packages()),
+        )
+        .await
+        .expect("I3");
+    let before = configured.clone();
+    let before_intents = r
+        .registration_intents(EnvironmentRegistrationIntentFilter::All)
+        .await
+        .unwrap();
+    assert_eq!(
+        r.update(
+            &configured.id,
+            EnvUpdate {
+                config: Some(EnvironmentConfigMutation::PatchCloud {
+                    networking: Some(EnvironmentNetworkingMutation::Limited {
+                        allowed_hosts: None,
+                        allow_mcp_servers: None,
+                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
+                    }),
+                    packages: None,
+                }),
+                ..Default::default()
+            }
+        )
+        .await
+        .unwrap_err(),
+        EnvironmentStoreError::InvalidConfig(
+            InvalidEnvironmentConfig::PackagesRequirePackageManager
+        ),
+        "I4"
+    );
+    assert_eq!(
+        r.get(&configured.id).await.unwrap(),
+        Some(before.clone()),
+        "I4"
+    );
+    assert_eq!(
+        r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap(),
+        before_intents,
+        "I4 no delivery intent"
+    );
+    assert!(
+        r.get_revision(&configured.id, EnvironmentRevision(2))
+            .await
+            .unwrap()
+            .is_none(),
+        "I4 no revision"
+    );
+
+    let cleared = r
+        .update(
+            &configured.id,
+            EnvUpdate {
+                config: Some(EnvironmentConfigMutation::PatchCloud {
+                    networking: Some(EnvironmentNetworkingMutation::Limited {
+                        allowed_hosts: None,
+                        allow_mcp_servers: None,
+                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
+                    }),
+                    packages: Some(EnvironmentPackagesMutation {
+                        reset: true,
+                        ..Default::default()
+                    }),
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("I5 store")
+        .expect("I5 row");
+    assert_eq!(cleared.revision, EnvironmentRevision(2), "I5");
+    cleared.config.validate().expect("I5 final state");
+
+    let enabled = r
+        .update(
+            &empty.id,
+            EnvUpdate {
+                config: Some(EnvironmentConfigMutation::PatchCloud {
+                    networking: Some(EnvironmentNetworkingMutation::Limited {
+                        allowed_hosts: None,
+                        allow_mcp_servers: None,
+                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(true)),
+                    }),
+                    packages: Some(EnvironmentPackagesMutation {
+                        npm: Some(EnvironmentFieldUpdate::Replace(vec!["tsx".into()])),
+                        ..Default::default()
+                    }),
+                }),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("I6 store")
+        .expect("I6 row");
+    assert_eq!(enabled.revision, EnvironmentRevision(2), "I6");
+    enabled.config.validate().expect("I6 final state");
+}
+
 async fn idempotent_create_decision_table<R: EnvRegistry>(r: &R) {
     // Cause/effect graph: a new command creates one row; the same id and exact
     // payload replays that row; the same id with another payload conflicts and
@@ -411,6 +571,7 @@ async fn run_suite<R: EnvRegistry>(fresh: impl Fn() -> R) {
     revision_decision_table(&fresh()).await;
     scope_round_trips_and_updates(&fresh()).await;
     nested_config_patch_is_atomic_and_durable(&fresh()).await;
+    package_network_invariant_is_atomic(&fresh()).await;
     idempotent_create_decision_table(&fresh()).await;
     sandbox_binding_is_one_environment_revision(&fresh()).await;
 }

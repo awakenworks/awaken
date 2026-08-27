@@ -230,9 +230,20 @@ fn map_application_error(error: EnvironmentApplicationError) -> StatusCode {
         }
         EnvironmentApplicationError::Policy(error) => map_policy_error(error),
         EnvironmentApplicationError::PolicyStoreUnavailable => StatusCode::SERVICE_UNAVAILABLE,
-        EnvironmentApplicationError::Create(_)
+        EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::InvalidConfig(_),
+        )
+        | EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::InvalidConfig(_),
+        ) => StatusCode::UNPROCESSABLE_ENTITY,
+        EnvironmentApplicationError::Create(
+            awaken_environment_contract::CreateEnvironmentError::IdempotencyConflict
+            | awaken_environment_contract::CreateEnvironmentError::Store(_),
+        )
         | EnvironmentApplicationError::Registration(_)
-        | EnvironmentApplicationError::Store(_)
+        | EnvironmentApplicationError::Store(
+            awaken_environment_contract::EnvironmentStoreError::Backend(_),
+        )
         | EnvironmentApplicationError::RegistrationInvariant(_) => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
@@ -292,11 +303,29 @@ mod tests {
             map_application_error(EnvironmentApplicationError::PolicyStoreUnavailable),
             StatusCode::SERVICE_UNAVAILABLE
         );
+        // C5b a domain-invalid Environment is a client error regardless of
+        // whether it is rejected on create or update -> E5b 422.
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::Create(
+                awaken_environment_contract::CreateEnvironmentError::InvalidConfig(
+                    awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                ),
+            )),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
+        assert_eq!(
+            map_application_error(EnvironmentApplicationError::Store(
+                awaken_environment_contract::EnvironmentStoreError::InvalidConfig(
+                    awaken_environment_contract::InvalidEnvironmentConfig::PackagesRequirePackageManager,
+                ),
+            )),
+            StatusCode::UNPROCESSABLE_ENTITY
+        );
         // C6 outbox unavailable or structurally inconsistent -> E6 503; callers
         // must not observe authoring success before executable acknowledgement.
         assert_eq!(
             map_application_error(EnvironmentApplicationError::Store(
-                awaken_environment_contract::EnvironmentStoreError("x".into()),
+                awaken_environment_contract::EnvironmentStoreError::Backend("x".into()),
             )),
             StatusCode::SERVICE_UNAVAILABLE
         );
