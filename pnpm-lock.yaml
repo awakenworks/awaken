@@ -26,6 +26,10 @@ importers:
       typescript:
         specifier: 5.9.3
         version: 5.9.3
+    devDependencies:
+      '@types/node':
+        specifier: 26.1.0
+        version: 26.1.0
 
   packages/managed-session-projection:
     dependencies:

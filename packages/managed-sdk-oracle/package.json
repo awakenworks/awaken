@@ -8,14 +8,18 @@
     "./current-wire": "./src/current-wire.generated.ts"
   },
   "scripts": {
+    "conformance:hosted": "node src/conformance/hosted.mjs",
     "generate": "node src/cli.mjs generate",
     "check": "node src/cli.mjs check",
-    "test": "node --test test/*.test.mjs && tsc -p tsconfig.json"
+    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json"
   },
   "dependencies": {
     "@anthropic-ai/sdk-current": "npm:@anthropic-ai/sdk@0.122.0",
     "@anthropic-ai/sdk-oldest": "npm:@anthropic-ai/sdk@0.105.0",
     "@anthropic-ai/sdk-user-profiles-legacy": "npm:@anthropic-ai/sdk@0.117.1",
     "typescript": "5.9.3"
+  },
+  "devDependencies": {
+    "@types/node": "26.1.0"
   }
 }

@@ -8,7 +8,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.archive",
       "method": "POST",
@@ -28,7 +32,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.create",
       "method": "POST",
@@ -48,7 +56,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.list",
       "method": "GET",
@@ -68,7 +80,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.retrieve",
       "method": "GET",
@@ -88,7 +104,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.update",
       "method": "POST",
@@ -108,7 +128,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.versions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.versions.list",
       "method": "GET",
@@ -128,7 +152,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deploymentRuns.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deploymentRuns.list",
       "method": "GET",
@@ -148,7 +176,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deploymentRuns.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deploymentRuns.retrieve",
       "method": "GET",
@@ -168,7 +200,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.archive",
       "method": "POST",
@@ -188,7 +224,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.create",
       "method": "POST",
@@ -208,7 +248,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.list",
       "method": "GET",
@@ -228,7 +272,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.pause.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.pause",
       "method": "POST",
@@ -248,7 +296,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.retrieve",
       "method": "GET",
@@ -268,7 +320,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.run.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.run",
       "method": "POST",
@@ -288,7 +344,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.unpause.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.unpause",
       "method": "POST",
@@ -308,7 +368,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.update",
       "method": "POST",
@@ -327,7 +391,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.archive",
       "method": "POST",
@@ -345,7 +413,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.cancel.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.cancel",
       "method": "POST",
@@ -363,7 +435,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.create",
       "method": "POST",
@@ -381,7 +457,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.list",
       "method": "GET",
@@ -399,7 +479,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.retrieve",
       "method": "GET",
@@ -418,7 +502,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.archive",
       "method": "POST",
@@ -438,7 +526,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.create",
       "method": "POST",
@@ -458,7 +550,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.delete",
       "method": "DELETE",
@@ -478,7 +574,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.list",
       "method": "GET",
@@ -498,7 +598,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.retrieve",
       "method": "GET",
@@ -518,7 +622,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.update",
       "method": "POST",
@@ -538,7 +646,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.ack.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.ack",
       "method": "POST",
@@ -558,7 +670,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.heartbeat.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.heartbeat",
       "method": "POST",
@@ -578,7 +694,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.list",
       "method": "GET",
@@ -598,7 +718,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.poll.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.poll",
       "method": "GET",
@@ -618,7 +742,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.retrieve",
       "method": "GET",
@@ -638,7 +766,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.stats.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.stats",
       "method": "GET",
@@ -658,7 +790,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.stop.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.stop",
       "method": "POST",
@@ -678,7 +814,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.update",
       "method": "POST",
@@ -698,7 +838,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.delete",
       "method": "DELETE",
@@ -718,7 +862,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.download.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.download",
       "method": "GET",
@@ -738,7 +886,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.list",
       "method": "GET",
@@ -758,7 +910,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.retrieveMetadata.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.retrieveMetadata",
       "method": "GET",
@@ -778,7 +934,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.upload.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.upload",
       "method": "POST",
@@ -798,7 +958,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.archive",
       "method": "POST",
@@ -818,7 +982,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.create",
       "method": "POST",
@@ -838,7 +1006,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.delete",
       "method": "DELETE",
@@ -858,7 +1030,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.list",
       "method": "GET",
@@ -878,7 +1054,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.create",
       "method": "POST",
@@ -898,7 +1078,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.delete",
       "method": "DELETE",
@@ -918,7 +1102,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.list",
       "method": "GET",
@@ -938,7 +1126,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.retrieve",
       "method": "GET",
@@ -958,7 +1150,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.update",
       "method": "POST",
@@ -978,7 +1174,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.list",
       "method": "GET",
@@ -998,7 +1198,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.redact.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.redact",
       "method": "POST",
@@ -1018,7 +1222,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.retrieve",
       "method": "GET",
@@ -1038,7 +1246,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.retrieve",
       "method": "GET",
@@ -1058,7 +1270,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.update",
       "method": "POST",
@@ -1078,7 +1294,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.models.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.models.list",
       "method": "GET",
@@ -1098,7 +1318,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.models.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.models.retrieve",
       "method": "GET",
@@ -1118,7 +1342,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.archive",
       "method": "POST",
@@ -1138,7 +1366,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.create",
       "method": "POST",
@@ -1158,7 +1390,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.delete",
       "method": "DELETE",
@@ -1178,7 +1414,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.events.list",
       "method": "GET",
@@ -1198,7 +1438,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.send.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.events.send",
       "method": "POST",
@@ -1218,7 +1462,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.stream.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.events.stream",
       "method": "GET",
@@ -1238,7 +1486,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.list",
       "method": "GET",
@@ -1258,7 +1510,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.add.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.resources.add",
       "method": "POST",
@@ -1278,7 +1534,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.resources.delete",
       "method": "DELETE",
@@ -1298,7 +1558,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.resources.list",
       "method": "GET",
@@ -1318,7 +1582,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.resources.retrieve",
       "method": "GET",
@@ -1338,7 +1606,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.resources.update",
       "method": "POST",
@@ -1358,7 +1630,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.retrieve",
       "method": "GET",
@@ -1378,7 +1654,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.threads.archive",
       "method": "POST",
@@ -1398,7 +1678,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.events.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.threads.events.list",
       "method": "GET",
@@ -1418,7 +1702,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.events.stream.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.threads.events.stream",
       "method": "GET",
@@ -1438,7 +1726,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.threads.list",
       "method": "GET",
@@ -1458,7 +1750,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.threads.retrieve",
       "method": "GET",
@@ -1478,7 +1774,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.sessions.update",
       "method": "POST",
@@ -1498,7 +1798,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.create",
       "method": "POST",
@@ -1518,7 +1822,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.delete",
       "method": "DELETE",
@@ -1538,7 +1846,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.list",
       "method": "GET",
@@ -1558,7 +1870,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.retrieve",
       "method": "GET",
@@ -1578,7 +1894,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.versions.create",
       "method": "POST",
@@ -1598,7 +1918,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.versions.delete",
       "method": "DELETE",
@@ -1618,7 +1942,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.download.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.versions.download",
       "method": "GET",
@@ -1638,7 +1966,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.versions.list",
       "method": "GET",
@@ -1658,7 +1990,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.skills.versions.retrieve",
       "method": "GET",
@@ -1677,7 +2013,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.archive",
       "method": "POST",
@@ -1695,7 +2035,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.certificates.archive",
       "method": "POST",
@@ -1713,7 +2057,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.certificates.create",
       "method": "POST",
@@ -1731,7 +2079,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.certificates.list",
       "method": "GET",
@@ -1749,7 +2101,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.certificates.retrieve",
       "method": "GET",
@@ -1767,7 +2123,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.create",
       "method": "POST",
@@ -1785,7 +2145,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.list",
       "method": "GET",
@@ -1803,7 +2167,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.retrieve",
       "method": "GET",
@@ -1821,7 +2189,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.revealToken.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.revealToken",
       "method": "POST",
@@ -1839,7 +2211,11 @@
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.rotateToken.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.tunnels.rotateToken",
       "method": "POST",
@@ -1858,7 +2234,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.userProfiles.create",
       "method": "POST",
@@ -1878,7 +2258,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.createEnrollmentURL.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.userProfiles.createEnrollmentURL",
       "method": "POST",
@@ -1898,7 +2282,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.userProfiles.list",
       "method": "GET",
@@ -1918,7 +2306,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.userProfiles.retrieve",
       "method": "GET",
@@ -1938,7 +2330,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.userProfiles.update",
       "method": "POST",
@@ -1958,7 +2354,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.archive",
       "method": "POST",
@@ -1978,7 +2378,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.create",
       "method": "POST",
@@ -1998,7 +2402,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.archive",
       "method": "POST",
@@ -2018,7 +2426,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.create",
       "method": "POST",
@@ -2038,7 +2450,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.delete",
       "method": "DELETE",
@@ -2058,7 +2474,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.list",
       "method": "GET",
@@ -2078,7 +2498,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.mcpOAuthValidate.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.mcpOAuthValidate",
       "method": "POST",
@@ -2098,7 +2522,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.retrieve",
       "method": "GET",
@@ -2118,7 +2546,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.credentials.update",
       "method": "POST",
@@ -2138,7 +2570,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.delete",
       "method": "DELETE",
@@ -2158,7 +2594,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.list",
       "method": "GET",
@@ -2178,7 +2618,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.retrieve",
       "method": "GET",
@@ -2198,7 +2642,11 @@
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.vaults.update",
       "method": "POST",
@@ -2214,7 +2662,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.skills.versions.retrieveFile",
       "method": "GET",
@@ -2226,7 +2677,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.memoryStores.memories.patch",
       "method": "PATCH",
@@ -2238,7 +2692,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.create",
       "method": "POST",
@@ -2250,7 +2707,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.list",
       "method": "GET",
@@ -2262,7 +2722,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.retrieve",
       "method": "GET",
@@ -2274,7 +2737,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.archive",
       "method": "POST",
@@ -2286,7 +2752,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.revealToken",
       "method": "POST",
@@ -2298,7 +2767,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.rotateToken",
       "method": "POST",
@@ -2310,7 +2782,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.create",
       "method": "POST",
@@ -2322,7 +2797,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.list",
       "method": "GET",
@@ -2334,7 +2812,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.retrieve",
       "method": "GET",
@@ -2346,7 +2827,10 @@
       "evidence": {
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.archive",
       "method": "POST",

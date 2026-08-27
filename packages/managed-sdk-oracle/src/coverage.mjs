@@ -52,6 +52,12 @@ export function operationCoverage({
       .filter(({ operations: anchorOperations }) =>
         anchorOperations.some(({ id }) => id === operation.id))
       .map(({ id }) => id);
+    const sdkTransport = operation.id.startsWith('beta.')
+      ? {
+          case_id: `${operation.id}.transport.current`,
+          owner: 'packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts',
+        }
+      : { not_applicable: 'sdk_absent_documented_route' };
     return {
       id: operation.id,
       method: operation.method,
@@ -61,6 +67,7 @@ export function operationCoverage({
       evidence: {
         route_inventory: 'scripts/ci/_managed_protocol_boundary.py',
         rust_behavior: rustBehavior,
+        sdk_transport: sdkTransport,
         sdk_surface_compile: sdkAnchors.map(
           (id) => `packages/managed-sdk-oracle/fixtures/generated/${id}.ts`,
         ),

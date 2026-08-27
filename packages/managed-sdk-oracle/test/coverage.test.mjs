@@ -37,6 +37,17 @@ test('coverage ledger closes every current and documented operation exactly once
     new Set(Object.keys(config.resources)),
     'every configured resource owns live operations',
   );
+  for (const row of rows) {
+    if (row.id.startsWith('beta.')) {
+      assert.equal(row.evidence.sdk_transport.case_id, `${row.id}.transport.current`);
+      assert.match(row.evidence.sdk_transport.owner, /sdk-wire-lifecycle\.test\.ts$/u);
+    } else {
+      assert.equal(
+        row.evidence.sdk_transport.not_applicable,
+        'sdk_absent_documented_route',
+      );
+    }
+  }
 
   assert.throws(
     () => operationCoverage({

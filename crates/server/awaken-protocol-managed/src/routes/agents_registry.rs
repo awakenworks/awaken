@@ -393,11 +393,16 @@ mod tests {
         }
 
         async fn archive(&self, _: &str, _: &str) -> Result<Agent, ManagedAgentError> {
-            Err(ManagedAgentError::NotFound)
+            self.writes.fetch_add(1, Ordering::SeqCst);
+            let mut guard = self.agent.lock().unwrap();
+            let agent = guard.as_mut().ok_or(ManagedAgentError::NotFound)?;
+            agent.archived_at = Some("2026-08-18T00:00:01Z".into());
+            agent.version += 1;
+            Ok(agent.clone())
         }
 
         async fn versions(&self, _: &str, _: &str) -> Result<Vec<Agent>, ManagedAgentError> {
-            Ok(Vec::new())
+            Ok(self.agent.lock().unwrap().clone().into_iter().collect())
         }
     }
 
@@ -444,6 +449,21 @@ mod tests {
         let status = response.status();
         let _ = response.into_body().collect().await.unwrap();
         status
+    }
+
+    async fn response(app: &Router, method: &str, uri: &str) -> (StatusCode, serde_json::Value) {
+        let mut request = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Body::empty())
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(awaken_tenancy::WorkspaceScope("workspace-policy".into()));
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap())
     }
 
     #[tokio::test]
@@ -504,5 +524,46 @@ mod tests {
             "C4"
         );
         assert_eq!(repository.writes.load(Ordering::SeqCst), 1, "C4");
+    }
+
+    #[tokio::test]
+    async fn agent_lifecycle_projects_every_official_sdk_operation() {
+        // State-transition design A1: create establishes revision 1; retrieve
+        // and list project that identity without mutation; versions exposes the
+        // immutable revision; archive advances once and returns the terminal
+        // projection. Every official Agent route participates in this chain.
+        let repository = Arc::new(FakeRepository::new());
+        let policy = Arc::new(Policy {
+            allow: AtomicBool::new(true),
+            unavailable: AtomicBool::new(false),
+        });
+        let app = agents_router(Arc::new(
+            AgentRegistryState::from_repository(repository.clone())
+                .with_inference_geo_policy(policy),
+        ));
+        assert_eq!(
+            request(
+                &app,
+                json!({"name": "lifecycle", "model": "model"}),
+                "/v1/agents",
+            )
+            .await,
+            StatusCode::OK,
+            "A1/create"
+        );
+
+        let (status, retrieved) = response(&app, "GET", "/v1/agents/agent-policy").await;
+        assert_eq!(status, StatusCode::OK, "A1/retrieve");
+        assert_eq!(retrieved["id"], "agent-policy", "A1/retrieve");
+        let (status, listed) = response(&app, "GET", "/v1/agents").await;
+        assert_eq!(status, StatusCode::OK, "A1/list");
+        assert_eq!(listed["data"][0]["id"], "agent-policy", "A1/list");
+        let (status, versions) = response(&app, "GET", "/v1/agents/agent-policy/versions").await;
+        assert_eq!(status, StatusCode::OK, "A1/versions");
+        assert_eq!(versions["data"][0]["version"], 1, "A1/versions");
+        let (status, archived) = response(&app, "POST", "/v1/agents/agent-policy/archive").await;
+        assert_eq!(status, StatusCode::OK, "A1/archive");
+        assert!(archived["archived_at"].is_string(), "A1/archive");
+        assert_eq!(repository.writes.load(Ordering::SeqCst), 2, "A1");
     }
 }

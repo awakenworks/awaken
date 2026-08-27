@@ -269,6 +269,7 @@ mod tests {
 
     use axum::body::{Body, to_bytes};
     use axum::http::Request;
+    use axum::response::Response;
     use tower::ServiceExt;
 
     use super::*;
@@ -404,6 +405,20 @@ mod tests {
         }
     }
 
+    async fn call(app: &Router, method: &str, uri: &str, body: &'static str) -> Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn tunnel_acl_follows_scope_secret_and_validation_decision_table() {
         // Causes: C1=trusted Workspace extension, C2=request id, C3=token
@@ -475,6 +490,49 @@ mod tests {
             scopes[0].operation_id.as_deref(),
             Some("request-a"),
             "R1/E1"
+        );
+    }
+
+    #[tokio::test]
+    async fn tunnel_lifecycle_projects_every_current_sdk_operation() {
+        // State-transition design T1: create, read/list, secret operations,
+        // certificate lifecycle, and terminal archive all cross the same
+        // Workspace-scoped application port. The decision chain covers every
+        // current official Tunnel SDK method without duplicating Cloud effects.
+        let application = Arc::new(FakeTunnelApplication::default());
+        let app = tunnels_router(application.clone())
+            .layer(Extension(WorkspaceScope("workspace-a".into())));
+        let cases = [
+            ("POST", "/v1/tunnels", r#"{"display_name":"test"}"#),
+            ("GET", "/v1/tunnels/tun_1", ""),
+            ("GET", "/v1/tunnels", ""),
+            ("POST", "/v1/tunnels/tun_1/reveal_token", ""),
+            (
+                "POST",
+                "/v1/tunnels/tun_1/rotate_token",
+                r#"{"reason":"test"}"#,
+            ),
+            (
+                "POST",
+                "/v1/tunnels/tun_1/certificates",
+                r#"{"ca_certificate_pem":"pem"}"#,
+            ),
+            ("GET", "/v1/tunnels/tun_1/certificates/tcrt_1", ""),
+            ("GET", "/v1/tunnels/tun_1/certificates", ""),
+            ("POST", "/v1/tunnels/tun_1/certificates/tcrt_1/archive", ""),
+            ("POST", "/v1/tunnels/tun_1/archive", ""),
+        ];
+        for (method, uri, body) in cases {
+            let response = call(&app, method, uri, body).await;
+            assert_eq!(response.status(), StatusCode::OK, "T1/{method} {uri}");
+            if uri.ends_with("reveal_token") || uri.ends_with("rotate_token") {
+                assert_eq!(response.headers()["cache-control"], "no-store", "T1/secret");
+            }
+        }
+        assert_eq!(
+            application.scopes.lock().unwrap().len(),
+            10,
+            "T1/one port call"
         );
     }
 }
