@@ -158,18 +158,19 @@ pub use session_realization::{
     SessionProjectionSynchronizer, SessionRealizationAction, SessionRealizationControl,
     SessionRealizationControlDisposition, SessionRealizationControlFailure,
     SessionRealizationDirective, SessionRealizationDriveError, SessionRealizationProgress,
-    SessionRealizationTarget, SessionTerminalCleanupAssignment, drive_session_realization,
-    frozen_agent_publication_decision, realization_generation_authorizes,
-    realization_lease_authorizes, realization_lease_is_live_at,
+    SessionRealizationTarget, SessionRepositoryPublicationProjection,
+    SessionTerminalCleanupAssignment, drive_session_realization, frozen_agent_publication_decision,
+    realization_generation_authorizes, realization_lease_authorizes, realization_lease_is_live_at,
 };
 pub use session_repo::{
     IdempotencyRecord, ManagedSessionRepository, PersistedSession, ScopedPersistedSession,
-    SessionCreateResult, SessionDisposition, SessionDispositionTransitionError,
-    SessionExecutionState, SessionExecutionStateError, SessionExecutionTransitionError,
-    SessionIdempotencyReceipt, SessionMutation, SessionMutationPayload, SessionMutationResult,
-    SessionMutationValidationError, SessionRealizationLease, SessionRecoveryQuarantine,
-    SessionRecoveryScan, SessionRepositoryConflict, SessionRepositoryError,
-    SessionRepositoryRecoveryAction, SessionRevision, SessionTombstone, VisibleMcpServer,
+    SessionArchiveWithRepositoryPublicationError, SessionCreateResult, SessionDisposition,
+    SessionDispositionTransitionError, SessionExecutionState, SessionExecutionStateError,
+    SessionExecutionTransitionError, SessionIdempotencyReceipt, SessionMutation,
+    SessionMutationPayload, SessionMutationResult, SessionMutationValidationError,
+    SessionRealizationLease, SessionRecoveryQuarantine, SessionRecoveryScan,
+    SessionRepositoryConflict, SessionRepositoryError, SessionRepositoryRecoveryAction,
+    SessionRevision, SessionTombstone, VisibleMcpServer,
 };
 pub use skill_execution::{
     SkillBundleSource, SkillBundleSourceError, SkillCatalogApplication, SkillExecutionPin,
@@ -177,6 +178,8 @@ pub use skill_execution::{
 };
 pub use terminal_cleanup::{
     SessionCleanupCommand, SessionCleanupCompletion, SessionCleanupError, SessionCleanupOperation,
+    SessionRepositoryPublicationCleanup, SessionRepositoryPublicationCommand,
+    SessionRepositoryPublicationIntent, SessionRepositoryPublicationReceipt,
     VerifiedSessionCleanupReceipt,
 };
 pub use tool_configuration::SessionToolConfiguration;

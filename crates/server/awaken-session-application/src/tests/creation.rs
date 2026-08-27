@@ -1390,17 +1390,22 @@ async fn assert_profiled_direct_resource_rules() {
             "file-collides-repository",
             "/workspace/repository",
         ));
-    collides_repository.repositories = vec![SessionRepositoryResourceInput {
-        id: "profiled-collision-repository".into(),
-        workspace_id: "workspace".into(),
-        name: "Collision Repository".into(),
-        description: "must not be registered".into(),
-        remote_url: "https://example.test/collision.git".into(),
-        authorization_token: None,
-        credential: None,
-        mount_path: "/workspace/repository".into(),
-        initial_branch: Some("main".into()),
-        initial_commit: None,
+    collides_repository.repositories = vec![crate::ProfiledSessionRepositoryInput {
+        binding_id: awaken_resource_contract::BindingId::new(
+            "profiled-collision-repository-binding",
+        ),
+        repository: SessionRepositoryResourceInput {
+            id: "profiled-collision-repository".into(),
+            workspace_id: "workspace".into(),
+            name: "Collision Repository".into(),
+            description: "must not be registered".into(),
+            remote_url: "https://example.test/collision.git".into(),
+            authorization_token: None,
+            credential: None,
+            mount_path: "/workspace/repository".into(),
+            initial_branch: Some("main".into()),
+            initial_commit: None,
+        },
     }];
     assert!(
         repository_collision

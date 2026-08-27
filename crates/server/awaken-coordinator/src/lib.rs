@@ -456,11 +456,12 @@ fn local_managed_state_over(
     let local_realization_owner = host.dispatch_owner().to_string();
     let environments = environments
         .unwrap_or_else(|| awaken_protocol_managed::test_support::environment_components().1);
+    let repository_bindings = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
+    );
     let runtime = ManagedHost::new(host)
         .with_resource_validator(catalog.clone())
-        .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::RegistryRepositoryBindingVerifier::new(catalog.clone()),
-        ))
+        .with_repository_binding_verifier(repository_bindings)
         .with_credentials(credentials, secrets);
     let runtime = runtime.install_dispatch_session_runtime();
     let runtime = Arc::new(runtime);
@@ -1239,6 +1240,9 @@ fn mount_with_managed_over_and_models(
     let profiled_sessions = awaken_protocol_awaken::profiled_session_router(
         awaken_protocol_managed::create_profiled_session,
     )
+    .merge(awaken_protocol_awaken::profiled_session_release_router(
+        awaken_protocol_managed::release_profiled_session,
+    ))
     .with_state(managed_state.clone());
     let managed = router(managed_state.clone())
         .merge(dreams)
@@ -1346,7 +1350,8 @@ fn mount_with_managed_over_and_models(
         dispatch.clone() as Arc<dyn awaken_run_ingress::DispatchQueue>,
         worker_authenticator.clone(),
     )
-    .with_worker_directory(worker_directory.clone());
+    .with_worker_directory(worker_directory.clone())
+    .with_session_control(session_application.clone());
     let repository_service = match repository_transport_authorizer {
         Some(authorizer) => repository_service.with_transport_authorizer(authorizer),
         None => repository_service,

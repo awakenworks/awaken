@@ -471,24 +471,15 @@ impl SessionApplication {
             if !session.is_terminal() {
                 return Ok(false);
             }
-            let runtime_commit_cursor = match &session.terminal_cleanup {
-                awaken_session_contract::SessionCleanupOperation::NotRequested
-                | awaken_session_contract::SessionCleanupOperation::Fenced { .. } => {
-                    // The fence has not yet joined every root/child Runtime
-                    // writer. Resolving now would misclassify a current row as
-                    // legacy and could place accepted input before an unstable
-                    // terminal high-water.
-                    return Ok(false);
-                }
-                awaken_session_contract::SessionCleanupOperation::Requested {
-                    runtime_commit_cursor,
-                    ..
-                }
-                | awaken_session_contract::SessionCleanupOperation::Completed {
-                    runtime_commit_cursor,
-                    ..
-                } => *runtime_commit_cursor,
-            };
+            if !session.terminal_cleanup.is_requested() && !session.terminal_cleanup.is_completed()
+            {
+                // The fence has not yet joined every root/child Runtime
+                // writer. Resolving now would misclassify a current row as
+                // legacy and could place accepted input before an unstable
+                // terminal high-water.
+                return Ok(false);
+            }
+            let runtime_commit_cursor = session.terminal_cleanup.runtime_commit_cursor();
             let anchor =
                 runtime_commit_cursor.map(|source_commit_cursor| SessionEventProjectionAnchor {
                     source_commit_cursor,

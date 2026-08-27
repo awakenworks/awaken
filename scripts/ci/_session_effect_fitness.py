@@ -12,7 +12,8 @@ SESSION_REPOSITORY = "crates/contract/awaken-session-contract/src/session_repo.r
 SESSION_REALIZATION = "crates/contract/awaken-session-contract/src/session_realization.rs"
 RESOURCE_EXECUTION = "crates/contract/awaken-resource-contract/src/execution.rs"
 APPLICATION_CLEANUP = (
-    "crates/server/awaken-session-application/src/resource_reconciliation.rs"
+    "crates/server/awaken-session-application/src/"
+    "resource_reconciliation/terminal_cleanup.rs"
 )
 APPLICATION_TERMINAL = "crates/server/awaken-session-application/src/terminal.rs"
 APPLICATION_WORK_DISPATCH = "crates/server/awaken-session-application/src/application.rs"

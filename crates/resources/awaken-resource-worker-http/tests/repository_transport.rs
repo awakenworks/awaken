@@ -9,7 +9,7 @@ use awaken_resource_contract::RepositoryBindingVerifier as _;
 use awaken_resource_contract::{ConfigVersion, LiveResourceBindingVerifier, ResourceRegistryError};
 use awaken_resource_worker_http::HttpRepositoryBindingVerifier;
 use awaken_resource_worker_http::{
-    RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
+    RepositoryTransportAuthority, RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
     WorkerRepositoryBindingService, worker_repository_binding_router,
 };
 use awaken_run_ingress::{
@@ -19,6 +19,126 @@ use awaken_worker_transport_security::{HeaderWorkerAuthenticator, WorkerUpstream
 
 struct ExactRepositoryRegistry {
     active: bool,
+}
+
+#[derive(Clone)]
+struct ExactTerminalPublicationControl {
+    workspace_id: String,
+    command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    lease: awaken_session_contract::SessionRealizationLease,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRealizationControl for ExactTerminalPublicationControl {
+    async fn begin_session_realization(
+        &self,
+        _command: awaken_session_contract::BeginSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "unused test phase".into(),
+            ),
+        )
+    }
+
+    async fn activate_session_realization(
+        &self,
+        _command: awaken_session_contract::ActivateSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "unused test phase".into(),
+            ),
+        )
+    }
+
+    async fn acknowledge_session_realization(
+        &self,
+        _command: awaken_session_contract::AcknowledgeSessionRealization,
+    ) -> Result<
+        awaken_session_contract::SessionRealizationDirective,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "unused test phase".into(),
+            ),
+        )
+    }
+
+    async fn fail_session_realization(
+        &self,
+        _command: awaken_session_contract::FailSessionRealization,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        Err(
+            awaken_session_contract::SessionRealizationControlFailure::Invalid(
+                "unused test phase".into(),
+            ),
+        )
+    }
+
+    async fn terminal_repository_publication_command(
+        &self,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        if session_id != self.command.session_id || lease != &self.lease {
+            return Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership);
+        }
+        Ok(Some(
+            awaken_session_contract::SessionRepositoryPublicationProjection {
+                workspace_id: self.workspace_id.clone(),
+                command: self.command.clone(),
+            },
+        ))
+    }
+}
+
+fn terminal_publication_command(
+    session_id: &str,
+) -> awaken_session_contract::SessionRepositoryPublicationCommand {
+    let intent = serde_json::from_value(serde_json::json!({
+        "input": {
+            "binding_id": "repository-binding",
+            "source": {
+                "kind": "repository",
+                "repository_id": "repository-exact",
+                "config": {
+                    "repository_id": "repository-exact",
+                    "version": 1,
+                    "remote_url": "https://git.invalid/exact.git",
+                    "initial_branch": "main"
+                }
+            },
+            "mount_path": "/workspace/repository",
+            "access": "read_write"
+        },
+        "expectation": {
+            "branch": "awf/work",
+            "commit": "0123456789abcdef0123456789abcdef01234567"
+        }
+    }))
+    .expect("terminal publication intent");
+    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
+    operation
+        .request_with_publication(session_id, intent)
+        .expect("terminal publication fence");
+    operation
+        .freeze_targets(session_id, [], 0, 0)
+        .expect("terminal publication target");
+    operation
+        .publication_command(session_id)
+        .expect("terminal publication projection")
+        .expect("terminal publication command")
 }
 
 impl LiveResourceBindingVerifier for ExactRepositoryRegistry {
@@ -345,8 +465,15 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
         let calls = authorizer.0.lock().unwrap();
         assert_eq!(calls.len(), 1, "T2");
         assert_eq!(calls[0].worker, identity, "T2");
-        assert_eq!(calls[0].claim, claim, "T2");
-        assert!(calls[0].claim_expires_ms >= support::unix_now_ms(), "T2");
+        let RepositoryTransportAuthority::Run {
+            claim: authorized_claim,
+            claim_expires_ms,
+        } = &calls[0].authority
+        else {
+            panic!("T2 Run authority");
+        };
+        assert_eq!(authorized_claim, &claim, "T2");
+        assert!(*claim_expires_ms >= support::unix_now_ms(), "T2");
         assert_eq!(calls[0].workspace_id, "workspace-repository", "T2");
     }
 
@@ -405,6 +532,213 @@ async fn repository_transport_authorizer_is_exact_and_has_no_direct_fallback() {
     assert!(error.to_string().contains("409"), "T4: {error}");
 }
 
+/// Terminal Repository authority decision table:
+///
+/// | Rule | registered Worker | realization lease | canonical command | deployment authorizer | Effect |
+/// |---|---|---|---|---|---|
+/// | P1 | current | exact/live | exact, catalog retired | absent | Direct from the frozen command; no mutable catalog re-read |
+/// | P2 | current | exact/live | exact | Gateway | exact terminal authority reaches authorizer |
+/// | P3 | stale incarnation | exact | exact | any | deny before Control/authorizer |
+/// | P4 | current | stale | exact | any | reject the non-current generation |
+/// | P5 | current | exact | changed | any | reject before Repository transport |
+/// | P6 | current | exact | exact command, foreign request Workspace | any | deny before authorizer; Session owner is authoritative |
+/// | P7 | current | exact | exact | no Session Control | unavailable, never RunClaim fallback |
+#[tokio::test]
+async fn terminal_repository_transport_is_worker_lease_and_command_fenced() {
+    type PublicationFence = (
+        awaken_session_contract::SessionRepositoryPublicationCommand,
+        awaken_session_contract::SessionRealizationLease,
+    );
+
+    let (directory, identity) = support::ready_worker("worker-repository-publication").await;
+    let command = terminal_publication_command("session-publication");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: identity.worker_id.clone(),
+        runtime_incarnation: identity.lease_owner(),
+        epoch: 7,
+        expires_at_unix_ms: support::unix_now_ms().saturating_add(30_000),
+    };
+    let control = Arc::new(ExactTerminalPublicationControl {
+        workspace_id: "workspace-repository".into(),
+        command: command.clone(),
+        lease: lease.clone(),
+    });
+    let direct = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: false }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(control.clone()),
+    );
+    let address = support::serve(worker_repository_binding_router(direct)).await;
+    let verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
+    );
+    let fence = (command.clone(), lease.clone());
+    let transport =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&fence),
+        )
+        .await
+        .expect("P1 exact terminal Direct authority");
+    assert!(
+        matches!(
+            transport,
+            awaken_resource_contract::RepositoryTransport::Direct
+        ),
+        "P1"
+    );
+
+    let authorizer = Arc::new(GatewayAuthorizer::default());
+    let gateway = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: true }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory.clone())
+        .with_session_control(control)
+        .with_transport_authorizer(authorizer.clone()),
+    );
+    let address = support::serve(worker_repository_binding_router(gateway)).await;
+    let gateway_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity.clone()),
+    );
+    <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+        PublicationFence,
+    >>::verify(
+        &gateway_verifier,
+        "workspace-repository",
+        "repository-exact",
+        ConfigVersion::INITIAL,
+        Some(&fence),
+    )
+    .await
+    .expect("P2 Gateway terminal authority");
+    {
+        let calls = authorizer.0.lock().unwrap();
+        assert_eq!(calls.len(), 1, "P2");
+        assert!(
+            matches!(
+                &calls[0].authority,
+                RepositoryTransportAuthority::TerminalPublication {
+                    command: authorized,
+                    lease: authorized_lease,
+                } if authorized.as_ref() == &command && authorized_lease == &lease
+            ),
+            "P2"
+        );
+    }
+
+    let stale = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(WorkerIdentity::new(
+            identity.worker_id.clone(),
+            "stale-publication-incarnation",
+            identity.generation,
+        )),
+    );
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &stale,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&fence),
+        )
+        .await
+        .expect_err("P3 stale Worker");
+    assert!(error.to_string().contains("403"), "P3: {error}");
+
+    let mut stale_lease = lease.clone();
+    stale_lease.epoch += 1;
+    let stale_fence = (command.clone(), stale_lease);
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &gateway_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&stale_fence),
+        )
+        .await
+        .expect_err("P4 stale lease");
+    assert!(error.to_string().contains("409"), "P4: {error}");
+
+    let mut changed = command.clone();
+    changed.effect_id.push_str("-changed");
+    let changed_fence = (changed, lease.clone());
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &gateway_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&changed_fence),
+        )
+        .await
+        .expect_err("P5 changed command");
+    assert!(error.to_string().contains("409"), "P5: {error}");
+
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &gateway_verifier,
+            "workspace-forged-by-worker",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&fence),
+        )
+        .await
+        .expect_err("P6 Worker-selected Workspace must not replace the Session owner");
+    assert!(error.to_string().contains("403"), "P6: {error}");
+    assert_eq!(
+        authorizer.0.lock().unwrap().len(),
+        1,
+        "P6 before authorizer"
+    );
+
+    let unavailable = Arc::new(
+        WorkerRepositoryBindingService::new(
+            Arc::new(ExactRepositoryRegistry { active: true }),
+            Arc::new(MemoryDispatchStore::new()),
+            Arc::new(HeaderWorkerAuthenticator),
+        )
+        .with_worker_directory(directory),
+    );
+    let address = support::serve(worker_repository_binding_router(unavailable)).await;
+    let unavailable_verifier = HttpRepositoryBindingVerifier::new(
+        WorkerUpstream::new(format!("http://{address}")).with_worker_identity(identity),
+    );
+    let error =
+        <HttpRepositoryBindingVerifier as awaken_resource_contract::RepositoryBindingVerifier<
+            PublicationFence,
+        >>::verify(
+            &unavailable_verifier,
+            "workspace-repository",
+            "repository-exact",
+            ConfigVersion::INITIAL,
+            Some(&fence),
+        )
+        .await
+        .expect_err("P7 missing Control");
+    assert!(error.to_string().contains("503"), "P7: {error}");
+}
+
 /// Cause/effect rationale: a remote verifier without the exact dispatch claim
 /// has no authority to contact the Repository boundary, so C1 -> E1 fails
 /// locally and cannot become an unfenced compatibility path.
@@ -416,7 +750,7 @@ async fn remote_repository_verifier_requires_claim() {
             "workspace-repository",
             "repository-exact",
             ConfigVersion::INITIAL,
-            None,
+            None::<&RunClaim>,
         )
         .await
         .expect_err("claim is mandatory");

@@ -429,7 +429,7 @@ impl SharedHost {
         realizer: &dyn pc::RepositoryRealizer,
     ) -> Result<(), crate::host::HostError> {
         let credential = self
-            .repository_operation_credential(thread, repository, binding_checks)
+            .repository_operation_credential(thread, repository, binding_checks, None)
             .await?;
         realizer
             .realize_repository(&repository.plan, credential.as_ref())
@@ -448,10 +448,15 @@ impl SharedHost {
         thread: &str,
         repository: &RepositoryActivation,
         binding_checks: &[ResourceBindingCheck],
+        publication_fence: Option<&(
+            awaken_session_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRealizationLease,
+        )>,
     ) -> Result<Option<pc::RepositoryHttpBasicCredential>, crate::host::HostError> {
-        let Some(pin) = repository.credential_pin.as_ref() else {
+        let pin = repository.credential_pin.as_ref();
+        if pin.is_none() && publication_fence.is_none() {
             return Ok(None);
-        };
+        }
         let mut matching = binding_checks.iter().filter_map(|check| match check {
             ResourceBindingCheck::Repository {
                 repository_id,
@@ -477,18 +482,88 @@ impl SharedHost {
                 "protected Repository has ambiguous binding checks",
             ));
         }
-        let credential_binding = credential_binding.ok_or_else(|| {
-            crate::host::HostError::internal(
-                "protected Repository credential pin has no authored binding",
-            )
-        })?;
-        pin.validate_for_repository(credential_binding, remote_url)
-            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        if let Some(pin) = pin {
+            let credential_binding = credential_binding.ok_or_else(|| {
+                crate::host::HostError::internal(
+                    "protected Repository credential pin has no authored binding",
+                )
+            })?;
+            pin.validate_for_repository(credential_binding, remote_url)
+                .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        }
+        if repository.plan.source_remote_url != remote_url {
+            return Err(crate::host::HostError::internal(
+                "Repository changed its frozen source URL",
+            ));
+        }
+        let publication_transport = match (publication_fence, &self.upstream) {
+            (Some(fence), Some(_)) => {
+                let verifier = self
+                    .dispatch_session_runtime
+                    .read()
+                    .map_err(|_| {
+                        crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
+                    })?
+                    .as_ref()
+                    .and_then(|runtime| runtime.repository_publication_binding_verifier.clone())
+                    .ok_or_else(|| {
+                        crate::host::HostError::internal(
+                            "terminal Repository publication has no binding verifier",
+                        )
+                    })?;
+                Some(
+                    verifier
+                        .verify(
+                            &self.thread_workspace(thread),
+                            &repository.plan.repository_id,
+                            config_version,
+                            Some(fence),
+                        )
+                        .await
+                        .map_err(|error| crate::host::HostError::internal(error.to_string()))?,
+                )
+            }
+            // Local topology already compiled this exact command through the
+            // frozen terminal projection. It has no Gateway capability to mint
+            // and must not re-read the mutable Repository Registry here.
+            (Some(_), None) => Some(awaken_resource_contract::RepositoryTransport::Direct),
+            (None, _) => None,
+        };
+        let Some(pin) = pin else {
+            return match publication_transport {
+                Some(awaken_resource_contract::RepositoryTransport::Direct)
+                    if repository.plan.transport_url == repository.plan.source_remote_url =>
+                {
+                    Ok(None)
+                }
+                Some(awaken_resource_contract::RepositoryTransport::Direct) => {
+                    Err(crate::host::HostError::internal(
+                        "direct Repository changed its frozen transport URL",
+                    ))
+                }
+                Some(awaken_resource_contract::RepositoryTransport::GatewayMediated { .. }) => {
+                    Err(crate::host::HostError::internal(
+                        "Repository has a mediated transport without a credential pin",
+                    ))
+                }
+                None => Ok(None),
+            };
+        };
         match pin.selected_plaintext_holder.boundary {
             awaken_runtime_contract::PlaintextBoundary::Worker => {
-                if repository.plan.remote_url != remote_url {
+                if publication_transport.as_ref().is_some_and(|transport| {
+                    !matches!(
+                        transport,
+                        awaken_resource_contract::RepositoryTransport::Direct
+                    )
+                }) {
                     return Err(crate::host::HostError::internal(
-                        "direct Repository changed its frozen upstream URL",
+                        "Worker-held Repository credential cannot use a mediated transport",
+                    ));
+                }
+                if repository.plan.transport_url != remote_url {
+                    return Err(crate::host::HostError::internal(
+                        "direct Repository changed its frozen transport URL",
                     ));
                 }
                 let materializer = self.credential_materializer.as_ref().ok_or_else(|| {
@@ -514,33 +589,40 @@ impl SharedHost {
             }
             awaken_runtime_contract::PlaintextBoundary::Platform => {
                 let workspace = self.thread_workspace(thread);
-                let verifier = self
-                    .dispatch_session_runtime
-                    .read()
-                    .map_err(|_| {
-                        crate::host::HostError::internal("dispatch Session Runtime lock poisoned")
-                    })?
-                    .as_ref()
-                    .and_then(|runtime| runtime.repository_binding_verifier.clone())
-                    .ok_or_else(|| {
-                        crate::host::HostError::internal(
-                            "Gateway-mediated Repository has no binding verifier",
-                        )
-                    })?;
-                let transport = verifier
-                    .verify(
-                        &workspace,
-                        &repository.plan.repository_id,
-                        config_version,
-                        claim,
-                    )
-                    .await
-                    .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+                let transport = match publication_transport {
+                    Some(transport) => transport,
+                    None => {
+                        let verifier = self
+                            .dispatch_session_runtime
+                            .read()
+                            .map_err(|_| {
+                                crate::host::HostError::internal(
+                                    "dispatch Session Runtime lock poisoned",
+                                )
+                            })?
+                            .as_ref()
+                            .and_then(|runtime| runtime.repository_binding_verifier.clone())
+                            .ok_or_else(|| {
+                                crate::host::HostError::internal(
+                                    "Gateway-mediated Repository has no binding verifier",
+                                )
+                            })?;
+                        verifier
+                            .verify(
+                                &workspace,
+                                &repository.plan.repository_id,
+                                config_version,
+                                claim,
+                            )
+                            .await
+                            .map_err(|error| crate::host::HostError::internal(error.to_string()))?
+                    }
+                };
                 match transport {
                     awaken_resource_contract::RepositoryTransport::GatewayMediated {
                         remote_url,
                         capability,
-                    } if remote_url == repository.plan.remote_url => {
+                    } if remote_url == repository.plan.transport_url => {
                         Ok(Some(pc::RepositoryHttpBasicCredential::gateway_capability(
                             capability.expose().to_owned(),
                         )))
@@ -565,38 +647,42 @@ impl SharedHost {
         }
     }
 
-    /// Explicitly publish a thread's Agent-authored commits through the existing
-    /// Repository realizer. Session provisioning, replacement, and terminal
-    /// cleanup never call this method: Managed publication must be initiated by
-    /// an authorized Agent/MCP or operator workflow, not hidden in lifecycle
-    /// cleanup. Keeping the established public port preserves callers that own
-    /// that explicit decision without adding another Git implementation.
-    pub async fn publish_thread_repositories(
+    /// Publish one exact, already-compiled Repository activation. The caller
+    /// supplies the activation and binding checks derived from the frozen intent;
+    /// this method never selects from the thread's current Resource set and never
+    /// loops over unrelated repositories. Credential realization remains the same
+    /// operation-scoped edge used by clone and replacement.
+    pub(crate) async fn publish_repository_activation(
         &self,
         thread: &str,
-    ) -> Result<(), ResourcePurgeError> {
-        let env = self.session_environment(thread).await;
-        let resources = self.thread_resources_snapshot(thread);
-        let Some(env) = env else {
-            return Ok(());
-        };
-        for repository in &resources.repositories {
-            if repository.plan.access == pc::MountAccess::ReadOnly {
-                continue;
-            }
-            let credential = self
-                .repository_operation_credential(thread, repository, &resources.binding_checks)
-                .await
-                .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-            pc::RepositoryRealizer::publish_repository(
-                env.as_ref(),
-                &repository.plan,
-                credential.as_ref(),
-            )
-            .await
-            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+        repository: &RepositoryActivation,
+        binding_checks: &[ResourceBindingCheck],
+        realizer: &dyn pc::RepositoryRealizer,
+        expectation: &pc::RepositoryPublicationExpectation,
+        publication_fence: Option<&(
+            awaken_session_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRealizationLease,
+        )>,
+    ) -> Result<pc::RepositoryPublicationReceipt, crate::host::HostError> {
+        expectation
+            .validate()
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        if repository.plan.access == pc::MountAccess::ReadOnly {
+            return Err(crate::host::HostError::internal(
+                "read-only repository cannot be published",
+            ));
         }
-        Ok(())
+        let credential = self
+            .repository_operation_credential(thread, repository, binding_checks, publication_fence)
+            .await?;
+        let receipt = realizer
+            .publish_repository(&repository.plan, expectation, credential.as_ref())
+            .await
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        receipt
+            .verify(&repository.plan, expectation)
+            .map_err(|error| crate::host::HostError::internal(error.to_string()))?;
+        Ok(receipt)
     }
 
     /// Harvest a thread's run-authored skills into the durable catalog (ADR-0036 D6/D8,
@@ -831,6 +917,37 @@ mod provisioning_registry_tests {
         SharedHost::new(Arc::new(NoLlm), "test")
     }
 
+    #[derive(Default)]
+    struct RecordingPublicationRealizer {
+        calls: std::sync::Mutex<usize>,
+        mismatched_receipt: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl pc::RepositoryRealizer for RecordingPublicationRealizer {
+        async fn realize_repository(
+            &self,
+            _plan: &pc::RepositoryRealizationPlan,
+            _credential: Option<&pc::RepositoryHttpBasicCredential>,
+        ) -> Result<(), pc::SandboxError> {
+            unreachable!("publication helper never realizes a repository")
+        }
+
+        async fn publish_repository(
+            &self,
+            plan: &pc::RepositoryRealizationPlan,
+            expectation: &pc::RepositoryPublicationExpectation,
+            _credential: Option<&pc::RepositoryHttpBasicCredential>,
+        ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+            *self.calls.lock().unwrap() += 1;
+            let mut receipt = pc::RepositoryPublicationReceipt::new(plan, expectation);
+            if self.mismatched_receipt {
+                receipt.repository_id.push_str("-wrong");
+            }
+            Ok(receipt)
+        }
+    }
+
     fn root_terminal_cleanup_command(
         session_id: &str,
     ) -> awaken_session_contract::SessionCleanupCommand {
@@ -887,7 +1004,8 @@ mod provisioning_registry_tests {
             plan: pc::RepositoryRealizationPlan {
                 repository_id: format!("id-{logical}"),
                 mount_path: logical.to_string(),
-                remote_url: "https://example.invalid/x.git".to_string(),
+                source_remote_url: "https://example.invalid/x.git".to_string(),
+                transport_url: "https://example.invalid/x.git".to_string(),
                 initial_branch: None,
                 initial_commit: None,
                 access: pc::MountAccess::ReadWrite,
@@ -1054,7 +1172,8 @@ mod provisioning_registry_tests {
                     plan: pc::RepositoryRealizationPlan {
                         repository_id: "repo-escape".into(),
                         mount_path: "../escape".into(),
-                        remote_url: "https://example.invalid/x.git".into(),
+                        source_remote_url: "https://example.invalid/x.git".into(),
+                        transport_url: "https://example.invalid/x.git".into(),
                         initial_branch: None,
                         initial_commit: None,
                         access: pc::MountAccess::ReadWrite,
@@ -1069,6 +1188,80 @@ mod provisioning_registry_tests {
             err.is_err(),
             "an unsafe repo mount must abort session start"
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_repository_publication_uses_one_frozen_activation_and_verifies_receipt() {
+        /* Publication-helper cause/effect table.
+         * Causes: C1 activation is read/write; C2 expectation has a valid exact
+         * coordinate; C3 adapter receipt is canonical. Effects: E1 invoke exactly
+         * one Realizer effect; E2 return the verified receipt; E3 reject before
+         * any adapter call; E4 reject mismatched evidence. Rules: H1 C1+C2+C3 =>
+         * E1+E2; H2 !C1=>E3; H3 !C2=>E3; H4 C1+C2+!C3=>E1+E4. The caller supplies
+         * the activation compiled from its frozen ResolvedInput; no thread Resource
+         * lookup or publish-all loop exists in this helper.
+         */
+        let host = host();
+        let repository = repository_activation("repo");
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        };
+        let realizer = RecordingPublicationRealizer::default();
+        let receipt = host
+            .publish_repository_activation(
+                "thread",
+                &repository,
+                &[],
+                &realizer,
+                &expectation,
+                None,
+            )
+            .await
+            .expect("H1");
+        receipt.verify(&repository.plan, &expectation).unwrap();
+        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H1/E1");
+
+        let readonly = RepositoryActivation {
+            plan: pc::RepositoryRealizationPlan {
+                access: pc::MountAccess::ReadOnly,
+                ..repository.plan.clone()
+            },
+            credential_pin: None,
+        };
+        let error = host
+            .publish_repository_activation("thread", &readonly, &[], &realizer, &expectation, None)
+            .await
+            .expect_err("H2");
+        assert!(error.message.contains("read-only"), "H2/E3");
+        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H2 no effect");
+
+        let invalid = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: "short".into(),
+        };
+        host.publish_repository_activation("thread", &repository, &[], &realizer, &invalid, None)
+            .await
+            .expect_err("H3");
+        assert_eq!(*realizer.calls.lock().unwrap(), 1, "H3 no effect");
+
+        let mismatched = RecordingPublicationRealizer {
+            mismatched_receipt: true,
+            ..Default::default()
+        };
+        let error = host
+            .publish_repository_activation(
+                "thread",
+                &repository,
+                &[],
+                &mismatched,
+                &expectation,
+                None,
+            )
+            .await
+            .expect_err("H4");
+        assert!(error.message.contains("does not match"), "H4/E4");
+        assert_eq!(*mismatched.calls.lock().unwrap(), 1, "H4/E1");
     }
 
     #[tokio::test]

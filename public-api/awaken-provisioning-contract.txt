@@ -297,13 +297,27 @@ pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::expose_usern
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::gateway_capability(impl core::convert::Into<awaken_agent_contract::secret::RedactedString>) -> Self
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::is_gateway_capability(&self) -> bool
 pub fn awaken_provisioning_contract::RepositoryHttpBasicCredential::new(impl core::convert::Into<awaken_agent_contract::secret::RedactedString>, impl core::convert::Into<awaken_agent_contract::secret::RedactedString>) -> Self
+pub struct awaken_provisioning_contract::RepositoryPublicationExpectation
+pub awaken_provisioning_contract::RepositoryPublicationExpectation::branch: alloc::string::String
+pub awaken_provisioning_contract::RepositoryPublicationExpectation::commit: alloc::string::String
+impl awaken_provisioning_contract::RepositoryPublicationExpectation
+pub fn awaken_provisioning_contract::RepositoryPublicationExpectation::validate(&self) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
+pub struct awaken_provisioning_contract::RepositoryPublicationReceipt
+pub awaken_provisioning_contract::RepositoryPublicationReceipt::branch: alloc::string::String
+pub awaken_provisioning_contract::RepositoryPublicationReceipt::commit: alloc::string::String
+pub awaken_provisioning_contract::RepositoryPublicationReceipt::repository_id: alloc::string::String
+pub awaken_provisioning_contract::RepositoryPublicationReceipt::source_remote_url: alloc::string::String
+impl awaken_provisioning_contract::RepositoryPublicationReceipt
+pub fn awaken_provisioning_contract::RepositoryPublicationReceipt::new(&awaken_provisioning_contract::RepositoryRealizationPlan, &awaken_provisioning_contract::RepositoryPublicationExpectation) -> Self
+pub fn awaken_provisioning_contract::RepositoryPublicationReceipt::verify(&self, &awaken_provisioning_contract::RepositoryRealizationPlan, &awaken_provisioning_contract::RepositoryPublicationExpectation) -> core::result::Result<(), awaken_provisioning_contract::SandboxError>
 pub struct awaken_provisioning_contract::RepositoryRealizationPlan
 pub awaken_provisioning_contract::RepositoryRealizationPlan::access: awaken_provisioning_contract::MountAccess
 pub awaken_provisioning_contract::RepositoryRealizationPlan::initial_branch: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::RepositoryRealizationPlan::initial_commit: core::option::Option<alloc::string::String>
 pub awaken_provisioning_contract::RepositoryRealizationPlan::mount_path: alloc::string::String
-pub awaken_provisioning_contract::RepositoryRealizationPlan::remote_url: alloc::string::String
 pub awaken_provisioning_contract::RepositoryRealizationPlan::repository_id: alloc::string::String
+pub awaken_provisioning_contract::RepositoryRealizationPlan::source_remote_url: alloc::string::String
+pub awaken_provisioning_contract::RepositoryRealizationPlan::transport_url: alloc::string::String
 pub struct awaken_provisioning_contract::ResourceLimits
 pub awaken_provisioning_contract::ResourceLimits::cpu_millis: core::option::Option<u32>
 pub awaken_provisioning_contract::ResourceLimits::disk_bytes: core::option::Option<u64>
@@ -466,7 +480,7 @@ pub fn awaken_provisioning_contract::ProcessHandle::poll<'life0, 'async_trait>(&
 pub fn awaken_provisioning_contract::ProcessHandle::signal<'life0, 'async_trait>(&'life0 self, awaken_provisioning_contract::Signal) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_provisioning_contract::ProcessHandle::wait<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::ExitStatus, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub trait awaken_provisioning_contract::RepositoryRealizer: core::marker::Send + core::marker::Sync
-pub fn awaken_provisioning_contract::RepositoryRealizer::publish_repository<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, core::option::Option<&'life2 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_provisioning_contract::RepositoryRealizer::publish_repository<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, &'life2 awaken_provisioning_contract::RepositoryPublicationExpectation, core::option::Option<&'life3 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_provisioning_contract::RepositoryPublicationReceipt, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_provisioning_contract::RepositoryRealizer::realize_repository<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 awaken_provisioning_contract::RepositoryRealizationPlan, core::option::Option<&'life2 awaken_provisioning_contract::RepositoryHttpBasicCredential>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_provisioning_contract::Sandbox: core::marker::Send + core::marker::Sync
 pub fn awaken_provisioning_contract::Sandbox::artifacts<'life0, 'async_trait>(&'life0 self) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_provisioning_contract::Artifact>, awaken_provisioning_contract::SandboxError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait

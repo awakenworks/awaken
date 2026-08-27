@@ -1164,7 +1164,8 @@ impl WorkerNode {
         // validator is present: MCP hot attachment commands have an independent
         // lifecycle and must not be enabled accidentally by Resource wiring.
         let mut managed = awaken_runtime_host::ManagedHost::new(host.clone())
-            .with_repository_binding_verifier(remote_repositories);
+            .with_repository_binding_verifier(remote_repositories.clone())
+            .with_repository_publication_binding_verifier(remote_repositories);
         if let Some(credentials) = managed_credential_materializer {
             managed = managed.with_credential_materializer(credentials);
         }

@@ -1,5 +1,26 @@
 # Wiki Update Log
 
+## 2026-08-28 — Bind explicit Repository publication to terminal cleanup
+
+- Kept `SessionCleanupOperation` as the sole terminal-effect authority: one
+  explicit release freezes the exact active writable Repository input plus its
+  caller-approved branch/full commit in the archive root CAS; no queue,
+  registry, Resource generation, or protocol-local saga was added.
+- Ordered every delegated child receipt before the root-only publication, made
+  the publication receipt durable through the Session root CAS, and exposed the
+  ordinary root cleanup only afterward so retries cannot lose the working tree.
+- Reused the one `RepositoryRealizer` and Repository binding verifier for local
+  and external Workers. Terminal authorization uses the current realization
+  lease and aggregate-derived command rather than a fabricated Run claim or a
+  mutable Worker catalog read.
+- Preserved source Repository identity separately from direct/Gateway transport;
+  credential bytes and mediated capabilities remain effect-local and never
+  enter the publication intent or receipt.
+- Made absent-ref creation lease-protected, exact remote state an identical
+  receipt replay, and a different remote commit a fail-closed non-overwrite.
+- Preserved exact v1 cleanup JSON and fingerprints when publication is absent.
+  This documentation record does not claim deployment or live E2E validation.
+
 ## 2026-08-27 — Freeze profiled Session mutation authority at creation
 
 - Added the persisted Managed/Frozen/FileResources policy to the immutable

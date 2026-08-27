@@ -1762,6 +1762,20 @@ pub awaken_protocol_managed::ManagedAgentError::Conflict(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::Invalid(alloc::string::String)
 pub awaken_protocol_managed::ManagedAgentError::NotFound
 pub awaken_protocol_managed::ManagedAgentError::Storage(alloc::string::String)
+pub enum awaken_protocol_managed::ManagedCapability
+pub awaken_protocol_managed::ManagedCapability::Dreams
+pub awaken_protocol_managed::ManagedCapability::Files
+pub awaken_protocol_managed::ManagedCapability::ManagedAgents
+pub awaken_protocol_managed::ManagedCapability::Memory
+pub awaken_protocol_managed::ManagedCapability::Skills
+pub awaken_protocol_managed::ManagedCapability::TunnelsCurrent
+pub awaken_protocol_managed::ManagedCapability::TunnelsLegacy
+pub awaken_protocol_managed::ManagedCapability::UserProfilesCurrent
+pub awaken_protocol_managed::ManagedCapability::UserProfilesLegacy
+impl awaken_protocol_managed::ManagedCapability
+pub const awaken_protocol_managed::ManagedCapability::ALL: [Self; 9]
+pub const fn awaken_protocol_managed::ManagedCapability::beta(self) -> &'static str
+pub const fn awaken_protocol_managed::ManagedCapability::id(self) -> &'static str
 pub enum awaken_protocol_managed::ManagedOperation
 pub awaken_protocol_managed::ManagedOperation::Create
 pub awaken_protocol_managed::ManagedOperation::Read
@@ -1978,6 +1992,7 @@ pub fn awaken_protocol_managed::memory_stores_router(alloc::sync::Arc<dyn awaken
 pub fn awaken_protocol_managed::models_router(alloc::sync::Arc<alloc::vec::Vec<awaken_protocol_managed::ModelEntry>>) -> axum::routing::Router
 pub fn awaken_protocol_managed::models_router_with_inventory(alloc::sync::Arc<dyn awaken_executable_agent_contract::ExecutableAgentInventorySource>) -> axum::routing::Router
 pub fn awaken_protocol_managed::parse_idempotency_key_header(&http::header::map::HeaderMap) -> core::result::Result<core::option::Option<alloc::string::String>, &'static str>
+pub async fn awaken_protocol_managed::release_profiled_session(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, axum::json::Json<awaken_protocol_awaken::profiled_sessions::ProfiledSessionRelease>) -> core::result::Result<axum::json::Json<awaken_protocol_awaken::profiled_sessions::ProfiledSessionReleased>, (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub async fn awaken_protocol_managed::replace_resource_manifest(axum::extract::state::State<alloc::sync::Arc<awaken_protocol_managed::ManagedState>>, axum::extract::path::Path<alloc::string::String>, core::option::Option<axum::extension::Extension<awaken_tenancy::WorkspaceScope>>, http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::ResourceManifestReplaceParams>) -> core::result::Result<(http::header::map::HeaderMap, axum::json::Json<awaken_protocol_managed::types::resource::SessionResourceManifest>), (http::status::StatusCode, axum::json::Json<awaken_protocol_managed::types::ErrorResponse>)>
 pub fn awaken_protocol_managed::resources_router(awaken_protocol_managed::ResourcesRouterInput) -> axum::routing::Router
 pub fn awaken_protocol_managed::router(alloc::sync::Arc<awaken_protocol_managed::ManagedState>) -> axum::routing::Router

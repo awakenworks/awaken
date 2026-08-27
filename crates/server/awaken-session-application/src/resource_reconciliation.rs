@@ -21,6 +21,8 @@ use super::{
     mutation::repository_failure,
 };
 
+mod terminal_cleanup;
+
 #[derive(Clone)]
 enum ResourceSettlement {
     Commit,
@@ -289,6 +291,125 @@ impl SessionApplication {
         Ok(None)
     }
 
+    /// Project the root-only Repository publication effect under the exact
+    /// realization lease that already owns terminal cleanup. The command and
+    /// immutable Workspace owner are read from the Session authority on every
+    /// poll; no application queue or receipt registry exists beside
+    /// `SessionCleanupOperation`.
+    pub(crate) async fn external_terminal_repository_publication_command(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        SessionRealizationControlFailure,
+    > {
+        let session =
+            self.session_repository()
+                .get(session_id)
+                .await
+                .map_err(|error| match error {
+                    awaken_session_contract::SessionRepositoryError::NotFound => {
+                        SessionRealizationControlFailure::NotFound
+                    }
+                    error => SessionRealizationControlFailure::Unavailable(error.to_string()),
+                })?;
+        if !self.requires_external_realization(&session) {
+            return Ok(None);
+        }
+        if !Self::terminal_cleanup_lease_matches(&session, lease) {
+            return Err(SessionRealizationControlFailure::StaleOwnership);
+        }
+        if session.terminal_cleanup.is_completed() || !session.terminal_cleanup.is_requested() {
+            return Ok(None);
+        }
+        let command = session
+            .terminal_cleanup
+            .publication_command(session_id)
+            .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
+        let Some(command) = command else {
+            return Ok(None);
+        };
+        let workspace_id = self.owner(session_id).await.map_err(|error| match error {
+            SessionMutationError::NotFound => SessionRealizationControlFailure::NotFound,
+            error => SessionRealizationControlFailure::Unavailable(error.to_string()),
+        })?;
+        Ok(Some(
+            awaken_session_contract::SessionRepositoryPublicationProjection {
+                workspace_id,
+                command,
+            },
+        ))
+    }
+
+    /// Verify and persist one exact Worker Repository publication receipt in
+    /// the same root CAS as every cleanup completion. Root teardown remains a
+    /// later command, so response loss can replay this receipt without losing
+    /// the working tree that produced it.
+    pub(crate) async fn record_external_terminal_repository_publication_receipt(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
+            let owner_scope = self.owner(session_id).await.map_err(|error| {
+                SessionRealizationControlFailure::Unavailable(error.to_string())
+            })?;
+            let mut session = self
+                .session_repository()
+                .get(session_id)
+                .await
+                .map_err(|error| match error {
+                    awaken_session_contract::SessionRepositoryError::NotFound => {
+                        SessionRealizationControlFailure::NotFound
+                    }
+                    error => SessionRealizationControlFailure::Unavailable(error.to_string()),
+                })?;
+            if !self.requires_external_realization(&session) || !session.is_terminal() {
+                return Err(SessionRealizationControlFailure::Invalid(
+                    "Session is not owned by an external terminal realization".into(),
+                ));
+            }
+            if !Self::terminal_cleanup_lease_matches(&session, lease) {
+                return Err(SessionRealizationControlFailure::StaleOwnership);
+            }
+            let changed = session
+                .terminal_cleanup
+                .record_repository_publication_receipt(session_id, receipt.clone())
+                .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?;
+            if changed {
+                match self
+                    .commit_resource_snapshot(
+                        &owner_scope,
+                        session,
+                        "terminal-repository-publication-worker-receipt",
+                        Vec::new(),
+                    )
+                    .await
+                {
+                    Ok(_) => {}
+                    Err(SessionMutationError::Conflict)
+                        if attempt + 1 < Self::ROOT_CAS_ATTEMPTS =>
+                    {
+                        continue;
+                    }
+                    Err(SessionMutationError::Conflict) => {
+                        return Err(SessionRealizationControlFailure::Conflict);
+                    }
+                    Err(error) => {
+                        return Err(SessionRealizationControlFailure::Unavailable(
+                            error.to_string(),
+                        ));
+                    }
+                }
+            }
+            self.wake_lifecycle_supervisor();
+            return Ok(());
+        }
+        Err(SessionRealizationControlFailure::Conflict)
+    }
+
     /// Verify and persist one Worker completion through the same Session root
     /// CAS used by local cleanup, then let the canonical release driver finish
     /// only after the complete frozen target set has durable evidence.
@@ -349,12 +470,17 @@ impl SessionApplication {
                     }
                 };
             }
-            let all_recorded = session
+            let no_cleanup_command = session
                 .terminal_cleanup
                 .pending_commands(&session_id)
                 .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
                 .is_empty();
-            if all_recorded {
+            let publication_pending = session
+                .terminal_cleanup
+                .publication_command(&session_id)
+                .map_err(|error| SessionRealizationControlFailure::Invalid(error.to_string()))?
+                .is_some();
+            if no_cleanup_command && !publication_pending {
                 self.release_terminal_resources(&owner_scope, &session_id)
                     .await
                     .map_err(|error| {
@@ -1328,219 +1454,6 @@ impl SessionApplication {
                 Err(error) => return Err(mutation_failure(error)),
             }
         }
-    }
-
-    /// The sole terminal cleanup implementation shared by archive/delete edges
-    /// and background recovery. The target set comes only from the Runtime's
-    /// durable delegation authority after the terminal fence has stopped the
-    /// parent; protocol projections are never accepted as cleanup authority.
-    /// Every frozen child Runtime is attempted even when another teardown fails;
-    /// durable completion commits only when all external effects succeed.
-    pub async fn release_terminal_resources(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-    ) -> Result<Option<PersistedSession>, SessionPreparationError> {
-        for attempt in 0..Self::ROOT_CAS_ATTEMPTS {
-            match self
-                .release_terminal_resources_once(owner_scope, session_id)
-                .await
-            {
-                Err(SessionPreparationError::NotFound) => {
-                    // Delete removes the aggregate only after the durable
-                    // cleanup operation is complete. An eager actor can hold a
-                    // stale snapshot while the lifecycle supervisor wins the
-                    // final CAS and tombstones the Session; that loser observes
-                    // NotFound at its next phase CAS. Normalize the same
-                    // terminal truth as the entry read instead of reporting a
-                    // recoverable cleanup failure after cleanup already won.
-                    return Ok(None);
-                }
-                Err(SessionPreparationError::Conflict) if attempt + 1 < Self::ROOT_CAS_ATTEMPTS => {
-                    // Delete admission deliberately wakes the durable lifecycle
-                    // driver and also starts an eager cleanup attempt. Another
-                    // process may do the same after failover. Every external
-                    // effect below has a durable idempotency identity, so a root
-                    // CAS loser must re-read the aggregate and resume from the
-                    // winning phase instead of stranding a Deleting Session.
-                    continue;
-                }
-                result => return result,
-            }
-        }
-        Err(SessionPreparationError::Conflict)
-    }
-
-    async fn release_terminal_resources_once(
-        &self,
-        owner_scope: &str,
-        session_id: &str,
-    ) -> Result<Option<PersistedSession>, SessionPreparationError> {
-        let mut session = match self.session_repository().get(session_id).await {
-            Ok(session) => session,
-            Err(awaken_session_contract::SessionRepositoryError::NotFound) => return Ok(None),
-            Err(error) => return Err(repository_preparation(error)),
-        };
-        if !session.terminal_cleanup.is_completed() {
-            // Persist the admission fence before *any* external cleanup effect.
-            // This also upgrades legacy terminal rows that predate the explicit
-            // cleanup operation.
-            if session.ensure_terminal_cleanup_fence() {
-                session = self
-                    .commit_resource_snapshot(
-                        owner_scope,
-                        session,
-                        "terminal-cleanup-fence",
-                        Vec::new(),
-                    )
-                    .await
-                    .map_err(mutation_failure)?;
-            }
-            // Work retirement belongs to the recoverable cleanup operation.
-            // Completed archive cleanup is absorbing: a replay must not issue a
-            // second retirement attempt through this or any other reconciler.
-            self.retire_terminal_work(&session).await?;
-
-            // Phase 2 interrupts and waits for the parent to settle, then freezes the
-            // complete durable delegated-Run set and its committed watermark. A retry
-            // after this commit reuses exactly these targets.
-            let mut intent_changed = false;
-            if session.terminal_cleanup.is_fenced() {
-                let snapshot = self
-                    .runtime()
-                    .quiesce_terminal_delegations(session_id)
-                    .await
-                    .map_err(SessionPreparationError::Rejected)?;
-                let thread_ids = snapshot
-                    .delegated_runs
-                    .into_iter()
-                    .map(|delegated| delegated.run_id.0)
-                    .chain(
-                        snapshot
-                            .coordinated_thread_ids
-                            .into_iter()
-                            .map(|thread| thread.0),
-                    );
-                intent_changed = session
-                    .freeze_terminal_cleanup_targets(
-                        thread_ids,
-                        snapshot.watermark,
-                        snapshot.runtime_commit_cursor,
-                    )
-                    .map_err(internal)?;
-            }
-            if intent_changed {
-                session = self
-                    .commit_resource_snapshot(
-                        owner_scope,
-                        session,
-                        "resource-release-intent",
-                        Vec::new(),
-                    )
-                    .await
-                    .map_err(mutation_failure)?;
-            }
-
-            if session.terminal_cleanup.is_requested() {
-                let threads = session
-                    .terminal_cleanup
-                    .thread_ids()
-                    .cloned()
-                    .ok_or_else(|| {
-                        internal("Session terminal cleanup thread intent disappeared")
-                    })?;
-                let mut teardown_error = None;
-                let mut receipts = Vec::with_capacity(threads.len());
-                if self.requires_external_realization(&session) {
-                    receipts = session
-                        .terminal_cleanup
-                        .recorded_receipts(session_id)
-                        .map_err(|error| {
-                            SessionPreparationError::Rejected(RunError::unavailable_classified(
-                                "session_cleanup_worker_pending",
-                                format!("remote Session terminal cleanup remains pending: {error}"),
-                            ))
-                        })?;
-                } else {
-                    for thread in threads {
-                        let command = session
-                            .terminal_cleanup
-                            .command_for(session_id, &thread)
-                            .ok_or_else(|| internal("Session cleanup command disappeared"))?;
-                        match self
-                            .runtime()
-                            .execute_terminal_cleanup(command.clone())
-                            .await
-                        {
-                            Ok(completion) => match completion.verify(&command) {
-                                Ok(receipt) => receipts.push(receipt),
-                                Err(error) => {
-                                    teardown_error.get_or_insert(RunError::internal(format!(
-                                        "Session cleanup completion mismatch: {error}"
-                                    )));
-                                }
-                            },
-                            Err(error) => {
-                                tracing::warn!(
-                                    session = session_id,
-                                    thread = %thread,
-                                    effect_id = %command.effect_id,
-                                    error = ?error,
-                                    "Session terminal Runtime teardown remains pending"
-                                );
-                                teardown_error.get_or_insert(error);
-                            }
-                        }
-                    }
-                }
-                if let Some(error) = teardown_error {
-                    return Err(SessionPreparationError::Rejected(error));
-                }
-                if let Some(checkpoint) = session.environment.checkpoint().cloned() {
-                    self.runtime()
-                        .delete_session_checkpoint(session_id, &checkpoint)
-                        .await
-                        .map_err(SessionPreparationError::Rejected)?;
-                }
-                if !self
-                    .retire_session_repositories(owner_scope, session_id, &session.resources)
-                    .await
-                {
-                    return Err(internal(
-                        "Session-scoped Repository cleanup remains pending",
-                    ));
-                }
-                session
-                    .complete_terminal_cleanup(
-                        &receipts,
-                        "Session terminated before activation completed",
-                    )
-                    .map_err(internal)?;
-            }
-            session = self
-                .commit_resource_snapshot(
-                    owner_scope,
-                    session,
-                    "resource-release-complete",
-                    Vec::new(),
-                )
-                .await
-                .map_err(mutation_failure)?;
-        }
-        if session.is_hidden() {
-            if session.has_incomplete_event_batches() {
-                // The canonical Event-batch supervisor must first preserve and
-                // resolve every accepted receipt under the same root CAS. A
-                // compact tombstone cannot carry that provenance and resource
-                // reconciliation never executes or cancels those commands.
-                return Ok(Some(session));
-            }
-            self.commit_delete_tombstone(owner_scope, &session)
-                .await
-                .map_err(mutation_failure)?;
-            return Ok(None);
-        }
-        Ok(Some(session))
     }
 
     pub async fn retire_session_repositories(

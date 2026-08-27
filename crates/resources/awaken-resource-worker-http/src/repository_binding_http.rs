@@ -10,7 +10,7 @@ use awaken_run_ingress_contract::{DispatchQueue, RunClaim};
 use awaken_worker_contract::{WorkerDirectory, WorkerIdentity};
 use awaken_worker_transport_security::{
     VerifiedWorkerContext, WorkerRequestAuthenticator, WorkerUpstream, authenticate_worker_request,
-    verify_claim_owner,
+    verify_claim_owner, verify_current_worker_identity,
 };
 use axum::extract::{Extension, State};
 use axum::http::StatusCode;
@@ -24,7 +24,10 @@ const REPOSITORY_BINDING_PATH: &str = "/v1/worker/resources/repositories/verify"
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RepositoryBindingRequest {
-    claim: RunClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claim: Option<RunClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    terminal_publication: Option<TerminalRepositoryPublicationAuthority>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     identity: Option<WorkerIdentity>,
     workspace_id: String,
@@ -32,11 +35,22 @@ struct RepositoryBindingRequest {
     config_version: ConfigVersion,
 }
 
+/// Exact Session-owned authority for the one terminal Repository publication
+/// effect. The command carries the frozen input/configuration; the lease proves
+/// which registered Worker incarnation may execute it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TerminalRepositoryPublicationAuthority {
+    command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    lease: awaken_session_contract::SessionRealizationLease,
+}
+
 pub struct WorkerRepositoryBindingService {
     validator: Arc<dyn LiveResourceBindingVerifier>,
     dispatch: Arc<dyn DispatchQueue>,
     authenticator: Arc<dyn WorkerRequestAuthenticator>,
     directory: Option<Arc<dyn WorkerDirectory>>,
+    session_control: Option<Arc<dyn awaken_session_contract::SessionRealizationControl>>,
     transport_authorizer: Option<Arc<dyn RepositoryTransportAuthorizer>>,
 }
 
@@ -45,11 +59,26 @@ pub struct WorkerRepositoryBindingService {
 #[derive(Debug, Clone)]
 pub struct RepositoryTransportAuthorization {
     pub worker: WorkerIdentity,
-    pub claim: RunClaim,
-    pub claim_expires_ms: u64,
     pub session_id: String,
     pub workspace_id: String,
     pub input: awaken_session_contract::ResolvedInput,
+    pub authority: RepositoryTransportAuthority,
+}
+
+/// Closed authorization fence for the one deployment-selected Repository
+/// transport. Run execution retains its exact dispatch claim. Terminal
+/// publication instead carries the aggregate-derived command and its current
+/// realization lease; neither variant can be silently interpreted as the other.
+#[derive(Debug, Clone)]
+pub enum RepositoryTransportAuthority {
+    Run {
+        claim: RunClaim,
+        claim_expires_ms: u64,
+    },
+    TerminalPublication {
+        command: Box<awaken_session_contract::SessionRepositoryPublicationCommand>,
+        lease: awaken_session_contract::SessionRealizationLease,
+    },
 }
 
 /// Deployment adapter for the last credential hop. Self-hosted compositions
@@ -73,22 +102,15 @@ impl HttpRepositoryBindingVerifier {
     pub fn new(upstream: WorkerUpstream) -> Self {
         Self { upstream }
     }
-}
 
-#[async_trait::async_trait]
-impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
-    async fn verify(
+    async fn verify_request(
         &self,
         workspace_id: &str,
         repository_id: &str,
         config_version: ConfigVersion,
-        claim: Option<&RunClaim>,
+        claim: Option<RunClaim>,
+        terminal_publication: Option<TerminalRepositoryPublicationAuthority>,
     ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
-        let claim = claim.ok_or_else(|| {
-            RepositoryBindingVerifierError::new(
-                "remote Repository verification requires a dispatch claim",
-            )
-        })?;
         if workspace_id.trim().is_empty() || repository_id.trim().is_empty() {
             return Err(RepositoryBindingVerifierError::new(
                 "Workspace and Repository identities must not be empty",
@@ -102,7 +124,8 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
                 self.upstream.base_url()
             ))
             .json(&RepositoryBindingRequest {
-                claim: claim.clone(),
+                claim,
+                terminal_publication,
                 identity: self.upstream.worker_identity().cloned(),
                 workspace_id: workspace_id.to_owned(),
                 repository_id: repository_id.to_owned(),
@@ -133,6 +156,67 @@ impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
     }
 }
 
+#[async_trait::async_trait]
+impl RepositoryBindingVerifier<RunClaim> for HttpRepositoryBindingVerifier {
+    async fn verify(
+        &self,
+        workspace_id: &str,
+        repository_id: &str,
+        config_version: ConfigVersion,
+        claim: Option<&RunClaim>,
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
+        let claim = claim.ok_or_else(|| {
+            RepositoryBindingVerifierError::new(
+                "remote Repository verification requires a dispatch claim",
+            )
+        })?;
+        self.verify_request(
+            workspace_id,
+            repository_id,
+            config_version,
+            Some(claim.clone()),
+            None,
+        )
+        .await
+    }
+}
+
+#[async_trait::async_trait]
+impl
+    RepositoryBindingVerifier<(
+        awaken_session_contract::SessionRepositoryPublicationCommand,
+        awaken_session_contract::SessionRealizationLease,
+    )> for HttpRepositoryBindingVerifier
+{
+    async fn verify(
+        &self,
+        workspace_id: &str,
+        repository_id: &str,
+        config_version: ConfigVersion,
+        fence: Option<&(
+            awaken_session_contract::SessionRepositoryPublicationCommand,
+            awaken_session_contract::SessionRealizationLease,
+        )>,
+    ) -> Result<RepositoryTransport, RepositoryBindingVerifierError> {
+        let (command, lease) = fence.ok_or_else(|| {
+            RepositoryBindingVerifierError::new(
+                "remote terminal Repository verification requires its publication command and realization lease",
+            )
+        })?;
+        self.verify_request(
+            workspace_id,
+            repository_id,
+            config_version,
+            None,
+            Some(TerminalRepositoryPublicationAuthority {
+                command: command.clone(),
+                lease: lease.clone(),
+            }),
+        )
+        .await
+    }
+}
+
 impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn new(
@@ -145,6 +229,7 @@ impl WorkerRepositoryBindingService {
             dispatch,
             authenticator,
             directory: None,
+            session_control: None,
             transport_authorizer: None,
         }
     }
@@ -152,6 +237,18 @@ impl WorkerRepositoryBindingService {
     #[must_use]
     pub fn with_worker_directory(mut self, directory: Arc<dyn WorkerDirectory>) -> Self {
         self.directory = Some(directory);
+        self
+    }
+
+    /// Install another port view of the same Coordinator Session application
+    /// already used by terminal cleanup polling. This is read-only command
+    /// projection plus exact lease validation, never another publication queue.
+    #[must_use]
+    pub fn with_session_control(
+        mut self,
+        control: Arc<dyn awaken_session_contract::SessionRealizationControl>,
+    ) -> Self {
+        self.session_control = Some(control);
         self
     }
 
@@ -180,21 +277,40 @@ async fn verify_repository_binding(
     Extension(worker): Extension<VerifiedWorkerContext>,
     Json(request): Json<RepositoryBindingRequest>,
 ) -> Response {
-    if request.workspace_id.trim().is_empty()
-        || request.repository_id.trim().is_empty()
-        || verify_claim_owner(
-            service.directory.as_deref(),
-            &worker,
-            request.identity.as_ref(),
-            &request.claim,
-            unix_now_ms(),
-        )
-        .await
-        .is_err()
+    if request.workspace_id.trim().is_empty() || request.repository_id.trim().is_empty() {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let authority = (request.claim.clone(), request.terminal_publication.clone());
+    match authority {
+        (Some(claim), None) => {
+            verify_run_repository_binding(service, &worker, request, claim).await
+        }
+        (None, Some(authority)) => {
+            verify_terminal_repository_binding(service, &worker, request, authority).await
+        }
+        _ => StatusCode::FORBIDDEN.into_response(),
+    }
+}
+
+async fn verify_run_repository_binding(
+    service: Arc<WorkerRepositoryBindingService>,
+    worker: &VerifiedWorkerContext,
+    request: RepositoryBindingRequest,
+    claim: RunClaim,
+) -> Response {
+    if verify_claim_owner(
+        service.directory.as_deref(),
+        worker,
+        request.identity.as_ref(),
+        &claim,
+        unix_now_ms(),
+    )
+    .await
+    .is_err()
     {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let guard = match service.dispatch.lock_commit_epoch(&request.claim).await {
+    let guard = match service.dispatch.lock_commit_epoch(&claim).await {
         Ok(Some(guard)) if guard.is_live_at(unix_now_ms()) && !guard.cancellation_requested() => {
             guard
         }
@@ -252,11 +368,13 @@ async fn verify_repository_binding(
     let transport = match authorizer
         .authorize(RepositoryTransportAuthorization {
             worker,
-            claim: request.claim.clone(),
-            claim_expires_ms,
             session_id,
             workspace_id: request.workspace_id,
             input: frozen_input,
+            authority: RepositoryTransportAuthority::Run {
+                claim: claim.clone(),
+                claim_expires_ms,
+            },
         })
         .await
     {
@@ -265,7 +383,7 @@ async fn verify_repository_binding(
     };
     let revalidated = service
         .dispatch
-        .lock_commit_epoch(&request.claim)
+        .lock_commit_epoch(&claim)
         .await
         .ok()
         .flatten()
@@ -274,6 +392,101 @@ async fn verify_repository_binding(
                 && !guard.cancellation_requested()
                 && guard.request().canonical_fingerprint() == dispatch_fingerprint
         });
+    if !revalidated {
+        return StatusCode::CONFLICT.into_response();
+    }
+    match transport {
+        RepositoryTransport::Direct => StatusCode::NO_CONTENT.into_response(),
+        transport => (StatusCode::OK, Json(transport)).into_response(),
+    }
+}
+
+async fn verify_terminal_repository_binding(
+    service: Arc<WorkerRepositoryBindingService>,
+    worker: &VerifiedWorkerContext,
+    request: RepositoryBindingRequest,
+    authority: TerminalRepositoryPublicationAuthority,
+) -> Response {
+    let Some(identity) = request.identity.as_ref() else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    let Some(directory) = service.directory.as_deref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let Some(control) = service.session_control.as_deref() else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let now_ms = unix_now_ms();
+    if verify_current_worker_identity(directory, worker, identity, now_ms, false)
+        .await
+        .is_err()
+        || authority.lease.owner != identity.worker_id
+        || authority.lease.runtime_incarnation != identity.lease_owner()
+        || !awaken_session_contract::realization_lease_is_live_at(
+            authority.lease.expires_at_unix_ms,
+            now_ms,
+        )
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let projection = match control
+        .terminal_repository_publication_command(&authority.command.session_id, &authority.lease)
+        .await
+    {
+        Ok(Some(projection)) if projection.command == authority.command => projection,
+        Ok(_) => return StatusCode::CONFLICT.into_response(),
+        Err(awaken_session_contract::SessionRealizationControlFailure::Unavailable(_)) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        Err(_) => return StatusCode::CONFLICT.into_response(),
+    };
+    if projection.workspace_id != request.workspace_id {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let canonical = &projection.command;
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        repository_id,
+        config,
+        ..
+    } = &canonical.intent.input.source
+    else {
+        return StatusCode::FORBIDDEN.into_response();
+    };
+    if canonical.intent.validate().is_err()
+        || canonical.intent.input.access != awaken_resource_contract::ResourceAccess::ReadWrite
+        || repository_id.as_str() != request.repository_id
+        || config.repository_id.as_str() != request.repository_id
+        || config.version != request.config_version
+    {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let Some(authorizer) = &service.transport_authorizer else {
+        return StatusCode::NO_CONTENT.into_response();
+    };
+    let transport = match authorizer
+        .authorize(RepositoryTransportAuthorization {
+            worker: identity.clone(),
+            session_id: canonical.session_id.clone(),
+            workspace_id: projection.workspace_id.clone(),
+            input: canonical.intent.input.clone(),
+            authority: RepositoryTransportAuthority::TerminalPublication {
+                command: Box::new(canonical.clone()),
+                lease: authority.lease.clone(),
+            },
+        })
+        .await
+    {
+        Ok(transport) => transport,
+        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    };
+    let revalidated =
+        verify_current_worker_identity(directory, worker, identity, unix_now_ms(), false)
+            .await
+            .is_ok()
+            && control
+                .terminal_repository_publication_command(&canonical.session_id, &authority.lease)
+                .await
+                .is_ok_and(|projected| projected.as_ref() == Some(&projection));
     if !revalidated {
         return StatusCode::CONFLICT.into_response();
     }
@@ -301,11 +514,12 @@ mod tests {
         // field => reject before validation. Rules W1 R1+!R2=>decode; W2
         // R1+R2=>fail closed.
         let request = RepositoryBindingRequest {
-            claim: RunClaim {
+            claim: Some(RunClaim {
                 run_id: awaken_agent_contract::agent::run::Id("run-repo".into()),
                 owner: "worker-repo".into(),
                 epoch: 5,
-            },
+            }),
+            terminal_publication: None,
             identity: None,
             workspace_id: "workspace".into(),
             repository_id: "repository".into(),

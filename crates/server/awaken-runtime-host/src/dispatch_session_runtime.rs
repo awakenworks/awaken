@@ -54,6 +54,14 @@ pub(crate) struct DispatchSessionRuntime {
         Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     pub(super) repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
+    pub(super) repository_publication_binding_verifier: Option<
+        Arc<
+            dyn RepositoryBindingVerifier<(
+                awaken_session_contract::SessionRepositoryPublicationCommand,
+                awaken_session_contract::SessionRealizationLease,
+            )>,
+        >,
+    >,
     pub(super) mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -69,6 +77,9 @@ impl DispatchSessionRuntime {
             credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
+            repository_publication_binding_verifier: self
+                .repository_publication_binding_verifier
+                .clone(),
             mcp_realizer: None,
         })
     }
@@ -216,6 +227,16 @@ impl DispatchSessionRuntime {
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
         self.managed()?.execute_terminal_cleanup(command).await
     }
+
+    async fn execute_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        self.managed()?
+            .publish_terminal_repository(command, Some(lease))
+            .await
+    }
 }
 
 impl SharedHost {
@@ -318,6 +339,16 @@ impl SharedHost {
     ) -> Result<awaken_session_contract::SessionCleanupCompletion, RunError> {
         self.dispatch_session_runtime()?
             .execute_terminal_cleanup(command)
+            .await
+    }
+
+    pub(crate) async fn execute_dispatched_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        self.dispatch_session_runtime()?
+            .execute_terminal_repository_publication(command, lease)
             .await
     }
 }

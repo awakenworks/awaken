@@ -1546,7 +1546,19 @@ impl SessionApplication {
                         continue;
                     }
                 };
-                if pending_commands.is_empty() {
+                let publication_pending = match session
+                    .terminal_cleanup
+                    .publication_command(&session.session_id)
+                {
+                    Ok(command) => command.is_some(),
+                    Err(error) => {
+                        first_projection_failure.get_or_insert_with(|| {
+                            SessionRealizationControlFailure::Invalid(error.to_string())
+                        });
+                        continue;
+                    }
+                };
+                if pending_commands.is_empty() && !publication_pending {
                     continue;
                 }
 
@@ -1686,6 +1698,28 @@ impl SessionApplication {
         self.record_external_terminal_cleanup_completion(lease, completion)
             .await
     }
+
+    async fn terminal_repository_publication_command_after_refresh(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        SessionRealizationControlFailure,
+    > {
+        self.external_terminal_repository_publication_command(session_id, lease)
+            .await
+    }
+
+    async fn record_terminal_repository_publication_receipt_after_refresh(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_external_terminal_repository_publication_receipt(session_id, lease, receipt)
+            .await
+    }
 }
 
 /// Local application drivers cross an executable-refresh boundary before they
@@ -1808,6 +1842,30 @@ impl SessionRealizationControl for SessionApplication {
     ) -> Result<(), SessionRealizationControlFailure> {
         self.record_terminal_cleanup_completion_after_refresh(lease, completion)
             .await
+    }
+
+    async fn terminal_repository_publication_command(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        SessionRealizationControlFailure,
+    > {
+        self.terminal_repository_publication_command_after_refresh(session_id, lease)
+            .await
+    }
+
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        session_id: &str,
+        lease: &SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), SessionRealizationControlFailure> {
+        self.record_terminal_repository_publication_receipt_after_refresh(
+            session_id, lease, receipt,
+        )
+        .await
     }
 }
 

@@ -732,7 +732,7 @@ impl pc::RepositoryRealizer for LocalSandbox {
         provision_repo_at(
             &self.root,
             &plan.mount_path,
-            &plan.remote_url,
+            &plan.transport_url,
             plan.initial_branch.as_deref(),
             plan.initial_commit.as_deref(),
             credential,
@@ -743,9 +743,10 @@ impl pc::RepositoryRealizer for LocalSandbox {
     async fn publish_repository(
         &self,
         plan: &pc::RepositoryRealizationPlan,
+        expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<bool, pc::SandboxError> {
-        push_repo_to_at(&self.root, &plan.mount_path, &plan.remote_url, credential).map_err(err)
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+        push_repo_to_at(&self.root, &plan.mount_path, plan, expectation, credential).map_err(err)
     }
 }
 
@@ -1266,6 +1267,7 @@ mod shred_tests {
 #[cfg(test)]
 mod workdir_helper_tests {
     use super::*;
+    use crate::git_transport::git_stdout;
     use awaken_provisioning_contract::{
         IsolationClass, NetworkPolicy, ResourceLimits, Sandbox, SandboxProvider, SandboxSpec,
     };
@@ -1379,8 +1381,8 @@ mod workdir_helper_tests {
     /// | R1 | absent | valid | clone the exact repository |
     /// | R2 | already realized | exact replay | succeed without replacing Agent state |
     /// | R3 | occupied | different remote/checkout | reject without modifying the tree |
-    /// | R4 | origin and `url.*.insteadOf` target attacker | exact authored remote | push only the exact remote; attacker ref unchanged |
-    /// | R5 | R4 after successful push | same plan/commit | idempotent no-op |
+    /// | R4 | origin and `url.*.insteadOf` target attacker | exact authored remote plus branch/commit | push only the absent exact ref; attacker unchanged |
+    /// | R5 | R4 after successful push | same plan/coordinate | return the identical canonical receipt |
     #[tokio::test]
     async fn provision_clones_then_the_host_pushes_the_agents_own_commit() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1436,7 +1438,8 @@ mod workdir_helper_tests {
         let plan = pc::RepositoryRealizationPlan {
             repository_id: "repo-1".into(),
             mount_path: "workspace/repo".into(),
-            remote_url: bare.to_string_lossy().into_owned(),
+            source_remote_url: bare.to_string_lossy().into_owned(),
+            transport_url: bare.to_string_lossy().into_owned(),
             initial_branch: None,
             initial_commit: None,
             access: pc::MountAccess::ReadWrite,
@@ -1460,7 +1463,8 @@ mod workdir_helper_tests {
             "R2 preserves the existing working tree"
         );
         let conflicting = pc::RepositoryRealizationPlan {
-            remote_url: base.join("different.git").to_string_lossy().into_owned(),
+            source_remote_url: base.join("different.git").to_string_lossy().into_owned(),
+            transport_url: base.join("different.git").to_string_lossy().into_owned(),
             ..plan.clone()
         };
         assert!(
@@ -1485,45 +1489,59 @@ mod workdir_helper_tests {
             "provision must not set a committer identity"
         );
 
-        // Nothing authored yet → the host push is a no-op (agent committed nothing).
-        assert!(
-            !pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
+        // Nothing authored yet: an explicit exact seed coordinate observes the
+        // already-current remote and returns its canonical receipt.
+        let initial_branch = git_stdout(Some(&repo_dir), &["symbolic-ref", "--short", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let seed_expectation = pc::RepositoryPublicationExpectation {
+            branch: initial_branch,
+            commit: seed_head.clone(),
+        };
+        let seed_receipt =
+            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &seed_expectation, None)
                 .await
-                .unwrap()
-        );
+                .unwrap();
+        seed_receipt.verify(&plan, &seed_expectation).unwrap();
 
         // The AGENT configures its own identity and authors a commit in the jail — a clean
         // working tree afterwards (it committed everything), which the OLD harvest would have
         // wrongly skipped. The host then only pushes.
         git(&repo_dir, &["config", "user.email", "hermes@agent.local"]);
         git(&repo_dir, &["config", "user.name", "Hermes"]);
+        git(&repo_dir, &["checkout", "-b", "awf/work"]);
         std::fs::write(repo_dir.join("NEW.txt"), "agent").unwrap();
         git(&repo_dir, &["add", "-A"]);
         git(&repo_dir, &["commit", "-q", "-m", "agent: add NEW.txt"]);
+        let agent_commit = git_stdout(Some(&repo_dir), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: agent_commit,
+        };
 
         // The Agent owns this config and may point both the named remote and an
         // `insteadOf` rewrite at an attacker. Publication must ignore both and
         // consume only the immutable plan URL passed by the host.
         let attacker_url = attacker.to_string_lossy().into_owned();
-        let frozen_url = plan.remote_url.clone();
+        let frozen_url = plan.transport_url.clone();
         git(&repo_dir, &["remote", "set-url", "origin", &attacker_url]);
         let rewrite_key = format!("url.{attacker_url}.insteadOf");
         git(&repo_dir, &["config", &rewrite_key, &frozen_url]);
 
         // R4 pushes the frozen target even though both Agent-authored mechanisms
         // select the attacker. R5 compares the exact target and becomes a no-op.
-        assert!(
-            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
+        let first = pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &expectation, None)
+            .await
+            .expect("R4");
+        let replay =
+            pc::RepositoryRealizer::publish_repository(&sandbox, &plan, &expectation, None)
                 .await
-                .unwrap(),
-            "R4"
-        );
-        assert!(
-            !pc::RepositoryRealizer::publish_repository(&sandbox, &plan, None)
-                .await
-                .unwrap(),
-            "R5"
-        );
+                .expect("R5");
+        assert_eq!(first, replay, "R4/R5");
 
         let attacker_head = std::process::Command::new("git")
             .args([
@@ -1544,7 +1562,7 @@ mod workdir_helper_tests {
         // canned harvest commit by a fake user.
         let log = std::process::Command::new("git")
             .current_dir(&bare)
-            .args(["log", "-1", "--pretty=%an|%ae|%s"])
+            .args(["log", "-1", "refs/heads/awf/work", "--pretty=%an|%ae|%s"])
             .output()
             .unwrap();
         let log = String::from_utf8_lossy(&log.stdout);
@@ -1591,7 +1609,8 @@ mod workdir_helper_tests {
         let plan = pc::RepositoryRealizationPlan {
             repository_id: "repo-commit".into(),
             mount_path: "workspace/repo".into(),
-            remote_url: seed.to_string_lossy().into_owned(),
+            source_remote_url: seed.to_string_lossy().into_owned(),
+            transport_url: seed.to_string_lossy().into_owned(),
             initial_branch: None,
             initial_commit: Some(first.clone()),
             access: pc::MountAccess::ReadOnly,
@@ -1635,7 +1654,8 @@ mod workdir_helper_tests {
         let plan = pc::RepositoryRealizationPlan {
             repository_id: "repo-escape".into(),
             mount_path: "../escape".into(),
-            remote_url: "http://x".into(),
+            source_remote_url: "http://x".into(),
+            transport_url: "http://x".into(),
             initial_branch: None,
             initial_commit: None,
             access: pc::MountAccess::ReadOnly,

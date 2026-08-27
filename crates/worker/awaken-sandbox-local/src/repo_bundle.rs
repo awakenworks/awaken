@@ -37,9 +37,17 @@ pub fn clone_repo_bundle(
 pub fn push_repo_bundle(
     bundle: &[u8],
     branch: &str,
-    remote_url: &str,
+    plan: &pc::RepositoryRealizationPlan,
+    expectation: &pc::RepositoryPublicationExpectation,
     credential: Option<&pc::RepositoryHttpBasicCredential>,
-) -> Result<bool, pc::SandboxError> {
+) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+    expectation.validate()?;
+    if branch != expectation.branch {
+        return Err(pc::SandboxError::new(format!(
+            "repository export branch `{branch}` does not match expected branch `{}`",
+            expectation.branch
+        )));
+    }
     let temp = tempfile::tempdir().map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let bundle_path = temp.path().join("repo.bundle");
     let mut file = std::fs::File::create(&bundle_path)
@@ -52,7 +60,7 @@ pub fn push_repo_bundle(
     run_git(None, &["clone", "--branch", branch, &bundle_arg, &repo_arg])
         .map_err(|error| pc::SandboxError::new(error.to_string()))?;
     let root = IsolatedRoot::new(temp.path());
-    push_repo_to_at(&root, "repo", remote_url, credential)
+    push_repo_to_at(&root, "repo", plan, expectation, credential)
         .map_err(|error| pc::SandboxError::new(error.to_string()))
 }
 
@@ -70,10 +78,13 @@ mod tests {
         assert!(status.success(), "git {args:?}");
     }
 
-    /// Repository bundle publication decision table. R1 a bundle names an
-    /// absent branch -> fail closed and change no remote ref; R2 a non-default
-    /// current branch has a novel commit -> push that exact branch while the
-    /// base branch stays unchanged; R3 replay the same bundle/branch -> no-op.
+    /// Repository bundle publication decision table. Causes: C1 exported branch
+    /// matches the frozen expectation; C2 expected commit exists in that branch;
+    /// C3 the exact remote ref is absent/current/different. Effects: E1 reject a
+    /// wrong branch or commit before network; E2 push only an absent exact ref;
+    /// E3 return the same secret-free receipt for the first push and replay; E4
+    /// reject a different remote ref without overwriting it. Rules: R1 !C1=>E1;
+    /// R2 C1+!C2=>E1; R3 C1+C2+absent=>E2+E3; R4 current=>E3; R5 different=>E4.
     #[test]
     fn bundle_round_trip_pushes_agent_commits_without_a_credential_in_the_bundle() {
         let temp = tempfile::tempdir().unwrap();
@@ -113,10 +124,91 @@ mod tests {
         git(&agent, &["commit", "-m", "agent change"]);
         let work = git_stdout(Some(&agent), &["rev-parse", "HEAD"]).unwrap();
         let changed = git_bytes(Some(&agent), &["bundle", "create", "-", "--all"]).unwrap();
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo-1".into(),
+            mount_path: "repo".into(),
+            source_remote_url: remote.to_string_lossy().into_owned(),
+            transport_url: remote.to_string_lossy().into_owned(),
+            initial_branch: None,
+            initial_commit: None,
+            access: pc::MountAccess::ReadWrite,
+        };
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: work.trim().into(),
+        };
 
-        assert!(push_repo_bundle(&changed, "absent", remote.to_str().unwrap(), None).is_err());
-        assert!(push_repo_bundle(&changed, "awf/work", remote.to_str().unwrap(), None).unwrap());
-        assert!(!push_repo_bundle(&changed, "awf/work", remote.to_str().unwrap(), None).unwrap());
+        assert!(push_repo_bundle(&changed, "absent", &plan, &expectation, None).is_err());
+        let first = push_repo_bundle(&changed, "awf/work", &plan, &expectation, None).unwrap();
+        let replay = push_repo_bundle(&changed, "awf/work", &plan, &expectation, None).unwrap();
+        assert_eq!(first, replay, "R3/R4 deterministic receipt");
+        first.verify(&plan, &expectation).unwrap();
+
+        run_git(
+            None,
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "update-ref",
+                "refs/heads/awf/work",
+                base.trim(),
+            ],
+        )
+        .unwrap();
+        assert!(
+            push_repo_bundle(&changed, "awf/work", &plan, &expectation, None).is_err(),
+            "R5 even a would-be fast-forward must not overwrite a nonempty ref"
+        );
+        let observed = git_stdout(
+            None,
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/awf/work",
+            ],
+        )
+        .unwrap();
+        assert_eq!(observed.trim(), base.trim(), "R5 ancestor ref unchanged");
+
+        let divergent = temp.path().join("divergent");
+        git(
+            temp.path(),
+            &[
+                "clone",
+                "--branch",
+                "awf/work",
+                remote.to_str().unwrap(),
+                divergent.to_str().unwrap(),
+            ],
+        );
+        git(&divergent, &["config", "user.name", "remote-writer"]);
+        git(
+            &divergent,
+            &["config", "user.email", "remote@example.invalid"],
+        );
+        std::fs::write(divergent.join("README.md"), "remote changed").unwrap();
+        git(&divergent, &["commit", "-am", "remote change"]);
+        git(&divergent, &["push", "origin", "awf/work"]);
+        let divergent_commit = git_stdout(Some(&divergent), &["rev-parse", "HEAD"])
+            .unwrap()
+            .trim()
+            .to_owned();
+        assert!(
+            push_repo_bundle(&changed, "awf/work", &plan, &expectation, None).is_err(),
+            "R5 a different nonempty remote ref is not overwritten"
+        );
+        let observed = git_stdout(
+            None,
+            &[
+                "--git-dir",
+                remote.to_str().unwrap(),
+                "rev-parse",
+                "refs/heads/awf/work",
+            ],
+        )
+        .unwrap();
+        assert_eq!(observed.trim(), divergent_commit, "R5 remote unchanged");
         let refs = std::process::Command::new("git")
             .args(["--git-dir", remote.to_str().unwrap(), "show-ref", "--heads"])
             .output()
@@ -127,7 +219,7 @@ mod tests {
             base.trim(),
             base_branch.trim()
         )));
-        assert!(refs.contains(&format!("{} refs/heads/awf/work", work.trim())));
+        assert!(refs.contains(&format!("{} refs/heads/awf/work", divergent_commit.trim())));
         let count = std::process::Command::new("git")
             .args([
                 "--git-dir",

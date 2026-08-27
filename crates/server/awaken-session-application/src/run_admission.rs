@@ -82,12 +82,20 @@ pub struct CreateProfiledSessionCommand {
     /// Explicit Session candidates supplied by the product adapter. Published
     /// Agent candidates are joined and normalized inside the sole composer.
     pub mcp_candidates: Vec<McpAttachmentCandidate>,
-    pub repositories: Vec<SessionRepositoryResourceInput>,
+    pub repositories: Vec<ProfiledSessionRepositoryInput>,
     pub network_restriction: Option<SessionNetworkPolicy>,
     pub title: Option<String>,
     pub metadata: BTreeMap<String, String>,
     pub tools: Option<SessionToolConfiguration>,
     pub idempotency: Option<awaken_session_contract::IdempotencyRecord>,
+}
+
+/// One product-authored Repository binding joined into the original profiled
+/// Session root. `binding_id` is the caller's stable correlation identity;
+/// `repository.id` remains Open's Session-owned Registry identity.
+pub struct ProfiledSessionRepositoryInput {
+    pub binding_id: awaken_resource_contract::BindingId,
+    pub repository: SessionRepositoryResourceInput,
 }
 
 pub struct RecoveredSessionProjection {
@@ -150,16 +158,13 @@ fn creation_error(error: SessionCreationError) -> RunError {
 }
 
 fn profiled_repository_attachment(
-    session_id: &str,
     repository_id: awaken_resource_contract::RepositoryId,
     mount_path: String,
+    binding_id: awaken_resource_contract::BindingId,
 ) -> awaken_session_contract::SessionInputAttachment {
     awaken_session_contract::SessionInputAttachment {
         binding: awaken_resource_contract::InputBinding {
-            binding_id: awaken_resource_contract::BindingId::new(format!(
-                "profiled:{session_id}:repository:{}",
-                repository_id.as_str()
-            )),
+            binding_id,
             target: awaken_resource_contract::InputResourceId::Repository(repository_id),
             mount_path,
             access: awaken_resource_contract::ResourceAccess::ReadWrite,
@@ -508,16 +513,17 @@ impl SessionApplication {
             .unwrap_or_default();
         let repository_owner = SessionRepositoryOwner::profiled(&session_id);
         for repository in &repositories {
-            if repository.workspace_id != owner_scope
-                || !repository_owner.owns_repository_id(&repository.id)
+            if repository.binding_id.as_str().trim().is_empty()
+                || repository.repository.workspace_id != owner_scope
+                || !repository_owner.owns_repository_id(&repository.repository.id)
             {
                 return Err(RunError::bad_request(
-                    "Profiled Session Repository identity is outside its Session or Workspace",
+                    "Profiled Session Repository binding is empty or outside its Session or Workspace",
                 )
                 .into());
             }
             if !mutation_policy.admits_repository_credential_mutation()
-                && repository.authorization_token.is_some()
+                && repository.repository.authorization_token.is_some()
             {
                 return Err(RunError::bad_request(
                     "profiled Session Repository credentials must be pre-existing Vault references",
@@ -528,9 +534,9 @@ impl SessionApplication {
         let mut collision_preflight = resource_inputs.clone();
         collision_preflight.extend(repositories.iter().map(|repository| {
             profiled_repository_attachment(
-                &session_id,
-                awaken_resource_contract::RepositoryId::from(repository.id.clone()),
-                repository.mount_path.clone(),
+                awaken_resource_contract::RepositoryId::from(repository.repository.id.clone()),
+                repository.repository.mount_path.clone(),
+                repository.binding_id.clone(),
             )
         }));
         awaken_session_contract::SessionInputResolver::effective_bindings(
@@ -548,9 +554,13 @@ impl SessionApplication {
         let mut expected_repository_credentials = BTreeMap::new();
         let mut repository_configurations = Vec::<ConfiguredSessionRepository>::new();
         for repository in repositories {
-            let mount_path = repository.mount_path.clone();
-            let expected_credential = repository.credential.clone();
-            let configured = match self.configure_session_repository(repository).await {
+            let mount_path = repository.repository.mount_path.clone();
+            let expected_credential = repository.repository.credential.clone();
+            let binding_id = repository.binding_id;
+            let configured = match self
+                .configure_session_repository(repository.repository)
+                .await
+            {
                 Ok(configured) => configured,
                 Err(first) => {
                     if !self
@@ -568,9 +578,9 @@ impl SessionApplication {
             let repository_id = configured.repository_id.clone();
             expected_repository_credentials.insert(repository_id.clone(), expected_credential);
             repository_attachments.push(profiled_repository_attachment(
-                &session_id,
                 repository_id,
                 mount_path,
+                binding_id,
             ));
             repository_configurations.push(configured);
         }

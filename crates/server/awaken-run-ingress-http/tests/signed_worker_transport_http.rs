@@ -45,6 +45,10 @@ struct RecordingSessionControl {
     cleanup_claims: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
     cleanup_commands: Mutex<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
     cleanup_completions: Mutex<Vec<awaken_session_contract::SessionCleanupCompletion>>,
+    repository_publication_projection:
+        Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
+    repository_publication_receipts:
+        Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
 }
 
 #[derive(Default)]
@@ -325,6 +329,34 @@ impl awaken_session_contract::SessionRealizationControl for RecordingSessionCont
         completion: awaken_session_contract::SessionCleanupCompletion,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
         self.cleanup_completions.lock().unwrap().push(completion);
+        Ok(())
+    }
+
+    async fn terminal_repository_publication_command(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        Ok(self
+            .repository_publication_projection
+            .lock()
+            .unwrap()
+            .clone())
+    }
+
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.repository_publication_receipts
+            .lock()
+            .unwrap()
+            .push(receipt);
         Ok(())
     }
 }
@@ -1011,6 +1043,126 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .await
             .is_err(),
         "K2 foreign completion lease"
+    );
+
+    // Publication transport cause/effect table. P1 current identity + exact
+    // lease projects the one canonical command; P2 the same authority records
+    // its canonical receipt; P3 a foreign lease is rejected before Control;
+    // P4 no projected command stays pending without inventing work. Exact
+    // retries use the same route and receipt; aggregate idempotency remains in
+    // SessionCleanupOperation rather than this stateless transport.
+    //
+    // | Rule | Worker/lease | Control command | Effect |
+    // | P1 | current/exact | canonical | return exact command |
+    // | P2 | current/exact | canonical | forward exact receipt |
+    // | P3 | current/foreign | any | reject before Control |
+    // | P4 | current/exact | none | return pending None |
+    let publication_intent: awaken_session_contract::SessionRepositoryPublicationIntent =
+        serde_json::from_value(serde_json::json!({
+            "input": {
+                "binding_id": "source",
+                "source": {
+                    "kind": "repository",
+                    "repository_id": "repo-1",
+                    "config": {
+                        "repository_id": "repo-1",
+                        "version": 7,
+                        "remote_url": "https://example.test/repo.git"
+                    }
+                },
+                "mount_path": "/workspace/source",
+                "access": "read_write"
+            },
+            "expectation": {
+                "branch": "awf/work",
+                "commit": "0123456789abcdef0123456789abcdef01234567"
+            }
+        }))
+        .expect("publication intent fixture");
+    let mut publication_operation = awaken_session_contract::SessionCleanupOperation::default();
+    publication_operation
+        .request_with_publication("signed-thread", publication_intent.clone())
+        .expect("P1 publication fence");
+    publication_operation
+        .freeze_targets("signed-thread", [], 0, 0)
+        .expect("P1 root target");
+    let publication_command = publication_operation
+        .publication_command("signed-thread")
+        .expect("P1 command projection")
+        .expect("P1 pending publication");
+    let publication_projection = awaken_session_contract::SessionRepositoryPublicationProjection {
+        workspace_id: "workspace".into(),
+        command: publication_command.clone(),
+    };
+    *session_control
+        .repository_publication_projection
+        .lock()
+        .unwrap() = Some(publication_projection.clone());
+    let projected = client
+        .terminal_repository_publication_command(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+        )
+        .await
+        .expect("P1 publication poll")
+        .expect("P1 command");
+    assert_eq!(projected, publication_projection, "P1");
+    let effect_receipt = serde_json::from_value(serde_json::json!({
+        "repository_id": "repo-1",
+        "source_remote_url": "https://example.test/repo.git",
+        "branch": publication_intent.expectation.branch,
+        "commit": publication_intent.expectation.commit,
+    }))
+    .expect("P2 effect receipt");
+    let publication_receipt = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+        &publication_command,
+        effect_receipt,
+    );
+    client
+        .record_terminal_repository_publication_receipt(
+            &registered.snapshot.identity,
+            "signed-thread",
+            &realization_lease,
+            publication_receipt.clone(),
+        )
+        .await
+        .expect("P2 receipt");
+    assert_eq!(
+        session_control
+            .repository_publication_receipts
+            .lock()
+            .unwrap()
+            .as_slice(),
+        &[publication_receipt],
+        "P2"
+    );
+    assert!(
+        client
+            .terminal_repository_publication_command(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &foreign_cleanup_lease,
+            )
+            .await
+            .is_err(),
+        "P3"
+    );
+    *session_control
+        .repository_publication_projection
+        .lock()
+        .unwrap() = None;
+    assert!(
+        client
+            .terminal_repository_publication_command(
+                &registered.snapshot.identity,
+                "signed-thread",
+                &realization_lease,
+            )
+            .await
+            .expect("P4 pending poll")
+            .is_none(),
+        "P4"
     );
 
     let renewal = awaken_session_contract::BeginSessionRealization {

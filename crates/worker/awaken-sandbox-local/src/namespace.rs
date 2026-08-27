@@ -902,14 +902,15 @@ impl NamespaceSandbox {
 
     pub fn push_repo(
         &self,
-        logical: &str,
-        remote_url: &str,
+        plan: &pc::RepositoryRealizationPlan,
+        expectation: &pc::RepositoryPublicationExpectation,
         credential: Option<&pc::RepositoryHttpBasicCredential>,
-    ) -> Result<bool, pc::SandboxError> {
+    ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
         push_repo_to_at(
             &self.workspace_root(),
-            workspace_relative(logical),
-            remote_url,
+            workspace_relative(&plan.mount_path),
+            plan,
+            expectation,
             credential,
         )
         .map_err(err)

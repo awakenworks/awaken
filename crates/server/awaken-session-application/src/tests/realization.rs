@@ -1045,6 +1045,261 @@ async fn remote_terminal_cleanup_uses_durable_commands_and_cold_receipt_replay()
     assert!(runtime.intents.lock().unwrap().is_empty(), "W4/E5");
 }
 
+/// Repository-publication control cause/effect graph. C1 a Requested terminal
+/// operation has an exact publication intent; C2 a child completion is absent
+/// or durable; C3 the asserted lease is exact or stale; C4 the publication
+/// receipt is mismatched, exact, or an exact response-loss replay; C5 ordinary
+/// cleanup commands may be empty while publication is pending; C6 the durable
+/// Session row has one immutable Workspace owner. Effects: E1 the
+/// child is the sole first command; E2 publication remains hidden behind the
+/// child; E3 an empty cleanup vector remains cold-claimable; E4 stale/wrong
+/// evidence fails without mutation; E5 the exact receipt is durably replayable;
+/// E6 only then is the root finalizer exposed and completion becomes absorbing;
+/// E7 the command projection carries that canonical Workspace beside the
+/// command so transports need not accept a Worker-selected tenant.
+///
+/// | Rule | child | lease | publication receipt | Effect |
+/// |---|---|---|---|---|
+/// | P1 | pending | exact | none | E1 + E2 |
+/// | P2 | complete | stale | none | E4 |
+/// | P3 | none | unclaimed | none, cleanup=[] | E3 + E7 |
+/// | P4 | complete | exact | wrong | E4 |
+/// | P5 | complete | exact | exact/replay | E5 + E6 |
+#[tokio::test]
+async fn remote_repository_publication_is_child_gated_lease_fenced_and_replayable() {
+    // Constraint: SessionCleanupOperation is the only queue/receipt registry;
+    // this matrix therefore observes only its command projections and root CAS.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("Repository publication Session repository"),
+    );
+    let exact_lease = awaken_session_contract::SessionRealizationLease {
+        owner: "worker-a".into(),
+        runtime_incarnation: "worker-a:publication".into(),
+        epoch: 4,
+        expires_at_unix_ms: u64::MAX,
+    };
+    let requested =
+        |session_id: &str,
+         child: Option<&str>,
+         lease: Option<awaken_session_contract::SessionRealizationLease>| {
+            let resources = repository_resources("source", "repo-1");
+            let intent = repository_publication_intent(&resources);
+            let mut session = persisted(session_id, true, "terminated");
+            session.resources =
+                awaken_session_contract::SessionResourceState::from_active(resources);
+            session
+                .terminal_cleanup
+                .request_with_publication(session_id, intent)
+                .expect("publication fence");
+            session
+                .terminal_cleanup
+                .freeze_targets(session_id, child.into_iter().map(str::to_string), 17, 19)
+                .expect("publication cleanup target");
+            session.realization = lease;
+            session
+        };
+    create(
+        repo.as_ref(),
+        requested(
+            "publication-child-barrier",
+            Some("publication-child"),
+            Some(exact_lease.clone()),
+        ),
+    )
+    .await;
+    create(
+        repo.as_ref(),
+        requested("publication-cold-claim", None, None),
+    )
+    .await;
+    let application = application_with_configuration(
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration {
+            execution_placement: SessionExecutionPlacement::RegisteredWorker,
+            ..Default::default()
+        },
+    );
+
+    let child_commands = application
+        .terminal_cleanup_commands("publication-child-barrier", &exact_lease)
+        .await
+        .expect("P1 exact lease")
+        .expect("P1 terminal fence");
+    assert_eq!(child_commands.len(), 1, "P1/E1");
+    assert_eq!(child_commands[0].thread_id, "publication-child", "P1/E1");
+    assert!(
+        application
+            .terminal_repository_publication_command("publication-child-barrier", &exact_lease,)
+            .await
+            .expect("P1 exact lease")
+            .is_none(),
+        "P1/E2"
+    );
+    application
+        .record_terminal_cleanup_completion(
+            &exact_lease,
+            awaken_session_contract::SessionCleanupCompletion::new(&child_commands[0], Vec::new()),
+        )
+        .await
+        .expect("P2 child receipt");
+    assert!(
+        application
+            .terminal_cleanup_commands("publication-child-barrier", &exact_lease)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_empty(),
+        "P2 publication barrier withholds root cleanup"
+    );
+    let mut stale = exact_lease.clone();
+    stale.epoch += 1;
+    assert!(
+        matches!(
+            application
+                .terminal_repository_publication_command("publication-child-barrier", &stale,)
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::StaleOwnership)
+        ),
+        "P2/E4"
+    );
+
+    let target = awaken_session_contract::SessionRealizationTarget {
+        owner: "worker-b".into(),
+        runtime_incarnation: "worker-b:publication".into(),
+        lease_expires_at_unix_ms: u64::MAX,
+        renew_existing_lease: false,
+        reassign_existing_lease: false,
+    };
+    let assignment = application
+        .claim_next_terminal_cleanup(target)
+        .await
+        .expect("P3 claim")
+        .expect("P3 publication-only assignment");
+    assert_eq!(assignment.session_id, "publication-cold-claim", "P3/E3");
+    assert!(
+        application
+            .terminal_cleanup_commands(&assignment.session_id, &assignment.lease)
+            .await
+            .unwrap()
+            .unwrap()
+            .is_empty(),
+        "P3/E3"
+    );
+    let publication = application
+        .terminal_repository_publication_command(&assignment.session_id, &assignment.lease)
+        .await
+        .expect("P3 publication poll")
+        .expect("P3 publication projection");
+    assert_eq!(publication.workspace_id, "workspace", "P3/E7");
+    let publication = publication.command;
+    let awaken_session_contract::ResolvedInputSource::Repository {
+        repository_id,
+        config,
+        ..
+    } = &publication.intent.input.source
+    else {
+        panic!("publication fixture is a Repository")
+    };
+    let wrong = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+        &publication,
+        awaken_provisioning_contract::RepositoryPublicationReceipt {
+            repository_id: repository_id.to_string(),
+            source_remote_url: config.remote_url.clone(),
+            branch: "wrong-branch".into(),
+            commit: publication.intent.expectation.commit.clone(),
+        },
+    );
+    assert!(
+        matches!(
+            application
+                .record_terminal_repository_publication_receipt(
+                    &assignment.session_id,
+                    &assignment.lease,
+                    wrong,
+                )
+                .await,
+            Err(awaken_session_contract::SessionRealizationControlFailure::Invalid(_))
+        ),
+        "P4/E4"
+    );
+    assert!(
+        repo.get(&assignment.session_id)
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .repository_publication_receipt()
+            .is_none(),
+        "P4/E4 no mutation"
+    );
+
+    let exact = awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+        &publication,
+        awaken_provisioning_contract::RepositoryPublicationReceipt {
+            repository_id: repository_id.to_string(),
+            source_remote_url: config.remote_url.clone(),
+            branch: publication.intent.expectation.branch.clone(),
+            commit: publication.intent.expectation.commit.clone(),
+        },
+    );
+    application
+        .record_terminal_repository_publication_receipt(
+            &assignment.session_id,
+            &assignment.lease,
+            exact.clone(),
+        )
+        .await
+        .expect("P5 exact receipt");
+    application
+        .record_terminal_repository_publication_receipt(
+            &assignment.session_id,
+            &assignment.lease,
+            exact.clone(),
+        )
+        .await
+        .expect("P5 response-loss replay");
+    assert_eq!(
+        repo.get(&assignment.session_id)
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .repository_publication_receipt(),
+        Some(&exact),
+        "P5/E5"
+    );
+    assert!(
+        application
+            .terminal_repository_publication_command(&assignment.session_id, &assignment.lease)
+            .await
+            .unwrap()
+            .is_none(),
+        "P5/E6"
+    );
+    let root = application
+        .terminal_cleanup_commands(&assignment.session_id, &assignment.lease)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(root.len(), 1, "P5/E6");
+    assert_eq!(root[0].thread_id, assignment.session_id, "P5/E6");
+    application
+        .record_terminal_cleanup_completion(
+            &assignment.lease,
+            awaken_session_contract::SessionCleanupCompletion::new(&root[0], Vec::new()),
+        )
+        .await
+        .expect("P5 root finalizer");
+    assert!(
+        repo.get(&assignment.session_id)
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .is_completed(),
+        "P5/E6"
+    );
+}
+
 #[tokio::test]
 async fn cold_terminal_cleanup_claim_uses_the_existing_scan_and_fences_one_assignment() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
@@ -1252,10 +1507,18 @@ async fn recovery_treats_a_concurrently_deleted_terminal_session_as_converged() 
     );
 }
 
-/// Crash-window matrix for terminal effects. R1 persists the intent before
-/// an injected Runtime failure; R2 recovery reuses the exact effect id and
-/// commits the receipt plus Environment removal atomically; R3 a later
-/// reconciler observes Completed and performs no second effect.
+/// Legacy no-publication crash-window graph. C1 the terminal fence carries no
+/// Repository publication intent; C2 cleanup fails before or after its effect;
+/// C3 recovery/replay observes Requested or Completed. Effects: E1 legacy wire
+/// and cleanup behavior remain unchanged; E2 no publication command/effect is
+/// invented; E3 recovery reuses the exact cleanup effect id and commits the
+/// receipt plus Environment removal atomically; E4 Completed is absorbing.
+///
+/// | Rule | publication intent | cleanup phase | Effect |
+/// |---|---|---|---|
+/// | L1 | absent | first effect fails | E1 + E2, Requested retained |
+/// | L2 | absent | retry succeeds | E3 |
+/// | L3 | absent | Completed replay | E2 + E4 |
 #[tokio::test]
 async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
     let repo = Arc::new(
@@ -1316,6 +1579,10 @@ async fn terminal_cleanup_recovery_reuses_intent_and_skips_completed_effects() {
         "R1/R2 stable intent"
     );
     assert_eq!(runtime.effective_ids.lock().unwrap().len(), 1, "R1/R2");
+    assert!(
+        runtime.publication_intents.lock().unwrap().is_empty(),
+        "L1-L3/E2 legacy cleanup never invents publication"
+    );
 }
 
 /// A competing cleanup worker may win any root CAS after performing the exact

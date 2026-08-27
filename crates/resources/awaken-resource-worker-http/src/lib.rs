@@ -23,8 +23,9 @@ pub use memory_transport::{
     worker_memory_router,
 };
 pub use repository_binding_http::{
-    HttpRepositoryBindingVerifier, RepositoryTransportAuthorization, RepositoryTransportAuthorizer,
-    WorkerRepositoryBindingService, worker_repository_binding_router,
+    HttpRepositoryBindingVerifier, RepositoryTransportAuthority, RepositoryTransportAuthorization,
+    RepositoryTransportAuthorizer, WorkerRepositoryBindingService,
+    worker_repository_binding_router,
 };
 pub use skill_bundle_transport::{
     HttpSkillBundleSource, WorkerSkillBundleService, worker_skill_bundle_router,

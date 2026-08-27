@@ -528,6 +528,8 @@ struct RecordingCleanupRuntime {
     quiesce_entered: tokio::sync::Notify,
     quiesce_release: tokio::sync::Notify,
     delegated_snapshot: Mutex<awaken_session_contract::DelegatedRunSnapshot>,
+    publication_intents: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
+    terminal_effect_order: Mutex<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -1330,6 +1332,10 @@ impl SessionRuntime for RecordingCleanupRuntime {
             return Err(RunError::internal("injected pre-effect crash window"));
         }
         self.intents.lock().unwrap().push(intent.clone());
+        self.terminal_effect_order
+            .lock()
+            .unwrap()
+            .push(format!("cleanup:{}", intent.thread_id));
         self.effective_ids
             .lock()
             .unwrap()
@@ -1341,6 +1347,41 @@ impl SessionRuntime for RecordingCleanupRuntime {
             &intent,
             Vec::new(),
         ))
+    }
+
+    async fn execute_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        self.publication_intents
+            .lock()
+            .unwrap()
+            .push(command.clone());
+        self.terminal_effect_order
+            .lock()
+            .unwrap()
+            .push("publication".into());
+        let awaken_session_contract::ResolvedInputSource::Repository {
+            repository_id,
+            config,
+            ..
+        } = &command.intent.input.source
+        else {
+            return Err(RunError::internal(
+                "test publication command did not contain a Repository",
+            ));
+        };
+        Ok(
+            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                &command,
+                awaken_provisioning_contract::RepositoryPublicationReceipt {
+                    repository_id: repository_id.to_string(),
+                    source_remote_url: config.remote_url.clone(),
+                    branch: command.intent.expectation.branch.clone(),
+                    commit: command.intent.expectation.commit.clone(),
+                },
+            ),
+        )
     }
 
     async fn run(
@@ -2015,6 +2056,47 @@ fn file_resources(id: &str) -> awaken_session_contract::ResolvedSessionResources
         Vec::new(),
     )
     .unwrap()
+}
+
+fn repository_resources(
+    binding_id: &str,
+    repository_id: &str,
+) -> awaken_session_contract::ResolvedSessionResources {
+    awaken_session_contract::ResolvedSessionResources::try_new(
+        vec![awaken_session_contract::ResolvedInput {
+            binding_id: awaken_resource_contract::BindingId::from(binding_id),
+            source: awaken_session_contract::ResolvedInputSource::Repository {
+                repository_id: repository_id.into(),
+                config: awaken_resource_contract::RepositoryConfigVersion {
+                    repository_id: repository_id.into(),
+                    version: awaken_resource_contract::ConfigVersion::INITIAL,
+                    remote_url: "https://example.test/repository.git".into(),
+                    credential_binding: None,
+                    initial_branch: Some("main".into()),
+                    initial_commit: None,
+                    clone_policy: Default::default(),
+                },
+                credential: None,
+            },
+            mount_path: "/workspace/source".into(),
+            access: awaken_resource_contract::ResourceAccess::ReadWrite,
+            instructions: None,
+        }],
+        Vec::new(),
+    )
+    .expect("valid writable Repository fixture")
+}
+
+fn repository_publication_intent(
+    resources: &awaken_session_contract::ResolvedSessionResources,
+) -> awaken_session_contract::SessionRepositoryPublicationIntent {
+    awaken_session_contract::SessionRepositoryPublicationIntent {
+        input: resources.inputs()[0].clone(),
+        expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/issue-coding".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        },
+    }
 }
 
 /// Local-restart ownership FMECA and cause/effect decision table. C1 the

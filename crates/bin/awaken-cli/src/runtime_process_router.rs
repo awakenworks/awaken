@@ -603,13 +603,14 @@ pub(super) async fn prepare_runtime_routers(
             }
             Ok(())
         });
+    let repository_bindings = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(
+            resource_registry.clone(),
+        ),
+    );
     let mut managed_host = ManagedHost::new(host.clone())
         .with_resource_validator(resource_registry.clone())
-        .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::RegistryRepositoryBindingVerifier::new(
-                resource_registry.clone(),
-            ),
-        ));
+        .with_repository_binding_verifier(repository_bindings);
     if let Some(credentials) = credential_materializer {
         managed_host = managed_host.with_credential_materializer(credentials);
     }

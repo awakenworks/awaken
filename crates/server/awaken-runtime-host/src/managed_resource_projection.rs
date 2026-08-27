@@ -79,6 +79,31 @@ pub(super) fn managed_resource_mount_path(requested: &str) -> String {
     }
 }
 
+type TerminalRepositoryPublicationFence = (
+    awaken_session_contract::SessionRepositoryPublicationCommand,
+    awaken_session_contract::SessionRealizationLease,
+);
+
+/// Select only the Repository authorization port while keeping the resource
+/// projection itself singular. Terminal authority is interpreted together with
+/// the Host's existing upstream topology fact: local effects use the frozen
+/// command directly, while a remote effect requires its lease verifier. A
+/// remote Run without its claim still fails closed.
+#[derive(Clone, Copy)]
+enum RepositoryProjectionAuthority<'a> {
+    Run(Option<&'a awaken_run_ingress::RunClaim>),
+    Terminal(Option<&'a TerminalRepositoryPublicationFence>),
+}
+
+impl<'a> RepositoryProjectionAuthority<'a> {
+    fn run_claim(self) -> Option<&'a awaken_run_ingress::RunClaim> {
+        match self {
+            Self::Run(claim) => claim,
+            Self::Terminal(_) => None,
+        }
+    }
+}
+
 impl crate::ManagedHost {
     /// Compile one frozen Managed input into the provisioning vocabulary. This
     /// projection owns protocol paths and secret-free credential pins; the
@@ -90,9 +115,57 @@ impl crate::ManagedHost {
         input: &awaken_session_contract::ResolvedInput,
         claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
+        self.stage_resolved_input_with_repository_authority(
+            workspace,
+            input,
+            RepositoryProjectionAuthority::Run(claim),
+        )
+        .await
+    }
+
+    /// Compile the exact Repository input carried by a terminal publication
+    /// command through the same path as ordinary Session staging. A remote lease
+    /// selects the HTTP authority verifier; a local command needs no mutable
+    /// catalog re-read. Path, access, credential pin, transport, and
+    /// realization-plan projection stay canonical here.
+    pub(super) async fn stage_terminal_repository_publication_input(
+        &self,
+        workspace: &str,
+        command: &awaken_session_contract::SessionRepositoryPublicationCommand,
+        lease: Option<&awaken_session_contract::SessionRealizationLease>,
+    ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
+        command
+            .intent
+            .validate()
+            .map_err(|error| awaken_session_contract::RunError::bad_request(error.to_string()))?;
+        let input = &command.intent.input;
+        if !matches!(
+            input.source,
+            awaken_session_contract::ResolvedInputSource::Repository { .. }
+        ) {
+            return Err(awaken_session_contract::RunError::bad_request(
+                "terminal Repository publication input is not a Repository",
+            ));
+        }
+        let fence = lease.map(|lease| (command.clone(), lease.clone()));
+        self.stage_resolved_input_with_repository_authority(
+            workspace,
+            input,
+            RepositoryProjectionAuthority::Terminal(fence.as_ref()),
+        )
+        .await
+    }
+
+    async fn stage_resolved_input_with_repository_authority(
+        &self,
+        workspace: &str,
+        input: &awaken_session_contract::ResolvedInput,
+        repository_authority: RepositoryProjectionAuthority<'_>,
+    ) -> Result<crate::provisioning::StagedResources, awaken_session_contract::RunError> {
         use awaken_resource_contract::ResourceAccess;
         use awaken_session_contract::{ResolvedInputSource, RunError};
 
+        let claim = repository_authority.run_claim();
         let mut staged = crate::provisioning::StagedResources::default();
         let logical = input.mount_path.trim_start_matches('/').to_string();
         if matches!(input.source, ResolvedInputSource::MemoryStore { .. }) {
@@ -218,15 +291,42 @@ impl crate::ManagedHost {
                 config,
                 credential: credential_pin,
             } => {
-                let verifier = self.repository_binding_verifier.as_ref().ok_or_else(|| {
-                    RunError::bad_request(
-                        "repository resources require a configured binding verifier",
-                    )
-                })?;
-                let transport = verifier
-                    .verify(workspace, repository_id.as_str(), config.version, claim)
-                    .await
-                    .map_err(|error| RunError::bad_request(error.to_string()))?;
+                let transport = match (repository_authority, &self.host.upstream) {
+                    (RepositoryProjectionAuthority::Terminal(Some(fence)), Some(_)) => self
+                            .repository_publication_binding_verifier
+                            .as_ref()
+                            .ok_or_else(|| {
+                                RunError::bad_request(
+                                    "remote terminal Repository publication requires a configured binding verifier",
+                                )
+                            })?
+                            .verify(
+                                workspace,
+                                repository_id.as_str(),
+                                config.version,
+                                Some(fence),
+                            )
+                            .await,
+                    (RepositoryProjectionAuthority::Terminal(None), Some(_)) => Err(
+                        awaken_resource_contract::RepositoryBindingVerifierError::new(
+                            "remote terminal Repository publication requires its realization lease",
+                        ),
+                    ),
+                    (RepositoryProjectionAuthority::Terminal(_), None) => {
+                        Ok(awaken_resource_contract::RepositoryTransport::Direct)
+                    }
+                    (RepositoryProjectionAuthority::Run(claim), _) => self
+                        .repository_binding_verifier
+                        .as_ref()
+                        .ok_or_else(|| {
+                            RunError::bad_request(
+                                "repository resources require a configured binding verifier",
+                            )
+                        })?
+                        .verify(workspace, repository_id.as_str(), config.version, claim)
+                        .await,
+                }
+                .map_err(|error| RunError::bad_request(error.to_string()))?;
                 staged
                     .binding_checks
                     .push(crate::provisioning::ResourceBindingCheck::Repository {
@@ -236,7 +336,7 @@ impl crate::ManagedHost {
                         credential_binding: config.credential_binding.clone(),
                         claim: claim.cloned(),
                     });
-                let (remote_url, credential_pin) = match (
+                let (transport_url, credential_pin) = match (
                     &config.credential_binding,
                     credential_pin,
                 ) {
@@ -303,7 +403,8 @@ impl crate::ManagedHost {
                         plan: awaken_provisioning_contract::RepositoryRealizationPlan {
                             repository_id: repository_id.to_string(),
                             mount_path: logical,
-                            remote_url,
+                            source_remote_url: config.remote_url.clone(),
+                            transport_url,
                             initial_branch: config.initial_branch.clone(),
                             initial_commit: config.initial_commit.clone(),
                             access: mount_access,

@@ -70,6 +70,7 @@ mod skill_catalog;
 mod skills;
 mod step_projection;
 mod store;
+mod terminal_repository_publication;
 #[cfg(test)]
 mod test_mcp;
 mod tool_output_spill;
@@ -324,6 +325,14 @@ pub struct ManagedHost {
     resource_validator: Option<Arc<dyn awaken_resource_contract::LiveResourceBindingVerifier>>,
     repository_binding_verifier:
         Option<Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>>,
+    repository_publication_binding_verifier: Option<
+        Arc<
+            dyn RepositoryBindingVerifier<(
+                awaken_session_contract::SessionRepositoryPublicationCommand,
+                awaken_session_contract::SessionRealizationLease,
+            )>,
+        >,
+    >,
     mcp_realizer: Option<Arc<dyn awaken_session_contract::McpAttachmentRealizer>>,
 }
 
@@ -350,6 +359,7 @@ impl ManagedHost {
             credential_refresh_factory: None,
             resource_validator: None,
             repository_binding_verifier: None,
+            repository_publication_binding_verifier: None,
             mcp_realizer: None,
         }
     }
@@ -392,6 +402,9 @@ impl ManagedHost {
             credential_refresh_factory: self.credential_refresh_factory.clone(),
             resource_validator: self.resource_validator.clone(),
             repository_binding_verifier: self.repository_binding_verifier.clone(),
+            repository_publication_binding_verifier: self
+                .repository_publication_binding_verifier
+                .clone(),
             mcp_realizer: self.mcp_realizer.clone(),
         });
         self
@@ -431,6 +444,24 @@ impl ManagedHost {
         verifier: Arc<dyn RepositoryBindingVerifier<awaken_run_ingress::RunClaim>>,
     ) -> Self {
         self.repository_binding_verifier = Some(verifier);
+        self
+    }
+
+    /// Install the same Repository binding boundary under terminal Session
+    /// publication authority. Remote implementations require the exact durable
+    /// command plus realization lease; local registry implementations reuse the
+    /// generic verifier and therefore retain one Resource/config validation path.
+    #[must_use]
+    pub fn with_repository_publication_binding_verifier(
+        mut self,
+        verifier: Arc<
+            dyn RepositoryBindingVerifier<(
+                awaken_session_contract::SessionRepositoryPublicationCommand,
+                awaken_session_contract::SessionRealizationLease,
+            )>,
+        >,
+    ) -> Self {
+        self.repository_publication_binding_verifier = Some(verifier);
         self
     }
 
@@ -1282,6 +1313,13 @@ impl SessionRuntime for ManagedHost {
             .verify(&command)
             .map_err(|error| RunError::internal(error.to_string()))?;
         Ok(completion)
+    }
+
+    async fn execute_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        self.publish_terminal_repository(command, None).await
     }
 
     async fn run(

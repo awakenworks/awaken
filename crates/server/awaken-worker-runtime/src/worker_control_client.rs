@@ -259,6 +259,60 @@ impl WorkerControlClient {
         )
     }
 
+    /// Poll the aggregate-owned root publication command and its canonical
+    /// Workspace through the same registered-Worker control channel as terminal
+    /// cleanup.
+    pub async fn terminal_repository_publication_command(
+        &self,
+        identity: &WorkerIdentity,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        let body = self
+            .realization_response(
+                "/v1/worker/session/cleanup/repository-publication/poll",
+                json!({
+                    "identity": identity,
+                    "session_id": session_id,
+                    "lease": lease,
+                }),
+            )
+            .await?;
+        body.get("projection")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(|error| {
+                awaken_session_contract::SessionRealizationControlFailure::Unavailable(format!(
+                    "Session Repository publication projection decode: {error}"
+                ))
+            })
+    }
+
+    pub async fn record_terminal_repository_publication_receipt(
+        &self,
+        identity: &WorkerIdentity,
+        session_id: &str,
+        lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.realization_response(
+            "/v1/worker/session/cleanup/repository-publication/complete",
+            json!({
+                "identity": identity,
+                "session_id": session_id,
+                "lease": lease,
+                "receipt": receipt,
+            }),
+        )
+        .await
+        .map(|_| ())
+    }
+
     pub async fn record_terminal_cleanup_completion(
         &self,
         identity: &WorkerIdentity,
