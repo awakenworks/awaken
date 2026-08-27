@@ -32,7 +32,6 @@ use awaken_tenancy::ScopeId;
 mod lifecycle_identity;
 use lifecycle_identity::{lifecycle_timestamp, new_agent_id};
 
-const MAX_MCP_SERVER_URL_BYTES: usize = 2048;
 pub struct ConfigPlaneManagedAgentRepository {
     plane: ConfigPlane,
     fixed_platform_workspace: Option<String>,
@@ -428,67 +427,11 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             "max_steps must be greater than or equal to 1".into(),
         ));
     }
-    if config.mcp_servers.len() > 20 {
-        return Err(ManagedAgentError::Invalid(
-            "mcp_servers supports at most 20 entries".into(),
-        ));
-    }
-    let server_names = config
-        .mcp_servers
-        .iter()
-        .map(|server| server.name.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    for server in &config.mcp_servers {
-        if !(1..=255).contains(&server.name.chars().count()) {
-            return Err(ManagedAgentError::Invalid(
-                "mcp_server name must be 1-255 characters".into(),
-            ));
-        }
-        if let awaken_runtime_contract::agent_bindings::AgentMcpTransportBinding::Http(transport) =
-            &server.transport
-            && transport.url.len() > MAX_MCP_SERVER_URL_BYTES
-        {
-            return Err(ManagedAgentError::Invalid(format!(
-                "mcp_server URL must be at most {MAX_MCP_SERVER_URL_BYTES} bytes"
-            )));
-        }
-        server.transport.normalize().map_err(|error| {
-            ManagedAgentError::Invalid(format!("mcp_server transport is invalid: {error}"))
-        })?;
-    }
-    if server_names.len() != config.mcp_servers.len() {
-        return Err(ManagedAgentError::Invalid(
-            "mcp_servers names must be unique".into(),
-        ));
-    }
-    let mut sources = std::collections::BTreeSet::new();
-    let mut referenced_mcp = std::collections::BTreeSet::new();
+    config
+        .validate_managed_tool_bindings()
+        .map_err(ManagedAgentError::Invalid)?;
     for toolset in &config.toolsets {
-        let source = match &toolset.source {
-            ToolsetSource::Agent => "agent".to_string(),
-            ToolsetSource::Mcp { server_name } => {
-                if !server_names.contains(server_name.as_str()) {
-                    return Err(ManagedAgentError::Invalid(format!(
-                        "mcp_toolset references undeclared server `{server_name}`"
-                    )));
-                }
-                referenced_mcp.insert(server_name.as_str());
-                format!("mcp:{server_name}")
-            }
-        };
-        if !sources.insert(source.clone()) {
-            return Err(ManagedAgentError::Invalid(format!(
-                "toolset source `{source}` is duplicated"
-            )));
-        }
-        let mut names = std::collections::BTreeSet::new();
         for entry in &toolset.overrides {
-            if entry.name.is_empty() || !names.insert(entry.name.as_str()) {
-                return Err(ManagedAgentError::Invalid(format!(
-                    "tool config name {:?} is empty or duplicated",
-                    entry.name
-                )));
-            }
             if toolset.source == ToolsetSource::Agent && !is_agent_toolset_member(&entry.name) {
                 return Err(ManagedAgentError::Invalid(format!(
                     "unknown agent tool `{}`",
@@ -497,27 +440,12 @@ fn validate_managed_agent_config(config: &AgentConfig) -> Result<(), ManagedAgen
             }
         }
     }
-    if referenced_mcp != server_names {
-        let missing = server_names
-            .difference(&referenced_mcp)
-            .copied()
-            .collect::<Vec<_>>();
-        return Err(ManagedAgentError::Invalid(format!(
-            "every MCP server must have one mcp_toolset; missing {missing:?}"
-        )));
-    }
     awaken_agent_contract::validate_agent_skills(&config.skills)
         .map_err(ManagedAgentError::Invalid)?;
     if let Some(multiagent) = &config.multiagent {
         multiagent
             .validate(&config.id)
             .map_err(ManagedAgentError::Invalid)?;
-    }
-    let declared_count = config.client_tools.len() + config.toolsets.len();
-    if declared_count > 128 {
-        return Err(ManagedAgentError::Invalid(
-            "tools supports at most 128 declared entries".into(),
-        ));
     }
     Ok(())
 }

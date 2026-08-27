@@ -44,6 +44,7 @@ pub use agent_config::{
     AgentToolPermissionPolicy, AgentToolsetMember, AgentWebSearchUserLocation,
     AgentWebSearchUserLocationKind, CustomToolInputSchema, ObjectSchemaKind, agent_toolset_members,
     is_agent_toolset_member, resolved_toolsets, toolset_policies, validate_agent_tools,
+    validate_mcp_toolset_pairing,
 };
 pub use awaken_agent_contract::stable_fingerprint;
 pub use awaken_environment_contract::{EnvironmentPackages, EnvironmentRevision};

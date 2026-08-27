@@ -125,6 +125,13 @@ fn compile_with_models(
     candidates: Vec<ResolvedModelCandidate>,
     advisor: Option<ResolvedModelCandidate>,
 ) -> Result<ExecutableAgentSnapshot, CompileError> {
+    config
+        .validate_tool_bindings()
+        .map_err(|reason| CompileError::InvalidBinding {
+            agent: config.id.clone(),
+            axis: "tools",
+            reason,
+        })?;
     let mut descriptors = Vec::with_capacity(config.tool_ids.len());
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     // Exact tool ids: each must resolve (unknown references are rejected, fail-closed).
@@ -519,13 +526,6 @@ fn resolve_toolsets(
 ) -> Result<Vec<awaken_runtime_contract::agent_bindings::ToolsetPolicy>, CompileError> {
     use awaken_runtime_contract::agent_bindings::ToolsetSource;
 
-    if !config.toolsets.is_empty() && config.plugin_config.contains_key("permission") {
-        return Err(CompileError::InvalidBinding {
-            agent: config.id.clone(),
-            axis: "tools",
-            reason: "toolsets and plugin_config.permission are competing permission sources".into(),
-        });
-    }
     let mut resolved = config.toolsets.clone();
     let mut seen_sources = std::collections::BTreeSet::new();
     for toolset in &mut resolved {
