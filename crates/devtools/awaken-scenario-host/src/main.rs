@@ -415,7 +415,10 @@ mod dispatch_tests {
         // one cause; every rule must build through its canonical scenario
         // platform and expose the shared protocol route. A missing Resources
         // application, alternate Host path, or unmounted adapter is a failed
-        // effect for that exact mode.
+        // effect for that exact mode. Modes that instantiate a sandbox receive
+        // the same explicit Local test deployment, so this router-mapping test
+        // does not depend on an ambient Namespace companion; dedicated E2Es own
+        // the real Namespace capability boundary.
         // (AWAKEN_MODEL_MODE string, the router its `main()` arm builds). Kept in the
         // same order as the `match` in `main()` so drift is easy to spot.
         let mut local_test_deployment = awaken_runtime_host::DeploymentConfig::ephemeral();
@@ -443,7 +446,7 @@ mod dispatch_tests {
             ("acp-permission", sh::build_acp_permission_router()),
             (
                 "acp-sandboxed",
-                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment).await,
+                sh::build_acp_sandboxed_router_with_deployment(local_test_deployment.clone()).await,
             ),
             ("acp-gateway", sh::build_acp_gateway_router()),
             ("memory", sh::build_memory_router()),
@@ -455,10 +458,7 @@ mod dispatch_tests {
             ("environment-matrix", sh::build_environment_matrix_router()),
             (
                 "full-chain",
-                sh::build_full_chain_router_with_deployment(
-                    awaken_runtime_host::DeploymentConfig::ephemeral(),
-                )
-                .await,
+                sh::build_full_chain_router_with_deployment(local_test_deployment).await,
             ),
             // The `_ =>` fallback: any unrecognized mode routes to the echo router.
             ("<default/unknown>", sh::build_echo_router()),
