@@ -50,6 +50,7 @@
   "current": {
     "declaration_file_count": 40,
     "id": "current",
+    "module": "@anthropic-ai/sdk-current",
     "operation_fingerprint": "d624e4304b4995f1457658d2d83e716371738a0705edcd2538a20630e06b8ce0",
     "operations": [
       {
