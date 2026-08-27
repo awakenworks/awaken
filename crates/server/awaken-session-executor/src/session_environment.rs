@@ -15,6 +15,7 @@ mod agent_sandbox;
 mod container_files;
 mod container_repositories;
 mod container_skills;
+mod lifecycle;
 mod provider;
 mod repository_realizer;
 mod session_files;
@@ -43,48 +44,6 @@ pub(crate) enum SessionEnvironment {
 }
 
 impl SessionEnvironment {
-    fn sandbox(&self) -> &dyn pc::Sandbox {
-        match self {
-            Self::Workdir(sandbox) => sandbox.as_ref(),
-            Self::Namespace { sandbox, .. } => sandbox.as_ref(),
-            Self::Container { sandbox, .. } => sandbox.as_ref(),
-        }
-    }
-
-    pub(crate) fn handle(&self) -> pc::SandboxHandle {
-        self.sandbox().handle()
-    }
-
-    pub(crate) async fn status(&self) -> Result<pc::SandboxStatus, pc::SandboxError> {
-        self.sandbox().status().await
-    }
-
-    pub(crate) async fn dispose(&self) -> Result<(), pc::SandboxError> {
-        match self {
-            Self::Workdir(sandbox) => pc::Sandbox::dispose(sandbox.as_ref()).await,
-            Self::Namespace { sandbox, hand } => {
-                hand.stop().await;
-                pc::Sandbox::dispose(sandbox.as_ref()).await
-            }
-            Self::Container { sandbox, hand, .. } => {
-                hand.stop().await;
-                sandbox.dispose().await
-            }
-        }
-    }
-
-    pub(crate) async fn quiesce(&self) {
-        self.stop_bound_processes().await;
-    }
-
-    pub(crate) async fn checkpoint(
-        &self,
-        request: &pc::SandboxCheckpointRequest,
-        store: &dyn pc::SandboxCheckpointStore,
-    ) -> Result<pc::SandboxCheckpointRef, pc::SandboxError> {
-        self.sandbox().checkpoint(request, store).await
-    }
-
     #[must_use]
     pub(crate) fn workdir(sandbox: LocalSandbox) -> Self {
         Self::Workdir(Arc::new(sandbox))
@@ -1755,10 +1714,22 @@ mod tests {
             state.remove("__fail_repository_import");
             state.insert("__fail_repository_export".into(), Vec::new());
         }
-        let export_error =
-            container_repositories::push(&container, "repo", source.to_str().unwrap(), None)
-                .await
-                .expect_err("a failed container export is not pushed");
+        let plan = pc::RepositoryRealizationPlan {
+            repository_id: "repo".into(),
+            mount_path: "repo".into(),
+            source_remote_url: source.to_string_lossy().into_owned(),
+            transport_url: source.to_string_lossy().into_owned(),
+            initial_branch: None,
+            initial_commit: None,
+            access: pc::MountAccess::ReadWrite,
+        };
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "main".into(),
+            commit: "0000000000000000000000000000000000000000".into(),
+        };
+        let export_error = container_repositories::push(&container, &plan, &expectation, None)
+            .await
+            .expect_err("a failed container export is not pushed");
         assert!(
             export_error
                 .to_string()
@@ -1875,7 +1846,8 @@ mod tests {
         let repository_plan = pc::RepositoryRealizationPlan {
             repository_id: "repo".into(),
             mount_path: "workspace/repo".into(),
-            remote_url: remote.to_string_lossy().into_owned(),
+            source_remote_url: remote.to_string_lossy().into_owned(),
+            transport_url: remote.to_string_lossy().into_owned(),
             initial_branch: None,
             initial_commit: None,
             access: pc::MountAccess::ReadWrite,
@@ -1915,6 +1887,7 @@ mod tests {
                     "printf changed > /workspace/repo/README.md && ",
                     "git -C /workspace/repo add README.md && ",
                     "git -C /workspace/repo commit -m changed && ",
+                    "git -C /workspace/repo rev-parse HEAD > /workspace/.mnt/commit.txt && ",
                     "mkdir -p /workspace/outputs/nested && ",
                     "printf '\\000\\377' > /workspace/outputs/nested/result.bin && ",
                     "mkdir -p /workspace/skills/authored && ",
@@ -1930,16 +1903,38 @@ mod tests {
         let skills = environment.scan_skill_dir("skills");
         assert_eq!(skills.len(), 1);
         assert_eq!(skills[0].id, "authored");
-        assert!(
-            pc::RepositoryRealizer::publish_repository(&environment, &repository_plan, None)
-                .await
-                .unwrap()
-        );
-        assert!(
-            !pc::RepositoryRealizer::publish_repository(&environment, &repository_plan, None)
-                .await
-                .unwrap()
-        );
+        let commit = environment
+            .list_workspace_files(".mnt")
+            .await
+            .unwrap()
+            .into_iter()
+            .find_map(|(path, bytes)| (path == "commit.txt").then_some(bytes))
+            .expect("container exported its exact commit coordinate");
+        let expectation = pc::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: String::from_utf8(commit).unwrap().trim().into(),
+        };
+        environment
+            .remove_projection_path(".mnt/commit.txt")
+            .await
+            .unwrap();
+        let first = pc::RepositoryRealizer::publish_repository(
+            &environment,
+            &repository_plan,
+            &expectation,
+            None,
+        )
+        .await
+        .unwrap();
+        let replay = pc::RepositoryRealizer::publish_repository(
+            &environment,
+            &repository_plan,
+            &expectation,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(first, replay, "C1/C2 canonical receipt");
         // Artifact cause/effect rule: one regular output file → one canonical
         // content-addressed Artifact and binary-safe read through the same port.
         let artifacts = environment.artifacts().await.unwrap();

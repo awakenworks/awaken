@@ -1468,6 +1468,154 @@ async fn create_session_root_classifies_insert_replay_and_conflicts() {
     );
 }
 
+/// Profiled Repository-release cause/effect graph. C1 asserted owner scope is
+/// exact or foreign; C2 binding_id resolves to exactly one active writable
+/// Repository or is unknown; C3 the archive root CAS is fresh or an exact
+/// response-loss replay; C4 the expectation is exact or conflicts with the
+/// frozen intent; C5 the Runtime has a child. Effects: E1 foreign/unknown
+/// selectors mutate nothing; E2 one atomic archive fence owns the intent; E3
+/// local effects order child -> publication receipt CAS -> root finalizer; E4
+/// exact replay returns the same durable receipt without another effect; E5 a
+/// different expectation conflicts without rewriting the receipt.
+///
+/// | Rule | scope | binding | replay | expectation | Effect |
+/// |---|---|---|---|---|---|
+/// | R1 | foreign | exact | no | exact | E1 |
+/// | R2 | exact | unknown | no | exact | E1 |
+/// | R3 | exact | exact | no | exact | E2 + E3 |
+/// | R4 | exact | exact | yes | exact | E4 |
+/// | R5 | exact | exact | yes | different | E5 |
+#[tokio::test]
+async fn profiled_archive_publishes_one_selected_repository_before_root_cleanup() {
+    // Constraint: the Session root and its SessionCleanupOperation are the only
+    // intent/receipt authority; selector resolution is repeated from each CAS
+    // winner and the archived replay uses that same frozen intent.
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("profiled Repository publication repository"),
+    );
+    let mut session = persisted("profiled-publication", false, "idle");
+    session.resources = awaken_session_contract::SessionResourceState::from_active(
+        repository_resources("source", "repo-1"),
+    );
+    create(repo.as_ref(), session).await;
+    let runtime = Arc::new(RecordingCleanupRuntime::default());
+    *runtime.delegated_snapshot.lock().unwrap() = awaken_session_contract::DelegatedRunSnapshot {
+        delegated_runs: Vec::new(),
+        coordinated_thread_ids: vec![awaken_agent_contract::agent::thread::Id(
+            "profiled-publication-child".into(),
+        )],
+        watermark: 5,
+        runtime_commit_cursor: 8,
+    };
+    let application = SessionApplication::new_with_configuration(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+        SessionApplicationConfiguration::default(),
+    );
+    let fact = awaken_session_contract::ManagedLifecycleFact {
+        id: "profiled-publication:terminated".into(),
+        object_id: "profiled-publication".into(),
+        workspace_id: Some("workspace".into()),
+        event_type: "session.terminated".into(),
+        timestamp: 1,
+        runtime_interval: None,
+    };
+    let command = SessionArchiveWithRepositoryPublicationCommand {
+        owner_scope: "workspace".into(),
+        session_id: "profiled-publication".into(),
+        archived_at: "2026-08-28T00:00:00Z".into(),
+        lifecycle_fact: fact,
+        repository: SessionRepositoryPublicationSelector {
+            binding_id: awaken_resource_contract::BindingId::from("source"),
+            expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
+                branch: "awf/issue-coding".into(),
+                commit: "0123456789abcdef0123456789abcdef01234567".into(),
+            },
+        },
+    };
+
+    let mut foreign_scope = command.clone();
+    foreign_scope.owner_scope = "another-workspace".into();
+    assert!(
+        matches!(
+            application
+                .archive_with_repository_publication(foreign_scope)
+                .await,
+            Err(SessionArchiveWithRepositoryPublicationError::NotFound)
+        ),
+        "R1/E1"
+    );
+    let mut unknown_binding = command.clone();
+    unknown_binding.repository.binding_id = awaken_resource_contract::BindingId::from("unknown");
+    assert!(
+        matches!(
+            application
+                .archive_with_repository_publication(unknown_binding)
+                .await,
+            Err(SessionArchiveWithRepositoryPublicationError::Rejected(_))
+        ),
+        "R2/E1"
+    );
+    assert_eq!(
+        repo.get("profiled-publication").await.unwrap().execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "R1-R2/E1"
+    );
+
+    let first = application
+        .archive_with_repository_publication(command.clone())
+        .await
+        .expect("R3 exact release");
+    assert!(first.mutation.transitioned, "R3/E2");
+    assert_eq!(
+        *runtime.terminal_effect_order.lock().unwrap(),
+        vec![
+            "cleanup:profiled-publication-child".to_string(),
+            "publication".to_string(),
+            "cleanup:profiled-publication".to_string(),
+        ],
+        "R3/E3"
+    );
+    let replay = application
+        .archive_with_repository_publication(command.clone())
+        .await
+        .expect("R4 response-loss replay");
+    assert!(!replay.mutation.transitioned, "R4/E4");
+    assert_eq!(
+        replay.publication_receipt, first.publication_receipt,
+        "R4/E4"
+    );
+    assert_eq!(
+        runtime.terminal_effect_order.lock().unwrap().len(),
+        3,
+        "R4/E4 no duplicate effect"
+    );
+
+    let mut conflicting = command;
+    conflicting.repository.expectation.commit = "fedcba9876543210fedcba9876543210fedcba98".into();
+    assert!(
+        matches!(
+            application
+                .archive_with_repository_publication(conflicting)
+                .await,
+            Err(SessionArchiveWithRepositoryPublicationError::Conflict)
+        ),
+        "R5/E5"
+    );
+    assert_eq!(
+        repo.get("profiled-publication")
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .repository_publication_receipt(),
+        Some(&first.publication_receipt),
+        "R5/E5"
+    );
+}
+
 /// Terminal-transition cause/effect graph. C1 execution is Idle or Running; C2
 /// Running belongs to an ordinary root activity or an admitted child activity
 /// (including a not-yet-settled requires-action boundary); C3 two public archive

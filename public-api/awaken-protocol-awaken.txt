@@ -29,14 +29,27 @@ pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::origin: awaken_session
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::prompts_as_skills: bool
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::published_credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_protocol_awaken::ProfiledSessionMcpAttachment::target: awaken_agent_contract::mcp_target::McpTarget
+pub struct awaken_protocol_awaken::ProfiledSessionRelease
+pub awaken_protocol_awaken::ProfiledSessionRelease::repository_publication: core::option::Option<awaken_protocol_awaken::ProfiledSessionRepositoryPublication>
+pub struct awaken_protocol_awaken::ProfiledSessionReleased
+pub awaken_protocol_awaken::ProfiledSessionReleased::id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionReleased::repository_publication: core::option::Option<awaken_protocol_awaken::ProfiledSessionRepositoryPublished>
 pub struct awaken_protocol_awaken::ProfiledSessionRepository
+pub awaken_protocol_awaken::ProfiledSessionRepository::binding_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionRepository::credential: core::option::Option<awaken_credential_contract::CredentialRef>
 pub awaken_protocol_awaken::ProfiledSessionRepository::initial_branch: core::option::Option<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionRepository::initial_commit: core::option::Option<alloc::string::String>
 pub awaken_protocol_awaken::ProfiledSessionRepository::mount_path: alloc::string::String
 pub awaken_protocol_awaken::ProfiledSessionRepository::remote_url: alloc::string::String
+pub struct awaken_protocol_awaken::ProfiledSessionRepositoryPublication
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublication::binding_id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublication::expectation: awaken_provisioning_contract::sandbox::RepositoryPublicationExpectation
+pub struct awaken_protocol_awaken::ProfiledSessionRepositoryPublished
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublished::binding_id: alloc::string::String
+pub awaken_protocol_awaken::ProfiledSessionRepositoryPublished::receipt: awaken_provisioning_contract::sandbox::RepositoryPublicationReceipt
 pub fn awaken_protocol_awaken::dream_policy_router(alloc::sync::Arc<dyn awaken_session_contract::dream::DreamPolicyApplication>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::environment_extensions_router(alloc::sync::Arc<awaken_environment_application::EnvironmentApplication>, core::option::Option<alloc::sync::Arc<dyn awaken_provisioning_contract::execution_policy::SandboxExecutionPolicyStore>>) -> axum::routing::Router
 pub fn awaken_protocol_awaken::live_inbox_router(alloc::sync::Arc<dyn awaken_session_contract::session::LiveInboxApplication>) -> axum::routing::Router
+pub fn awaken_protocol_awaken::profiled_session_release_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::profiled_session_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static
 pub fn awaken_protocol_awaken::session_resource_manifest_router<H, T, S>(H) -> axum::routing::Router<S> where H: axum::handler::Handler<T, S>, T: 'static, S: core::clone::Clone + core::marker::Send + core::marker::Sync + 'static

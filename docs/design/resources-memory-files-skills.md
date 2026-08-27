@@ -27,6 +27,7 @@ The key terms are:
 | Revision | optimistic-concurrency counter on a mutable authoring aggregate |
 | Config version | immutable published Memory/Repository configuration |
 | Content version | Memory entry version or Git revision; never a Memory/Repo binding pin |
+| Repository publication expectation | exact branch plus full commit explicitly frozen for terminal release; not a binding or configuration pin |
 | Resolved Session resources | one secret-free manifest containing resolved inputs and separately frozen Skill capabilities |
 | Activation | Session-local realization of one resolved input |
 | Reclamation | asynchronous physical cleanup after logical denial and reference/lease checks |
@@ -51,6 +52,7 @@ own scopes and work lifecycle before it invokes this boundary.
 | Immutable File bytes and logical File metadata | Resources / File aggregate |
 | Mutable Memory entries, history, redaction | Resources / MemoryStore aggregate |
 | External Git truth | remote Git provider; awaken owns only config and Session working tree |
+| Explicit terminal Repository intent and receipt | Session aggregate's existing `SessionCleanupOperation` |
 | Mounts, working trees, live handles | Environment/Sandbox provisioning |
 | Runtime facts, messages, decisions, verdicts | Runtime Core |
 
@@ -291,10 +293,11 @@ process-local handle.
 | `HttpMemorySnapshotSource` / `HttpMemoryWritebackClient` | Implemented network adapters | Worker/Memory boundary | obtain one atomic snapshot and apply claim-fenced CAS create/update/delete-if-match under the frozen Workspace/store/config/access binding | config selection, silent overwrite, authoring/history/purge, Worker database access |
 | `MemoryRuntime` | Existing, moving to extension ownership | `awaken-ext-memory` | recall Plugin, terminal extraction observer, selector/extractor capability, stable intent/receipt | resource identity, default store, IAM policy, Host lifecycle |
 | `BoundMemory` | Existing | Session Runtime | one resolved store handle + pinned policy + maximum access shared by recall/extraction | workspace lookup, current-config resolution, authorization |
-| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct working tree, publish Agent-authored commits with ephemeral transport credentials | remote repository ownership, authorization policy, or commit pinning |
-| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding and select direct or deployment-mediated Git transport before realization/use | configuration selection, upstream credential material, generic Resource dispatch |
+| `SessionRepositoryPublicationIntent` / command / receipt | Implemented typed terminal-effect protocol | Session aggregate | freeze one exact active writable `ResolvedInput` plus caller-approved branch/full commit; derive one root-only command and retain its canonical receipt in the existing cleanup root CAS | another cleanup queue/store, Resource re-resolution, credential/capability material, protocol-owned effect state |
+| `RepositoryRealizer` | Existing neutral port | Environment adapter | clone current remote config, construct the working tree, and publish the exact caller-frozen branch/commit with operation-scoped transport credentials | remote repository ownership, authorization policy, commit selection, or a second publication path |
+| `RepositoryBindingVerifier` | Implemented boundary port | Worker/Repository boundary | verify one exact frozen Workspace/Repository/config binding under either the current Run claim or the aggregate-derived terminal publication command plus realization lease, then select direct or deployment-mediated Git transport | configuration selection, upstream credential material, a fabricated Run claim, generic Resource dispatch |
 | `CatalogRepositoryBindingVerifier` | Implemented local adapter | Resource Catalog | delegate the exact live check to the existing `ResourceBindingValidator` | claim or HTTP policy, a second catalog |
-| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker, prove the exact binding belongs to the frozen dispatch manifest, hold the claim guard through catalog validation, and optionally return a short Gateway capability | upstream Git bytes, upstream plaintext credential, Worker database access |
+| `HttpRepositoryBindingVerifier` / Worker Repository handler | Implemented network adapters | Worker/Repository boundary | authenticate the current Worker; for ordinary use prove the frozen dispatch binding under its claim, and for terminal publication re-derive the aggregate command under its realization lease before and after authorization; optionally return a short Gateway capability | upstream Git bytes, upstream plaintext credential, Worker database access, a parallel terminal authority |
 | Repository credential pin compiler | Existing in Managed Session application service | Session application/Vault ACL | compile a Repository config binding once into exact active source revision, canonical usage, `Forbidden` exposure, and selected Resource holder before persistence | material opening, Runtime lookup, generic Service state |
 | `CredentialMaterialResolver` | Existing canonical port | Credential execution boundary | validate and open one exact access/holder/Workspace/target-use binding for an installed adapter; shared by Model, MCP, and Repository | source enumeration, revision/holder/target selection, Agent prompt, persisted plaintext |
 | `SkillBundleSource` | Implemented boundary port | Worker/Skill boundary | retrieve and verify one exact immutable custom capability bundle under a live claim | generic Resource lifecycle, Skill policy selection, database access |
@@ -362,11 +365,18 @@ remain runtime-owned and never cross the Resource boundary.
 
 The Repository branch reuses the existing `RepositoryRealizer` and exact
 credential pin; it does not proxy Git content. `RepositoryBindingVerifier`
-supplies only the missing live invariant check. Its HTTP handler verifies the
-current Worker incarnation, claim, Workspace, Repository id, config version, and
-frozen manifest before delegating to the Resource Catalog. The Worker then calls
-the unchanged environment realizer with the frozen secret-free plan and
-ephemeral credential. The former direct Worker catalog connection and empty
+supplies only the missing live invariant check. Ordinary realization verifies
+the current Worker incarnation and Run claim. Explicit terminal publication
+instead presents the aggregate-derived publication command with the current
+`SessionRealizationLease`; the handler re-derives that exact command before and
+after transport authorization rather than inventing a cleanup `RunClaim`.
+Both forms verify Workspace, Repository id, config version, and frozen input
+before delegating to the Resource Catalog. The Worker then calls the same
+environment realizer with a secret-free plan and operation-scoped credential.
+The plan preserves the frozen source URL for identity and receipts while an
+authorized direct or Gateway transport URL remains a separate ephemeral effect
+endpoint. Neither the command nor the receipt persists credential bytes or the
+Gateway capability. The former direct Worker catalog connection and empty
 composition marker were removed.
 
 `ResourceAuthorities` selects the local Resource authorities at product-process
@@ -392,6 +402,7 @@ resource-specific repositories enforce their own intrinsic invariants.
 | Activate Memory | `SessionResourceCoordinator` | `MemoryRepository`, Memory realizer | `ScopedMemoryStore`/mount + activation `Active` |
 | Activate Repo | `SessionResourceCoordinator` | Repository realizer, exact material resolver, Sandbox | current clone + working tree; exact pin persists, material does not |
 | Use | sandbox/tool adapters | File/Memory/Git domain ports | domain writes and receipts; no second config resolve |
+| Explicit terminal Repo publication | `SessionApplication` + `SessionCleanupOperation` | `SessionRealizationControl`, `RepositoryBindingVerifier`, `RepositoryRealizer` | exact branch/full-commit receipt in the Session root after child cleanup and before root cleanup |
 | Recall for Run | Memory Recall Plugin | scoped Memory handle, optional Selector Agent | Run-scoped request-only `ContextMessages`; query derives from current `RunInput` |
 | Extract after terminal Run | Memory Extraction terminal observer | committed Run/Thread facts, Extractor Agent, Memory repository | stable extraction intent and receipt; at-least-once delivery is idempotent |
 | Release | `SessionResourceCoordinator` | Sandbox manager, Vault, per-kind realizer | activation `Released`; sandbox-local material removed |
@@ -440,7 +451,19 @@ Agent default binding  +  Session temporary attachment
                     Agent use
                        |
                        v
-              release activation
+              terminal Session fence
+                       |
+                       v
+              delegated child cleanup
+                       |
+                       v
+       optional exact Repo publication
+                       |
+                       v
+       publication receipt root CAS
+                       |
+                       v
+        root release / physical cleanup
                        |
                        v
        ResourceReclaimer / per-kind GC
@@ -648,10 +671,46 @@ No cross-Session commit replay is promised.
 
 ### Release and reclaim
 
-On release, the coordinator records push/PR receipts and, by policy, publishes
-un-pushed changes as a Patch/Artifact. It removes the working tree, credential
-helper, headers, and lease. A credential-free object cache may remain as an
-optimization but is never authority.
+#### Explicit terminal publication
+
+Ordinary release has no implicit remote write. An explicit terminal publication
+request is admitted only for one idle Session and exactly one active writable
+Repository binding. The Session application copies that already-frozen
+`ResolvedInput` together with the caller-approved branch and full commit into the
+existing terminal cleanup operation in the same root CAS that archives the
+Session. It never resolves a current Repository config, branch head, credential,
+or catalog entry a second time. A cleanup operation already frozen without
+publication cannot be upgraded; an exact archived replay returns its durable
+intent and receipt.
+
+Terminal reconciliation retains one causal order:
+
+```text
+durable terminal fence and target freeze
+  -> settle every delegated child cleanup
+  -> derive one root-only Repository publication command
+  -> verify/push the exact local symbolic branch and HEAD commit
+  -> persist the canonical publication receipt through the Session root CAS
+  -> expose and settle root cleanup
+  -> remove the working tree, credential helper, headers, and lease
+```
+
+The same `RepositoryRealizer` used for clone performs publication. It accepts
+only an in-sandbox Git directory with no object alternates, the exact symbolic
+branch, and the exact full HEAD commit. If the remote ref is absent, creation is
+protected by an absent-ref lease; if it already equals that commit, retry returns
+the same receipt; if it names another commit, publication fails without
+overwriting it. The receipt deliberately has no changed/replayed bit, so first
+success and exact response-loss replay are identical secret-free evidence. The
+source remote URL remains the receipt identity even when a separate Gateway URL
+is the authorized transport. Credential bytes and Gateway capabilities are
+opened only for the effect and are never persisted in the intent, realization
+plan, receipt, or Session root.
+
+With no explicit publication intent, terminal cleanup retains the pre-existing
+v1 JSON shape, effect ids, command/completion fingerprints, and terminal receipt
+fingerprint. It performs no Repository publication. A credential-free object
+cache may remain after either path as an optimization but is never authority.
 
 Deleting the platform Repository tombstones only awaken's definition, revokes
 its credential binding, denies clone/fetch/push, and eventually removes local
@@ -936,9 +995,11 @@ preserves every non-File input and exact Skill pin before it commits.
   exact secret-free `ResolvedRepositoryCredential`; Model, MCP, and Repository
   now share `CredentialMaterialResolver`, and the bare-source Runtime
   materialization path is removed;
-- Repository publication and authored-Skill persistence run only at binding
-  replacement or Session release; `GET /v1/files` is a read-only artifact
-  projection and no longer triggers unrelated resource writes.
+- Repository publication is an explicit terminal Session release effect in the
+  one `SessionCleanupOperation`; absent intent preserves the no-publication v1
+  path. Authored-Skill persistence retains its existing release owner, while
+  `GET /v1/files` remains a read-only artifact projection and never triggers
+  either write.
 - the misleading `MemoryFs` family and `memfs` module are removed rather than
   retained as aliases: the port is `MemoryRepository`, with
   `VolatileMemoryRepository`, `SqliteMemoryRepository`, and
@@ -1010,6 +1071,10 @@ Fail an operation without widening authority when:
   realization;
 - a read-only binding attempts a write/extraction;
 - Repository state or credential is revoked before fetch/push;
+- the explicit publication binding is absent, duplicated, read-only, or no
+  longer matches the frozen active input;
+- the live symbolic branch or full HEAD differs from the frozen publication
+  expectation, or the remote branch is already bound to another commit;
 - an activation lease is stale.
 
 A failed pre-root Repository command preserves its first error and compensates

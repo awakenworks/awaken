@@ -109,10 +109,89 @@ pub trait MemoryMount: Send + Sync {
 pub struct RepositoryRealizationPlan {
     pub repository_id: String,
     pub mount_path: String,
-    pub remote_url: String,
+    /// Frozen upstream/source identity from the resolved Repository config.
+    /// This is the canonical URL recorded in publication receipts.
+    pub source_remote_url: String,
+    /// Already-authorized effect endpoint. Direct transports equal
+    /// `source_remote_url`; mediated transports use the Gateway endpoint.
+    pub transport_url: String,
     pub initial_branch: Option<String>,
     pub initial_commit: Option<String>,
     pub access: MountAccess,
+}
+
+/// Exact Agent-authored Git coordinate approved for one explicit Repository
+/// publication effect. The branch is a symbolic local branch name and `commit`
+/// is the full SHA-1 object id observed by the authoring workflow. Publication
+/// adapters must compare both values exactly before any network operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryPublicationExpectation {
+    pub branch: String,
+    pub commit: String,
+}
+
+impl RepositoryPublicationExpectation {
+    /// Validate the transport-independent coordinate shape. The Git adapter
+    /// additionally applies `check-ref-format` and compares the live symbolic
+    /// branch and HEAD before contacting the frozen remote.
+    pub fn validate(&self) -> Result<(), SandboxError> {
+        if self.branch.is_empty() || self.branch.trim() != self.branch {
+            return Err(SandboxError::new(
+                "repository publication branch must be non-empty without surrounding whitespace",
+            ));
+        }
+        if self.commit.len() != 40 || !self.commit.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return Err(SandboxError::new(
+                "repository publication commit must be a full 40-hex object id",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Secret-free, deterministic evidence for one exact Repository publication.
+/// The receipt deliberately has no `changed`/disposition bit: the first push and
+/// an exact replay against an already-current remote produce identical evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryPublicationReceipt {
+    pub repository_id: String,
+    pub source_remote_url: String,
+    pub branch: String,
+    pub commit: String,
+}
+
+impl RepositoryPublicationReceipt {
+    #[must_use]
+    pub fn new(
+        plan: &RepositoryRealizationPlan,
+        expectation: &RepositoryPublicationExpectation,
+    ) -> Self {
+        Self {
+            repository_id: plan.repository_id.clone(),
+            source_remote_url: plan.source_remote_url.clone(),
+            branch: expectation.branch.clone(),
+            commit: expectation.commit.clone(),
+        }
+    }
+
+    /// Verify that this receipt is the canonical projection of the exact frozen
+    /// realization plan and publication expectation.
+    pub fn verify(
+        &self,
+        plan: &RepositoryRealizationPlan,
+        expectation: &RepositoryPublicationExpectation,
+    ) -> Result<(), SandboxError> {
+        expectation.validate()?;
+        if self == &Self::new(plan, expectation) {
+            Ok(())
+        } else {
+            Err(SandboxError::new(
+                "repository publication receipt does not match its exact intent",
+            ))
+        }
+    }
 }
 
 /// Ephemeral Basic-auth value translated from an already-admitted credential at
@@ -188,14 +267,16 @@ pub trait RepositoryRealizer: Send + Sync {
         credential: Option<&RepositoryHttpBasicCredential>,
     ) -> Result<(), SandboxError>;
 
-    /// Publish Agent-authored commits from the current working branch. The caller
+    /// Publish one exact Agent-authored branch/commit coordinate. The caller
     /// decides whether publishing is allowed/required; this adapter owns only Git
-    /// transport mechanics. Returns false when there is nothing to publish.
+    /// transport mechanics. First publication and exact replay return the same
+    /// deterministic, secret-free receipt.
     async fn publish_repository(
         &self,
         plan: &RepositoryRealizationPlan,
+        expectation: &RepositoryPublicationExpectation,
         credential: Option<&RepositoryHttpBasicCredential>,
-    ) -> Result<bool, SandboxError>;
+    ) -> Result<RepositoryPublicationReceipt, SandboxError>;
 }
 
 /// A serializable, **durable** reference to a realized sandbox. Persist it the
@@ -1716,6 +1797,64 @@ mod tests {
             pp.adopt(&SandboxHandle::new("k", "id")).await.unwrap().id(),
             "id"
         );
+    }
+
+    #[test]
+    fn repository_publication_coordinate_and_receipt_are_canonical() {
+        // Contract cause/effect rules: C1 nonempty exact branch + 40-hex commit
+        // => valid coordinate; C2 empty/trimmed branch or non-40/non-hex commit
+        // => reject; C3 one plan+coordinate => one deterministic secret-free
+        // receipt; C4 any receipt field differs => verification rejects it.
+        let plan = RepositoryRealizationPlan {
+            repository_id: "repository-a".into(),
+            mount_path: "workspace/repository-a".into(),
+            source_remote_url: "https://example.invalid/repository-a.git".into(),
+            transport_url: "https://gateway.invalid/git/repository-a".into(),
+            initial_branch: None,
+            initial_commit: None,
+            access: MountAccess::ReadWrite,
+        };
+        let expectation = RepositoryPublicationExpectation {
+            branch: "awf/issue-1".into(),
+            commit: "0123456789abcdef0123456789abcdef01234567".into(),
+        };
+        expectation.validate().expect("C1");
+        for invalid in [
+            RepositoryPublicationExpectation {
+                branch: String::new(),
+                commit: expectation.commit.clone(),
+            },
+            RepositoryPublicationExpectation {
+                branch: " awf/issue-1".into(),
+                commit: expectation.commit.clone(),
+            },
+            RepositoryPublicationExpectation {
+                branch: expectation.branch.clone(),
+                commit: "short".into(),
+            },
+            RepositoryPublicationExpectation {
+                branch: expectation.branch.clone(),
+                commit: "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz".into(),
+            },
+        ] {
+            assert!(invalid.validate().is_err(), "C2: {invalid:?}");
+        }
+
+        let receipt = RepositoryPublicationReceipt::new(&plan, &expectation);
+        receipt.verify(&plan, &expectation).expect("C3");
+        assert_eq!(
+            serde_json::to_value(&receipt).unwrap(),
+            serde_json::json!({
+                "repository_id": "repository-a",
+                "source_remote_url": "https://example.invalid/repository-a.git",
+                "branch": "awf/issue-1",
+                "commit": "0123456789abcdef0123456789abcdef01234567"
+            }),
+            "C3 stable wire has no changed/disposition or credential field"
+        );
+        let mut mismatched = receipt.clone();
+        mismatched.branch = "awf/other".into();
+        assert!(mismatched.verify(&plan, &expectation).is_err(), "C4");
     }
 
     fn a_mount() -> MountRequirement {

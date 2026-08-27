@@ -391,11 +391,12 @@ impl awaken_resource_contract::LiveResourceBindingVerifier for TestLiveResourceB
 fn managed_with_resource_source(host: Arc<SharedHost>) -> crate::ManagedHost {
     let validator = test_resource_validator();
     install_test_session_application(&host);
+    let repository_bindings = Arc::new(
+        awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator.clone()),
+    );
     crate::ManagedHost::new(host)
         .with_resource_validator(validator.clone())
-        .with_repository_binding_verifier(Arc::new(
-            awaken_resource_application::RegistryRepositoryBindingVerifier::new(validator),
-        ))
+        .with_repository_binding_verifier(repository_bindings)
 }
 
 fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract::RedactedString {
@@ -624,10 +625,14 @@ impl awaken_provisioning_contract::RepositoryRealizer for RecordingRepositoryRea
 
     async fn publish_repository(
         &self,
-        _plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
+        plan: &awaken_provisioning_contract::RepositoryRealizationPlan,
+        expectation: &awaken_provisioning_contract::RepositoryPublicationExpectation,
         _credential: Option<&awaken_provisioning_contract::RepositoryHttpBasicCredential>,
-    ) -> Result<bool, awaken_provisioning_contract::SandboxError> {
-        Ok(false)
+    ) -> Result<
+        awaken_provisioning_contract::RepositoryPublicationReceipt,
+        awaken_provisioning_contract::SandboxError,
+    > {
+        Ok(awaken_provisioning_contract::RepositoryPublicationReceipt::new(plan, expectation))
     }
 }
 
@@ -5823,8 +5828,259 @@ async fn prepare_session_mounts_effective_file_and_stages_effective_repo() {
         "the bound repository has one realization plan"
     );
     assert_eq!(
-        repositories[0].plan.remote_url,
+        repositories[0].plan.source_remote_url,
         "https://github.com/awaken/example.git"
+    );
+    assert_eq!(
+        repositories[0].plan.transport_url,
+        "https://github.com/awaken/example.git"
+    );
+}
+
+/// Terminal publication cause/effect decision table:
+///
+/// | Rule | frozen input | local branch/HEAD | remote ref | Effect |
+/// |---|---|---|---|---|
+/// | P1 | one writable Repository | exact expected coordinate | absent | publish and return canonical Session receipt |
+/// | P2 | same command replay | exact expected coordinate | same commit | no-op with byte-identical receipt |
+/// | P3 | command carries no second Resource lookup | exact | any | compile the command input through the ordinary staging owner |
+/// | P4 | child cleanup complete, publication receipt absent | exact | same commit | record replay receipt before root cleanup |
+///
+/// Invalid coordinate and mismatched remote rules are exhaustively covered at
+/// the Repository realizer boundary; this integration test proves the
+/// ManagedHost uses that sole implementation and retains the Environment until
+/// first execution, replay, and the ordered terminal reconciliation have
+/// produced evidence.
+#[tokio::test]
+async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays() {
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let temp = tempfile::tempdir().expect("publication fixture");
+    let remote = temp.path().join("remote.git");
+    let seed = temp.path().join("seed");
+    let git = |cwd: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(cwd)
+            .args(args)
+            .status()
+            .expect("git fixture command");
+        assert!(status.success(), "git {args:?}");
+    };
+    git(temp.path(), &["init", "--bare", remote.to_str().unwrap()]);
+    git(
+        temp.path(),
+        &["clone", remote.to_str().unwrap(), seed.to_str().unwrap()],
+    );
+    git(&seed, &["config", "user.name", "seed"]);
+    git(&seed, &["config", "user.email", "seed@example.invalid"]);
+    std::fs::write(seed.join("README.md"), "base").expect("seed file");
+    git(&seed, &["add", "README.md"]);
+    git(&seed, &["commit", "-m", "base"]);
+    git(&seed, &["push", "-u", "origin", "HEAD"]);
+
+    let control = Arc::new(RemoteTerminalCleanupControl::default());
+    let mut raw_host =
+        SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
+    raw_host.session_provider =
+        crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
+            temp.path().join("sandboxes"),
+            false,
+            Arc::new(crate::session_environment::UnusedHandExecutorFactory),
+            "/bin/sh",
+            std::time::Duration::ZERO,
+        );
+    let host = Arc::new(raw_host);
+    let managed = managed_with_resource_source(host.clone());
+    let _dispatch_runtime = managed.clone().install_dispatch_session_runtime();
+    let session_id = "terminal-publication-local";
+    let resources = effective_repository(
+        "repository-publication",
+        remote.to_str().unwrap(),
+        "repository",
+        None,
+    );
+    managed
+        .prepare_session(
+            session_id,
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "agent".into(),
+                delegate_ids: Vec::new(),
+                tools: None,
+                resource_revision: 1,
+                resources: resources.clone(),
+                model: None,
+                runtime: None,
+                environment: session_environment(
+                    awaken_session_contract::SessionNetworkPolicy::Unrestricted,
+                    serde_json::json!({}),
+                ),
+            },
+        )
+        .await
+        .expect("P1 prepare exact input");
+    host.run(
+        None,
+        session_id,
+        vec![Message::text(
+            MessageId("terminal-publication-input".into()),
+            Role::User,
+            "prepare repository",
+        )],
+    )
+    .await
+    .expect("P1 realize Session Environment");
+    let environment = host
+        .session_environment(session_id)
+        .await
+        .expect("P1 retained Environment");
+    let status = environment
+        .run_test_command(awaken_provisioning_contract::Command::new([
+            "sh",
+            "-c",
+            concat!(
+                "git -C repository config user.name agent && ",
+                "git -C repository config user.email agent@example.invalid && ",
+                "git -C repository checkout -b awf/work && ",
+                "printf changed > repository/README.md && ",
+                "git -C repository add README.md && ",
+                "git -C repository commit -m changed && ",
+                "git -C repository rev-parse HEAD > commit.txt"
+            ),
+        ]))
+        .await
+        .expect("P1 author commit");
+    assert_eq!(status.code, Some(0), "P1 exact local commit");
+    let commit = environment
+        .list_workspace_files("")
+        .await
+        .expect("P1 list workspace")
+        .into_iter()
+        .find_map(|(path, bytes)| (path == "commit.txt").then_some(bytes))
+        .map(String::from_utf8)
+        .transpose()
+        .expect("P1 UTF-8 commit")
+        .expect("P1 commit file")
+        .trim()
+        .to_string();
+    let intent = awaken_session_contract::SessionRepositoryPublicationIntent {
+        input: resources.inputs()[0].clone(),
+        expectation: awaken_provisioning_contract::RepositoryPublicationExpectation {
+            branch: "awf/work".into(),
+            commit: commit.clone(),
+        },
+    };
+    let mut operation = awaken_session_contract::SessionCleanupOperation::default();
+    operation
+        .request_with_publication(session_id, intent)
+        .expect("P1 publication fence");
+    let child_id = "terminal-publication-child";
+    operation
+        .freeze_targets(session_id, [child_id.to_string()], 0, 0)
+        .expect("P1 root target");
+    let child_cleanup = operation
+        .command_for(session_id, child_id)
+        .expect("P4 child cleanup command");
+    let root_cleanup = operation
+        .command_for(session_id, session_id)
+        .expect("P4 root cleanup command");
+    operation
+        .record_completion(
+            session_id,
+            awaken_session_contract::SessionCleanupCompletion::new(&child_cleanup, Vec::new()),
+        )
+        .expect("P4 publication becomes reachable only after its child barrier");
+    let command = operation
+        .publication_command(session_id)
+        .expect("P1 command projection")
+        .expect("P1 command");
+    let first = managed
+        .execute_terminal_repository_publication(command.clone())
+        .await
+        .expect("P1 publish");
+    let replay = managed
+        .execute_terminal_repository_publication(command.clone())
+        .await
+        .expect("P2 replay");
+    assert_eq!(first, replay, "P2 canonical first/replay receipt");
+    assert_eq!(first.effect_receipt.commit, commit, "P1 exact receipt");
+    let remote_commit = std::process::Command::new("git")
+        .current_dir(temp.path())
+        .args([
+            "--git-dir",
+            remote.to_str().unwrap(),
+            "rev-parse",
+            "refs/heads/awf/work",
+        ])
+        .output()
+        .expect("P1 inspect remote");
+    assert!(remote_commit.status.success(), "P1 remote branch exists");
+    assert_eq!(
+        String::from_utf8(remote_commit.stdout)
+            .expect("P1 remote commit UTF-8")
+            .trim(),
+        commit,
+        "P1 remote exact commit"
+    );
+    assert!(
+        host.session_environment(session_id).await.is_some(),
+        "P1-P2 Environment survives until root cleanup"
+    );
+
+    host.run(
+        None,
+        child_id,
+        vec![Message::text(
+            MessageId("terminal-publication-child-input".into()),
+            Role::User,
+            "child",
+        )],
+    )
+    .await
+    .expect("P4 child Environment");
+    let lease = awaken_session_contract::SessionRealizationLease {
+        owner: "terminal-publication-worker".into(),
+        runtime_incarnation: "terminal-publication-worker:incarnation".into(),
+        epoch: 1,
+        expires_at_unix_ms: crate::terminal_repository_publication::runtime_unix_now_ms()
+            .saturating_add(60_000),
+    };
+    host.install_session_realization_lease(session_id, lease);
+    control
+        .cleanup_sequence
+        .lock()
+        .unwrap()
+        .extend([Some(vec![child_cleanup]), Some(vec![root_cleanup])]);
+    *control.publication_projection.lock().unwrap() = Some(
+        awaken_session_contract::SessionRepositoryPublicationProjection {
+            workspace_id: host.local_workspace().into(),
+            command,
+        },
+    );
+
+    assert_eq!(
+        host.renew_due_session_realizations(0, 0)
+            .await
+            .expect("P4 ordered terminal reconciliation"),
+        0,
+        "P4 terminal work never becomes an ordinary lease renewal"
+    );
+    assert_eq!(
+        control.events.lock().unwrap().as_slice(),
+        [
+            "cleanup:poll",
+            "cleanup:terminal-publication-child",
+            "publication:poll",
+            "publication:receipt",
+            "cleanup:poll",
+            "cleanup:terminal-publication-local",
+        ],
+        "P4 child -> publication receipt -> root"
+    );
+    assert_eq!(control.publication_receipts.lock().unwrap().len(), 1, "P4");
+    assert!(
+        host.session_environment(session_id).await.is_none(),
+        "P4 root cleanup runs only after the publication receipt"
     );
 }
 
@@ -7572,7 +7828,7 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
 ///
 /// | Rule | dispatch claim | verifier transport | local materializer | Effect |
 /// |---|---|---|---|---|
-/// | P1 | exact | Gateway mediated | absent | stage rewritten URL + secret-free pin |
+/// | P1 | exact | Gateway mediated | absent | preserve source URL, stage Gateway transport + secret-free pin |
 /// | P2 | exact | Direct | any | reject; never fall back to Worker plaintext |
 /// | P3 | absent Coordinator staging | Direct | absent | reject; never erase the Platform pin into anonymous Git |
 /// | P4 | exact, delayed use | Gateway mediated again | absent | refresh capability at Git operation edge |
@@ -7631,8 +7887,12 @@ async fn platform_repository_credentials_are_gateway_mediated_without_fallback()
     let activations = host.thread_repository_activations("platform-mediated");
     let activation = &activations[0];
     assert_eq!(
-        activation.plan.remote_url, "https://gateway.internal/git/repo-platform",
-        "P1"
+        activation.plan.source_remote_url, "https://github.com/awaken/example.git",
+        "P1 frozen source remains canonical"
+    );
+    assert_eq!(
+        activation.plan.transport_url, "https://gateway.internal/git/repo-platform",
+        "P1 Gateway endpoint is effect-only transport"
     );
     assert_eq!(
         activation
@@ -11589,7 +11849,14 @@ struct RemoteTerminalCleanupControl {
         std::collections::VecDeque<awaken_session_contract::SessionTerminalCleanupAssignment>,
     >,
     commands: Mutex<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
+    cleanup_sequence: Mutex<
+        std::collections::VecDeque<Option<Vec<awaken_session_contract::SessionCleanupCommand>>>,
+    >,
     completions: Mutex<Vec<awaken_session_contract::SessionCleanupCompletion>>,
+    publication_projection:
+        Mutex<Option<awaken_session_contract::SessionRepositoryPublicationProjection>>,
+    publication_receipts: Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationReceipt>>,
+    events: Mutex<Vec<String>>,
     poll_barrier: Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     claim_targets: Mutex<Vec<awaken_session_contract::SessionRealizationTarget>>,
 }
@@ -11652,12 +11919,42 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         Option<Vec<awaken_session_contract::SessionCleanupCommand>>,
         awaken_session_contract::SessionRealizationControlFailure,
     > {
+        self.events.lock().unwrap().push("cleanup:poll".into());
         let barrier = self.poll_barrier.lock().unwrap().clone();
         if let Some((started, proceed)) = barrier {
             started.notify_one();
             proceed.notified().await;
         }
+        if let Some(commands) = self.cleanup_sequence.lock().unwrap().pop_front() {
+            return Ok(commands);
+        }
         Ok(self.commands.lock().unwrap().clone())
+    }
+
+    async fn terminal_repository_publication_command(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+    ) -> Result<
+        Option<awaken_session_contract::SessionRepositoryPublicationProjection>,
+        awaken_session_contract::SessionRealizationControlFailure,
+    > {
+        self.events.lock().unwrap().push("publication:poll".into());
+        Ok(self.publication_projection.lock().unwrap().clone())
+    }
+
+    async fn record_terminal_repository_publication_receipt(
+        &self,
+        _session_id: &str,
+        _lease: &awaken_session_contract::SessionRealizationLease,
+        receipt: awaken_session_contract::SessionRepositoryPublicationReceipt,
+    ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.events
+            .lock()
+            .unwrap()
+            .push("publication:receipt".into());
+        self.publication_receipts.lock().unwrap().push(receipt);
+        Ok(())
     }
 
     async fn record_terminal_cleanup_completion(
@@ -11665,6 +11962,10 @@ impl awaken_session_contract::SessionRealizationControl for RemoteTerminalCleanu
         _lease: &awaken_session_contract::SessionRealizationLease,
         completion: awaken_session_contract::SessionCleanupCompletion,
     ) -> Result<(), awaken_session_contract::SessionRealizationControlFailure> {
+        self.events
+            .lock()
+            .unwrap()
+            .push(format!("cleanup:{}", completion.thread_id));
         self.completions.lock().unwrap().push(completion);
         Ok(())
     }

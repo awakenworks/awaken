@@ -661,6 +661,9 @@ impl crate::SharedHost {
         match control.terminal_cleanup_commands(session_id, lease).await {
             Ok(Some(commands)) => {
                 let mut terminal_error = None;
+                let root_was_ready = commands
+                    .iter()
+                    .any(|command| command.thread_id == session_id);
                 for command in commands {
                     match self
                         .execute_dispatched_terminal_cleanup(command.clone())
@@ -691,10 +694,97 @@ impl crate::SharedHost {
                         }
                     }
                 }
-                match terminal_error {
-                    Some(error) => Err(error),
-                    None => Ok(true),
+                if let Some(error) = terminal_error {
+                    return Err(error);
                 }
+                if root_was_ready {
+                    return Ok(true);
+                }
+
+                // Publication is the sole root-owned effect between child
+                // cleanup and root finalization. Its command and receipt remain
+                // projections of the same aggregate operation; no Worker-local
+                // queue or completion registry is introduced.
+                match control
+                    .terminal_repository_publication_command(session_id, lease)
+                    .await
+                {
+                    Ok(Some(projection)) => {
+                        if self.thread_workspace(session_id) != projection.workspace_id {
+                            return Err(crate::HostError::internal(format!(
+                                "Session `{session_id}` terminal Repository publication Workspace does not match its frozen Runtime projection"
+                            )));
+                        }
+                        let receipt = self
+                            .execute_dispatched_terminal_repository_publication(
+                                projection.command,
+                                lease,
+                            )
+                            .await
+                            .map_err(|error| {
+                                crate::HostError::internal(format!(
+                                    "Session `{session_id}` terminal Repository publication remained pending: {error}"
+                                ))
+                            })?;
+                        control
+                            .record_terminal_repository_publication_receipt(
+                                session_id,
+                                lease,
+                                receipt,
+                            )
+                            .await
+                            .map_err(|error| {
+                                crate::HostError::internal(format!(
+                                    "Session `{session_id}` terminal Repository publication receipt remained pending: {error}"
+                                ))
+                            })?;
+                    }
+                    Ok(None) => {}
+                    Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        return Err(crate::HostError::internal(format!(
+                            "Session `{session_id}` terminal Repository publication control remained pending: {error}"
+                        )));
+                    }
+                }
+
+                // Re-read the aggregate after child/publication receipts. Only
+                // its canonical pending-command projection may expose the root
+                // finalizer that disposes the retained Environment.
+                let root_commands = match control.terminal_cleanup_commands(session_id, lease).await
+                {
+                    Ok(Some(commands)) => commands,
+                    Ok(None)
+                    | Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
+                        return Ok(true);
+                    }
+                    Err(error) => {
+                        return Err(crate::HostError::internal(format!(
+                            "Session `{session_id}` terminal root cleanup control remained pending: {error}"
+                        )));
+                    }
+                };
+                for command in root_commands {
+                    let completion = self
+                        .execute_dispatched_terminal_cleanup(command)
+                        .await
+                        .map_err(|error| {
+                            crate::HostError::internal(format!(
+                                "Session `{session_id}` terminal root cleanup remained pending: {error}"
+                            ))
+                        })?;
+                    control
+                        .record_terminal_cleanup_completion(lease, completion)
+                        .await
+                        .map_err(|error| {
+                            crate::HostError::internal(format!(
+                                "Session `{session_id}` terminal root cleanup receipt remained pending: {error}"
+                            ))
+                        })?;
+                }
+                Ok(true)
             }
             Ok(None) => Ok(false),
             Err(awaken_session_contract::SessionRealizationControlFailure::NotFound) => {
@@ -807,20 +897,21 @@ impl crate::SharedHost {
         let mut terminal_error = None;
         for (session_id, lease) in &realizations {
             // Cause/effect decision table: C1 the aggregate has no terminal
-            // fence, C2 it is Fenced, C3 it has missing exact commands, C4 all
-            // completions are already recorded, and C5 Control is temporarily
-            // unavailable. Effects: E1 ordinary renewal; E2 retain the slot
-            // without teardown; E3 attempt every command and record each exact
-            // receipt; E4 let Control complete and then retire the now-empty
-            // projection; E5 retain recoverable local state. No Worker-local
-            // cleanup queue or completion registry participates.
+            // fence, C2 it is Fenced, C3 child cleanup is pending, C4 exact
+            // Repository publication is pending, C5 root cleanup is ready, and
+            // C6 Control/effect is temporarily unavailable. Effects: E1 ordinary
+            // renewal; E2 retain the slot; E3 record children before publication;
+            // E4 record publication before root disposal; E5 finalize and retire;
+            // E6 retain recoverable local state. No Worker-local queue or receipt
+            // registry participates.
             //
             // | Rule | Control projection | Effect |
             // | R1 | None | E1 when due |
             // | R2 | Some([]) | E2 |
-            // | R3 | Some(commands) | E3, retry failures cold |
-            // | R4 | NotFound after settlement | E4 |
-            // | R5 | Unavailable | E5 |
+            // | R3 | Some(child commands) | E3, then re-poll |
+            // | R4 | publication command | E4, then re-poll |
+            // | R5 | Some(root command) / NotFound | E5 |
+            // | R6 | Unavailable | E6 |
             match self
                 .reconcile_terminal_cleanup_for_lease(control.as_ref(), session_id, lease)
                 .await

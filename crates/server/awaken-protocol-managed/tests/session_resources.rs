@@ -50,6 +50,19 @@ fn router(state: std::sync::Arc<ManagedState>) -> Router {
     )
 }
 
+fn profiled_router(state: std::sync::Arc<ManagedState>, workspace: &str) -> Router {
+    let extensions = awaken_protocol_awaken::profiled_session_router(
+        awaken_protocol_managed::create_profiled_session,
+    )
+    .merge(awaken_protocol_awaken::profiled_session_release_router(
+        awaken_protocol_managed::release_profiled_session,
+    ))
+    .with_state(state);
+    extensions.layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+        workspace.to_string(),
+    )))
+}
+
 fn input(
     id: &str,
     target: InputResourceId,
@@ -125,6 +138,9 @@ struct AcceptingFake {
         std::sync::Arc<std::sync::Mutex<Vec<awaken_session_contract::ResolvedSessionResources>>>,
     fail_next_apply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     fail_apply_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    published: std::sync::Arc<
+        std::sync::Mutex<Vec<awaken_session_contract::SessionRepositoryPublicationCommand>>,
+    >,
 }
 
 struct AgentWithResources;
@@ -1617,6 +1633,35 @@ impl SessionRuntime for AcceptingFake {
         ))
     }
 
+    async fn execute_terminal_repository_publication(
+        &self,
+        command: awaken_session_contract::SessionRepositoryPublicationCommand,
+    ) -> Result<awaken_session_contract::SessionRepositoryPublicationReceipt, RunError> {
+        let awaken_session_contract::ResolvedInputSource::Repository {
+            repository_id,
+            config,
+            ..
+        } = &command.intent.input.source
+        else {
+            return Err(RunError::internal(
+                "publication command is not a Repository",
+            ));
+        };
+        let effect_receipt = awaken_provisioning_contract::RepositoryPublicationReceipt {
+            repository_id: repository_id.as_str().to_string(),
+            source_remote_url: config.remote_url.clone(),
+            branch: command.intent.expectation.branch.clone(),
+            commit: command.intent.expectation.commit.clone(),
+        };
+        self.published.lock().unwrap().push(command.clone());
+        Ok(
+            awaken_session_contract::SessionRepositoryPublicationReceipt::new(
+                &command,
+                effect_receipt,
+            ),
+        )
+    }
+
     async fn prepare_session(&self, _thread: &str, init: SessionInit) -> Result<(), RunError> {
         self.prepared.lock().unwrap().push(init);
         Ok(())
@@ -2872,17 +2917,20 @@ async fn terminal_profiled_session_retires_its_marked_repository_definition() {
             prompts: Vec::new(),
             resource_inputs: Vec::new(),
             mcp_candidates: Vec::new(),
-            repositories: vec![awaken_session_application::SessionRepositoryResourceInput {
-                id: repository_id.clone(),
-                workspace_id: "default".into(),
-                name: "Profiled Repository".into(),
-                description: String::new(),
-                remote_url: "https://github.com/awaken/profiled.git".into(),
-                authorization_token: None,
-                credential: None,
-                mount_path: "/workspace/profiled".into(),
-                initial_branch: Some("main".into()),
-                initial_commit: None,
+            repositories: vec![awaken_session_application::ProfiledSessionRepositoryInput {
+                binding_id: awaken_resource_contract::BindingId::new("profiled-repository-binding"),
+                repository: awaken_session_application::SessionRepositoryResourceInput {
+                    id: repository_id.clone(),
+                    workspace_id: "default".into(),
+                    name: "Profiled Repository".into(),
+                    description: String::new(),
+                    remote_url: "https://github.com/awaken/profiled.git".into(),
+                    authorization_token: None,
+                    credential: None,
+                    mount_path: "/workspace/profiled".into(),
+                    initial_branch: Some("main".into()),
+                    initial_commit: None,
+                },
             }],
             network_restriction: None,
             title: None,
@@ -4364,5 +4412,274 @@ async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
             .revision,
         2,
         "B5 exact crash replay"
+    );
+}
+
+#[tokio::test]
+async fn profiled_repository_binding_wire_preserves_the_historical_derivation() {
+    // Binding migration cause/effect graph: C1 `binding_id` is omitted on the
+    // historical private wire; C2 the Session id and Repository index make its
+    // former generated identity deterministic; C3 a new caller supplies an
+    // explicit non-empty or empty identity. Effects: E1 C1+C2 derives exactly
+    // the former binding and preserves create replay; E2 that derived binding
+    // selects the same frozen input for terminal publication; E3 a valid
+    // explicit identity remains caller-owned (covered by the adjacent release
+    // matrix); E4 an explicitly empty identity is rejected and cannot
+    // masquerade as omission.
+    //
+    // | Rule | wire binding | deterministic Session/index | Effect |
+    // |---|---|---|---|
+    // | B1 | omitted | yes | historical binding + exact replay |
+    // | B2 | omitted | yes, then release selects it | one publication |
+    // | B3 | explicit non-empty | n/a | preserve caller identity |
+    // | B4 | explicit empty | n/a | reject before root creation |
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state, "default");
+    let historical_create = json!({
+        "session_id": "profiled-historical-binding",
+        "mode": "work_unit",
+        "agent_id": "coder",
+        "repositories": [{
+            "remote_url": "https://github.com/awaken/historical.git",
+            "mount_path": "repository"
+        }]
+    });
+    for replay in ["first", "replay"] {
+        let (status, body) = call(
+            &app,
+            "POST",
+            "/v1/awaken/sessions",
+            Some(historical_create.clone()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "B1 {replay}: {body}");
+    }
+    let historical_binding = concat!(
+        "profiled:profiled-historical-binding:repository:",
+        "profiled:profiled-historical-binding:repository:0"
+    );
+    let durable = sessions.get("profiled-historical-binding").await.unwrap();
+    assert_eq!(
+        durable.resources.active.inputs()[0].binding_id.as_str(),
+        historical_binding,
+        "B1 exact former generated identity"
+    );
+    let (status, released) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-historical-binding/release",
+        Some(json!({
+            "repository_publication": {
+                "binding_id": historical_binding,
+                "expectation": {
+                    "branch": "awf/historical",
+                    "commit": "0123456789abcdef0123456789abcdef01234567"
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "B2: {released}");
+    assert_eq!(runtime.published.lock().unwrap().len(), 1, "B2");
+
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(json!({
+            "session_id": "profiled-empty-binding",
+            "mode": "work_unit",
+            "agent_id": "coder",
+            "repositories": [{
+                "binding_id": "",
+                "remote_url": "https://github.com/awaken/invalid.git",
+                "mount_path": "repository"
+            }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "B4");
+    assert!(
+        matches!(
+            sessions.get("profiled-empty-binding").await,
+            Err(awaken_session_contract::SessionRepositoryError::NotFound)
+        ),
+        "B4 no root"
+    );
+}
+
+#[tokio::test]
+async fn profiled_release_projects_one_durable_repository_publication() {
+    // Release cause/effect graph: C1 publication is absent/present; C2 the
+    // Workspace and frozen binding are exact/foreign; C3 the expectation is
+    // first, an exact replay, or a mismatch; C4 the Runtime returns canonical
+    // evidence. Effects: E1 legacy release archives without publication; E2 an
+    // exact request returns the provisioning receipt only after it is durable in
+    // the Session root; E3 exact replay returns the same response and performs no
+    // second effect; E4 wrong scope is 404; E5 wrong binding is 400; E6 changed
+    // expectation is 409. Rules: P1=!C1=>E1; P2=C1+exact C2+first C3+C4=>E2;
+    // P3=C1+exact C2+replay C3=>E3; P4=foreign C2=>E4; P5=wrong binding C2=>E5;
+    // P6=mismatch C3=>E6.
+    let runtime = AcceptingFake::default();
+    let sessions = std::sync::Arc::new(
+        SqliteManagedSessionRepository::open_in_memory().expect("Session repository"),
+    );
+    let state = std::sync::Arc::new(
+        ManagedState::new(runtime.clone())
+            .with_session_repo(sessions.clone())
+            .with_resource_registry(resource_registry()),
+    );
+    let app = profiled_router(state.clone(), "default");
+
+    let create_with_repository = |session_id: &str| {
+        json!({
+            "session_id": session_id,
+            "mode": "work_unit",
+            "agent_id": "coder",
+            "repositories": [{
+                "binding_id": "flow-repository",
+                "remote_url": "https://github.com/awaken/publication.git",
+                "mount_path": "repository"
+            }]
+        })
+    };
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(create_with_repository("profiled-publication")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P2 create: {created}");
+
+    let request = json!({
+        "repository_publication": {
+            "binding_id": "flow-repository",
+            "expectation": {
+                "branch": "awf/work-unit-1",
+                "commit": "0123456789abcdef0123456789abcdef01234567"
+            }
+        }
+    });
+    let (status, first) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-publication/release",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P2/E2: {first}");
+    assert_eq!(
+        first["repository_publication"]["binding_id"], "flow-repository",
+        "P2/E2"
+    );
+    assert_eq!(
+        first["repository_publication"]["receipt"]["commit"],
+        "0123456789abcdef0123456789abcdef01234567",
+        "P2/E2"
+    );
+    assert!(
+        sessions
+            .get("profiled-publication")
+            .await
+            .unwrap()
+            .terminal_cleanup
+            .repository_publication_receipt()
+            .is_some(),
+        "P2/E2 receipt is durable before response"
+    );
+    assert_eq!(runtime.published.lock().unwrap().len(), 1, "P2/E2");
+
+    let (status, replay) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-publication/release",
+        Some(request.clone()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P3/E3: {replay}");
+    assert_eq!(replay, first, "P3/E3 exact response");
+    assert_eq!(runtime.published.lock().unwrap().len(), 1, "P3/E3");
+
+    let mut conflict = request.clone();
+    conflict["repository_publication"]["expectation"]["commit"] =
+        json!("abcdef0123456789abcdef0123456789abcdef01");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-publication/release",
+        Some(conflict),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "P6/E6");
+
+    let foreign = profiled_router(state.clone(), "other-workspace");
+    let (status, _) = call(
+        &foreign,
+        "POST",
+        "/v1/awaken/sessions/profiled-publication/release",
+        Some(request),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "P4/E4");
+
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(create_with_repository("profiled-publication-wrong-binding")),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P5 create: {created}");
+    let (status, _) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-publication-wrong-binding/release",
+        Some(json!({
+            "repository_publication": {
+                "binding_id": "other-repository",
+                "expectation": {
+                    "branch": "awf/work-unit-1",
+                    "commit": "0123456789abcdef0123456789abcdef01234567"
+                }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "P5/E5");
+
+    let (status, created) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions",
+        Some(json!({
+            "session_id": "profiled-legacy-release",
+            "mode": "work_unit",
+            "agent_id": "coder"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P1 create: {created}");
+    let (status, released) = call(
+        &app,
+        "POST",
+        "/v1/awaken/sessions/profiled-legacy-release/release",
+        Some(json!({})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "P1/E1: {released}");
+    assert!(released.get("repository_publication").is_none(), "P1/E1");
+    assert_eq!(
+        runtime.published.lock().unwrap().len(),
+        1,
+        "all no-op rules"
     );
 }

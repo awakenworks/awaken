@@ -6,6 +6,7 @@
 - Amended: 2026-08-10 — typed application-contributed Session inputs
 - Amended: 2026-08-12 — one front-door IAM enforcement path
 - Amended: 2026-08-27 — profiled creation, File item fencing, and Session-owned Repository adoption
+- Amended: 2026-08-28 — explicit terminal Repository publication
 - Builds on: [ADR-0038](0038-managed-resource-injection-and-store-organization.md)
   (resource injection and provisioning descriptors),
   [ADR-0041](0041-sandbox-execution-environment-provider.md) (sandbox lifecycle),
@@ -566,3 +567,57 @@ root CAS. They do not rebase after a concurrent writer: one mutation wins and a
 loser receives conflict (`409`) with the winner's manifest intact. Explicit
 whole-manifest replacement retains its caller-supplied `If-Match` fence and the
 same no-lost-update rule.
+
+## Amendment: explicit terminal Repository publication (2026-08-28)
+
+An exact Git branch and commit remain outside Repository binding and Session
+configuration resolution. They become durable only when a caller explicitly
+requests publication while releasing an idle Session. The application selects
+exactly one active writable Repository binding, copies its already-frozen
+`ResolvedInput`, and atomically archives the Session with a
+`RepositoryPublicationExpectation` containing the symbolic branch and full
+commit. It does not resolve the current Repository configuration, credential,
+or remote branch head again. Ordinary release with no publication intent keeps
+the existing behavior and exact v1 cleanup JSON and fingerprints.
+
+### Static ownership
+
+- Reused unchanged: `ResolvedInput` remains the configuration and credential-pin
+  authority; `SessionCleanupOperation` remains the only durable terminal-effect
+  operation; `RepositoryRealizer` remains the only clone/publish effect port.
+- Modified: the cleanup operation may carry one optional immutable publication
+  intent and its canonical receipt, and the same Worker Repository verifier may
+  validate either ordinary Run-claim use or terminal command plus realization
+  lease authority.
+- Added: typed publication expectation, command, and receipt values bind the
+  existing authorities together. They add no queue, registry, Resource
+  generation, credential store, or second Git implementation.
+
+The Session aggregate owns intent, command identity, ordering, and receipt
+admission. The Environment adapter owns Git filesystem and transport effects.
+The remote provider remains the external Git truth. A mediated transport may
+replace only the effect URL: the frozen source URL remains the Repository
+identity recorded in the receipt. Neither credential bytes nor a Gateway
+capability enters durable Session or Resource state.
+
+### Dynamic ordering and recovery
+
+```text
+archive + explicit expectation
+  -> root CAS freezes the terminal fence and exact ResolvedInput
+  -> quiesce parent; freeze root and delegated-child cleanup targets
+  -> settle every child cleanup receipt
+  -> derive one root-only Repository publication command
+  -> RepositoryRealizer verifies exact local branch + HEAD
+  -> exact remote already present: return canonical receipt
+     remote absent: create only under an absent-ref lease, then verify
+     remote at another commit: fail without overwrite
+  -> root CAS records the canonical publication receipt
+  -> only then expose root cleanup and dispose the shared working tree
+```
+
+Every phase is recoverable from the same cleanup operation. Command or response
+loss replays the exact command; first success and already-current replay produce
+the same receipt without a changed flag. A mismatched intent or receipt fails
+closed, and a cleanup operation already frozen without publication cannot be
+upgraded after archive.

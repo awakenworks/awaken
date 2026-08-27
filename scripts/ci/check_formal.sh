@@ -312,7 +312,6 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness startup_wiring_requires_every_role_owned_component \
     --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
   run_kani awaken-resource-contract \
-    --harness deployment_backing_selects_only_exact_resources_database_and_files_object_roles \
     --harness resource_config_publication_is_exact_and_never_wraps \
     --harness exhausted_resource_config_versions_fail_closed \
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \

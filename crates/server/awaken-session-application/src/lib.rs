@@ -91,8 +91,8 @@ pub use resource_reconciliation::{
     SessionResourcePurgeGuard,
 };
 pub use run_admission::{
-    AdmittedRunApplication, CreateProfiledSessionCommand, RecoveredSessionProjection,
-    SessionProjectionRecoveryError, SessionRunAdmission,
+    AdmittedRunApplication, CreateProfiledSessionCommand, ProfiledSessionRepositoryInput,
+    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunAdmission,
 };
 pub use runtime_commands::{
     ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryResourceInput,
@@ -103,7 +103,11 @@ pub use update::{
     SessionUpdateCommand, SessionUpdateError, SessionUpdateOutcome,
 };
 mod terminal;
-pub use terminal::{SessionDeleteCommand, SessionDispositionMutation};
+pub use terminal::{
+    SessionArchiveWithRepositoryPublicationCommand, SessionArchiveWithRepositoryPublicationError,
+    SessionArchiveWithRepositoryPublicationOutcome, SessionDeleteCommand,
+    SessionDispositionMutation, SessionRepositoryPublicationSelector,
+};
 
 #[cfg(test)]
 mod tests;

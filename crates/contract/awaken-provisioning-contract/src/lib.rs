@@ -56,9 +56,10 @@ pub use sandbox::{
     BlobSource, CheckpointObjectMetadata, ContainerContinuationHandle, ContainerSandboxHandleV1,
     ExitStatus, IsolationClass, IsolationPolicy, LocalSandboxHandleV1, MemoryMount, MemoryMounter,
     NamespaceProviderKind, NamespaceSandboxHandleV1, OnUnmet, PolicySelection, ProcessHandle,
-    RepositoryHttpBasicCredential, RepositoryRealizationPlan, RepositoryRealizer, Sandbox,
-    SandboxCapabilities, SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore,
-    SandboxError, SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
+    RepositoryHttpBasicCredential, RepositoryPublicationExpectation, RepositoryPublicationReceipt,
+    RepositoryRealizationPlan, RepositoryRealizer, Sandbox, SandboxCapabilities,
+    SandboxCheckpointRef, SandboxCheckpointRequest, SandboxCheckpointStore, SandboxError,
+    SandboxHandle, SandboxProvider, SandboxRequirements, SandboxStatus, SecretBroker,
     SelectionError, Signal, StoredCheckpointObject, capability_requirements_satisfied,
     select_provider, select_provider_with_policy,
 };

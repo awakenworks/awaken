@@ -16,7 +16,10 @@
 use async_trait::async_trait;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod repository_publication;
 mod runtime_intervals;
+
+pub use repository_publication::SessionArchiveWithRepositoryPublicationError;
 
 use crate::ManagedLifecycleFact;
 

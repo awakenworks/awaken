@@ -202,7 +202,7 @@ are checked separately by the OKF/wiki hooks.
 | `managed-dream.md` | Managed Dream API and explicit cross-Session Dream: frozen JSONL evidence, read-only source snapshot, write-through result MemoryStore, ordinary auxiliary Agent, recovery, and compatibility tests |
 | `managed-deployments.md` | Durable Managed Deployment and DeploymentRun scheduling, exact occurrence claims, Agent version freezing, lifecycle webhooks, and the shared periodic driver |
 | `credentials-and-vaults.md` | Boundary guidance for product-owned credential lifecycle and authorization boundaries |
-| `resources-memory-files-skills.md` | Resources application composition; File/Memory/Repository/Skill identities, binding, activation, recovery, and reclamation |
+| `resources-memory-files-skills.md` | Resources application composition; File/Memory/Repository/Skill identities, binding, activation, explicit terminal Repository publication, recovery, and reclamation |
 | `observability-eval-dataset-boundary.md` | Trace, dataset, eval, and analytics boundaries |
 | `error-taxonomy.md` | Neutral error ownership and public adapter error mapping |
 | `packaging-enforcement-matrix.md` | Package/import/license/vocabulary enforcement matrix |
