@@ -264,24 +264,45 @@ impl SessionApplication {
     /// Revisit every unfinished root-owned Event batch through the one Session
     /// recovery scan. One Session is advanced until it reaches an external Run
     /// boundary; no process-local task owns later progress.
+    #[cfg(test)]
     pub(crate) async fn reconcile_event_batches(&self) -> EventBatchReconciliation {
-        let mut report = EventBatchReconciliation::default();
-        let scan = match self.session_repository().reconcilable_sessions().await {
-            Ok(scan) => scan,
+        let candidates = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => super::SessionRecoveryCandidates::from(scan),
             Err(error) => {
+                let mut report = EventBatchReconciliation::default();
                 report
                     .failures
                     .push(("<repository>".into(), error.to_string()));
                 return report;
             }
         };
-        report.quarantined = scan.quarantined.len();
-        for scoped in scan.sessions {
-            if !scoped.session.needs_event_reconciliation() {
+        self.reconcile_event_batches_from(&candidates).await
+    }
+
+    pub(super) async fn reconcile_event_batches_from(
+        &self,
+        candidates: &super::SessionRecoveryCandidates,
+    ) -> EventBatchReconciliation {
+        let mut report = EventBatchReconciliation {
+            quarantined: candidates.quarantined.len(),
+            ..Default::default()
+        };
+        for candidate in &candidates.sessions {
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(error) => {
+                    report
+                        .failures
+                        .push((candidate.session_id.clone(), error.to_string()));
+                    continue;
+                }
+            };
+            if !session.needs_event_reconciliation() {
                 continue;
             }
             report.pending += 1;
-            let session_id = scoped.session.session_id.clone();
+            let session_id = session.session_id;
             match self
                 .reconcile_session_event_batches(&session_id, None)
                 .await

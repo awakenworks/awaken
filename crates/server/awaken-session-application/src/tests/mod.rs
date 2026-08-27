@@ -1393,6 +1393,7 @@ struct FaultingSessionRepository {
     tombstone_after_operation_once: Mutex<Option<String>>,
     get_not_found_once: AtomicBool,
     fail_recovery_scan_once: AtomicBool,
+    recovery_scan_count: AtomicUsize,
 }
 
 fn report_committed_mutation_as_conflict(
@@ -1422,6 +1423,7 @@ impl FaultingSessionRepository {
             tombstone_after_operation_once: Mutex::new(None),
             get_not_found_once: AtomicBool::new(false),
             fail_recovery_scan_once: AtomicBool::new(false),
+            recovery_scan_count: AtomicUsize::new(0),
         }
     }
 
@@ -1447,6 +1449,10 @@ impl FaultingSessionRepository {
 
     fn fail_recovery_scan_once(&self) {
         self.fail_recovery_scan_once.store(true, Ordering::SeqCst);
+    }
+
+    fn recovery_scan_count(&self) -> usize {
+        self.recovery_scan_count.load(Ordering::SeqCst)
     }
 }
 
@@ -1657,6 +1663,7 @@ impl ManagedSessionRepository for FaultingSessionRepository {
         awaken_session_contract::SessionRecoveryScan,
         awaken_session_contract::SessionRepositoryError,
     > {
+        self.recovery_scan_count.fetch_add(1, Ordering::SeqCst);
         if self.fail_recovery_scan_once.swap(false, Ordering::SeqCst) {
             return Err(
                 awaken_session_contract::SessionRepositoryError::Unavailable(

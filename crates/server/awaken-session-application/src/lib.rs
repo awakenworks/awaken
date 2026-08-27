@@ -13,9 +13,40 @@ use awaken_executable_environment_contract::ExecutableEnvironmentRegistrationErr
 use awaken_session_contract::SessionExecutionState;
 use awaken_session_contract::{
     LifecycleFactNotifier, ManagedSessionRepository, McpAttachmentRealizer, McpTarget,
-    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink, SessionRuntime,
-    SessionRuntimePlacement,
+    PersistedSession, RunError, SandboxProvisioning, SessionEnvironmentBindingSink,
+    SessionRecoveryQuarantine, SessionRecoveryScan, SessionRuntime, SessionRuntimePlacement,
 };
+
+/// Identity-only input to one recovery cycle. Reconcilers must reload the root
+/// before deciding or performing an effect; carrying a `PersistedSession` here
+/// would make a stale pre-reconciliation snapshot too easy to reuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SessionRecoveryCandidate {
+    workspace_id: String,
+    session_id: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct SessionRecoveryCandidates {
+    sessions: Vec<SessionRecoveryCandidate>,
+    quarantined: Vec<SessionRecoveryQuarantine>,
+}
+
+impl From<SessionRecoveryScan> for SessionRecoveryCandidates {
+    fn from(scan: SessionRecoveryScan) -> Self {
+        Self {
+            sessions: scan
+                .sessions
+                .into_iter()
+                .map(|scoped| SessionRecoveryCandidate {
+                    workspace_id: scoped.workspace_id,
+                    session_id: scoped.session.session_id,
+                })
+                .collect(),
+            quarantined: scan.quarantined,
+        }
+    }
+}
 
 mod mutation;
 pub use mutation::SessionMutationError;

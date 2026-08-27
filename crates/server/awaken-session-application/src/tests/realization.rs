@@ -1,6 +1,41 @@
 use super::*;
 use awaken_session_contract::SessionRealizationControl;
 
+/// Recovery-scan causal graph: C1 one supervisor cycle owns Resource,
+/// Environment, realization, Event, and Outcome convergence; C2 every handler
+/// previously opened the same durable candidate index; C3 cutover validation is
+/// a distinct post-cycle audit. Effects are E1 one candidate scan feeds all
+/// handlers, E2 handlers reload roots by id before effects, and E3 the final
+/// audit remains an independent second scan.
+///
+/// | Rule | Candidate scan | Cutover audit | Expected scans |
+/// |---|---|---|---|
+/// | S1 | succeeds | enabled | 2 (E1 + E3) |
+/// | S2 | unavailable | not reached | 1 and retryable failure |
+#[test]
+fn one_recovery_cycle_scans_candidates_once_before_the_final_audit() {
+    run_composed_async_test(|| async {
+        let durable: Arc<dyn ManagedSessionRepository> = Arc::new(
+            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+                .expect("session repository"),
+        );
+        let observed = Arc::new(FaultingSessionRepository::new(durable));
+        let application = Arc::new(application(
+            observed.clone(),
+            Arc::new(RecordingEnvironmentSource::default()),
+        ));
+
+        observed.fail_recovery_scan_once();
+        let unavailable = application.clone().reconcile_pending_session_state().await;
+        assert_eq!(unavailable.retryable_failures, 1, "S2");
+        assert_eq!(observed.recovery_scan_count(), 1, "S2");
+
+        let cycle = application.reconcile_pending_session_state().await;
+        assert_eq!(cycle.retryable_failures, 0, "S1");
+        assert_eq!(observed.recovery_scan_count(), 3, "S1/E1/E3");
+    });
+}
+
 #[derive(Default)]
 struct RecordingResourceRuntime {
     applied: Mutex<Vec<(u64, awaken_session_contract::ResolvedSessionResources)>>,

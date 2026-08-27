@@ -6,7 +6,9 @@
 
 use awaken_session_contract::OutcomeDrive;
 
-use super::{SessionApplication, mutation::repository_failure};
+#[cfg(test)]
+use super::mutation::repository_failure;
+use super::{SessionApplication, SessionRecoveryCandidates};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct OutcomeReconciliation {
@@ -20,23 +22,44 @@ impl SessionApplication {
     /// Continue every possible Outcome through the sole lifecycle supervisor.
     /// Candidate selection is deliberately conservative because copying an
     /// active/terminal marker into the Session root would create a second truth.
+    #[cfg(test)]
     pub(crate) async fn reconcile_outcome_continuations(&self) -> OutcomeReconciliation {
-        let mut report = OutcomeReconciliation::default();
-        let scan = match self.session_repository().reconcilable_sessions().await {
-            Ok(scan) => scan,
+        let candidates = match self.session_repository().reconcilable_sessions().await {
+            Ok(scan) => SessionRecoveryCandidates::from(scan),
             Err(error) => {
+                let mut report = OutcomeReconciliation::default();
                 report
                     .failures
                     .push(("<repository>".into(), repository_failure(error).to_string()));
                 return report;
             }
         };
-        report.quarantined = scan.quarantined.len();
-        for scoped in scan.sessions {
-            if !scoped.session.needs_outcome_reconciliation() {
+        self.reconcile_outcome_continuations_from(&candidates).await
+    }
+
+    pub(super) async fn reconcile_outcome_continuations_from(
+        &self,
+        candidates: &SessionRecoveryCandidates,
+    ) -> OutcomeReconciliation {
+        let mut report = OutcomeReconciliation {
+            quarantined: candidates.quarantined.len(),
+            ..Default::default()
+        };
+        for candidate in &candidates.sessions {
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(error) => {
+                    report
+                        .failures
+                        .push((candidate.session_id.clone(), error.to_string()));
+                    continue;
+                }
+            };
+            if !session.needs_outcome_reconciliation() {
                 continue;
             }
-            let session_id = scoped.session.session_id;
+            let session_id = session.session_id;
             match self.runtime().continue_outcome(&session_id).await {
                 Ok(Some(OutcomeDrive::Completed(_))) => report.settled += 1,
                 Ok(Some(OutcomeDrive::Awaiting)) => report.pending += 1,
