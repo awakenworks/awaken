@@ -9,6 +9,9 @@
   },
   "scripts": {
     "conformance:hosted": "node src/conformance/hosted.mjs",
+    "conformance:recovery:prepare": "node src/conformance/recovery.mjs prepare",
+    "conformance:recovery:verify": "node src/conformance/recovery.mjs verify",
+    "conformance:recovery:cleanup": "node src/conformance/recovery.mjs cleanup",
     "generate": "node src/cli.mjs generate",
     "check": "node src/cli.mjs check",
     "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json"

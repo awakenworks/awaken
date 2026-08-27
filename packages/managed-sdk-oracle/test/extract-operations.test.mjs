@@ -19,10 +19,23 @@ test('current oracle discovers ordinary, paginated, and nested managed operation
     id: 'beta.sessions.create',
     method: 'POST',
     path: '/v1/sessions',
+    transport_query: 'beta=true',
     betas: ['managed-agents-2026-04-01'],
   });
   assert.equal(byId.get('beta.sessions.list')?.method, 'GET', 'C2/E1');
   assert.equal(byId.get('beta.environments.work.list')?.method, 'GET', 'C3/E1');
+  assert.equal(byId.get('beta.files.list')?.transport_query, 'beta=true', 'Beta transport selector');
+  assert.deepEqual(byId.get('files.upload'), {
+    id: 'files.upload',
+    method: 'POST',
+    path: '/v1/files',
+    betas: [],
+  }, 'GA Files is a first-class SDK surface');
+  assert.equal(byId.get('files.list')?.transport_query, undefined, 'GA Files has no Beta selector');
+  assert.deepEqual(byId.get('files.list')?.betas, [], 'GA Files has no Beta capability');
+  assert.equal(byId.get('models.list')?.path, '/v1/models', 'GA Models');
+  assert.equal(byId.get('skills.versions.create')?.method, 'POST', 'GA Skills');
+  assert.ok(!operations.some(({ id }) => id.startsWith('messages.')), 'ordinary GA Messages stays out of scope');
   assert.ok(!operations.some(({ id }) => id.startsWith('beta.organization.users')), 'E2');
   assert.equal(new Set(operations.map(({ id }) => id)).size, operations.length);
 });

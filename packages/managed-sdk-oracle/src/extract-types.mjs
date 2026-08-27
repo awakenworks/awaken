@@ -21,17 +21,22 @@ function declarations(root) {
 export function managedTypeFingerprint(moduleName, scope) {
   const sdk = resolveSdkPackage(moduleName);
   const betaRoot = path.join(sdk.root, 'resources', 'beta');
-  const allowed = new Set(scope.beta_resource_roots);
+  const roots = [
+    { root: betaRoot, prefix: 'beta/', allowed: new Set(scope.beta_resource_roots) },
+    { root: path.join(sdk.root, 'resources'), prefix: 'ga/', allowed: new Set(scope.ga_resource_roots ?? []) },
+  ];
   const hash = crypto.createHash('sha256');
   let fileCount = 0;
-  for (const filename of declarations(betaRoot)) {
-    const relative = path.relative(betaRoot, filename).replaceAll(path.sep, '/');
-    if (!allowed.has(relative.split('/')[0].replace(/\.d\.ts$/, ''))) continue;
-    hash.update(relative);
-    hash.update('\0');
-    hash.update(fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n'));
-    hash.update('\0');
-    fileCount += 1;
+  for (const { root, prefix, allowed } of roots) {
+    for (const filename of declarations(root)) {
+      const relative = path.relative(root, filename).replaceAll(path.sep, '/');
+      if (!allowed.has(relative.split('/')[0].replace(/\.d\.ts$/, ''))) continue;
+      hash.update(prefix + relative);
+      hash.update('\0');
+      hash.update(fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n'));
+      hash.update('\0');
+      fileCount += 1;
+    }
   }
   if (fileCount === 0) throw new Error(`${moduleName} exposed no scoped Managed declarations`);
   return { fingerprint: hash.digest('hex'), file_count: fileCount };

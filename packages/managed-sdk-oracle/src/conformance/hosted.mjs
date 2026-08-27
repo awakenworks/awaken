@@ -2,10 +2,12 @@
 // composition supplies only endpoint, credentials, fixtures, and failure controls.
 
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import http from 'node:http';
 import https from 'node:https';
 
 import { loadQualifiedClients, qualifiedClient } from './clients.mjs';
+import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -36,6 +38,9 @@ const environmentId = process.env.AWAKEN_MANAGED_ENVIRONMENT_ID;
 const workspaceId = process.env.AWAKEN_MANAGED_WORKSPACE_ID;
 const userProfileId = process.env.AWAKEN_MANAGED_USER_PROFILE_ID;
 const userProfileAccessType = process.env.AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE;
+const referenceBaseURL = process.env.ANTHROPIC_MANAGED_REFERENCE_BASE_URL;
+const referenceApiKey = process.env.ANTHROPIC_MANAGED_REFERENCE_API_KEY;
+const referenceTunnelAccessToken = process.env.ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN;
 
 for (const [name, value] of Object.entries({
   baseURL, apiKey, tunnelAccessToken, agent, environmentId, workspaceId,
@@ -117,6 +122,119 @@ async function drain(page) {
   return values;
 }
 
+function committedSseEvents(text) {
+  return text
+    .split('\n')
+    .filter((line) => line.startsWith('data: '))
+    .map((line) => JSON.parse(line.slice('data: '.length)))
+    .filter((event) => typeof event?.id === 'string');
+}
+
+async function sessionStream(sessionId, lastEventId) {
+  const headers = {
+    'x-api-key': apiKey,
+    'anthropic-version': '2023-06-01',
+    'anthropic-beta': BETAS[0],
+  };
+  if (lastEventId) headers['last-event-id'] = lastEventId;
+  const response = await fetch(`${baseURL}/v1/sessions/${encodeURIComponent(sessionId)}/events/stream`, {
+    headers,
+    signal: AbortSignal.timeout(60_000),
+  });
+  assert.equal(response.status, 200, 'Session SSE status');
+  return committedSseEvents(await response.text());
+}
+
+async function exerciseConcurrencyPaginationAndReconnect(CurrentClient) {
+  const client = new CurrentClient({ apiKey, baseURL });
+  const marker = `${Date.now()}-${crypto.randomUUID()}`;
+  const key = `managed-conformance-${marker}`;
+  const createdAfter = new Date(Date.now() - 1_000).toISOString();
+  const params = {
+    agent,
+    environment_id: environmentId,
+    title: `Concurrent ${marker}`,
+    metadata: { qualification_marker: marker },
+    betas: BETAS,
+  };
+  const options = { headers: { 'idempotency-key': key } };
+  let canonical;
+  let independent;
+  try {
+    const attempts = await Promise.allSettled([
+      client.beta.sessions.create(params, options),
+      client.beta.sessions.create(params, options),
+    ]);
+    const failed = attempts.filter(({ status }) => status === 'rejected');
+    if (failed.length > 0) {
+      const partial = attempts
+        .filter(({ status }) => status === 'fulfilled')
+        .map(({ value }) => value.id);
+      await Promise.allSettled(
+        [...new Set(partial)].map((sessionID) => client.beta.sessions.delete(sessionID, {
+          betas: BETAS,
+        })),
+      );
+      throw new AggregateError(failed.map(({ reason }) => reason), 'concurrent Session create failed');
+    }
+    const concurrent = attempts.map(({ value }) => value);
+    canonical = concurrent[0];
+    assert.equal(concurrent[1].id, canonical.id, 'concurrent idempotent create converges');
+    assert.equal(
+      (await client.beta.sessions.create(params, options)).id,
+      canonical.id,
+      'completed command replays one durable Session',
+    );
+    await assert.rejects(
+      () => client.beta.sessions.create({ ...params, title: `${params.title} changed` }, {
+        headers: { 'idempotency-key': key }, maxRetries: 0,
+      }),
+      (error) => error?.status === 409,
+      'same identity with changed payload conflicts',
+    );
+    independent = await client.beta.sessions.create({
+      ...params,
+      title: `Independent ${marker}`,
+      metadata: { qualification_marker: `${marker}-independent` },
+    });
+    const listed = [];
+    for await (const value of client.beta.sessions.list({
+      agent_id: agent,
+      'created_at[gte]': createdAfter,
+      limit: 1,
+      order: 'asc',
+      betas: BETAS,
+    })) listed.push(value.id);
+    assert.ok(listed.includes(canonical.id) && listed.includes(independent.id), 'SDK follows all cursor pages');
+    assert.equal(new Set(listed).size, listed.length, 'cursor pages never overlap');
+
+    await client.beta.sessions.events.send(canonical.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: `managed reconnect ${marker}` }],
+      }],
+      betas: BETAS,
+    }, { headers: { 'idempotency-key': `${key}-event` } });
+    await eventsUntilIdle(client, canonical.id);
+    const first = await sessionStream(canonical.id);
+    assert.ok(first.some(({ type }) => type === 'agent.message'), 'first stream observes committed reply');
+    const replay = await sessionStream(canonical.id, first.at(-1).id);
+    assert.deepEqual(
+      replay.map(({ id }) => id),
+      first.map(({ id }) => id),
+      'disconnect/reconnect performs the documented full replay',
+    );
+    assert.equal(
+      new Set([...first, ...replay].map(({ id }) => id)).size,
+      first.length,
+      'event id provides deterministic client deduplication',
+    );
+  } finally {
+    if (canonical) await client.beta.sessions.delete(canonical.id, { betas: BETAS });
+    if (independent) await client.beta.sessions.delete(independent.id, { betas: BETAS });
+  }
+}
+
 async function exercise(version, Client, toFile) {
   const client = new Client({ apiKey, baseURL });
   const file = await client.beta.files.upload({
@@ -177,6 +295,67 @@ async function exercise(version, Client, toFile) {
   } finally {
     if (session) await client.beta.sessions.delete(session.id, { betas: BETAS });
     await client.beta.files.delete(file.id, { betas: FILE_BETAS });
+  }
+}
+
+async function exerciseGa(CurrentClient, toFile) {
+  const client = new CurrentClient({ apiKey, baseURL });
+  const marker = `${Date.now()}-${crypto.randomUUID()}`;
+  const modelPage = await drain(client.models.list({ limit: 1 }));
+  assert.ok(modelPage.length > 0, 'GA Models list is non-empty');
+  assert.equal((await client.models.retrieve(modelPage[0].id)).id, modelPage[0].id, 'GA Models retrieve');
+
+  let file;
+  let skill;
+  let extraVersion;
+  try {
+    const bytes = Buffer.from(`ga-file-${marker}`);
+    file = await client.files.upload({
+      file: await toFile(bytes, `ga-${marker}.txt`),
+      expires_in_seconds: 3600,
+    });
+    assert.ok(file.expires_at, 'GA File exposes expiry');
+    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'GA File metadata');
+    assert.ok(
+      (await drain(client.files.list({ ids: [file.id, 'file_qualification_missing'] })))
+        .some(({ id }) => id === file.id),
+      'GA Files ids filter silently omits missing ids',
+    );
+    assert.equal(await (await client.files.download(file.id)).text(), bytes.toString(), 'GA File bytes');
+
+    const definition = (description) => Buffer.from(
+      `---\nname: qualification-${marker}\ndescription: ${description}\n---\n# Qualification\n`,
+    );
+    skill = await client.skills.create({
+      display_name: `GA qualification ${marker}`,
+      files: [await toFile(definition('initial'), 'SKILL.md')],
+    });
+    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'GA Skill retrieve');
+    assert.ok((await drain(client.skills.list())).some(({ id }) => id === skill.id), 'GA Skill list');
+    extraVersion = await client.skills.versions.create(skill.id, {
+      files: [await toFile(definition('updated'), 'SKILL.md')],
+    });
+    assert.equal(
+      (await client.skills.versions.retrieve(extraVersion.id, { skill_id: skill.id })).id,
+      extraVersion.id,
+      'GA Skill Version retrieve',
+    );
+    assert.ok(
+      (await drain(client.skills.versions.list(skill.id))).some(({ id }) => id === extraVersion.id),
+      'GA Skill Version list',
+    );
+    assert.equal(
+      (await client.skills.versions.delete(extraVersion.id, { skill_id: skill.id })).id,
+      extraVersion.id,
+      'GA Skill Version delete',
+    );
+    extraVersion = undefined;
+  } finally {
+    if (extraVersion && skill) {
+      await client.skills.versions.delete(extraVersion.id, { skill_id: skill.id });
+    }
+    if (skill) await client.skills.delete(skill.id);
+    if (file) await client.files.delete(file.id);
   }
 }
 
@@ -413,7 +592,23 @@ await exerciseUserProfileChangePoint({
 });
 await exerciseIngressHeaderFidelity();
 for (const client of clients) await exercise(client.version, client.Client, client.toFile);
+await exerciseGa(current.Client, current.toFile);
+await exerciseConcurrencyPaginationAndReconnect(current.Client);
 await exerciseTunnelPublicLifecycle(current.Client);
+const referenceValues = [referenceBaseURL, referenceApiKey, referenceTunnelAccessToken];
+assert.ok(
+  referenceValues.every(Boolean) || referenceValues.every((value) => !value),
+  'official reference endpoint, API key, and Tunnel bearer must be configured together',
+);
+await exerciseDeployedOperationSweep({
+  actual: { name: 'awaken', baseURL, apiKey, tunnelAccessToken },
+  reference: referenceBaseURL ? {
+    name: 'anthropic',
+    baseURL: referenceBaseURL,
+    apiKey: referenceApiKey,
+    tunnelAccessToken: referenceTunnelAccessToken,
+  } : undefined,
+});
 console.log(
-  `Managed public-ingress SDK matrix passed for ${clients.map(({ version }) => version).join(', ')}, including the User Profiles change point, repeated/scoped beta headers, negative routing, Files/Resources, and the WIF-only Tunnel/Certificate lifecycle`,
+  `Managed public-ingress SDK matrix passed for ${clients.map(({ version }) => version).join(', ')}, including the User Profiles change point, all-operation public routing, pagination/idempotency/reconnect, Files/Resources, and the WIF-only Tunnel/Certificate lifecycle${referenceBaseURL ? ' with official-service differential evidence' : ''}`,
 );

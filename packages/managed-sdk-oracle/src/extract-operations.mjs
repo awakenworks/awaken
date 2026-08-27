@@ -45,10 +45,10 @@ function betaTokens(node) {
   return [...tokens].sort();
 }
 
-function operationsInFile(betaRoot, filename) {
+function operationsInFile(resourceRoot, filename, prefix) {
   const text = fs.readFileSync(filename, 'utf8');
   const source = ts.createSourceFile(filename, text, ts.ScriptTarget.Latest, true);
-  const namespace = operationNamespace(betaRoot, filename);
+  const namespace = operationNamespace(resourceRoot, filename, prefix);
   const operations = [];
   const visit = (node) => {
     if (ts.isMethodDeclaration(node) && node.body) {
@@ -73,10 +73,13 @@ function operationsInFile(betaRoot, filename) {
       }
       if (calls.length === 1) {
         const call = calls[0];
+        const route = routeText(call.arguments[0], source);
+        const transportQuery = route.split('?', 2)[1];
         operations.push({
           id: `${namespace}.${operation}`,
           method: HTTP_METHODS.get(call.expression.name.text),
-          path: normalizeRoute(routeText(call.arguments[0], source)),
+          path: normalizeRoute(route),
+          ...(transportQuery ? { transport_query: transportQuery } : {}),
           betas: betaTokens(node.body),
         });
       }
@@ -90,13 +93,23 @@ function operationsInFile(betaRoot, filename) {
 export function extractOperations(moduleName, scope) {
   const sdk = resolveSdkPackage(moduleName);
   const betaRoot = path.join(sdk.root, 'resources', 'beta');
-  const allowed = new Set(scope.beta_resource_roots);
-  const files = walkJavaScript(betaRoot).filter((filename) => {
+  const betaAllowed = new Set(scope.beta_resource_roots);
+  const betaFiles = walkJavaScript(betaRoot).filter((filename) => {
     const root = path.relative(betaRoot, filename).split(path.sep)[0].replace(/\.js$/, '');
-    return allowed.has(root);
+    return betaAllowed.has(root);
+  });
+  const gaRoot = path.join(sdk.root, 'resources');
+  const gaAllowed = new Set(scope.ga_resource_roots ?? []);
+  const gaFiles = walkJavaScript(gaRoot).filter((filename) => {
+    const root = path.relative(gaRoot, filename).split(path.sep)[0].replace(/\.js$/, '');
+    return gaAllowed.has(root);
   });
   const byId = new Map();
-  for (const operation of files.flatMap((filename) => operationsInFile(betaRoot, filename))) {
+  const operations = [
+    ...betaFiles.flatMap((filename) => operationsInFile(betaRoot, filename, 'beta')),
+    ...gaFiles.flatMap((filename) => operationsInFile(gaRoot, filename, '')),
+  ];
+  for (const operation of operations) {
     const previous = byId.get(operation.id);
     if (previous && JSON.stringify(previous) !== JSON.stringify(operation)) {
       throw new Error(`Conflicting official operation ${operation.id}`);

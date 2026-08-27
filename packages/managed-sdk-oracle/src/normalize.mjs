@@ -12,12 +12,12 @@ function camel(value) {
   return value.replaceAll(/-([a-z])/g, (_, letter) => letter.toUpperCase());
 }
 
-export function operationNamespace(betaRoot, filename) {
-  const relative = path.relative(betaRoot, filename).replaceAll(path.sep, '/');
+export function operationNamespace(resourceRoot, filename, prefix = 'beta') {
+  const relative = path.relative(resourceRoot, filename).replaceAll(path.sep, '/');
   const segments = relative.replace(/\.js$/, '').split('/');
   if (segments.length > 1 && segments.at(-1) === segments.at(-2)) segments.pop();
   if (segments.at(-1) === 'index') segments.pop();
-  return ['beta', ...segments.map(camel)].join('.');
+  return [prefix, ...segments.map(camel)].filter(Boolean).join('.');
 }
 
 export function stableJson(value) {

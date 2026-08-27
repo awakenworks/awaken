@@ -31,17 +31,28 @@ evidence from drifting from the external expectation:
 - `fixtures/generated/*.ts` compile every discovered operation against every
   pinned SDK anchor. `fixtures/user-profiles-change-point.ts` additionally
   checks the intentional response-type transition at the User Profiles anchor.
-- `test/sdk-wire-lifecycle.test.ts` invokes every current SDK operation through
-  a recording transport. Strict TypeScript checks its arguments while runtime
-  assertions bind the exact method, normalized path, and capability set.
+- `test/sdk-wire-lifecycle.test.ts` invokes every current scoped SDK operation
+  through a recording transport. This includes the Managed Beta namespaces and
+  the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
+  arguments while runtime assertions bind the exact method, normalized path,
+  transport selector, and capability set.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
-  environment variables.
+  environment variables. It executes positive Beta/GA lifecycles, all-operation
+  negative/error probes, pagination, concurrent idempotency, retry identity,
+  SSE full-replay/deduplication, and an optional official-service differential.
+- `src/conformance/recovery.mjs` splits a Session/File/idempotency scenario at a
+  process-replacement boundary. Product orchestration runs `prepare`, replaces
+  every serving process, then runs `verify` and `cleanup`; an in-memory cache
+  cannot satisfy this gate.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
-`config/scope.json` declares the Managed namespaces plus the small, reviewed set
-of documented routes that are intentionally absent from the selected SDK
-anchors. Operation inventories and type fingerprints must never be copied into
+`config/scope.json` declares the Managed Beta namespaces, the GA Files/Models/
+Skills namespaces, and the small reviewed set of documented routes that are
+intentionally absent from the selected SDK anchors. Beta and GA are separate
+SDK transports over selected shared aggregates: the oracle retains the SDK's
+`beta=true` selector so testing one projection cannot accidentally certify the
+other. Operation inventories and type fingerprints must never be copied into
 another hand-maintained manifest.
 
 The generated current wire contract also owns the browser Session event catalog

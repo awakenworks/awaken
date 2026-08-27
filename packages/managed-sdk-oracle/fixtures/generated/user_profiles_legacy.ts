@@ -118,4 +118,6 @@ void ([
   client.beta.vaults.list,
   client.beta.vaults.retrieve,
   client.beta.vaults.update,
+  client.models.list,
+  client.models.retrieve,
 ] satisfies readonly Callable[]);

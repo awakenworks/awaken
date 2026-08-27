@@ -1,7 +1,7 @@
 {
   "anchors": [
     {
-      "declaration_file_count": 35,
+      "declaration_file_count": 36,
       "id": "oldest",
       "only_in_anchor": [],
       "only_in_current": [
@@ -19,25 +19,52 @@
         "beta.tunnels.list",
         "beta.tunnels.retrieve",
         "beta.tunnels.revealToken",
-        "beta.tunnels.rotateToken"
+        "beta.tunnels.rotateToken",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieveMetadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
       ],
-      "operation_fingerprint": "5f487d23932fcfe4bdb31cb82e1e27e861a0e4d28aaa9e8929a83f6eebb2291a",
+      "operation_fingerprint": "8bc30a783ba309bdce3e06789b4e81b6a6f16ecf4b6a7f6899da6395475f0278",
       "role": "oldest_supported",
-      "type_fingerprint": "bec8f7b9d236d1e72ffcfad0ac362f1a5de60681e603661250ff23c1f21593a8",
+      "type_fingerprint": "8537a553e72df6df3ed8624cd118421e21def2113e246343333dceb3b349b856",
       "version": "0.105.0"
     },
     {
-      "declaration_file_count": 40,
+      "declaration_file_count": 41,
       "id": "user_profiles_legacy",
       "only_in_anchor": [],
-      "only_in_current": [],
-      "operation_fingerprint": "6f10dbb8297c2cdf9a4915587cd4bf41c2a5f7f136dd994bae8b83b9ded19da5",
+      "only_in_current": [
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieveMetadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_fingerprint": "27be4854aeec7f7a211fbd3eed32f54bb0e150760372c88b1ae495217c19207e",
       "role": "protocol_change_point",
-      "type_fingerprint": "f0dd45cd49980ac2aafa69fce9c79500b8752fd5e25e5df81c15521190c30e88",
+      "type_fingerprint": "5a900959f6e9c1dc547c43c95321ec2d7eb5c147420c737365a0e45b87096950",
       "version": "0.117.1"
     },
     {
-      "declaration_file_count": 40,
+      "declaration_file_count": 46,
       "id": "current",
       "only_in_anchor": [],
       "only_in_current": [],
@@ -48,7 +75,7 @@
     }
   ],
   "current": {
-    "declaration_file_count": 40,
+    "declaration_file_count": 46,
     "id": "current",
     "module": "@anthropic-ai/sdk-current",
     "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
@@ -59,7 +86,8 @@
         ],
         "id": "beta.agents.archive",
         "method": "POST",
-        "path": "/v1/agents/{}/archive"
+        "path": "/v1/agents/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -67,7 +95,8 @@
         ],
         "id": "beta.agents.create",
         "method": "POST",
-        "path": "/v1/agents"
+        "path": "/v1/agents",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -75,7 +104,8 @@
         ],
         "id": "beta.agents.list",
         "method": "GET",
-        "path": "/v1/agents"
+        "path": "/v1/agents",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -83,7 +113,8 @@
         ],
         "id": "beta.agents.retrieve",
         "method": "GET",
-        "path": "/v1/agents/{}"
+        "path": "/v1/agents/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -91,7 +122,8 @@
         ],
         "id": "beta.agents.update",
         "method": "POST",
-        "path": "/v1/agents/{}"
+        "path": "/v1/agents/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -99,7 +131,8 @@
         ],
         "id": "beta.agents.versions.list",
         "method": "GET",
-        "path": "/v1/agents/{}/versions"
+        "path": "/v1/agents/{}/versions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -107,7 +140,8 @@
         ],
         "id": "beta.deploymentRuns.list",
         "method": "GET",
-        "path": "/v1/deployment_runs"
+        "path": "/v1/deployment_runs",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -115,7 +149,8 @@
         ],
         "id": "beta.deploymentRuns.retrieve",
         "method": "GET",
-        "path": "/v1/deployment_runs/{}"
+        "path": "/v1/deployment_runs/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -123,7 +158,8 @@
         ],
         "id": "beta.deployments.archive",
         "method": "POST",
-        "path": "/v1/deployments/{}/archive"
+        "path": "/v1/deployments/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -131,7 +167,8 @@
         ],
         "id": "beta.deployments.create",
         "method": "POST",
-        "path": "/v1/deployments"
+        "path": "/v1/deployments",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -139,7 +176,8 @@
         ],
         "id": "beta.deployments.list",
         "method": "GET",
-        "path": "/v1/deployments"
+        "path": "/v1/deployments",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -147,7 +185,8 @@
         ],
         "id": "beta.deployments.pause",
         "method": "POST",
-        "path": "/v1/deployments/{}/pause"
+        "path": "/v1/deployments/{}/pause",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -155,7 +194,8 @@
         ],
         "id": "beta.deployments.retrieve",
         "method": "GET",
-        "path": "/v1/deployments/{}"
+        "path": "/v1/deployments/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -163,7 +203,8 @@
         ],
         "id": "beta.deployments.run",
         "method": "POST",
-        "path": "/v1/deployments/{}/run"
+        "path": "/v1/deployments/{}/run",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -171,7 +212,8 @@
         ],
         "id": "beta.deployments.unpause",
         "method": "POST",
-        "path": "/v1/deployments/{}/unpause"
+        "path": "/v1/deployments/{}/unpause",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -179,7 +221,8 @@
         ],
         "id": "beta.deployments.update",
         "method": "POST",
-        "path": "/v1/deployments/{}"
+        "path": "/v1/deployments/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -187,7 +230,8 @@
         ],
         "id": "beta.dreams.archive",
         "method": "POST",
-        "path": "/v1/dreams/{}/archive"
+        "path": "/v1/dreams/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -195,7 +239,8 @@
         ],
         "id": "beta.dreams.cancel",
         "method": "POST",
-        "path": "/v1/dreams/{}/cancel"
+        "path": "/v1/dreams/{}/cancel",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -203,7 +248,8 @@
         ],
         "id": "beta.dreams.create",
         "method": "POST",
-        "path": "/v1/dreams"
+        "path": "/v1/dreams",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -211,7 +257,8 @@
         ],
         "id": "beta.dreams.list",
         "method": "GET",
-        "path": "/v1/dreams"
+        "path": "/v1/dreams",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -219,7 +266,8 @@
         ],
         "id": "beta.dreams.retrieve",
         "method": "GET",
-        "path": "/v1/dreams/{}"
+        "path": "/v1/dreams/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -227,7 +275,8 @@
         ],
         "id": "beta.environments.archive",
         "method": "POST",
-        "path": "/v1/environments/{}/archive"
+        "path": "/v1/environments/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -235,7 +284,8 @@
         ],
         "id": "beta.environments.create",
         "method": "POST",
-        "path": "/v1/environments"
+        "path": "/v1/environments",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -243,7 +293,8 @@
         ],
         "id": "beta.environments.delete",
         "method": "DELETE",
-        "path": "/v1/environments/{}"
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -251,7 +302,8 @@
         ],
         "id": "beta.environments.list",
         "method": "GET",
-        "path": "/v1/environments"
+        "path": "/v1/environments",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -259,7 +311,8 @@
         ],
         "id": "beta.environments.retrieve",
         "method": "GET",
-        "path": "/v1/environments/{}"
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -267,7 +320,8 @@
         ],
         "id": "beta.environments.update",
         "method": "POST",
-        "path": "/v1/environments/{}"
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -275,7 +329,8 @@
         ],
         "id": "beta.environments.work.ack",
         "method": "POST",
-        "path": "/v1/environments/{}/work/{}/ack"
+        "path": "/v1/environments/{}/work/{}/ack",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -283,7 +338,8 @@
         ],
         "id": "beta.environments.work.heartbeat",
         "method": "POST",
-        "path": "/v1/environments/{}/work/{}/heartbeat"
+        "path": "/v1/environments/{}/work/{}/heartbeat",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -291,7 +347,8 @@
         ],
         "id": "beta.environments.work.list",
         "method": "GET",
-        "path": "/v1/environments/{}/work"
+        "path": "/v1/environments/{}/work",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -299,7 +356,8 @@
         ],
         "id": "beta.environments.work.poll",
         "method": "GET",
-        "path": "/v1/environments/{}/work/poll"
+        "path": "/v1/environments/{}/work/poll",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -307,7 +365,8 @@
         ],
         "id": "beta.environments.work.retrieve",
         "method": "GET",
-        "path": "/v1/environments/{}/work/{}"
+        "path": "/v1/environments/{}/work/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -315,7 +374,8 @@
         ],
         "id": "beta.environments.work.stats",
         "method": "GET",
-        "path": "/v1/environments/{}/work/stats"
+        "path": "/v1/environments/{}/work/stats",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -323,7 +383,8 @@
         ],
         "id": "beta.environments.work.stop",
         "method": "POST",
-        "path": "/v1/environments/{}/work/{}/stop"
+        "path": "/v1/environments/{}/work/{}/stop",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -331,37 +392,43 @@
         ],
         "id": "beta.environments.work.update",
         "method": "POST",
-        "path": "/v1/environments/{}/work/{}"
+        "path": "/v1/environments/{}/work/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.files.delete",
         "method": "DELETE",
-        "path": "/v1/files/{}"
+        "path": "/v1/files/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.files.download",
         "method": "GET",
-        "path": "/v1/files/{}/content"
+        "path": "/v1/files/{}/content",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.files.list",
         "method": "GET",
-        "path": "/v1/files"
+        "path": "/v1/files",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.files.retrieveMetadata",
         "method": "GET",
-        "path": "/v1/files/{}"
+        "path": "/v1/files/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.files.upload",
         "method": "POST",
-        "path": "/v1/files"
+        "path": "/v1/files",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -369,7 +436,8 @@
         ],
         "id": "beta.memoryStores.archive",
         "method": "POST",
-        "path": "/v1/memory_stores/{}/archive"
+        "path": "/v1/memory_stores/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -377,7 +445,8 @@
         ],
         "id": "beta.memoryStores.create",
         "method": "POST",
-        "path": "/v1/memory_stores"
+        "path": "/v1/memory_stores",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -385,7 +454,8 @@
         ],
         "id": "beta.memoryStores.delete",
         "method": "DELETE",
-        "path": "/v1/memory_stores/{}"
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -393,7 +463,8 @@
         ],
         "id": "beta.memoryStores.list",
         "method": "GET",
-        "path": "/v1/memory_stores"
+        "path": "/v1/memory_stores",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -401,7 +472,8 @@
         ],
         "id": "beta.memoryStores.memories.create",
         "method": "POST",
-        "path": "/v1/memory_stores/{}/memories"
+        "path": "/v1/memory_stores/{}/memories",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -409,7 +481,8 @@
         ],
         "id": "beta.memoryStores.memories.delete",
         "method": "DELETE",
-        "path": "/v1/memory_stores/{}/memories/{}"
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -417,7 +490,8 @@
         ],
         "id": "beta.memoryStores.memories.list",
         "method": "GET",
-        "path": "/v1/memory_stores/{}/memories"
+        "path": "/v1/memory_stores/{}/memories",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -425,7 +499,8 @@
         ],
         "id": "beta.memoryStores.memories.retrieve",
         "method": "GET",
-        "path": "/v1/memory_stores/{}/memories/{}"
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -433,7 +508,8 @@
         ],
         "id": "beta.memoryStores.memories.update",
         "method": "POST",
-        "path": "/v1/memory_stores/{}/memories/{}"
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -441,7 +517,8 @@
         ],
         "id": "beta.memoryStores.memoryVersions.list",
         "method": "GET",
-        "path": "/v1/memory_stores/{}/memory_versions"
+        "path": "/v1/memory_stores/{}/memory_versions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -449,7 +526,8 @@
         ],
         "id": "beta.memoryStores.memoryVersions.redact",
         "method": "POST",
-        "path": "/v1/memory_stores/{}/memory_versions/{}/redact"
+        "path": "/v1/memory_stores/{}/memory_versions/{}/redact",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -457,7 +535,8 @@
         ],
         "id": "beta.memoryStores.memoryVersions.retrieve",
         "method": "GET",
-        "path": "/v1/memory_stores/{}/memory_versions/{}"
+        "path": "/v1/memory_stores/{}/memory_versions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -465,7 +544,8 @@
         ],
         "id": "beta.memoryStores.retrieve",
         "method": "GET",
-        "path": "/v1/memory_stores/{}"
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -473,19 +553,22 @@
         ],
         "id": "beta.memoryStores.update",
         "method": "POST",
-        "path": "/v1/memory_stores/{}"
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.models.list",
         "method": "GET",
-        "path": "/v1/models"
+        "path": "/v1/models",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.models.retrieve",
         "method": "GET",
-        "path": "/v1/models/{}"
+        "path": "/v1/models/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -493,7 +576,8 @@
         ],
         "id": "beta.sessions.archive",
         "method": "POST",
-        "path": "/v1/sessions/{}/archive"
+        "path": "/v1/sessions/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -501,7 +585,8 @@
         ],
         "id": "beta.sessions.create",
         "method": "POST",
-        "path": "/v1/sessions"
+        "path": "/v1/sessions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -509,7 +594,8 @@
         ],
         "id": "beta.sessions.delete",
         "method": "DELETE",
-        "path": "/v1/sessions/{}"
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -517,7 +603,8 @@
         ],
         "id": "beta.sessions.events.list",
         "method": "GET",
-        "path": "/v1/sessions/{}/events"
+        "path": "/v1/sessions/{}/events",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -525,7 +612,8 @@
         ],
         "id": "beta.sessions.events.send",
         "method": "POST",
-        "path": "/v1/sessions/{}/events"
+        "path": "/v1/sessions/{}/events",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -533,7 +621,8 @@
         ],
         "id": "beta.sessions.events.stream",
         "method": "GET",
-        "path": "/v1/sessions/{}/events/stream"
+        "path": "/v1/sessions/{}/events/stream",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -541,7 +630,8 @@
         ],
         "id": "beta.sessions.list",
         "method": "GET",
-        "path": "/v1/sessions"
+        "path": "/v1/sessions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -549,7 +639,8 @@
         ],
         "id": "beta.sessions.resources.add",
         "method": "POST",
-        "path": "/v1/sessions/{}/resources"
+        "path": "/v1/sessions/{}/resources",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -557,7 +648,8 @@
         ],
         "id": "beta.sessions.resources.delete",
         "method": "DELETE",
-        "path": "/v1/sessions/{}/resources/{}"
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -565,7 +657,8 @@
         ],
         "id": "beta.sessions.resources.list",
         "method": "GET",
-        "path": "/v1/sessions/{}/resources"
+        "path": "/v1/sessions/{}/resources",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -573,7 +666,8 @@
         ],
         "id": "beta.sessions.resources.retrieve",
         "method": "GET",
-        "path": "/v1/sessions/{}/resources/{}"
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -581,7 +675,8 @@
         ],
         "id": "beta.sessions.resources.update",
         "method": "POST",
-        "path": "/v1/sessions/{}/resources/{}"
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -589,7 +684,8 @@
         ],
         "id": "beta.sessions.retrieve",
         "method": "GET",
-        "path": "/v1/sessions/{}"
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -597,7 +693,8 @@
         ],
         "id": "beta.sessions.threads.archive",
         "method": "POST",
-        "path": "/v1/sessions/{}/threads/{}/archive"
+        "path": "/v1/sessions/{}/threads/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -605,7 +702,8 @@
         ],
         "id": "beta.sessions.threads.events.list",
         "method": "GET",
-        "path": "/v1/sessions/{}/threads/{}/events"
+        "path": "/v1/sessions/{}/threads/{}/events",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -613,7 +711,8 @@
         ],
         "id": "beta.sessions.threads.events.stream",
         "method": "GET",
-        "path": "/v1/sessions/{}/threads/{}/stream"
+        "path": "/v1/sessions/{}/threads/{}/stream",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -621,7 +720,8 @@
         ],
         "id": "beta.sessions.threads.list",
         "method": "GET",
-        "path": "/v1/sessions/{}/threads"
+        "path": "/v1/sessions/{}/threads",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -629,7 +729,8 @@
         ],
         "id": "beta.sessions.threads.retrieve",
         "method": "GET",
-        "path": "/v1/sessions/{}/threads/{}"
+        "path": "/v1/sessions/{}/threads/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -637,61 +738,71 @@
         ],
         "id": "beta.sessions.update",
         "method": "POST",
-        "path": "/v1/sessions/{}"
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.create",
         "method": "POST",
-        "path": "/v1/skills"
+        "path": "/v1/skills",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.delete",
         "method": "DELETE",
-        "path": "/v1/skills/{}"
+        "path": "/v1/skills/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.list",
         "method": "GET",
-        "path": "/v1/skills"
+        "path": "/v1/skills",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.retrieve",
         "method": "GET",
-        "path": "/v1/skills/{}"
+        "path": "/v1/skills/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.versions.create",
         "method": "POST",
-        "path": "/v1/skills/{}/versions"
+        "path": "/v1/skills/{}/versions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.versions.delete",
         "method": "DELETE",
-        "path": "/v1/skills/{}/versions/{}"
+        "path": "/v1/skills/{}/versions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.versions.download",
         "method": "GET",
-        "path": "/v1/skills/{}/versions/{}/content"
+        "path": "/v1/skills/{}/versions/{}/content",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.versions.list",
         "method": "GET",
-        "path": "/v1/skills/{}/versions"
+        "path": "/v1/skills/{}/versions",
+        "transport_query": "beta=true"
       },
       {
         "betas": [],
         "id": "beta.skills.versions.retrieve",
         "method": "GET",
-        "path": "/v1/skills/{}/versions/{}"
+        "path": "/v1/skills/{}/versions/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -699,7 +810,8 @@
         ],
         "id": "beta.tunnels.archive",
         "method": "POST",
-        "path": "/v1/tunnels/{}/archive"
+        "path": "/v1/tunnels/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -707,7 +819,8 @@
         ],
         "id": "beta.tunnels.certificates.archive",
         "method": "POST",
-        "path": "/v1/tunnels/{}/certificates/{}/archive"
+        "path": "/v1/tunnels/{}/certificates/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -715,7 +828,8 @@
         ],
         "id": "beta.tunnels.certificates.create",
         "method": "POST",
-        "path": "/v1/tunnels/{}/certificates"
+        "path": "/v1/tunnels/{}/certificates",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -723,7 +837,8 @@
         ],
         "id": "beta.tunnels.certificates.list",
         "method": "GET",
-        "path": "/v1/tunnels/{}/certificates"
+        "path": "/v1/tunnels/{}/certificates",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -731,7 +846,8 @@
         ],
         "id": "beta.tunnels.certificates.retrieve",
         "method": "GET",
-        "path": "/v1/tunnels/{}/certificates/{}"
+        "path": "/v1/tunnels/{}/certificates/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -739,7 +855,8 @@
         ],
         "id": "beta.tunnels.create",
         "method": "POST",
-        "path": "/v1/tunnels"
+        "path": "/v1/tunnels",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -747,7 +864,8 @@
         ],
         "id": "beta.tunnels.list",
         "method": "GET",
-        "path": "/v1/tunnels"
+        "path": "/v1/tunnels",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -755,7 +873,8 @@
         ],
         "id": "beta.tunnels.retrieve",
         "method": "GET",
-        "path": "/v1/tunnels/{}"
+        "path": "/v1/tunnels/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -763,7 +882,8 @@
         ],
         "id": "beta.tunnels.revealToken",
         "method": "POST",
-        "path": "/v1/tunnels/{}/reveal_token"
+        "path": "/v1/tunnels/{}/reveal_token",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -771,7 +891,8 @@
         ],
         "id": "beta.tunnels.rotateToken",
         "method": "POST",
-        "path": "/v1/tunnels/{}/rotate_token"
+        "path": "/v1/tunnels/{}/rotate_token",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -779,7 +900,8 @@
         ],
         "id": "beta.userProfiles.create",
         "method": "POST",
-        "path": "/v1/user_profiles"
+        "path": "/v1/user_profiles",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -787,7 +909,8 @@
         ],
         "id": "beta.userProfiles.createEnrollmentURL",
         "method": "POST",
-        "path": "/v1/user_profiles/{}/enrollment_url"
+        "path": "/v1/user_profiles/{}/enrollment_url",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -795,7 +918,8 @@
         ],
         "id": "beta.userProfiles.list",
         "method": "GET",
-        "path": "/v1/user_profiles"
+        "path": "/v1/user_profiles",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -803,7 +927,8 @@
         ],
         "id": "beta.userProfiles.retrieve",
         "method": "GET",
-        "path": "/v1/user_profiles/{}"
+        "path": "/v1/user_profiles/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -811,7 +936,8 @@
         ],
         "id": "beta.userProfiles.update",
         "method": "POST",
-        "path": "/v1/user_profiles/{}"
+        "path": "/v1/user_profiles/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -819,7 +945,8 @@
         ],
         "id": "beta.vaults.archive",
         "method": "POST",
-        "path": "/v1/vaults/{}/archive"
+        "path": "/v1/vaults/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -827,7 +954,8 @@
         ],
         "id": "beta.vaults.create",
         "method": "POST",
-        "path": "/v1/vaults"
+        "path": "/v1/vaults",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -835,7 +963,8 @@
         ],
         "id": "beta.vaults.credentials.archive",
         "method": "POST",
-        "path": "/v1/vaults/{}/credentials/{}/archive"
+        "path": "/v1/vaults/{}/credentials/{}/archive",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -843,7 +972,8 @@
         ],
         "id": "beta.vaults.credentials.create",
         "method": "POST",
-        "path": "/v1/vaults/{}/credentials"
+        "path": "/v1/vaults/{}/credentials",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -851,7 +981,8 @@
         ],
         "id": "beta.vaults.credentials.delete",
         "method": "DELETE",
-        "path": "/v1/vaults/{}/credentials/{}"
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -859,7 +990,8 @@
         ],
         "id": "beta.vaults.credentials.list",
         "method": "GET",
-        "path": "/v1/vaults/{}/credentials"
+        "path": "/v1/vaults/{}/credentials",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -867,7 +999,8 @@
         ],
         "id": "beta.vaults.credentials.mcpOAuthValidate",
         "method": "POST",
-        "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate"
+        "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -875,7 +1008,8 @@
         ],
         "id": "beta.vaults.credentials.retrieve",
         "method": "GET",
-        "path": "/v1/vaults/{}/credentials/{}"
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -883,7 +1017,8 @@
         ],
         "id": "beta.vaults.credentials.update",
         "method": "POST",
-        "path": "/v1/vaults/{}/credentials/{}"
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -891,7 +1026,8 @@
         ],
         "id": "beta.vaults.delete",
         "method": "DELETE",
-        "path": "/v1/vaults/{}"
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -899,7 +1035,8 @@
         ],
         "id": "beta.vaults.list",
         "method": "GET",
-        "path": "/v1/vaults"
+        "path": "/v1/vaults",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -907,7 +1044,8 @@
         ],
         "id": "beta.vaults.retrieve",
         "method": "GET",
-        "path": "/v1/vaults/{}"
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
       },
       {
         "betas": [
@@ -915,7 +1053,98 @@
         ],
         "id": "beta.vaults.update",
         "method": "POST",
-        "path": "/v1/vaults/{}"
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "files.delete",
+        "method": "DELETE",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [],
+        "id": "files.download",
+        "method": "GET",
+        "path": "/v1/files/{}/content"
+      },
+      {
+        "betas": [],
+        "id": "files.list",
+        "method": "GET",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [],
+        "id": "files.retrieveMetadata",
+        "method": "GET",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [],
+        "id": "files.upload",
+        "method": "POST",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [],
+        "id": "models.list",
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "betas": [],
+        "id": "models.retrieve",
+        "method": "GET",
+        "path": "/v1/models/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.create",
+        "method": "POST",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [],
+        "id": "skills.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.list",
+        "method": "GET",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [],
+        "id": "skills.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.create",
+        "method": "POST",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}/versions/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.list",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}"
       }
     ],
     "role": "current_oracle",
@@ -1022,72 +1251,110 @@
   },
   "documented_routes": [
     {
+      "betas": [
+        "skills-2025-10-02"
+      ],
       "id": "documented.skills.versions.retrieveFile",
       "method": "GET",
       "path": "/v1/skills/{}/versions/{}/files/{}",
-      "reason": "Official bundle-file endpoint is documented but not generated by the current TypeScript SDK"
+      "reason": "Official bundle-file endpoint is documented but not generated by the current TypeScript SDK",
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "id": "documented.memoryStores.memories.patch",
       "method": "PATCH",
       "path": "/v1/memory_stores/{}/memories/{}",
-      "reason": "Canonical protocol verb retained beside the generated SDK POST transport"
+      "reason": "Canonical protocol verb retained beside the generated SDK POST transport",
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.create",
       "method": "POST",
       "path": "/v1/organizations/tunnels",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.list",
       "method": "GET",
       "path": "/v1/organizations/tunnels",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.retrieve",
       "method": "GET",
       "path": "/v1/organizations/tunnels/{}",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.archive",
       "method": "POST",
       "path": "/v1/organizations/tunnels/{}/archive",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.revealToken",
       "method": "POST",
       "path": "/v1/organizations/tunnels/{}/reveal_token",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.rotateToken",
       "method": "POST",
       "path": "/v1/organizations/tunnels/{}/rotate_token",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.certificates.create",
       "method": "POST",
       "path": "/v1/organizations/tunnels/{}/certificates",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.certificates.list",
       "method": "GET",
       "path": "/v1/organizations/tunnels/{}/certificates",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.certificates.retrieve",
       "method": "GET",
       "path": "/v1/organizations/tunnels/{}/certificates/{}",
       "reason": "Deprecated official organization-scoped Tunnel migration surface"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "id": "documented.organizationTunnels.certificates.archive",
       "method": "POST",
       "path": "/v1/organizations/tunnels/{}/certificates/{}/archive",

@@ -3,23 +3,23 @@
   "schema_version": 1,
   "supported_sdk_anchors": [
     {
-      "declaration_file_count": 35,
+      "declaration_file_count": 36,
       "id": "oldest",
-      "operation_fingerprint": "5f487d23932fcfe4bdb31cb82e1e27e861a0e4d28aaa9e8929a83f6eebb2291a",
+      "operation_fingerprint": "8bc30a783ba309bdce3e06789b4e81b6a6f16ecf4b6a7f6899da6395475f0278",
       "role": "oldest_supported",
-      "type_fingerprint": "bec8f7b9d236d1e72ffcfad0ac362f1a5de60681e603661250ff23c1f21593a8",
+      "type_fingerprint": "8537a553e72df6df3ed8624cd118421e21def2113e246343333dceb3b349b856",
       "version": "0.105.0"
     },
     {
-      "declaration_file_count": 40,
+      "declaration_file_count": 41,
       "id": "user_profiles_legacy",
-      "operation_fingerprint": "6f10dbb8297c2cdf9a4915587cd4bf41c2a5f7f136dd994bae8b83b9ded19da5",
+      "operation_fingerprint": "27be4854aeec7f7a211fbd3eed32f54bb0e150760372c88b1ae495217c19207e",
       "role": "protocol_change_point",
-      "type_fingerprint": "f0dd45cd49980ac2aafa69fce9c79500b8752fd5e25e5df81c15521190c30e88",
+      "type_fingerprint": "5a900959f6e9c1dc547c43c95321ec2d7eb5c147420c737365a0e45b87096950",
       "version": "0.117.1"
     },
     {
-      "declaration_file_count": 40,
+      "declaration_file_count": 46,
       "id": "current",
       "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
       "role": "current_oracle",

@@ -68,6 +68,45 @@ function recordingClient() {
 
 const scenarios = [
   {
+    resource: 'files',
+    phases: ['create', 'retrieve', 'list', 'terminal'],
+    calls: [
+      ['files.upload', async (c) => c.files.upload({
+        file: await toFile(Buffer.from('fixture'), 'fixture.txt'), expires_in_seconds: 3600,
+      })],
+      ['files.retrieveMetadata', (c) => c.files.retrieveMetadata(fixtureID)],
+      ['files.download', (c) => c.files.download(fixtureID)],
+      ['files.list', (c) => c.files.list({ ids: [fixtureID] })],
+      ['files.delete', (c) => c.files.delete(fixtureID)],
+    ],
+  },
+  {
+    resource: 'models',
+    phases: ['retrieve', 'list'],
+    calls: [
+      ['models.retrieve', (c) => c.models.retrieve(fixtureID)],
+      ['models.list', (c) => c.models.list()],
+    ],
+  },
+  {
+    resource: 'skills',
+    phases: ['create', 'retrieve', 'list', 'terminal'],
+    calls: [
+      ['skills.create', async (c) => c.skills.create({
+        files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')], display_name: 'Fixture',
+      })],
+      ['skills.retrieve', (c) => c.skills.retrieve(fixtureID)],
+      ['skills.list', (c) => c.skills.list()],
+      ['skills.delete', (c) => c.skills.delete(fixtureID)],
+      ['skills.versions.create', async (c) => c.skills.versions.create(fixtureID, {
+        files: [await toFile(Buffer.from('# Skill'), 'SKILL.md')],
+      })],
+      ['skills.versions.retrieve', (c) => c.skills.versions.retrieve(fixtureID, { skill_id: fixtureID })],
+      ['skills.versions.list', (c) => c.skills.versions.list(fixtureID)],
+      ['skills.versions.delete', (c) => c.skills.versions.delete(fixtureID, { skill_id: fixtureID })],
+    ],
+  },
+  {
     resource: 'agents',
     phases: ['create', 'retrieve', 'update', 'list', 'terminal'],
     calls: [
