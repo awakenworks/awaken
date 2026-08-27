@@ -12406,7 +12406,8 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
     // | generated   | present               | generated execution config receives policy |
     // The second rule is owned by the fallback construction path. This test owns
     // the distributed continuation boundary: a second claim must compare the
-    // same immutable publication instead of a Session-augmented copy.
+    // same immutable publication while the execution clone exposes the Session's
+    // exact MCP policy to the dynamic-tool filter.
     let publication = crate::config::server_config(
         "assistant",
         "stub",
@@ -12425,13 +12426,15 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
     host.session_slots.update("policy-session", |slot| {
         slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
             toolsets: vec![ToolsetPolicy {
-                source: ToolsetSource::Agent,
+                source: ToolsetSource::Mcp {
+                    server_name: "flow".into(),
+                },
                 default: ToolExecutionPolicy::default(),
                 overrides: vec![ToolPolicyOverride::new(
                     "write",
                     ToolExecutionPolicy {
                         enabled: true,
-                        permission: ToolPermissionRequirement::AlwaysAsk,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
                     },
                 )],
             }],
@@ -12443,7 +12446,26 @@ async fn session_tool_policy_does_not_rewrite_an_immutable_publication() {
         .ctx_for("policy-session", Some("assistant"))
         .await
         .expect("build Session from immutable publication");
-    assert_eq!(context.config, publication);
+    assert_eq!(
+        context
+            .config
+            .resolved_spec
+            .plugin_config
+            .agent
+            .tool_policy("mcp__flow__workflow_get"),
+        Some(ToolExecutionPolicy {
+            enabled: true,
+            permission: ToolPermissionRequirement::AlwaysAllow,
+        })
+    );
+    assert!(
+        publication
+            .resolved_spec
+            .plugin_config
+            .agent
+            .toolsets
+            .is_empty()
+    );
 }
 
 #[tokio::test]

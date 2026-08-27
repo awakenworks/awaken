@@ -223,6 +223,7 @@ impl CatalogModelPublicationResolver {
             processing_placement: None,
         };
         let provider_ref = format!("{}@{}", offering.provider_id.0, provider.version);
+        let brokered = matches!(access, PublicationAccess::Brokered);
         let credential = match access {
             PublicationAccess::Direct(credential) => credential
                 .map(|credential| {
@@ -234,16 +235,20 @@ impl CatalogModelPublicationResolver {
                         &(&provider_ref, &endpoint),
                         &usage,
                     );
+                    let holder_admission = match &self.direct_holder {
+                        Some(holder) => CredentialHolderAdmission::Selected(holder),
+                        None => CredentialHolderAdmission::Deferred(
+                            DeferredCredentialHolderSelection::ProviderPublication,
+                        ),
+                    };
                     compile_exact_credential_access(
                         credential,
                         ExactCredentialAccessRequest {
                             workspace_id: Some(workspace.as_str()),
                             target: None,
                             usage,
-                            policy: CredentialExecutionPolicy::self_hosted_provider(),
-                            holder_admission: CredentialHolderAdmission::Deferred(
-                                DeferredCredentialHolderSelection::ProviderPublication,
-                            ),
+                            policy: self.direct_credential_policy.clone(),
+                            holder_admission,
                             binding: &material_binding,
                             now_unix_ms: super::wall_clock_ms(),
                         },
@@ -254,8 +259,27 @@ impl CatalogModelPublicationResolver {
             PublicationAccess::Brokered => None,
         };
         let error_binding = binding.clone();
-        match acp {
-            Some(acp) => ResolvedModelCandidate::try_provider_with_profile(
+        match (brokered, acp) {
+            (true, Some(acp)) => ResolvedModelCandidate::try_brokered_provider_with_profile(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                endpoint,
+                ProviderExecutionProfile {
+                    unspecified_reasoning: reasoning,
+                    acp: Some(acp),
+                },
+            ),
+            (true, None) => ResolvedModelCandidate::try_brokered_provider_with_reasoning(
+                binding,
+                provider_ref,
+                route_ref,
+                workspace.clone(),
+                endpoint,
+                reasoning,
+            ),
+            (false, Some(acp)) => ResolvedModelCandidate::try_provider_with_profile(
                 binding,
                 provider_ref,
                 route_ref,
@@ -267,7 +291,7 @@ impl CatalogModelPublicationResolver {
                     acp: Some(acp),
                 },
             ),
-            None => ResolvedModelCandidate::try_provider_with_reasoning(
+            (false, None) => ResolvedModelCandidate::try_provider_with_reasoning(
                 binding,
                 provider_ref,
                 route_ref,

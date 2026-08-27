@@ -206,10 +206,14 @@ pub async fn prepare_control_process_with_managed_services(
     additional_lifecycle_delivery: Option<Arc<dyn awaken_session_contract::LifecycleFactDelivery>>,
     managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
+    let direct_credential_execution = managed_services.provider_credential_execution.clone();
     prepare_control_process_with_model_supply(
         deployment,
         key,
-        PublicationModelSupply::HostedPublication { resolver },
+        PublicationModelSupply::HostedPublication {
+            resolver,
+            direct_credential_execution,
+        },
         brokered_catalog,
         Some((web_search_providers, web_search_publication_resolver)),
         additional_lifecycle_delivery,
@@ -231,6 +235,7 @@ async fn prepare_control_process_with_model_supply(
     mut managed_services: ManagedServiceAdapters,
 ) -> Result<PreparedProcess, String> {
     let service_lifecycle = awaken_service_lifecycle::ServiceLifecycle::new();
+    let hosted_byok_enabled = managed_services.provider_credential_execution.is_some();
     managed_platform::install_background_services(
         &service_lifecycle,
         &managed_services.background_services,
@@ -296,10 +301,10 @@ async fn prepare_control_process_with_model_supply(
             cloud_api_base_url: Some(deployment.cloud_iam.inference_base_url.clone()),
             cloud_developer_key_file: deployment.cloud_iam.developer_key_file.clone(),
             model_supply: awaken_admin_config_api::ModelSupplyCapabilityView {
-                local_catalog_enabled: false,
-                byok_enabled: false,
+                local_catalog_enabled: hosted_byok_enabled,
+                byok_enabled: hosted_byok_enabled,
                 cloud_models_enabled: true,
-                profile_authoring_enabled: false,
+                profile_authoring_enabled: hosted_byok_enabled,
             },
             brokered_catalog,
             cloud_login: identity.cloud_login,

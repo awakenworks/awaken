@@ -168,6 +168,7 @@ fn provider_model_candidate_provisioning_is_pinned() {
             "type": "provider",
             "provider_ref": "provider-a@2",
             "route_ref": "route-a@3",
+            "access_kind": "direct",
             "scope_id": "workspace-a",
             "credential": {
                 "credential": { "id": "credential-a", "revision": 4 },

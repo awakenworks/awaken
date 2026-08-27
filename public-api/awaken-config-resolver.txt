@@ -164,6 +164,7 @@ pub awaken_config_resolver::CredentialSelectionContext::offering_endpoint: core:
 pub awaken_config_resolver::CredentialSelectionContext::offering_provider: core::option::Option<&'a str>
 pub awaken_config_resolver::CredentialSelectionContext::selection_sequence: u64
 pub struct awaken_config_resolver::ExecutableModelOption
+pub awaken_config_resolver::ExecutableModelOption::access_kind: awaken_runtime_contract::resolved::ProviderAccessKind
 pub awaken_config_resolver::ExecutableModelOption::backend_ref: alloc::string::String
 pub awaken_config_resolver::ExecutableModelOption::dialect: alloc::string::String
 pub awaken_config_resolver::ExecutableModelOption::endpoint_id: alloc::string::String

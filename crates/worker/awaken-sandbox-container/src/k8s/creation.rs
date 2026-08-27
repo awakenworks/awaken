@@ -452,6 +452,52 @@ mod tests {
     }
 
     #[test]
+    fn failed_creation_cleans_only_resources_created_by_that_attempt() {
+        /* Create-failure cleanup cause/effect table.
+         * Causes: C1 realization failed; C2 this attempt created the Pod; C3
+         * this attempt created the continuation claim. Effects: E1 reap the
+         * exact created Pod; E2 evaluate deletion of the exact created claim.
+         * Rules: F1 !C1=>!E1+!E2; F2 C1+C2+!C3=>E1 only (ephemeral Session);
+         * F3 C1+!C2+C3=>E2 only (a peer owns the Pod); F4 C1+C2+C3=>E1+E2.
+         * UID/resourceVersion and claim-UID fencing remain in the existing
+         * deletion owners; this kernel only prevents one condition from
+         * suppressing cleanup of the other resource.
+         */
+        assert_eq!(
+            creation_failure_cleanup(false, true, true),
+            CreationFailureCleanup {
+                pod: false,
+                claim: false,
+            },
+            "F1"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, true, false),
+            CreationFailureCleanup {
+                pod: true,
+                claim: false,
+            },
+            "F2"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, false, true),
+            CreationFailureCleanup {
+                pod: false,
+                claim: true,
+            },
+            "F3"
+        );
+        assert_eq!(
+            creation_failure_cleanup(true, true, true),
+            CreationFailureCleanup {
+                pod: true,
+                claim: true,
+            },
+            "F4"
+        );
+    }
+
+    #[test]
     fn stale_continuation_reference_decision_table() {
         /* Existing-realization recovery cause/effect table.
          * Causes: C1 the deterministic Pod references this realization's PVC;

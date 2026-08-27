@@ -493,3 +493,28 @@ local Credential is expected. Publication still revalidates the exact Cloud
 route; an unavailable or unacknowledged route fails there without falling back
 to Catalog endpoint data or BYOK. Cloud provider keys never enter the Awaken
 Credential repository, process configuration, model directory, or response.
+
+### 2026-08-27 amendment — model access kind is explicit and Hosted may compose BYOK
+
+`ProviderAccessKind` is the single provider-neutral value that distinguishes a
+published direct Workspace credential path from brokered platform access. It is
+carried by `ExecutableModelOption` and `ModelProvisioning::Provider`; the
+presence or absence of `CredentialAccess`, endpoint names, and `route_ref`
+prefixes are not access-source discriminants. A direct candidate may be
+anonymous or carry one exact `CredentialAccess`; a brokered candidate never
+carries a Workspace credential in the open publication.
+
+The earlier hosted posture is the original managed-only product profile, not a
+permanent prohibition on Hosted BYOK. A hosted composition may advertise and
+authorize direct Provider connection/Profile commands only when its typed
+deployment capability enables them and IAM grants the exact Workspace
+model-supply actions. It must call the same `ProviderConnectionService`,
+Catalog, Credential repository, Profile and publication resolver used by local
+composition. Cloud remains an adapter: it may supply remote custody and an
+egress plaintext holder, but it must not introduce another Provider form,
+catalogue, Profile, credential binding, or publication compiler.
+
+Brokered and direct candidates may coexist in one explicitly authored Profile.
+Every candidate retains its access kind and exact credential/route pins;
+runtime and downstream products may never infer a source, inject a hidden
+cross-source fallback, or convert a direct failure into platform-funded usage.
