@@ -31,7 +31,7 @@ const OBJECT_AT: &str = "2026-01-01T00:00:00Z";
 const NS: &str = "env_registry";
 
 fn environment_store(error: impl std::fmt::Display) -> EnvironmentStoreError {
-    EnvironmentStoreError(error.to_string())
+    EnvironmentStoreError::Backend(error.to_string())
 }
 
 fn env_bundle() -> Result<MigrationBundle, MigrationError> {
@@ -177,16 +177,19 @@ struct PersistedEnvRow {
 
 impl PersistedEnvRow {
     fn try_into_item(self) -> Result<EnvItem, EnvironmentStoreError> {
+        let config: EnvironmentConfig =
+            serde_json::from_str(&self.config_json).map_err(environment_store)?;
+        config.validate()?;
         Ok(EnvItem {
             id: self.id,
             revision: EnvironmentRevision(u64::try_from(self.revision).map_err(|_| {
-                EnvironmentStoreError("invalid persisted Environment revision".into())
+                EnvironmentStoreError::Backend("invalid persisted Environment revision".into())
             })?),
             name: self.name,
             description: decode_description(self.description)?,
             metadata: serde_json::from_str(&self.metadata_json).map_err(environment_store)?,
             scope: self.scope,
-            config: serde_json::from_str(&self.config_json).map_err(environment_store)?,
+            config,
             sandbox_policy: self
                 .sandbox_policy_json
                 .map(|json| serde_json::from_str(&json).map_err(environment_store))
@@ -327,6 +330,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
+        command.config.validate()?;
         let mut guard = self
             .conn
             .lock()
@@ -471,7 +475,7 @@ impl EnvRegistry for SqliteEnvRegistry {
         if item.archived_at.is_some() {
             return Ok(None);
         }
-        if !item.apply(patch) {
+        if !item.apply(patch)? {
             return Ok(Some(item));
         }
         tx.execute(
@@ -507,12 +511,9 @@ impl EnvRegistry for SqliteEnvRegistry {
             return Ok(Some(item));
         }
         item.archived_at = Some(OBJECT_AT.to_string());
-        item.revision = EnvironmentRevision(
-            item.revision
-                .0
-                .checked_add(1)
-                .ok_or_else(|| EnvironmentStoreError("Environment revision exhausted".into()))?,
-        );
+        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
+            EnvironmentStoreError::Backend("Environment revision exhausted".into())
+        })?);
         tx.execute(
             "UPDATE env_registry_env SET archived_at = ?1, revision = ?2 WHERE env_id = ?3",
             params![OBJECT_AT, item.revision.0, id],
@@ -543,7 +544,7 @@ impl EnvRegistry for SqliteEnvRegistry {
             Ok(EnvironmentRegistrationIntent {
                 environment_id: id.to_string(),
                 revision,
-                operation: parse_operation(&operation).map_err(EnvironmentStoreError)?,
+                operation: parse_operation(&operation).map_err(EnvironmentStoreError::Backend)?,
                 delivered: delivered != 0,
             })
         })
@@ -581,9 +582,11 @@ impl EnvRegistry for SqliteEnvRegistry {
             Ok(EnvironmentRegistrationIntent {
                 environment_id,
                 revision: EnvironmentRevision(u64::try_from(revision).map_err(|_| {
-                    EnvironmentStoreError("invalid Environment registration revision".into())
+                    EnvironmentStoreError::Backend(
+                        "invalid Environment registration revision".into(),
+                    )
                 })?),
-                operation: parse_operation(&operation).map_err(EnvironmentStoreError)?,
+                operation: parse_operation(&operation).map_err(EnvironmentStoreError::Backend)?,
                 delivered: delivered != 0,
             })
         })
@@ -661,6 +664,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         &self,
         command: CreateEnvironmentCommand,
     ) -> Result<CreateEnvironmentOutcome, CreateEnvironmentError> {
+        command.config.validate()?;
         let mut tx = self
             .pool
             .begin()
@@ -861,7 +865,7 @@ impl EnvRegistry for PostgresEnvRegistry {
         if item.archived_at.is_some() {
             return Ok(None);
         }
-        if !item.apply(patch) {
+        if !item.apply(patch)? {
             return Ok(Some(item));
         }
         let revision = i64::try_from(item.revision.0).map_err(environment_store)?;
@@ -931,12 +935,9 @@ impl EnvRegistry for PostgresEnvRegistry {
             return Ok(Some(item));
         }
         item.archived_at = Some(OBJECT_AT.to_string());
-        item.revision = EnvironmentRevision(
-            item.revision
-                .0
-                .checked_add(1)
-                .ok_or_else(|| EnvironmentStoreError("Environment revision exhausted".into()))?,
-        );
+        item.revision = EnvironmentRevision(item.revision.0.checked_add(1).ok_or_else(|| {
+            EnvironmentStoreError::Backend("Environment revision exhausted".into())
+        })?);
         let revision = i64::try_from(item.revision.0).map_err(environment_store)?;
         sqlx::query(
             "UPDATE env_registry_env SET archived_at = $1, revision = $2 WHERE env_id = $3",
@@ -1000,7 +1001,7 @@ impl EnvRegistry for PostgresEnvRegistry {
                 environment_id: id.to_string(),
                 revision,
                 operation: parse_operation(row.get::<String, _>("operation").as_str())
-                    .map_err(EnvironmentStoreError)?,
+                    .map_err(EnvironmentStoreError::Backend)?,
                 delivered: row.get::<i64, _>("delivered") != 0,
             })
         })
@@ -1031,13 +1032,13 @@ impl EnvRegistry for PostgresEnvRegistry {
                     environment_id: row.get("env_id"),
                     revision: EnvironmentRevision(
                         u64::try_from(row.get::<i64, _>("revision")).map_err(|_| {
-                            EnvironmentStoreError(
+                            EnvironmentStoreError::Backend(
                                 "invalid Environment registration revision".into(),
                             )
                         })?,
                     ),
                     operation: parse_operation(row.get::<String, _>("operation").as_str())
-                        .map_err(EnvironmentStoreError)?,
+                        .map_err(EnvironmentStoreError::Backend)?,
                     delivered: row.get::<i64, _>("delivered") != 0,
                 })
             })
@@ -1066,6 +1067,11 @@ impl EnvRegistry for PostgresEnvRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use awaken_environment_contract::{
+        EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworking,
+        EnvironmentNetworkingMutation, EnvironmentPackages, EnvironmentStoreError,
+        InvalidEnvironmentConfig,
+    };
 
     #[test]
     fn environment_schema_is_versioned_and_unconditional() {
@@ -1101,6 +1107,38 @@ mod tests {
             decode_description(String::new()).unwrap(),
             Some(String::new()),
             "R4"
+        );
+    }
+
+    #[test]
+    fn persisted_invalid_environment_fails_closed_on_rehydration() {
+        // C1 legacy/corrupt storage contains an unreachable package plan -> E1
+        // rehydration returns the same typed domain error rather than admitting
+        // an invalid aggregate through a read-side bypass.
+        let row = PersistedEnvRow {
+            id: "env_invalid".into(),
+            name: "invalid".into(),
+            description: encode_description(&None),
+            metadata_json: "{}".into(),
+            config_json: serde_json::json!({
+                "type": "cloud",
+                "networking": {
+                    "type": "limited",
+                    "allow_package_managers": false
+                },
+                "packages": { "npm": ["tsx"] }
+            })
+            .to_string(),
+            archived_at: None,
+            revision: 1,
+            scope: None,
+            sandbox_policy_json: None,
+        };
+        assert_eq!(
+            row.try_into_item().unwrap_err(),
+            EnvironmentStoreError::InvalidConfig(
+                InvalidEnvironmentConfig::PackagesRequirePackageManager
+            )
         );
     }
 
@@ -1548,6 +1586,93 @@ mod tests {
         // The shared cause/effect rules above run unchanged against PostgreSQL;
         // this is adapter parity, not a PostgreSQL-specific reinterpretation.
         registration_outbox_conformance(&r).await;
+
+        // Cross-backend invariant parity: C1 limited networking denies package
+        // managers while C2 packages are configured -> E1 create/update reject;
+        // E2 the failed update appends neither a revision nor an outbox intent.
+        let invalid_config = EnvironmentConfig::Cloud {
+            networking: EnvironmentNetworking::Limited {
+                allowed_hosts: Vec::new(),
+                allow_mcp_servers: false,
+                allow_package_managers: false,
+            },
+            packages: EnvironmentPackages {
+                npm: vec!["tsx".into()],
+                ..Default::default()
+            },
+        };
+        assert_eq!(
+            r.create(
+                "invalid".into(),
+                String::new(),
+                BTreeMap::new(),
+                invalid_config,
+            )
+            .await
+            .unwrap_err(),
+            CreateEnvironmentError::InvalidConfig(
+                InvalidEnvironmentConfig::PackagesRequirePackageManager
+            )
+        );
+        let valid = r
+            .create(
+                "valid".into(),
+                String::new(),
+                BTreeMap::new(),
+                EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers: true,
+                    },
+                    packages: EnvironmentPackages {
+                        npm: vec!["tsx".into()],
+                        ..Default::default()
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let intent_count = r
+            .registration_intents(EnvironmentRegistrationIntentFilter::All)
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            r.update(
+                &valid.id,
+                EnvUpdate {
+                    config: Some(EnvironmentConfigMutation::PatchCloud {
+                        networking: Some(EnvironmentNetworkingMutation::Limited {
+                            allowed_hosts: None,
+                            allow_mcp_servers: None,
+                            allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
+                        }),
+                        packages: None,
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err(),
+            EnvironmentStoreError::InvalidConfig(
+                InvalidEnvironmentConfig::PackagesRequirePackageManager
+            )
+        );
+        assert_eq!(r.get(&valid.id).await.unwrap(), Some(valid.clone()));
+        assert!(
+            r.get_revision(&valid.id, EnvironmentRevision(2))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            r.registration_intents(EnvironmentRegistrationIntentFilter::All)
+                .await
+                .unwrap()
+                .len(),
+            intent_count
+        );
 
         // PostgreSQL transaction-failure parity for the SQLite rollback rule:
         // C1 the final intent insert raises -> E1 create fails and E2 every table

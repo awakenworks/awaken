@@ -81,13 +81,28 @@ impl CreateEnvironmentOutcome {
 pub enum CreateEnvironmentError {
     #[error("Environment command id was reused with different input")]
     IdempotencyConflict,
+    #[error(transparent)]
+    InvalidConfig(#[from] InvalidEnvironmentConfig),
     #[error("Environment store failed: {0}")]
     Store(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-#[error("Environment store failed: {0}")]
-pub struct EnvironmentStoreError(pub String);
+pub enum EnvironmentStoreError {
+    #[error(transparent)]
+    InvalidConfig(#[from] InvalidEnvironmentConfig),
+    #[error("Environment store failed: {0}")]
+    Backend(String),
+}
+
+/// A cross-field Environment rule that every ingress and persistence backend
+/// enforces. Keeping the invariant in the domain contract gives protocol,
+/// in-memory, SQLite, and PostgreSQL paths one authoritative interpretation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum InvalidEnvironmentConfig {
+    #[error("packages require package-manager network access")]
+    PackagesRequirePackageManager,
+}
 
 /// The frozen presence timestamp stamped on a record (parity with the work queue).
 /// The Managed wire adapter reuses it in its `BetaEnvironment` projection.
@@ -143,6 +158,25 @@ impl EnvironmentConfig {
             Self::Cloud { packages, .. } => packages.clone(),
             Self::SelfHosted => EnvironmentPackages::default(),
         }
+    }
+
+    /// Reject configurations whose package installation cannot reach a package
+    /// manager. Stores call this at their transaction boundary so an invalid
+    /// state cannot be persisted even when an adapter forgets to validate it.
+    pub fn validate(&self) -> Result<(), InvalidEnvironmentConfig> {
+        if matches!(
+            self,
+            Self::Cloud {
+                networking: EnvironmentNetworking::Limited {
+                    allow_package_managers: false,
+                    ..
+                },
+                packages,
+            } if !packages.is_empty()
+        ) {
+            return Err(InvalidEnvironmentConfig::PackagesRequirePackageManager);
+        }
+        Ok(())
     }
 }
 
@@ -304,29 +338,28 @@ impl EnvItem {
     /// mapped to `null` deletes it. Returns whether canonical facts changed; a
     /// no-op replay retains the revision and produces no new delivery intent.
     /// One patch definition is shared by every backend so semantics cannot drift.
-    #[must_use]
-    pub fn apply(&mut self, patch: EnvUpdate) -> bool {
-        let before = self.clone();
+    pub fn apply(&mut self, patch: EnvUpdate) -> Result<bool, InvalidEnvironmentConfig> {
+        let mut next = self.clone();
         if let Some(name) = patch.name {
-            self.name = name;
+            next.name = name;
         }
         if let Some(description) = patch.description {
-            self.description = match description {
+            next.description = match description {
                 EnvironmentFieldUpdate::Clear => None,
                 EnvironmentFieldUpdate::Replace(description) => Some(description),
             };
         }
         if let Some(config) = patch.config {
-            self.config.apply(config);
+            next.config.apply(config);
         }
         if let Some(scope) = patch.scope {
-            self.scope = match scope {
+            next.scope = match scope {
                 EnvironmentFieldUpdate::Clear => None,
                 EnvironmentFieldUpdate::Replace(scope) => Some(scope),
             };
         }
         if let Some(sandbox_policy) = patch.sandbox_policy {
-            self.sandbox_policy = match sandbox_policy {
+            next.sandbox_policy = match sandbox_policy {
                 EnvironmentFieldUpdate::Clear => None,
                 EnvironmentFieldUpdate::Replace(policy) => Some(policy),
             };
@@ -335,24 +368,26 @@ impl EnvItem {
             for (k, v) in md {
                 match v {
                     Some(s) => {
-                        self.metadata.insert(k, s);
+                        next.metadata.insert(k, s);
                     }
                     None => {
-                        self.metadata.remove(&k);
+                        next.metadata.remove(&k);
                     }
                 }
             }
         }
-        if *self == before {
-            return false;
+        next.config.validate()?;
+        if next == *self {
+            return Ok(false);
         }
-        self.revision = EnvironmentRevision(
-            self.revision
+        next.revision = EnvironmentRevision(
+            next.revision
                 .0
                 .checked_add(1)
                 .expect("Environment revision exhausted"),
         );
-        true
+        *self = next;
+        Ok(true)
     }
 }
 
@@ -660,5 +695,86 @@ mod tests {
             environment_facts_fingerprint(&(2_u64, "same")),
             "R2"
         );
+    }
+
+    #[test]
+    fn package_network_invariant_exhausts_the_closed_state_space() {
+        // Exhaustive model check over the closed discriminants and booleans:
+        // self-hosted and unrestricted are always valid; limited is invalid iff
+        // packages are nonempty AND package-manager access is false. Because
+        // package contents do not affect the rule, empty/nonempty is the complete
+        // equivalence partition rather than a sampled example set.
+        for packages_present in [false, true] {
+            let packages = EnvironmentPackages {
+                npm: packages_present.then(|| "tsx".into()).into_iter().collect(),
+                ..Default::default()
+            };
+            assert!(EnvironmentConfig::SelfHosted.validate().is_ok());
+            assert!(
+                EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Unrestricted,
+                    packages: packages.clone(),
+                }
+                .validate()
+                .is_ok()
+            );
+            for allow_package_managers in [false, true] {
+                let result = EnvironmentConfig::Cloud {
+                    networking: EnvironmentNetworking::Limited {
+                        allowed_hosts: Vec::new(),
+                        allow_mcp_servers: false,
+                        allow_package_managers,
+                    },
+                    packages: packages.clone(),
+                }
+                .validate();
+                assert_eq!(result.is_err(), packages_present && !allow_package_managers);
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_patch_restores_the_entire_aggregate() {
+        // C1 a valid aggregate has packages + access; C2 one patch disables
+        // access; E1 the patch is rejected; E2 every field and revision equals
+        // the pre-state. This proves rollback is aggregate-wide, not field-local.
+        let mut item = EnvItem {
+            id: "env".into(),
+            revision: EnvironmentRevision(7),
+            name: "before".into(),
+            description: None,
+            metadata: BTreeMap::new(),
+            scope: None,
+            config: EnvironmentConfig::Cloud {
+                networking: EnvironmentNetworking::Limited {
+                    allowed_hosts: Vec::new(),
+                    allow_mcp_servers: false,
+                    allow_package_managers: true,
+                },
+                packages: EnvironmentPackages {
+                    npm: vec!["tsx".into()],
+                    ..Default::default()
+                },
+            },
+            sandbox_policy: None,
+            archived_at: None,
+        };
+        let before = item.clone();
+        assert_eq!(
+            item.apply(EnvUpdate {
+                name: Some("must roll back too".into()),
+                config: Some(EnvironmentConfigMutation::PatchCloud {
+                    networking: Some(EnvironmentNetworkingMutation::Limited {
+                        allowed_hosts: None,
+                        allow_mcp_servers: None,
+                        allow_package_managers: Some(EnvironmentFieldUpdate::Replace(false)),
+                    }),
+                    packages: None,
+                }),
+                ..Default::default()
+            }),
+            Err(InvalidEnvironmentConfig::PackagesRequirePackageManager)
+        );
+        assert_eq!(item, before);
     }
 }
