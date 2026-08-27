@@ -9,7 +9,7 @@ use awaken_session_contract::{
     SessionEnvironmentTransitionError, SessionExecutionState, SuspendPhase,
 };
 
-use super::{SessionApplication, SessionMutationError};
+use super::{SessionApplication, SessionMutationError, SessionRecoveryCandidates};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionContinuationError {
@@ -32,17 +32,26 @@ impl SessionContinuationError {
 }
 
 impl SessionApplication {
-    pub(crate) async fn reconcile_environment_continuations(&self, now_unix_ms: u64) -> usize {
-        let sessions = match self.session_repository().reconcilable_sessions().await {
-            Ok(scan) => scan.sessions,
-            Err(error) => {
-                tracing::warn!(error = ?error, "Session Environment continuation scan failed");
-                return 1;
-            }
-        };
+    pub(super) async fn reconcile_environment_continuations_from(
+        &self,
+        candidates: &SessionRecoveryCandidates,
+        now_unix_ms: u64,
+    ) -> usize {
         let mut failures = 0;
-        for scoped in sessions {
-            let session = scoped.session;
+        for candidate in &candidates.sessions {
+            let session = match self.session_repository().get(&candidate.session_id).await {
+                Ok(session) => session,
+                Err(awaken_session_contract::SessionRepositoryError::NotFound) => continue,
+                Err(error) => {
+                    failures += 1;
+                    tracing::warn!(
+                        session = %candidate.session_id,
+                        error = ?error,
+                        "Session Environment continuation reload failed"
+                    );
+                    continue;
+                }
+            };
             if session.is_terminal() {
                 continue;
             }
