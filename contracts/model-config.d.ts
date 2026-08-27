@@ -274,6 +274,15 @@ export type ProbeStatus = "valid" | "invalid" | "unknown";
 export type ExecutableModelReadiness =
   "ready" | "offering_unavailable" | "credential_unavailable" | "runtime_unavailable" | "dialect_unavailable";
 /**
+ * How one exact published Provider candidate obtains access. This is a
+ * provider-neutral execution fact: it is neither catalog provenance nor a
+ * commercial funding decision.
+ *
+ * This interface was referenced by the generated JSON Schema
+ * via the `definition` "ProviderAccessKind".
+ */
+export type ProviderAccessKind = "direct" | "brokered";
+/**
  * The "which credential" axis (oversight-next / awaken-management-contract).
  *
  * This interface was referenced by the generated JSON Schema
@@ -1037,6 +1046,7 @@ export interface EnterCredentialRequest {
  * via the `definition` "ExecutableModelOption".
  */
 export interface ExecutableModelOption {
+  access_kind: ProviderAccessKind;
   backend_ref: string;
   dialect: string;
   endpoint_id: string;
