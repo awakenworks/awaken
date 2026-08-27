@@ -1,5 +1,6 @@
 use awaken_credential_vault::CredentialSource;
 use awaken_model_catalog::ProviderCatalog;
+use awaken_runtime_contract::resolved::ProviderAccessKind;
 
 use crate::credential_is_executable_supply;
 
@@ -120,6 +121,7 @@ pub struct ExecutableModelOption {
     pub model_id: String,
     pub endpoint_id: String,
     pub dialect: String,
+    pub access_kind: ProviderAccessKind,
     pub readiness: ExecutableModelReadiness,
 }
 
@@ -168,6 +170,11 @@ pub fn project_executable_models(
                     model_id: offering.model_id.clone(),
                     endpoint_id: offering.protocol_endpoint_id.0.clone(),
                     dialect: offering.dialect.as_str().to_string(),
+                    access_kind: if brokered {
+                        ProviderAccessKind::Brokered
+                    } else {
+                        ProviderAccessKind::Direct
+                    },
                     readiness,
                 }
             })
@@ -235,11 +242,12 @@ mod tests {
     #[test]
     fn executable_model_wire_deserializes_into_the_canonical_read_model() {
         // Causes: C1 the response has every required ExecutableModelOption
-        // field; C2 readiness is one canonical snake_case token; C3 readiness
-        // is unknown or absent. Effects: E1 decode directly into the canonical
-        // DTO and nested enum; E2 reject an unknown token; E3 reject an
-        // incomplete option. Decision rules: C1+C2 -> E1; C1+C3(unknown) -> E2;
-        // !C1+C3(absent) -> E3. No client-side compatibility DTO participates.
+        // field; C2 readiness and access kind are canonical snake_case tokens;
+        // C3 either token is unknown or absent. Effects: E1 decode directly
+        // into the canonical DTO and nested enums; E2 reject an unknown token;
+        // E3 reject an incomplete option. Decision rules: C1+C2 -> E1;
+        // C1+C3(unknown) -> E2; !C1+C3(absent) -> E3. No client-side
+        // compatibility DTO participates.
         let cases = [
             ("ready", ExecutableModelReadiness::Ready),
             (
@@ -266,6 +274,7 @@ mod tests {
                 "model_id": "model",
                 "endpoint_id": "provider.open_ai_chat",
                 "dialect": "open_ai_chat",
+                "access_kind": "direct",
                 "readiness": readiness,
             }]))
             .expect("canonical executable-model response deserializes");
@@ -278,6 +287,7 @@ mod tests {
             "model_id": "model",
             "endpoint_id": "provider.open_ai_chat",
             "dialect": "open_ai_chat",
+            "access_kind": "direct",
             "readiness": "future_state",
         }]);
         assert!(
@@ -290,6 +300,7 @@ mod tests {
             "model_id": "model",
             "endpoint_id": "provider.open_ai_chat",
             "dialect": "open_ai_chat",
+            "access_kind": "direct",
         }]);
         assert!(
             serde_json::from_value::<Vec<ExecutableModelOption>>(incomplete).is_err(),
@@ -303,9 +314,10 @@ mod tests {
         // source; C3 provider+endpoint compatible local credential; C4 runtime
         // available/unavailable; C5 dialect supported/unsupported; C6 brokered
         // access capability enabled/disabled.
-        // Effects: E1 Ready; E2 OfferingUnavailable; E3
+        // Effects: E1 Ready with Direct access; E2 OfferingUnavailable; E3
         // CredentialUnavailable; E4 RuntimeUnavailable; E5
-        // DialectUnavailable. Decision rules: direct/BYOK+C3+C4+C5 -> E1;
+        // DialectUnavailable; E6 Ready with Brokered access. Decision rules:
+        // direct/BYOK+C3+C4+C5 -> E1;
         // direct/BYOK+!C3 -> E3; Brokered+C4+C5+C6 -> E1 without a local
         // Credential; Brokered+!C6 -> E4; !C1 -> E2. Each rule retains the same
         // catalog/access join used by publication admission.
@@ -334,47 +346,59 @@ mod tests {
             model_api_dialects: dialects.iter().map(|value| (*value).into()).collect(),
             available,
         };
-        let readiness = |capability: ExecutorModelCapability, credentials: &[CredentialSource]| {
-            project_executable_models(&catalog, credentials, &[capability], false)[0].readiness
+        let option = |capability: ExecutorModelCapability, credentials: &[CredentialSource]| {
+            project_executable_models(&catalog, credentials, &[capability], false).remove(0)
         };
         assert_eq!(
-            readiness(
+            option(
                 capability(true, &["open_ai_chat"]),
                 std::slice::from_ref(&credential),
-            ),
+            )
+            .readiness,
             ExecutableModelReadiness::Ready,
             "E1"
         );
         assert_eq!(
-            readiness(capability(true, &["open_ai_chat"]), &[]),
+            option(
+                capability(true, &["open_ai_chat"]),
+                std::slice::from_ref(&credential),
+            )
+            .access_kind,
+            ProviderAccessKind::Direct,
+            "E1"
+        );
+        assert_eq!(
+            option(capability(true, &["open_ai_chat"]), &[]).readiness,
             ExecutableModelReadiness::CredentialUnavailable,
             "E3"
         );
         let mut other_endpoint = credential.clone();
         other_endpoint.protocol_endpoint_id = Some("provider.open_ai_chat.backup".into());
         assert_eq!(
-            readiness(capability(true, &["open_ai_chat"]), &[other_endpoint]),
+            option(capability(true, &["open_ai_chat"]), &[other_endpoint]).readiness,
             ExecutableModelReadiness::CredentialUnavailable,
             "E3: a credential for another endpoint cannot make this route ready"
         );
         assert_eq!(
-            readiness(
+            option(
                 capability(false, &["open_ai_chat"]),
                 std::slice::from_ref(&credential),
-            ),
+            )
+            .readiness,
             ExecutableModelReadiness::RuntimeUnavailable,
             "E4"
         );
         assert_eq!(
-            readiness(
+            option(
                 capability(true, &["anthropic_messages"]),
                 std::slice::from_ref(&credential),
-            ),
+            )
+            .readiness,
             ExecutableModelReadiness::DialectUnavailable,
             "E5"
         );
         assert_eq!(
-            readiness(capability(true, &[]), &[]),
+            option(capability(true, &[]), &[]).readiness,
             ExecutableModelReadiness::DialectUnavailable,
             "an external executor with no dialect claims nothing"
         );
@@ -387,6 +411,13 @@ mod tests {
             .readiness,
             ExecutableModelReadiness::Ready,
             "E1: brokered access uses the existing runtime capability, not a local key"
+        );
+        assert_eq!(
+            project_executable_models(&brokered, &[], &[ExecutorModelCapability::native()], true)
+                [0]
+            .access_kind,
+            ProviderAccessKind::Brokered,
+            "E6: access kind is explicit and independent from credential presence"
         );
         assert_eq!(
             project_executable_models(
