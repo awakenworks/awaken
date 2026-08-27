@@ -1590,6 +1590,9 @@ mod tests {
         // Cross-backend invariant parity: C1 limited networking denies package
         // managers while C2 packages are configured -> E1 create/update reject;
         // E2 the failed update appends neither a revision nor an outbox intent.
+        // C3 the invariant fixture is complete -> E3 archive it through the
+        // canonical terminal transition so later lifecycle rules own the only
+        // active row without discarding this fixture's durable history.
         let invalid_config = EnvironmentConfig::Cloud {
             networking: EnvironmentNetworking::Limited {
                 allowed_hosts: Vec::new(),
@@ -1673,6 +1676,10 @@ mod tests {
                 .len(),
             intent_count
         );
+        r.archive(&valid.id)
+            .await
+            .expect("archive invariant fixture")
+            .expect("invariant fixture exists");
 
         // PostgreSQL transaction-failure parity for the SQLite rollback rule:
         // C1 the final intent insert raises -> E1 create fails and E2 every table
