@@ -29,11 +29,11 @@ fn row_record(row: &sqlx::postgres::PgRow) -> FileRecord {
         size_bytes: row.get::<i64, _>("size_bytes") as u64,
         created_at: row.get("file_created_at"),
         expires_at: row.get("expires_at"),
-        downloadable: row.get::<i32, _>("downloadable") != 0,
+        downloadable: row.get::<i64, _>("downloadable") != 0,
         scope_id: row.get("scope_id"),
         logical_path: row.get("logical_path"),
         harvest_key: row.get("harvest_key"),
-        deleted: row.get::<i32, _>("deleted") != 0,
+        deleted: row.get::<i64, _>("deleted") != 0,
     }
 }
 
@@ -160,11 +160,11 @@ impl FileCatalog for PgFileStore {
         .bind(record.size_bytes as i64)
         .bind(&record.created_at)
         .bind(&record.expires_at)
-        .bind(i32::from(record.downloadable))
+        .bind(i64::from(record.downloadable))
         .bind(&record.scope_id)
         .bind(&record.logical_path)
         .bind(&record.harvest_key)
-        .bind(i32::from(record.deleted))
+        .bind(i64::from(record.deleted))
         .fetch_optional(&self.pool)
         .await
         .map_err(ce)?;
