@@ -2021,6 +2021,16 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     .await;
     assert_eq!(status, StatusCode::OK, "{session}");
     assert_eq!(session["agent"]["mcp_servers"][0]["name"], "docs");
+    // The immutable transport and policy sets are one causal integration
+    // authority. Session inheritance must preserve exactly one typed policy
+    // for each published MCP server, never synthesize a permissive default.
+    assert_eq!(session["agent"]["tools"].as_array().unwrap().len(), 2);
+    assert_eq!(session["agent"]["tools"][0]["type"], "mcp_toolset");
+    assert_eq!(session["agent"]["tools"][0]["mcp_server_name"], "docs");
+    assert_eq!(
+        session["agent"]["tools"][1]["mcp_server_name"],
+        "public-docs"
+    );
     assert_eq!(
         session["agent"]["mcp_servers"][1],
         json!({
