@@ -3,8 +3,8 @@
 // `user.tool_confirmation`. Covers BOTH the allow path (tool runs, read-back
 // succeeds) and the deny path (tool is blocked, the Run still completes).
 //
-// Uses the probe server (AWAKEN_MODEL_MODE=probe): write probe.txt (asked), read
-// it back (allowed), reply.
+// Uses the probe server (AWAKEN_MODEL_MODE=probe) with one explicit Session
+// override: write probe.txt (asked), read it back (inherited allow), reply.
 //
 // Run: (from e2e/)  npm install && node managed_hitl_e2e.mjs
 
@@ -16,21 +16,38 @@ const PORT = Number(process.env.E2E_PORT ?? 38102);
 const BETAS = ['managed-agents-2026-04-01'];
 
 async function newSession(client) {
-  return client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+  return client.beta.sessions.create({
+    agent: {
+      id: 'assistant',
+      type: 'agent_with_overrides',
+      tools: [{
+        type: 'agent_toolset_20260401',
+        configs: [{
+          name: 'write',
+          type: 'write',
+          enabled: true,
+          permission_policy: { type: 'always_ask' },
+        }],
+      }],
+    },
+    environment_id: 'env_local',
+    betas: BETAS,
+  });
 }
 
 async function main() {
   await withRealServer('probe', PORT, async (baseUrl) => {
     const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
-    // Cause/effect graph: C1=an agent.tool_use is durably pending with ask;
-    // C2=the official SDK sends allow for its qualified Event id; C3=the SDK
-    // sends deny for its qualified Event id. Effects: E1=requires_action owns
-    // C1; E2=allow executes the write, emits its result, and ends the Run;
-    // E3=deny blocks the write but still ends the Run. Decision table:
-    // H1(C1+C2)->E1+E2; H2(C1+C3)->E1+E3. Wrong family/id and duplicate reply
-    // rules remain with the protocol/error-path owners. Constraints/invariant:
-    // the qualified tool-use Event id is the single decision authority and deny
+    // Cause/effect graph: C0=the Session explicitly overrides write to
+    // always_ask while read inherits the official default; C1=write becomes a
+    // durably pending agent.tool_use; C2=the SDK sends allow for its qualified
+    // Event id; C3=the SDK sends deny for that id. Effects: E1=requires_action
+    // owns C1; E2=allow executes write, inherited-allow read proves its bytes,
+    // and the Run ends; E3=deny blocks write but the Run still ends. Decision
+    // table: H1(C0+C1+C2)->E1+E2; H2(C0+C1+C3)->E1+E3. Wrong family/id and
+    // duplicate reply remain with protocol/error-path owners. Constraint: the
+    // qualified tool-use Event id is the single decision authority and deny
     // cannot execute the pending mutation.
 
     // H1: allow path.
