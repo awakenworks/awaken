@@ -2,7 +2,10 @@
 // stays in `worker.rs`, preserving every existing test path and design comment.
 use std::sync::Arc;
 
-use super::{DispatchWorker, recovered_attempt_disposition, settle_outcome};
+use super::{
+    DispatchWorker, cancellation_uses_tool_interruption, recovered_attempt_disposition,
+    settle_outcome,
+};
 use awaken_agent_contract::agent::awaiting::{
     AwaitTarget, PendingTool, RemoteInputReason, ResumeTicket, ToolAwaitReason,
 };
@@ -49,6 +52,81 @@ fn ended_settles_done_and_awaiting_settles_awaiting() {
         settle_outcome(&RunState::Awaiting).unwrap(),
         DispatchOutcome::Awaiting
     ));
+}
+
+#[test]
+fn managed_cancellation_routes_missing_external_waits_to_batch_recovery() {
+    // Cause/effect graph: C1=claim belongs to a managed Session Run; C2=Run is
+    // Awaiting vs another state; C3=ResumeTicket is missing, an external-tool
+    // reason, or another legal wait. Effect E1=use batch-aware interruption;
+    // E2=use ordinary cancellation. The missing partition is intentional: the
+    // store isolated a damaged ticket and Runtime must reconstruct/quarantine
+    // from durable batch facts.
+    //
+    // | Rule | Managed | State | Ticket | Effect |
+    // | CI1 | no | Awaiting | missing/tool | E2 |
+    // | CI2 | yes | Running/Ended/absent | any | E2 |
+    // | CI3 | yes | Awaiting | tool/external | E1 |
+    // | CI4 | yes | Awaiting | missing | E1 |
+    // | CI5 | yes | Awaiting | manual/delegation/scheduled | E2 |
+    // Constraint: the queue remains delivery-only; this pure selector neither
+    // mutates nor interprets ToolBatch state.
+    let run = RunId("interrupt-route-run".into());
+    let thread = ThreadId("interrupt-route-thread".into());
+    let ticket = |target| {
+        ResumeTicket::new(
+            "interrupt-route-correlation",
+            run.clone(),
+            thread.clone(),
+            "interrupt-route-snapshot",
+            "interrupt-route-catalog",
+            target,
+        )
+    };
+    let tool = ticket(AwaitTarget::ToolCall {
+        reason: ToolAwaitReason::Permission,
+        call_id: "interrupt-route-call".into(),
+        tool: PendingTool {
+            tool_id: "write".into(),
+            arguments: serde_json::json!({}),
+        },
+    });
+    let external = ticket(AwaitTarget::ToolCall {
+        reason: ToolAwaitReason::ClientExecution,
+        call_id: "interrupt-route-client-call".into(),
+        tool: PendingTool {
+            tool_id: "client-tool".into(),
+            arguments: serde_json::json!({}),
+        },
+    });
+    let manual = ticket(AwaitTarget::Pause(
+        awaken_agent_contract::agent::awaiting::PauseReason::Manual,
+    ));
+
+    assert!(
+        !cancellation_uses_tool_interruption(false, Some(&RunState::Awaiting), None),
+        "CI1/E2"
+    );
+    assert!(
+        !cancellation_uses_tool_interruption(true, Some(&RunState::Running), Some(&tool)),
+        "CI2/E2"
+    );
+    assert!(
+        cancellation_uses_tool_interruption(true, Some(&RunState::Awaiting), Some(&tool)),
+        "CI3/E1"
+    );
+    assert!(
+        cancellation_uses_tool_interruption(true, Some(&RunState::Awaiting), Some(&external)),
+        "CI3/E1 external result"
+    );
+    assert!(
+        cancellation_uses_tool_interruption(true, Some(&RunState::Awaiting), None),
+        "CI4/E1"
+    );
+    assert!(
+        !cancellation_uses_tool_interruption(true, Some(&RunState::Awaiting), Some(&manual)),
+        "CI5/E2"
+    );
 }
 
 #[test]

@@ -40,6 +40,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
+    decode_resume_ticket_value_for_owner,
 };
 use awaken_store_schema::StoredU64;
 use sqlx::Row;
@@ -375,28 +376,40 @@ impl PostgresCommitCoordinator {
         thread_id: &ThreadId,
     ) -> Result<Option<(RunId, ResumeTicket)>, StoreError> {
         let row = sqlx::query(&format!(
-            "SELECT latest.run_id, waiting.ticket \
+            "SELECT latest.run_id, run.phase, waiting.ticket \
              FROM (\
                  SELECT run_id FROM {NS}_commit \
                  WHERE thread_id = $1 ORDER BY sequence DESC LIMIT 1\
              ) AS latest \
+             JOIN {NS}_run_record AS run ON run.run_id = latest.run_id \
              JOIN {NS}_waiting AS waiting ON waiting.run_id = latest.run_id"
         ))
         .bind(&thread_id.0)
         .fetch_optional(&self.pool)
         .await
         .map_err(|error| StoreError::Read(error.to_string()))?;
-        row.map(|row| {
-            let run_id = RunId(
-                row.try_get("run_id")
-                    .map_err(|error| StoreError::Read(error.to_string()))?,
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let run_id = RunId(
+            row.try_get("run_id")
+                .map_err(|error| StoreError::Read(error.to_string()))?,
+        );
+        let Json(state): Json<RunState> = row
+            .try_get("phase")
+            .map_err(|error| StoreError::Read(error.to_string()))?;
+        if !matches!(state, RunState::Awaiting) {
+            tracing::error!(
+                awaken.run.id = %run_id.0,
+                awaken.thread.id = %thread_id.0,
+                "quarantining a stale waiting row whose Run is not Awaiting"
             );
-            let Json(ticket): Json<ResumeTicket> = row
-                .try_get("ticket")
-                .map_err(|error| StoreError::Read(error.to_string()))?;
-            Ok((run_id, ticket))
-        })
-        .transpose()
+            return Ok(None);
+        }
+        let Json(ticket): Json<serde_json::Value> = row
+            .try_get("ticket")
+            .map_err(|error| StoreError::Read(error.to_string()))?;
+        Ok(decode_resume_ticket(&run_id, thread_id, ticket).map(|ticket| (run_id, ticket)))
     }
 
     /// Read a thread's complete message history directly from committed
@@ -990,9 +1003,22 @@ impl RunRecoverySource for PostgresCommitCoordinator {
                 row.try_get::<String, _>("run_id")
                     .map_err(recovery_reject)?,
             );
-            let Json(ticket): Json<ResumeTicket> =
+            let is_awaiting = runs
+                .iter()
+                .any(|run| run.id == run_id && matches!(&run.state, RunState::Awaiting));
+            if !is_awaiting {
+                tracing::error!(
+                    awaken.run.id = %run_id.0,
+                    awaken.thread.id = %thread_id.0,
+                    "quarantining a stale waiting row whose Run is not Awaiting"
+                );
+                continue;
+            }
+            let Json(ticket): Json<serde_json::Value> =
                 row.try_get("ticket").map_err(recovery_reject)?;
-            resume_tickets.push(RunResumeTicket { run_id, ticket });
+            if let Some(ticket) = decode_resume_ticket(&run_id, thread_id, ticket) {
+                resume_tickets.push(RunResumeTicket { run_id, ticket });
+            }
         }
 
         tx.commit().await.map_err(recovery_reject)?;
@@ -1142,6 +1168,28 @@ fn recovery_reject(err: sqlx::Error) -> RecoveryError {
     RecoveryError::Rejected(err.to_string())
 }
 
+/// Decode one isolated waiting row without making the Thread's complete
+/// recovery snapshot or process startup unavailable. The durable row is kept;
+/// canonical Runtime interruption owns reconstruction or terminal quarantine.
+fn decode_resume_ticket(
+    row_run_id: &RunId,
+    expected_thread_id: &ThreadId,
+    value: serde_json::Value,
+) -> Option<ResumeTicket> {
+    match decode_resume_ticket_value_for_owner(value, row_run_id, expected_thread_id) {
+        Ok(ticket) => Some(ticket),
+        Err(error) => {
+            tracing::error!(
+                awaken.run.id = %row_run_id.0,
+                awaken.thread.id = %expected_thread_id.0,
+                %error,
+                "quarantining an invalid ResumeTicket while retaining Thread recovery facts"
+            );
+            None
+        }
+    }
+}
+
 /// Rebuild the read projection from the committed log in Postgres.
 async fn hydrate(pool: &PgPool) -> Result<Projection, sqlx::Error> {
     // Hydration is one logical read. Without a shared snapshot, a commit can land
@@ -1258,8 +1306,26 @@ async fn hydrate_snapshot(tx: &mut Transaction<'_, Postgres>) -> Result<Projecti
         .await?;
     for row in resume_ticket_rows {
         let run_id: String = row.try_get("run_id")?;
-        let Json(ticket): Json<ResumeTicket> = row.try_get("ticket")?;
-        projection.resume_tickets.insert(RunId(run_id), ticket);
+        let run_id = RunId(run_id);
+        let Some(record) = projection.run_records.get(&run_id) else {
+            tracing::error!(
+                awaken.run.id = %run_id.0,
+                "quarantining a waiting row whose Run record is absent"
+            );
+            continue;
+        };
+        if !matches!(&record.state, RunState::Awaiting) {
+            tracing::error!(
+                awaken.run.id = %run_id.0,
+                awaken.thread.id = %record.thread_id.0,
+                "quarantining a stale waiting row whose Run is not Awaiting"
+            );
+            continue;
+        }
+        let Json(ticket): Json<serde_json::Value> = row.try_get("ticket")?;
+        if let Some(ticket) = decode_resume_ticket(&run_id, &record.thread_id, ticket) {
+            projection.resume_tickets.insert(run_id, ticket);
+        }
     }
 
     Ok(projection)

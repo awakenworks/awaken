@@ -21,6 +21,7 @@ serde_json.workspace = true
 rusqlite = { workspace = true }
 thiserror.workspace = true
 tokio.workspace = true
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

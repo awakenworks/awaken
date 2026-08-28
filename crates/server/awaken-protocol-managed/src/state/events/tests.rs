@@ -1218,18 +1218,21 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
     // Cause/effect graph: C1=the latest Runtime Run has zero, one, or two
-    // committed ResumeTickets; C2=later ToolBatch calls may remain Requested
-    // but have no ticket yet. Effects: E1=zero projects no pending; E2=one
-    // projects that exact pending; E3=two fail closed instead of selecting an
-    // arbitrary reply authority. This records the current production
-    // constraint separately from the resolver's synthetic multi-candidate
-    // rules: a logical Thread exposes one answerable call at a time.
+    // committed ResumeTickets; C2=the Awaiting audit retains the exact closed
+    // target independently of the consumable ticket. Effects: E1=zero with no
+    // target projects no pending but strict reply admission rejects the damaged
+    // wait; E2=one projects that exact pending; E3=two fail closed for replies,
+    // while list projection rebuilds the same pending from C2. This records the
+    // separation between reply authority and historical/public projection.
     // Decision table:
     // | Rule | Current-Run tickets | Effect |
-    // | P1 | 0 | E1 |
+    // | P1 | 0, no audit target | lenient E1; strict reject |
     // | P2 | 1 | E2 |
-    // | P3 | 2 | E3 |
+    // | P3 | 2, exact audit target | strict E3; lenient exact rebuild |
     let runtime = LifecycleRuntime::default();
+    runtime
+        .include_runs_in_snapshot
+        .store(true, Ordering::SeqCst);
     let thread_id = "sthr-single-ticket";
     let run_id = RunId("run-single-ticket".into());
     runtime.lifecycle.lock().unwrap().push(lifecycle(
@@ -1250,6 +1253,10 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
             .unwrap()
             .is_none(),
         "P1/E1"
+    );
+    assert!(
+        ManagedState::pending_ticket_from_recovery_snapshot(&empty).is_err(),
+        "P1 strict admission rejects an Awaiting Run without reply authority"
     );
 
     *runtime.pending.lock().unwrap() = Some(Pending {
@@ -1272,10 +1279,177 @@ async fn recovery_pending_projection_enforces_one_current_run_ticket() {
         "P2/E2"
     );
 
+    one.events
+        .push(awaken_agent_contract::audit::record::Record {
+            sequence: 1,
+            run_id: run_id.clone(),
+            kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+            payload: serde_json::json!({
+                "state": RunState::Awaiting,
+                "await_target": one.resume_tickets[0].ticket.target().clone(),
+            }),
+        });
     one.resume_tickets.push(one.resume_tickets[0].clone());
     assert!(
-        ManagedState::pending_from_recovery_snapshot(&one).is_err(),
-        "P3/E3"
+        ManagedState::pending_ticket_from_recovery_snapshot(&one).is_err(),
+        "P3/E3 strict reply admission"
+    );
+    assert_eq!(
+        ManagedState::pending_from_recovery_snapshot(&one)
+            .unwrap()
+            .unwrap()
+            .tool_use_id,
+        "call-single-ticket",
+        "P3/C2 list projection reconstructs without choosing a duplicate ticket"
+    );
+}
+
+#[tokio::test]
+async fn pure_interrupt_bypasses_only_damaged_reply_authority() {
+    // Cause/effect graph: C1=the latest Run is durably Awaiting; C2=its active
+    // ResumeTicket is isolated-missing; C3=RunStateChanged retains the exact
+    // AwaitTarget; C4=batch is pure user.interrupt, an ordinary message/reply,
+    // or a mixed interrupt batch.
+    // Effects: E1=list projection rebuilds the pending payload from C3; E2=pure
+    // interrupt freezes the canonical target without reading reply authority;
+    // E3=ordinary input remains fail-closed and cannot start a competing Run.
+    //
+    // | Rule | Awaiting | Ticket | Audit target | Input | Effect |
+    // | DI1 | yes | missing | exact | list | E1 |
+    // | DI2 | yes | missing | exact | pure interrupt | E2 |
+    // | DI3 | yes | missing | exact | user message/reply | E3 |
+    // | DI4 | yes | missing | exact | interrupt + message | E3 |
+    // Constraint: only the control command bypasses ticket correlation; mixed
+    // batches and every reply still use strict ResumeTicket admission.
+    let runtime = LifecycleRuntime::default();
+    runtime
+        .include_runs_in_snapshot
+        .store(true, Ordering::SeqCst);
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .expect("DI fixture Session");
+    let run_id = RunId("run-damaged-interrupt".into());
+    let call_id = "call-damaged-interrupt";
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        1,
+        &session.id,
+        &run_id,
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    ));
+    runtime
+        .audit_events
+        .lock()
+        .unwrap()
+        .push(awaken_agent_contract::audit::record::Record {
+            sequence: lifecycle_cursor(1).0,
+            run_id: run_id.clone(),
+            kind: awaken_agent_contract::audit::kind::Kind::RunStateChanged,
+            payload: serde_json::json!({
+                "state": RunState::Awaiting,
+                "await_target": awaken_agent_contract::agent::awaiting::AwaitTarget::RemoteInput {
+                    reason: awaken_agent_contract::agent::awaiting::RemoteInputReason::UserInput,
+                    call_id: call_id.to_string(),
+                },
+            }),
+        });
+
+    let snapshot = runtime
+        .session_thread_recovery_snapshot(&session.id, &session.id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        ManagedState::pending_from_recovery_snapshot(&snapshot)
+            .unwrap()
+            .unwrap()
+            .tool_use_id,
+        call_id,
+        "DI1/E1"
+    );
+    state
+        .refresh_committed_events(&session.id)
+        .await
+        .expect("DI1 list projection remains available");
+    assert!(
+        state
+            .list_events(&session.id, None, None, false)
+            .expect("DI1 public list does not inherit ticket corruption")
+            .data
+            .iter()
+            .any(|event| {
+                decode_managed_tool_event_id(&event.id)
+                    .is_some_and(|identity| identity.call_id == call_id)
+            }),
+        "DI1/E1 public pending projection"
+    );
+    let interrupt = state
+        .validate_event_batch(
+            &session.id,
+            &[InboundEvent::UserInterrupt {
+                session_thread_id: None,
+            }],
+        )
+        .await
+        .expect("DI2 pure interrupt remains admissible");
+    assert!(
+        matches!(
+            interrupt.inputs.as_slice(),
+            [SessionEventInput::Interrupt(SessionEventInterrupt { targets, .. })]
+                if targets == &[SessionThreadTarget::Primary]
+        ),
+        "DI2/E2"
+    );
+    assert!(
+        state
+            .validate_event_batch(
+                &session.id,
+                &[InboundEvent::UserMessage {
+                    content: vec![ContentBlock::text("must not bypass the damaged wait")],
+                }],
+            )
+            .await
+            .is_err(),
+        "DI3/E3"
+    );
+    assert!(
+        state
+            .validate_event_batch(
+                &session.id,
+                &[InboundEvent::UserCustomToolResult {
+                    custom_tool_use_id: call_id.into(),
+                    content: Some(vec![ContentBlock::text("must retain ticket correlation")]),
+                    is_error: false,
+                }],
+            )
+            .await
+            .is_err(),
+        "DI3/E3 reply"
+    );
+    assert!(
+        state
+            .validate_event_batch(
+                &session.id,
+                &[
+                    InboundEvent::UserInterrupt {
+                        session_thread_id: None,
+                    },
+                    InboundEvent::UserMessage {
+                        content: vec![ContentBlock::text("mixed batches remain strict")],
+                    },
+                ],
+            )
+            .await
+            .is_err(),
+        "DI4/E3"
     );
 }
 

@@ -926,14 +926,12 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .settle_if_terminal_or_raise(&claimed, &all_pending, error, &clock)
                     .await;
             }
-            let awaiting_tool_interrupt = claimed.request.session_activity_epoch.is_some()
-                && matches!(self.reader.run_state(&run_id), Some(RunState::Awaiting))
-                && self.reader.resume_ticket(&run_id).is_some_and(|ticket| {
-                    matches!(
-                        ticket.reason(),
-                        AwaitReason::ToolPermission | AwaitReason::ExternalEvent
-                    )
-                });
+            let ticket = self.reader.resume_ticket(&run_id);
+            let awaiting_tool_interrupt = cancellation_uses_tool_interruption(
+                claimed.request.session_activity_epoch.is_some(),
+                self.reader.run_state(&run_id).as_ref(),
+                ticket.as_ref(),
+            );
             let result = if awaiting_tool_interrupt {
                 self.runtime
                     .interrupt_awaiting_tools(run_id.clone(), activation.thread_id.clone(), context)
@@ -1741,6 +1739,26 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
         }
         Ok(processed)
     }
+}
+
+/// Select the existing batch-aware interruption only for a managed Session's
+/// externally blocked Run. A missing ticket is included deliberately: storage
+/// has isolated a damaged reply token, and Runtime must inspect the durable
+/// ToolBatch to reconstruct or terminally quarantine that wait. Other valid
+/// await reasons retain ordinary cancellation semantics.
+fn cancellation_uses_tool_interruption(
+    managed_session_run: bool,
+    state: Option<&RunState>,
+    ticket: Option<&awaken_agent_contract::agent::awaiting::ResumeTicket>,
+) -> bool {
+    managed_session_run
+        && matches!(state, Some(RunState::Awaiting))
+        && ticket.is_none_or(|ticket| {
+            matches!(
+                ticket.reason(),
+                AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+            )
+        })
 }
 
 /// Records the `awaken.dispatch.drive.duration` histogram on drop, so the wall

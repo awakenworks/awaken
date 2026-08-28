@@ -43,6 +43,7 @@ use awaken_agent_contract::thread::read::lifecycle::{
 };
 use awaken_agent_contract::thread::read::recovery::{
     RecoveryError, RunRecoverySnapshot, RunRecoverySource, RunResumeTicket,
+    decode_resume_ticket_json_for_owner,
 };
 use awaken_store_schema::StoredU64;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
@@ -608,10 +609,21 @@ impl RunRecoverySource for SqliteCommitCoordinator {
                 .map_err(recovery_reject)?;
             for row in rows {
                 let (run_id, ticket) = row.map_err(recovery_reject)?;
-                resume_tickets.push(RunResumeTicket {
-                    run_id: RunId(run_id),
-                    ticket: serde_json::from_str(&ticket).map_err(recovery_reject)?,
-                });
+                let run_id = RunId(run_id);
+                let is_awaiting = runs
+                    .iter()
+                    .any(|run| run.id == run_id && matches!(run.state, RunState::Awaiting));
+                if !is_awaiting {
+                    tracing::error!(
+                        awaken.run.id = %run_id.0,
+                        awaken.thread.id = %thread_id.0,
+                        "quarantining a stale waiting row whose Run is not Awaiting"
+                    );
+                    continue;
+                }
+                if let Some(ticket) = decode_resume_ticket(&run_id, thread_id, &ticket) {
+                    resume_tickets.push(RunResumeTicket { run_id, ticket });
+                }
             }
         }
         tx.commit().map_err(recovery_reject)?;
@@ -673,6 +685,29 @@ where
 
 fn recovery_reject(error: impl ToString) -> RecoveryError {
     RecoveryError::Rejected(error.to_string())
+}
+
+/// Decode one isolated waiting row without making the Thread's complete
+/// recovery snapshot unavailable. The row is intentionally retained in SQLite;
+/// Runtime interruption will either reconstruct from the other durable facts or
+/// terminalize through the canonical ThreadCommit boundary.
+fn decode_resume_ticket(
+    row_run_id: &RunId,
+    expected_thread_id: &ThreadId,
+    raw: &str,
+) -> Option<ResumeTicket> {
+    match decode_resume_ticket_json_for_owner(raw, row_run_id, expected_thread_id) {
+        Ok(ticket) => Some(ticket),
+        Err(error) => {
+            tracing::error!(
+                awaken.run.id = %row_run_id.0,
+                awaken.thread.id = %expected_thread_id.0,
+                %error,
+                "quarantining an invalid ResumeTicket while retaining Thread recovery facts"
+            );
+            None
+        }
+    }
 }
 
 fn lock(projection: &Mutex<Projection>) -> Result<std::sync::MutexGuard<'_, Projection>, Error> {
@@ -1158,8 +1193,24 @@ fn hydrate(conn: &Connection) -> Result<Projection, rusqlite::Error> {
     })?;
     for row in rows {
         let (run_id, ticket) = row?;
-        if let Ok(ticket) = serde_json::from_str::<ResumeTicket>(&ticket) {
-            projection.resume_tickets.insert(RunId(run_id), ticket);
+        let run_id = RunId(run_id);
+        let Some(record) = projection.run_records.get(&run_id) else {
+            tracing::error!(
+                awaken.run.id = %run_id.0,
+                "quarantining a waiting row whose Run record is absent"
+            );
+            continue;
+        };
+        if !matches!(record.state, RunState::Awaiting) {
+            tracing::error!(
+                awaken.run.id = %run_id.0,
+                awaken.thread.id = %record.thread_id.0,
+                "quarantining a stale waiting row whose Run is not Awaiting"
+            );
+            continue;
+        }
+        if let Some(ticket) = decode_resume_ticket(&run_id, &record.thread_id, &ticket) {
+            projection.resume_tickets.insert(run_id, ticket);
         }
     }
 
