@@ -9,15 +9,45 @@ import { useQuery } from "@tanstack/react-query";
 import { Button, Card, EmptyState, Pill } from "../ui";
 import { useToast } from "../ui/Toast";
 import { api, ws } from "../../lib/api/client";
-import type { FileArtifact, Page, SessionResourceDto } from "../../lib/api/types";
+import type {
+  FileArtifact,
+  ListSessionResourcesResponse,
+  SessionResource,
+} from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 
-const KIND_TONE: Record<string, "agent" | "info" | "ok" | "neutral"> = {
+const KIND_TONE: Record<SessionResource["type"], "agent" | "info" | "ok"> = {
   memory_store: "agent",
   file: "info",
   github_repository: "ok",
-  skill: "ok",
 };
+
+function resourceView(resource: SessionResource): {
+  key: string;
+  identity: string;
+  mountPath: string | null;
+} {
+  switch (resource.type) {
+    case "file":
+      return {
+        key: `file:${resource.id}`,
+        identity: resource.file_id,
+        mountPath: resource.mount_path,
+      };
+    case "github_repository":
+      return {
+        key: `github_repository:${resource.id}`,
+        identity: resource.url,
+        mountPath: resource.mount_path,
+      };
+    case "memory_store":
+      return {
+        key: `memory_store:${resource.memory_store_id}`,
+        identity: resource.memory_store_id,
+        mountPath: resource.mount_path ?? null,
+      };
+  }
+}
 
 export default function SessionFiles({
   base,
@@ -33,7 +63,7 @@ export default function SessionFiles({
 
   const resources = useQuery({
     queryKey: ["session-resources", sid],
-    queryFn: () => api.get<Page<SessionResourceDto>>(`${base}/resources`),
+    queryFn: () => api.get<ListSessionResourcesResponse>(`${base}/resources`),
     enabled: view === "inputs",
     retry: false,
   });
@@ -67,17 +97,20 @@ export default function SessionFiles({
           <span className="mut">{app.t("No resources mounted for this session.", "本会话未挂载资源。")}</span>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-            {mounts.map((r) => (
-              <div key={r.id} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-                <span className="row" style={{ gap: 8 }}>
-                  <Pill tone={KIND_TONE[r.type] ?? "neutral"}>{r.type}</Pill>
-                  <code style={{ fontSize: 12 }}>{r.mount_path}</code>
-                </span>
-                <span className="mut mono" style={{ fontSize: 11 }}>
-                  {r.memory_store_id ?? r.file_id ?? r.url ?? r.resource_id ?? ""}
-                </span>
-              </div>
-            ))}
+            {mounts.map((resource) => {
+              const item = resourceView(resource);
+              return (
+                <div key={item.key} className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+                  <span className="row" style={{ gap: 8 }}>
+                    <Pill tone={KIND_TONE[resource.type]}>{resource.type}</Pill>
+                    <code style={{ fontSize: 12 }}>
+                      {item.mountPath ?? app.t("not mounted", "未挂载")}
+                    </code>
+                  </span>
+                  <span className="mut mono" style={{ fontSize: 11 }}>{item.identity}</span>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>}

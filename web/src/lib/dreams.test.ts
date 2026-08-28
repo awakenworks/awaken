@@ -12,13 +12,19 @@ describe("Dream UI decisions", () => {
       .toEqual(["claude-sonnet-5"]);
   });
 
-  it("excludes running, archived, and Dream auxiliary sessions", () => {
+  /**
+   * Cause/effect rule: running or rescheduling aggregate status, archival, or
+   * Dream origin each makes a Session ineligible; only a non-active ordinary
+   * Session can become immutable Dream input.
+   */
+  it("excludes active, archived, and Dream auxiliary sessions", () => {
     const session = (id: string, status = "idle", metadata = {}, archived_at: string | null = null) => ({
       id, status, metadata, archived_at,
     }) as Session;
     expect(eligibleDreamSessions([
       session("ready"),
       session("running", "running"),
+      session("rescheduling", "rescheduling"),
       session("aux", "idle", { "awaken.session.origin": "dream" }),
       session("archived", "idle", {}, "now"),
     ]).map((item) => item.id)).toEqual(["ready"]);

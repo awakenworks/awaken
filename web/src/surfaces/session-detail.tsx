@@ -1,21 +1,22 @@
 // Session detail: header actions (rename/archive/interrupt) + an
-// agent/properties aside around the shared <Transcript>. The transcript owns the
-// live event log; header actions post inbound events and invalidate the same
-// events cache key so the transcript refreshes.
+// agent/properties aside around the shared TranscriptView. This surface owns
+// exactly one live SessionLog; header, chat, approvals, and trace consume it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef, useState } from "react";
+import { managedSessionPresentationPhase } from "@awaken/managed-session-projection";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
-import Transcript from "../components/session/Transcript";
+import { TranscriptView } from "../components/session/Transcript";
 import TraceView from "../components/session/TraceView";
 import SessionFiles from "../components/session/SessionFiles";
 import SessionIntegrations from "../components/session/SessionIntegrations";
 import SessionThreads from "../components/session/SessionThreads";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
-import { api, IdempotencyScope, ws } from "../lib/api/client";
-import type { InboundEvent, ListEventsResponse, SendEventsResponse, Session } from "../lib/api/types";
+import { api, ws } from "../lib/api/client";
+import type { Session } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
-import { canSendToSession, projectSessionRuntime, sessionErrorText } from "../lib/session-log";
+import { sessionErrorText } from "../lib/session-log";
+import { useSessionLog } from "../lib/useSessionLog";
 
 /** The agent's model can arrive as a bare id or a `{ id }` object — coerce to text. */
 function modelText(m: unknown): string {
@@ -30,7 +31,6 @@ export default function SessionDetailSurface() {
   const qc = useQueryClient();
   const confirm = useConfirm();
   const toast = useToast();
-  const controlIdentity = useRef(new IdempotencyScope("session-control"));
   // Workspace-scoped via ws() (tenancy is an edge aspect); flat under default scope.
   const base = ws(`/v1/sessions/${sid}`);
   const eventsKey = ["session-events", wsId, sid];
@@ -44,43 +44,20 @@ export default function SessionDetailSurface() {
     queryFn: () => api.get<Session>(base),
     refetchInterval: 15_000,
   });
-  // Same query key/data and same pure reducer as Transcript/Trace. React Query
-  // shares the request/cache; this observer lets header controls stay correct
-  // even when the Chat tab is not mounted.
-  const sessionEvents = useQuery({
-    queryKey: eventsKey,
-    queryFn: async () => (await api.get<ListEventsResponse>(`${base}/events`)).data,
-    refetchInterval: 5_000,
+  // One hook owns merge/reducer/admission, SSE, mutation identity, and pending
+  // transport state for every detail control and view.
+  const sessionLog = useSessionLog(base, eventsKey, {
+    sessionStatus: session.data?.status,
+    live: true,
+    followLive: true,
   });
-  const runtime = projectSessionRuntime(sessionEvents.data ?? []);
-  const effectiveStatus = runtime.phase === "unknown" ? session.data?.status : runtime.phase;
-  const canInterrupt = runtime.phase === "running"
-    || runtime.pendingConfirmIds.size > 0
-    || runtime.resolvingConfirmIds.size > 0
-    || session.data?.status === "running"
-    || session.data?.status === "rescheduling";
-  const needsRecovery = runtime.pendingConfirmIds.size > 0
-    || runtime.resolvingConfirmIds.size > 0;
-  const canSend = canSendToSession(runtime, session.data?.status);
+  const runtime = sessionLog.runtime;
+  const admission = sessionLog.admission;
+  const effectiveStatus = managedSessionPresentationPhase(runtime, session.data?.status);
+  const needsRecovery = runtime.pendingToolIds.size > 0
+    || runtime.resolvingToolIds.size > 0
+    || runtime.resolvingInputIds.size > 0;
 
-  const control = useMutation({
-    mutationFn: (evs: InboundEvent[]) => {
-      const request = { events: evs };
-      return api.post<SendEventsResponse>(
-        `${base}/events`,
-        request,
-        controlIdentity.current.headersFor(request),
-      );
-    },
-    onSuccess: (result) => {
-      controlIdentity.current.complete();
-      const receipt = result.data.at(-1);
-      setControlResult(receipt ? `${receipt.type} accepted · ${receipt.id}` : null);
-      void qc.invalidateQueries({ queryKey: eventsKey });
-      void session.refetch();
-    },
-    onError: (error) => setControlResult(error instanceof Error ? error.message : "control request failed"),
-  });
   const rename = useMutation({
     mutationFn: (title: string) => api.post<Session>(base, { title }),
     onSuccess: (s) => {
@@ -121,7 +98,16 @@ export default function SessionDetailSurface() {
         : app.t("Stop run", "停止运行"),
       danger: true,
     });
-    if (approved) control.mutate([{ type: "user.interrupt" }]);
+    if (!approved) return;
+    setControlResult(null);
+    try {
+      const result = await sessionLog.send([{ type: "user.interrupt" }]);
+      const receipt = result.data?.at(-1);
+      setControlResult(receipt ? `${receipt.type} accepted · ${receipt.id}` : null);
+      void session.refetch();
+    } catch {
+      // The shared hook owns and presents the exact transport/projection error.
+    }
   };
 
   return (
@@ -152,7 +138,7 @@ export default function SessionDetailSurface() {
               ⌫ {archive.isPending ? app.t("Archiving…", "正在归档…") : app.t("Archive", "归档")}
             </Button>
           )}
-          <Button variant="danger" disabled={!canInterrupt || control.isPending} onClick={() => void interruptSession()}>
+          <Button variant="danger" disabled={!admission.canInterrupt || sessionLog.sendPending} onClick={() => void interruptSession()}>
             ⏹ {needsRecovery ? app.t("Recover run", "恢复运行") : app.t("Stop run", "停止运行")}
           </Button>
         </span>
@@ -171,7 +157,16 @@ export default function SessionDetailSurface() {
         </Modal>
       )}
 
-      {controlResult && <div className={`banner ${control.isError ? "err" : "info"}`}>{controlResult}</div>}
+      {controlResult && <div className="banner info">{controlResult}</div>}
+      {sessionLog.sendError && <div className="banner err">{sessionLog.sendError.message}</div>}
+      {view !== "chat" && sessionLog.projectionError && (
+        <div className="banner err">
+          {app.t(
+            "Committed Session history is inconsistent; input is disabled until the projection is reloaded.",
+            "已提交的会话历史不一致；重新加载投影前将禁用输入。",
+          )}
+        </div>
+      )}
 
       <div className="session-detail-layout" style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
         <div style={{ flex: 1.8, minWidth: 0 }}>
@@ -189,12 +184,17 @@ export default function SessionDetailSurface() {
             value={view}
             onChange={setView}
           />
-          {view === "chat" && <Transcript base={base} queryKey={eventsKey} modelOverride />}
+          {view === "chat" && <TranscriptView key={sid} sessionLog={sessionLog} />}
           {view === "collaboration" && <SessionThreads base={base} workspaceId={wsId} />}
           {view === "inputs" && <SessionFiles base={base} sid={sid} view="inputs" />}
           {view === "artifacts" && <SessionFiles base={base} sid={sid} view="artifacts" />}
           {view === "integrations" && <SessionIntegrations session={session.data} />}
-          {view === "trace" && <TraceView base={base} queryKey={eventsKey} />}
+          {view === "trace" && (
+            <TraceView
+              log={sessionLog.log}
+              loadError={sessionLog.projectionError ? null : sessionLog.loadError}
+            />
+          )}
         </div>
 
         <aside className="session-detail-aside" style={{ width: 300, flex: "none", display: "flex", flexDirection: "column", gap: 12 }}>
@@ -223,9 +223,10 @@ export default function SessionDetailSurface() {
             <div className="mut" style={{ fontSize: 12, display: "flex", flexDirection: "column", gap: 4 }}>
               <span>{app.t("Created", "创建时间")} {session.data?.created_at ? new Date(session.data.created_at).toLocaleString() : "—"}</span>
               <span>{app.t("Status", "状态")} {effectiveStatus === "running" ? app.t("running", "运行中") : effectiveStatus === "idle" ? app.t("idle", "空闲") : effectiveStatus ?? "—"}</span>
-              <span>{app.t("Pending tools", "待审批工具")} {runtime.pendingConfirmIds.size}</span>
-              <span>{app.t("Resolving tools", "处理中工具")} {runtime.resolvingConfirmIds.size}</span>
-              <span>{app.t("Can send message", "允许发送消息")} {canSend ? app.t("yes", "是") : app.t("no", "否")}</span>
+              <span>{app.t("Pending tools", "待审批工具")} {runtime.pendingToolIds.size}</span>
+              <span>{app.t("Resolving tools", "处理中工具")} {runtime.resolvingToolIds.size}</span>
+              <span>{app.t("Resolving inputs", "处理中输入")} {runtime.resolvingInputIds.size}</span>
+              <span>{app.t("Can send message", "允许发送消息")} {admission.canSendMessage ? app.t("yes", "是") : app.t("no", "否")}</span>
               {runtime.latestError && <span className="err">{app.t("Last error", "最近错误")} {sessionErrorText(runtime.latestError)}</span>}
               <span>{app.t("Environment", "运行环境")} {session.data?.environment_id ?? app.t("Default", "默认")}</span>
               {/* Runtime provenance: which backend actually executed this run (native vs an

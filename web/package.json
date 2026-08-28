@@ -14,6 +14,7 @@
   },
   "dependencies": {
     "@awaken/managed-session-projection": "workspace:*",
+    "@awaken/managed-sdk-oracle": "workspace:*",
     "@awaken/ui": "file:vendor/awaken-ui",
     "@ai-sdk/react": "^4.0.39",
     "@tanstack/react-query": "^5.62.0",
