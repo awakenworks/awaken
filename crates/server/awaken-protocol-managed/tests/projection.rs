@@ -1051,6 +1051,9 @@ async fn a_retries_exhausted_run_idles_with_that_stop_reason() {
 /// |---|---|---|---|---|---|
 /// | M1 | accepted+complete | yes | no | yes | E0,E1,E2,E4,E5,E6 |
 /// | M2 | already idle | yes | accepted+complete | yes | E0,E1,E3,E4,E5,E6 |
+// Test design: a_delegation_projects_the_child_thread_lifecycle
+// Cause/effect graph: delegated child facts produce one isolated Thread list/retrieve/event history.
+// Decision table: known child=typed lifecycle; root/sibling excluded; unknown=404; replay=stable.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delegation_projects_the_child_thread_lifecycle() {
     // Constraints/invariants: the Managed edge owns wire validation/projection only; Session/Run
@@ -1275,6 +1278,9 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 /// combined update covers both changed fields in one event. Constraint K1: the
 /// Session aggregate and its `SessionUpdateOutcome.changes` remain the mutation
 /// and change-mask authorities; this event owns no second field state.
+// Test design: updating_a_session_commits_a_session_updated_event
+// Cause/effect graph: accepted patch updates the aggregate and commits one matching session.updated fact.
+// Decision table: omitted=preserve; null=clear where allowed; value=replace; invalid/terminal=reject.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {

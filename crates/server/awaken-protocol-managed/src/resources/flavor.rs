@@ -42,7 +42,7 @@ pub(crate) fn resource_api_surface(
 /// Remove the generated SDK's transport-only `beta=true` selector before
 /// deserializing the public parameter DTO. This keeps Rust SDK DTOs one-to-one
 /// with the declarations while the route still validates the wire selector.
-pub(super) fn without_beta_selector(raw_query: Option<&str>) -> String {
+pub(crate) fn without_beta_selector(raw_query: Option<&str>) -> String {
     form_urlencoded::Serializer::new(String::new())
         .extend_pairs(
             raw_query

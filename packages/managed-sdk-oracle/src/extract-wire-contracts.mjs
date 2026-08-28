@@ -50,6 +50,15 @@ function containsReference(node, source, expected) {
   return false;
 }
 
+function containsUndefinedTypeNode(node) {
+  if (node.kind === ts.SyntaxKind.UndefinedKeyword) return true;
+  if (ts.isParenthesizedTypeNode(node)) return containsUndefinedTypeNode(node.type);
+  if (ts.isUnionTypeNode(node)) {
+    return node.types.some(containsUndefinedTypeNode);
+  }
+  return false;
+}
+
 function isNullishTypeNode(node) {
   return node.kind === ts.SyntaxKind.UndefinedKeyword
     || (ts.isLiteralTypeNode(node) && node.literal.kind === ts.SyntaxKind.NullKeyword);
@@ -68,6 +77,17 @@ function isUploadableTypeNode(node) {
   return name === 'Array'
     && node.typeArguments?.length === 1
     && isUploadableTypeNode(node.typeArguments[0]);
+}
+
+function isDirectUploadableTypeNode(node) {
+  if (ts.isParenthesizedTypeNode(node)) return isDirectUploadableTypeNode(node.type);
+  if (ts.isUnionTypeNode(node)) {
+    return node.types.every((candidate) =>
+      isNullishTypeNode(candidate) || isDirectUploadableTypeNode(candidate));
+  }
+  return ts.isTypeReferenceNode(node)
+    && node.typeName.getText(node.getSourceFile()).split('.').at(-1) === 'Uploadable'
+    && !node.typeArguments?.length;
 }
 
 function isRequestOptionsTypeNode(node) {
@@ -236,6 +256,150 @@ function contractForType(checker, input, operationID, path = [], active = new Se
   } finally {
     active.delete(identity);
   }
+}
+
+function requestContractForType(checker, input, operationID, path = [], active = new Set()) {
+  const type = withoutUndefined(input);
+  const uploadable = type.aliasSymbol?.name === 'Uploadable' || type.symbol?.name === 'Uploadable';
+  if (uploadable) return Object.freeze({ kind: 'upload' });
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) {
+    const purpose = requestOpenJsonPurpose(operationID, path);
+    assert.ok(
+      purpose,
+      `${operationID} request contains unreviewed open JSON at $.${path.join('.')}`,
+    );
+    return Object.freeze({ kind: 'open-json', purpose });
+  }
+  if (type.flags & ts.TypeFlags.Never) return Object.freeze({ kind: 'never' });
+  if (type.flags & ts.TypeFlags.Null) return Object.freeze({ kind: 'null' });
+  assert.ok(
+    !(type.flags & ts.TypeFlags.Undefined),
+    `${operationID} request contains bare undefined at $.${path.join('.')}`,
+  );
+
+  if (type.flags & ts.TypeFlags.StringLiteral) {
+    return Object.freeze({ kind: 'literal', primitive: 'string', value: type.value });
+  }
+  if (type.flags & ts.TypeFlags.NumberLiteral) {
+    return Object.freeze({ kind: 'literal', primitive: 'number', value: type.value });
+  }
+  if (type.flags & ts.TypeFlags.BooleanLiteral) {
+    return Object.freeze({
+      kind: 'literal',
+      primitive: 'boolean',
+      value: type.intrinsicName === 'true',
+    });
+  }
+
+  if (type.isUnion()) {
+    const variants = type.types
+      .filter((candidate) => !(candidate.flags & ts.TypeFlags.Undefined))
+      .map((candidate) => requestContractForType(checker, candidate, operationID, path, active));
+    const unique = new Map(variants.map((variant) => [JSON.stringify(variant), variant]));
+    assert.ok(unique.size > 0, `${operationID} request union is only undefined at $.${path.join('.')}`);
+    return Object.freeze({ kind: 'union', variants: [...unique.values()] });
+  }
+
+  if (type.isIntersection()) {
+    if (type.types.some((candidate) => candidate.flags & ts.TypeFlags.StringLike)) {
+      return Object.freeze({ kind: 'string' });
+    }
+    if (type.types.some((candidate) => candidate.flags & ts.TypeFlags.NumberLike)) {
+      return Object.freeze({ kind: 'number' });
+    }
+    if (type.types.some((candidate) => candidate.flags & ts.TypeFlags.BooleanLike)) {
+      return Object.freeze({ kind: 'boolean' });
+    }
+  }
+
+  if (type.flags & ts.TypeFlags.StringLike) return Object.freeze({ kind: 'string' });
+  if (type.flags & ts.TypeFlags.NumberLike) return Object.freeze({ kind: 'number' });
+  if (type.flags & ts.TypeFlags.BooleanLike) return Object.freeze({ kind: 'boolean' });
+  if (type.flags & ts.TypeFlags.BigIntLike) return Object.freeze({ kind: 'number' });
+
+  if (checker.isArrayType(type) || checker.isTupleType(type)) {
+    const arguments_ = checker.getTypeArguments(type);
+    assert.equal(
+      arguments_.length,
+      1,
+      `${operationID} request tuple needs an explicit contract at $.${path.join('.')}`,
+    );
+    return Object.freeze({
+      kind: 'array',
+      item: requestContractForType(
+        checker,
+        arguments_[0],
+        operationID,
+        [...path, '[]'],
+        active,
+      ),
+    });
+  }
+
+  const identity = type.id;
+  assert.ok(
+    !active.has(identity),
+    `${operationID} request contains a recursive type at $.${path.join('.')}`,
+  );
+  active.add(identity);
+  try {
+    const properties = {};
+    for (const property of checker.getPropertiesOfType(type).filter(visibleProperty)) {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0];
+      assert.ok(declaration, `${property.name}: public request property has no declaration`);
+      const propertyType = declaration.type && isDirectUploadableTypeNode(declaration.type)
+        ? Object.freeze({ kind: 'upload' })
+        : requestContractForType(
+          checker,
+          checker.getTypeOfSymbolAtLocation(property, declaration),
+          operationID,
+          [...path, property.name],
+          active,
+        );
+      properties[property.name] = Object.freeze({
+        required: (property.flags & ts.SymbolFlags.Optional) === 0,
+        value: propertyType,
+      });
+    }
+    const index = checker.getIndexTypeOfType(type, ts.IndexKind.String);
+    assert.ok(
+      Object.keys(properties).length > 0 || index,
+      `${operationID} request contains an unconstrained object at $.${path.join('.')}`,
+    );
+    return Object.freeze({
+      kind: 'object',
+      properties: Object.freeze(Object.fromEntries(
+        Object.entries(properties).sort(([left], [right]) => left.localeCompare(right)),
+      )),
+      additional: index
+        ? requestContractForType(checker, index, operationID, [...path, '*'], active)
+        : false,
+    });
+  } finally {
+    active.delete(identity);
+  }
+}
+
+function requestContract(checker, method, source, operationID) {
+  const parameters = [];
+  for (const parameter of method.parameters) {
+    const name = parameter.name.getText(source);
+    assert.ok(parameter.type, `${name}: request parameter type is absent`);
+    if (name === 'options' && isRequestOptionsTypeNode(parameter.type)) continue;
+    parameters.push(Object.freeze({
+      name,
+      required: !parameter.questionToken
+        && !parameter.initializer
+        && !containsUndefinedTypeNode(parameter.type),
+      value: requestContractForType(
+        checker,
+        checker.getTypeFromTypeNode(parameter.type),
+        operationID,
+        [name],
+      ),
+    }));
+  }
+  return Object.freeze({ parameters: Object.freeze(parameters) });
 }
 
 function responseContract(checker, method, source, operationID) {
@@ -462,4 +626,45 @@ export function extractResponseContractsFromPackageRoot(root, scope, operationID
     `${sdk.version}: every official operation has one response contract`,
   );
   return Object.freeze(Object.fromEntries([...contracts].sort(([left], [right]) => left.localeCompare(right))));
+}
+
+export function extractRequestContractsFromPackageRoot(root, scope, operationIDs) {
+  const expected = new Set(operationIDs);
+  assert.ok(expected.size > 0, 'request extraction requires operation identities');
+  const { checker, program, sdk, sources } = declarationContext(root, scope);
+  const contracts = new Map();
+  for (const { declaration, filename, prefix, resourceRoot } of sources) {
+    const source = program.getSourceFile(declaration);
+    assert.ok(source, `${declaration}: declaration was not loaded`);
+    const namespace = operationNamespace(resourceRoot, filename, prefix);
+    const visit = (node) => {
+      if (ts.isMethodDeclaration(node) && node.name && ts.isIdentifier(node.name)) {
+        const id = `${namespace}.${node.name.text}`;
+        if (expected.has(id)) {
+          let contract;
+          try {
+            contract = requestContract(checker, node, source, id);
+          } catch (error) {
+            throw new Error(`${sdk.version} ${id}: ${error.message}`, { cause: error });
+          }
+          const prior = contracts.get(id);
+          assert.ok(
+            !prior || JSON.stringify(prior) === JSON.stringify(contract),
+            `${id}: overloaded requests disagree`,
+          );
+          contracts.set(id, contract);
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  assert.deepEqual(
+    [...contracts.keys()].sort(),
+    [...expected].sort(),
+    `${sdk.version}: every official operation has one request contract`,
+  );
+  return Object.freeze(Object.fromEntries(
+    [...contracts].sort(([left], [right]) => left.localeCompare(right)),
+  ));
 }

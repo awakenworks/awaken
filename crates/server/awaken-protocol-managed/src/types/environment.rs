@@ -245,7 +245,8 @@ pub struct WorkUpdateParams {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct WorkStopParams {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+    #[cfg_attr(feature = "schema", schemars(with = "bool"))]
     pub force: Option<bool>,
 }
 
@@ -395,6 +396,35 @@ pub struct WorkHeartbeat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn work_stop_force_has_the_exact_optional_non_null_domain() {
+        // Official-SDK decision table: omitted, false and true are the complete
+        // `force?: boolean` domain; JSON null and an unknown sibling are not
+        // alternative spellings. Serde is the HTTP extractor, so rejecting the
+        // two invalid rows here proves they cannot reach queue mutation.
+        assert_eq!(
+            serde_json::from_value::<WorkStopParams>(serde_json::json!({}))
+                .unwrap()
+                .force,
+            None
+        );
+        for force in [false, true] {
+            assert_eq!(
+                serde_json::from_value::<WorkStopParams>(serde_json::json!({ "force": force }))
+                    .unwrap()
+                    .force,
+                Some(force)
+            );
+        }
+        assert!(
+            serde_json::from_value::<WorkStopParams>(serde_json::json!({ "force": null })).is_err()
+        );
+        assert!(
+            serde_json::from_value::<WorkStopParams>(serde_json::json!({ "future": true }))
+                .is_err()
+        );
+    }
 
     #[test]
     fn managed_environment_wire_remains_exactly_anthropic_owned() {

@@ -2194,6 +2194,9 @@ async fn app_with_session() -> (Router, String) {
     (app, id)
 }
 
+// Test design: create_time_resources_are_backfilled_and_addressable
+// Cause/effect graph: create-time resources become durable activations, then list/retrieve projections.
+// Decision table: valid manifest=addressable rows; duplicate/conflicting identity=4xx; missing id=404.
 #[tokio::test]
 async fn create_time_resources_are_backfilled_and_addressable() {
     let app = router(std::sync::Arc::new(
@@ -2409,6 +2412,9 @@ async fn published_agent_resources_are_visible_as_effective_session_inputs() {
     assert_eq!(session["resources"][0]["mount_path"], "/mnt/release.txt");
 }
 
+// Test design: session_get_projects_the_durable_activity_lifecycle
+// Cause/effect graph: durable activity facts select each official Session status across replacement.
+// Decision table: one valid lifecycle=one SDK projection; unknown=404; contradictory facts=fail closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn session_get_projects_the_durable_activity_lifecycle() {
     // Causes: the fixtures below establish `session get` with the concrete inputs, state,
@@ -3298,6 +3304,9 @@ async fn duplicate_session_mount_paths_fail_closed_before_runtime() {
     assert!(prepared.lock().unwrap().is_empty());
 }
 
+// Test design: file_resource_attaches_to_a_live_session
+// Cause/effect graph: add on a live Session activates one File mount and durable resource projection.
+// Decision table: live+valid=attach; duplicate/conflict follows identity rule; terminal/missing=4xx/404.
 #[tokio::test]
 async fn file_resource_attaches_to_a_live_session() {
     let (app, id) = app_with_session().await;
@@ -3744,6 +3753,9 @@ async fn github_repository_live_attach_is_rejected_without_runtime_effect() {
     assert!(listed["data"].as_array().unwrap().is_empty());
 }
 
+// Test design: a_file_resource_can_be_detached_from_a_live_session
+// Cause/effect graph: delete retires the exact File activation without changing unrelated resources.
+// Decision table: live+attached=detach; missing=404; terminal=reject without mutation.
 #[tokio::test]
 async fn a_file_resource_can_be_detached_from_a_live_session() {
     let (app, id) = app_with_session().await;
@@ -4297,6 +4309,9 @@ async fn repository_authorization_fails_closed_without_vault_or_existing_binding
     assert_eq!(applied.lock().unwrap().len(), applied_before);
 }
 
+// Test design: repository_authorization_is_sealed_pinned_and_rotated_without_echo
+// Cause/effect graph: update seals credentials, pins/rotates one revision, and exposes only metadata.
+// Decision table: fresh+valid=rotate; stale=409; invalid=4xx; every response/recovery path=no secret.
 #[tokio::test]
 async fn repository_authorization_is_sealed_pinned_and_rotated_without_echo() {
     // Cause graph:

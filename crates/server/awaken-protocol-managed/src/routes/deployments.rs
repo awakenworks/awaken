@@ -13,7 +13,7 @@ use awaken_deployment_application::{
     DeploymentSchedule, DeploymentSeedEvent, DeploymentStatus, DeploymentTrigger, DeploymentView,
     FieldUpdate, MetadataUpdate, UpdateDeploymentCommand,
 };
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -22,7 +22,7 @@ use chrono_tz::Tz;
 use serde::Deserialize;
 
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::routes::ManagedJson;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::types::deployment::{
     Deployment, DeploymentCreateParams, DeploymentInitialEvent, DeploymentRun,
     DeploymentUpdateParams, PausedReason, PausedReasonError, RunError, Schedule, TriggerContext,
@@ -599,11 +599,22 @@ struct DeploymentListParams {
     page: PageQuery,
     #[serde(default, rename = "beta")]
     _beta: Option<String>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     agent_id: Option<String>,
-    #[serde(default, rename = "created_at[gte]")]
+    #[serde(
+        default,
+        rename = "created_at[gte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_gte: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[lte]")]
+    #[serde(
+        default,
+        rename = "created_at[lte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_lte: Option<DateTime<FixedOffset>>,
     #[serde(default)]
     include_archived: bool,
@@ -631,7 +642,7 @@ fn page_query(query: &PageQuery) -> Result<PageQuery, WireError> {
 
 async fn list_deployments(
     State(application): State<Arc<DeploymentApplication>>,
-    Query(query): Query<DeploymentListParams>,
+    ManagedQuery(query): ManagedQuery<DeploymentListParams>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<Deployment>>, WireError> {
     if query.include_archived && query.status.is_some() {
@@ -780,15 +791,34 @@ struct DeploymentRunListParams {
     page: PageQuery,
     #[serde(default, rename = "beta")]
     _beta: Option<String>,
-    #[serde(default, rename = "created_at[gt]")]
+    #[serde(
+        default,
+        rename = "created_at[gt]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_gt: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[gte]")]
+    #[serde(
+        default,
+        rename = "created_at[gte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_gte: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[lt]")]
+    #[serde(
+        default,
+        rename = "created_at[lt]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_lt: Option<DateTime<FixedOffset>>,
-    #[serde(default, rename = "created_at[lte]")]
+    #[serde(
+        default,
+        rename = "created_at[lte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     created_at_lte: Option<DateTime<FixedOffset>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     deployment_id: Option<String>,
     #[serde(default)]
     has_error: Option<bool>,
@@ -818,7 +848,7 @@ async fn retrieve_run(
 
 async fn list_runs(
     State(application): State<Arc<DeploymentApplication>>,
-    Query(query): Query<DeploymentRunListParams>,
+    ManagedQuery(query): ManagedQuery<DeploymentRunListParams>,
     RequiredWorkspaceScope(scope): RequiredWorkspaceScope,
 ) -> Result<Json<PageCursor<DeploymentRun>>, WireError> {
     let page = page_query(&query.page)?;
@@ -861,4 +891,44 @@ async fn list_runs(
         })
         .collect();
     Ok(Json(paginate(data, &page, |run| run.id.as_str())))
+}
+
+#[cfg(test)]
+mod query_tests {
+    use super::{DeploymentListParams, DeploymentRunListParams};
+
+    #[test]
+    fn empty_deployment_filters_match_python_omission() {
+        // Causal matrix: both official SDKs expose the same optional filter
+        // states, but TS emits empty query pairs and Python omits them. Cross
+        // deployments/runs and every timestamp/id branch; populated RFC-3339
+        // values prove the adapter does not collapse valid filters.
+        let deployments: DeploymentListParams = serde_urlencoded::from_str(concat!(
+            "agent_id=&page=&created_at%5Bgte%5D=&created_at%5Blte%5D="
+        ))
+        .unwrap();
+        assert!(deployments.agent_id.is_none());
+        assert!(deployments.page.page.is_none());
+        assert!(deployments.created_at_gte.is_none());
+        assert!(deployments.created_at_lte.is_none());
+
+        let runs: DeploymentRunListParams = serde_urlencoded::from_str(concat!(
+            "deployment_id=&page=&created_at%5Bgt%5D=&created_at%5Bgte%5D=",
+            "&created_at%5Blt%5D=&created_at%5Blte%5D="
+        ))
+        .unwrap();
+        assert!(runs.deployment_id.is_none());
+        assert!(runs.page.page.is_none());
+        assert!(runs.created_at_gt.is_none());
+        assert!(runs.created_at_gte.is_none());
+        assert!(runs.created_at_lt.is_none());
+        assert!(runs.created_at_lte.is_none());
+
+        let populated: DeploymentRunListParams = serde_urlencoded::from_str(
+            "deployment_id=deploy_1&created_at%5Bgte%5D=2026-01-01T00%3A00%3A00Z",
+        )
+        .unwrap();
+        assert_eq!(populated.deployment_id.as_deref(), Some("deploy_1"));
+        assert!(populated.created_at_gte.is_some());
+    }
 }

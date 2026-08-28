@@ -15,6 +15,7 @@ use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
     ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
+use crate::routes::ManagedMultipart;
 use crate::types::skill::{
     BetaSkill, BetaSkillListParams, BetaSkillVersion, BetaSkillVersionListParams, DeletedSkill,
     DeletedSkillObjectType, DeletedSkillVersion, DeletedSkillVersionObjectType, Skill,
@@ -30,7 +31,7 @@ use awaken_resource_contract::{
     ResourceKind, ResourceTarget, SkillDefinition, SkillStore, SkillStoreError, SkillVersion,
     skill_bundle_sha256, skill_catalog_id, skill_stem,
 };
-use axum::extract::{Multipart, Path, RawQuery, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
@@ -208,13 +209,18 @@ pub fn skills_router(
 
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
 /// read for `display_title`; bundle contents remain binary-safe end to end.
+fn optional_multipart_text(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
 async fn read_multipart(
-    mut multipart: Multipart,
+    mut multipart: ManagedMultipart,
 ) -> Result<(Option<String>, Vec<UploadedSkillBundleFile>), String> {
     let mut display_title = None;
     let mut executable_paths = None;
     let mut files = Vec::new();
     while let Some(field) = multipart
+        .0
         .next_field()
         .await
         .map_err(|error| error.to_string())?
@@ -237,7 +243,8 @@ async fn read_multipart(
             if display_title.is_some() {
                 return Err("display_name/display_title may be supplied only once".into());
             }
-            display_title = Some(field.text().await.map_err(|error| error.to_string())?);
+            let value = field.text().await.map_err(|error| error.to_string())?;
+            display_title = optional_multipart_text(value);
         } else if name.as_deref() == Some("executable_paths") {
             if executable_paths.is_some() {
                 return Err("executable_paths may be supplied only once".into());
@@ -339,7 +346,7 @@ async fn create_skill(
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-    multipart: Multipart,
+    multipart: ManagedMultipart,
 ) -> axum::response::Response {
     let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
         Ok(surface) => surface,
@@ -561,7 +568,7 @@ async fn create_version(
     Path(id): Path<String>,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
-    multipart: Multipart,
+    multipart: ManagedMultipart,
 ) -> axum::response::Response {
     let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
         Ok(surface) => surface,
@@ -835,6 +842,19 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn empty_skill_display_name_matches_python_multipart_omission() {
+        // Metamorphic request relation derived from both official serializers:
+        // TS emits a `display_name` text part containing `""`; Python omits the
+        // part. Both must select the manifest-derived name, while non-empty
+        // input remains an explicit override.
+        assert_eq!(optional_multipart_text(String::new()), None);
+        assert_eq!(
+            optional_multipart_text("Managed Skill".into()).as_deref(),
+            Some("Managed Skill")
+        );
+    }
 
     #[test]
     fn skill_and_version_dtos_emit_only_official_response_fields() {

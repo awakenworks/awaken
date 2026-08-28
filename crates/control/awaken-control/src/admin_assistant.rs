@@ -325,11 +325,19 @@ impl HostResourceInventory {
 #[async_trait]
 impl ResourceInventory for HostResourceInventory {
     async fn memory_stores(&self, workspace_id: &str) -> Vec<String> {
-        // Active/suspended store ids from the durable catalog (sorted by id).
+        // Only executable/candidate store ids belong in assistant capabilities;
+        // management inventory intentionally retains archived definitions.
         self.memory
             .list_memory_stores(workspace_id)
             .unwrap_or_default()
             .into_iter()
+            .filter(|definition| {
+                matches!(
+                    definition.state,
+                    awaken_resource_contract::ResourceState::Active
+                        | awaken_resource_contract::ResourceState::Suspended
+                )
+            })
             .map(|d| d.id.to_string())
             .collect()
     }

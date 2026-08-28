@@ -12,10 +12,10 @@ from pathlib import Path
 import anthropic
 
 from managed_python_sdk_request_contract import (
+    exercise_declared_request_witnesses,
     exercise_async_error_and_retry_contract,
-    exercise_all_async_operation_requests,
-    exercise_all_operation_requests,
     exercise_error_and_retry_contract,
+    exercise_pathlike_upload_change_point,
 )
 from managed_python_sdk_installed_evidence import assert_installed_evidence
 from managed_python_sdk_response_contract_e2e import exercise_async, exercise_sync
@@ -246,9 +246,16 @@ def main() -> None:
     assert anthropic.__version__ == args.version
     evidence, anchor = extracted_evidence(args.version)
     transport = importlib.import_module("httpx2" if args.version.startswith("1.") else "httpx")
-    exercise_all_operation_requests(anthropic, transport, evidence["operations"])
-    asyncio.run(
-        exercise_all_async_operation_requests(anthropic, transport, evidence["operations"])
+    request_witnesses = exercise_declared_request_witnesses(
+        anthropic,
+        transport,
+        evidence["operations"],
+    )
+    operation_ids = {operation["id"] for operation in evidence["operations"]}
+    pathlike = exercise_pathlike_upload_change_point(
+        anthropic,
+        transport,
+        operation_ids,
     )
     exercise_error_and_retry_contract(anthropic, transport)
     asyncio.run(exercise_async_error_and_retry_contract(anthropic, transport))
@@ -258,12 +265,13 @@ def main() -> None:
         transport,
         evidence["operations"],
     )
-    operation_ids = {operation["id"] for operation in evidence["operations"]}
     exercise_session(args.base_url, anchor["stream_event_names"])
     exercise_memory(args.base_url, operation_ids)
     exercise_beta_ga_change_point(args.base_url, operation_ids)
     print(
         f"PYTHON SDK MATRIX PASS {args.version}: {len(operation_ids)} sync/async operations, "
+        f"{request_witnesses} declaration-derived request witnesses, "
+        f"PathLike={pathlike}, "
         f"{response_witnesses} current-response witnesses per client mode, "
         f"{len(evidence['helpers'])} resource helpers, "
         f"{len(evidence['library_exports'])} library exports"

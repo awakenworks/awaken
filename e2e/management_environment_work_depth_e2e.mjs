@@ -135,6 +135,67 @@ try {
     'the official EnvironmentWorker recognizes 409 as already stopped',
   );
 
+  // Stop-mode causal graph: WorkPoller calls stop after its handler returns
+  // with `force` omitted; direct callers may spell false; EnvironmentWorker
+  // force-stops during exceptional cleanup. In this self-hosted protocol the
+  // caller owns process cleanup, while the queue owns only the durable lease,
+  // so all three causes must converge to one stopped item and release capacity.
+  // Decision table: W0 null -> 400/no mutation, W1 omitted -> stopped, W2
+  // false -> stopped, W3 true above -> stopped, W4 repeat any terminal request
+  // -> 409. Leaving W1/W2 in `stopping` would retain the single-active lease
+  // and deadlock the official WorkPoller on its next poll.
+  for (const [label, force] of [['omitted', undefined], ['false', false]]) {
+    const stopEnvironment = await admin.beta.environments.create({
+      name: `environment-work-stop-${label}`,
+      config: { type: 'self_hosted' },
+      betas: BETAS,
+    });
+    const stopWork = await worker.beta.environments.work.poll(stopEnvironment.id, {
+      block_ms: null,
+      'Anthropic-Worker-ID': `worker-stop-${label}`,
+      betas: BETAS,
+    });
+    assert.ok(stopWork, `W1/W2 ${label} poll claims the healthcheck`);
+    if (force === undefined) {
+      const invalidNull = await fetch(
+        `${baseURL}/v1/environments/${stopEnvironment.id}/work/${stopWork.id}/stop`,
+        {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer e2e-env-key',
+            'anthropic-beta': BETAS[0],
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify({ force: null }),
+        },
+      );
+      assert.equal(invalidNull.status, 400, 'W0 non-nullable force fails closed');
+      assert.equal(
+        (await admin.beta.environments.work.retrieve(stopWork.id, {
+          environment_id: stopEnvironment.id,
+          betas: BETAS,
+        })).state,
+        'active',
+        'W0 invalid stop has no lease mutation',
+      );
+    }
+    const stopParams = {
+      environment_id: stopEnvironment.id,
+      ...(force === undefined ? {} : { force }),
+      betas: BETAS,
+    };
+    const terminal = await worker.beta.environments.work.stop(stopWork.id, stopParams);
+    assert.equal(terminal.state, 'stopped', `W1/W2 ${label}`);
+    assert.ok(terminal.stop_requested_at, `W1/W2 ${label} records request time`);
+    assert.ok(terminal.stopped_at, `W1/W2 ${label} records terminal time`);
+    assert.equal(
+      (await admin.beta.environments.work.stats(stopEnvironment.id, { betas: BETAS })).pending,
+      0,
+      `W1/W2 ${label} releases the active lease`,
+    );
+  }
+  pass('Environment Work stop omitted/false/true modes converge after caller-owned cleanup');
+
   const beforeUnknown = await drain(admin.beta.environments.work.list(environment.id, { betas: BETAS }));
   const unknown = 'work_does_not_exist';
   const unknownCalls = [

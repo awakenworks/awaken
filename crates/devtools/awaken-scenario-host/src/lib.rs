@@ -296,6 +296,50 @@ pub fn build_environment_matrix_router() -> Router {
     mount_with_environments(resource_host(model, model_ref))
 }
 
+fn ask_tool_bindings(tool_name: &str) -> AgentBindings {
+    AgentBindings {
+        toolsets: vec![awaken_agent_contract::ToolsetPolicy {
+            source: awaken_agent_contract::ToolsetSource::Agent,
+            default: awaken_agent_contract::ToolExecutionPolicy::default(),
+            overrides: vec![awaken_agent_contract::ToolPolicyOverride::new(
+                tool_name,
+                awaken_agent_contract::ToolExecutionPolicy {
+                    enabled: true,
+                    permission: awaken_agent_contract::ToolPermissionRequirement::AlwaysAsk,
+                },
+            )],
+        }],
+        ..Default::default()
+    }
+}
+
+/// Native tool-control fixture with an explicitly authored policy. The Probe
+/// model's `write` call is the mutating edge used by Managed, A2A, and
+/// cross-protocol HITL tests; leaving its policy implicit would make those tests
+/// follow whichever neutral default the runtime currently uses.
+pub fn build_probe_router() -> Router {
+    let (model, model_ref) = scenario_model(Arc::new(ProbeModel), "probe");
+    let snapshot = ExecutableAgentSnapshot::builder("assistant")
+        .resolved_model(ResolvedModelCandidate::host(ModelBinding::new(
+            "scenario",
+            model_ref.clone(),
+            "native",
+        )))
+        .metadata(awaken_runtime_contract::snapshot::AgentSnapshotMetadata {
+            source: awaken_runtime_contract::snapshot::AgentConfigRevisionRef {
+                agent_id: AgentId("assistant".into()),
+                revision: 1,
+            },
+            ..Default::default()
+        })
+        .agent_bindings(ask_tool_bindings("write"))
+        .build();
+    let publication = fixed_agent_publication([snapshot]);
+    let platform = resource_host(model, model_ref)
+        .map_host(|host| host.with_agent_publications(publication.clone()));
+    mount_with_agent_source(platform, publication)
+}
+
 /// The one deterministic ACP JSON-RPC fixture. It exercises the canonical codec
 /// for every catalog route without copying a fake per CLI. `AWAKEN_MATRIX_RUNTIME`
 /// is scenario-only observability injected by the catalog projection; delegated

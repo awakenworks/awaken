@@ -148,9 +148,26 @@ async function main() {
       assert.deepEqual(cleared.trust_grants, {});
       pass('beta.userProfiles.update -> explicit null is distinct from omission');
 
-      const ids = (await drain(client.beta.userProfiles.list())).map((p) => p.id);
-      assert.ok(ids.includes(profile.id), 'list returns the profile');
-      pass(`beta.userProfiles.list -> PageCursor<BetaUserProfile> (${ids.length})`);
+      // Ordering causal graph: the application supplies one deterministic
+      // creation/id order; asc preserves it, desc reverses it, and ordering is
+      // applied before cursor pagination. Empty/null SDK query spellings equal
+      // omission; an invalid value fails before a page is read.
+      await client.beta.userProfiles.create({ name: 'ordering-probe' });
+      const ascending = (await drain(client.beta.userProfiles.list({ order: 'asc' })))
+        .map((p) => p.id);
+      const descending = (await drain(client.beta.userProfiles.list({ order: 'desc' })))
+        .map((p) => p.id);
+      assert.ok(ascending.includes(profile.id), 'list returns the profile');
+      assert.deepEqual(descending, [...ascending].reverse());
+      const nullOrder = (await drain(client.beta.userProfiles.list({
+        order: null, limit: null, page: null,
+      }))).map((p) => p.id);
+      assert.deepEqual(nullOrder, ascending, 'TypeScript null query equals omission/asc');
+      const invalidOrder = await fetch(`${baseUrl}/v1/user_profiles?order=newest`, {
+        headers: { 'anthropic-beta': USER_PROFILES_BETA },
+      });
+      assert.equal(invalidOrder.status, 400);
+      pass(`beta.userProfiles.list order -> PageCursor<BetaUserProfile> (${ascending.length})`);
 
       const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id);
       assert.equal(enroll.type, 'enrollment_url');
