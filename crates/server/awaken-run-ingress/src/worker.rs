@@ -937,9 +937,7 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                     .interrupt_awaiting_tools(run_id.clone(), activation.thread_id.clone(), context)
                     .await
             } else {
-                self.runtime
-                    .cancel_run(run_id.clone(), activation.thread_id.clone(), context)
-                    .await
+                self.runtime.cancel_activation(activation, context).await
             };
             let state = match result {
                 Ok(state) => state,

@@ -59,6 +59,23 @@ pub(crate) async fn cancel_run(
     finish(runtime, &context, &thread_id, run_id, step).await
 }
 
+/// Cancel a claimed activation before its accepted input was necessarily
+/// committed by the fenced execution owner. Already-committed messages are
+/// removed by identity; the remaining input and terminal Cancelled fact commit
+/// atomically through the same finish boundary as ordinary execution.
+pub(crate) async fn cancel_activation(
+    runtime: &Runtime,
+    activation: RunActivation,
+    context: RuntimeRunContext,
+) -> Result<RunState> {
+    let run_id = activation.run_id;
+    let thread_id = activation.thread_id;
+    let (_, fresh_input) =
+        committed_history_and_fresh_input(&context, &thread_id, activation.input);
+    let step = RunStepResult::ended_with_messages(run_id.clone(), EndCause::Cancelled, fresh_input);
+    finish(runtime, &context, &thread_id, run_id, step).await
+}
+
 /// Resolve an externally blocked coordinated child without another inference
 /// step. Every unfinished call in the authoritative ToolBatch receives the
 /// coordinated-child interruption result, the complete ordered result batch and

@@ -179,6 +179,37 @@ async fn pre_cancelled_run_commits_a_terminal_cancelled_outcome() {
     );
 }
 
+#[tokio::test]
+async fn claimed_cancellation_commits_unpublished_activation_input_with_terminal_state() {
+    // Cause/effect graph: C1 admission has accepted one exact User message; C2
+    // its execution owner is fenced before the first commit; C3 a cancellation
+    // claim receives the immutable activation. Effects: E1 C3 commits C1 once;
+    // E2 the same commit ends the Run Cancelled. Invariant: a processed public
+    // receipt cannot lose its User message merely because interrupt won the
+    // execution lease. The real-process ACP matrix owns old-owner fencing and
+    // no-late-output; this unit isolates the replacement claim's commit payload.
+    let runtime = Runtime::new().with_llm(Arc::new(TextLlm));
+    let commit = Arc::new(MemoryCommitCoordinator::new());
+    let context = RuntimeRunContext::new()
+        .with_commit(commit.clone())
+        .with_reader(commit.clone());
+
+    let outcome = runtime
+        .cancel_activation(activation(), context)
+        .await
+        .expect("C3 cancellation claim commits");
+
+    assert_eq!(outcome, RunState::Ended(EndCause::Cancelled), "E2");
+    let committed = commit.committed();
+    assert_eq!(committed.messages.len(), 1, "E1");
+    assert_eq!(committed.messages[0].id, MessageId("m1".to_string()), "E1");
+    assert_eq!(
+        committed.latest_run.expect("E2 terminal Run").state,
+        RunState::Ended(EndCause::Cancelled),
+        "E2",
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn live_cancel_steers_an_in_flight_run() {
     let started = Arc::new(Notify::new());

@@ -144,5 +144,28 @@ fn model_transcript(context: &RuntimeRunContext, committed: Vec<Message>) -> Vec
     transcript
 }
 
+/// Partition an activation's accepted input against committed Thread truth.
+/// Fresh execution and a cancellation claim use this same boundary so either
+/// owner commits each accepted message exactly once with its first durable Run
+/// outcome.
+fn committed_history_and_fresh_input(
+    context: &RuntimeRunContext,
+    thread_id: &ThreadId,
+    input: Vec<Message>,
+) -> (Vec<Message>, Vec<Message>) {
+    let committed = context
+        .reader
+        .as_ref()
+        .map(|reader| reader.committed_messages(thread_id))
+        .unwrap_or_default();
+    let committed_ids: std::collections::HashSet<_> =
+        committed.iter().map(|message| message.id.clone()).collect();
+    let fresh = input
+        .into_iter()
+        .filter(|message| !committed_ids.contains(&message.id))
+        .collect();
+    (committed, fresh)
+}
+
 #[cfg(test)]
 mod tests;
