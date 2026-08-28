@@ -1103,7 +1103,18 @@ fn resolve_model_services(
                 .with_acp_capabilities(acp_capabilities)
                 .with_profiles(control.profiles.clone())
                 .with_worker_observations(worker_observations)
-                .with_brokered_access(cloud_models_enabled),
+                .with_brokered_access(cloud_models_enabled)
+                // The canonical self-hosted deployment selects the Worker as
+                // the exact direct Provider plaintext holder. Publication must
+                // freeze that existing deployment fact instead of leaving the
+                // resolver unconfigured and rejecting every Provider credential.
+                .with_direct_provider_credential_execution(
+                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                    awaken_runtime_contract::PlaintextHolder::new(
+                        awaken_runtime_contract::PlaintextBoundary::Worker,
+                        awaken_credential_contract::SELF_HOSTED_WORKER_TRUST_DOMAIN,
+                    ),
+                ),
             ),
             runtime: RuntimeModelServices::PublishedProviders,
         },

@@ -191,6 +191,10 @@ async function main() {
     console.log('ok: managed agent object/tool/metadata projection is lossless and typed extensions fail closed');
 
     // ---- publish an agent bound to that model --------------------------------
+    // Regression boundary: the default PublishedProviders composition must
+    // freeze its deployment-selected self-hosted Worker plaintext holder. A
+    // Provider Connection alone is insufficient evidence; this publication
+    // must resolve the exact credential before the real Session can run.
     // The console agent object is the managed `/v1/agents` shape: the model is
     // `model: { id }`, which the config plane maps to a Pinned selection — so a
     // session for this agent runs exactly the DB-configured `MODEL`.
@@ -524,6 +528,12 @@ async function main() {
     assert.equal(ownedCredential.status, 201, JSON.stringify(ownedCredential.json));
     assert.equal(ownedCredential.json.workspace_id, WS_A, 'path scope overrides body workspace');
     const ownedId = ownedCredential.json.id;
+    const ownedMcpCredential = await req(base, 'POST', scoped(WS_A, 'credentials'), {
+      workspace_id: 'forged-body-owner', kind: 'vault',
+      env_key: null, secret: 'mcp-resource-owner-e2e', // awaken-allow: secret
+    });
+    assert.equal(ownedMcpCredential.status, 201, JSON.stringify(ownedMcpCredential.json));
+    const ownedMcpId = ownedMcpCredential.json.id;
     const pool = {
       id: 'owned-pool', workspace_id: 'forged-body-owner',
       members: [{ credential_source_id: ownedId, ordinal: 0, enabled: true, selection_weight: 0 }],
@@ -547,13 +557,15 @@ async function main() {
         model_ref: MODEL,
         backend_ref: 'default',
       },
+      tools: [{ type: 'mcp_toolset', mcp_server_name: 'owned' }],
       mcp_servers: [{
         name: 'owned',
         url: 'https://mcp.example.invalid/',
-        credential: { id: ownedId, revision: ownedCredential.json.version },
+        credential: { id: ownedMcpId, revision: ownedMcpCredential.json.version },
       }],
     };
-    assert.equal((await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent'), agentMcp)).status, 200);
+    const ownedAgentDraft = await req(base, 'PUT', scoped(WS_A, 'agents/owned-agent'), agentMcp);
+    assert.equal(ownedAgentDraft.status, 200, JSON.stringify(ownedAgentDraft.json));
 
     // Exercise the owning side of every scoped operational route as well as
     // cross-aggregate binding checks. A foreign credential/pool/server must not
@@ -591,7 +603,7 @@ async function main() {
     assert.equal(owningAgent.status, 200);
     assert.deepEqual(
       owningAgent.json.mcp_servers[0].credential,
-      { id: ownedId, revision: ownedCredential.json.version },
+      { id: ownedMcpId, revision: ownedMcpCredential.json.version },
     );
 
     for (const uri of [
@@ -661,7 +673,10 @@ async function main() {
     );
     const unchangedAgentA = await req(base, 'GET', scoped(WS_A, 'agents/owned-agent'));
     assert.equal(unchangedAgentA.status, 200);
-    assert.deepEqual(unchangedAgentA.json.mcp_servers[0].credential, { id: ownedId, revision: ownedCredential.json.version });
+    assert.deepEqual(
+      unchangedAgentA.json.mcp_servers[0].credential,
+      { id: ownedMcpId, revision: ownedMcpCredential.json.version },
+    );
     assert.equal((await req(base, 'POST', scoped(WS_B, 'inference-profiles/owned-profile/resolve-candidates'), {
       workspace_id: WS_A,
     })).status, 200, 'trusted B path resolves B profile despite forged body Workspace');
