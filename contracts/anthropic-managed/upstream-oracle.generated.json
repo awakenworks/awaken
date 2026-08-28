@@ -1006,6 +1006,24 @@
         "managed-agents-2026-04-01"
       ],
       "session": {
+        "nested": {
+          "agent": {
+            "optional": [],
+            "required": [
+              "description",
+              "id",
+              "mcp_servers",
+              "model",
+              "multiagent",
+              "name",
+              "skills",
+              "system",
+              "tools",
+              "type",
+              "version"
+            ]
+          }
+        },
         "optional": [
           "deployment_id"
         ],

@@ -333,14 +333,16 @@ async fn prefer_header_cannot_select_a_second_standard_create_semantics() {
 }
 
 #[tokio::test]
-async fn session_routes_emit_only_the_current_official_sdk_outer_shape() {
+async fn session_routes_emit_only_the_current_official_sdk_recursive_shape() {
     // Cause/effect graph: C1 the current SDK declares required and optional
-    // Session properties; C2 create/retrieve/list serialize the same adapter
-    // DTO; C3 an internal lifecycle/property is present or a required official
-    // property is missing. Effects: E1 every route emits all required fields
-    // and only current-SDK fields; E2 C3 fails this offline gate. Decision
-    // rules: S1 C1+C2+!C3=>E1; S2 C3=>E2. The SDK oracle, not this test, owns
-    // the property catalog.
+    // Session and nested SessionAgent properties; C2 create/retrieve/list
+    // serialize the same adapter DTO; C3 an internal lifecycle/property is
+    // present or a required official property is missing at either level.
+    // Effects: E1 every route emits all required fields and only current-SDK
+    // fields recursively; E2 C3 fails this offline gate. Decision rules:
+    // S1=C1+C2+!C3=>E1; S2=C3=>E2. The SDK oracle, not this test, owns the
+    // property catalog; the default agent's absent coordinator covers the
+    // required-nullable `multiagent` serialization rule.
     let app = router(Arc::new(ManagedState::new(EchoFake::default())));
     let created = json_call(
         &app,
@@ -362,6 +364,19 @@ async fn session_routes_emit_only_the_current_official_sdk_outer_shape() {
 
     let listed = json_call(&app, "GET", "/v1/sessions", serde_json::Value::Null).await;
     support::assert_current_sdk_session_shape(&listed["data"][0]);
+
+    let mut missing_required_nested = created;
+    missing_required_nested["agent"]
+        .as_object_mut()
+        .expect("Session Agent is an object")
+        .remove("multiagent");
+    assert!(
+        std::panic::catch_unwind(|| {
+            support::assert_current_sdk_session_shape(&missing_required_nested)
+        })
+        .is_err(),
+        "S2/E2 recursively rejects an omitted required-nullable Agent field"
+    );
 }
 
 #[tokio::test]
@@ -371,12 +386,16 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     // ActivationFailed; C4 the process cache is cold. Effects: E1 replay is 409
     // `invalid_request_error` with the stable machine-readable message; E2 exact
     // GET returns the same official Session projection as terminated while the
-    // durable root retains the adapter-private realization error;
-    // E3 neither request creates, retries, replaces, or mutates the failed Session.
+    // durable root retains the adapter-private realization error; E3 neither
+    // request creates, retries, replaces, or mutates the failed Session; E4 the
+    // sole committed projector emits exactly one deterministic `session.error`
+    // (`unknown_error`/`terminal`) before the Thread and Session terminated
+    // edges, and warm refresh plus cold restart reproduce the same ids without
+    // duplicates.
     //
     // | Rule | C1 | C2 | C3 | C4 | POST replay | exact GET | Side effect |
     // |---|---|---|---|---|---|---|---|
-    // | F1 | yes | yes | yes | yes | E1 | 200 failed (E2) | E3 |
+    // | F1 | yes | yes | yes | yes | E1 | 200 failed (E2) | E3+E4 |
     //
     // Live and mismatch partitions are owned by the complete idempotency table
     // above. The same router and repository paths are used; this test adds no
@@ -429,6 +448,56 @@ async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
         failed.realization_progress.last_error.as_deref(),
         Some("repository realization timed out"),
         "F1/E2 durable cause remains internal"
+    );
+    let first_events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        types(&first_events),
+        vec![
+            "session.error",
+            "session.thread_status_terminated",
+            "session.status_terminated",
+        ],
+        "F1/E4 failure precedes the complete terminal projection"
+    );
+    let error = &first_events["data"][0]["error"];
+    assert_eq!(error["type"], "unknown_error", "F1/E4");
+    assert_eq!(
+        error["message"], "repository realization timed out",
+        "F1/E4"
+    );
+    assert_eq!(error["retry_status"]["type"], "terminal", "F1/E4");
+    let warm_refresh = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        warm_refresh["data"], first_events["data"],
+        "F1/E4 warm idempotency"
+    );
+    drop(app);
+    drop(restarted);
+
+    let cold = Arc::new(ManagedState::new(EchoFake::default()).with_session_repo(repo.clone()));
+    let app = router(cold);
+    let cold_events = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/events"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        cold_events["data"], first_events["data"],
+        "F1/E4 cold idempotency"
     );
     assert_eq!(repo.get(&id).await.unwrap(), failed, "F1/E3 durable truth");
 }
@@ -1169,7 +1238,8 @@ async fn create_session_advertises_capabilities() {
 }
 
 /// The default capability surface is empty: a runtime that does not override
-/// `capabilities` advertises no tools, skills, or resources, and omits `multiagent`.
+/// `capabilities` advertises no tools, skills, or resources, and emits the
+/// SDK-required nullable `multiagent` property as `null`.
 #[tokio::test]
 async fn create_session_defaults_to_empty_surface() {
     // Causes: the fixtures below establish `create session defaults to empty surface` with the

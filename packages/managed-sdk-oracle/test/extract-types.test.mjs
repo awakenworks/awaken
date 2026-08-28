@@ -21,24 +21,30 @@ test('managed declaration fingerprint is deterministic and scoped', () => {
   assert.ok(first.file_count > scope.beta_resource_roots.length);
 });
 
-test('current wire contract extracts Session shape and event vocabulary from declarations', () => {
+test('current wire contract extracts recursive Session shape and event vocabulary from declarations', () => {
   // Cause/effect graph: C1 one exact current SDK package contains the Session
-  // interface and event discriminators; C2 properties are required/optional;
-  // C3 event literals are inbound/outbound/preview. Effects: E1 generate one
-  // closed Session property contract and event catalog; E2 an absent/ambiguous
-  // declaration fails extraction. Decision rules: W1 C1+C2+C3=>E1; W2 !C1
-  // or ambiguous interface=>E2. No consumer owns another property/event list.
+  // and nested SessionAgent interfaces plus event discriminators; C2 properties
+  // are required/optional; C3 event literals are inbound/outbound/preview.
+  // Effects: E1 generate one recursively closed Session property contract and
+  // event catalog, including required-nullable Agent properties; E2 an
+  // absent/ambiguous declaration fails extraction. Decision rules:
+  // W1=C1+C2+C3=>E1; W2=!C1 or ambiguous interface=>E2. No consumer owns
+  // another property/event list.
   const wire = managedWireContract('@anthropic-ai/sdk-current');
   assert.ok(wire.session.required.includes('id'));
   assert.ok(wire.session.required.includes('status'));
   assert.ok(wire.session.optional.includes('deployment_id'));
+  assert.ok(wire.session.nested.agent.required.includes('multiagent'));
+  assert.equal(wire.session.nested.agent.optional.includes('multiagent'), false);
   assert.equal(wire.session.required.includes('preparation'), false);
   assert.equal(wire.session.optional.includes('preparation'), false);
-  assert.equal(
-    new Set([...wire.session.required, ...wire.session.optional]).size,
-    wire.session.required.length + wire.session.optional.length,
-    'required and optional properties are disjoint',
-  );
+  for (const shape of [wire.session, wire.session.nested.agent]) {
+    assert.equal(
+      new Set([...shape.required, ...shape.optional]).size,
+      shape.required.length + shape.optional.length,
+      'required and optional properties are disjoint at every extracted object',
+    );
+  }
   assert.ok(wire.events.outbound.includes('session.status_idle'));
   assert.ok(wire.events.inbound.includes('user.message'));
   assert.deepEqual(wire.events.preview, ['event_delta', 'event_start']);
