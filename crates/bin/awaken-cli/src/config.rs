@@ -38,6 +38,7 @@ use file_support::{
 pub use role::Role;
 pub use seal_key::SealKeySource;
 pub use service_boundary::{ControlServiceConfig, ExecutableAgentRegistrationConfig};
+pub(crate) use workspace_data::{WorkspaceDataLeaseGuard, enforce_workspace_data_lease};
 
 pub const DEFAULT_BIND: &str = "127.0.0.1:8080";
 const DEFAULT_WAKE_CHANNEL: &str = "awaken_dispatch_wake";
@@ -86,6 +87,10 @@ pub struct ResolvedDeployment {
     pub control: awaken_control::ControlStoreConfig,
     pub coordinator: CoordinatorStoreConfig,
     pub resources: ResourceStoreBackend,
+    /// Present only when Cloud supplies an exact Workspace data contract.
+    /// Local, self-hosted, and managed-agent-compatible deployments do not
+    /// acquire this additional request authority.
+    pub(crate) workspace_data_lease_guard: Option<WorkspaceDataLeaseGuard>,
     pub seal_key: SealKeySource,
     pub deprecations: Vec<String>,
     pub origins: BTreeMap<String, String>,
@@ -486,6 +491,7 @@ impl ResolvedDeployment {
                 data_dir.join("captured_content.db"),
             ),
         };
+        let workspace_data_lease_guard = workspace_data::lease_guard(file.workspace_data.as_ref());
         let resources = workspace_data::resolve(
             execution_store_url(&file.resource_database_url),
             file.workspace_data.as_ref(),
@@ -614,6 +620,7 @@ impl ResolvedDeployment {
             control,
             coordinator,
             resources,
+            workspace_data_lease_guard,
             seal_key,
             deprecations: Vec::new(),
             origins,
