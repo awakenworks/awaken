@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  awakenTargetFromEnvironment,
   officialReferenceFromEnvironment,
   parseHostedArguments,
 } from '../src/conformance/hosted-configuration.mjs';
@@ -15,6 +16,17 @@ const completeReference = Object.freeze({
   ANTHROPIC_MANAGED_REFERENCE_WORKSPACE_ID: 'workspace-reference',
   ANTHROPIC_MANAGED_REFERENCE_USER_PROFILE_ID: 'profile-reference',
   ANTHROPIC_MANAGED_REFERENCE_USER_PROFILE_ACCESS_TYPE: 'application',
+});
+
+const completeAwaken = Object.freeze({
+  AWAKEN_MANAGED_BASE_URL: 'https://awaken.invalid',
+  AWAKEN_MANAGED_API_KEY: 'awaken-key', // awaken-allow: secret
+  AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN: 'awaken-token', // awaken-allow: secret
+  AWAKEN_MANAGED_AGENT_ID: 'agent-awaken',
+  AWAKEN_MANAGED_ENVIRONMENT_ID: 'environment-awaken',
+  AWAKEN_MANAGED_WORKSPACE_ID: 'workspace-awaken',
+  AWAKEN_MANAGED_USER_PROFILE_ID: 'profile-awaken',
+  AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE: 'passthrough',
 });
 
 test('hosted invocation has one closed release-mode choice', () => {
@@ -80,7 +92,7 @@ test('official reference configuration is all-or-nothing and release is fail-clo
   }
   assert.throws(
     () => officialReferenceFromEnvironment({}, { requireReference: true }),
-    /requires the official Anthropic reference service/u,
+    /official reference is required/u,
     'R4',
   );
   for (const [name, value, pattern] of [
@@ -99,6 +111,43 @@ test('official reference configuration is all-or-nothing and release is fail-clo
       ),
       pattern,
       `R5 ${name}`,
+    );
+  }
+});
+
+test('Awaken hosted configuration is complete before any release side effect', () => {
+  // Admission graph: all eight target coordinates form one immutable value;
+  // removing any coordinate, using a blank value, a non-HTTP URL, or an open
+  // access type fails before hosted traffic or recovery artifacts can exist.
+  assert.deepEqual(awakenTargetFromEnvironment(completeAwaken), {
+    baseURL: 'https://awaken.invalid',
+    apiKey: 'awaken-key', // awaken-allow: secret
+    tunnelAccessToken: 'awaken-token', // awaken-allow: secret
+    agent: 'agent-awaken',
+    environmentId: 'environment-awaken',
+    workspaceId: 'workspace-awaken',
+    userProfileId: 'profile-awaken',
+    userProfileAccessType: 'passthrough',
+  });
+  for (const name of Object.keys(completeAwaken)) {
+    const incomplete = { ...completeAwaken };
+    delete incomplete[name];
+    assert.throws(
+      () => awakenTargetFromEnvironment(incomplete),
+      /configured together/u,
+      name,
+    );
+  }
+  assert.throws(() => awakenTargetFromEnvironment({}), /is required/u);
+  for (const [name, value, pattern] of [
+    ['AWAKEN_MANAGED_BASE_URL', 'file:///tmp/awaken', /uses HTTP\(S\)/u],
+    ['AWAKEN_MANAGED_AGENT_ID', ' ', /target agent/u],
+    ['AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE', 'unknown', /userProfileAccessType/u],
+  ]) {
+    assert.throws(
+      () => awakenTargetFromEnvironment({ ...completeAwaken, [name]: value }),
+      pattern,
+      name,
     );
   }
 });

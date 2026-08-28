@@ -11,6 +11,10 @@ import {
   replacementCommandEnvironment,
   runReleaseQualification,
 } from './release-qualification.mjs';
+import {
+  awakenTargetFromEnvironment,
+  officialReferenceFromEnvironment,
+} from './hosted-configuration.mjs';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 
@@ -46,14 +50,15 @@ async function main() {
   assert.equal(process.argv.length, 2, 'release qualification accepts no arguments');
   const replaceCommand = process.env.AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND;
   const expectedRevision = process.env.AWAKEN_MANAGED_EXPECTED_REVISION;
-  const expectedBaseURL = process.env.AWAKEN_MANAGED_BASE_URL;
+  const awaken = awakenTargetFromEnvironment(process.env);
+  officialReferenceFromEnvironment(process.env, { requireReference: true });
+  const expectedBaseURL = awaken.baseURL;
   assert.ok(replaceCommand, 'AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND is required');
   assert.ok(
     path.isAbsolute(replaceCommand),
     'AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND must be an absolute executable path',
   );
   assert.match(expectedRevision ?? '', /^[0-9A-Za-z][0-9A-Za-z._-]*$/u, 'exact deployed revision');
-  assert.ok(expectedBaseURL, 'AWAKEN_MANAGED_BASE_URL is required');
 
   await withReleaseArtifactDirectory(async (temporaryDirectory) => {
     const recoveryStateFile = path.join(temporaryDirectory, 'recovery.json');

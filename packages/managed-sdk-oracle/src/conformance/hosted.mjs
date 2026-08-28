@@ -16,6 +16,7 @@ import { officialBetaResourceProjection } from './resource-projection.mjs';
 import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
 import {
+  awakenTargetFromEnvironment,
   officialReferenceFromEnvironment,
   parseHostedArguments,
 } from './hosted-configuration.mjs';
@@ -44,16 +45,7 @@ CeFKdLr8W7pyoxEwCgYIKoZIzj0EAwIDSAAwRQIgS4B6fQj5UHT+4K9gknAevKBq
 const clients = await loadConformanceClients();
 const hostedArguments = parseHostedArguments(process.argv.slice(2));
 const reference = officialReferenceFromEnvironment(process.env, hostedArguments);
-const awaken = {
-  baseURL: process.env.AWAKEN_MANAGED_BASE_URL,
-  apiKey: process.env.AWAKEN_MANAGED_API_KEY,
-  tunnelAccessToken: process.env.AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN,
-  agent: process.env.AWAKEN_MANAGED_AGENT_ID,
-  environmentId: process.env.AWAKEN_MANAGED_ENVIRONMENT_ID,
-  workspaceId: process.env.AWAKEN_MANAGED_WORKSPACE_ID,
-  userProfileId: process.env.AWAKEN_MANAGED_USER_PROFILE_ID,
-  userProfileAccessType: process.env.AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE,
-};
+const awaken = awakenTargetFromEnvironment(process.env);
 const target = hostedArguments.referenceLifecycles ? reference : awaken;
 const {
   baseURL,
@@ -66,12 +58,6 @@ const {
   userProfileAccessType,
 } = target;
 
-for (const [name, value] of Object.entries({
-  baseURL, apiKey, tunnelAccessToken, agent, environmentId, workspaceId,
-  userProfileId, userProfileAccessType,
-})) {
-  assert.ok(value, `${name} is required`);
-}
 function ingressRequest(path, headerPairs) {
   const url = new URL(path, baseURL);
   const transport = url.protocol === 'https:' ? https : http;
