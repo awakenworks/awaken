@@ -970,10 +970,9 @@ impl SharedHost {
         self
     }
 
-    /// Offer skills on every thread (ADR-0036): they are fronted by the single
-    /// `Skill` tool, whose catalog lists them and whose invocation returns the
-    /// activated skill's instructions. The host stays out of skill
-    /// authoring/collection — it only carries the offered set.
+    /// Offer host-static Skills to direct/non-Managed threads (ADR-0036). The
+    /// compatibility adapter lists and activates them through the one registry.
+    /// Managed Sessions require durable versioned bindings instead.
     pub fn with_skills(mut self, skills: Vec<SkillSpec>) -> Self {
         self.skills.add_specs(skills);
         self

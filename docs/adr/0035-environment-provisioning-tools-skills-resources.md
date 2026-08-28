@@ -76,10 +76,12 @@ D5 covers only the model-visible presentation. Full run identity =
 
 > **Superseded by [ADR-0036](0036-skills-as-runtime-extension-single-tool.md).**
 > The per-skill `RawTool` shape below (one dynamic tool per skill) is withdrawn.
-> ADR-0036's 2026-08-23 amendment now selects either Anthropic-compatible
-> filesystem discovery or the fixed `list_skills`/`Skill` semantic surface from
-> the effective filesystem capability. Both are implemented over the same
-> `awaken-ext-skills` registry (still outside the kernel). D1–D3 and
+> ADR-0036's 2026-08-29 amendment makes Anthropic-compatible filesystem
+> discovery the only Managed Skill projection. A Managed Session without the
+> required filesystem capability fails before inference; it never falls back to
+> `list_skills`/`Skill`. Those two semantic tools remain only a direct/non-Managed
+> compatibility adapter over the same `awaken-ext-skills` registry (still outside
+> the kernel). D1–D3 and
 > D5–D8 of this ADR are unaffected — provisioning still materializes resources
 > and the per-run substrate.
 

@@ -1578,9 +1578,12 @@ mod provisioning_registry_tests {
 
     #[tokio::test]
     async fn a_durable_skill_is_advertised_by_a_resolvable_catalog_id() {
-        // The official worker reads `agent.skills[].skill_id` then downloads it — so the
-        // advertised id must be a tagged catalog id the `/v1/skills` read paths resolve,
-        // never the skill's name (which used to 404). This pins that round-trip.
+        // Cause/effect rule V1: C1 a Skill is persisted into the versioned
+        // catalog => E1 Managed advertisement contains its stable resource id
+        // and E2 the corresponding frozen bytes remain loadable. Constraint:
+        // display names and host-static specs cannot satisfy E2, so they cannot
+        // enter this Managed id set. The static exclusion row is covered by
+        // `managed_session_folds_builtins_into_the_agent_toolset`.
         let dir = std::env::temp_dir().join(format!("awaken-skillid-{}", std::process::id()));
         let host = SharedHost::new(Arc::new(NoLlm), "test").with_skill_store(dir.join("store"));
         host.skills
@@ -1592,10 +1595,10 @@ mod provisioning_registry_tests {
             .await;
 
         let cid = "Greeter".to_string();
-        let advertised = host.skills.ids_in(host.local_workspace());
-        assert!(
-            advertised.contains(&cid),
-            "advertisement {advertised:?} must offer the stable resource id {cid}"
+        assert_eq!(
+            host.skills.managed_ids_in(host.local_workspace()),
+            vec![cid.clone()],
+            "Managed advertisement contains only the version-backed catalog id"
         );
 
         let version = host

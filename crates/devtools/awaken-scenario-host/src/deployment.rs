@@ -47,6 +47,32 @@ impl ScenarioPlatform {
     ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, awaken_runtime_host::HostError> {
         self.host.dispatch_store()
     }
+
+    /// Seed deterministic Managed-Agent Skill fixtures through the same
+    /// Resources application that production admission resolves and freezes.
+    /// The returned bindings are the only Agent-facing selection; no host-static
+    /// `SkillSpec` mirror is installed.
+    pub(crate) async fn publish_managed_skills(
+        &self,
+        skills: &[awaken_ext_skills::SkillSpec],
+    ) -> Vec<awaken_agent_contract::AgentSkillBinding> {
+        let workspace = self.host.local_workspace();
+        let application = self.resources.skill_catalog_application();
+        let mut bindings = Vec::with_capacity(skills.len());
+        for skill in skills {
+            let id = awaken_resource_contract::skill_catalog_id(&skill.id);
+            let content = format!(
+                "---\nname: {}\ndescription: {}\n---\n{}",
+                skill.name, skill.description, skill.body
+            );
+            application
+                .publish_authored(workspace, &id, &skill.name, &skill.description, &content)
+                .await
+                .expect("publish deterministic Managed Skill fixture");
+            bindings.push(awaken_agent_contract::AgentSkillBinding::custom(id));
+        }
+        bindings
+    }
 }
 
 static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<

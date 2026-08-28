@@ -4,7 +4,8 @@
 //!   discover — prompt metadata advertises an exact `SKILL.md`, then `read` loads it.
 //!   author   — the model authors a new skill via `bash` (awaits on the gate,
 //!              the client confirms) at the canonical repository path.
-//!   use      — the confirmed Run reads the authored repository Skill.
+//!   use      — the confirmed Run explicitly reads the authored Skill file; it
+//!              does not create a second Managed binding or registry entry.
 
 mod support;
 
@@ -15,7 +16,7 @@ use awaken_coordinator::SkillSpec;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_scenario_host::build_router_with_skills;
+use awaken_scenario_host::build_router_with_managed_skills;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -213,7 +214,7 @@ impl LlmExecutor for FullFlowModel {
         let output = match last.role {
             Role::User => {
                 if last_text.contains("discover") {
-                    match advertised("greet/SKILL.md") {
+                    match advertised("/SKILL.md") {
                         Some(path) => tool("read-greet", "read", serde_json::json!({"path": path})),
                         None => AssistantOutput::text("MISSING-GREET-METADATA"),
                     }
@@ -263,9 +264,11 @@ fn tool(call_id: &str, tool_id: &str, arguments: serde_json::Value) -> Assistant
 #[tokio::test]
 async fn discover_read_author_and_use_authored_skill_end_to_end() {
     // Causes: C0 the Session override explicitly freezes `bash=always_ask`; C1 a
-    // frozen Skill is offered; C2 the model follows its prompt path; C3 authoring
+    // versioned Agent binding resolves to frozen Skill bytes; C2 the model follows
+    // its prompt path; C3 authoring
     // invokes approval-gated bash and the client confirms it; C4 a
-    // confirmed Run continues to the authored Skill. Effects: E1 `read` returns the
+    // confirmed Run explicitly reads the authored file without registering a
+    // second Managed Skill. Effects: E1 `read` returns the
     // frozen body with no semantic tools; E2 approval names the exact public
     // bash Event; E3 `.claude/skills/notes/SKILL.md` is readable through the same
     // sandbox boundary; E4 its body reaches the final reply.
@@ -275,7 +278,8 @@ async fn discover_read_author_and_use_authored_skill_end_to_end() {
     // Decision rules: F1=C1+C2 -> E1; F2=F1+C3 -> E2;
     // F3=F2+C4 -> E3+E4.
     let greet = SkillSpec::new("greet", "Greet", "say hello", "GREETING for $ARGUMENTS");
-    let app = build_router_with_skills(Arc::new(FullFlowModel), "scripted", vec![greet]);
+    let app =
+        build_router_with_managed_skills(Arc::new(FullFlowModel), "scripted", vec![greet]).await;
     let id = create_session(&app).await;
 
     // 1) discover and load the frozen Skill through its advertised path.

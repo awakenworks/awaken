@@ -5,6 +5,21 @@
 
 use super::*;
 
+pub(super) fn published_skill_ids(
+    snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+) -> Option<std::collections::BTreeSet<String>> {
+    snapshot.map(|snapshot| {
+        snapshot
+            .resolved_spec
+            .plugin_config
+            .agent
+            .skills
+            .iter()
+            .map(|skill| skill.skill_id.clone())
+            .collect()
+    })
+}
+
 impl SharedHost {
     fn session_allows_agent_tool(
         &self,
@@ -58,8 +73,10 @@ impl SharedHost {
             .any(|tool| self.session_allows_agent_tool(thread, published_snapshot, tool))
     }
 
-    /// Repository Skill discovery follows Anthropic's `read` capability rule,
-    /// which is intentionally narrower than general filesystem capability.
+    /// Direct Agent SDK-compatible repository Skill discovery follows the
+    /// `read` capability rule, intentionally narrower than general filesystem
+    /// capability. Managed Sessions consume only frozen binding bytes and do
+    /// not call this discovery path.
     pub(crate) fn session_allows_repository_skill_discovery(
         &self,
         thread: &str,
@@ -72,8 +89,39 @@ impl SharedHost {
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
-        frozen_skill_versions: Option<&Vec<awaken_resource_contract::SkillVersion>>,
+        frozen_skill_versions: Option<&[awaken_resource_contract::SkillVersion]>,
     ) -> Result<crate::session_slot::ManagedContentDelivery, HostError> {
+        let managed_session = self
+            .session_slots
+            .read(thread, |slot| slot.session_dispatch)
+            .unwrap_or(false);
+        let selected_skills = published_skill_ids(published_snapshot);
+        let managed_has_skill = if managed_session {
+            // A cold reservation may precede Resource realization and therefore
+            // carry neither a publication Skill selection nor a frozen Skill
+            // vector yet. That means "no Skill projection", not an alternate
+            // catalog. Once a publication selects a Skill, however, its exact
+            // frozen bytes are mandatory.
+            let frozen = frozen_skill_versions.unwrap_or_default();
+            if let Some(missing) = selected_skills.as_ref().and_then(|selected| {
+                selected.iter().find(|id| {
+                    !frozen
+                        .iter()
+                        .any(|version| version.skill_id.as_str() == id.as_str())
+                })
+            }) {
+                return Err(HostError::internal(format!(
+                    "Managed Session Skill `{missing}` has no frozen version bytes"
+                )));
+            }
+            frozen.iter().any(|version| {
+                selected_skills
+                    .as_ref()
+                    .is_none_or(|selected| selected.contains(version.skill_id.as_str()))
+            })
+        } else {
+            false
+        };
         // Content delivery belongs to the physical Session, not to each
         // auxiliary/child Agent snapshot. Once the root projection chooses it,
         // a restricted Outcome grader or delegate must reuse that immutable
@@ -83,28 +131,33 @@ impl SharedHost {
             .read(thread, |slot| slot.content_delivery)
             .flatten()
         {
+            if managed_has_skill
+                && existing != crate::session_slot::ManagedContentDelivery::ManagedFilesystem
+            {
+                return Err(HostError::bad_request(
+                    "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
+                ));
+            }
             return Ok(existing);
         }
-        let delivery = if self.session_allows_filesystem_tools(thread, published_snapshot) {
+        let allows_filesystem = self.session_allows_filesystem_tools(thread, published_snapshot);
+        if managed_has_skill && !allows_filesystem {
+            return Err(HostError::bad_request(
+                "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
+            ));
+        }
+        let delivery = if allows_filesystem {
             crate::session_slot::ManagedContentDelivery::ManagedFilesystem
         } else {
             crate::session_slot::ManagedContentDelivery::SemanticTools
         };
-        if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools {
+        if delivery == crate::session_slot::ManagedContentDelivery::SemanticTools
+            && !managed_session
+        {
             let frozen_requires_filesystem = frozen_skill_versions.is_some_and(|versions| {
                 versions
                     .iter()
                     .any(crate::skills::version_requires_environment)
-            });
-            let selected_skills = published_snapshot.map(|snapshot| {
-                snapshot
-                    .resolved_spec
-                    .plugin_config
-                    .agent
-                    .skills
-                    .iter()
-                    .map(|skill| skill.skill_id.clone())
-                    .collect::<std::collections::BTreeSet<_>>()
             });
             if frozen_requires_filesystem
                 || self.skills.requires_environment_in(
@@ -128,66 +181,59 @@ impl SharedHost {
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> bool {
         let filesystem_delivery = self.session_allows_filesystem_tools(thread, published_snapshot);
-        let slot_requires = self
+        let selected_skills = published_skill_ids(published_snapshot);
+        let (managed_session, slot_requires, frozen_has_selected) = self
             .session_slots
             .read(thread, |slot| {
-                !slot.delegates.is_empty()
-                    || slot.resources.mounts.iter().any(|mount| {
+                let is_selected = |id: &str| {
+                    selected_skills
+                        .as_ref()
+                        .is_none_or(|selected| selected.contains(id))
+                };
+                let frozen_has_selected = slot.skills.as_ref().is_some_and(|versions| {
+                    versions
+                        .iter()
+                        .any(|version| is_selected(version.skill_id.as_str()))
+                });
+                let frozen_requires = slot.skills.as_ref().is_some_and(|versions| {
+                    versions.iter().any(|version| {
+                        is_selected(version.skill_id.as_str())
+                            && crate::skills::version_requires_environment(version)
+                    })
+                });
+                let mount_requires_environment =
+                    |mount: &awaken_provisioning_contract::MountRequirement| {
                         filesystem_delivery
                             || !matches!(
                                 mount.source,
                                 awaken_provisioning_contract::MountSource::MemoryStore { .. }
                             )
-                    })
+                    };
+                let baseline_requires = slot.baseline.as_ref().is_some_and(|baseline| {
+                    baseline.mounts.iter().any(mount_requires_environment)
+                        || !baseline.env.is_empty()
+                });
+                let slot_requires = !slot.delegates.is_empty()
+                    || slot.resources.mounts.iter().any(mount_requires_environment)
                     || !slot.resources.repositories.is_empty()
-                    || slot.baseline.as_ref().is_some_and(|baseline| {
-                        baseline.mounts.iter().any(|mount| {
-                            filesystem_delivery
-                                || !matches!(
-                                    mount.source,
-                                    awaken_provisioning_contract::MountSource::MemoryStore { .. }
-                                )
-                        }) || !baseline.env.is_empty()
-                    })
-                    || slot.skills.as_ref().is_some_and(|versions| {
-                        versions
-                            .iter()
-                            .any(crate::skills::version_requires_environment)
-                    })
+                    || baseline_requires
+                    || frozen_requires;
+                (slot.session_dispatch, slot_requires, frozen_has_selected)
             })
-            .unwrap_or(false);
-        let selected_skills = published_snapshot.map(|snapshot| {
-            snapshot
-                .resolved_spec
-                .plugin_config
-                .agent
-                .skills
-                .iter()
-                .map(|skill| skill.skill_id.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        });
+            .unwrap_or((false, false, false));
         let workspace = self.thread_workspace(thread);
         let filesystem_skill_projection = filesystem_delivery
-            && (self
-                .skills
-                .has_selected_in(&workspace, selected_skills.as_ref())
-                || self
-                    .session_slots
-                    .read(thread, |slot| {
-                        slot.skills.as_ref().is_some_and(|versions| {
-                            versions.iter().any(|version| {
-                                selected_skills.as_ref().is_none_or(|selected| {
-                                    selected.contains(version.skill_id.as_str())
-                                })
-                            })
-                        })
-                    })
-                    .unwrap_or(false));
+            && (frozen_has_selected
+                || (!managed_session
+                    && self
+                        .skills
+                        .has_selected_in(&workspace, selected_skills.as_ref())));
         slot_requires
             || filesystem_skill_projection
-            || self
-                .skills
-                .requires_environment_in(&workspace, selected_skills.as_ref())
+            || (!managed_session
+                && self
+                    .skills
+                    .requires_environment_in(&workspace, selected_skills.as_ref()))
     }
 
     pub(super) fn can_defer_session_environment(

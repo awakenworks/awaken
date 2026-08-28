@@ -3,7 +3,7 @@
 //! Drives the real kernel over the public `/v1/sessions...` wire and proves the
 //! Anthropic-compatible filesystem Skill surface from **discover** to **use**:
 //!
-//!   offer   (SkillSpec → frozen `SKILL.md` projection)
+//!   offer   (Resource version + Agent binding → frozen `SKILL.md` projection)
 //!     → discover (prompt carries metadata + path, never the body)
 //!     → load     (model calls ordinary `read`; instructions returned)
 //!     → use      (the loop continues; the model replies)
@@ -20,7 +20,7 @@ use awaken_coordinator::SkillSpec;
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
-use awaken_scenario_host::{build_router, build_router_with_skills};
+use awaken_scenario_host::{build_router, build_router_with_managed_skills};
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -186,12 +186,15 @@ impl LlmExecutor for SkillUserModel {
 
 #[tokio::test]
 async fn offered_skill_is_discovered_activated_and_used() {
-    // Causes: C1 the Session is offered one Skill; C2 the model requests the
-    // prompt path; C3 it reads `deploy/SKILL.md`; C4 the instructions return to
+    // Causes: C1 a versioned Agent binding freezes one Skill into the Session;
+    // C2 the model requests the
+    // prompt path; C3 it reads the advertised `SKILL.md`; C4 the instructions return to
     // the same Run. Effects: E1 only `read` is invoked; E2 prompt contains
     // metadata/path but not body; E3 read returns the exact body; E4 the Run
     // commits `USED_SKILL`. Rule L1=C1+C2 -> E1+E2; L2=L1+C3+C4 -> E3+E4.
-    let app = build_router_with_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()]);
+    let app =
+        build_router_with_managed_skills(Arc::new(SkillUserModel), "scripted", vec![skill_spec()])
+            .await;
     let id = create_session(&app).await;
 
     let list = send_message(&app, &id, "please deploy").await;
