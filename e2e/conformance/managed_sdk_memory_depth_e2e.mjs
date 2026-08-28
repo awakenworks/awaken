@@ -2,7 +2,7 @@
 // every mutating subresource's beta rejection, cross-beta cursors, cursor
 // invalidation safety, and literal HTTP/1 header framing.
 //
-// Cause/effect graph: SDK 0.105/0.117/0.120 or header selector -> one Memory aggregate/cursor ->
+// Cause/effect graph: SDK 0.105/0.117/current or header selector -> one Memory aggregate/cursor ->
 // mutation or read. Valid old/current selectors share state; ambiguous/invalid
 // selectors fail before mutation; stale cursors never resurrect removed heads.
 // Decision table coverage is grouped in the assertions below by handoff, CAS,
@@ -10,17 +10,19 @@
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import AnthropicCurrent from '@anthropic-ai/sdk';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import Anthropic0120 from '@anthropic-ai/sdk-0-120';
 import { pass, withScenarioServer } from '../harness.mjs';
+import { sdkVersionBinding } from './catalog.mjs';
 
 const LEGACY_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
+const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
 const CLIENTS = [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
-  ['0.120.0', Anthropic0120],
+  [CURRENT_SDK_VERSION, AnthropicCurrent],
 ];
 
 async function drain(items) {

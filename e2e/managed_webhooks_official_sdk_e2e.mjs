@@ -11,14 +11,16 @@
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import AnthropicCurrent from '@anthropic-ai/sdk';
 import Anthropic0105 from '@anthropic-ai/sdk-0-105';
 import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import Anthropic0120 from '@anthropic-ai/sdk-0-120';
+import { sdkVersionBinding } from './conformance/catalog.mjs';
 import { pass } from './harness.mjs';
 
 const keyBytes = Buffer.from('managed-webhook-test-key!');
 const key = `whsec_${keyBytes.toString('base64')}`;
 const timestamp = String(Math.floor(Date.now() / 1000));
+const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
 const eventCases = [{
   type: 'session.thread_idled',
   id: 'session_1',
@@ -59,7 +61,7 @@ function signedEvent(data, index) {
 for (const [version, Anthropic] of [
   ['0.105.0', Anthropic0105],
   ['0.117.1', Anthropic0117],
-  ['0.120.0', Anthropic0120],
+  [CURRENT_SDK_VERSION, AnthropicCurrent],
 ]) {
   const client = new Anthropic({ apiKey: 'inert', webhookKey: key });
   for (const [index, data] of eventCases.entries()) {

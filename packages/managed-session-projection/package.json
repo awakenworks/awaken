@@ -17,7 +17,7 @@
     "build": "tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "0.120.0"
+    "@awaken/managed-sdk-oracle": "workspace:*"
   },
   "devDependencies": {
     "typescript": "5.9.3",

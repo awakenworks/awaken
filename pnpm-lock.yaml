@@ -29,9 +29,9 @@ importers:
 
   packages/managed-session-projection:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: 0.120.0
-        version: 0.120.0(zod@4.4.3)
+      '@awaken/managed-sdk-oracle':
+        specifier: workspace:*
+        version: link:../managed-sdk-oracle
     devDependencies:
       typescript:
         specifier: 5.9.3
@@ -45,6 +45,9 @@ importers:
       '@ai-sdk/react':
         specifier: ^4.0.39
         version: 4.0.39(react@19.2.7)(zod@4.4.3)
+      '@awaken/managed-session-projection':
+        specifier: workspace:*
+        version: link:../packages/managed-session-projection
       '@awaken/ui':
         specifier: file:vendor/awaken-ui
         version: file:web/vendor/awaken-ui(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)
@@ -130,15 +133,6 @@ packages:
 
   '@anthropic-ai/sdk@0.117.1':
     resolution: {integrity: sha512-Yn2QlXfyCiKJ5YGCOOay7ZE78ISvII2XY621WMCiflmG8IYgwx59IBwPExxki3Xk9jKUtnD/Sj6UvplWr0rZxg==}
-    hasBin: true
-    peerDependencies:
-      zod: ^3.25.0 || ^4.0.0
-    peerDependenciesMeta:
-      zod:
-        optional: true
-
-  '@anthropic-ai/sdk@0.120.0':
-    resolution: {integrity: sha512-ZlvmNFT/iIF6JD13rxbbMWD8nvGR0RaUp6yMQnoc+4Af0YjVVe/bIdW1XSQQsoxXAtg1NaT6Vak0LKFlJ4d37Q==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -1270,13 +1264,6 @@ snapshots:
       zod: 4.4.3
 
   '@anthropic-ai/sdk@0.117.1(zod@4.4.3)':
-    dependencies:
-      json-schema-to-ts: 3.1.1
-      standardwebhooks: 1.0.0
-    optionalDependencies:
-      zod: 4.4.3
-
-  '@anthropic-ai/sdk@0.120.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0

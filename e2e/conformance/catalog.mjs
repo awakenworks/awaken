@@ -1,10 +1,9 @@
 // Shared source-of-truth extractors for the Managed Agents conformance gates.
 //
-// The oracle is the *installed* official SDK (`@anthropic-ai/sdk`, pinned in
-// e2e/package.json) — its vendored `.d.ts` is the authoritative event catalog and
-// beta identifier. The subject-under-test is awaken's Rust wire vocabulary, read
-// straight from source (the `#[serde(rename=…)]` tags on the event enums and the
-// `MANAGED_BETA` const). No server, no network — pure static comparison.
+// The sole SDK authority is the generated `@awaken/managed-sdk-oracle` current
+// anchor. E2E's installed `@anthropic-ai/sdk` is only an executable mirror and
+// must match that anchor exactly. The subject-under-test is awaken's Rust wire
+// vocabulary, read straight from source. No server or network is involved.
 
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -15,56 +14,37 @@ const read = (rel) => readFileSync(path.join(REPO, rel), 'utf8');
 
 const SESSION_RS = 'crates/server/awaken-protocol-managed/src/types/session.rs';
 const MANAGED_HEADERS_RS = 'crates/server/awaken-protocol-managed/src/common/headers.rs';
-const EVENTS_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/sessions/events.d.ts';
-// `session.updated` / `system.message` events are declared here and re-exported
-// into the event unions, so the catalog scan must read this file too.
-const SESSIONS_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/sessions/sessions.d.ts';
-const BETA_DTS = 'e2e/node_modules/@anthropic-ai/sdk/resources/beta/beta.d.ts';
+const SDK_ORACLE_JSON = 'contracts/anthropic-managed/upstream-oracle.generated.json';
 const MANAGED_E2E = 'e2e/managed_e2e.mjs';
 const E2E_PACKAGE_JSON = 'e2e/package.json';
 const SDK_PACKAGE_JSON = 'e2e/node_modules/@anthropic-ai/sdk/package.json';
+const sdkOracle = JSON.parse(read(SDK_ORACLE_JSON));
 
 // -- SDK oracle -------------------------------------------------------------
 
-// Every event `type` string literal the installed SDK declares, split by family.
-// The SDK's outbound SessionEvent union includes the accepted `user.*` and
-// `system.message` history events as well as agent/session/span events. The
-// inbound EventParams union is the user/system subset. Keeping the outbound set
-// complete catches a history/list projection that accepts an event but cannot
-// serialize it back through the official union.
+// Generated from every current-SDK event `type` literal by the oracle package.
 export function sdkEventTypes() {
-  const text = read(EVENTS_DTS) + '\n' + read(SESSIONS_DTS);
-  const all = new Set();
-  for (const m of text.matchAll(/type:\s*'([a-z_]+(?:\.[a-z_]+)*)'/g)) all.add(m[1]);
-  const types = [...all];
-  return {
-    outbound: types.filter((t) => /^(agent|session|span|user|system)\./.test(t)).sort(),
-    inbound: types.filter((t) => /^(user|system)\./.test(t)).sort(),
-    preview: types.filter((t) => /^(event_start|event_delta)$/.test(t)).sort(),
-  };
+  return structuredClone(sdkOracle.current.wire_contract.events);
 }
 
 // A catalog result is evidence for the pinned SDK only when the declarations
 // being read really belong to that exact package version. Keeping this check in
 // the extractor prevents every consumer from inventing its own version policy.
 export function sdkVersionBinding() {
+  const oracle = sdkOracle.current.version;
   const pinned = JSON.parse(read(E2E_PACKAGE_JSON)).dependencies['@anthropic-ai/sdk'];
   const installed = JSON.parse(read(SDK_PACKAGE_JSON)).version;
-  if (installed !== pinned) {
+  if (pinned !== oracle || installed !== oracle) {
     throw new Error(
-      `installed @anthropic-ai/sdk ${installed} does not match pinned ${pinned}; run npm ci in e2e`,
+      `E2E SDK mirror pinned=${pinned} installed=${installed} does not match current oracle ${oracle}; update the oracle anchor and run npm ci in e2e`,
     );
   }
-  return Object.freeze({ pinned, installed });
+  return Object.freeze({ oracle, pinned, installed });
 }
 
 // The managed beta identifiers the SDK ships (e.g. `managed-agents-2026-04-01`).
 export function sdkManagedBetas() {
-  const found = new Set();
-  for (const rel of [BETA_DTS, EVENTS_DTS]) {
-    for (const m of read(rel).matchAll(/managed-agents-\d{4}-\d{2}-\d{2}/g)) found.add(m[0]);
-  }
-  return [...found].sort();
+  return [...sdkOracle.current.wire_contract.managed_betas];
 }
 
 // -- Rust subject-under-test (parsed from source) ---------------------------
