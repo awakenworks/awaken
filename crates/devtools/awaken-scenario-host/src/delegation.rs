@@ -6,7 +6,10 @@ use std::sync::Arc;
 use awaken_agent_config::{
     AgentConfig, ModelSelection, MultiagentConfig, MultiagentTarget, compile_published,
 };
-use awaken_runtime_contract::agent_bindings::{AgentBindings, AgentDelegateBinding};
+use awaken_runtime_contract::agent_bindings::{
+    AgentBindings, AgentDelegateBinding, ToolExecutionPolicy, ToolPermissionRequirement,
+    ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+};
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
 use awaken_runtime_contract::snapshot::{
     AgentConfigRevisionRef, AgentId, AgentSnapshotMetadata, ExecutableAgentSnapshot,
@@ -41,6 +44,25 @@ pub fn build_delegation_router() -> Router {
             {
                 builder = builder.instructions(format!("matrix-runtime={runtime}"));
             }
+            let toolsets = (owner_id == "researcher")
+                .then(|| ToolsetPolicy {
+                    source: ToolsetSource::Agent,
+                    default: ToolExecutionPolicy::default(),
+                    overrides: ["write", "bash"]
+                        .into_iter()
+                        .map(|name| {
+                            ToolPolicyOverride::new(
+                                name,
+                                ToolExecutionPolicy {
+                                    enabled: true,
+                                    permission: ToolPermissionRequirement::AlwaysAsk,
+                                },
+                            )
+                        })
+                        .collect(),
+                })
+                .into_iter()
+                .collect();
             builder
                 .model(ModelBinding::new("default", &model_ref, backend_ref))
                 .tools(tools)
@@ -54,6 +76,12 @@ pub fn build_delegation_router() -> Router {
                             source_revision: Some(1),
                         })
                         .collect(),
+                    // Causal fixture boundary: the frozen child publication,
+                    // not a root Session override, owns the two permission
+                    // decisions exercised by managed_delegation_e2e M7-M11.
+                    // All ordinary Agent-tool defaults stay compatible with
+                    // the official always-allow Managed Agent surface.
+                    toolsets,
                     ..Default::default()
                 })
                 .build()
