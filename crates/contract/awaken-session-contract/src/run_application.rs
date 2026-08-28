@@ -40,6 +40,7 @@ pub enum RunResume {
 pub trait RunApplication: Send + Sync {
     async fn run(
         &self,
+        operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
@@ -47,17 +48,19 @@ pub trait RunApplication: Send + Sync {
 
     async fn run_streaming(
         &self,
+        operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn StreamSink>,
     ) -> Result<StepOutcome, RunApplicationError> {
         let _ = sink;
-        self.run(thread, agent, messages).await
+        self.run(operation_id, thread, agent, messages).await
     }
 
     async fn resume(
         &self,
+        operation_id: &str,
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,

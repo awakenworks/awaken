@@ -556,8 +556,8 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/ResourceLifecycleWorkflowReachability.cfg \
     formal/tla/ResourceLifecycleWorkflow.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
-    -metadir "$tlc_state_root/session-run-workflow" \
-    -config formal/tla/SessionRunWorkflow.cfg formal/tla/SessionRunWorkflow.tla
+    -metadir "$tlc_state_root/session-run-protocol" \
+    -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \

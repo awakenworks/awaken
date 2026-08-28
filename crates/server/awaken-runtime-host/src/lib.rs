@@ -171,37 +171,6 @@ fn session_system_message(
     ))
 }
 
-/// Lower one Session User command into the exact activation input frozen by the
-/// existing dispatch reservation. An accompanying System Message precedes the
-/// User Message for model semantics, while their stable operation ids preserve
-/// the public batch order independently.
-fn session_user_run_messages(
-    command: &awaken_session_contract::SessionUserRunCommand,
-) -> Result<Vec<Message>, RunError> {
-    if command.session_id.trim().is_empty()
-        || command.operation_id.trim().is_empty()
-        || command.run_id.0.trim().is_empty()
-        || command.content.is_empty()
-        || command.accompanying_system.as_ref().is_some_and(|system| {
-            system.operation_id.trim().is_empty() || system.content.is_empty()
-        })
-    {
-        return Err(RunError::bad_request(
-            "Session User Run reservation is incomplete",
-        ));
-    }
-    let mut input = Vec::with_capacity(1 + usize::from(command.accompanying_system.is_some()));
-    if let Some(system) = &command.accompanying_system {
-        input.push(session_system_message(&command.session_id, system)?);
-    }
-    input.push(Message::new(
-        MessageId::session_event_input(&command.session_id, &command.operation_id),
-        Role::User,
-        command.content.clone(),
-    ));
-    Ok(input)
-}
-
 /// Select the exact target carried by the admitted MCP realization request.
 /// Keeping this identity projection explicit prevents credential materialization
 /// from silently rebinding the request to a name/target tuple or another derived
@@ -236,78 +205,6 @@ mod credential_target_projection_tests {
         assert_eq!(
             selected.http_url(),
             Some("https://credential-bound.example.test/mcp?tenant=exact")
-        );
-    }
-}
-
-#[cfg(test)]
-mod session_user_run_input_tests {
-    use super::session_user_run_messages;
-    use awaken_agent_contract::agent::{
-        content::ContentBlock,
-        message::{Id as MessageId, Role},
-        run::Id as RunId,
-    };
-    use awaken_session_contract::{SessionUserRunCommand, SessionUserRunSystemInput};
-
-    fn command(system: Option<SessionUserRunSystemInput>) -> SessionUserRunCommand {
-        SessionUserRunCommand {
-            session_id: "session-input".into(),
-            agent_id: "agent".into(),
-            operation_id: "user-op".into(),
-            run_id: RunId("run-input".into()),
-            content: vec![ContentBlock::text("user")],
-            accompanying_system: system,
-            data_subject_id: None,
-            traceparent: None,
-        }
-    }
-
-    #[test]
-    fn reservation_input_freezes_the_accompanying_system_before_user() {
-        // Constraint/Invariant: the authoritative inputs and ownership boundaries
-        // documented here remain the only decision source; no parallel path is admitted.
-        // Decision rule: execute every reachable cause partition documented here and
-        // require its stated effects, including each fail-closed outcome.
-        // Cause/effect graph: C1 accompanying System absent/present; C2 its
-        // operation/content complete/incomplete. Effects: E1 User-only input;
-        // E2 stable System then stable User in one vector; E3 invalid input is
-        // rejected before dispatch reservation.
-        //
-        // | Rule | C1 | C2 | Effect |
-        // | I1 | absent | - | E1 |
-        // | I2 | present | complete | E2 |
-        // | I3 | present | empty operation/content | E3 |
-        let user_only = session_user_run_messages(&command(None)).expect("I1");
-        assert_eq!(user_only.len(), 1, "I1/E1");
-        assert_eq!(user_only[0].role, Role::User, "I1/E1");
-
-        let with_system = session_user_run_messages(&command(Some(SessionUserRunSystemInput {
-            operation_id: "system-op".into(),
-            content: vec![ContentBlock::text("system")],
-        })))
-        .expect("I2");
-        assert_eq!(with_system.len(), 2, "I2/E2");
-        assert_eq!(with_system[0].role, Role::System, "I2/E2");
-        assert_eq!(with_system[1].role, Role::User, "I2/E2");
-        assert_eq!(
-            with_system[0].id,
-            MessageId::session_system("session-input", "system-op"),
-            "I2/E2"
-        );
-        assert_eq!(
-            with_system[1].id,
-            MessageId::session_event_input("session-input", "user-op"),
-            "I2/E2"
-        );
-
-        assert!(
-            session_user_run_messages(&command(Some(SessionUserRunSystemInput {
-                operation_id: String::new(),
-                content: vec![ContentBlock::text("system")],
-            })))
-            .is_err(),
-            "I3/E3"
         );
     }
 }
@@ -1004,14 +901,24 @@ impl SessionRuntime for ManagedHost {
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
     }
 
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: awaken_session_contract::SessionUserRunCommand,
-    ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
         use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 
         let session_id = command.session_id.clone();
-        let input = session_user_run_messages(&command)?;
+        if command.session_id.trim().is_empty()
+            || command.agent_id.trim().is_empty()
+            || command.operation_id.trim().is_empty()
+            || command.run_id.0.trim().is_empty()
+            || command.messages.is_empty()
+        {
+            return Err(RunError::bad_request(
+                "Session Run reservation is incomplete",
+            ));
+        }
+        let input = command.messages.clone();
         self.validate_thread_resource_bindings(&command.session_id)
             .await?;
         let ctx = self
@@ -1056,26 +963,26 @@ impl SessionRuntime for ManagedHost {
                 .map_err(|error| RunError::unavailable(error.to_string()))?
             {
                 awaken_run_ingress::SessionRunReservationOutcome::Reserved => {
-                    Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
+                    Ok(awaken_session_contract::SessionRunReservation::Reserved)
                 }
                 awaken_run_ingress::SessionRunReservationOutcome::AlreadyReserved => {
-                    Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved)
+                    Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved)
                 }
                 awaken_run_ingress::SessionRunReservationOutcome::RecoveryClaimed => {
-                    Ok(awaken_session_contract::SessionUserRunReservation::RecoveryClaimed)
+                    Ok(awaken_session_contract::SessionRunReservation::RecoveryClaimed)
                 }
                 awaken_run_ingress::SessionRunReservationOutcome::AlreadyActivated {
                     session_activity_epoch,
                 } => Ok(
-                    awaken_session_contract::SessionUserRunReservation::AlreadyActivated {
+                    awaken_session_contract::SessionRunReservation::AlreadyActivated {
                         session_activity_epoch,
                     },
                 ),
                 awaken_run_ingress::SessionRunReservationOutcome::Completed => {
-                    Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+                    Ok(awaken_session_contract::SessionRunReservation::Completed)
                 }
                 awaken_run_ingress::SessionRunReservationOutcome::Conflict => Err(
-                    RunError::bad_request("Session User Run id was reused with different input"),
+                    RunError::bad_request("Session Run id was reused with different input"),
                 ),
             }
         }
@@ -1086,28 +993,31 @@ impl SessionRuntime for ManagedHost {
         reservation
     }
 
-    async fn activate_session_user_run(
+    async fn activate_session_run(
         &self,
-        delivery: awaken_session_contract::SessionUserRunDelivery,
-    ) -> Result<awaken_session_contract::SessionUserRunActivation, RunError> {
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
         self.host
-            .activate_session_user_run_reservation(delivery)
+            .activate_session_run_reservation(delivery)
             .await
             .map_err(to_run_error)
     }
 
-    async fn activate_and_observe_session_user_run(
+    async fn activate_and_observe_session_run(
         &self,
-        admission: awaken_session_contract::SessionUserRunAdmission,
+        admission: awaken_session_contract::AdmittedSessionRun,
+        input_message_ids: Vec<String>,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<awaken_agent_contract::agent::run::RunState, RunError> {
-        self.host
-            .activate_and_observe_session_user_run(admission, sink)
+    ) -> Result<StepOutcome, RunError> {
+        let receipt = self
+            .host
+            .activate_and_observe_session_run(admission, input_message_ids, sink)
             .await
-            .map_err(to_run_error)
+            .map_err(to_run_error)?;
+        crate::step_projection::settled_step(receipt)
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
@@ -1240,6 +1150,18 @@ impl SessionRuntime for ManagedHost {
             .reply_session_thread_tool(delivery)
             .await
             .map_err(to_run_error)
+    }
+
+    async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<StepOutcome, RunError> {
+        let receipt = self
+            .host
+            .reply_and_observe_session_thread_tool(delivery)
+            .await
+            .map_err(to_run_error)?;
+        crate::step_projection::settled_step(receipt)
     }
 
     async fn resume_budget_reached(

@@ -17,10 +17,10 @@ use awaken_agent_contract::{
 };
 use awaken_protocol_managed::{ManagedState, managed_session_id_from_idempotency, router};
 use awaken_session_contract::{
-    AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool,
+    AdmitSessionRun, AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool,
     ManagedSessionRepository, OutcomeDrive, OutcomeIteration, OutcomeReport, Pending, RunError,
-    SessionExecutionState, SessionRuntime, SessionUserRunCommand, SessionUserRunReservation,
-    StepOutcome, ToolPermissionDecision,
+    SessionExecutionState, SessionRunReservation, SessionRuntime, StepOutcome,
+    ToolPermissionDecision,
 };
 use awaken_session_store::SqliteManagedSessionRepository;
 use axum::Router;
@@ -401,13 +401,13 @@ impl EchoFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for EchoFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: SessionUserRunCommand,
-    ) -> Result<SessionUserRunReservation, RunError> {
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
         let mut state = self.state.lock().unwrap();
         if state.runs.contains_key(&command.run_id.0) {
-            return Ok(SessionUserRunReservation::Completed);
+            return Ok(SessionRunReservation::Completed);
         }
         state.runs.insert(
             command.run_id.0.clone(),
@@ -422,35 +422,24 @@ impl SessionRuntime for EchoFake {
         .unwrap();
         let terminal_commit_cursor = opening_commit_cursor + 1;
 
-        let user_text = Message::new(
-            Id::session_event_input(&command.session_id, &command.operation_id),
-            Role::User,
-            command.content.clone(),
-        )
-        .text_content();
+        let user_text = command
+            .messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .map(Message::text_content)
+            .unwrap_or_default();
         let mut new_message_commit_cursors = Vec::new();
         {
             let transcript = state
                 .messages
                 .entry(command.session_id.clone())
                 .or_default();
-            if let Some(system) = command.accompanying_system {
-                let message = Message::new(
-                    Id::session_system(&command.session_id, &system.operation_id),
-                    Role::System,
-                    system.content,
-                );
+            for message in command.messages {
                 if !transcript.iter().any(|existing| existing.id == message.id) {
                     transcript.push(message);
                     new_message_commit_cursors.push(opening_commit_cursor);
                 }
             }
-            transcript.push(Message::new(
-                Id::session_event_input(&command.session_id, &command.operation_id),
-                Role::User,
-                command.content,
-            ));
-            new_message_commit_cursors.push(opening_commit_cursor);
             transcript.push(Message::text(
                 Id(format!("{}/reply", command.run_id.0)),
                 Role::Assistant,
@@ -465,7 +454,7 @@ impl SessionRuntime for EchoFake {
             .extend(new_message_commit_cursors);
 
         // The adapter's one warm/cold projector is intentionally driven by the
-        // committed lifecycle feed, never by `session_user_run_state` or the
+        // committed lifecycle feed, never by `session_run_state` or the
         // disposable transcript cache. Keep the fake's three query surfaces
         // causally consistent with the production Thread commit boundary.
         let lifecycle = state
@@ -490,10 +479,10 @@ impl SessionRuntime for EchoFake {
             state: RunState::Ended(EndCause::NaturalEnd),
             await_reason: None,
         });
-        Ok(SessionUserRunReservation::Completed)
+        Ok(SessionRunReservation::Completed)
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         _session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
@@ -1304,14 +1293,14 @@ impl ToolAwaitingFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ToolAwaitingFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: SessionUserRunCommand,
-    ) -> Result<SessionUserRunReservation, RunError> {
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
         let mut slot = self.run.lock().unwrap();
         if let Some(existing) = slot.as_ref() {
             return if existing.run_id == command.run_id {
-                Ok(SessionUserRunReservation::Completed)
+                Ok(SessionRunReservation::Completed)
             } else {
                 Err(RunError::bad_request(
                     "adapter fixture already owns a different Run",
@@ -1319,22 +1308,16 @@ impl SessionRuntime for ToolAwaitingFake {
             };
         }
         let pending = self.pending();
-        let messages = vec![
-            Message::new(
-                Id::session_event_input(&command.session_id, &command.operation_id),
-                Role::User,
-                command.content,
-            ),
-            Message {
-                id: Id(format!("{}/tool-use", command.run_id.0)),
-                role: Role::Assistant,
-                content: vec![ContentBlock::ToolUse {
-                    id: pending.tool_use_id.clone(),
-                    name: pending.name.clone(),
-                    input: pending.input.clone(),
-                }],
-            },
-        ];
+        let mut messages = command.messages;
+        messages.push(Message {
+            id: Id(format!("{}/tool-use", command.run_id.0)),
+            role: Role::Assistant,
+            content: vec![ContentBlock::ToolUse {
+                id: pending.tool_use_id.clone(),
+                name: pending.name.clone(),
+                input: pending.input.clone(),
+            }],
+        });
         let opening_commit_cursor = 1;
         let awaiting_commit_cursor = 2;
         let lifecycle = vec![
@@ -1366,10 +1349,10 @@ impl SessionRuntime for ToolAwaitingFake {
             lifecycle,
             pending: Some(pending),
         });
-        Ok(SessionUserRunReservation::Completed)
+        Ok(SessionRunReservation::Completed)
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         session_id: &str,
         run_id: &RunId,
@@ -2452,25 +2435,23 @@ struct RecordingFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: SessionUserRunCommand,
-    ) -> Result<SessionUserRunReservation, RunError> {
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
         self.subjects
             .lock()
             .unwrap()
             .push(command.data_subject_id.clone());
-        self.committed.reserve_session_user_run(command).await
+        self.committed.reserve_session_run(command).await
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         session_id: &str,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
-        self.committed
-            .session_user_run_state(session_id, run_id)
-            .await
+        self.committed.session_run_state(session_id, run_id).await
     }
 
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {
@@ -2828,28 +2809,26 @@ struct InterruptRedirectFake {
 
 #[async_trait::async_trait]
 impl SessionRuntime for InterruptRedirectFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: SessionUserRunCommand,
-    ) -> Result<SessionUserRunReservation, RunError> {
-        let text = Message::new(
-            Id::session_event_input(&command.session_id, &command.operation_id),
-            Role::User,
-            command.content.clone(),
-        )
-        .text_content();
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
+        let text = command
+            .messages
+            .iter()
+            .find(|message| message.role == Role::User)
+            .map(Message::text_content)
+            .unwrap_or_default();
         self.order.lock().unwrap().push(format!("run:{text}"));
-        self.committed.reserve_session_user_run(command).await
+        self.committed.reserve_session_run(command).await
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         session_id: &str,
         run_id: &RunId,
     ) -> Result<Option<RunState>, RunError> {
-        self.committed
-            .session_user_run_state(session_id, run_id)
-            .await
+        self.committed.session_run_state(session_id, run_id).await
     }
 
     async fn committed_messages(&self, thread: &str) -> Result<Vec<Message>, RunError> {

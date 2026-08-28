@@ -24,6 +24,7 @@ pub struct awaken_protocol_ai_sdk::request::ProcessedRequest
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::decisions: alloc::vec::Vec<awaken_protocol_ai_sdk::request::Decision>
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_protocol_ai_sdk::request::ProcessedRequest::operation_id: alloc::string::String
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::thread_id: alloc::string::String
 impl awaken_protocol_ai_sdk::request::ProcessedRequest
 pub fn awaken_protocol_ai_sdk::request::ProcessedRequest::is_resume_only(&self) -> bool

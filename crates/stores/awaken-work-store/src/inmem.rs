@@ -628,6 +628,40 @@ impl WorkQueue for InMemoryWorkQueue {
         Ok(Some(item))
     }
 
+    async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+        let mut works = self.works.lock().unwrap();
+        let Some(work) = works.get_mut(&lease.work_id) else {
+            return Ok(false);
+        };
+        if work.environment_id != lease.environment_id
+            || !matches!(&work.data, WorkPayload::Session { id } if id == &lease.session_id)
+        {
+            return Ok(false);
+        }
+        if work.state == WorkState::Stopped
+            && self.book.is_released_at_epoch(&lease.work_id, lease.epoch)
+        {
+            return Ok(true);
+        }
+        if work.state != WorkState::Active
+            || !self
+                .book
+                .is_owned_at_epoch(&lease.work_id, &lease.owner, lease.epoch)
+        {
+            return Ok(false);
+        }
+        work.stop_requested_at = Some(OBJECT_AT.to_string());
+        work.stopped_at = Some(OBJECT_AT.to_string());
+        work.state = WorkState::Stopped;
+        drop(works);
+        self.book.release(&lease.work_id);
+        self.session_token_sha256
+            .lock()
+            .unwrap()
+            .remove(&lease.work_id);
+        Ok(true)
+    }
+
     async fn acquire_session(
         &self,
         env_id: &str,

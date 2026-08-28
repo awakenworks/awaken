@@ -115,6 +115,13 @@ impl LeaseBook {
             && authority.epochs.get(work_id).copied() == Some(expected_epoch)
     }
 
+    pub fn is_released_at_epoch(&self, work_id: &str, expected_epoch: u64) -> bool {
+        let authority = self.authority.lock().unwrap();
+        !authority.owners.contains_key(work_id)
+            && !authority.leases.contains_key(work_id)
+            && authority.epochs.get(work_id).copied() == Some(expected_epoch)
+    }
+
     pub fn authority(&self, work_id: &str, now_ms: u64) -> Option<(String, u64, u64)> {
         let authority = self.authority.lock().unwrap();
         let lease = authority.leases.get(work_id).copied()?;

@@ -1851,12 +1851,39 @@ async fn settle(
         // commits have landed; a later activity revives and reacquires its stable
         // Work item. Child Runs borrow the parent's fence and must retain it.
         if owns_session_work && let Some(session_work) = service.session_work.as_ref() {
-            let released = session_work
-                .release_session_work(&session_thread_id.0, &claim.owner, authority.now_ms)
+            let lease = match session_work
+                .acquire_session_work(
+                    &session_thread_id.0,
+                    &claim.owner,
+                    authority.now_ms,
+                    awaken_session_contract::work_queue::SessionWorkAcquisition::RealizationRenewal,
+                )
                 .await
                 .map_err(|error| {
                     RealizationHttpError::from(HostError::internal(error.to_string()))
-                })?;
+                })? {
+                awaken_session_contract::work_queue::SessionWorkOwnership::NotRequired => None,
+                awaken_session_contract::work_queue::SessionWorkOwnership::Leased(lease)
+                    if lease.owner == claim.owner =>
+                {
+                    Some(lease)
+                }
+                awaken_session_contract::work_queue::SessionWorkOwnership::Unowned
+                | awaken_session_contract::work_queue::SessionWorkOwnership::Leased(_) => {
+                    return Err(RealizationHttpError::from(HostError::bad_request(
+                        "Session Work ownership was lost before Run settlement",
+                    )));
+                }
+            };
+            let released = match lease.as_ref() {
+                Some(lease) => session_work
+                    .release_session_work(lease)
+                    .await
+                    .map_err(|error| {
+                        RealizationHttpError::from(HostError::internal(error.to_string()))
+                    })?,
+                None => true,
+            };
             if !released {
                 return Err(RealizationHttpError::from(HostError::bad_request(
                     "Session Work ownership was lost before Run settlement",

@@ -42,6 +42,7 @@ impl RunApplicationHost {
 impl RunApplication for RunApplicationHost {
     async fn run(
         &self,
+        _operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
@@ -56,6 +57,7 @@ impl RunApplication for RunApplicationHost {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
@@ -71,6 +73,7 @@ impl RunApplication for RunApplicationHost {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,

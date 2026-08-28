@@ -2,19 +2,17 @@
 //! extraction. All AG-UI–specific parsing lives here so the router only routes.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::fresh_process_id;
 
 use crate::types::{
     AgUiContent, AgUiMessage, AgUiRole, InputContentPart, InputContentSource, RunAgentInput,
 };
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-
 fn next(prefix: &str) -> String {
-    format!("{prefix}-{}", SEQ.fetch_add(1, Ordering::SeqCst))
+    fresh_process_id(prefix)
 }
 
 /// A client's tool result (AG-UI delivers these as `role: "tool"` messages).

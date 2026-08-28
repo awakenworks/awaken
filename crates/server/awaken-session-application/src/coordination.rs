@@ -9,11 +9,12 @@ use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::{RunLifecycleEventKind, classify_run_lifecycle_event};
 use awaken_session_contract::{
-    CoordinatedRunCommand, CoordinatedRunIntent, RunError, SessionAgentBoundaryCommand,
-    SessionAgentCoordination, SessionAgentMessageCommand, SessionAgentMessageReceipt,
-    SessionAgentReportContinuation, SessionAgentRosterEntry, SessionAgentTarget,
-    SessionRunActivityAdmission, SessionRunActivityAdmissionMode, SessionThreadTarget,
-    SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery, coordinated_thread_failed,
+    CoordinatedRunCommand, CoordinatedRunIntent, Pending, RunError, RunResume,
+    SessionAgentBoundaryCommand, SessionAgentCoordination, SessionAgentMessageCommand,
+    SessionAgentMessageReceipt, SessionAgentReportContinuation, SessionAgentRosterEntry,
+    SessionAgentTarget, SessionRunActivityAdmission, SessionRunActivityAdmissionMode,
+    SessionThreadTarget, SessionThreadToolReply, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery, StepOutcome, coordinated_thread_failed,
     session_agent_report_text, session_run_activity_operation_id,
 };
 
@@ -226,6 +227,188 @@ impl SessionApplication {
             other => RunError::unavailable(other.to_string()),
         })?;
         Ok((owner, session))
+    }
+}
+
+impl SessionApplication {
+    async fn prepare_session_thread_tool_reply(
+        &self,
+        command: SessionThreadToolReplyCommand,
+    ) -> Result<(String, u64, SessionThreadToolReplyDelivery), RunError> {
+        if command.session_id.trim().is_empty()
+            || command.expected_run_id.0.trim().is_empty()
+            || command.expected_correlation_id.trim().is_empty()
+            || command.tool_use_id.trim().is_empty()
+        {
+            return Err(RunError::bad_request(
+                "Session Thread reply requires exact Run, correlation, and tool identities",
+            ));
+        }
+        let fence = self
+            .runtime()
+            .session_thread_tool_reply_fence(&command)
+            .await?;
+        if !fence.already_applied
+            && let SessionThreadTarget::Child(child_thread_id) = &command.target
+        {
+            self.validate_coordinated_thread(&command.session_id, child_thread_id)
+                .await?;
+            if self
+                .runtime()
+                .session_thread_disposition(&command.session_id, &child_thread_id.0)
+                .await?
+                == awaken_agent_contract::ThreadDisposition::Archived
+            {
+                return Err(RunError::bad_request("Agent Thread is archived"));
+            }
+        }
+        let operation_id = command.activity_operation_id();
+        let session_id = command.session_id.clone();
+        let (_, session_activity_epoch) = self
+            .transfer_committed_activity_for_operation(
+                &session_id,
+                &operation_id,
+                fence.prior_session_activity_epoch,
+            )
+            .await
+            .map_err(crate::SessionActivityError::run_error)?;
+        Ok((
+            session_id,
+            session_activity_epoch,
+            SessionThreadToolReplyDelivery {
+                command,
+                fence,
+                session_activity_epoch,
+            },
+        ))
+    }
+
+    /// Resume the primary Thread through the same exact-ticket, activity-transfer,
+    /// durable Inbox path used by Managed Event replies, then observe the next
+    /// committed Step. This replaces the former inline `RunApplication::resume`
+    /// execution path without introducing another resume state machine.
+    pub async fn resume_session_run(
+        &self,
+        operation_id: &str,
+        session_id: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_session_run_with_owner(None, operation_id, session_id, tool_use_id, resume)
+            .await
+    }
+
+    /// Resume a public-protocol Session Run only when the authenticated owner
+    /// still owns the durable Session root. Exact operation replay does not
+    /// bypass this authorization boundary.
+    pub async fn resume_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        operation_id: &str,
+        session_id: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunError> {
+        self.resume_session_run_with_owner(
+            Some(owner_scope),
+            operation_id,
+            session_id,
+            tool_use_id,
+            resume,
+        )
+        .await
+    }
+
+    async fn resume_session_run_with_owner(
+        &self,
+        expected_owner: Option<&str>,
+        operation_id: &str,
+        session_id: &str,
+        tool_use_id: &str,
+        resume: RunResume,
+    ) -> Result<StepOutcome, RunError> {
+        if operation_id.trim().is_empty() {
+            return Err(RunError::bad_request(
+                "Session Run resume requires a stable operation identity",
+            ));
+        }
+        if let Some(expected_owner) = expected_owner {
+            let actual_owner = self.owner(session_id).await.map_err(|error| match error {
+                crate::SessionMutationError::NotFound => {
+                    RunError::bad_request("Session was not found")
+                }
+                other => RunError::unavailable(other.to_string()),
+            })?;
+            if actual_owner != expected_owner {
+                return Err(RunError::bad_request("Session was not found"));
+            }
+        }
+        let snapshot = self
+            .runtime()
+            .session_thread_recovery_snapshot(session_id, session_id)
+            .await?
+            .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
+        let run_id = snapshot
+            .latest_run_id
+            .clone()
+            .ok_or_else(|| RunError::bad_request("Session Thread has no committed Run"))?;
+        let is_awaiting = snapshot.runs.iter().any(|run| {
+            run.id == run_id
+                && run.thread_id == snapshot.thread_id
+                && run.state == RunState::Awaiting
+        });
+        if !is_awaiting {
+            return Err(RunError::bad_request(
+                "Session Thread is not awaiting a reply",
+            ));
+        }
+        let ticket = snapshot
+            .resume_tickets
+            .iter()
+            .find(|ticket| {
+                ticket.ticket.run_id == run_id && ticket.ticket.call_id() == Some(tool_use_id)
+            })
+            .ok_or_else(|| RunError::bad_request("tool_use_id does not name the active ticket"))?;
+        let pending = Pending::from_resume_ticket(&ticket.ticket)
+            .ok_or_else(|| RunError::bad_request("active ticket is not externally answerable"))?;
+        let reply = match resume {
+            RunResume::Permission(decision) if !pending.client_executed => {
+                SessionThreadToolReply::Confirm(decision)
+            }
+            RunResume::ClientResult { content, is_error } if pending.client_executed => {
+                SessionThreadToolReply::Result { content, is_error }
+            }
+            RunResume::Permission(_) => {
+                return Err(RunError::bad_request(
+                    "client-executed tool requires a client result",
+                ));
+            }
+            RunResume::ClientResult { .. } => {
+                return Err(RunError::bad_request(
+                    "permission-gated tool requires a permission decision",
+                ));
+            }
+        };
+        let command = SessionThreadToolReplyCommand {
+            session_id: session_id.to_string(),
+            tool_request_event_id: Some(operation_id.to_string()),
+            expected_thread_version: Some(snapshot.thread_version),
+            target: SessionThreadTarget::Primary,
+            expected_run_id: run_id,
+            expected_correlation_id: ticket.ticket.correlation_id.clone(),
+            tool_use_id: tool_use_id.to_string(),
+            reply,
+            accompanying_system: None,
+        };
+        let (session_id, session_activity_epoch, delivery) =
+            self.prepare_session_thread_tool_reply(command).await?;
+        let result = self
+            .runtime()
+            .reply_and_observe_session_thread_tool(delivery)
+            .await;
+        self.settle_definitive_coordination_rejection(&session_id, session_activity_epoch, &result)
+            .await?;
+        result
     }
 }
 
@@ -620,55 +803,9 @@ impl SessionAgentCoordination for SessionApplication {
         &self,
         command: SessionThreadToolReplyCommand,
     ) -> Result<(), RunError> {
-        if command.session_id.trim().is_empty()
-            || command.expected_run_id.0.trim().is_empty()
-            || command.expected_correlation_id.trim().is_empty()
-            || command.tool_use_id.trim().is_empty()
-        {
-            return Err(RunError::bad_request(
-                "Session Thread reply requires exact Run, correlation, and tool identities",
-            ));
-        }
-        // Runtime first classifies a committed exact replay. Current topology
-        // and active-ticket checks apply only to a new delivery: a response lost
-        // after Runtime commit must remain finishable even if the child was
-        // archived or the ticket was consumed in the meantime.
-        let fence = self
-            .runtime()
-            .session_thread_tool_reply_fence(&command)
-            .await?;
-        if !fence.already_applied
-            && let SessionThreadTarget::Child(child_thread_id) = &command.target
-        {
-            self.validate_coordinated_thread(&command.session_id, child_thread_id)
-                .await?;
-            if self
-                .runtime()
-                .session_thread_disposition(&command.session_id, &child_thread_id.0)
-                .await?
-                == awaken_agent_contract::ThreadDisposition::Archived
-            {
-                return Err(RunError::bad_request("Agent Thread is archived"));
-            }
-        }
-        let operation_id = command.activity_operation_id();
-        let session_id = command.session_id.clone();
-        let (_, session_activity_epoch) = self
-            .transfer_committed_activity_for_operation(
-                &session_id,
-                &operation_id,
-                fence.prior_session_activity_epoch,
-            )
-            .await
-            .map_err(crate::SessionActivityError::run_error)?;
-        let result = self
-            .runtime()
-            .reply_session_thread_tool(SessionThreadToolReplyDelivery {
-                command,
-                fence,
-                session_activity_epoch,
-            })
-            .await;
+        let (session_id, session_activity_epoch, delivery) =
+            self.prepare_session_thread_tool_reply(command).await?;
+        let result = self.runtime().reply_session_thread_tool(delivery).await;
         self.settle_definitive_coordination_rejection(&session_id, session_activity_epoch, &result)
             .await?;
         result

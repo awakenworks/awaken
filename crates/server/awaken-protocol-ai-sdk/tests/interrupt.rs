@@ -43,6 +43,7 @@ struct InterruptRecorder {
 impl RunApplication for InterruptRecorder {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -52,6 +53,7 @@ impl RunApplication for InterruptRecorder {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -80,6 +82,7 @@ impl RunApplication for InterruptRecorder {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

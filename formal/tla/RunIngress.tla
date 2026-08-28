@@ -1,53 +1,78 @@
 ------------------------------ MODULE RunIngress ------------------------------
-EXTENDS Naturals, RuntimeVocabulary
+EXTENDS Naturals
 
-\* Runtime/run-ingress lifecycle after admission activation. Session Run
-\* reservation and activity-before-Pending are composed with WorkQueue and
-\* realization ownership in SessionRunWorkflow.tla; this model deliberately
-\* begins at executable Pending and owns only claim/settlement fencing.
+\* Dispatch-only executable specification. Run disposition, resume tickets,
+\* ThreadCommit, ToolBatch and Session activity are external authorities. This
+\* module owns only queue state, pending delivery, cancellation, lease owner and
+\* fencing epoch; composed protocols INSTANCE these operators instead of copying
+\* their transitions.
 CONSTANTS Owners, NoOwner, MaxEpoch
 
 DispatchStates == {
+    "Reserved",
+    "ReservationLeased",
     "Pending",
     "Leased",
     "Awaiting",
-    "Removed",
     "DeadLetter",
+    "Removed",
     "Superseded"
 }
+LeasedStates == {"ReservationLeased", "Leased"}
 TerminalDispatchStates == {"Removed", "Superseded"}
 
-VARIABLES
-    runState,
-    hasTicket,
-    dispatchState,
-    owner,
-    leaseEpoch,
-    endedOnce
+VARIABLES dispatchState, owner, leaseEpoch, cancelRequested, pendingInput
 
-vars == <<runState, hasTicket, dispatchState, owner, leaseEpoch, endedOnce>>
+vars == <<dispatchState, owner, leaseEpoch, cancelRequested, pendingInput>>
 
 Init ==
-    /\ runState = "Running"
-    /\ hasTicket = FALSE
-    /\ dispatchState = "Pending"
+    /\ dispatchState = "Reserved"
     /\ owner = NoOwner
     /\ leaseEpoch = 0
-    /\ endedOnce = FALSE
+    /\ cancelRequested = FALSE
+    /\ pendingInput = FALSE
+
+ClaimReservation(candidate) ==
+    /\ candidate \in Owners
+    /\ dispatchState = "Reserved"
+    /\ leaseEpoch < MaxEpoch
+    /\ dispatchState' = "ReservationLeased"
+    /\ owner' = candidate
+    /\ leaseEpoch' = leaseEpoch + 1
+    /\ UNCHANGED <<cancelRequested, pendingInput>>
+
+ActivateReservation ==
+    /\ dispatchState = "Reserved"
+    /\ dispatchState' = "Pending"
+    /\ UNCHANGED <<owner, leaseEpoch, cancelRequested, pendingInput>>
+
+ResolveReservation(candidate, epoch) ==
+    /\ dispatchState = "ReservationLeased"
+    /\ owner = candidate
+    /\ leaseEpoch = epoch
+    /\ dispatchState' = "Pending"
+    /\ owner' = NoOwner
+    /\ UNCHANGED <<leaseEpoch, cancelRequested, pendingInput>>
+
+RetryReservation(candidate, epoch) ==
+    /\ dispatchState = "ReservationLeased"
+    /\ owner = candidate
+    /\ leaseEpoch = epoch
+    /\ dispatchState' = "Reserved"
+    /\ owner' = NoOwner
+    /\ UNCHANGED <<leaseEpoch, cancelRequested, pendingInput>>
 
 Claim(candidate) ==
     /\ candidate \in Owners
     /\ leaseEpoch < MaxEpoch
-    /\ dispatchState \in {"Pending", "Awaiting"}
-    /\ IF dispatchState = "Awaiting"
-          THEN /\ runState = "Awaiting" /\ hasTicket
-          ELSE /\ runState = "Running" /\ ~hasTicket
-    /\ runState' = "Running"
-    /\ hasTicket' = FALSE
+    /\ \/ dispatchState = "Pending"
+       \/ /\ dispatchState = "Awaiting"
+          /\ \/ pendingInput
+             \/ cancelRequested
     /\ dispatchState' = "Leased"
     /\ owner' = candidate
     /\ leaseEpoch' = leaseEpoch + 1
-    /\ UNCHANGED endedOnce
+    /\ UNCHANGED <<cancelRequested, pendingInput>>
 
 Reclaim(candidate) ==
     /\ candidate \in Owners
@@ -56,51 +81,52 @@ Reclaim(candidate) ==
     /\ candidate # owner
     /\ owner' = candidate
     /\ leaseEpoch' = leaseEpoch + 1
-    /\ UNCHANGED <<runState, hasTicket, dispatchState, endedOnce>>
+    /\ UNCHANGED <<dispatchState, cancelRequested, pendingInput>>
 
-\* Pre-execution admission may discover that a subordinate authority is
-\* temporarily busy. Only the exact current owner/epoch may return that claim
-\* to Pending; the lease epoch remains spent so a stale owner stays fenced.
 Relinquish(candidate, epoch) ==
     /\ dispatchState = "Leased"
     /\ owner = candidate
     /\ epoch = leaseEpoch
     /\ dispatchState' = "Pending"
     /\ owner' = NoOwner
-    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
+    /\ UNCHANGED <<leaseEpoch, cancelRequested, pendingInput>>
 
+DeliverInput ==
+    /\ dispatchState = "Awaiting"
+    /\ ~pendingInput
+    /\ pendingInput' = TRUE
+    /\ UNCHANGED <<dispatchState, owner, leaseEpoch, cancelRequested>>
+
+\* ThreadCommit has already committed Awaiting before this queue settlement.
+\* The queue consumes its pending receipt but does not create or mutate a ticket.
 SettleAwaiting(candidate, epoch) ==
     /\ dispatchState = "Leased"
     /\ owner = candidate
     /\ epoch = leaseEpoch
-    /\ runState = "Running"
-    /\ runState' = "Awaiting"
-    /\ hasTicket' = TRUE
     /\ dispatchState' = "Awaiting"
     /\ owner' = NoOwner
-    /\ UNCHANGED <<leaseEpoch, endedOnce>>
+    /\ pendingInput' = FALSE
+    /\ UNCHANGED <<leaseEpoch, cancelRequested>>
 
-Finish(candidate, epoch) ==
+\* ThreadCommit has already committed a terminal Run disposition. Removal is a
+\* later idempotent queue effect and therefore cannot erase the crash window.
+SettleDone(candidate, epoch) ==
     /\ dispatchState = "Leased"
     /\ owner = candidate
     /\ epoch = leaseEpoch
-    /\ runState = "Running"
-    /\ runState' = "Ended"
-    /\ hasTicket' = FALSE
     /\ dispatchState' = "Removed"
     /\ owner' = NoOwner
-    /\ endedOnce' = TRUE
-    /\ UNCHANGED leaseEpoch
+    /\ pendingInput' = FALSE
+    /\ UNCHANGED <<leaseEpoch, cancelRequested>>
 
-Cancel ==
-    /\ runState # "Ended"
+RequestCancel ==
     /\ dispatchState \notin TerminalDispatchStates
-    /\ runState' = "Ended"
-    /\ hasTicket' = FALSE
-    /\ dispatchState' = "Removed"
-    /\ owner' = NoOwner
-    /\ endedOnce' = TRUE
-    /\ UNCHANGED leaseEpoch
+    /\ ~cancelRequested
+    /\ cancelRequested' = TRUE
+    /\ IF dispatchState = "Leased"
+          THEN /\ dispatchState' = "Pending" /\ owner' = NoOwner
+          ELSE UNCHANGED <<dispatchState, owner>>
+    /\ UNCHANGED <<leaseEpoch, pendingInput>>
 
 ExhaustRetries(candidate, epoch) ==
     /\ dispatchState = "Leased"
@@ -108,37 +134,22 @@ ExhaustRetries(candidate, epoch) ==
     /\ epoch = leaseEpoch
     /\ dispatchState' = "DeadLetter"
     /\ owner' = NoOwner
-    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
+    /\ UNCHANGED <<leaseEpoch, cancelRequested, pendingInput>>
 
-\* Dead-lettering is an operational dispatch condition, not an Agent outcome.
-\* An operator may requeue it without reopening an Ended Run.
 RequeueDeadLetter ==
     /\ dispatchState = "DeadLetter"
-    /\ runState = "Running"
-    /\ ~hasTicket
     /\ dispatchState' = "Pending"
     /\ owner' = NoOwner
-    /\ UNCHANGED <<runState, hasTicket, leaseEpoch, endedOnce>>
+    /\ UNCHANGED <<leaseEpoch, cancelRequested, pendingInput>>
 
 Supersede ==
-    /\ runState # "Ended"
     /\ dispatchState \notin TerminalDispatchStates
-    /\ runState' = "Ended"
-    /\ hasTicket' = FALSE
     /\ dispatchState' = "Superseded"
     /\ owner' = NoOwner
-    /\ endedOnce' = TRUE
-    /\ UNCHANGED leaseEpoch
+    /\ pendingInput' = FALSE
+    /\ UNCHANGED <<leaseEpoch, cancelRequested>>
 
-\* A settle carrying a stale epoch is an explicit no-op. Including it in Next
-\* checks the API fence without granting stale owners a state-changing action.
 StaleSettle(candidate, epoch) ==
-    /\ candidate \in Owners
-    /\ epoch \in 0..MaxEpoch
-    /\ epoch # leaseEpoch
-    /\ UNCHANGED vars
-
-StaleRelinquish(candidate, epoch) ==
     /\ candidate \in Owners
     /\ epoch \in 0..MaxEpoch
     /\ \/ dispatchState # "Leased"
@@ -147,55 +158,55 @@ StaleRelinquish(candidate, epoch) ==
     /\ UNCHANGED vars
 
 Next ==
+    \/ \E candidate \in Owners: ClaimReservation(candidate)
+    \/ ActivateReservation
+    \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
+           ResolveReservation(candidate, epoch)
+    \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
+           RetryReservation(candidate, epoch)
     \/ \E candidate \in Owners: Claim(candidate)
     \/ \E candidate \in Owners: Reclaim(candidate)
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            Relinquish(candidate, epoch)
+    \/ DeliverInput
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            SettleAwaiting(candidate, epoch)
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
-           Finish(candidate, epoch)
+           SettleDone(candidate, epoch)
+    \/ RequestCancel
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            ExhaustRetries(candidate, epoch)
+    \/ RequeueDeadLetter
+    \/ Supersede
     \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
            StaleSettle(candidate, epoch)
-    \/ \E candidate \in Owners, epoch \in 0..MaxEpoch:
-           StaleRelinquish(candidate, epoch)
-    \/ Cancel
-    \/ Supersede
-    \/ RequeueDeadLetter
 
 Spec == Init /\ [][Next]_vars
 
 TypeOK ==
-    /\ runState \in CoreRunStates
-    /\ hasTicket \in BOOLEAN
     /\ dispatchState \in DispatchStates
     /\ owner \in Owners \cup {NoOwner}
     /\ leaseEpoch \in 0..MaxEpoch
-    /\ endedOnce \in BOOLEAN
-
-TicketIffAwaiting == hasTicket \equiv (runState = "Awaiting")
+    /\ cancelRequested \in BOOLEAN
+    /\ pendingInput \in BOOLEAN
 
 LeaseHasExactlyOneOwner ==
-    (dispatchState = "Leased") \equiv (owner \in Owners)
+    (dispatchState \in LeasedStates) \equiv (owner \in Owners)
 
-RunDispatchCoherence ==
-    /\ (dispatchState = "Awaiting") \equiv (runState = "Awaiting")
-    /\ (dispatchState \in {"Pending", "Leased"}) => (runState = "Running")
-    /\ (dispatchState \in TerminalDispatchStates) => (runState = "Ended")
-    /\ (dispatchState = "DeadLetter") => (runState = "Running")
+TerminalHasNoOwner ==
+    (dispatchState \in TerminalDispatchStates) => owner = NoOwner
 
-EndedIsAbsorbing == endedOnce => (runState = "Ended")
+LeasedEpochIsPositive ==
+    (dispatchState \in LeasedStates) => leaseEpoch > 0
 
-LeasedEpochIsPositive == (dispatchState = "Leased") => (leaseEpoch > 0)
+PendingInputIsDurable ==
+    pendingInput => dispatchState \in {"Pending", "Awaiting", "Leased", "DeadLetter"}
 
 Safety ==
     /\ TypeOK
-    /\ TicketIffAwaiting
     /\ LeaseHasExactlyOneOwner
-    /\ RunDispatchCoherence
-    /\ EndedIsAbsorbing
+    /\ TerminalHasNoOwner
     /\ LeasedEpochIsPositive
+    /\ PendingInputIsDurable
 
 =============================================================================

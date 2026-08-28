@@ -3,15 +3,13 @@
 //! routes.
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::fresh_process_id;
 use serde_json::Value;
 
 use crate::types::{AiSdkChatRequest, UIMessage, UIMessagePart};
-
-static THREAD_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// A client's answer to an awaiting tool, before binding-specific translation.
 #[derive(Debug, Clone, PartialEq)]
@@ -35,6 +33,7 @@ pub struct Decision {
 
 /// A decoded request ready for the runtime.
 pub struct ProcessedRequest {
+    pub operation_id: String,
     pub thread_id: String,
     pub messages: Vec<Message>,
     pub decisions: Vec<Decision>,
@@ -55,12 +54,26 @@ pub fn process_request(payload: AiSdkChatRequest, known_ids: &HashSet<String>) -
         .thread_id
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| format!("thread-{}", THREAD_SEQ.fetch_add(1, Ordering::SeqCst)));
+        .unwrap_or_else(|| fresh_process_id("thread"));
 
     let decisions = extract_decisions(&payload.messages);
     let messages = convert_new_messages(&payload.messages, known_ids);
+    let operation_id = payload
+        .messages
+        .iter()
+        .rev()
+        .find_map(|message| {
+            message
+                .id
+                .as_deref()
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| fresh_process_id("ai-sdk-operation"));
 
     ProcessedRequest {
+        operation_id,
         thread_id,
         messages,
         decisions,
@@ -91,7 +104,7 @@ fn convert_new_messages(messages: &[UIMessage], known_ids: &HashSet<String>) -> 
         let id = message
             .id
             .clone()
-            .unwrap_or_else(|| format!("msg-{}", THREAD_SEQ.fetch_add(1, Ordering::SeqCst)));
+            .unwrap_or_else(|| fresh_process_id("msg"));
         out.push(Message::new(MessageId(id), role, blocks));
     }
     out

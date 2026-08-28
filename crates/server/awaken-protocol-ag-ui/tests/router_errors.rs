@@ -20,6 +20,7 @@ struct NoAwaitingRuntime;
 impl RunApplication for NoAwaitingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -32,6 +33,7 @@ impl RunApplication for NoAwaitingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -180,6 +182,7 @@ struct AwaitingRuntime;
 impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -189,6 +192,7 @@ impl RunApplication for AwaitingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -254,6 +258,7 @@ struct ExactResumeRuntime {
 impl RunApplication for ExactResumeRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -263,6 +268,7 @@ impl RunApplication for ExactResumeRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -344,6 +350,7 @@ struct AdmissionRecordingRuntime {
 impl RunApplication for AdmissionRecordingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -357,6 +364,7 @@ impl RunApplication for AdmissionRecordingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -458,6 +466,7 @@ struct DenyRecordingRuntime {
 impl RunApplication for DenyRecordingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
@@ -466,6 +475,7 @@ impl RunApplication for DenyRecordingRuntime {
     }
     async fn resume(
         &self,
+        _operation_id: &str,
         _t: &str,
         _id: &str,
         resume: RunResume,
@@ -522,6 +532,7 @@ struct ClassifiedFailureRuntime;
 impl RunApplication for ClassifiedFailureRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -534,6 +545,7 @@ impl RunApplication for ClassifiedFailureRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -585,6 +597,7 @@ struct AgUiPanickingRuntime;
 impl RunApplication for AgUiPanickingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _t: &str,
         _a: Option<String>,
         _m: Vec<Message>,
@@ -593,6 +606,7 @@ impl RunApplication for AgUiPanickingRuntime {
     }
     async fn resume(
         &self,
+        _operation_id: &str,
         _t: &str,
         _id: &str,
         _r: RunResume,

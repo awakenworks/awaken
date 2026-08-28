@@ -1,20 +1,14 @@
 //! Durable activity fencing for overlapping Session Runs.
 
-use std::sync::Arc;
-
-use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
-use awaken_agent_contract::stream::sink::Sink;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind};
 use awaken_session_contract::{
     IdempotencyRecord, ManagedLifecycleFact, PersistedSession, RunError, SessionExecutionState,
-    SessionRuntimeInterval, SessionRuntimeIntervalObservation, StepOutcome,
+    SessionRuntimeInterval, SessionRuntimeIntervalObservation,
 };
 
-use super::{
-    SessionApplication, SessionMutationError, SessionRunAdmission, mutation::repository_failure,
-};
+use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
 
 pub(crate) fn now_unix_ms() -> u64 {
     std::time::SystemTime::now()
@@ -55,13 +49,6 @@ pub enum SessionActivityError {
     Conflict,
     #[error("Session activity persistence is unavailable: {0}")]
     Unavailable(String),
-}
-
-/// One committed Runtime step together with the durable Session state after its
-/// activity fence has been settled.
-pub struct SessionMessageOutcome {
-    pub step: StepOutcome,
-    pub session: PersistedSession,
 }
 
 impl SessionActivityError {
@@ -183,136 +170,6 @@ impl SessionApplication {
         Ok(epoch)
     }
 
-    /// Execute one user message under the Session's durable activity fence.
-    /// Settlement is attempted after both successful and failed Runtime work so
-    /// protocol adapters and internal jobs cannot leave independent lifecycle
-    /// behavior behind.
-    pub async fn run_session_message(
-        &self,
-        agent_id: &str,
-        session_id: &str,
-        content: Vec<ContentBlock>,
-        data_subject_id: Option<String>,
-        sink: Arc<dyn Sink>,
-    ) -> Result<SessionMessageOutcome, RunError> {
-        let activity = self.begin_admitted_activity(agent_id, session_id).await?;
-        let step = self
-            .run_streaming_attributed(agent_id, session_id, content, data_subject_id, sink)
-            .await;
-        self.finish_runtime_activity(session_id, activity.activity_epoch, step)
-            .await
-    }
-
-    /// Run a message inside an activity already admitted for its whole Managed
-    /// event batch. The caller owns final settlement, so every batch member is
-    /// fenced by one root CAS before the first public receipt can be appended.
-    pub async fn run_session_message_in_activity(
-        &self,
-        agent_id: &str,
-        session_id: &str,
-        content: Vec<ContentBlock>,
-        data_subject_id: Option<String>,
-        sink: Arc<dyn Sink>,
-    ) -> Result<StepOutcome, RunError> {
-        let step = self
-            .run_streaming_attributed(agent_id, session_id, content, data_subject_id, sink)
-            .await;
-        let budget = match self.session_usage(session_id).await {
-            Ok(usage) => self
-                .reconcile_managed_budget_usage(session_id, usage)
-                .await
-                .map(|_| ())
-                .map_err(|error| RunError::unavailable(error.to_string())),
-            Err(error) => Err(error),
-        };
-        let step = step?;
-        budget?;
-        Ok(step)
-    }
-
-    /// Reconcile committed cumulative usage while the interval is still open,
-    /// then settle it exactly once. This ordering makes active-time pricing
-    /// visible at the boundary and prevents protocol adapters from racing a
-    /// separate usage ledger against Session activity closure.
-    pub(crate) async fn finish_runtime_activity(
-        &self,
-        session_id: &str,
-        activity_epoch: u64,
-        step: Result<StepOutcome, RunError>,
-    ) -> Result<SessionMessageOutcome, RunError> {
-        // Causes: C1 Runtime Step succeeds/fails; C2 cumulative usage read and
-        // root reconciliation succeed/fail; C3 exact lifecycle observation is
-        // present/absent; C4 activity is/is not the last overlapping epoch.
-        // Effects: E1 usage failure retains Running for exact retry; E2 a failed
-        // Step with readable usage still settles; E3 an observed boundary is
-        // retained before epoch removal; E4 only the last epoch closes one
-        // interval. Rules: R1=C2 fail=>E1; R2=C1 fail+C2 ok=>E2;
-        // R3=C1 ok+C2 ok+C3 present=>E3; R4=C4 false/true=>retain/E4.
-        // Constraint: usage and interval history commit only through root CAS.
-        let usage = self.session_usage(session_id).await?;
-        let _usage_projection = self
-            .reconcile_managed_budget_usage(session_id, usage)
-            .await
-            .map_err(|error| RunError::unavailable(error.to_string()))?;
-        let observation = match step.as_ref().ok().and_then(StepOutcome::run_id) {
-            Some(run_id) => self
-                .runtime_interval_observation(
-                    session_id,
-                    activity_epoch,
-                    &ThreadId(session_id.to_string()),
-                    run_id,
-                    step.as_ref().expect("successful Step was matched").state(),
-                    None,
-                )
-                .await?
-                .ok_or_else(|| {
-                    RunError::unavailable(
-                        "committed Run boundary is not yet visible in the lifecycle feed",
-                    )
-                })?,
-            None => {
-                let settled = self
-                    .settle_activity(session_id, activity_epoch)
-                    .await
-                    .map_err(SessionActivityError::run_error);
-                let step = step?;
-                let session = settled?;
-                return Ok(SessionMessageOutcome { step, session });
-            }
-        };
-        let settled = self
-            .settle_activity_observed(session_id, activity_epoch, Some(observation))
-            .await
-            .map_err(SessionActivityError::run_error);
-        let step = step?;
-        let session = settled?;
-        Ok(SessionMessageOutcome { step, session })
-    }
-
-    /// Recover the canonical Session projection, then open its one billable
-    /// activity interval. Every driving event uses this ordering, including a
-    /// tool continuation after process restart; no protocol adapter may open an
-    /// interval or invoke Runtime against a stale realization lease first.
-    pub async fn begin_admitted_activity(
-        &self,
-        agent_id: &str,
-        session_id: &str,
-    ) -> Result<PersistedSession, RunError> {
-        let owner_scope = self
-            .owner(session_id)
-            .await
-            .map_err(SessionActivityError::mutation)
-            .map_err(SessionActivityError::run_error)?;
-        // Enter through the async-trait port used by the protocol decorator.
-        // Besides preserving one admission owner, its boxed future prevents the
-        // large recovery state machine from being embedded in an already-deep
-        // Managed event future and exhausting a production Tokio worker stack.
-        SessionRunAdmission::admit(self, &owner_scope, session_id, agent_id).await?;
-        self.begin_activity(session_id)
-            .await
-            .map_err(SessionActivityError::run_error)
-    }
-
     /// Recover/admit the frozen Session binding, then open exactly one activity
     /// for a stable protocol operation. The existing operation receipt is the
     /// only retry coordinate; the protocol receives the committed epoch and
@@ -344,7 +201,8 @@ impl SessionApplication {
             .await
             .map_err(SessionActivityError::mutation)
             .map_err(SessionActivityError::run_error)?;
-        SessionRunAdmission::admit(self, &owner_scope, session_id, agent_id).await?;
+        self.admit_run_session(&owner_scope, session_id, agent_id)
+            .await?;
         self.begin_activity_for_operation(session_id, operation_id)
             .await
             .map_err(SessionActivityError::run_error)

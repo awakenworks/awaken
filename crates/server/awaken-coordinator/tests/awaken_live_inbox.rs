@@ -92,7 +92,7 @@ fn text_content(text: &str) -> serde_json::Value {
 struct QueueFake {
     active: AtomicBool,
     queue: Mutex<FakeQueue>,
-    user_runs: Mutex<HashMap<String, awaken_session_contract::SessionUserRunCommand>>,
+    user_runs: Mutex<HashMap<String, awaken_session_contract::AdmitSessionRun>>,
 }
 
 #[derive(Default)]
@@ -108,10 +108,10 @@ fn unsupported_runtime_operation() -> RunError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: awaken_session_contract::SessionUserRunCommand,
-    ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
         let mut runs = self.user_runs.lock().unwrap();
         if let Some(existing) = runs.get(&command.run_id.0) {
             if existing != &command {
@@ -119,13 +119,13 @@ impl SessionRuntime for QueueFake {
                     "live-inbox test reservation replay changed its command",
                 ));
             }
-            return Ok(awaken_session_contract::SessionUserRunReservation::Completed);
+            return Ok(awaken_session_contract::SessionRunReservation::Completed);
         }
         runs.insert(command.run_id.0.clone(), command);
-        Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+        Ok(awaken_session_contract::SessionRunReservation::Completed)
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         _session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
@@ -167,12 +167,8 @@ impl SessionRuntime for QueueFake {
                     state: awaken_agent_contract::agent::run::RunState::Ended(EndCause::NaturalEnd),
                 }],
                 latest_run_id: Some(run_id),
-                messages: vec![Message {
-                    id: Id::session_event_input(session_id, &command.operation_id),
-                    role: Role::User,
-                    content: command.content.clone(),
-                }],
-                message_commit_cursors: vec![1],
+                message_commit_cursors: vec![1; command.messages.len()],
+                messages: command.messages.clone(),
                 state: Vec::new(),
                 state_commit_cursors: Vec::new(),
                 events: Vec::new(),
@@ -332,19 +328,19 @@ fn app_with_session_application(
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
-        async fn reserve_session_user_run(
+        async fn reserve_session_run(
             &self,
-            command: awaken_session_contract::SessionUserRunCommand,
-        ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
-            self.0.reserve_session_user_run(command).await
+            command: awaken_session_contract::AdmitSessionRun,
+        ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
+            self.0.reserve_session_run(command).await
         }
 
-        async fn session_user_run_state(
+        async fn session_run_state(
             &self,
             session_id: &str,
             run_id: &awaken_agent_contract::agent::run::Id,
         ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
-            self.0.session_user_run_state(session_id, run_id).await
+            self.0.session_run_state(session_id, run_id).await
         }
 
         async fn session_thread_recovery_snapshot(

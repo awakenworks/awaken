@@ -74,12 +74,16 @@ impl AcpServeHost {
         agent: Option<String>,
         text: &str,
     ) -> Result<AcpTurn, RunApplicationError> {
+        let operation_id = awaken_runtime::fresh_process_id("acp-operation");
         let user = Message::text(
             MessageId(awaken_runtime::fresh_process_id("acp-u")),
             Role::User,
             text.to_string(),
         );
-        let outcome = self.runtime.run(session, agent, vec![user]).await?;
+        let outcome = self
+            .runtime
+            .run(&operation_id, session, agent, vec![user])
+            .await?;
         Ok(AcpTurn {
             stop: map_stop(outcome.state()),
             messages: outcome.new_messages,

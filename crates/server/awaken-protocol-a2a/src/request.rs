@@ -2,31 +2,24 @@
 //! message to neutral runtime input. All A2A-specific parsing lives here so the
 //! router only routes.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
+use awaken_agent_contract::fresh_process_id;
 use awaken_session_contract::{Pending, RunApplicationError, RunResume};
 use serde_json::Value;
 
 use crate::types::{Part, SendMessageRequest};
 
 fn next(prefix: &str) -> String {
-    static SEQUENCE: AtomicU64 = AtomicU64::new(0);
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock before Unix epoch")
-        .as_nanos();
-    let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{:x}-{nanos:x}-{sequence:x}", std::process::id())
+    fresh_process_id(prefix)
 }
 
 /// A decoded `message:send` request ready for the runtime: the A2A `contextId`
 /// maps to the neutral thread id, the message text is the turn input (or, when the
 /// thread has an awaiting run, the tool answer the router delivers on resume).
 pub struct Processed {
+    pub operation_id: String,
     pub thread_id: String,
     pub task_id: String,
     pub agent_id: Option<String>,
@@ -66,9 +59,10 @@ pub fn process(req: SendMessageRequest, path_agent: Option<String>) -> Processed
     let approval = approval_decision(&req.message.parts);
     let message_id = req.message.message_id.clone();
     let blocks: Vec<ContentBlock> = req.message.parts.iter().filter_map(part_to_block).collect();
-    let message = Message::new(MessageId(message_id), Role::User, blocks);
+    let message = Message::new(MessageId(message_id.clone()), Role::User, blocks);
 
     Processed {
+        operation_id: message_id,
         thread_id,
         task_id: requested_task_id.unwrap_or_else(|| next("task")),
         // The path agent (e.g. `/v1/a2a/agents/{agent}/...`) wins over a body

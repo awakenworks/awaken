@@ -18,6 +18,8 @@ RETIRED_EXECUTION_PATHS = {
     "ExecutionShape": "environment realization has one Session/backend decision path",
     "SessionDefaultsPreparer": "Session admission is owned by awaken-session-application",
     "SessionDefaultsPreparationError": "Session admission is owned by awaken-session-application",
+    "SessionRunAdmission": "use the SessionApplication-owned AdmitSessionRun command",
+    "AdmittedRunApplication": "use the sole SessionRunApplication adapter",
 }
 
 RUNTIME_HOST_ERROR_OWNER = "crates/server/awaken-runtime-host/src/lib.rs"
@@ -217,9 +219,14 @@ def runtime_host_boundary_violations(sources: dict[str, str]) -> list[str]:
                 f"{RUNTIME_HOST_ERROR_OWNER}: Host fault classification must use stable origin codes; forbidden {token!r}"
             )
     admission = sources.get(SESSION_RUN_ADMISSION_OWNER, "")
-    if "pub struct AdmittedRunApplication" not in admission:
+    required = (
+        "pub struct SessionRunApplication",
+        "impl RunApplication for SessionRunApplication",
+        "run_admitted_session_for_owner",
+    )
+    if any(symbol not in admission for symbol in required):
         errors.append(
-            f"{SESSION_RUN_ADMISSION_OWNER}: missing Session-owned public Run admission decorator"
+            f"{SESSION_RUN_ADMISSION_OWNER}: missing the Session-owned Run command or sole public adapter"
         )
     return errors
 
@@ -319,12 +326,17 @@ def selftest() -> None:
         {"deploy/stale.yaml": "AWAKEN_REMOTE_HAND=hand:9000"}
     ), "D2"
 
-    # Runtime boundary decision table: B1 Session application owns the one
-    # admission decorator and Host maps typed codes -> accept; B2 decorator
-    # missing -> reject; B3 Host infers identity from message text -> reject.
+    # Runtime boundary decision table: B1 Session application owns the admitted
+    # Run command and sole public adapter while Host maps typed codes -> accept;
+    # B2 any required ownership surface is missing -> reject; B3 Host infers
+    # identity from message text -> reject.
     boundary = {
         RUNTIME_HOST_ERROR_OWNER: "match error.code { _ => () }",
-        SESSION_RUN_ADMISSION_OWNER: "pub struct AdmittedRunApplication;",
+        SESSION_RUN_ADMISSION_OWNER: (
+            "pub struct SessionRunApplication; "
+            "impl RunApplication for SessionRunApplication {} "
+            "fn run_admitted_session_for_owner() {}"
+        ),
     }
     assert runtime_host_boundary_violations(boundary) == [], "B1"
     assert runtime_host_boundary_violations(

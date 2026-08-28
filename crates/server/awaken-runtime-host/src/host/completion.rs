@@ -449,10 +449,10 @@ impl SharedHost {
     /// Publish one Session-approved reservation through the existing dispatch
     /// row. This is the sole Host activation implementation used by both the
     /// non-blocking reconciler port and foreground observation.
-    pub(crate) async fn activate_session_user_run_reservation(
+    pub(crate) async fn activate_session_run_reservation(
         &self,
-        delivery: awaken_session_contract::SessionUserRunDelivery,
-    ) -> Result<awaken_session_contract::SessionUserRunActivation, HostError> {
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, HostError> {
         use awaken_run_ingress::Outbox as _;
 
         if delivery.session_activity_epoch == 0 {
@@ -471,18 +471,18 @@ impl SharedHost {
             .map_err(|error| HostError::unavailable(error.to_string()))?;
         let projected = match outcome {
             awaken_run_ingress::SessionRunReservationActivation::Activated => {
-                awaken_session_contract::SessionUserRunActivation::Activated
+                awaken_session_contract::SessionRunActivation::Activated
             }
             awaken_run_ingress::SessionRunReservationActivation::AlreadyActivated {
                 session_activity_epoch,
-            } => awaken_session_contract::SessionUserRunActivation::AlreadyActivated {
+            } => awaken_session_contract::SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             },
             awaken_run_ingress::SessionRunReservationActivation::RecoveryClaimed => {
-                awaken_session_contract::SessionUserRunActivation::RecoveryClaimed
+                awaken_session_contract::SessionRunActivation::RecoveryClaimed
             }
             awaken_run_ingress::SessionRunReservationActivation::Completed => {
-                awaken_session_contract::SessionUserRunActivation::Completed
+                awaken_session_contract::SessionRunActivation::Completed
             }
             awaken_run_ingress::SessionRunReservationActivation::MissingOrRejected => {
                 return Err(HostError::bad_request(
@@ -497,8 +497,8 @@ impl SharedHost {
         };
         if matches!(
             projected,
-            awaken_session_contract::SessionUserRunActivation::Activated
-                | awaken_session_contract::SessionUserRunActivation::AlreadyActivated { .. }
+            awaken_session_contract::SessionRunActivation::Activated
+                | awaken_session_contract::SessionRunActivation::AlreadyActivated { .. }
         ) {
             if let Some(pool) = self.dispatch_pool.get() {
                 pool.notify().await;
@@ -515,37 +515,65 @@ impl SharedHost {
     /// Register before activation and observe only the committed Run lifecycle.
     /// The registry is a wakeup/preview relay; peer settlement is recovered by
     /// the same authoritative Thread read used by other foreground operations.
-    pub(crate) async fn activate_and_observe_session_user_run(
+    pub(crate) async fn activate_and_observe_session_run(
         &self,
-        admission: awaken_session_contract::SessionUserRunAdmission,
+        admission: awaken_session_contract::AdmittedSessionRun,
+        input_message_ids: Vec<String>,
         stream_sink: Option<Arc<dyn StreamSink>>,
-    ) -> Result<RunState, HostError> {
+    ) -> Result<CommittedStepReceipt, HostError> {
         let session_id = admission.session_id().to_string();
         let run_id = admission.run_id().clone();
         let ctx = self.ctx_for(&session_id, None).await?;
-        activate_and_await_session_user_run(
+        let state = activate_and_await_session_run(
             &self.completion,
             &run_id,
             stream_sink,
             std::time::Duration::from_millis(250),
             || async move {
                 match admission {
-                    awaken_session_contract::SessionUserRunAdmission::Reserved(delivery)
-                    | awaken_session_contract::SessionUserRunAdmission::AlreadyReserved(delivery)
-                    | awaken_session_contract::SessionUserRunAdmission::AlreadyActivated(
-                        delivery,
-                    ) => self.activate_session_user_run_reservation(delivery).await,
-                    awaken_session_contract::SessionUserRunAdmission::RecoveryClaimed {
-                        ..
-                    } => Ok(awaken_session_contract::SessionUserRunActivation::RecoveryClaimed),
-                    awaken_session_contract::SessionUserRunAdmission::Completed { .. } => {
-                        Ok(awaken_session_contract::SessionUserRunActivation::Completed)
+                    awaken_session_contract::AdmittedSessionRun::Reserved(delivery)
+                    | awaken_session_contract::AdmittedSessionRun::AlreadyReserved(delivery)
+                    | awaken_session_contract::AdmittedSessionRun::AlreadyActivated(delivery) => {
+                        self.activate_session_run_reservation(delivery).await
+                    }
+                    awaken_session_contract::AdmittedSessionRun::RecoveryClaimed { .. } => {
+                        Ok(awaken_session_contract::SessionRunActivation::RecoveryClaimed)
+                    }
+                    awaken_session_contract::AdmittedSessionRun::Completed { .. } => {
+                        Ok(awaken_session_contract::SessionRunActivation::Completed)
                     }
                 }
             },
             || self.read_settled_phase(&ctx, &run_id, None),
         )
-        .await
+        .await?;
+        self.project_settled_session_run(&ctx, run_id, state, &input_message_ids)
+            .await
+    }
+
+    /// Register before publishing one Session-owned resume, then project only
+    /// the next committed Step. The durable reply ingress and Worker execution
+    /// are shared with background Managed Event reconciliation.
+    pub(crate) async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let session_id = delivery.command.session_id.clone();
+        let run_id = delivery.command.expected_run_id.clone();
+        let correlation_id = delivery.command.expected_correlation_id.clone();
+        let ctx = self.ctx_for(&session_id, None).await?;
+        let messages_before = self
+            .authoritative_step_snapshot(&ctx, &run_id)
+            .await?
+            .messages
+            .len();
+        let (settled, _waiter_guard) = self.completion.register(&run_id, None);
+        self.reply_session_thread_tool(delivery).await?;
+        let state = self
+            .await_settled_event(&ctx, &run_id, Some(&correlation_id), settled)
+            .await?;
+        self.project_settled_session_resume(&ctx, run_id, state, messages_before)
+            .await
     }
 
     /// Submit a durable run and wait for the pool to drive it to a settled state.
@@ -794,7 +822,7 @@ where
 /// One register-before-activate composition shared by every Session User Run
 /// foreground caller. Activation outcomes remain typed, while the only value
 /// returned across the observation boundary is committed `RunState`.
-async fn activate_and_await_session_user_run<Activate, ActivateFuture, Read, ReadFuture>(
+async fn activate_and_await_session_run<Activate, ActivateFuture, Read, ReadFuture>(
     registry: &Arc<CompletionRegistry>,
     run_id: &RunId,
     stream_sink: Option<Arc<dyn StreamSink>>,
@@ -805,7 +833,7 @@ async fn activate_and_await_session_user_run<Activate, ActivateFuture, Read, Rea
 where
     Activate: FnOnce() -> ActivateFuture,
     ActivateFuture: std::future::Future<
-            Output = Result<awaken_session_contract::SessionUserRunActivation, HostError>,
+            Output = Result<awaken_session_contract::SessionRunActivation, HostError>,
         >,
     Read: FnMut() -> ReadFuture,
     ReadFuture: std::future::Future<Output = Result<Option<RunState>, HostError>>,
@@ -817,7 +845,7 @@ where
     let activation = activate().await?;
     if matches!(
         activation,
-        awaken_session_contract::SessionUserRunActivation::Completed
+        awaken_session_contract::SessionRunActivation::Completed
     ) && let Some(state) = read_settled().await?
     {
         return Ok(state);
@@ -1021,7 +1049,7 @@ impl StreamSink for CompletionRegistry {
 mod completion_tests {
     use super::{
         CompletionRegistry, HOST_EXECUTOR_CAPABILITY, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, RunId,
-        activate_and_await_session_user_run, await_completion_state, awaiting_ticket_advanced,
+        activate_and_await_session_run, await_completion_state, awaiting_ticket_advanced,
         durable_resume_input, remote_worker_placement,
     };
     use awaken_agent_contract::agent::run::RunState;
@@ -1408,7 +1436,7 @@ mod completion_tests {
         // Decision rule: execute every reachable cause partition documented here and
         // require its stated effects, including each fail-closed outcome.
         use awaken_agent_contract::agent::run::EndCause;
-        use awaken_session_contract::SessionUserRunActivation;
+        use awaken_session_contract::SessionRunActivation;
 
         // Cause/effect graph: C1 activation returns Activated/AlreadyActivated/
         // RecoveryClaimed/Completed; C2 settlement is signalled locally during
@@ -1425,13 +1453,13 @@ mod completion_tests {
         let rules = [
             (
                 "O1",
-                SessionUserRunActivation::Activated,
+                SessionRunActivation::Activated,
                 Some(RunState::Awaiting),
                 None,
             ),
             (
                 "O2",
-                SessionUserRunActivation::AlreadyActivated {
+                SessionRunActivation::AlreadyActivated {
                     session_activity_epoch: 9,
                 },
                 None,
@@ -1439,13 +1467,13 @@ mod completion_tests {
             ),
             (
                 "O3",
-                SessionUserRunActivation::RecoveryClaimed,
+                SessionRunActivation::RecoveryClaimed,
                 None,
                 Some(RunState::Awaiting),
             ),
             (
                 "O4",
-                SessionUserRunActivation::Completed,
+                SessionRunActivation::Completed,
                 None,
                 Some(RunState::Ended(EndCause::NaturalEnd)),
             ),
@@ -1457,7 +1485,7 @@ mod completion_tests {
             let activation_registry = registry.clone();
             let activation_run = run_id.clone();
             let expected_peer = peer_state.clone();
-            let state = activate_and_await_session_user_run(
+            let state = activate_and_await_session_run(
                 &registry,
                 &run_id,
                 None,
@@ -1498,7 +1526,7 @@ mod completion_tests {
     async fn dropping_session_user_run_observation_releases_only_its_waiter() {
         // Constraint/Invariant: the authoritative inputs and ownership boundaries
         // documented here remain the only decision source; no parallel path is admitted.
-        use awaken_session_contract::SessionUserRunActivation;
+        use awaken_session_contract::SessionRunActivation;
 
         // Cause/effect graph: C1 an activated Run remains Running in committed
         // truth; C2 its foreground caller is dropped. Effects: E1 the observation
@@ -1506,12 +1534,12 @@ mod completion_tests {
         // E3 no Run/Dispatch state is changed. Decision rule D1=C1+C2=>E1+E2+E3.
         let registry = Arc::new(CompletionRegistry::default());
         let run_id = RunId("session-user-drop".into());
-        let mut observation = Box::pin(activate_and_await_session_user_run(
+        let mut observation = Box::pin(activate_and_await_session_run(
             &registry,
             &run_id,
             None,
             std::time::Duration::from_millis(2),
-            || std::future::ready(Ok(SessionUserRunActivation::Activated)),
+            || std::future::ready(Ok(SessionRunActivation::Activated)),
             || std::future::ready(Ok(None)),
         ));
 

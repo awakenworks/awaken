@@ -18,6 +18,7 @@ struct UsageRuntime;
 impl RunApplication for UsageRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -30,6 +31,7 @@ impl RunApplication for UsageRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -102,6 +104,7 @@ struct ResumeUsageRuntime;
 impl RunApplication for ResumeUsageRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -111,6 +114,7 @@ impl RunApplication for ResumeUsageRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

@@ -39,8 +39,6 @@ where
 }
 
 struct NoopRuntime;
-struct SuccessfulRuntime;
-struct DiscardProgress;
 
 #[derive(Default)]
 struct ToggleProjectionRefresh {
@@ -84,12 +82,6 @@ struct RecordingBoundaryBudgetRuntime {
     budget_resume_deliveries: Mutex<Vec<awaken_session_contract::SessionBudgetResumeDelivery>>,
     budget_resume_dispositions:
         Mutex<VecDeque<awaken_session_contract::SessionBudgetResumeDisposition>>,
-}
-
-struct ScriptedMessageBoundaryRuntime {
-    boundaries: RecordingBoundaries,
-    usage_unavailable: AtomicBool,
-    publish_boundary_on_run: AtomicBool,
 }
 
 #[derive(Clone, Copy)]
@@ -428,32 +420,6 @@ impl RecordingBoundaryBudgetRuntime {
     }
 }
 
-impl ScriptedMessageBoundaryRuntime {
-    fn new(usage_unavailable: bool, publish_boundary_on_run: bool) -> Self {
-        Self {
-            boundaries: RecordingBoundaries::default(),
-            usage_unavailable: AtomicBool::new(usage_unavailable),
-            publish_boundary_on_run: AtomicBool::new(publish_boundary_on_run),
-        }
-    }
-
-    fn set_usage_unavailable(&self, unavailable: bool) {
-        self.usage_unavailable.store(unavailable, Ordering::SeqCst);
-    }
-
-    fn commit_root_boundary(&self, session_id: &str) {
-        self.boundaries.commit(
-            session_id,
-            &awaken_agent_contract::agent::thread::Id(session_id.into()),
-            &awaken_agent_contract::agent::run::Id(format!("{session_id}-run")),
-            awaken_agent_contract::agent::run::RunState::Ended(
-                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            ),
-            "",
-        );
-    }
-}
-
 impl RecordingAgentAdmissionRuntime {
     fn commit_boundary(
         &self,
@@ -504,16 +470,6 @@ impl RecordingReplyRuntime {
             deliveries: Mutex::new(Vec::new()),
             boundaries: RecordingBoundaries::default(),
         }
-    }
-}
-
-#[async_trait::async_trait]
-impl awaken_agent_contract::stream::sink::Sink for DiscardProgress {
-    async fn send(
-        &self,
-        _event: awaken_agent_contract::stream::event::Event,
-    ) -> Result<(), awaken_agent_contract::stream::sink::Error> {
-        Ok(())
     }
 }
 
@@ -784,7 +740,35 @@ impl SessionRuntime for RecordingReplyRuntime {
                 "",
             );
         }
-        Ok(self.boundaries.snapshot(session_id, thread_id))
+        let mut snapshot = self.boundaries.snapshot(session_id, thread_id);
+        if session_id == thread_id
+            && let Some(snapshot) = snapshot.as_mut()
+        {
+            use awaken_agent_contract::agent::awaiting::{
+                AwaitTarget, PendingTool, ResumeTicket, ToolAwaitReason,
+            };
+            snapshot.resume_tickets = vec![
+                awaken_agent_contract::thread::read::recovery::RunResumeTicket {
+                    run_id: awaken_agent_contract::agent::run::Id("reply-run".into()),
+                    ticket: ResumeTicket::new(
+                        "reply-correlation",
+                        awaken_agent_contract::agent::run::Id("reply-run".into()),
+                        awaken_agent_contract::agent::thread::Id(session_id.to_string()),
+                        "reply-snapshot",
+                        "reply-catalog",
+                        AwaitTarget::ToolCall {
+                            reason: ToolAwaitReason::Permission,
+                            call_id: "reply-tool".into(),
+                            tool: PendingTool {
+                                tool_id: "write".into(),
+                                arguments: serde_json::json!({"path": "answer.txt"}),
+                            },
+                        },
+                    ),
+                },
+            ];
+        }
+        Ok(snapshot)
     }
 
     async fn committed_run_lifecycle(
@@ -806,6 +790,17 @@ impl SessionRuntime for RecordingReplyRuntime {
             ReplyRuntimeOutcome::BadRequest => Err(RunError::bad_request("rejected reply")),
             ReplyRuntimeOutcome::Unavailable => Err(RunError::unavailable("ambiguous reply")),
         }
+    }
+
+    async fn reply_and_observe_session_thread_tool(
+        &self,
+        delivery: awaken_session_contract::SessionThreadToolReplyDelivery,
+    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
+        self.reply_session_thread_tool(delivery).await?;
+        Ok(awaken_session_contract::StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
     }
 
     async fn run(
@@ -1174,137 +1169,6 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
     fn model(&self) -> String {
         "model".into()
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionRuntime for ScriptedMessageBoundaryRuntime {
-    async fn session_usage(
-        &self,
-        _thread: &str,
-    ) -> Result<awaken_session_contract::SessionUsage, RunError> {
-        if self.usage_unavailable.load(Ordering::SeqCst) {
-            Err(RunError::unavailable("scripted usage unavailable"))
-        } else {
-            Ok(Default::default())
-        }
-    }
-
-    async fn session_thread_recovery_snapshot(
-        &self,
-        session_id: &str,
-        thread_id: &str,
-    ) -> Result<Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, RunError>
-    {
-        Ok(self.boundaries.snapshot(session_id, thread_id))
-    }
-
-    async fn committed_run_lifecycle(
-        &self,
-        session_id: &str,
-        cursor: awaken_agent_contract::RunLifecycleCursor,
-        limit: usize,
-    ) -> Result<awaken_agent_contract::RunLifecyclePage, RunError> {
-        Ok(self.boundaries.lifecycle_page(session_id, cursor, limit))
-    }
-
-    async fn run(
-        &self,
-        _agent: &str,
-        thread: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        if self.publish_boundary_on_run.load(Ordering::SeqCst) {
-            self.commit_root_boundary(thread);
-        }
-        Ok(awaken_session_contract::StepOutcome::ended(
-            Vec::new(),
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-        )
-        .with_run_id(awaken_agent_contract::agent::run::Id(format!(
-            "{thread}-run"
-        ))))
-    }
-
-    async fn resume(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _decision: awaken_session_contract::ToolPermissionDecision,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("message boundary test never resumes")
-    }
-
-    async fn resume_custom(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _is_error: bool,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("message boundary test never custom-resumes")
-    }
-
-    async fn define_outcome(
-        &self,
-        _thread: &str,
-        _description: &str,
-        _rubric: &str,
-        _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
-        unreachable!("message boundary test never defines an outcome")
-    }
-
-    fn model(&self) -> String {
-        "scripted-message-model".into()
-    }
-}
-
-#[async_trait::async_trait]
-impl SessionRuntime for SuccessfulRuntime {
-    async fn run(
-        &self,
-        _agent: &str,
-        _thread: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        Ok(awaken_session_contract::StepOutcome::ended(
-            Vec::new(),
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-        ))
-    }
-
-    async fn resume(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _decision: awaken_session_contract::ToolPermissionDecision,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("message test never resumes")
-    }
-
-    async fn resume_custom(
-        &self,
-        _thread: &str,
-        _tool_use_id: &str,
-        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-        _is_error: bool,
-    ) -> Result<awaken_session_contract::StepOutcome, RunError> {
-        unreachable!("message test never resumes")
-    }
-
-    async fn define_outcome(
-        &self,
-        _thread: &str,
-        _description: &str,
-        _rubric: &str,
-        _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeDrive, RunError> {
-        unreachable!("message test never defines an outcome")
-    }
-
-    fn model(&self) -> String {
-        "successful-test-model".into()
     }
 }
 

@@ -19,6 +19,7 @@ struct Runtime;
 impl RunApplication for Runtime {
     async fn run(
         &self,
+        _operation_id: &str,
         _: &str,
         _: Option<String>,
         _: Vec<Message>,
@@ -30,6 +31,7 @@ impl RunApplication for Runtime {
     }
     async fn resume(
         &self,
+        _operation_id: &str,
         _: &str,
         _: &str,
         _: RunResume,

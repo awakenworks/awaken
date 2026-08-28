@@ -335,8 +335,7 @@ impl ManagedState {
         session_id: &str,
         req: SendEventsRequest,
     ) -> Result<SendEventsResponse, StateError> {
-        self.send_events_attributed(session_id, req, None, None)
-            .await
+        Box::pin(self.send_events_attributed(session_id, req, None, None)).await
     }
 
     /// Send an official Managed event envelope with optional request-grain data
@@ -355,13 +354,13 @@ impl ManagedState {
         idempotency_key: Option<String>,
     ) -> Result<SendEventsResponse, StateError> {
         let traceparent = awaken_observability::current_traceparent();
-        self.send_event_batch(
+        Box::pin(self.send_event_batch(
             session_id,
             req,
             data_subject_id,
             traceparent,
             idempotency_key,
-        )
+        ))
         .await
     }
 

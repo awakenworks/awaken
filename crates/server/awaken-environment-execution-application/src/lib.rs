@@ -465,6 +465,13 @@ impl awaken_session_application::SessionEnvironmentSource for EnvironmentExecuti
         self.work.retire_session(environment_id, session_id).await
     }
 
+    async fn release_session_work(
+        &self,
+        lease: &awaken_session_contract::work_queue::SessionWorkLease,
+    ) -> Result<bool, WorkQueueError> {
+        self.work.release_session(lease).await
+    }
+
     async fn acquire_session_work(
         &self,
         environment_id: &str,

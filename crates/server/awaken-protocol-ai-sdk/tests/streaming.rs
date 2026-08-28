@@ -30,6 +30,7 @@ struct StreamingMock;
 impl RunApplication for StreamingMock {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -39,6 +40,7 @@ impl RunApplication for StreamingMock {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -79,6 +81,7 @@ impl RunApplication for StreamingMock {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -206,6 +209,7 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
     impl RunApplication for SilentMock {
         async fn run(
             &self,
+            _operation_id: &str,
             _t: &str,
             _a: Option<String>,
             _m: Vec<Message>,
@@ -217,6 +221,7 @@ async fn falls_back_to_full_projection_when_nothing_streamed() {
         }
         async fn resume(
             &self,
+            _operation_id: &str,
             _t: &str,
             _id: &str,
             _r: RunResume,
@@ -293,6 +298,7 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
     impl RunApplication for RetainedSinkMock {
         async fn run(
             &self,
+            _operation_id: &str,
             _thread: &str,
             _agent: Option<String>,
             _messages: Vec<Message>,
@@ -302,6 +308,7 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
 
         async fn run_streaming(
             &self,
+            _operation_id: &str,
             _thread: &str,
             _agent: Option<String>,
             _messages: Vec<Message>,
@@ -316,6 +323,7 @@ async fn a_retained_best_effort_sink_cannot_hold_the_completed_stream_open() {
 
         async fn resume(
             &self,
+            _operation_id: &str,
             _thread: &str,
             _tool_use_id: &str,
             _resume: RunResume,
@@ -380,6 +388,7 @@ struct HangupProbe {
 impl RunApplication for HangupProbe {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -389,6 +398,7 @@ impl RunApplication for HangupProbe {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -417,6 +427,7 @@ impl RunApplication for HangupProbe {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

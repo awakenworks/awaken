@@ -15,10 +15,11 @@ mod runtime;
 mod snapshot_file;
 mod tool_discovery;
 
+pub use awaken_agent_contract::fresh_process_id;
 pub use circuit_breaker::CircuitBreakerConfig;
 pub use detached_tool::{DetachedToolError, PreparedToolExecutor, ResolvedToolExecution};
 pub use ingress::{DirectRunIngress, RunIngress, RunService};
 pub use permission::PermissionGate;
 pub use retry::LlmRetryPolicy;
-pub use run::{RunInput, fresh_process_id};
+pub use run::RunInput;
 pub use runtime::{ActiveAttemptTracking, Runtime};

@@ -318,9 +318,10 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// Session ownership FMECA/cause-effect graph. Causes: C1 exact Session is
 /// queued/stopped/active; C2 caller is current owner/other owner; C3 lease is
 /// live/expired; C4 trigger is reconciliation enqueue, driving-event wake, or
-/// terminal retire. Effects: E1 one monotonic lease; E2 stale mutations fail
+/// exact Worker release. Effects: E1 one monotonic lease; E2 stale mutations fail
 /// closed; E3 reconciliation never resurrects completed Work; E4 driving event
-/// explicitly wakes it; E5 terminal projection revokes all ownership.
+/// explicitly wakes it; E5 only the exact current epoch releases, and replay is
+/// idempotent.
 ///
 /// | Rule | State | Owner | Trigger | Effect |
 /// |---|---|---|---|---|
@@ -328,8 +329,9 @@ async fn heartbeat_compare_and_extend<Q: WorkQueue>(q: &Q) {
 /// | L2 | active/live | A | acquire | E1 renew, same epoch |
 /// | L3 | active/live | B | acquire/ack/stop | E2 |
 /// | L4 | stopped | n/a | enqueue/acquire | E3 |
-/// | L5 | stopped | B | wake+acquire | E4, epoch 2 |
-/// | L6 | active | Coordinator | retire | E5 |
+/// | L5 | stopped | A again | wake+acquire | E4, epoch 2 |
+/// | L6 | active epoch 2 | stale epoch 1 | release | E2 |
+/// | L7 | active epoch 2 | exact epoch 2/replay | release | E5 |
 async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
     let id = q.enqueue_session("env", "session").await.expect("L1");
     let first = q
@@ -395,21 +397,36 @@ async fn session_ownership_lifecycle_is_single_and_fenced<Q: WorkQueue>(q: &Q) {
     );
     assert_eq!(q.wake_session("env", "session").await.expect("L5"), id);
     let replacement = q
-        .acquire_session("env", "session", "owner-b", 20)
+        .acquire_session("env", "session", "owner-a", 20)
         .await
         .expect("L5")
         .expect("L5 lease");
     assert_eq!(replacement.epoch, 2, "L5/E4");
     assert!(
-        q.retire_session("env", "session")
+        !q.release_session(&first).await.expect("L6 stale release"),
+        "L6/E2"
+    );
+    assert_eq!(
+        q.get("env", &id).await.unwrap().unwrap().state,
+        WorkState::Active,
+        "L6/E2 successor remains authoritative"
+    );
+    assert!(
+        q.release_session(&replacement)
             .await
-            .expect("L6")
-            .is_some()
+            .expect("L7 exact release"),
+        "L7/E5"
+    );
+    assert!(
+        q.release_session(&replacement)
+            .await
+            .expect("L7 exact replay"),
+        "L7/E5 idempotent response-loss replay"
     );
     assert_eq!(
         q.get("env", &id).await.unwrap().unwrap().state,
         WorkState::Stopped,
-        "L6/E5"
+        "L7/E5"
     );
 }
 

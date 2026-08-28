@@ -1,37 +1,31 @@
 use super::*;
+use awaken_session_contract::{
+    AdmitSessionRun, AdmittedSessionRun, SessionRunReservation, StepOutcome,
+};
 
-#[derive(Default)]
-struct ColdEventRuntime {
-    prepared: std::sync::atomic::AtomicBool,
-}
+struct ProtocolProjectionRuntime;
 
-struct BlockingProtocolRuntime {
+struct BlockingSessionRunRuntime {
     entered: Arc<tokio::sync::Semaphore>,
     release: Arc<tokio::sync::Semaphore>,
+    application: std::sync::OnceLock<std::sync::Weak<SessionApplication>>,
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::RunApplication for BlockingProtocolRuntime {
+impl awaken_session_contract::RunApplication for ProtocolProjectionRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<awaken_agent_contract::agent::message::Message>,
     ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
-        self.entered.add_permits(1);
-        self.release
-            .acquire()
-            .await
-            .expect("test release semaphore")
-            .forget();
-        Ok(awaken_session_contract::StepOutcome::ended(
-            Vec::new(),
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-        ))
+        unreachable!("Session Run execution is owned by SessionRuntime")
     }
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: awaken_session_contract::RunResume,
@@ -57,37 +51,19 @@ impl awaken_session_contract::RunApplication for BlockingProtocolRuntime {
     }
 
     fn model(&self) -> String {
-        "blocking-protocol".into()
+        "protocol-projection".into()
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
-    async fn prepare_session(
-        &self,
-        _thread: &str,
-        _init: awaken_session_contract::SessionInit,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.prepared
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-        Ok(())
-    }
-
+impl awaken_session_contract::SessionRuntime for BlockingSessionRunRuntime {
     async fn run(
         &self,
         _agent: &str,
         _thread: &str,
         _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
-        if !self.prepared.load(std::sync::atomic::Ordering::SeqCst) {
-            return Err(awaken_session_contract::RunError::internal(
-                "Runtime executed before its frozen Session projection was installed",
-            ));
-        }
-        Ok(awaken_session_contract::StepOutcome::ended(
-            Vec::new(),
-            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-        ))
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("legacy inline execution is not an admission path")
     }
 
     async fn resume(
@@ -95,8 +71,8 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
         _thread: &str,
         _tool_use_id: &str,
         _decision: awaken_session_contract::ToolPermissionDecision,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
-        unreachable!("cold event test never resumes")
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("test never resumes")
     }
 
     async fn resume_custom(
@@ -105,22 +81,47 @@ impl awaken_session_contract::SessionRuntime for ColdEventRuntime {
         _tool_use_id: &str,
         _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
         _is_error: bool,
-    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
-        unreachable!("cold event test never resumes a custom tool")
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("test never resumes a custom tool")
     }
 
-    async fn define_outcome(
+    async fn reserve_session_run(
         &self,
-        _thread: &str,
-        _description: &str,
-        _rubric: &str,
-        _max_iterations: u32,
-    ) -> Result<awaken_session_contract::OutcomeDrive, awaken_session_contract::RunError> {
-        unreachable!("cold event test never defines an outcome")
+        _command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
+        Ok(SessionRunReservation::Reserved)
+    }
+
+    async fn activate_and_observe_session_run(
+        &self,
+        admission: AdmittedSessionRun,
+        _input_message_ids: Vec<String>,
+        _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        let delivery = admission
+            .delivery()
+            .expect("fresh test admission carries the durable activity receipt");
+        self.entered.add_permits(1);
+        self.release
+            .acquire()
+            .await
+            .expect("test release semaphore")
+            .forget();
+        self.application
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .expect("test Session application")
+            .settle_activity(&delivery.session_id, delivery.session_activity_epoch)
+            .await
+            .expect("committed Run observation settles the exact activity");
+        Ok(StepOutcome::ended(
+            Vec::new(),
+            awaken_agent_contract::agent::run::EndCause::NaturalEnd,
+        ))
     }
 
     fn model(&self) -> String {
-        "cold-event-model".into()
+        "blocking-session-run".into()
     }
 }
 
@@ -305,11 +306,14 @@ async fn recovered_running_activity_admits_a_fenced_successor() {
 async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     // Hosted MCP authorization cause/effect graph: C1 an AI SDK/AG-UI/A2A Run
     // has passed the canonical Session owner/Agent admission; C2 Runtime is
-    // executing; C3 Runtime settles. Effects: E1 the durable Session is Running
+    // executing; C3 Runtime settles; C4 a foreign owner replays the exact stable
+    // operation after its activity receipt exists. Effects: E1 the durable Session is Running
     // throughout C2 so an internal MCP `tools/call` can prove a live Run; E2 C3
-    // closes the same activity and returns the Session to Idle. Constraint: the
+    // closes the same activity and returns the Session to Idle; E3 C4 is rejected
+    // before Runtime even though response-loss recovery truth exists. Constraint: the
     // protocol keeps its original Message/stream path; SessionApplication is the
-    // sole activity owner. Decision table: P1=C1+C2=>E1; P2=C1+C3=>E2. The
+    // sole activity owner. Decision table: P1=C1+C2=>E1; P2=C1+C3=>E2;
+    // P3=C4=>E3. The
     // adjacent decorator test covers admission and Runtime failures.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
@@ -320,19 +324,28 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
         persisted("protocol-running", false, "idle"),
     )
     .await;
-    let application = Arc::new(application(
+    let entered = Arc::new(tokio::sync::Semaphore::new(0));
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let session_runtime = Arc::new(BlockingSessionRunRuntime {
+        entered: entered.clone(),
+        release: release.clone(),
+        application: std::sync::OnceLock::new(),
+    });
+    let application = Arc::new(application_with_runtime(
+        session_runtime.clone(),
         repository.clone(),
         Arc::new(RecordingEnvironmentSource::default()),
     ));
-    let entered = Arc::new(tokio::sync::Semaphore::new(0));
-    let release = Arc::new(tokio::sync::Semaphore::new(0));
-    let runtime = Arc::new(BlockingProtocolRuntime {
-        entered: entered.clone(),
-        release: release.clone(),
-    });
-    let protocol = AdmittedRunApplication::new(
-        runtime,
-        application,
+    assert!(
+        session_runtime
+            .application
+            .set(Arc::downgrade(&application))
+            .is_ok(),
+        "install test settlement observer"
+    );
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        application.clone(),
         |_| "workspace".into(),
         |_| Some("agent".into()),
     );
@@ -340,9 +353,14 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
     let drive = tokio::spawn(async move {
         awaken_session_contract::RunApplication::run(
             &protocol,
+            "protocol-operation",
             "protocol-running",
             None,
-            Vec::new(),
+            vec![awaken_agent_contract::agent::message::Message::text(
+                awaken_agent_contract::agent::message::Id("protocol-input".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "hello",
+            )],
         )
         .await
     });
@@ -372,60 +390,27 @@ async fn public_protocol_run_projects_durable_running_until_runtime_settles() {
         SessionExecutionState::Idle,
         "P2/E2"
     );
-}
 
-#[tokio::test]
-async fn managed_event_recovers_a_cold_worker_dispatch_projection_before_runtime() {
-    // Cause/effect graph: C1 a Managed `/events` command enters the Session
-    // application directly; C2 the Coordinator has restarted and therefore has
-    // no process-local Runtime projection; C3 the frozen placement is Worker;
-    // C4 the Cloud Environment needs no self-hosted WorkQueue item. Effects:
-    // E1 canonical Run admission installs the exact frozen projection; E2 only
-    // then may the activity epoch advance and Runtime execute; E3 this isolated
-    // adapter test preserves Worker-owned Preparing (the real Worker owns its
-    // realization acknowledgement) without inventing Environment work.
-    //
-    // | Rule | Managed event | Cold projection | Placement | Environment | Effect |
-    // |---|---|---|---|---|---|
-    // | E1 | yes | yes | Worker | Cloud | prepare -> run -> Preparing; no WorkQueue item |
-    // | E2 | ordinary protocol | any | any | any | owned by AdmittedRunApplication |
-    let repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("session repository"),
+    let foreign = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        application,
+        |_| "foreign-workspace".into(),
+        |_| Some("agent".into()),
     );
-    let environments = Arc::new(RecordingEnvironmentSource::default());
-    let runtime = Arc::new(ColdEventRuntime::default());
-    let mut session = persisted("cold-managed-event", false, "preparing");
-    let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
-    else {
-        unreachable!("fixture is frozen")
-    };
-    baseline.runtime_placement = SessionRuntimePlacement::Worker;
-    create(repo.as_ref(), session).await;
-    let application = application_with_runtime(runtime.clone(), repo.clone(), environments.clone());
-
-    let outcome = application
-        .run_session_message(
-            "agent",
-            "cold-managed-event",
-            vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                "continue after restart",
-            )],
+    assert!(
+        awaken_session_contract::RunApplication::run(
+            &foreign,
+            "protocol-operation",
+            "protocol-running",
             None,
-            Arc::new(DiscardProgress),
+            vec![awaken_agent_contract::agent::message::Message::text(
+                awaken_agent_contract::agent::message::Id("protocol-input".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "hello",
+            )],
         )
         .await
-        .expect("E1/E2 cold Managed event is admitted before Runtime");
-
-    assert!(
-        runtime.prepared.load(std::sync::atomic::Ordering::SeqCst),
-        "E1 frozen projection installed"
+        .is_err(),
+        "P3/E3 a receipt never bypasses owner authorization"
     );
-    assert_eq!(
-        outcome.session.execution,
-        SessionExecutionState::Preparing,
-        "E3"
-    );
-    assert_eq!(outcome.session.activity_epoch, 1, "E2");
-    assert!(environments.dispatched.lock().unwrap().is_empty(), "E3");
 }

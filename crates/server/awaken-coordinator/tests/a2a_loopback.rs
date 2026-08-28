@@ -32,6 +32,33 @@ use axum::routing::get;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
+const COMPOSED_ASYNC_TEST_STACK_BYTES: usize = 32 * 1024 * 1024;
+
+fn run_composed_async_test<F, Fut>(case: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + 'static,
+{
+    // The in-process A2A fixture composes parent Runtime, transport, remote
+    // Router, and child Runtime on one process stack. Production crosses a
+    // socket; this dedicated test executor preserves that scheduling boundary
+    // while giving the deliberately composed future a bounded explicit stack.
+    let test = std::thread::Builder::new()
+        .name("a2a-loopback-composed-test".into())
+        .stack_size(COMPOSED_ASYNC_TEST_STACK_BYTES)
+        .spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("composed A2A test runtime")
+                .block_on(case());
+        })
+        .expect("spawn composed A2A test thread");
+    if let Err(panic) = test.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 struct RouterTransport {
     app: Router,
 }
@@ -293,32 +320,37 @@ fn published_delegating_host(
         .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(Some(materializer)))
 }
 
-#[tokio::test]
-async fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
+#[test]
+fn delegated_remote_uses_the_published_child_run_and_attempt_executor() {
     // Causes:
     // C1 parent publication permits researcher and freezes AgentDelegation; C2
     // researcher publication pins a2a:*; C3 one remote attempt executor is
-    // installed; C4 the local native fixture has no/one ToolResult.
-    // Effects: E1 agent_run creates the stable child Run; E2 exact backend routing sends
-    // message:send through A2A; E3 child and parent commit ordinary results; E4
-    // C4=no result emits exactly agent_run, while C4=result reports delegate said.
+    // installed; C4 the remote protocol has no pre-existing Session but carries
+    // the router's authenticated local owner; C5 the local native fixture has
+    // no/one ToolResult. Effects: E1 agent_run creates the stable child Run; E2
+    // exact backend routing sends message:send through A2A; E3 C4 creates the
+    // default Session under that one owner before admission; E4 child and parent
+    // commit ordinary results; E5 C5=no result emits exactly agent_run, while
+    // C5=result reports delegate said.
     //
     // Constraints/invariants: RunDelegations and the parent transcript are the
     // committed relationship/report authorities; A2A owns only its wire projection.
-    // Decision rule U1: C1+C2+C3+C4(no result) => E1+E2+E4(call); U2: the
-    // resulting ToolResult => E3+E4(report). Missing C1 is covered by the
+    // Decision rule U1: C1+C2+C3+C4+C5(no result) => E1+E2+E3+E5;
+    // U2=the resulting ToolResult=>E4+E5(report). Missing C1 is covered by the
     // resolved-tool and target gates; missing C2/C3 is covered by fail-closed
     // resolver tests in awaken-runtime-host.
-    let transport = Arc::new(RouterTransport {
-        app: build_router(Arc::new(EchoModel), "remote"),
+    run_composed_async_test(|| async {
+        let transport = Arc::new(RouterTransport {
+            app: build_router(Arc::new(EchoModel), "remote"),
+        });
+        let host = delegating_host(transport);
+
+        host.run(None, "thread", vec![user("research the answer")])
+            .await
+            .expect("delegated A2A child settles through the ordinary Run path");
+
+        assert_committed_child_report(&host, "thread").await;
     });
-    let host = delegating_host(transport);
-
-    host.run(None, "thread", vec![user("research the answer")])
-        .await
-        .expect("delegated A2A child settles through the ordinary Run path");
-
-    assert_committed_child_report(&host, "thread").await;
 }
 
 async fn require_remote_bearer(
@@ -336,8 +368,8 @@ async fn require_remote_bearer(
     next.run(request).await
 }
 
-#[tokio::test]
-async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
+#[test]
+fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // Causes:
     // C1 the published remote child pins a card fingerprint and one exact
     // origin-tagged credential revision; C2 the card requires Bearer auth; C3
@@ -354,87 +386,89 @@ async fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // authenticated ToolResult => E3+E4(report). Missing credential and card
     // fingerprint drift are the fail-closed rules in `a2a_remote` and
     // `PinnedA2aTransportResolver`; anonymous U1/U2 are covered above.
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind authenticated A2A peer");
-    let endpoint = format!("http://{}", listener.local_addr().expect("peer address"));
-    let mut card = awaken_protocol_a2a::agent_card("remote");
-    card.url = format!("{endpoint}/v1/a2a");
-    card.security_schemes.insert(
-        "bearer".into(),
-        serde_json::from_value(serde_json::json!({
-            "type": "http",
-            "scheme": "Bearer"
-        }))
-        .expect("valid HTTP Bearer security scheme"),
-    );
-    card.security = serde_json::from_value(serde_json::json!([{"bearer": []}]))
-        .expect("valid security requirement");
-    let security_fingerprint =
-        awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
-            .map(|fingerprint| format!("sha256:{fingerprint}"))
-            .expect("fingerprint card security");
-    let card_router = Router::new().route(
-        awaken_protocol_a2a::client::AGENT_CARD_PATH,
-        get({
-            let card = card.clone();
-            move || {
-                let card = card.clone();
-                async move { axum::Json(card) }
-            }
-        }),
-    );
-    let authenticated_peer = build_router(Arc::new(EchoModel), "remote")
-        .layer(axum::middleware::from_fn(require_remote_bearer));
-    let peer = card_router.fallback_service(authenticated_peer);
-    let peer_task = tokio::spawn(async move {
-        axum::serve(listener, peer)
+    run_composed_async_test(|| async {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("serve authenticated A2A peer");
+            .expect("bind authenticated A2A peer");
+        let endpoint = format!("http://{}", listener.local_addr().expect("peer address"));
+        let mut card = awaken_protocol_a2a::agent_card("remote");
+        card.url = format!("{endpoint}/v1/a2a");
+        card.security_schemes.insert(
+            "bearer".into(),
+            serde_json::from_value(serde_json::json!({
+                "type": "http",
+                "scheme": "Bearer"
+            }))
+            .expect("valid HTTP Bearer security scheme"),
+        );
+        card.security = serde_json::from_value(serde_json::json!([{"bearer": []}]))
+            .expect("valid security requirement");
+        let security_fingerprint =
+            awaken_runtime_contract::content_fingerprint(&(&card.security_schemes, &card.security))
+                .map(|fingerprint| format!("sha256:{fingerprint}"))
+                .expect("fingerprint card security");
+        let card_router = Router::new().route(
+            awaken_protocol_a2a::client::AGENT_CARD_PATH,
+            get({
+                let card = card.clone();
+                move || {
+                    let card = card.clone();
+                    async move { axum::Json(card) }
+                }
+            }),
+        );
+        let authenticated_peer = build_router(Arc::new(EchoModel), "remote")
+            .layer(axum::middleware::from_fn(require_remote_bearer));
+        let peer = card_router.fallback_service(authenticated_peer);
+        let peer_task = tokio::spawn(async move {
+            axum::serve(listener, peer)
+                .await
+                .expect("serve authenticated A2A peer");
+        });
+
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let entered = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "default".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some(endpoint.clone()),
+                env_key: None,
+                secret: Some(RedactedString::new("remote-secret")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .expect("enter origin credential");
+        let access = CredentialAccess::new(
+            CredentialRef {
+                id: entered.id.0,
+                revision: u64::try_from(entered.version).expect("positive credential revision"),
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            CredentialExecutionPolicy::self_hosted_provider(),
+        );
+        let host = published_delegating_host(
+            &endpoint,
+            access,
+            security_fingerprint,
+            awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
+        );
+
+        host.run(
+            None,
+            "authenticated-thread",
+            vec![user("research securely")],
+        )
+        .await
+        .expect("origin credential authenticates the delegated A2A child");
+        assert_committed_child_report(&host, "authenticated-thread").await;
+        peer_task.abort();
     });
-
-    let credentials = Arc::new(InMemoryCredentialRepo::new());
-    let secrets = Arc::new(InMemorySecretStore::new());
-    let entered = enter_credential(
-        CredentialCreateParams {
-            workspace_id: "default".into(),
-            kind: CredentialKind::Vault,
-            provider_id: Some(endpoint.clone()),
-            env_key: None,
-            secret: Some(RedactedString::new("remote-secret")),
-            oauth_command: None,
-        },
-        secrets.as_ref(),
-        credentials.as_ref(),
-    )
-    .await
-    .expect("enter origin credential");
-    let access = CredentialAccess::new(
-        CredentialRef {
-            id: entered.id.0,
-            revision: u64::try_from(entered.version).expect("positive credential revision"),
-        },
-        CredentialMaterialSource::ControlPlaneReference,
-        CredentialUsage::HttpHeader {
-            name: "authorization".into(),
-            scheme: Some("Bearer".into()),
-        },
-        CredentialExecutionPolicy::self_hosted_provider(),
-    );
-    let host = published_delegating_host(
-        &endpoint,
-        access,
-        security_fingerprint,
-        awaken_credential_materializer::PinnedCredentialMaterializer::new(credentials, secrets),
-    );
-
-    host.run(
-        None,
-        "authenticated-thread",
-        vec![user("research securely")],
-    )
-    .await
-    .expect("origin credential authenticates the delegated A2A child");
-    assert_committed_child_report(&host, "authenticated-thread").await;
-    peer_task.abort();
 }

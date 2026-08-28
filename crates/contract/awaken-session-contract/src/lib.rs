@@ -23,6 +23,7 @@ mod mcp_probe;
 mod model_resolution;
 mod resource;
 mod resource_activation;
+mod run_admission;
 mod run_application;
 mod session;
 mod session_realization;
@@ -108,10 +109,9 @@ pub use event_batches::{
     SessionEventBatchOperation, SessionEventCommand, SessionEventEntry, SessionEventInput,
     SessionEventInterrupt, SessionEventProjectionAnchor, SessionEventToolReply,
     SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric,
-    SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
-    SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput,
-    decode_session_event_batch_operation, session_event_batch_id, session_event_batch_operation,
-    session_event_outcome_id, session_event_user_run_id, session_outcome_convenience_id,
+    SessionUserRunCommand, SessionUserRunSystemInput, decode_session_event_batch_operation,
+    session_event_batch_id, session_event_batch_operation, session_event_outcome_id,
+    session_event_user_run_id, session_outcome_convenience_id,
 };
 pub use lifecycle::{
     CompositeLifecycleFactDelivery, LifecycleFactDelivery, LifecycleFactNotifier,
@@ -139,6 +139,10 @@ pub use resource::{
 pub use resource_activation::{
     ActivationState, ResourceActivationError, SessionResourceActivation, SessionResourceReferences,
     SessionResourceState,
+};
+pub use run_admission::{
+    AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
+    SessionRunReservation, session_run_id,
 };
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,
