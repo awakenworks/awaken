@@ -15,7 +15,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
-import { extractResponseContractsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-response-contracts.mjs';
+import {
+  auditRequestTypesFromPackageRoot,
+  extractResponseContractsFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { managedExportFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
@@ -70,6 +73,17 @@ const qualification = qualifyOfficialSdkCandidateDelta(
   candidateDelta,
   qualificationCatalog.qualifications,
 );
+const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
+auditRequestTypesFromPackageRoot(
+  packageRoot,
+  scope,
+  operations.map(({ id }) => id),
+);
+const responseContracts = extractResponseContractsFromPackageRoot(
+  packageRoot,
+  scope,
+  operations.map(({ id }) => id),
+);
 const completedBehaviorOwners = new Set();
 const completeBehaviorOwner = (owner) => completedBehaviorOwners.add(owner);
 
@@ -87,18 +101,12 @@ const {
   betaAgentToolset20260401,
   setupSkills,
 } = agentToolset;
-const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 const managedExports = managedExportFingerprintFromPackageRoot(packageRoot, scope);
 const hasResolveSkillVersion = managedExports.exports.some(
   ({ id }) => id === 'tools/agent-toolset/node.mjs#resolveSkillVersion',
 );
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
-const responseContracts = extractResponseContractsFromPackageRoot(
-  packageRoot,
-  scope,
-  operations.map(({ id }) => id),
-);
 const candidateResourceOperations = operations
   .filter(({ id }) => id.startsWith('beta.files.') || id.startsWith('beta.skills.'))
   .map((operation) => Object.freeze({

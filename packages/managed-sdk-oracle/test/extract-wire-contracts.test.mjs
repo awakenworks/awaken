@@ -6,7 +6,10 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { extractOperations } from '../src/extract-operations.mjs';
-import { extractResponseContractsFromPackageRoot } from '../src/extract-response-contracts.mjs';
+import {
+  auditRequestTypesFromPackageRoot,
+  extractResponseContractsFromPackageRoot,
+} from '../src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../src/package-source.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -24,6 +27,41 @@ function contractsFor(module) {
     ),
   };
 }
+
+function requestBoundariesFor(module) {
+  const operations = extractOperations(module, scope).operations;
+  return auditRequestTypesFromPackageRoot(
+    resolveSdkPackage(module).root,
+    scope,
+    operations.map(({ id }) => id),
+  );
+}
+
+test('every supported and candidate request type has only intent-named open JSON', () => {
+  // Cause/effect graph: C1 every generated HTTP operation contributes all of
+  // its non-transport TypeScript parameters; C2 the TypeChecker follows their
+  // complete property/union/index closure; C3 multipart Uploadable remains a
+  // named transport boundary. Effects: E1 only custom-tool `input_schema` may
+  // contain open JSON, E2 every other any/unknown or unconstrained object fails
+  // before the wire exemplar or server can provide evidence, and E3 renaming a
+  // body parameter to `options` cannot evade the audit. Historical 0.105 lacks
+  // the inline Session-create tool branch, hence six instead of eight named
+  // index positions; all later anchors and the candidate own exactly eight.
+  const expectedCounts = new Map([
+    ['@anthropic-ai/sdk-oldest', 6],
+    ['@anthropic-ai/sdk-user-profiles-legacy', 8],
+    ['@anthropic-ai/sdk-current', 8],
+    ['@anthropic-ai/sdk-candidate', 8],
+  ]);
+  for (const [module, expectedCount] of expectedCounts) {
+    const boundaries = requestBoundariesFor(module);
+    assert.equal(boundaries.length, expectedCount, module);
+    assert.deepEqual(new Set(boundaries.map(({ purpose }) => purpose)), new Set(['json-schema']));
+    for (const boundary of boundaries) {
+      assert.ok(boundary.path.includes('input_schema'), `${module}: ${boundary.path.join('.')}`);
+    }
+  }
+});
 
 test('every supported and candidate SDK operation owns one declaration-derived response contract', () => {
   // Cause/effect graph: C1 each exact npm anchor supplies generated JS routes;
@@ -151,7 +189,7 @@ test('only intent-named open JSON and finite response types can produce behavior
 
     fs.writeFileSync(declaration, [
       'interface APIPromise<T> extends Promise<T> {}',
-      'export declare class Files {',
+      'export declare class Agents {',
       '  retrieve(): APIPromise<{ payload: unknown }>;',
       '}',
     ].join('\n'));
@@ -165,6 +203,63 @@ test('only intent-named open JSON and finite response types can produce behavior
       '}',
     ].join('\n'));
     assert.throws(extract, /recursive type.*next/u, 'C2/E1');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('request audit fails closed before a type escape can reach transport evidence', () => {
+  // Decision table: a named JSON-Schema index is the sole open request cell and
+  // is admitted; an arbitrary unknown field, `{}`/object escape, or a payload
+  // disguised with the transport parameter name `options` is rejected. This is
+  // a generator-boundary test: no hand-authored request exemplar can mask an
+  // unsafe future declaration because extraction runs over the official graph.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-request-audit-'));
+  try {
+    fs.mkdirSync(path.join(root, 'resources/beta'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: '@anthropic-ai/sdk', version: '0.0.0-test' }),
+    );
+    fs.writeFileSync(path.join(root, 'resources/beta/agents.js'), 'export class Agents {}\n');
+    const declaration = path.join(root, 'resources/beta/agents.d.ts');
+    const audit = () => auditRequestTypesFromPackageRoot(
+      root,
+      { beta_resource_roots: ['agents'], ga_resource_roots: [] },
+      ['beta.agents.create'],
+    );
+    const writeMethod = (parameter) => fs.writeFileSync(declaration, [
+      'interface APIPromise<T> extends Promise<T> {}',
+      'interface RequestOptions { headers?: Record<string, string> }',
+      'type Uploadable = Uint8Array;',
+      'export declare class Files {',
+      `  create(${parameter}): APIPromise<{ id: string }>;`,
+      '}',
+    ].join('\n'));
+
+    writeMethod('params: { tools: Array<{ input_schema: { [key: string]: unknown } }> }');
+    assert.deepEqual(audit(), [{
+      operation: 'beta.agents.create',
+      path: ['params', 'tools', '[]', 'input_schema', '*'],
+      purpose: 'json-schema',
+    }], 'named open JSON is admitted');
+
+    writeMethod('params: { file: Uploadable }');
+    assert.deepEqual(audit(), [], 'exact multipart upload is a distinct transport boundary');
+    writeMethod('params: { file: Uploadable | { payload: unknown } }');
+    assert.throws(audit, /unreviewed open JSON.*payload/u, 'multipart cannot hide open JSON');
+
+    writeMethod('options?: RequestOptions');
+    assert.deepEqual(audit(), [], 'exact SDK transport options are outside the wire body');
+    writeMethod('options: RequestOptions | unknown');
+    assert.throws(audit, /unreviewed open JSON.*options/u, 'transport options cannot hide open JSON');
+
+    writeMethod('params: { payload: unknown }');
+    assert.throws(audit, /unreviewed open JSON.*payload/u, 'unknown fails closed');
+    writeMethod('params: { payload: object }');
+    assert.throws(audit, /unconstrained object.*payload/u, 'object escape fails closed');
+    writeMethod('options: unknown');
+    assert.throws(audit, /unreviewed open JSON.*options/u, 'parameter spelling cannot evade audit');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

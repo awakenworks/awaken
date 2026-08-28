@@ -79,9 +79,14 @@ evidence from drifting from the external expectation:
   observe a non-empty item at least once. The only open JSON response positions
   are named `json-schema` and `tool-input` contracts from the official protocol;
   an `any`/`unknown` anywhere else, or an unchecked recursive response type,
-  fails extraction before behavior evidence can be admitted. A method present
-  only in source text, an empty page, or a same-primitive wrong discriminator
-  cannot satisfy qualification.
+  fails extraction before behavior evidence can be admitted. The same
+  TypeChecker walks the complete non-transport request parameter closure for
+  every anchor and candidate. It admits open request JSON only beneath a custom
+  tool's named `input_schema`, treats `Uploadable` as the distinct multipart
+  transport boundary, and rejects arbitrary `any`/`unknown`, unconstrained
+  objects, or payloads disguised as transport `options`. A method present only
+  in source text, an empty page, or a same-primitive wrong discriminator cannot
+  satisfy qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation

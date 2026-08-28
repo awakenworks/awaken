@@ -22,7 +22,10 @@ import {
   cargoScenarioHostBundle,
 } from '../cargo_binary.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
-import { extractResponseContractsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-response-contracts.mjs';
+import {
+  auditRequestTypesFromPackageRoot,
+  extractResponseContractsFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import { officialBetaResourceProjection } from '../../packages/managed-sdk-oracle/src/conformance/resource-projection.mjs';
 import { managedTsMethodManifestForOperations } from './managed_ts_sdk_method_manifest.mjs';
@@ -93,6 +96,11 @@ assert.equal(
   'selected operation source must belong to the selected SDK manifest',
 );
 const selectedOperations = extractedOperations.operations;
+auditRequestTypesFromPackageRoot(
+  sdkRoot,
+  scope,
+  selectedOperations.map(({ id }) => id),
+);
 const responseContracts = extractResponseContractsFromPackageRoot(
   sdkRoot,
   scope,
