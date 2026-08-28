@@ -16,6 +16,10 @@ const candidateQualifications = JSON.parse(readFileSync(resolve(
   REPO,
   'e2e/conformance/official_sdk_candidate_qualifications.json',
 ), 'utf8'));
+const pythonRuntime = [
+  readFileSync(resolve(REPO, 'e2e/conformance/managed_python_sdk_runtime_e2e.py'), 'utf8'),
+  readFileSync(resolve(REPO, 'e2e/conformance/managed_python_sdk_helpers_e2e.py'), 'utf8'),
+].join('\n');
 
 function camelCase(segment) {
   return segment.replace(/_([a-z])/gu, (_, letter) => letter.toUpperCase());
@@ -93,6 +97,67 @@ test('Python 1.2 beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta
     .sort();
   assert.deepEqual(differences.sort(), reviewed);
   assert.equal(differences.length, 14);
+});
+
+test('every handwritten Python Managed helper is oracle-visible and runtime-owned', () => {
+  // Helper coverage graph: C1=AST extraction separates handwritten helpers
+  // from generated HTTP operations/subresource properties; C2=the current
+  // wheel exposes five helpers; C3=one real-runtime driver names each public
+  // entrypoint. Effects: E1=helper addition/removal changes the wheel-bound
+  // oracle; E2=no helper can sit outside executable coverage. Decision table:
+  // C1+C2+C3=>E1+E2; missing identity, duplicate, stale fingerprint, or absent
+  // runtime owner=>reject.
+  const expected = [
+    'beta.environments.work.poller',
+    'beta.environments.work.worker',
+    'beta.sessions.events.tool_runner',
+    'beta.webhooks.parse_unverified',
+    'beta.webhooks.unwrap',
+  ];
+  assert.deepEqual(python.current.helpers, expected);
+  assert.match(python.current.helper_fingerprint, /^[0-9a-f]{64}$/u);
+  for (const helper of expected) {
+    const method = helper.split('.').at(-1);
+    assert.match(pythonRuntime, new RegExp(`\\.${method}\\(`, 'u'), `${helper}: runtime owner`);
+  }
+  for (const anchor of python.anchors) {
+    assert.equal(anchor.helper_count, anchor.helpers.length, `${anchor.version}: helper count`);
+    assert.match(anchor.helper_fingerprint, /^[0-9a-f]{64}$/u, `${anchor.version}: helper fingerprint`);
+    assert.equal(
+      anchor.library_export_count,
+      anchor.library_exports.length,
+      `${anchor.version}: library export count`,
+    );
+    assert.match(
+      anchor.library_export_fingerprint,
+      /^[0-9a-f]{64}$/u,
+      `${anchor.version}: library export fingerprint`,
+    );
+  }
+});
+
+test('Python handwritten Managed library modules have one exact import surface', () => {
+  // Import-surface graph: C1=three reviewed handwritten modules are in scope;
+  // C2=their explicit __all__ declarations are extracted from the exact wheel;
+  // C3=the isolated runtime driver imports the generated identities. Effects:
+  // E1=29 current symbols remain visible without hand-maintained stubs; E2=a
+  // module removal/addition or moved symbol requires explicit oracle review.
+  // Constants/types receive import coverage here; executable owners remain the
+  // accumulator/toolset/poller/runner/worker causal scenarios.
+  const groups = new Map();
+  for (const identity of python.current.library_exports) {
+    const module = identity.split('.').slice(0, -1).join('.');
+    groups.set(module, [...(groups.get(module) ?? []), identity]);
+  }
+  assert.deepEqual([...groups.keys()].sort(), [
+    'anthropic.lib.environments',
+    'anthropic.lib.sessions',
+    'anthropic.lib.tools.agent_toolset',
+  ]);
+  assert.deepEqual([...groups.values()].map(({ length }) => length).sort((a, b) => a - b), [2, 11, 16]);
+  assert.equal(python.current.library_exports.length, 29);
+  assert.match(python.current.library_export_fingerprint, /^[0-9a-f]{64}$/u);
+  assert.match(pythonRuntime, /\["current"\]\["library_exports"\]/u);
 });
 
 test('Python anchors are monotonic reviewed change points with one exact wheel each', () => {

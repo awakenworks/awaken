@@ -15,8 +15,9 @@ else is derived evidence:
   fingerprints;
 - `contracts/anthropic-managed/python-upstream-oracle.generated.json` binds
   every selected Python change point to its exact PyPI wheel SHA-256, normalized
-  operation inventory, and scoped source fingerprint. The current Python oracle
-  must retain the reviewed operation identity relationship to TypeScript;
+  operation inventory, handwritten resource helpers, explicit Managed library
+  exports, and scoped source fingerprint. The current Python oracle must retain
+  the reviewed operation identity relationship to TypeScript;
 - `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
   the wire schemas generated from the Rust implementation and is compared to
   that oracle rather than treated as a competing protocol definition;
@@ -65,12 +66,22 @@ evidence from drifting from the external expectation:
   locked Python client closure in an isolated virtual environment and drives a
   real Awaken process. It owns Python-specific sync/async calls, cursor and SSE
   decoding, typed errors, multipart encoding, beta/GA resource handoff, and the
-  standard-webhooks adapter. Before that real-process slice, a recording
+  standard-webhooks adapter. The companion helper driver executes the official
+  poller, SessionToolRunner, EnvironmentWorker, accumulator, and Agent Toolset;
+  a two-process scenario recovers Session/Event, Memory, File, and Skill facts
+  from one durable deployment. Before those real-process slices, a recording
   transport invokes all 127 Python methods through `with_raw_response` and
   requires their exact generated verb, normalized route, query selector, and
   beta-header set; a new required parameter fails closed until its fixture is
   reviewed. The existing shared behavior owners continue to own service-domain
   semantics, so this client sweep does not copy their resource state machines.
+- `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
+  change point in its own SHA-256-qualified wheel root over one exact dependency
+  closure. It re-extracts and compares the installed source/operation/helper/
+  export fingerprints, constructs every operation, and runs live Session and
+  Memory lifecycles. The last Beta-only and first GA Files/Skills releases own
+  the two additional projection-cutover cells; the current 1.2 behavior remains
+  owned by the deeper runtime/recovery driver instead of being run twice.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
 `config/python-anchors.json` selects behavior-changing Python releases from the

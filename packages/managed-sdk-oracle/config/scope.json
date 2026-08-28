@@ -28,6 +28,11 @@
     "lib/sessions/accumulate.mjs",
     "tools/agent-toolset/node.mjs"
   ],
+  "python_managed_library_modules": [
+    "anthropic.lib.environments",
+    "anthropic.lib.sessions",
+    "anthropic.lib.tools.agent_toolset"
+  ],
   "documented_routes": [
     {
       "id": "documented.skills.versions.retrieveFile",

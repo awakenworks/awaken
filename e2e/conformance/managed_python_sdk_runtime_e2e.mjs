@@ -1,13 +1,30 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
-import { withScenarioServer } from '../harness.mjs';
+import {
+  availablePort,
+  deploymentEnv,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
+  waitForPort,
+  withScenarioServer,
+  withServer,
+} from '../harness.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const LOCK = resolve(REPO, 'packages/managed-sdk-oracle/python/requirements.lock');
+const MATRIX_LOCK = resolve(
+  REPO,
+  'packages/managed-sdk-oracle/python/runtime-matrix-requirements.lock',
+);
+const ORACLE = resolve(REPO, 'contracts/anthropic-managed/python-upstream-oracle.generated.json');
 const DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_runtime_e2e.py');
+const HELPER_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_helpers_e2e.py');
+const MATRIX_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_matrix_e2e.py');
 const PORT = Number(process.env.E2E_PORT ?? 38199);
 
 function commandSucceeds(command, args) {
@@ -37,18 +54,62 @@ function provisionPython(directory) {
       LOCK,
     ], { stdio: 'inherit' });
     if (install.status !== 0) throw new Error(`failed to install Python SDK closure with ${candidate}`);
-    return python;
+    return { python, pip };
   }
   throw new Error('Python Managed SDK E2E requires Python >=3.10 with the venv module');
 }
 
-function runDriver(python, baseURL) {
+function provisionHistoricalSdks(pip, directory, anchors) {
+  const closure = spawnSync(pip, [
+    'install',
+    '--disable-pip-version-check',
+    '--no-input',
+    '--requirement',
+    MATRIX_LOCK,
+  ], { encoding: 'utf8' });
+  if (closure.status !== 0) {
+    throw new Error(`failed to install Python history closure:\n${closure.stdout}\n${closure.stderr}`);
+  }
+  const roots = new Map();
+  for (const anchor of anchors) {
+    const target = resolve(directory, 'versions', anchor.version);
+    const requirement = resolve(directory, `anthropic-${anchor.version}.txt`);
+    mkdirSync(target, { recursive: true });
+    writeFileSync(
+      requirement,
+      `anthropic==${anchor.version} --hash=sha256:${anchor.wheel.sha256}\n`,
+    );
+    const installed = spawnSync(pip, [
+      'install',
+      '--disable-pip-version-check',
+      '--no-input',
+      '--only-binary=:all:',
+      '--no-deps',
+      '--require-hashes',
+      '--target',
+      target,
+      '--requirement',
+      requirement,
+    ], { encoding: 'utf8' });
+    if (installed.status !== 0) {
+      throw new Error(
+        `failed to install anthropic ${anchor.version}:\n${installed.stdout}\n${installed.stderr}`,
+      );
+    }
+    roots.set(anchor.version, target);
+  }
+  return roots;
+}
+
+function runDriver(python, driver, baseURL, { args = [], extraEnv = {} } = {}) {
   return new Promise((resolveDriver, rejectDriver) => {
-    const child = spawn(python, [DRIVER], {
+    const child = spawn(python, [driver, ...args], {
       env: {
         ...process.env,
         AWAKEN_MANAGED_BASE_URL: baseURL,
         AWAKEN_PYTHON_REQUIREMENTS_LOCK: LOCK,
+        AWAKEN_PYTHON_ORACLE: ORACLE,
+        ...extraEnv,
       },
       stdio: 'inherit',
     });
@@ -61,22 +122,82 @@ function runDriver(python, baseURL) {
   });
 }
 
+async function exerciseRecovery(python, temporary) {
+  // Cross-process cause/effect graph: Node owns only topology and shutdown;
+  // the exact Python wheel owns all API encoding/decoding in both phases. One
+  // upstream survives A->B while the same durable directory is reopened.
+  // Effects: the state JSON carries ids only, graceful shutdown flushes facts,
+  // and a fresh client/process must prove Session/Event/Memory/File/Skill
+  // recovery. Any child, bind, shutdown, or verification failure rejects.
+  const storage = resolve(temporary, 'recovery-storage');
+  const state = resolve(temporary, 'recovery-state.json');
+  mkdirSync(storage, { recursive: true });
+  const port = await availablePort(PORT + 2);
+  const upstream = await startUpstream('echo');
+  const environment = {
+    ...deploymentEnv(storage, { identityMode: 'no-login' }),
+    ...realServerEnv('echo', upstream, { mode: 'management' }),
+  };
+  let running;
+  try {
+    const first = spawnServer('management', port, environment);
+    running = first.server;
+    await waitForPort(port, 900_000, running);
+    await runDriver(python, DRIVER, first.baseUrl, { args: ['prepare-recovery', state] });
+    await stopServer(running);
+    running = undefined;
+
+    const second = spawnServer('management', port, environment);
+    running = second.server;
+    await waitForPort(port, 900_000, running);
+    await runDriver(python, DRIVER, second.baseUrl, { args: ['verify-recovery', state] });
+  } finally {
+    if (running) await stopServer(running);
+    upstream.close();
+  }
+}
+
+async function exerciseHistoricalMatrix(python, pip, temporary) {
+  // Version-axis graph: all configured historical rows are reviewed change
+  // points, never arbitrary patches. Each target installation is constrained
+  // by the generated official wheel SHA; one shared exact dependency closure
+  // avoids ambient packages. The Python driver then re-extracts source evidence
+  // and owns every SDK call. One live server is shared because service behavior
+  // is invariant; wheel state is isolated by one subprocess/PYTHONPATH per row.
+  const oracle = JSON.parse(readFileSync(ORACLE, 'utf8'));
+  const anchors = oracle.anchors.filter(({ role }) => role !== 'current_oracle');
+  const roots = provisionHistoricalSdks(pip, temporary, anchors);
+  await withScenarioServer('management', 'echo', PORT + 3, async (baseURL) => {
+    for (const anchor of anchors) {
+      await runDriver(python, MATRIX_DRIVER, baseURL, {
+        args: [anchor.version, baseURL],
+        extraEnv: { PYTHONPATH: roots.get(anchor.version) },
+      });
+    }
+  });
+}
+
 // Multi-language runtime cause/effect graph:
 // C1 the reviewed lock provisions one isolated official Python client closure;
 // C2 the real Awaken process speaks to a real fake-provider socket; C3 the
-// Python driver crosses sync/async, beta/GA, paging, SSE, errors and multipart
-// boundaries. Effects: E1 no globally installed package can impersonate the
-// oracle; E2 client encoding and decoding are exercised end to end; E3 install,
-// child, signal, or protocol failure fails the release gate. Decision table:
-// C1+C2+C3=>E1+E2; missing venv/install/nonzero/signal=>E3. The service-domain
-// semantics remain owned by the shared TypeScript behavior owners; this driver
-// owns only Python-specific transport and decoder behavior.
+// core driver crosses sync/async, beta/GA, paging, SSE, errors and multipart
+// boundaries; C4 the helper driver crosses the official poller, SessionToolRunner,
+// EnvironmentWorker and local Agent Toolset against their owning topology.
+// Effects: E1 no globally installed package can impersonate the oracle; E2
+// client encoding/decoding and handwritten helper composition are end-to-end;
+// E3 install, child, signal, or protocol failure fails the release gate.
+// Decision table: C1+C2+C3+C4=>E1+E2; missing venv/install/nonzero/signal=>E3.
 const temporary = mkdtempSync(resolve(tmpdir(), 'awaken-python-managed-sdk-'));
 try {
-  const python = provisionPython(temporary);
+  const { python, pip } = provisionPython(temporary);
   await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
-    await runDriver(python, baseURL);
+    await runDriver(python, DRIVER, baseURL);
   });
+  await withServer('worker', PORT + 1, async (baseURL) => {
+    await runDriver(python, HELPER_DRIVER, baseURL);
+  });
+  await exerciseRecovery(python, temporary);
+  await exerciseHistoricalMatrix(python, pip, temporary);
   const pinned = readFileSync(LOCK, 'utf8').match(/^anthropic==(\S+)$/mu)?.[1];
   console.log(`E2E PASS: official Python Managed SDK ${pinned} runtime compatibility.`);
 } finally {

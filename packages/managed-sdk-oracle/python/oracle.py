@@ -134,6 +134,99 @@ def is_sync_resource(node: ast.ClassDef) -> bool:
     return any(isinstance(base, ast.Name) and base.id == "SyncAPIResource" for base in node.bases)
 
 
+def is_async_resource(node: ast.ClassDef) -> bool:
+    return any(isinstance(base, ast.Name) and base.id == "AsyncAPIResource" for base in node.bases)
+
+
+def decorator_name(node: ast.AST) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    if isinstance(node, ast.Call):
+        return decorator_name(node.func)
+    return None
+
+
+def helper_methods_in_file(resource_root: Path, filename: Path, prefix: str) -> list[str]:
+    """Extract public async-resource helpers that do not issue one HTTP call.
+
+    Generated sub-resource accessors are cached properties; ordinary generated
+    operations contain one transport call. What remains is the small explicit
+    helper surface (currently poller, worker, and Session tool_runner). Keeping
+    this structural rule in the oracle makes a newly added helper fail closed
+    instead of relying on a reviewer to notice one more handwritten SDK API.
+    """
+    module = ast.parse(filename.read_text(encoding="utf-8"), filename=str(filename))
+    helper_namespace = namespace(resource_root, filename, prefix)
+    if not helper_namespace:
+        return []
+    helpers = set()
+    for resource in (node for node in module.body if isinstance(node, ast.ClassDef) and is_async_resource(node)):
+        for method in (
+            node
+            for node in resource.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ):
+            if method.name.startswith("_"):
+                continue
+            decorators = {name for item in method.decorator_list if (name := decorator_name(item))}
+            if decorators & {"cached_property", "property"}:
+                continue
+            transport_calls = [
+                candidate
+                for candidate in ast.walk(method)
+                if isinstance(candidate, ast.Call)
+                and isinstance(candidate.func, ast.Attribute)
+                and candidate.func.attr in HTTP_CALLS
+            ]
+            if not transport_calls:
+                helpers.add(f"{helper_namespace}.{method.name}")
+    return sorted(helpers)
+
+
+def public_exports_in_file(filename: Path, module_name: str) -> list[str]:
+    """Return the exact explicit public surface of one handwritten module."""
+    module = ast.parse(filename.read_text(encoding="utf-8"), filename=str(filename))
+    assignments = [
+        node
+        for node in module.body
+        if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "__all__" for target in node.targets)
+    ]
+    if len(assignments) != 1:
+        raise AssertionError(f"{module_name}: expected one explicit __all__, got {len(assignments)}")
+    value = assignments[0].value
+    if not isinstance(value, (ast.List, ast.Tuple)):
+        raise AssertionError(f"{module_name}: __all__ must be a literal list or tuple")
+    names = []
+    for item in value.elts:
+        if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            raise AssertionError(f"{module_name}: __all__ contains a dynamic export")
+        names.append(item.value)
+    if len(names) != len(set(names)):
+        raise AssertionError(f"{module_name}: __all__ contains duplicate exports")
+    return sorted(f"{module_name}.{name}" for name in names)
+
+
+def managed_library_exports(root: Path, module_names: Iterable[str]) -> tuple[list[str], list[dict[str, str]]]:
+    exports = []
+    source_hashes = []
+    for module_name in module_names:
+        module_path = root.joinpath(*module_name.split("."))
+        filename = module_path / "__init__.py" if module_path.is_dir() else module_path.with_suffix(".py")
+        if not filename.is_file():
+            continue
+        exports.extend(public_exports_in_file(filename, module_name))
+        source_hashes.append({
+            "path": filename.relative_to(root).as_posix(),
+            "sha256": hashlib.sha256(filename.read_bytes()).hexdigest(),
+        })
+    if len(exports) != len(set(exports)):
+        raise AssertionError("Python Managed library modules expose duplicate identities")
+    return sorted(exports), source_hashes
+
+
 def beta_tokens(node: ast.AST) -> list[str]:
     return sorted({
         child.value
@@ -198,15 +291,23 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         *scoped_files(resources, scope["ga_resource_roots"], ""),
     ]
     by_id: dict[str, dict[str, Any]] = {}
+    helpers: set[str] = set()
     source_hashes = []
     for resource_root, filename, prefix in sorted(files, key=lambda item: str(item[1])):
         relative = filename.relative_to(root).as_posix()
         source_hashes.append({"path": relative, "sha256": hashlib.sha256(filename.read_bytes()).hexdigest()})
+        helpers.update(helper_methods_in_file(resource_root, filename, prefix))
         for operation in operations_in_file(resource_root, filename, prefix):
             previous = by_id.get(operation["id"])
             if previous is not None and previous != operation:
                 raise AssertionError(f"{version}: conflicting operation {operation['id']}")
             by_id[operation["id"]] = operation
+    library_exports, library_source_hashes = managed_library_exports(
+        root,
+        scope["python_managed_library_modules"],
+    )
+    source_hashes.extend(library_source_hashes)
+    source_hashes.sort(key=lambda item: item["path"])
     operations = sorted(by_id.values(), key=lambda operation: operation["id"])
     if not operations:
         raise AssertionError(f"{version}: no Managed operations extracted")
@@ -215,6 +316,10 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         "operation_fingerprint": digest(operations),
         "source_fingerprint": digest(source_hashes),
         "source_file_count": len(source_hashes),
+        "helper_fingerprint": digest(sorted(helpers)),
+        "helpers": sorted(helpers),
+        "library_export_fingerprint": digest(library_exports),
+        "library_exports": library_exports,
         "operations": operations,
     }
 
@@ -233,10 +338,15 @@ def generate() -> dict[str, Any]:
             key: anchor[key]
             for key in (
                 "version", "role", "reason", "wheel", "operation_fingerprint",
-                "source_fingerprint", "source_file_count",
+                "source_fingerprint", "source_file_count", "helper_fingerprint",
+                "library_export_fingerprint",
             )
         } | {
             "operation_count": len(anchor["operations"]),
+            "helper_count": len(anchor["helpers"]),
+            "helpers": anchor["helpers"],
+            "library_export_count": len(anchor["library_exports"]),
+            "library_exports": anchor["library_exports"],
             "only_in_anchor": sorted(ids - current_ids),
             "only_in_current": sorted(current_ids - ids),
         })
@@ -310,6 +420,16 @@ def validate(oracle: dict[str, Any]) -> None:
     operations = oracle["current"]["operations"]
     if digest(operations) != oracle["current"]["operation_fingerprint"]:
         raise AssertionError("current Python operation fingerprint is stale")
+    helpers = oracle["current"].get("helpers")
+    if not isinstance(helpers, list) or helpers != sorted(set(helpers)):
+        raise AssertionError("current Python helpers must be unique and sorted")
+    if digest(helpers) != oracle["current"].get("helper_fingerprint"):
+        raise AssertionError("current Python helper fingerprint is stale")
+    library_exports = oracle["current"].get("library_exports")
+    if not isinstance(library_exports, list) or library_exports != sorted(set(library_exports)):
+        raise AssertionError("current Python library exports must be unique and sorted")
+    if digest(library_exports) != oracle["current"].get("library_export_fingerprint"):
+        raise AssertionError("current Python library export fingerprint is stale")
     ids = [operation["id"] for operation in operations]
     if ids != sorted(set(ids)):
         raise AssertionError("current Python operations must be unique and sorted")
@@ -320,6 +440,20 @@ def validate(oracle: dict[str, Any]) -> None:
         raise AssertionError("Python anchor summaries differ from the reviewed change-point policy")
     if len({anchor["wheel"]["sha256"] for anchor in oracle["anchors"]}) != len(actual):
         raise AssertionError("each Python anchor must bind one distinct official wheel")
+    for anchor in oracle["anchors"]:
+        helpers = anchor.get("helpers")
+        if not isinstance(helpers, list) or helpers != sorted(set(helpers)):
+            raise AssertionError(f"{anchor['version']}: helpers must be unique and sorted")
+        if anchor.get("helper_count") != len(helpers) or anchor.get("helper_fingerprint") != digest(helpers):
+            raise AssertionError(f"{anchor['version']}: helper summary is stale")
+        exports = anchor.get("library_exports")
+        if not isinstance(exports, list) or exports != sorted(set(exports)):
+            raise AssertionError(f"{anchor['version']}: library exports must be unique and sorted")
+        if (
+            anchor.get("library_export_count") != len(exports)
+            or anchor.get("library_export_fingerprint") != digest(exports)
+        ):
+            raise AssertionError(f"{anchor['version']}: library export summary is stale")
 
 
 def main() -> None:

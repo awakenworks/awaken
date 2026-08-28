@@ -69,6 +69,71 @@ class Files(SyncAPIResource):
             with self.assertRaisesRegex(AssertionError, "multiple HTTP operations"):
                 oracle.operations_in_file(root / "anthropic/resources/beta", target, "beta")
 
+    def test_discovers_handwritten_async_helpers_but_not_subresources_or_operations(self) -> None:
+        # Helper-surface partition: C1=an AsyncAPIResource has a handwritten
+        # non-transport method; C2=overloads repeat that same helper; C3=a
+        # cached subresource accessor has no transport; C4=a generated async
+        # operation does. Effects: E1=the helper is recorded once; E2=C3/C4 are
+        # excluded. This makes future helper additions/removals oracle-visible.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            target = root / "anthropic/resources/beta/environments/work.py"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                """
+class AsyncWork(AsyncAPIResource):
+    @overload
+    def worker(self, *, key: str): ...
+
+    def worker(self, *, key: str):
+        return EnvironmentWorker(key)
+
+    async def observe(self):
+        return await observe_state()
+
+    @cached_property
+    def children(self):
+        return Children(self._client)
+
+    async def poll(self):
+        return await self._post('/v1/environments/e/work?beta=true')
+""",
+                encoding="utf-8",
+            )
+            helpers = oracle.helper_methods_in_file(
+                root / "anthropic/resources/beta",
+                target,
+                "beta",
+            )
+        self.assertEqual(
+            helpers,
+            ["beta.environments.work.observe", "beta.environments.work.worker"],
+        )
+
+    def test_extracts_only_explicit_static_library_exports(self) -> None:
+        # Library-surface partition: C1=the handwritten module owns one static
+        # __all__; C2=private/imported names exist beside it. Effect E1=only
+        # explicit exports become wheel-bound identities. Dynamic or duplicate
+        # declarations fail closed because their compatibility cannot be
+        # reviewed deterministically.
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "anthropic/lib/sessions/__init__.py"
+            target.parent.mkdir(parents=True)
+            target.write_text(
+                "from ._accumulate import AccumulatedEvent\n"
+                "hidden = object()\n"
+                "__all__ = ['AccumulatedEvent', 'accumulate_managed_agents_event']\n",
+                encoding="utf-8",
+            )
+            exports = oracle.public_exports_in_file(target, "anthropic.lib.sessions")
+        self.assertEqual(
+            exports,
+            [
+                "anthropic.lib.sessions.AccumulatedEvent",
+                "anthropic.lib.sessions.accumulate_managed_agents_event",
+            ],
+        )
+
     def test_route_expression_rejects_unresolved_dynamic_values(self) -> None:
         # Negative partition: a route assembled outside a literal/path_template
         # cannot be fingerprinted from source and is rejected. Accepting it
