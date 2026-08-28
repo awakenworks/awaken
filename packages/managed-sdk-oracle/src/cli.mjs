@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { extractOperations } from './extract-operations.mjs';
 import { managedTypeFingerprint, managedWireContract } from './extract-types.mjs';
 import { managedRuntimeFingerprint } from './extract-runtime.mjs';
+import { managedExportFingerprint } from './extract-exports.mjs';
 import { stableJson } from './normalize.mjs';
 import { operationCoverage, surfaceFixture } from './coverage.mjs';
 
@@ -34,6 +35,9 @@ function generated() {
     const sdk = extractOperations(anchor.module, scope);
     const types = managedTypeFingerprint(anchor.module, scope);
     const runtime = managedRuntimeFingerprint(anchor.module, scope);
+    const runtimeExports = managedExportFingerprint(anchor.module, scope, {
+      allowMissing: anchor.role !== 'current_oracle',
+    });
     assert.ok(sdk.operations.length > 0, `${anchor.id} extracted no Managed operations`);
     return {
       id: anchor.id,
@@ -45,6 +49,9 @@ function generated() {
       declaration_file_count: types.file_count,
       runtime_fingerprint: runtime.fingerprint,
       runtime_file_count: runtime.file_count,
+      managed_export_fingerprint: runtimeExports.fingerprint,
+      managed_export_count: runtimeExports.export_count,
+      managed_exports: runtimeExports.exports,
       operations: sdk.operations,
     };
   });
@@ -72,6 +79,8 @@ function generated() {
       declaration_file_count: anchor.declaration_file_count,
       runtime_fingerprint: anchor.runtime_fingerprint,
       runtime_file_count: anchor.runtime_file_count,
+      managed_export_fingerprint: anchor.managed_export_fingerprint,
+      managed_export_count: anchor.managed_export_count,
       only_in_anchor: anchor.operations.filter(({ id }) => !currentById.has(id)),
       only_in_current: currentOracle.operations
         .filter(({ id }) => !anchorIds.has(id))
@@ -98,6 +107,8 @@ function generated() {
           declaration_file_count,
           runtime_fingerprint,
           runtime_file_count,
+          managed_export_fingerprint,
+          managed_export_count,
         }) => ({
           id,
           role,
@@ -107,6 +118,8 @@ function generated() {
           declaration_file_count,
           runtime_fingerprint,
           runtime_file_count,
+          managed_export_fingerprint,
+          managed_export_count,
         }),
       ),
     }),

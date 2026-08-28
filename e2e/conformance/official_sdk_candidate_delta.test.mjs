@@ -28,6 +28,9 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'beta/files.d.ts' },
         { path: 'beta/skills/versions.d.ts' },
         { path: 'beta/webhooks.d.ts' },
+        { path: 'managed/lib/sessions/accumulate.d.ts' },
+        { path: 'managed/tools/agent-toolset/node.d.ts' },
+        { path: 'managed/tools/agent-toolset/skills.d.ts' },
       ],
     },
     runtime: {
@@ -43,6 +46,10 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'version.mjs' },
       ],
     },
+    exports: {
+      ...empty(),
+      removed: [{ id: 'tools/agent-toolset/node.mjs#resolveSkillVersion' }],
+    },
   };
   assert.doesNotThrow(() => assertLatestRuntimeOwnsCandidateDelta(owned), 'D1/E1');
 
@@ -53,6 +60,8 @@ test('candidate delta ownership fails closed outside exercised change points', (
     { ...owned, declarations: { ...empty(), changed: [{ path: 'beta/sessions.d.ts' }] } },
     { ...owned, runtime: { ...empty(), added: [{ path: 'lib/new-helper.mjs' }] } },
     { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/SessionToolRunner.mjs' }] } },
+    { ...owned, exports: { ...empty(), added: [{ id: 'tools/agent-toolset/node.mjs#newTool' }] } },
+    { ...owned, exports: { ...empty(), removed: [{ id: 'tools/agent-toolset/node.mjs#setupSkills' }] } },
   ];
   for (const delta of rejected) {
     assert.throws(() => assertLatestRuntimeOwnsCandidateDelta(delta), undefined, 'D2/E2');
@@ -85,6 +94,7 @@ test('candidate qualification binds exact content coordinates to executable beha
         after: { fingerprint: 'b' },
       }],
     },
+    exports: empty(),
   };
   const coordinates = officialSdkCandidateDeltaCoordinates(delta);
   const qualification = {
@@ -150,6 +160,7 @@ test('same-version candidate evidence must be byte-equivalent to the current anc
     operations: empty(),
     declarations: empty(),
     runtime: empty(),
+    exports: empty(),
   };
   assert.deepEqual(
     qualifyOfficialSdkCandidateDelta(same, []),

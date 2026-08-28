@@ -7,6 +7,7 @@
 // separate prevents a hand-maintained method inventory from certifying a stale
 // SDK while still making every behavior owner reviewable.
 
+import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -115,3 +116,32 @@ const operations = coverage.operations
 
 export const MANAGED_TS_METHOD_MANIFEST = [...operations, ...SDK_HELPERS]
   .sort((left, right) => left.sdkMethod.localeCompare(right.sdkMethod));
+
+export function managedTsMethodManifestForOperations(selectedOperations) {
+  assert.ok(Array.isArray(selectedOperations), 'selected SDK operations must be an array');
+  const selected = new Map();
+  for (const operation of selectedOperations) {
+    assert.ok(!selected.has(operation.id), `selected SDK operation ${operation.id} is duplicated`);
+    selected.set(operation.id, operation);
+  }
+  const expectedIDs = operations.map(({ sdkMethod }) => sdkMethod).sort();
+  const actualIDs = [...selected.keys()].sort();
+  assert.deepEqual(
+    actualIDs,
+    expectedIDs,
+    'selected SDK operations must have the exact qualified Managed operation identities',
+  );
+
+  return MANAGED_TS_METHOD_MANIFEST.map((evidence) => {
+    if (!evidence.method) return evidence;
+    const operation = selected.get(evidence.sdkMethod);
+    const { transportQuery: _currentTransportQuery, ...ownership } = evidence;
+    return Object.freeze({
+      ...ownership,
+      route: operation.path,
+      method: operation.method,
+      betas: operation.betas,
+      ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
+    });
+  });
+}

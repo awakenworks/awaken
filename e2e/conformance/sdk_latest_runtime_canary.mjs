@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import { managedExportFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
   availablePort,
@@ -77,11 +78,18 @@ const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packag
 const {
   accumulateManagedAgentsEvent,
 } = await import(pathToFileURL(resolve(packageRoot, 'lib/sessions/accumulate.mjs')));
+const agentToolset = await import(
+  pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/node.mjs')),
+);
 const {
   betaAgentToolset20260401,
   setupSkills,
-} = await import(pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/node.mjs')));
+} = agentToolset;
 const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
+const managedExports = managedExportFingerprintFromPackageRoot(packageRoot, scope);
+const hasResolveSkillVersion = managedExports.exports.some(
+  ({ id }) => id === 'tools/agent-toolset/node.mjs#resolveSkillVersion',
+);
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
 const candidateResourceOperations = operations
@@ -109,6 +117,7 @@ compileOfficialSdkChangePoints(packageRoot, {
   filesProjection: betaFiles.projection,
   skillsProjection: betaSkills.projection,
   parseUnverified: webhookProfile.parseUnverified,
+  resolveSkillVersion: hasResolveSkillVersion,
 });
 completeBehaviorOwner('candidate.typescript-change-points');
 
@@ -153,64 +162,19 @@ function assertCandidateFilesTransport(input, init) {
 }
 
 async function exerciseSdkCoreTransport() {
-  // Cause/effect graph: C1 the exact candidate's shared transport constructs a
-  // changed Beta Files request; C2 server returns each canonical Managed error;
-  // C3 two retryable server faults precede success. Effects: E1 exact path,
-  // query, capability and auth headers; E2 one typed APIError with unchanged
-  // status/envelope and no client-fault retry; E3 exactly three attempts, then
-  // the candidate paginator decodes its projection. Decision rules:
-  // T1 C1->E1; T2 C1+C2+maxRetries=0->E1+E2; T3 C1+C3+maxRetries=2->E1+E3.
-  // This closes core SDK implementation drift that operation/declaration hashes
-  // cannot see (authentication, fetch assembly, errors and retry ownership).
-  for (const [status, kind] of [
-    [400, 'invalid_request_error'],
-    [401, 'authentication_error'],
-    [403, 'permission_error'],
-    [404, 'not_found_error'],
-    [409, 'conflict_error'],
-    [429, 'rate_limit_error'],
-    [500, 'api_error'],
-  ]) {
-    let attempts = 0;
-    const client = new Anthropic({
-      apiKey: 'transport-only', // awaken-allow: secret
-      baseURL: 'https://managed.invalid',
-      maxRetries: 0,
-      fetch: async (input, init) => {
-        attempts += 1;
-        assertCandidateFilesTransport(input, init);
-        return new Response(JSON.stringify({
-          type: 'error', error: { type: kind, message: `status ${status}` },
-        }), {
-          status,
-          headers: { 'content-type': 'application/json' },
-        });
-      },
-    });
-    await assert.rejects(
-      () => client.beta.files.retrieveMetadata('file_transport'),
-      managedError(status, kind, new RegExp(`status ${status}`, 'u')),
-      `T2 candidate error ${status}`,
-    );
-    assert.equal(attempts, 1, `T2 status ${status} is not retried when disabled`);
-  }
-
-  let attempts = 0;
-  const retrying = new Anthropic({
+  // Cause/effect graph: C1 exact candidate code constructs a changed Beta
+  // Files request; C2 version.mjs supplies transport telemetry. Effects: E1
+  // exact route/query/capability/auth and E2 exact candidate self-identity.
+  // Error taxonomy, retry decisions, aborts, pagination and complete command
+  // identity are owned once by the shared all-anchor transport matrix.
+  let requests = 0;
+  const client = new Anthropic({
     apiKey: 'transport-only', // awaken-allow: secret
     baseURL: 'https://managed.invalid',
-    maxRetries: 2,
+    maxRetries: 0,
     fetch: async (input, init) => {
-      attempts += 1;
+      requests += 1;
       assertCandidateFilesTransport(input, init);
-      if (attempts < 3) {
-        return new Response(JSON.stringify({
-          type: 'error', error: { type: 'api_error', message: 'transient' },
-        }), {
-          status: 500,
-          headers: { 'content-type': 'application/json', 'retry-after-ms': '0' },
-        });
-      }
       return new Response(JSON.stringify(betaFiles.projection === 'beta'
         ? { data: [], has_more: false, first_id: null, last_id: null }
         : { data: [], has_more: false, next_page: null }), {
@@ -218,10 +182,10 @@ async function exerciseSdkCoreTransport() {
       });
     },
   });
-  assert.deepEqual(await drain(retrying.beta.files.list({ limit: 1 })), [], 'T3 page decode');
-  assert.equal(attempts, 3, 'T3 candidate retry bound');
+  assert.deepEqual(await drain(client.beta.files.list({ limit: 1 })), [], 'T1 page decode');
+  assert.equal(requests, 1, 'T1 exact request');
   completeBehaviorOwner('candidate.core-transport');
-  pass(`registry SDK ${manifest.version} preserves Managed core transport semantics`);
+  pass(`registry SDK ${manifest.version} preserves exact transport identity`);
 }
 
 async function exerciseSdkHelperRuntime() {
@@ -261,6 +225,11 @@ async function exerciseSdkHelperRuntime() {
       'H2 complete Agent Toolset registration',
     );
     if (runtimeChanged('tools/agent-toolset/node.mjs')) {
+      assert.equal(
+        Object.hasOwn(agentToolset, 'resolveSkillVersion'),
+        false,
+        'H2 0.122 explicitly removes the former public resolveSkillVersion helper',
+      );
       const lines = Array.from({ length: 40 }, (_, index) => `line-${String(index + 1).padStart(2, '0')}`);
       writeFileSync(join(workdir, 'large.txt'), lines.join('\n'));
       const read = tools.find(({ name }) => name === 'read');
@@ -983,7 +952,7 @@ await exerciseBetaGaRecovery();
 // C1 the extracted candidate inventory is the sole expected-operation source;
 // C2 the exact candidate SDK emits each request; C3 a real Awaken handler
 // returns a non-5xx application response. Effect E1 every Files/Skills operation
-// has a matching method/path/query/capability/Stainless receipt. Authentication
+// has a matching method/path/query/capability/Stainless/exact-version receipt. Authentication
 // and authorization failures are deliberately excluded: 401/403 prove PEP
 // ordering but not entry into the resource owner. Missing calls, a nearby route,
 // lost selector, direct fetch, server fault, or newly changed operation therefore
@@ -993,6 +962,7 @@ const coveredCandidateOperations = assertOwnerOperationReceipts(
   candidateResourceOperations,
   'candidate-files-skills',
   businessReceipts,
+  manifest.version,
 );
 const coveredIds = new Set(candidateResourceOperations.map(({ sdkMethod }) => sdkMethod));
 for (const { id } of candidateDelta.operations.changed) {

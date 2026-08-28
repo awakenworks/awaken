@@ -20,6 +20,9 @@ import { withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = [];
 const SKILLS_BETA = 'skills-2025-10-02';
+const SKILLS_PROJECTION = process.env.AWAKEN_MANAGED_SDK_SKILLS_PROJECTION ?? 'beta';
+assert.match(SKILLS_PROJECTION, /^(?:beta|ga)$/u, 'invalid selected SDK Skills projection');
+const legacyBetaSkills = SKILLS_PROJECTION === 'beta';
 const SKILL_MD_V1 = '---\nname: greeter\ndescription: says hi\n---\nSay hi to the user.';
 const SKILL_MD_V2 = '---\nname: greeter\ndescription: says hi (v2)\n---\nSay a warm hi.';
 const GA_SKILL_MD_V1 = '---\nname: ga-greeter\ndescription: says hi through GA\n---\nSay hi.';
@@ -67,17 +70,32 @@ async function main() {
       }
       assert.equal((await fetch(`${baseUrl}/v1/skills?beta=true`)).status, 200);
 
-      // Create a skill via a multipart SKILL.md upload.
+      // Version-projection graph: P1 historical Beta methods add SKILLS_BETA
+      // and decode display_title/latest_version/version; P2 post-GA Beta
+      // methods retain beta=true without that capability and decode the GA
+      // display_name/latest_version_id/id DTO. The runner derives P1/P2 from
+      // the selected package's generated operations. This one scenario and one
+      // SkillStore therefore exercise both exact SDK shapes without accepting
+      // a union response that neither official declaration permits.
       const skill = await client.beta.skills.create({
-        display_title: 'Greeter',
+        ...(legacyBetaSkills ? { display_title: 'Greeter' } : { display_name: 'Greeter' }),
         files: [await toFile(Buffer.from(SKILL_MD_V1), 'SKILL.md')],
         betas: BETAS,
       });
       assert.equal(skill.type, 'skill');
       assert.ok(skill.id.startsWith('skill_'), `id: ${skill.id}`);
-      assert.equal(skill.display_title, 'Greeter');
-      assert.equal(skill.latest_version, '1');
-      pass('beta.skills.create -> SkillCreateResponse (multipart)');
+      const firstVersion = legacyBetaSkills ? skill.latest_version : skill.latest_version_id;
+      assert.equal(typeof firstVersion, 'string');
+      if (legacyBetaSkills) {
+        assert.equal(skill.display_title, 'Greeter');
+        assert.equal(firstVersion, '1');
+        assert.equal(Object.hasOwn(skill, 'display_name'), false);
+      } else {
+        assert.equal(skill.display_name, 'Greeter');
+        assert.equal(skill.source.type, 'custom');
+        assert.equal(Object.hasOwn(skill, 'display_title'), false);
+      }
+      pass(`beta.skills.create -> exact ${SKILLS_PROJECTION} Skill projection (multipart)`);
 
       await expectStatus(
         async () =>
@@ -132,18 +150,23 @@ async function main() {
       });
       assert.equal(v2.type, 'skill_version');
       assert.equal(v2.skill_id, skill.id);
-      assert.equal(v2.version, '2');
+      const secondVersion = legacyBetaSkills ? v2.version : v2.id;
+      assert.equal(typeof secondVersion, 'string');
+      if (legacyBetaSkills) assert.equal(secondVersion, '2');
       assert.equal(v2.name, 'greeter');
-      pass('beta.skills.versions.create -> VersionCreateResponse');
+      pass(`beta.skills.versions.create -> exact ${SKILLS_PROJECTION} Version projection`);
 
-      const versions = (await drain(client.beta.skills.versions.list(skill.id, { betas: BETAS }))).map(
-        (v) => v.version,
-      );
-      assert.deepEqual(versions, ['1', '2']);
+      const versions = (await drain(
+        client.beta.skills.versions.list(skill.id, { betas: BETAS }),
+      )).map((version) => (legacyBetaSkills ? version.version : version.id));
+      assert.deepEqual(versions, [firstVersion, secondVersion]);
       pass('beta.skills.versions.list');
 
-      const v1 = await client.beta.skills.versions.retrieve('1', { skill_id: skill.id, betas: BETAS });
-      assert.equal(v1.version, '1');
+      const v1 = await client.beta.skills.versions.retrieve(firstVersion, {
+        skill_id: skill.id,
+        betas: BETAS,
+      });
+      assert.equal(legacyBetaSkills ? v1.version : v1.id, firstVersion);
       assert.equal(v1.description, 'says hi');
       pass('beta.skills.versions.retrieve');
 
@@ -151,19 +174,25 @@ async function main() {
         skill_id: skill.id,
         betas: BETAS,
       });
-      assert.equal(latest.version, '2');
+      assert.equal(legacyBetaSkills ? latest.version : latest.id, secondVersion);
       const byId = await client.beta.skills.versions.retrieve(v2.id, {
         skill_id: skill.id,
         betas: BETAS,
       });
-      assert.equal(byId.version, '2');
+      assert.equal(legacyBetaSkills ? byId.version : byId.id, secondVersion);
       await expectStatus(
-        () => client.beta.skills.versions.retrieve('404', { skill_id: skill.id, betas: BETAS }),
+        () => client.beta.skills.versions.retrieve('version_missing', {
+          skill_id: skill.id,
+          betas: BETAS,
+        }),
         404,
       );
       pass('latest, immutable version id, and missing version references are distinct');
 
-      const download = await client.beta.skills.versions.download('2', { skill_id: skill.id, betas: BETAS });
+      const download = await client.beta.skills.versions.download(secondVersion, {
+        skill_id: skill.id,
+        betas: BETAS,
+      });
       assert.equal(download.headers.get('content-type'), 'application/x-tar');
       const body = await download.text();
       assert.ok(body.includes('worker-greeter') || body.includes('greeter'));
@@ -171,31 +200,43 @@ async function main() {
       pass('beta.skills.versions.download returns the archive consumed by setupSkills');
 
       const missingFile = await fetch(
-        `${baseUrl}/v1/skills/${skill.id}/versions/2/files/references/missing.md`,
+        `${baseUrl}/v1/skills/${skill.id}/versions/${secondVersion}/files/references/missing.md`,
         { headers: { 'anthropic-beta': SKILLS_BETA } },
       );
       assert.equal(missingFile.status, 404);
       const missingVersionFile = await fetch(
-        `${baseUrl}/v1/skills/${skill.id}/versions/404/files/references/missing.md`,
+        `${baseUrl}/v1/skills/${skill.id}/versions/version_missing/files/references/missing.md`,
         { headers: { 'anthropic-beta': SKILLS_BETA } },
       );
       assert.equal(missingVersionFile.status, 404);
       await expectStatus(
-        () => client.beta.skills.versions.download('404', { skill_id: skill.id, betas: BETAS }),
+        () => client.beta.skills.versions.download('version_missing', {
+          skill_id: skill.id,
+          betas: BETAS,
+        }),
         404,
       );
       pass('unknown bundle file/content/version -> 404');
 
-      const delVer = await client.beta.skills.versions.delete('1', { skill_id: skill.id, betas: BETAS });
+      const delVer = await client.beta.skills.versions.delete(firstVersion, {
+        skill_id: skill.id,
+        betas: BETAS,
+      });
       assert.equal(delVer.type, 'skill_version_deleted');
       pass('beta.skills.versions.delete');
 
       await expectStatus(
-        () => client.beta.skills.versions.delete('1', { skill_id: skill.id, betas: BETAS }),
+        () => client.beta.skills.versions.delete(firstVersion, {
+          skill_id: skill.id,
+          betas: BETAS,
+        }),
         404,
       );
       await expectStatus(
-        () => client.beta.skills.versions.delete('2', { skill_id: skill.id, betas: BETAS }),
+        () => client.beta.skills.versions.delete(secondVersion, {
+          skill_id: skill.id,
+          betas: BETAS,
+        }),
         400,
       );
       pass('retired version stays absent and the sole live version cannot be deleted');

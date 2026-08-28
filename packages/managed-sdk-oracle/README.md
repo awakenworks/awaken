@@ -42,6 +42,15 @@ evidence from drifting from the external expectation:
   the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
   arguments while runtime assertions bind the exact method, normalized path,
   `beta=true` transport selector, and capability set.
+- `test/sdk-transport-resilience.test.mjs` runs every supported TypeScript
+  anchor and the admitted candidate through one error/retry contract. It owns
+  the exact 400/401/403/404/409/413/422/429/500/529 subclasses and headers,
+  retry decision table including `x-should-retry`, byte-identical mutation
+  identity, opaque cursor traversal, and caller-abort fencing.
+- The declaration oracle includes the Managed helper entrypoints in addition
+  to HTTP resource types. A separate pre-import ESM export inventory is checked
+  against the executable current modules; adding or removing a helper inside
+  an already-owned file therefore cannot reuse that file's behavior evidence.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
   closure rooted at the supported resources, Client, Session accumulator,
   EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client
@@ -50,9 +59,14 @@ evidence from drifting from the external expectation:
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
-  It fails unless all current HTTP operations are observed with their exact
-  method, route, Beta/GA selector, and required capabilities. A method present
-  only in source text can therefore no longer satisfy behavior qualification.
+  It replays the same 127 HTTP operations and four helpers for the current SDK
+  and every admitted candidate. A package-selection hook resolves unchanged
+  canonical imports inside the selected exact package root; each receipt must
+  carry that package's exact `x-stainless-package-version`, method, route,
+  Beta/GA selector, and capabilities. Files/Skills wire coordinates are
+  projected from that package's generated operations, so the 0.122 post-GA
+  DTOs are exercised without copying the 0.121 tests or accepting a union
+  shape. A method present only in source text cannot satisfy qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
@@ -182,6 +196,15 @@ version-number table, uses type escape hatches, or silently falls back to the
 installed current anchor. After the observation window, a passing candidate
 proof still fails the release gate until that exact version is promoted to the
 canonical current oracle.
+
+The 0.121→0.122 change point intentionally records one upstream source-level
+break: 0.122 removes the public `resolveSkillVersion` re-export from
+`tools/agent-toolset/node`. Static runtime and declaration inventories prove
+that it is the sole removed Managed helper; candidate compilation proves the
+symbol is absent, while the real-process `setupSkills("latest")` recovery case
+proves the replacement server-resolved version flow. This is an official SDK
+API boundary, not an Awaken compatibility shim, and future export changes fail
+closed until they receive their own explicit behavior owner.
 
 Supplying the same exact candidate module and version to `conformance:hosted`
 and every `conformance:recovery:*` phase also admits it to public-ingress and

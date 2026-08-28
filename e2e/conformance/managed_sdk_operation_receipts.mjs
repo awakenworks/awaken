@@ -27,6 +27,7 @@ export function managedSdkReceipt(input, init, response) {
       .map((value) => value.trim())
       .filter(Boolean),
     sdk: request.headers.get('x-stainless-lang') === 'js',
+    sdkVersion: request.headers.get('x-stainless-package-version'),
     status: response.status,
   });
 }
@@ -40,9 +41,10 @@ export function recordingFetch(fetchImplementation, record) {
   };
 }
 
-export function receiptMatchesOperation(receipt, operation) {
+export function receiptMatchesOperation(receipt, operation, expectedSdkVersion) {
   const actualBetas = new Set(receipt.betas);
   return receipt.sdk === true
+    && receipt.sdkVersion === expectedSdkVersion
     && Number.isInteger(receipt.status)
     && receipt.status >= 200
     && receipt.status < 500
@@ -52,13 +54,22 @@ export function receiptMatchesOperation(receipt, operation) {
     && normalizedBetas(operation.betas).every((beta) => actualBetas.has(beta));
 }
 
-export function assertOwnerOperationReceipts(manifest, owner, receipts) {
+export function assertOwnerOperationReceipts(manifest, owner, receipts, expectedSdkVersion) {
+  assert.match(
+    expectedSdkVersion ?? '',
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
+    'operation ownership requires one exact SDK version',
+  );
   const expected = manifest.filter((entry) => entry.owner === owner && entry.method);
   for (const operation of expected) {
     assert.ok(
-      receipts.some((receipt) => receiptMatchesOperation(receipt, operation)),
+      receipts.some((receipt) => receiptMatchesOperation(
+        receipt,
+        operation,
+        expectedSdkVersion,
+      )),
       `${owner}: no official SDK runtime receipt for ${operation.sdkMethod} `
-        + `${operation.method} ${operation.route}`,
+        + `${operation.method} ${operation.route} from SDK ${expectedSdkVersion}`,
     );
   }
   return expected.length;

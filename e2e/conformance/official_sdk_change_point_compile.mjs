@@ -70,6 +70,7 @@ export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
   parseUnverified,
+  resolveSkillVersion,
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
@@ -77,11 +78,17 @@ import { accumulateManagedAgentsEvent } from '@anthropic-ai/sdk/lib/sessions/acc
 import {
   betaAgentToolset20260401,
   setupSkills,
+  ${resolveSkillVersion ? 'resolveSkillVersion,' : ''}
 } from '@anthropic-ai/sdk/tools/agent-toolset/node';
+type AgentToolsetModule = typeof import('@anthropic-ai/sdk/tools/agent-toolset/node');
 
 const client = new Anthropic({ apiKey: 'compile-only' }); // awaken-allow: secret
 
 async function exerciseChangePoints() {
+  ${resolveSkillVersion ? `const resolveVersion: typeof resolveSkillVersion = resolveSkillVersion;
+  void resolveVersion;` : `const noRetiredResolveHelper:
+    'resolveSkillVersion' extends keyof AgentToolsetModule ? never : true = true;
+  void noRetiredResolveHelper;`}
   const upload = await toFile(new Uint8Array([1]), 'fixture.txt');
   const tools = betaAgentToolset20260401({ workdir: '/tmp' });
   const toolNames: string[] = tools.map(({ name }) => name);

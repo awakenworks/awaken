@@ -1,8 +1,10 @@
 {
   "anchors": [
     {
-      "declaration_file_count": 37,
+      "declaration_file_count": 45,
       "id": "oldest",
+      "managed_export_count": 25,
+      "managed_export_fingerprint": "702bc38ff90011f45ea3c499c403cea688f0b3e1a4b6d2a2e89539e28f9379da",
       "only_in_anchor": [],
       "only_in_current": [
         "beta.dreams.archive",
@@ -38,12 +40,14 @@
       "role": "oldest_supported",
       "runtime_file_count": 97,
       "runtime_fingerprint": "d796c2cd6c77244cd6345b09d4e70feea15464ba5b62e5012b21b4961e34bf56",
-      "type_fingerprint": "79faa0f29c5d662b04adffe4ecee271b38aad1ab1e34a9176b81d6c09cfaac60",
+      "type_fingerprint": "488b1aaa3a19a94e7449dba77fedbeca0ff7aed76c0eb7be6f7f66ed5f1bf593",
       "version": "0.105.0"
     },
     {
-      "declaration_file_count": 42,
+      "declaration_file_count": 51,
       "id": "user_profiles_legacy",
+      "managed_export_count": 27,
+      "managed_export_fingerprint": "226132be287dbd236fd4075432862169fdeea2de28f7bead06568beb0952c23d",
       "only_in_anchor": [],
       "only_in_current": [
         "files.delete",
@@ -64,12 +68,14 @@
       "role": "protocol_change_point",
       "runtime_file_count": 104,
       "runtime_fingerprint": "427157fd63fb784c6396fddd9fa381fba9bd1d6b1d1d9ec95ab5ebfe3f8f23a0",
-      "type_fingerprint": "e9ee37dc895914efcd87e51da6d4cca350b07ec9b6849ab799c772eacd5deb4f",
+      "type_fingerprint": "9cfee5114665531e1c233d4810087b11ab9e5ea77973eaf47295f43cdc77897f",
       "version": "0.117.1"
     },
     {
-      "declaration_file_count": 47,
+      "declaration_file_count": 58,
       "id": "current",
+      "managed_export_count": 33,
+      "managed_export_fingerprint": "cbcede7282b8baebb0183c9cdc7a328e84d0bc97d25dcfe0133383454fcfe2e4",
       "only_in_anchor": [],
       "only_in_current": [],
       "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
@@ -81,8 +87,177 @@
     }
   ],
   "current": {
-    "declaration_file_count": 47,
+    "declaration_file_count": 58,
     "id": "current",
+    "managed_export_count": 33,
+    "managed_export_fingerprint": "cbcede7282b8baebb0183c9cdc7a328e84d0bc97d25dcfe0133383454fcfe2e4",
+    "managed_exports": [
+      {
+        "entrypoint": "helpers/beta/zod.mjs",
+        "id": "helpers/beta/zod.mjs#betaZodOutputFormat",
+        "name": "betaZodOutputFormat"
+      },
+      {
+        "entrypoint": "helpers/beta/zod.mjs",
+        "id": "helpers/beta/zod.mjs#betaZodTool",
+        "name": "betaZodTool"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#backoff",
+        "name": "backoff"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#DEFAULT_MAX_IDLE_MS",
+        "name": "DEFAULT_MAX_IDLE_MS"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#EnvironmentWorker",
+        "name": "EnvironmentWorker"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#is4xx",
+        "name": "is4xx"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#isFatal4xx",
+        "name": "isFatal4xx"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#isStatus",
+        "name": "isStatus"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#jitter",
+        "name": "jitter"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#MANAGED_AGENTS_BETA",
+        "name": "MANAGED_AGENTS_BETA"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#POLL_BLOCK_MS",
+        "name": "POLL_BLOCK_MS"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#SessionToolRunner",
+        "name": "SessionToolRunner"
+      },
+      {
+        "entrypoint": "lib/environments/index.mjs",
+        "id": "lib/environments/index.mjs#WorkPoller",
+        "name": "WorkPoller"
+      },
+      {
+        "entrypoint": "lib/sessions/accumulate.mjs",
+        "id": "lib/sessions/accumulate.mjs#accumulateManagedAgentsEvent",
+        "name": "accumulateManagedAgentsEvent"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#BashSession",
+        "name": "BashSession"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#BashTimeoutError",
+        "name": "BashTimeoutError"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaAgentToolset20260401",
+        "name": "betaAgentToolset20260401"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaBashTool",
+        "name": "betaBashTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaEditTool",
+        "name": "betaEditTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaGlobTool",
+        "name": "betaGlobTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaGrepTool",
+        "name": "betaGrepTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaReadTool",
+        "name": "betaReadTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#betaWriteTool",
+        "name": "betaWriteTool"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#DEFAULT_MEMORY_SYNC_INTERVAL_MS",
+        "name": "DEFAULT_MEMORY_SYNC_INTERVAL_MS"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#extractSkillArchive",
+        "name": "extractSkillArchive"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#MARKER_PATH",
+        "name": "MARKER_PATH"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#MEMORY_FLUSH_TIMEOUT_MS",
+        "name": "MEMORY_FLUSH_TIMEOUT_MS"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#MIN_MEMORY_SYNC_INTERVAL_MS",
+        "name": "MIN_MEMORY_SYNC_INTERVAL_MS"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#resolvePath",
+        "name": "resolvePath"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#resolveSkillVersion",
+        "name": "resolveSkillVersion"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#SessionMemoryError",
+        "name": "SessionMemoryError"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#SessionMemoryStores",
+        "name": "SessionMemoryStores"
+      },
+      {
+        "entrypoint": "tools/agent-toolset/node.mjs",
+        "id": "tools/agent-toolset/node.mjs#setupSkills",
+        "name": "setupSkills"
+      }
+    ],
     "module": "@anthropic-ai/sdk-current",
     "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
     "operations": [

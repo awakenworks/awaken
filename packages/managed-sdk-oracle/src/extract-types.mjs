@@ -6,6 +6,8 @@ import ts from 'typescript';
 import { resolveSdkPackage, sdkPackageFromRoot } from './package-source.mjs';
 
 function declarations(root) {
+  if (!fs.existsSync(root)) return [];
+  if (fs.statSync(root).isFile()) return root.endsWith('.d.ts') ? [root] : [];
   const files = [];
   const visit = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -37,6 +39,22 @@ export function managedTypeFingerprintFromPackageRoot(root, scope) {
       const relative = path.relative(declarationRoot, filename).replaceAll(path.sep, '/');
       if (!allowed.has(relative.split('/')[0].replace(/\.d\.ts$/, ''))) continue;
       const scopedPath = prefix + relative;
+      const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
+      hash.update(scopedPath);
+      hash.update('\0');
+      hash.update(content);
+      hash.update('\0');
+      files.push(Object.freeze({
+        path: scopedPath,
+        fingerprint: crypto.createHash('sha256').update(content).digest('hex'),
+      }));
+    }
+  }
+  for (const configuredRoot of scope.managed_declaration_roots ?? []) {
+    const declarationRoot = path.join(root, configuredRoot);
+    for (const filename of declarations(declarationRoot)) {
+      const relative = path.relative(root, filename).replaceAll(path.sep, '/');
+      const scopedPath = `managed/${relative}`;
       const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
       hash.update(scopedPath);
       hash.update('\0');

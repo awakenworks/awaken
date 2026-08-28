@@ -136,6 +136,7 @@ test('a reviewed candidate joins every shared conformance suite without becoming
   ).scripts;
   const candidateMatrix = scripts['test:managed-sdk-candidate-matrix'];
   for (const owner of [
+    'sdk-transport-resilience.test.mjs',
     'managed_sdk_version_matrix_e2e.mjs',
     'managed_sdk_runtime_matrix_e2e.mjs',
     'managed_sdk_resource_handoff_e2e.mjs',

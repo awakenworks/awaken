@@ -82,7 +82,7 @@ const verifyRuntime = (sdk) => execFileSync(
     stdio: 'inherit',
   },
 );
-const verifyCandidateMatrix = (module, version) => execFileSync(
+const verifyCandidateMatrix = (module, version, root) => execFileSync(
   'npm', ['run', 'test:managed-sdk-candidate-matrix'],
   {
     cwd: E2E,
@@ -90,6 +90,7 @@ const verifyCandidateMatrix = (module, version) => execFileSync(
       ...process.env,
       ANTHROPIC_SDK_CONFORMANCE_CANDIDATE: module,
       ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION: version,
+      ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: root,
     },
     stdio: 'inherit',
   },
@@ -101,6 +102,7 @@ await executeLatestCanaryPlan(plan, {
     verifyCandidateMatrix(
       candidateQualification.module,
       candidateQualification.candidate_version,
+      candidate.root,
     );
   } : undefined,
 });

@@ -28,6 +28,18 @@
     "lib/sessions/accumulate.mjs",
     "tools/agent-toolset/node.mjs"
   ],
+  "managed_export_entrypoints": [
+    "helpers/beta/zod.mjs",
+    "lib/environments/index.mjs",
+    "lib/sessions/accumulate.mjs",
+    "tools/agent-toolset/node.mjs"
+  ],
+  "managed_declaration_roots": [
+    "helpers/beta/zod.d.ts",
+    "lib/environments",
+    "lib/sessions/accumulate.d.ts",
+    "tools/agent-toolset"
+  ],
   "python_managed_library_modules": [
     "anthropic.lib.environments",
     "anthropic.lib.sessions",
