@@ -53,6 +53,13 @@ const WRONG_KEY: [u8; 32] = [8u8; 32];
 
 #[tokio::test(flavor = "multi_thread")]
 async fn authored_config_and_sealed_credentials_survive_a_restart() {
+    // Cause/effect graph: C1 an authored Agent contains one exact MCP
+    // server/toolset pair and a sealed credential reference; C2 the process
+    // restarts with the same data directory/key; C3 it restarts with a different
+    // key. Effects: E1 C1 is accepted as one typed integration; E2 C2 preserves
+    // secret-free configuration and materializes the sealed secret; E3 C3 keeps
+    // public rows readable but fails secret materialization closed. Decision
+    // rules: P1=C1=>E1, P2=C1+C2=>E2, P3=C1+C3=>E3.
     let dir = tempfile::tempdir().unwrap();
     let catalog = SqliteCatalogRepo::open(dir.path().join("catalog.db").to_str().unwrap()).unwrap();
     catalog
@@ -195,7 +202,7 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
         .await;
         assert_eq!(s, StatusCode::OK);
 
-        let (s, _) = call(
+        let (s, agent_save) = call(
             &app,
             "PUT",
             "/v1/config/agents/calc-agent",
@@ -210,11 +217,15 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
                 "mcp_servers": [{
                     "name": "calc",
                     "url": "http://127.0.0.1:1/"
+                }],
+                "tools": [{
+                    "type": "mcp_toolset",
+                    "mcp_server_name": "calc"
                 }]
             })),
         )
         .await;
-        assert_eq!(s, StatusCode::OK);
+        assert_eq!(s, StatusCode::OK, "agent save failed: {agent_save}");
     } // drop router A: "process" ends
 
     // ---- lifetime B: same dir, same key — everything is still there -------

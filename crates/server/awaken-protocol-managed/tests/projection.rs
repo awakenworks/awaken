@@ -157,7 +157,7 @@ struct CommittedRunEvidence {
 
 #[derive(Default)]
 struct ScriptDurableState {
-    reservations: HashMap<String, awaken_session_contract::SessionUserRunCommand>,
+    reservations: HashMap<String, awaken_session_contract::AdmitSessionRun>,
     run_states: HashMap<String, RunState>,
     committed_run: Option<CommittedRunEvidence>,
 }
@@ -218,7 +218,7 @@ impl CommittedEvidence {
         self,
         thread_id: &str,
         run_id: RunId,
-        command: &awaken_session_contract::SessionUserRunCommand,
+        command: &awaken_session_contract::AdmitSessionRun,
         outcome: StepOutcome,
     ) -> awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot {
         let terminal_state = outcome.state().clone();
@@ -226,20 +226,8 @@ impl CommittedEvidence {
         // though Managed reconstructs the public DTO from Session-root
         // provenance. This keeps the fake faithful to production without using
         // the transcript as the public payload authority.
-        let mut messages = vec![Message::new(
-            Id::session_event_input(thread_id, &command.operation_id),
-            Role::User,
-            command.content.clone(),
-        )];
-        let mut message_commit_cursors = vec![1];
-        if let Some(system) = &command.accompanying_system {
-            messages.push(Message::new(
-                Id::session_system(thread_id, &system.operation_id),
-                Role::System,
-                system.content.clone(),
-            ));
-            message_commit_cursors.push(1);
-        }
+        let mut messages = command.messages.clone();
+        let mut message_commit_cursors = vec![1; messages.len()];
         message_commit_cursors.extend(std::iter::repeat_n(3, outcome.new_messages.len()));
         messages.extend(outcome.new_messages);
         let state = if matches!(self, Self::Compaction) {
@@ -422,13 +410,13 @@ impl SessionRuntime for ScriptFake {
             events,
         })
     }
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: awaken_session_contract::SessionUserRunCommand,
-    ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
         let mut durable = self.durable.lock().unwrap();
         if durable.run_states.contains_key(&command.run_id.0) {
-            return Ok(awaken_session_contract::SessionUserRunReservation::Completed);
+            return Ok(awaken_session_contract::SessionRunReservation::Completed);
         }
         if let Some(existing) = durable.reservations.get(&command.run_id.0) {
             if existing != &command {
@@ -436,20 +424,20 @@ impl SessionRuntime for ScriptFake {
                     "scripted Run id was reused with different input",
                 ));
             }
-            return Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved);
+            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
         }
         durable
             .reservations
             .insert(command.run_id.0.clone(), command);
-        Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
+        Ok(awaken_session_contract::SessionRunReservation::Reserved)
     }
-    async fn activate_session_user_run(
+    async fn activate_session_run(
         &self,
-        delivery: awaken_session_contract::SessionUserRunDelivery,
-    ) -> Result<awaken_session_contract::SessionUserRunActivation, RunError> {
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
         let mut durable = self.durable.lock().unwrap();
         if durable.run_states.contains_key(&delivery.run_id.0) {
-            return Ok(awaken_session_contract::SessionUserRunActivation::Completed);
+            return Ok(awaken_session_contract::SessionRunActivation::Completed);
         }
         let command = durable
             .reservations
@@ -484,9 +472,9 @@ impl SessionRuntime for ScriptFake {
         durable
             .run_states
             .insert(delivery.run_id.0, outcome.state().clone());
-        Ok(awaken_session_contract::SessionUserRunActivation::Activated)
+        Ok(awaken_session_contract::SessionRunActivation::Activated)
     }
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         _session_id: &str,
         run_id: &RunId,

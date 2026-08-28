@@ -5,6 +5,7 @@ pub mod agent;
 pub mod audit;
 pub mod event;
 pub mod fingerprint;
+pub mod id;
 pub mod mcp_target;
 pub mod model_spec;
 pub mod model_target;
@@ -24,6 +25,7 @@ pub use agent::thread::Id as ThreadId;
 pub use audit::record::Record as EventRecord;
 pub use event::AgentEvent;
 pub use fingerprint::stable_fingerprint;
+pub use id::fresh_process_id;
 pub use mcp_target::{
     HttpMcpTarget, McpTarget, McpTargetError, McpTargetIdentity, SandboxStdioMcpTarget,
     SandboxStdioMcpTargetKind,

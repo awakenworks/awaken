@@ -118,16 +118,14 @@ impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority
 
     async fn release_session_work(
         &self,
-        session_id: &str,
-        worker_owner: &str,
-        _now_ms: u64,
+        lease: &awaken_session_contract::work_queue::SessionWorkLease,
     ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
         self.released_sessions
             .lock()
             .unwrap()
-            .push(session_id.to_string());
+            .push(lease.session_id.clone());
         let mut owner = self.owner.lock().unwrap();
-        if owner.as_deref() != Some(worker_owner) {
+        if owner.as_deref() != Some(lease.owner.as_str()) {
             return Ok(false);
         }
         *owner = None;

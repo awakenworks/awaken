@@ -5,10 +5,11 @@ async fn claim_exact_transaction(
     requested_run: &RunId,
     owner: &str,
     lease_ms: u64,
-    now_ms: u64,
+    _now_ms: u64,
     worker: Option<&WorkerSnapshot>,
     capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
 ) -> Result<Option<Claimed>, DispatchError> {
+    let now_ms = crate::postgres_helpers::postgres_now_ms(&mut **tx).await?;
     let phase = sqlx::query(&format!(
         "SELECT status, lease_until FROM {NS}_dispatch WHERE run_id = $1"
     ))

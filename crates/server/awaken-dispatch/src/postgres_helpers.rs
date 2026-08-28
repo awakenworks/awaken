@@ -9,22 +9,34 @@ use sqlx::{Executor, PgPool, Postgres, Row};
 
 use crate::{DispatchError, PendingInput, RunClaim, WorkerIdentity, durable_u64};
 
+pub(super) async fn postgres_now_ms<'e, E>(executor: E) -> Result<u64, DispatchError>
+where
+    E: Executor<'e, Database = Postgres>,
+{
+    let now: i64 =
+        sqlx::query_scalar("SELECT FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint")
+            .fetch_one(executor)
+            .await
+            .map_err(reject)?;
+    crate::clock::millis_from_db(now).map_err(|error| DispatchError::Rejected(error.to_string()))
+}
+
 pub(super) async fn current_worker_claim(
     pool: &PgPool,
     prefix: &str,
     identity: &WorkerIdentity,
     run_id: &RunId,
-    now_ms: u64,
+    _now_ms: u64,
 ) -> Result<Option<RunClaim>, DispatchError> {
     let owner = identity.lease_owner();
     let epoch = sqlx::query_scalar::<_, i64>(&format!(
         "SELECT lease_epoch FROM {prefix}_dispatch WHERE run_id = $1 AND status = 'running' \
          AND lease_owner = $2 AND lease_until IS NOT NULL \
-         AND lease_until >= $3 AND cancel_requested = 0"
+         AND lease_until >= FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint \
+         AND cancel_requested = 0"
     ))
     .bind(&run_id.0)
     .bind(&owner)
-    .bind(crate::clock::db_millis(now_ms))
     .fetch_optional(pool)
     .await
     .map_err(reject)?;

@@ -351,12 +351,7 @@ pub trait SessionWorkLeaseAuthority: Send + Sync {
     /// Release the exact Session Work lease after the registered Worker's Run
     /// has committed and is ready to settle. `false` means the caller no longer
     /// owns that Session and must not settle its Run as current.
-    async fn release_session_work(
-        &self,
-        session_id: &str,
-        worker_owner: &str,
-        now_ms: u64,
-    ) -> Result<bool, WorkQueueError>;
+    async fn release_session_work(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError>;
 
     /// Return every non-terminal Session Work lease owned by one exact registered
     /// Worker incarnation to the queue during authority loss or deregistration.
@@ -657,6 +652,12 @@ pub trait WorkQueue: Send + Sync {
         env_id: &str,
         session_id: &str,
     ) -> Result<Option<WorkItem>, WorkQueueError>;
+    /// Registered-Worker settlement transition. Retire only the exact current
+    /// Session Work owner and lease epoch in one store compare-and-set; a stale
+    /// request must never retire a successor lease from the same incarnation.
+    async fn release_session(&self, _lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+        Ok(false)
+    }
     /// Private registered-Worker adapter over the same WorkQueue authority.
     /// It claims the exact queued Session or renews that exact current owner.
     /// When the exact Session is actively held by another owner, return that

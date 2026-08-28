@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_dream_application::{
     DreamCancellation, DreamExecutor, DreamFailure, DreamPreparation, DreamRequest,
@@ -16,7 +17,8 @@ use awaken_resource_contract::{
 };
 use awaken_session_application::{CreateProfiledSessionCommand, SessionApplication};
 use awaken_session_contract::{
-    DreamOutputBehavior, ManagedLifecycleFact, SessionExecutionState, SessionToolConfiguration,
+    AdmitSessionRun, DreamOutputBehavior, ManagedLifecycleFact, SessionToolConfiguration,
+    session_run_id,
 };
 
 const PLATFORM_INSTRUCTIONS: &str = r#"You are the built-in Dream Agent.
@@ -496,46 +498,31 @@ impl DreamExecutor for BuiltInDreamAgent {
             "[dream-job:{}] Consolidate the frozen memory and Session evidence now.",
             request.job_id
         );
-        let already_executed = self
-            .sessions
-            .session_transcript(&request.workspace_id, &preparation.session_id)
-            .await
-            .ok()
-            .is_some_and(|messages| {
-                messages.iter().any(|message| {
-                    serde_json::to_string(message)
-                        .is_ok_and(|serialized| serialized.contains(&trigger))
-                })
-            });
-        if already_executed {
-            let session = self
-                .sessions
-                .session(&preparation.session_id)
-                .await
-                .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-            if session.execution == SessionExecutionState::ActivationFailed {
-                return Err(DreamFailure::new(
-                    "internal_error",
-                    "the recovered Dream Agent Session failed",
-                ));
-            }
-            return Ok(());
-        }
-        let content = vec![awaken_agent_contract::agent::content::ContentBlock::text(
+        let operation_id = format!("dream-job:{}", request.job_id);
+        let run_id = session_run_id(&preparation.session_id, &operation_id);
+        let message = Message::text(
+            MessageId::session_event_input(&preparation.session_id, &operation_id),
+            Role::User,
             trigger,
-        )];
+        );
         let run = self
             .sessions
-            .run_session_message(
-                &request.agent_id,
-                &preparation.session_id,
-                content,
-                None,
-                Arc::new(DiscardDreamProgress),
+            .run_admitted_session_for_owner(
+                &request.workspace_id,
+                AdmitSessionRun {
+                    session_id: preparation.session_id.clone(),
+                    agent_id: request.agent_id.clone(),
+                    operation_id,
+                    run_id,
+                    messages: vec![message],
+                    data_subject_id: None,
+                    traceparent: None,
+                },
+                Some(Arc::new(DiscardDreamProgress)),
             )
             .await
             .map_err(|error| DreamFailure::new("internal_error", error.to_string()))?;
-        validate_dream_step(run.step.state())
+        validate_dream_step(run.state())
     }
 
     async fn cleanup(

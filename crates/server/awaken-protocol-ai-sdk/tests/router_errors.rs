@@ -18,6 +18,7 @@ struct NoAwaitingRuntime;
 impl RunApplication for NoAwaitingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -30,6 +31,7 @@ impl RunApplication for NoAwaitingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -132,6 +134,7 @@ struct AwaitingRuntime;
 impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -141,6 +144,7 @@ impl RunApplication for AwaitingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -212,6 +216,7 @@ struct PanickingRuntime;
 impl RunApplication for PanickingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -220,6 +225,7 @@ impl RunApplication for PanickingRuntime {
     }
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

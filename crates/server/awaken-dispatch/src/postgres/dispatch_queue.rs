@@ -344,11 +344,12 @@ impl DispatchQueue for PostgresDispatchStore {
         request: RunDispatch,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
         let owner = worker.identity.lease_owner();
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         if exact_run_replay(&mut tx, p, &request).await? {
             let run_id = request.run_id().clone();
@@ -444,6 +445,26 @@ impl DispatchQueue for PostgresDispatchStore {
         self.lock_claim_epoch_in_status(claim, "running").await
     }
 
+    async fn claim_is_current(
+        &self,
+        claim: &RunClaim,
+        _now_ms: u64,
+    ) -> Result<bool, DispatchError> {
+        let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
+        sqlx::query_scalar(&format!(
+            "SELECT EXISTS(SELECT 1 FROM {NS}_dispatch WHERE run_id = $1 \
+             AND status = 'running' AND lease_owner = $2 AND lease_epoch = $3 \
+             AND lease_until IS NOT NULL AND lease_until >= \
+             FLOOR(EXTRACT(EPOCH FROM clock_timestamp()) * 1000)::bigint)"
+        ))
+        .bind(&claim.run_id.0)
+        .bind(&claim.owner)
+        .bind(epoch)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(reject)
+    }
+
     async fn lock_session_run_reservation_epoch(
         &self,
         claim: &RunClaim,
@@ -456,10 +477,11 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
         capabilities: &awaken_runtime_contract::CredentialRealizationCapabilities,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         // Candidate discovery is deliberately read-only. The exact transition
         // below is the sole claim algorithm and always acquires the per-Thread
         // advisory lock before its row lock. Locking a candidate row here would
@@ -521,9 +543,10 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         worker: &WorkerSnapshot,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let thread_available = thread_available_for_claim(p);
         let rows = sqlx::query(&format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -594,9 +617,10 @@ impl DispatchQueue for PostgresDispatchStore {
         workers: Vec<WorkerSnapshot>,
         policy: std::sync::Arc<dyn PlacementPolicy>,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<Option<Claimed>, DispatchError> {
         let p = NS;
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let thread_available = thread_available_for_claim(p);
         let rows = sqlx::query(&format!(
             "SELECT d.run_id, d.request, d.sandbox, d.worker_assignment, d.status, d.cancel_requested, d.lease_epoch FROM {p}_dispatch d WHERE \
@@ -778,8 +802,9 @@ impl DispatchQueue for PostgresDispatchStore {
         run_id: &RunId,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<bool, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let p = NS;
         let result = sqlx::query(&format!(
             "UPDATE {p}_dispatch SET lease_until = $1 \
@@ -916,8 +941,9 @@ impl DispatchQueue for PostgresDispatchStore {
         &self,
         owner: &str,
         lease_ms: u64,
-        now_ms: u64,
+        _now_ms: u64,
     ) -> Result<usize, DispatchError> {
+        let now_ms = crate::postgres_helpers::postgres_now_ms(&self.pool).await?;
         let p = NS;
         // Only rows within half a lease of expiring — a fresh claim's lease is a
         // full length out, so it is skipped until it approaches expiry, bounding

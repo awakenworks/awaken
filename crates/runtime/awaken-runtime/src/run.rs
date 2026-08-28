@@ -3,14 +3,12 @@
 //! Every entry consumes the same immutable `ExecutableAgentSnapshot`; embedded and
 //! durable delivery differ only in transport and lifecycle ownership.
 
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use awaken_agent_contract::agent::awaiting::ResumeTicket;
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::{Id as RunId, RunState};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_agent_contract::fresh_process_id;
 use awaken_runtime_contract::activation::RunActivation;
 use awaken_runtime_contract::execution::{Error, RunExecutor};
 use awaken_runtime_contract::resume::{ResumeCommand, ResumeResult};
@@ -213,65 +211,9 @@ fn user_message(text: impl Into<String>) -> Message {
     }
 }
 
-/// Mint one restart-unique runtime identity. Runs, input messages and protocol
-/// adapters share this generator because each value can enter the same durable
-/// transcript; process-local counters would collide across active-active peers.
-#[must_use]
-pub fn fresh_process_id(prefix: &str) -> String {
-    static PROCESS_NAMESPACE: OnceLock<String> = OnceLock::new();
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let namespace = PROCESS_NAMESPACE.get_or_init(|| {
-        let started = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        process_namespace(std::process::id(), started)
-    });
-    let sequence = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("{prefix}-{namespace}-{sequence}")
-}
-
-fn process_namespace(process_id: u32, started_at_unix_nanos: u128) -> String {
-    format!("{process_id}-{started_at_unix_nanos:x}")
-}
-
 /// A fresh Run id must remain unique across process restarts because mutating tools
 /// derive their durable operation identity from it. Recovered/dispatched Runs supply
 /// their already-persisted explicit id and never pass through this generator.
 fn next_run_id() -> String {
     fresh_process_id("run")
-}
-
-#[cfg(test)]
-mod id_tests {
-    use std::collections::HashSet;
-
-    use super::{fresh_process_id, process_namespace};
-
-    #[test]
-    fn durable_runtime_ids_follow_the_process_namespace_decision_table() {
-        // Cause/effect graph: process identity + start instant define a restart
-        // namespace; one atomic sequence orders every durable identity kind.
-        //
-        // | Rule | process | start | concurrent calls | prefix | Effect |
-        // |---|---|---|---|---|---|
-        // | I1 | same | same | yes | same | every id is unique |
-        // | I2 | same | same | no | different | ids cannot alias |
-        // | I3 | different | same | no | same | namespaces differ |
-        // | I4 | same | different | no | same | namespaces differ |
-        let mut workers = Vec::new();
-        for _ in 0..8 {
-            workers.push(std::thread::spawn(|| {
-                (0..32).map(|_| fresh_process_id("msg")).collect::<Vec<_>>()
-            }));
-        }
-        let ids = workers
-            .into_iter()
-            .flat_map(|worker| worker.join().expect("id worker"))
-            .collect::<Vec<_>>();
-        assert_eq!(ids.iter().collect::<HashSet<_>>().len(), ids.len(), "I1");
-        assert_ne!(fresh_process_id("msg"), fresh_process_id("run"), "I2");
-        assert_ne!(process_namespace(1, 7), process_namespace(2, 7), "I3");
-        assert_ne!(process_namespace(1, 7), process_namespace(1, 8), "I4");
-    }
 }

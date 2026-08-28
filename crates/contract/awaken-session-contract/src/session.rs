@@ -559,26 +559,26 @@ pub trait SessionRuntime: Send + Sync {
     /// Install the durable callback used at the exact sandbox creation boundary.
     fn install_environment_binding_sink(&self, _sink: Arc<dyn SessionEnvironmentBindingSink>) {}
 
-    /// Persist one complete self-affine User Run as an unclaimable reservation.
+    /// Persist one complete self-affine Session Run as an unclaimable reservation.
     /// Implementations must use their existing durable Run dispatch authority;
     /// the default fails closed rather than executing inline.
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        _command: crate::SessionUserRunCommand,
-    ) -> Result<crate::SessionUserRunReservation, RunError> {
+        _command: crate::AdmitSessionRun,
+    ) -> Result<crate::SessionRunReservation, RunError> {
         Err(RunError::unavailable(
-            "runtime does not implement durable Session User Run reservations",
+            "runtime does not implement durable Session Run reservations",
         ))
     }
 
     /// Publish one exact reservation only after the Session root committed its
     /// activity epoch. Ordinary Worker claim/execution remains the sole runner.
-    async fn activate_session_user_run(
+    async fn activate_session_run(
         &self,
-        _delivery: crate::SessionUserRunDelivery,
-    ) -> Result<crate::SessionUserRunActivation, RunError> {
+        _delivery: crate::SessionRunDelivery,
+    ) -> Result<crate::SessionRunActivation, RunError> {
         Err(RunError::unavailable(
-            "runtime does not implement durable Session User Run activation",
+            "runtime does not implement durable Session Run activation",
         ))
     }
 
@@ -590,26 +590,27 @@ pub trait SessionRuntime: Send + Sync {
     /// committed Thread truth and never create another reservation/activity.
     /// Public queued Event acceptance has its own durable command boundary and
     /// does not wait through this foreground observation port.
-    async fn activate_and_observe_session_user_run(
+    async fn activate_and_observe_session_run(
         &self,
-        _admission: crate::SessionUserRunAdmission,
+        _admission: crate::AdmittedSessionRun,
+        _input_message_ids: Vec<String>,
         _sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> Result<RunState, RunError> {
+    ) -> Result<StepOutcome, RunError> {
         Err(RunError::unavailable(
-            "runtime does not implement durable Session User Run observation",
+            "runtime does not implement durable Session Run observation",
         ))
     }
 
     /// Read the exact Run lifecycle from existing committed Thread truth. This
     /// is the recovery observation for batch advancement, not a completion
     /// registry or protocol event cache.
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         _session_id: &str,
         _run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
         Err(RunError::unavailable(
-            "runtime does not implement Session User Run recovery",
+            "runtime does not implement Session Run recovery",
         ))
     }
     /// Install the exact realization fence before any physical environment can
@@ -718,6 +719,19 @@ pub trait SessionRuntime: Send + Sync {
     ) -> Result<(), RunError> {
         Err(RunError::unavailable(
             "Session Thread tool replies are unsupported",
+        ))
+    }
+
+    /// Foreground form of [`Self::reply_session_thread_tool`]. The durable
+    /// reply ingress remains identical; implementations additionally register
+    /// before publication and project the next committed Step from Thread
+    /// truth. No inline executor is authorized by this observation policy.
+    async fn reply_and_observe_session_thread_tool(
+        &self,
+        _delivery: crate::SessionThreadToolReplyDelivery,
+    ) -> Result<StepOutcome, RunError> {
+        Err(RunError::unavailable(
+            "Session Thread tool reply observation is unsupported",
         ))
     }
 

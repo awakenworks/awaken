@@ -179,10 +179,12 @@ production logic.
 
 ## TLA+ specifications
 
-- `RunIngress.tla` covers the post-activation executable queue: claim,
-  lease-epoch fencing, crash reclaim, await/wake, cancellation, dead-letter,
-  requeue, and supersession. `SessionRunWorkflow.tla` owns the preceding
-  durable Session Run reservation and activity-opening boundary.
+- `RunIngress.tla` is the dispatch-only component: reservation publication,
+  claim/lease-epoch fencing, crash reclaim, pending-input delivery,
+  cancellation, settlement, dead-letter, requeue, and supersession. It never
+  mutates Run disposition or tickets. `SessionRunProtocol.tla` instances those
+  operators and adds only cross-authority ordering for Session activity, Work,
+  realization, committed Thread observation, and settlement.
 - `WorkQueue.tla` covers the distinct Managed environment queue: transactional
   single-active claim, durable owner/epoch/expiry, exact-boundary reclaim,
   heartbeat, acknowledgement, stop, and environment removal.
@@ -225,6 +227,25 @@ production logic.
   followers that cannot return early, cooperative completion, deadline abort,
   and repeated shutdown after the active drain. `ServiceLifecycleProof.tla`
   proves the shutdown admission and return barriers directly.
+
+### Orthogonal state regions
+
+The implementation and proofs do not use one product-wide state enum. The
+Thread aggregate commits orthogonal regions in one `ThreadCommit`: Run
+disposition and optional exact resume ticket; ordered messages/state/audit;
+`ActiveToolBatch`; and delegation relationships. Their coupling is expressed as
+commit invariants (for example, Awaiting requires its exact ticket, executor
+entry requires a committed Executing call), not by multiplying every region
+into a second mega-state machine.
+
+A tool call is likewise decomposed into durable call lifecycle, approval/input
+availability, and replay policy. `ToolBatch.tla` checks their legal product and
+whole-batch publication barrier; `RustCommitSystem.tla` plus the executable Rust
+trace bridge checks the committed Thread projection. `RunIngress.tla` does not
+repeat either region: it treats ThreadCommit disposition as an external fact and
+models only dispatch ownership and settlement. This is assume-guarantee
+composition, so external tool effects still require a stable operation id and
+downstream idempotency; they are not claimed exactly once by these proofs.
 - `ObservationReconcile.tla` covers the concurrent heartbeat and periodic
   observation-refresh paths sharing one async mutex. It gives every semantic
   evidence change a monotonic epoch (including A -> B -> A), preserves the
@@ -259,9 +280,9 @@ production logic.
   completion bound for TLC; the one-driver invariant itself is independent of
   the chosen bound.
 - `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
-  `ResourceLifecycleWorkflow.tla`, and `SessionRunWorkflow.tla` compose the
-  corresponding already-modeled kernels into product workflows. The Session
-  workflow additionally checks that reservation precedes activity, Reserved
+  `ResourceLifecycleWorkflow.tla`, and `SessionRunProtocol.tla` compose the
+  corresponding already-modeled kernels at product boundaries. The Session
+  protocol additionally checks that reservation precedes activity, Reserved
   never executes, recovery claims grant admission work only, and execution
   requires one Worker to own the exact Dispatch, WorkQueue, and realization
   authorities. Their normal configurations check safety; the dedicated
@@ -375,7 +396,7 @@ graphs with zero invariant violations and zero states left on the queue:
 
 | Model | Generated | Distinct | Max depth |
 | --- | ---: | ---: | ---: |
-| RunIngress | 1,095 | 31 | 6 |
+| RunIngress | 3,215 | 118 | 10 |
 | WorkQueue | 26,521 | 4,206 | 15 |
 | Delegation | 5,835 | 1,097 | 14 |
 | ToolBatch | 1,414 | 979 | 12 |
@@ -431,7 +452,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | Deployment execution reachability | 15 | 15 | 5 |
 | Resource lifecycle workflow | 50 | 22 | 9 |
 | Resource lifecycle reachability | 6 | 6 | 6 |
-| Session run workflow | 98 | 98 | 8 |
+| Session run protocol | 7,475 | 432 | 18 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.

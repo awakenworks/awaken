@@ -6,14 +6,13 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[cfg(test)]
-use awaken_agent_contract::agent::awaiting::PermissionDecision;
 use awaken_agent_contract::agent::message::Message;
 use awaken_session_contract::{
-    ControlSessionCreationInputs, McpAttachmentOrigin, Pending, RunApplication,
-    RunApplicationError, RunError, RunResume, SessionBaselineState, SessionCreationIntent,
-    SessionMcpAuthoringContext, SessionNetworkPolicy, SessionRepositoryError,
-    SessionToolConfiguration, StepOutcome,
+    AdmitSessionRun, AdmittedSessionRun, ControlSessionCreationInputs, McpAttachmentOrigin,
+    Pending, RunApplication, RunApplicationError, RunError, RunResume, SessionBaselineState,
+    SessionCreationIntent, SessionMcpAuthoringContext, SessionNetworkPolicy,
+    SessionRepositoryError, SessionRunDelivery, SessionRunReservation, SessionToolConfiguration,
+    StepOutcome, session_run_activity_operation_id,
 };
 
 use crate::{
@@ -22,39 +21,6 @@ use crate::{
     SessionPreparationError, SessionRealizationError, SessionRepositoryOwner,
     SessionRepositoryResourceInput,
 };
-
-#[async_trait::async_trait]
-pub trait SessionRunAdmission: Send + Sync {
-    async fn admit(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), RunApplicationError>;
-    /// Open the admitted operation's activity. The default preserves source and
-    /// behavior compatibility for non-Session test/application adapters; the
-    /// canonical SessionApplication implementation returns its durable epoch.
-    async fn begin(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<u64>, RunApplicationError> {
-        self.admit(workspace_id, thread_id, agent_id).await?;
-        Ok(None)
-    }
-
-    /// Settle the exact activity opened by [`Self::begin`]. Implementations that
-    /// do not own a Session aggregate retain their former pass-through behavior.
-    async fn finish(
-        &self,
-        _thread_id: &str,
-        _activity_epoch: Option<u64>,
-        step: Result<StepOutcome, RunApplicationError>,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        step
-    }
-}
 
 /// Protocol-independent request to create a Session from one published Agent
 /// profile. The Session application resolves Environment, MCP, Resources,
@@ -121,6 +87,16 @@ fn repository_error(error: SessionRepositoryError) -> RunError {
     }
 }
 
+fn mutation_error(error: SessionMutationError) -> RunError {
+    match error {
+        SessionMutationError::NotFound => RunError::bad_request("Session was not found"),
+        SessionMutationError::Conflict | SessionMutationError::IdempotencyMismatch => {
+            RunError::unavailable("Session changed while it was being admitted")
+        }
+        SessionMutationError::Unavailable(message) => RunError::unavailable(message),
+    }
+}
+
 fn preparation_error(error: SessionPreparationError) -> RunError {
     match error {
         SessionPreparationError::Rejected(error) => error,
@@ -175,6 +151,159 @@ fn profiled_repository_attachment(
 }
 
 impl SessionApplication {
+    /// Reserve one stable Run, then commit or recover the exact Session activity
+    /// receipt before activation. This is the sole durable Session Run admission
+    /// boundary used by both public protocols and Event reconciliation.
+    pub async fn admit_session_run(
+        &self,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, RunError> {
+        self.admit_session_run_with_owner(command, None).await
+    }
+
+    /// Admit a protocol request under its already-authenticated owner scope.
+    /// This is the same durable admission as [`Self::admit_session_run`]; the
+    /// extra coordinate is used only to create or authorize the Session before
+    /// the shared reservation/activity/activation protocol starts.
+    pub async fn admit_session_run_for_owner(
+        &self,
+        owner_scope: &str,
+        command: AdmitSessionRun,
+    ) -> Result<AdmittedSessionRun, RunError> {
+        self.admit_session_run_with_owner(command, Some(owner_scope))
+            .await
+    }
+
+    fn admit_session_run_with_owner<'a>(
+        &'a self,
+        command: AdmitSessionRun,
+        expected_owner: Option<&'a str>,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + 'a>,
+    > {
+        // Return a boxed future at the application boundary. The admission
+        // graph is intentionally deep; boxing here prevents protocol and
+        // lifecycle callers from moving its complete state machine through a
+        // default Tokio worker stack.
+        Box::pin(async move {
+            let session_id = command.session_id.clone();
+            let agent_id = command.agent_id.clone();
+            let run_id = command.run_id.clone();
+            let operation = session_run_activity_operation_id(&session_id, &run_id);
+            // Cause/effect decision table: an existing exact activity receipt is
+            // response-loss truth and outranks current policy; without one, recover
+            // the Session projection before Runtime freezes the dispatch. Reservation
+            // remains non-executable until the exact epoch is activated.
+            let durable_owner = match self.owner(&session_id).await {
+                Ok(actual_owner) => {
+                    if expected_owner.is_some_and(|expected| expected != actual_owner) {
+                        return Err(RunError::bad_request("Session was not found"));
+                    }
+                    Some(actual_owner)
+                }
+                Err(SessionMutationError::NotFound) if expected_owner.is_some() => None,
+                Err(error) => return Err(mutation_error(error)),
+            };
+            let existing_activity_epoch = match durable_owner.as_ref() {
+                Some(_) => self
+                    .recover_activity_for_operation(&session_id, &operation)
+                    .await
+                    .map_err(crate::SessionActivityError::run_error)?
+                    .map(|(_, epoch)| epoch),
+                None => None,
+            };
+            if existing_activity_epoch.is_none() {
+                let owner_scope = durable_owner
+                    .or_else(|| expected_owner.map(str::to_string))
+                    .ok_or_else(|| RunError::bad_request("Session was not found"))?;
+                self.admit_run_session(&owner_scope, &session_id, &agent_id)
+                    .await?;
+            }
+            let reservation = self.runtime().reserve_session_run(command).await?;
+            let delivery = |session_activity_epoch| SessionRunDelivery {
+                session_id: session_id.clone(),
+                run_id: run_id.clone(),
+                session_activity_epoch,
+            };
+
+            match reservation {
+                SessionRunReservation::Reserved | SessionRunReservation::AlreadyReserved => {
+                    let session_activity_epoch = match existing_activity_epoch {
+                        Some(epoch) => epoch,
+                        None => {
+                            self.begin_activity_for_operation(&session_id, &operation)
+                                .await
+                                .map_err(crate::SessionActivityError::run_error)?
+                                .1
+                        }
+                    };
+                    Ok(match reservation {
+                        SessionRunReservation::Reserved => {
+                            AdmittedSessionRun::Reserved(delivery(session_activity_epoch))
+                        }
+                        SessionRunReservation::AlreadyReserved => {
+                            AdmittedSessionRun::AlreadyReserved(delivery(session_activity_epoch))
+                        }
+                        _ => unreachable!("matched reserved outcomes"),
+                    })
+                }
+                SessionRunReservation::AlreadyActivated {
+                    session_activity_epoch,
+                } => {
+                    if session_activity_epoch == 0 {
+                        return Err(RunError::internal(
+                            "activated Session Run has no activity epoch",
+                        ));
+                    }
+                    Ok(AdmittedSessionRun::AlreadyActivated(delivery(
+                        session_activity_epoch,
+                    )))
+                }
+                SessionRunReservation::RecoveryClaimed => {
+                    Ok(AdmittedSessionRun::RecoveryClaimed { session_id, run_id })
+                }
+                SessionRunReservation::Completed => {
+                    Ok(AdmittedSessionRun::Completed { session_id, run_id })
+                }
+            }
+        })
+    }
+
+    /// Admit, register-before-activation, and project one foreground Run from
+    /// authoritative committed Thread truth. Foreground/background is only an
+    /// observation policy; the durable state transition is the same admission.
+    pub async fn run_admitted_session(
+        &self,
+        command: AdmitSessionRun,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        let input_message_ids = command.input_message_ids();
+        let admitted = Box::pin(self.admit_session_run(command)).await?;
+        Box::pin(
+            self.runtime()
+                .activate_and_observe_session_run(admitted, input_message_ids, sink),
+        )
+        .await
+    }
+
+    /// Owner-authenticated form of [`Self::run_admitted_session`] used by
+    /// public protocol adapters. Both forms converge on the same durable Run
+    /// reservation and foreground observation port.
+    pub async fn run_admitted_session_for_owner(
+        &self,
+        owner_scope: &str,
+        command: AdmitSessionRun,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunError> {
+        let input_message_ids = command.input_message_ids();
+        let admitted = Box::pin(self.admit_session_run_for_owner(owner_scope, command)).await?;
+        Box::pin(
+            self.runtime()
+                .activate_and_observe_session_run(admitted, input_message_ids, sink),
+        )
+        .await
+    }
+
     /// Read the one durable Session projection used by every protocol without
     /// driving Runtime effects. Queries must remain projections; realization is
     /// owned by create, run admission, Worker claims, and reconciliation.
@@ -780,129 +909,119 @@ impl SessionApplication {
     }
 }
 
-#[async_trait::async_trait]
-impl SessionRunAdmission for SessionApplication {
-    async fn admit(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<(), RunApplicationError> {
-        self.admit_run_session(workspace_id, thread_id, agent_id)
-            .await
-    }
-
-    async fn begin(
-        &self,
-        workspace_id: &str,
-        thread_id: &str,
-        agent_id: &str,
-    ) -> Result<Option<u64>, RunApplicationError> {
-        self.admit_run_session(workspace_id, thread_id, agent_id)
-            .await?;
-        self.begin_activity(thread_id)
-            .await
-            .map(|session| Some(session.activity_epoch))
-            .map_err(crate::SessionActivityError::run_error)
-    }
-
-    async fn finish(
-        &self,
-        thread_id: &str,
-        activity_epoch: Option<u64>,
-        step: Result<StepOutcome, RunApplicationError>,
-    ) -> Result<StepOutcome, RunApplicationError> {
-        let Some(activity_epoch) = activity_epoch else {
-            return step;
-        };
-        self.finish_runtime_activity(thread_id, activity_epoch, step)
-            .await
-            .map(|outcome| outcome.step)
-    }
-}
-
-/// The sole admission decorator for all public Run protocols.
+/// The sole durable Session Run application for all public Run protocols.
 type WorkspaceResolver = dyn Fn(&str) -> String + Send + Sync;
 type ProjectedAgentResolver = dyn Fn(&str) -> Option<String> + Send + Sync;
 
-pub struct AdmittedRunApplication {
+pub struct SessionRunApplication {
     runtime: Arc<dyn RunApplication>,
-    admission: Arc<dyn SessionRunAdmission>,
+    sessions: Arc<SessionApplication>,
     workspace: Arc<WorkspaceResolver>,
     projected_agent: Arc<ProjectedAgentResolver>,
 }
 
-impl AdmittedRunApplication {
+impl SessionRunApplication {
     #[must_use]
     pub fn new(
         runtime: Arc<dyn RunApplication>,
-        admission: Arc<dyn SessionRunAdmission>,
+        sessions: Arc<SessionApplication>,
         workspace: impl Fn(&str) -> String + Send + Sync + 'static,
         projected_agent: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
     ) -> Self {
         Self {
             runtime,
-            admission,
+            sessions,
             workspace: Arc::new(workspace),
             projected_agent: Arc::new(projected_agent),
         }
     }
 
-    async fn begin_run(
-        &self,
-        thread: &str,
-        requested_agent: Option<&str>,
-    ) -> Result<Option<u64>, RunApplicationError> {
+    fn agent_for(&self, thread: &str, requested_agent: Option<&str>) -> String {
         let projected = (self.projected_agent)(thread);
-        self.admission
-            .begin(
-                &(self.workspace)(thread),
-                thread,
-                requested_agent
-                    .or(projected.as_deref())
-                    .unwrap_or("assistant"),
-            )
-            .await
+        requested_agent
+            .or(projected.as_deref())
+            .unwrap_or("assistant")
+            .to_string()
+    }
+
+    async fn run_admitted(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        requested_agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        if operation_id.trim().is_empty() {
+            return Err(RunError::bad_request(
+                "Session Run requires a stable operation identity",
+            ));
+        }
+        if messages.is_empty() {
+            return Err(RunError::bad_request(
+                "Session Run requires at least one new input message",
+            ));
+        }
+        let agent_id = self.agent_for(thread, requested_agent.as_deref());
+        let command = AdmitSessionRun {
+            session_id: thread.to_string(),
+            agent_id,
+            operation_id: operation_id.to_string(),
+            run_id: awaken_session_contract::session_run_id(thread, operation_id),
+            messages,
+            data_subject_id: None,
+            traceparent: None,
+        };
+        let owner_scope = (self.workspace)(thread);
+        Box::pin(
+            self.sessions
+                .run_admitted_session_for_owner(&owner_scope, command, sink),
+        )
+        .await
     }
 }
 
 #[async_trait::async_trait]
-impl RunApplication for AdmittedRunApplication {
+impl RunApplication for SessionRunApplication {
     async fn run(
         &self,
+        operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        let activity_epoch = self.begin_run(thread, agent.as_deref()).await?;
-        let step = self.runtime.run(thread, agent, messages).await;
-        self.admission.finish(thread, activity_epoch, step).await
+        self.run_admitted(operation_id, thread, agent, messages, None)
+            .await
     }
 
     async fn run_streaming(
         &self,
+        operation_id: &str,
         thread: &str,
         agent: Option<String>,
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        let activity_epoch = self.begin_run(thread, agent.as_deref()).await?;
-        let step = self
-            .runtime
-            .run_streaming(thread, agent, messages, sink)
-            .await;
-        self.admission.finish(thread, activity_epoch, step).await
+        self.run_admitted(operation_id, thread, agent, messages, Some(sink))
+            .await
     }
 
     async fn resume(
         &self,
+        operation_id: &str,
         thread: &str,
         tool_use_id: &str,
         resume: RunResume,
     ) -> Result<StepOutcome, RunApplicationError> {
-        let activity_epoch = self.begin_run(thread, None).await?;
-        let step = self.runtime.resume(thread, tool_use_id, resume).await;
-        self.admission.finish(thread, activity_epoch, step).await
+        self.sessions
+            .resume_session_run_for_owner(
+                &(self.workspace)(thread),
+                operation_id,
+                thread,
+                tool_use_id,
+                resume,
+            )
+            .await
     }
 
     async fn interrupt(&self, thread: &str) -> Result<(), RunApplicationError> {
@@ -923,225 +1042,5 @@ impl RunApplication for AdmittedRunApplication {
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
         self.runtime.usage(thread).await
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
-    use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    struct Admission {
-        calls: Mutex<Vec<(String, String, String)>>,
-        fail: bool,
-        active: Arc<Mutex<HashSet<String>>>,
-    }
-
-    #[async_trait::async_trait]
-    impl SessionRunAdmission for Admission {
-        async fn admit(
-            &self,
-            workspace_id: &str,
-            thread_id: &str,
-            agent_id: &str,
-        ) -> Result<(), RunApplicationError> {
-            self.begin(workspace_id, thread_id, agent_id)
-                .await
-                .map(|_| ())
-        }
-
-        async fn begin(
-            &self,
-            workspace_id: &str,
-            thread_id: &str,
-            agent_id: &str,
-        ) -> Result<Option<u64>, RunApplicationError> {
-            self.calls.lock().unwrap().push((
-                workspace_id.to_owned(),
-                thread_id.to_owned(),
-                agent_id.to_owned(),
-            ));
-            if self.fail {
-                Err(RunApplicationError::unavailable("session store offline"))
-            } else {
-                self.active.lock().unwrap().insert(thread_id.to_owned());
-                Ok(Some(1))
-            }
-        }
-
-        async fn finish(
-            &self,
-            thread_id: &str,
-            activity_epoch: Option<u64>,
-            step: Result<StepOutcome, RunApplicationError>,
-        ) -> Result<StepOutcome, RunApplicationError> {
-            assert_eq!(activity_epoch, Some(1));
-            assert!(self.active.lock().unwrap().remove(thread_id));
-            step
-        }
-    }
-
-    struct Runtime {
-        calls: AtomicUsize,
-        active: Arc<Mutex<HashSet<String>>>,
-        fail_thread: Option<&'static str>,
-    }
-
-    #[async_trait::async_trait]
-    impl RunApplication for Runtime {
-        async fn run(
-            &self,
-            _thread: &str,
-            _agent: Option<String>,
-            _messages: Vec<Message>,
-        ) -> Result<StepOutcome, RunApplicationError> {
-            assert!(self.active.lock().unwrap().contains(_thread));
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            if self.fail_thread == Some(_thread) {
-                return Err(RunApplicationError::unavailable("runtime offline"));
-            }
-            Ok(StepOutcome::ended(
-                Vec::new(),
-                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            ))
-        }
-
-        async fn resume(
-            &self,
-            _thread: &str,
-            _tool_use_id: &str,
-            _resume: RunResume,
-        ) -> Result<StepOutcome, RunApplicationError> {
-            assert!(self.active.lock().unwrap().contains(_thread));
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(StepOutcome::ended(
-                Vec::new(),
-                awaken_agent_contract::agent::run::EndCause::NaturalEnd,
-            ))
-        }
-
-        async fn pending(&self, _thread: &str) -> Result<Option<Pending>, RunApplicationError> {
-            Ok(None)
-        }
-
-        async fn history(&self, _thread: &str) -> Result<Vec<Message>, RunApplicationError> {
-            Ok(Vec::new())
-        }
-
-        fn model(&self) -> String {
-            "test".into()
-        }
-    }
-
-    #[tokio::test]
-    async fn session_admission_is_the_single_gate_before_run_execution() {
-        // Cause/effect decision table: R1 explicit Agent + admission success =>
-        // exact Agent admitted then one Run; R2 no Agent + recovered projection =>
-        // projected Agent admitted; R3 admission unavailable => zero Runs and the
-        // retryable error preserved; R4 read-only history => no activity; R5 a
-        // continuation opens the activity before Runtime resume; R6 Runtime
-        // failure still closes the activity. E1 every effect-capable Runtime call
-        // observes its Session as Running; E2 every terminal return observes the
-        // activity closed. These rules reproduce the hosted MCP failure where
-        // `tools/call` queried the durable Thread during an AI SDK Run but saw
-        // Idle, while keeping application policy out of Runtime Host.
-        //
-        // | Rule | Admission | Operation | Runtime | Effect |
-        // |---|---|---|---|---|
-        // | R1/R2 | allow | Run | success | E1 then E2 |
-        // | R3 | deny | Run | not called | no activity |
-        // | R4 | n/a | read | n/a | no activity |
-        // | R5 | allow | resume | success | E1 then E2 |
-        // | R6 | allow | Run | failure | E1 then E2 + same error |
-        let active = Arc::new(Mutex::new(HashSet::new()));
-        let admission = Arc::new(Admission {
-            calls: Mutex::new(Vec::new()),
-            fail: false,
-            active: active.clone(),
-        });
-        let runtime = Arc::new(Runtime {
-            calls: AtomicUsize::new(0),
-            active: active.clone(),
-            fail_thread: Some("thread-failure"),
-        });
-        let app = AdmittedRunApplication::new(
-            runtime.clone(),
-            admission.clone(),
-            |_| "workspace-a".into(),
-            |_| Some("projected-agent".into()),
-        );
-
-        app.run("thread-a", Some("explicit-agent".into()), Vec::new())
-            .await
-            .expect("R1");
-        app.run("thread-b", None, Vec::new()).await.expect("R2");
-        app.resume(
-            "thread-resume",
-            "tool-a",
-            RunResume::Permission(PermissionDecision::Allow { note: None }),
-        )
-        .await
-        .expect("R5");
-        let error = app
-            .run("thread-failure", None, Vec::new())
-            .await
-            .expect_err("R6");
-        assert_eq!(error.message, "runtime offline", "R6");
-        app.history("thread-a").await.expect("R4");
-        assert_eq!(runtime.calls.load(Ordering::SeqCst), 4, "R1/R2/R4-R6");
-        assert!(active.lock().unwrap().is_empty(), "R1-R6/E2");
-        assert_eq!(
-            admission.calls.lock().unwrap().as_slice(),
-            [
-                (
-                    "workspace-a".into(),
-                    "thread-a".into(),
-                    "explicit-agent".into()
-                ),
-                (
-                    "workspace-a".into(),
-                    "thread-b".into(),
-                    "projected-agent".into()
-                ),
-                (
-                    "workspace-a".into(),
-                    "thread-resume".into(),
-                    "projected-agent".into()
-                ),
-                (
-                    "workspace-a".into(),
-                    "thread-failure".into(),
-                    "projected-agent".into()
-                ),
-            ],
-            "R1/R2/R4-R6"
-        );
-
-        let denied_active = Arc::new(Mutex::new(HashSet::new()));
-        let denied_runtime = Arc::new(Runtime {
-            calls: AtomicUsize::new(0),
-            active: denied_active.clone(),
-            fail_thread: None,
-        });
-        let denied = AdmittedRunApplication::new(
-            denied_runtime.clone(),
-            Arc::new(Admission {
-                calls: Mutex::new(Vec::new()),
-                fail: true,
-                active: denied_active.clone(),
-            }),
-            |_| "workspace-a".into(),
-            |_| None,
-        );
-        let error = denied.run("thread-c", None, Vec::new()).await.unwrap_err();
-        assert_eq!(
-            error.kind,
-            awaken_session_contract::RunErrorKind::Unavailable,
-            "R3"
-        );
-        assert_eq!(denied_runtime.calls.load(Ordering::SeqCst), 0, "R3");
-        assert!(denied_active.lock().unwrap().is_empty(), "R3");
     }
 }

@@ -74,14 +74,19 @@ def session_admission_ownership_violations(sources: dict[str, str]) -> list[str]
             if re.search(rf"\b{symbol}\b", production):
                 errors.append(
                     f"{relative}: obsolete protocol-owned Session admission {symbol!r}; "
-                    "use SessionApplication's SessionRunAdmission implementation"
+                    "use SessionApplication's AdmitSessionRun command"
                 )
     application = sources.get(
         "crates/server/awaken-session-application/src/run_admission.rs", ""
     )
-    if "impl SessionRunAdmission for SessionApplication" not in application:
+    required = (
+        "pub async fn admit_session_run_for_owner",
+        "pub struct SessionRunApplication",
+        "impl RunApplication for SessionRunApplication",
+    )
+    if any(symbol not in application for symbol in required):
         errors.append(
-            "awaken-session-application: missing authoritative SessionRunAdmission implementation"
+            "awaken-session-application: missing the authoritative Session Run command or adapter"
         )
     coordinator = sources.get("crates/server/awaken-coordinator/src/lib.rs", "")
     if "managed_state.session_application()" not in coordinator:
@@ -205,15 +210,17 @@ def selftest() -> None:
         }
     ) == [], "B3/E7"
 
-    # Admission-ownership cause/effect graph: C8 SessionApplication implements
-    # the neutral gate; C9 Coordinator injects that implementation; C10 Managed
-    # or Coordinator defines a compatibility admission. Effects: E8 one owner;
+    # Admission-ownership cause/effect graph: C8 SessionApplication owns the
+    # neutral command and sole adapter; C9 Coordinator injects that application;
+    # C10 Managed or Coordinator defines a compatibility admission. Effects: E8 one owner;
     # E9 all public Run adapters share it; E10 reject a second creation/recovery
     # path. Decision table: A1 C8+C9,!C10 -> accept; A2 !C8 -> reject; A3 C10 ->
     # reject. The production stripper keeps test fixtures from becoming owners.
     valid = {
         "crates/server/awaken-session-application/src/run_admission.rs":
-            "impl SessionRunAdmission for SessionApplication {}",
+            "pub async fn admit_session_run_for_owner() {} "
+            "pub struct SessionRunApplication; "
+            "impl RunApplication for SessionRunApplication {}",
         "crates/server/awaken-coordinator/src/lib.rs":
             "managed_state.session_application()",
         "crates/server/awaken-protocol-managed/src/state/sessions.rs": "",

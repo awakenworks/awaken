@@ -3099,6 +3099,159 @@ async fn coordinated_follow_up_admission_uses_existing_thread_authorities() {
 }
 
 #[tokio::test]
+async fn foreground_resume_reuses_exact_ticket_coordination_path() {
+    // Cause/effect graph: C1 asserted owner matches/does not match the durable
+    // owner; C2 operation identity is empty/stable; C3 asserted tool id
+    // matches/does not match the committed ResumeTicket; C4 reply kind matches
+    // the ticket; C5 durable delivery accepts/definitively rejects. Effects: E1
+    // unauthorized or invalid requests create neither delivery nor Session
+    // activity; E2 an accepted request publishes one Primary delivery containing
+    // the exact Run/correlation/Thread version and one receipt-backed activity
+    // epoch; E3 the result is observed from committed truth; E4 definitive
+    // rejection settles the transferred epoch. The fake's legacy inline
+    // `resume` methods always fail, so E2+E3 also prove this API has no second
+    // execution path.
+    //
+    // | Rule | identity | ticket/tool/kind | delivery | Effect |
+    // |---|---|---|---|---|
+    // | F0 | wrong | stable | exact | n/a | E1 |
+    // | F1 | exact | empty | exact | n/a | E1 |
+    // | F2 | exact | stable | wrong tool or kind | n/a | E1 |
+    // | F3 | exact | stable | exact | accepted | E2+E3 |
+    // | F4 | exact | stable | exact | rejected | E4 |
+    let repo = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("foreground resume repository"),
+    );
+    for session_id in ["foreground-resume", "foreground-resume-rejected"] {
+        create(repo.as_ref(), persisted(session_id, false, "idle")).await;
+    }
+    let accepted_runtime = Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::Accepted));
+    let accepted = application_with_runtime(
+        accepted_runtime.clone(),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let allow = || {
+        awaken_session_contract::RunResume::Permission(
+            awaken_agent_contract::agent::awaiting::PermissionDecision::Allow { note: None },
+        )
+    };
+
+    assert!(
+        accepted
+            .resume_session_run_for_owner(
+                "foreign-workspace",
+                "foreground-request-foreign",
+                "foreground-resume",
+                "reply-tool",
+                allow(),
+            )
+            .await
+            .is_err(),
+        "F0 foreign owner fails closed"
+    );
+
+    for (operation_id, tool_use_id, resume) in [
+        ("", "reply-tool", allow()),
+        ("foreground-request-wrong-tool", "other-tool", allow()),
+        (
+            "foreground-request-wrong-kind",
+            "reply-tool",
+            awaken_session_contract::RunResume::ClientResult {
+                content: Vec::new(),
+                is_error: false,
+            },
+        ),
+    ] {
+        assert!(
+            accepted
+                .resume_session_run(operation_id, "foreground-resume", tool_use_id, resume,)
+                .await
+                .is_err(),
+            "F1/F2 invalid request fails closed"
+        );
+    }
+    assert!(
+        accepted_runtime.deliveries.lock().unwrap().is_empty(),
+        "F0/F1/F2/E1"
+    );
+    assert!(
+        repo.get("foreground-resume")
+            .await
+            .expect("F0/F1/F2 state")
+            .active_activity_epochs
+            .is_empty(),
+        "F0/F1/F2/E1"
+    );
+
+    let outcome = accepted
+        .resume_session_run(
+            "foreground-request-accepted",
+            "foreground-resume",
+            "reply-tool",
+            allow(),
+        )
+        .await
+        .expect("F3 accepted foreground resume");
+    assert!(
+        matches!(
+            outcome.state(),
+            awaken_agent_contract::agent::run::RunState::Ended(_)
+        ),
+        "F3/E3 committed outcome observation"
+    );
+    let delivery = accepted_runtime.deliveries.lock().unwrap()[0].clone();
+    assert_eq!(
+        delivery.command.target,
+        awaken_session_contract::SessionThreadTarget::Primary,
+        "F3/E2"
+    );
+    assert_eq!(delivery.command.expected_run_id.0, "reply-run", "F3/E2");
+    assert_eq!(
+        delivery.command.expected_correlation_id, "reply-correlation",
+        "F3/E2"
+    );
+    assert_eq!(delivery.command.expected_thread_version, Some(1), "F3/E2");
+    assert_eq!(
+        repo.get("foreground-resume")
+            .await
+            .expect("F3 state")
+            .active_activity_epochs,
+        std::collections::BTreeSet::from([delivery.session_activity_epoch]),
+        "F3/E2"
+    );
+
+    let rejected = application_with_runtime(
+        Arc::new(RecordingReplyRuntime::new(ReplyRuntimeOutcome::BadRequest)),
+        repo.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    assert!(
+        rejected
+            .resume_session_run(
+                "foreground-request-rejected",
+                "foreground-resume-rejected",
+                "reply-tool",
+                allow(),
+            )
+            .await
+            .is_err(),
+        "F4 rejection surfaces"
+    );
+    let rejected_state = repo
+        .get("foreground-resume-rejected")
+        .await
+        .expect("F4 state");
+    assert!(rejected_state.active_activity_epochs.is_empty(), "F4/E4");
+    assert_eq!(
+        rejected_state.execution,
+        SessionExecutionState::Idle,
+        "F4/E4"
+    );
+}
+
+#[tokio::test]
 async fn coordinated_reply_activity_follows_acceptance_and_ambiguity_decision_table() {
     // Constraint/Invariant: the authoritative Session inputs and repository CAS
     // documented here remain the only decision source; no parallel ledger is admitted.
@@ -4470,195 +4623,6 @@ async fn concurrent_child_cap_crossing_has_one_root_cas_winner_and_no_second_led
         .filter(|fact| fact.event_type == "session.budget_reached")
         .count();
     assert_eq!(reached, 1, "C1/E3");
-}
-
-/// Message-execution FMECA and cause/effect graph. Failure modes are FM1 a
-/// successful Runtime step leaves the Session running, FM2 a Runtime error
-/// skips settlement, FM3 admission failure invokes Runtime anyway. Causes: C1
-/// Session is idle, C2 Runtime succeeds, C3 Runtime fails after admission, C4
-/// Session is terminal before admission. Effects: E1 one epoch and idle
-/// settlement with a step, E2 one epoch and idle settlement with the original
-/// error, E3 no Runtime effect and terminal truth unchanged. Cause graph:
-/// C1&&C2 -> E1; C1&&C3 -> E2; C4 -> E3.
-///
-/// | Rule | Idle | Runtime | Terminal | Effect |
-/// |---|---|---|---|---|
-/// | M1 | yes | success | no | E1 |
-/// | M2 | yes | error | no | E2 |
-/// | M3 | no | not called | yes | E3 |
-#[tokio::test]
-async fn session_message_execution_always_settles_its_activity() {
-    let success_repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("M1 repository"),
-    );
-    create(
-        success_repo.as_ref(),
-        persisted("message-success", false, "idle"),
-    )
-    .await;
-    let success = application_with_runtime(
-        Arc::new(SuccessfulRuntime),
-        success_repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .run_session_message(
-        "agent",
-        "message-success",
-        vec![awaken_agent_contract::agent::content::ContentBlock::text(
-            "go",
-        )],
-        None,
-        Arc::new(DiscardProgress),
-    )
-    .await
-    .expect("M1 successful message");
-    assert_eq!(success.session.execution, SessionExecutionState::Idle, "M1");
-    assert_eq!(success.session.activity_epoch, 1, "M1");
-
-    let failure_repo = Arc::new(
-        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-            .expect("M2 repository"),
-    );
-    create(
-        failure_repo.as_ref(),
-        persisted("message-failure", false, "idle"),
-    )
-    .await;
-    let failure = application(
-        failure_repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .run_session_message(
-        "agent",
-        "message-failure",
-        vec![awaken_agent_contract::agent::content::ContentBlock::text(
-            "go",
-        )],
-        None,
-        Arc::new(DiscardProgress),
-    )
-    .await;
-    assert!(failure.is_err(), "M2");
-    let settled = failure_repo.get("message-failure").await.expect("M2 state");
-    assert_eq!(settled.execution, SessionExecutionState::Idle, "M2");
-    assert_eq!(settled.activity_epoch, 1, "M2");
-
-    let mut terminal = persisted("message-terminal", false, "idle");
-    terminal.execution = SessionExecutionState::Terminated;
-    create(failure_repo.as_ref(), terminal).await;
-    let terminal_before = failure_repo
-        .get("message-terminal")
-        .await
-        .expect("M3 initial state");
-    let rejected = application(
-        failure_repo.clone(),
-        Arc::new(RecordingEnvironmentSource::default()),
-    )
-    .run_session_message(
-        "agent",
-        "message-terminal",
-        Vec::new(),
-        None,
-        Arc::new(DiscardProgress),
-    )
-    .await;
-    assert!(rejected.is_err(), "M3");
-    assert_eq!(
-        failure_repo
-            .get("message-terminal")
-            .await
-            .expect("M3 state"),
-        terminal_before,
-        "M3"
-    );
-}
-
-#[tokio::test]
-async fn committed_message_boundary_failures_preserve_the_open_interval_for_exact_retry() {
-    // Cause/effect graph: C1 the Runtime Step has one exact terminal Run id;
-    // C2 cumulative usage is available/unavailable; C3 the matching lifecycle
-    // boundary is visible/missing. Effects: E1 a C2 failure returns unavailable
-    // before observing or settling; E2 C2-ok+C3-missing does the same; E3 after
-    // the missing owner fact appears, the same epoch closes exactly once with
-    // one observation and one historical interval. Constraint: neither failure
-    // may manufacture a partial close or a second usage/event authority.
-    //
-    // | Rule | Usage | Boundary | Effect |
-    // |---|---|---|---|
-    // | F1 | unavailable | visible | E1 |
-    // | F2 | available | missing | E2 |
-    // | F3 | available | visible on retry | E3 |
-    for (rule, session_id, usage_unavailable, publish_boundary) in [
-        ("F1", "message-usage-unavailable", true, true),
-        ("F2", "message-boundary-unavailable", false, false),
-    ] {
-        let repo = Arc::new(
-            awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
-                .expect("boundary failure repository"),
-        );
-        create(repo.as_ref(), persisted(session_id, false, "idle")).await;
-        let runtime = Arc::new(ScriptedMessageBoundaryRuntime::new(
-            usage_unavailable,
-            publish_boundary,
-        ));
-        let app = application_with_runtime(
-            runtime.clone(),
-            repo.clone(),
-            Arc::new(RecordingEnvironmentSource::default()),
-        );
-
-        let failed = app
-            .run_session_message(
-                "agent",
-                session_id,
-                vec![awaken_agent_contract::agent::content::ContentBlock::text(
-                    "go",
-                )],
-                None,
-                Arc::new(DiscardProgress),
-            )
-            .await;
-        assert!(failed.is_err(), "{rule} must remain retryable");
-        let open = repo.get(session_id).await.expect("open Session");
-        assert_eq!(open.execution, SessionExecutionState::Running, "{rule}");
-        assert_eq!(open.active_activity_epochs, BTreeSet::from([1]), "{rule}");
-        assert!(open.running_interval.is_some(), "{rule}");
-        assert!(open.closed_runtime_intervals.is_empty(), "{rule}");
-
-        runtime.set_usage_unavailable(false);
-        runtime.commit_root_boundary(session_id);
-        let run_id = RunId(format!("{session_id}-run"));
-        let state = RunState::Ended(EndCause::NaturalEnd);
-        let observation = app
-            .runtime_interval_observation(
-                session_id,
-                1,
-                &ThreadId(session_id.into()),
-                &run_id,
-                &state,
-                None,
-            )
-            .await
-            .expect("F3 lifecycle read")
-            .expect("F3 exact boundary");
-        let usage = app.session_usage(session_id).await.expect("F3 usage read");
-        app.reconcile_managed_budget_usage(session_id, usage)
-            .await
-            .expect("F3 usage reconciliation");
-        app.settle_activity_observed(session_id, 1, Some(observation))
-            .await
-            .expect("F3 exact retry settlement");
-        let closed = repo.get(session_id).await.expect("closed Session");
-        assert_eq!(closed.execution, SessionExecutionState::Idle, "F3/E3");
-        assert!(closed.running_interval.is_none(), "F3/E3");
-        assert_eq!(closed.closed_runtime_intervals.len(), 1, "F3/E3");
-        assert_eq!(
-            closed.closed_runtime_intervals[0].observations.len(),
-            1,
-            "F3/E3"
-        );
-    }
 }
 
 #[tokio::test]

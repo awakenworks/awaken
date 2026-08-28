@@ -7,8 +7,11 @@
 
 mod support;
 
-use awaken_agent_contract::ClientToolDescriptor;
 use awaken_agent_contract::agent::content::ContentBlock;
+use awaken_agent_contract::{
+    ClientToolDescriptor, ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy,
+    ToolsetSource,
+};
 use awaken_credential_vault::SecretStore;
 use awaken_credential_vault::repo::CredentialRepo;
 use awaken_executable_agent_contract::{
@@ -303,6 +306,19 @@ impl ExecutableAgentProfileSource for AgentWithIntegrations {
                     prompts_as_skills: false,
                 },
             ],
+            toolsets: ["docs", "public-docs"]
+                .into_iter()
+                .map(|server_name| ToolsetPolicy {
+                    source: ToolsetSource::Mcp {
+                        server_name: server_name.into(),
+                    },
+                    default: ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                    overrides: Vec::new(),
+                })
+                .collect(),
             skills: vec![awaken_agent_contract::AgentSkillBinding::custom(
                 "skill_release",
             )],
@@ -1916,15 +1932,15 @@ async fn session_projects_exact_published_client_tool_contract() {
 #[tokio::test]
 async fn session_inherits_published_agent_integrations_and_echoes_the_effective_set() {
     // Causal graph:
-    // published Agent bindings + no Session MCP override
-    //   -> inherit the exact published MCP set
+    // published Agent bindings + one policy per MCP server + no Session override
+    //   -> inherit the exact published MCP server/toolset pairs
     //   -> prepare Runtime with exact delegate and credential revision
     //   -> persist one authoritative Resource/MCP realization.
     //
     // Decision table:
     // | Agent binding | Session override | Expected behavior |
-    // | exact credential@7 | absent | stage credential@7 with Agent origin |
-    // | public URL | absent | preserve Agent URL and Agent origin |
+    // | exact credential@7 + toolset | absent | stage credential@7 with Agent origin |
+    // | public URL + toolset | absent | preserve Agent URL and Agent origin |
     // | Skill + delegate | n/a | persist Skill pin and prepare delegate once |
     // FMECA: projecting the delegate as only its executable id loses its
     // publication-owned name/version/model/tools and makes the Session response

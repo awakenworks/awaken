@@ -1756,24 +1756,27 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
 
     assert_eq!(
         managed
-            .reserve_session_user_run(awaken_session_contract::SessionUserRunCommand {
+            .reserve_session_run(awaken_session_contract::AdmitSessionRun {
                 session_id: thread.into(),
                 agent_id: "assistant".into(),
                 operation_id: "cold-session-reservation-op".into(),
                 run_id,
-                content: vec![ContentBlock::text("reserve before realization")],
-                accompanying_system: None,
+                messages: vec![Message::new(
+                    MessageId::session_event_input(thread, "cold-session-reservation-op",),
+                    Role::User,
+                    vec![ContentBlock::text("reserve before realization")],
+                )],
                 data_subject_id: None,
                 traceparent: None,
             })
             .await
             .expect("R1 reservation"),
-        awaken_session_contract::SessionUserRunReservation::Reserved,
+        awaken_session_contract::SessionRunReservation::Reserved,
         "R1/E1"
     );
     assert_eq!(
         managed
-            .session_user_run_state(thread, &RunId("cold-session-reservation-run".into()))
+            .session_run_state(thread, &RunId("cold-session-reservation-run".into()))
             .await
             .expect("R1 read pre-claim state"),
         None,

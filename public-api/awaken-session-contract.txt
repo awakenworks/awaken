@@ -112,7 +112,7 @@ pub awaken_session_contract::work_queue::WorkSessionAccess::work_id: alloc::stri
 pub const awaken_session_contract::work_queue::OBJECT_AT: &str
 pub trait awaken_session_contract::work_queue::SessionWorkLeaseAuthority: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::acquire_session_work<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64, awaken_session_contract::work_queue::SessionWorkAcquisition) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::work_queue::SessionWorkOwnership, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::release_session_work<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::release_session_work<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::work_queue::SessionWorkLease) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::work_queue::SessionWorkLeaseAuthority::release_worker_session_work<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::work_queue::WorkQueue: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::work_queue::WorkQueue::ack<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::work_queue::WorkMutationResult, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
@@ -130,6 +130,7 @@ pub fn awaken_session_contract::work_queue::WorkQueue::heartbeat<'life0, 'life1,
 pub fn awaken_session_contract::work_queue::WorkQueue::heartbeat_with_session_access<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::work_queue::WorkSessionAccess, u64, awaken_session_contract::work_queue::LeaseHeartbeat) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::work_queue::HeartbeatResult, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::list<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::work_queue::WorkItem>, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::release_owner<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<usize, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::work_queue::WorkQueue::release_session<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::work_queue::SessionWorkLease) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::remove_env<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::retire_session<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::work_queue::WorkItem>, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::work_queue::WorkQueue::stats<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::work_queue::QueueStats, awaken_session_contract::work_queue::WorkQueueError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -145,6 +146,20 @@ pub awaken_session_contract::ActivationState::Failed
 pub awaken_session_contract::ActivationState::Prepared
 pub awaken_session_contract::ActivationState::Released
 pub awaken_session_contract::ActivationState::Releasing
+pub enum awaken_session_contract::AdmittedSessionRun
+pub awaken_session_contract::AdmittedSessionRun::AlreadyActivated(awaken_session_contract::SessionRunDelivery)
+pub awaken_session_contract::AdmittedSessionRun::AlreadyReserved(awaken_session_contract::SessionRunDelivery)
+pub awaken_session_contract::AdmittedSessionRun::Completed
+pub awaken_session_contract::AdmittedSessionRun::Completed::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_contract::AdmittedSessionRun::Completed::session_id: alloc::string::String
+pub awaken_session_contract::AdmittedSessionRun::RecoveryClaimed
+pub awaken_session_contract::AdmittedSessionRun::RecoveryClaimed::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_contract::AdmittedSessionRun::RecoveryClaimed::session_id: alloc::string::String
+pub awaken_session_contract::AdmittedSessionRun::Reserved(awaken_session_contract::SessionRunDelivery)
+impl awaken_session_contract::AdmittedSessionRun
+pub fn awaken_session_contract::AdmittedSessionRun::delivery(&self) -> core::option::Option<&awaken_session_contract::SessionRunDelivery>
+pub fn awaken_session_contract::AdmittedSessionRun::run_id(&self) -> &awaken_agent_contract::agent::run::Id
+pub fn awaken_session_contract::AdmittedSessionRun::session_id(&self) -> &str
 pub enum awaken_session_contract::AgentTool
 pub awaken_session_contract::AgentTool::AgentToolset20260401
 pub awaken_session_contract::AgentTool::AgentToolset20260401::configs: alloc::vec::Vec<awaken_session_contract::AgentToolConfig>
@@ -650,6 +665,12 @@ pub enum awaken_session_contract::SessionRepositoryRecoveryAction
 pub awaken_session_contract::SessionRepositoryRecoveryAction::Quarantine
 pub awaken_session_contract::SessionRepositoryRecoveryAction::Reject
 pub awaken_session_contract::SessionRepositoryRecoveryAction::Retry
+pub enum awaken_session_contract::SessionRunActivation
+pub awaken_session_contract::SessionRunActivation::Activated
+pub awaken_session_contract::SessionRunActivation::AlreadyActivated
+pub awaken_session_contract::SessionRunActivation::AlreadyActivated::session_activity_epoch: u64
+pub awaken_session_contract::SessionRunActivation::Completed
+pub awaken_session_contract::SessionRunActivation::RecoveryClaimed
 pub enum awaken_session_contract::SessionRunActivityAdmission
 pub awaken_session_contract::SessionRunActivityAdmission::Admitted
 pub awaken_session_contract::SessionRunActivityAdmission::Admitted::session_activity_epoch: u64
@@ -657,6 +678,13 @@ pub awaken_session_contract::SessionRunActivityAdmission::Rejected
 pub enum awaken_session_contract::SessionRunActivityAdmissionMode
 pub awaken_session_contract::SessionRunActivityAdmissionMode::RecoverOnly
 pub awaken_session_contract::SessionRunActivityAdmissionMode::RecoverOrAdmit
+pub enum awaken_session_contract::SessionRunReservation
+pub awaken_session_contract::SessionRunReservation::AlreadyActivated
+pub awaken_session_contract::SessionRunReservation::AlreadyActivated::session_activity_epoch: u64
+pub awaken_session_contract::SessionRunReservation::AlreadyReserved
+pub awaken_session_contract::SessionRunReservation::Completed
+pub awaken_session_contract::SessionRunReservation::RecoveryClaimed
+pub awaken_session_contract::SessionRunReservation::Reserved
 pub enum awaken_session_contract::SessionRuntimePlacement
 pub awaken_session_contract::SessionRuntimePlacement::Local
 pub awaken_session_contract::SessionRuntimePlacement::Worker
@@ -683,33 +711,6 @@ pub awaken_session_contract::SessionThreadToolReply::Result::content: alloc::vec
 pub awaken_session_contract::SessionThreadToolReply::Result::is_error: bool
 impl awaken_session_contract::SessionThreadToolReply
 pub fn awaken_session_contract::SessionThreadToolReply::client_executed(&self) -> bool
-pub enum awaken_session_contract::SessionUserRunActivation
-pub awaken_session_contract::SessionUserRunActivation::Activated
-pub awaken_session_contract::SessionUserRunActivation::AlreadyActivated
-pub awaken_session_contract::SessionUserRunActivation::AlreadyActivated::session_activity_epoch: u64
-pub awaken_session_contract::SessionUserRunActivation::Completed
-pub awaken_session_contract::SessionUserRunActivation::RecoveryClaimed
-pub enum awaken_session_contract::SessionUserRunAdmission
-pub awaken_session_contract::SessionUserRunAdmission::AlreadyActivated(awaken_session_contract::SessionUserRunDelivery)
-pub awaken_session_contract::SessionUserRunAdmission::AlreadyReserved(awaken_session_contract::SessionUserRunDelivery)
-pub awaken_session_contract::SessionUserRunAdmission::Completed
-pub awaken_session_contract::SessionUserRunAdmission::Completed::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_session_contract::SessionUserRunAdmission::Completed::session_id: alloc::string::String
-pub awaken_session_contract::SessionUserRunAdmission::RecoveryClaimed
-pub awaken_session_contract::SessionUserRunAdmission::RecoveryClaimed::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_session_contract::SessionUserRunAdmission::RecoveryClaimed::session_id: alloc::string::String
-pub awaken_session_contract::SessionUserRunAdmission::Reserved(awaken_session_contract::SessionUserRunDelivery)
-impl awaken_session_contract::SessionUserRunAdmission
-pub fn awaken_session_contract::SessionUserRunAdmission::delivery(&self) -> core::option::Option<&awaken_session_contract::SessionUserRunDelivery>
-pub fn awaken_session_contract::SessionUserRunAdmission::run_id(&self) -> &awaken_agent_contract::agent::run::Id
-pub fn awaken_session_contract::SessionUserRunAdmission::session_id(&self) -> &str
-pub enum awaken_session_contract::SessionUserRunReservation
-pub awaken_session_contract::SessionUserRunReservation::AlreadyActivated
-pub awaken_session_contract::SessionUserRunReservation::AlreadyActivated::session_activity_epoch: u64
-pub awaken_session_contract::SessionUserRunReservation::AlreadyReserved
-pub awaken_session_contract::SessionUserRunReservation::Completed
-pub awaken_session_contract::SessionUserRunReservation::RecoveryClaimed
-pub awaken_session_contract::SessionUserRunReservation::Reserved
 pub enum awaken_session_contract::SuspendPhase
 pub awaken_session_contract::SuspendPhase::Quiescing
 pub awaken_session_contract::SuspendPhase::ReadyToDispose
@@ -724,6 +725,16 @@ pub awaken_session_contract::ActivateSessionRealization::lease: awaken_session_c
 pub awaken_session_contract::ActivateSessionRealization::mcp_receipts: alloc::vec::Vec<awaken_session_contract::McpRealizationReceipt>
 pub awaken_session_contract::ActivateSessionRealization::prepared_resource_revision: core::option::Option<u64>
 pub awaken_session_contract::ActivateSessionRealization::session_id: alloc::string::String
+pub struct awaken_session_contract::AdmitSessionRun
+pub awaken_session_contract::AdmitSessionRun::agent_id: alloc::string::String
+pub awaken_session_contract::AdmitSessionRun::data_subject_id: core::option::Option<alloc::string::String>
+pub awaken_session_contract::AdmitSessionRun::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
+pub awaken_session_contract::AdmitSessionRun::operation_id: alloc::string::String
+pub awaken_session_contract::AdmitSessionRun::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_contract::AdmitSessionRun::session_id: alloc::string::String
+pub awaken_session_contract::AdmitSessionRun::traceparent: core::option::Option<alloc::string::String>
+impl awaken_session_contract::AdmitSessionRun
+pub fn awaken_session_contract::AdmitSessionRun::input_message_ids(&self) -> alloc::vec::Vec<alloc::string::String>
 pub struct awaken_session_contract::AgentCapabilities
 pub awaken_session_contract::AgentCapabilities::builtin_tools: alloc::vec::Vec<awaken_session_contract::BuiltinTool>
 pub awaken_session_contract::AgentCapabilities::custom_tools: alloc::vec::Vec<awaken_session_contract::CustomTool>
@@ -1550,6 +1561,10 @@ pub fn awaken_session_contract::SessionResourceState::revise_unattempted_pending
 pub fn awaken_session_contract::SessionResourceState::rollback(&mut self, impl core::convert::Into<alloc::string::String>) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub fn awaken_session_contract::SessionResourceState::start_attempt(&mut self) -> core::result::Result<(), awaken_session_contract::ResourceActivationError>
 pub struct awaken_session_contract::SessionRevision(pub u64)
+pub struct awaken_session_contract::SessionRunDelivery
+pub awaken_session_contract::SessionRunDelivery::run_id: awaken_agent_contract::agent::run::Id
+pub awaken_session_contract::SessionRunDelivery::session_activity_epoch: u64
+pub awaken_session_contract::SessionRunDelivery::session_id: alloc::string::String
 pub struct awaken_session_contract::SessionRuntimeInterval
 pub awaken_session_contract::SessionRuntimeInterval::activity_epoch: u64
 pub awaken_session_contract::SessionRuntimeInterval::closed_revision: awaken_session_contract::SessionRevision
@@ -1623,10 +1638,6 @@ pub awaken_session_contract::SessionUserRunCommand::operation_id: alloc::string:
 pub awaken_session_contract::SessionUserRunCommand::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_contract::SessionUserRunCommand::session_id: alloc::string::String
 pub awaken_session_contract::SessionUserRunCommand::traceparent: core::option::Option<alloc::string::String>
-pub struct awaken_session_contract::SessionUserRunDelivery
-pub awaken_session_contract::SessionUserRunDelivery::run_id: awaken_agent_contract::agent::run::Id
-pub awaken_session_contract::SessionUserRunDelivery::session_activity_epoch: u64
-pub awaken_session_contract::SessionUserRunDelivery::session_id: alloc::string::String
 pub struct awaken_session_contract::SessionUserRunSystemInput
 pub awaken_session_contract::SessionUserRunSystemInput::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_session_contract::SessionUserRunSystemInput::operation_id: alloc::string::String
@@ -1744,9 +1755,9 @@ pub fn awaken_session_contract::RunApplication::history<'life0, 'life1, 'async_t
 pub fn awaken_session_contract::RunApplication::interrupt<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::RunApplication::model(&self) -> alloc::string::String
 pub fn awaken_session_contract::RunApplication::pending<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::Pending>, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_contract::RunApplication::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_session_contract::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
-pub fn awaken_session_contract::RunApplication::run<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_contract::RunApplication::run_streaming<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::RunApplication::resume<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str, awaken_session_contract::RunResume) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
+pub fn awaken_session_contract::RunApplication::run<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+pub fn awaken_session_contract::RunApplication::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, core::option::Option<alloc::string::String>, alloc::vec::Vec<awaken_agent_contract::agent::message::Message>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::RunApplication::usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(u64, u64), awaken_session_contract::RunApplicationError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::SessionAgentCoordination: core::marker::Send + core::marker::Sync
 pub fn awaken_session_contract::SessionAgentCoordination::admit_session_model_request<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::agent::thread::Id, &'life3 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
@@ -1774,8 +1785,8 @@ pub fn awaken_session_contract::SessionRealizationControl::record_terminal_repos
 pub fn awaken_session_contract::SessionRealizationControl::terminal_cleanup_commands<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::SessionRealizationLease) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::vec::Vec<awaken_session_contract::SessionCleanupCommand>>, awaken_session_contract::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRealizationControl::terminal_repository_publication_command<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_session_contract::SessionRealizationLease) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_session_contract::SessionRepositoryPublicationProjection>, awaken_session_contract::SessionRealizationControlFailure>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub trait awaken_session_contract::SessionRuntime: core::marker::Send + core::marker::Sync
-pub fn awaken_session_contract::SessionRuntime::activate_and_observe_session_user_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionUserRunAdmission, core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::agent::run::RunState, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_contract::SessionRuntime::activate_session_user_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionUserRunDelivery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionUserRunActivation, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::activate_and_observe_session_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::AdmittedSessionRun, alloc::vec::Vec<alloc::string::String>, core::option::Option<alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::activate_session_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionRunDelivery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRunActivation, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::admit_coordinated_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::CoordinatedRunCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionAgentMessageReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::adopt_session_environment<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::apply_session_inputs<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, u64, &'life3 awaken_session_contract::ResolvedSessionResources) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
@@ -1816,8 +1827,9 @@ pub fn awaken_session_contract::SessionRuntime::quiesce_session_environment<'lif
 pub fn awaken_session_contract::SessionRuntime::quiesce_terminal_delegations<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::DelegatedRunSnapshot, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::rebind_model<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::replace_session_tools<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str, awaken_session_contract::SessionToolConfiguration) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::reply_and_observe_session_thread_tool<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionThreadToolReplyDelivery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::reply_session_thread_tool<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionThreadToolReplyDelivery) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<(), awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
-pub fn awaken_session_contract::SessionRuntime::reserve_session_user_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::SessionUserRunCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionUserRunReservation, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::reserve_session_run<'life0, 'async_trait>(&'life0 self, awaken_session_contract::AdmitSessionRun) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionRunReservation, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::resolve_session_skills<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 [awaken_agent_contract::skill::AgentSkillBinding]) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::ResolvedSkillBinding>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::restore_checkpointed_session_environment<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_session_contract::SessionEnvironmentOperation, &'life4 awaken_session_contract::SandboxGeneration, &'life5 awaken_provisioning_contract::sandbox::SandboxCheckpointRef) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::RestoreReceipt, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::resume<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, awaken_agent_contract::agent::awaiting::PermissionDecision) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
@@ -1828,13 +1840,13 @@ pub fn awaken_session_contract::SessionRuntime::run_attributed<'life0, 'life1, '
 pub fn awaken_session_contract::SessionRuntime::run_streaming<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::run_streaming_attributed<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>, core::option::Option<alloc::string::String>, alloc::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_budget_resume_tickets<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<alloc::vec::Vec<awaken_session_contract::SessionBudgetResumeTicket>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub fn awaken_session_contract::SessionRuntime::session_run_state<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::RunState>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_thread_disposition<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_agent_contract::thread::disposition::ThreadDisposition, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_thread_recovery_snapshot<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_thread_run_recovery_snapshot<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 str, &'life2 str, &'life3 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_thread_tool_reply_fence<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 awaken_session_contract::SessionThreadToolReplyCommand) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionThreadToolReplyFence, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_thread_usage<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::session_usage<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<awaken_session_contract::SessionUsage, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
-pub fn awaken_session_contract::SessionRuntime::session_user_run_state<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 awaken_agent_contract::agent::run::Id) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<awaken_agent_contract::agent::run::RunState>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::subscribe_session_thread_live<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 str, &'life2 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<core::option::Option<alloc::boxed::Box<dyn awaken_session_contract::SessionThreadLiveSubscription>>, awaken_session_contract::RunError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub fn awaken_session_contract::SessionRuntime::supports_mid_conversation_system<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = bool> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub trait awaken_session_contract::SessionThreadLiveSubscription: core::marker::Send
@@ -1873,6 +1885,7 @@ pub fn awaken_session_contract::session_event_user_run_id(&str, &str) -> awaken_
 pub fn awaken_session_contract::session_model_override_decision<T: core::cmp::PartialEq + ?core::marker::Sized>(&T, &T) -> awaken_session_contract::SessionModelOverrideDecision
 pub fn awaken_session_contract::session_outcome_convenience_id(&str, &str, &str, u32) -> alloc::string::String
 pub fn awaken_session_contract::session_run_activity_operation_id(&str, &awaken_agent_contract::agent::run::Id) -> alloc::string::String
+pub fn awaken_session_contract::session_run_id(&str, &str) -> awaken_agent_contract::agent::run::Id
 pub fn awaken_session_contract::toolset_policies(&[awaken_session_contract::AgentTool]) -> alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub fn awaken_session_contract::validate_agent_tools(&[awaken_session_contract::AgentTool]) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::validate_mcp_toolset_pairing(&[alloc::string::String], &[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
