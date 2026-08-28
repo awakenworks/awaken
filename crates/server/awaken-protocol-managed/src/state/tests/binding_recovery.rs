@@ -876,8 +876,9 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
     // stores and committed facts remain the single behavior authority.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    // Cause/effect graph: C1 cache is cold; C2 durable Session and committed
-    // transcript exist; C3 Runtime projection is stale; C4 a real coordinated
+    // Cause/effect graph: C1 cache is cold; C2 the durable Session, root
+    // transcript, and one internally consistent Awaiting Run/ResumeTicket prefix
+    // exist; C3 Runtime projection is stale; C4 a real coordinated
     // child Thread has one internally consistent recovery snapshot, including
     // the ToolResult that classifies its call, and ordinary Run lifecycle; C5
     // Runtime call ids are batch-local; C6 the durable legacy
@@ -960,10 +961,11 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         .lock()
         .unwrap()
         .push("researcher".into());
+    let root_run_id = awaken_agent_contract::agent::run::Id("parent".into());
     let child_run_id = awaken_agent_contract::agent::run::Id("coord-run-durable".into());
     runtime.install_agent_coordination_prefix(
         "sesn_1",
-        awaken_agent_contract::agent::run::Id("parent".into()),
+        root_run_id.clone(),
         0,
         "call-durable",
         awaken_session_contract::CoordinatedThreadLink {
@@ -973,7 +975,7 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
                 agent_id: "researcher".into(),
             },
             created_by_operation_id: ToolBatch::operation_id_for_step(
-                &awaken_agent_contract::agent::run::Id("parent".into()),
+                &root_run_id,
                 0,
                 "call-durable",
             ),
@@ -981,6 +983,30 @@ async fn ensure_session_rehydrates_from_repo_after_cache_loss() {
         },
     );
     runtime.lifecycle.lock().unwrap().extend([
+        // The root ResumeTicket is consumable only while its owning Run is
+        // durably Awaiting. This fixture used to publish the ticket beside a
+        // synthetic Running record, a state combination no production commit
+        // can emit. R2 therefore supplies the real Running -> Awaiting prefix;
+        // a stale ticket beside Running remains covered by recovery's
+        // fail-closed decision table and must not regain projection authority.
+        awaken_agent_contract::RunLifecycleEvent {
+            cursor: awaken_agent_contract::RunLifecycleCursor(1),
+            source_commit_cursor: 1,
+            thread_id: awaken_agent_contract::agent::thread::Id("sesn_1".into()),
+            run_id: root_run_id.clone(),
+            kind: awaken_agent_contract::RunLifecycleEventKind::Running,
+            state: awaken_agent_contract::agent::run::RunState::Running,
+            await_reason: None,
+        },
+        awaken_agent_contract::RunLifecycleEvent {
+            cursor: awaken_agent_contract::RunLifecycleCursor(2),
+            source_commit_cursor: 2,
+            thread_id: awaken_agent_contract::agent::thread::Id("sesn_1".into()),
+            run_id: root_run_id,
+            kind: awaken_agent_contract::RunLifecycleEventKind::Awaiting,
+            state: awaken_agent_contract::agent::run::RunState::Awaiting,
+            await_reason: Some(awaken_agent_contract::agent::awaiting::AwaitReason::ExternalEvent),
+        },
         awaken_agent_contract::RunLifecycleEvent {
             cursor: awaken_agent_contract::RunLifecycleCursor(3),
             source_commit_cursor: 3,

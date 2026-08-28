@@ -184,6 +184,87 @@ async fn projection_rehydrates_from_a_file_after_reopen() {
 }
 
 #[tokio::test]
+async fn corrupt_waiting_ticket_does_not_poison_restart_or_thread_recovery() {
+    // Cause/effect graph: C1=an Awaiting ThreadCommit durably stores Run,
+    // transcript, state, audit, and ResumeTicket; C2=only the waiting-row JSON
+    // becomes semantically unreadable; C3=process restarts and requests one
+    // repeatable recovery prefix. Effects: E1=store opens; E2=all non-ticket
+    // durable facts and fences are preserved; E3=the damaged row exposes no
+    // reply authority; E4=the row remains durable for canonical interruption to
+    // settle through a later terminal ThreadCommit.
+    //
+    // | Rule | Run facts | Ticket row | Restart | Effect |
+    // | CT1 | valid | valid | yes | ordinary complete recovery |
+    // | CT2 | valid | corrupt | yes | E1+E2+E3+E4 |
+    // | CT3 | corrupt | any | yes | fail closed outside this isolated repair |
+    // Constraint: the adapter never deletes or rewrites the damaged waiting row;
+    // it quarantines only its typed read projection. This case covers CT2.
+    let directory = tempfile::tempdir().expect("temporary SQLite directory");
+    let database = directory.path().join("corrupt-waiting-ticket.db");
+    let thread = ThreadId("corrupt-ticket-thread".into());
+    let run = RunId("corrupt-ticket-run".into());
+    {
+        let store = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("open");
+        store
+            .commit(ThreadCommit::assemble(
+                thread.clone(),
+                RunDisposition::awaiting(ticket(&run.0, &thread.0)),
+                true,
+                vec![message("corrupt-ticket-message", "retained transcript")],
+                vec![StateCommand::set(
+                    Scope::Run,
+                    MergePolicy::Disjoint,
+                    "test.recovery.fact",
+                    serde_json::json!({"retained": true}),
+                )],
+                Vec::new(),
+            ))
+            .await
+            .expect("CT2 commit complete Awaiting prefix");
+    }
+    let connection = rusqlite::Connection::open(&database).expect("open raw corruption seam");
+    connection
+        .execute(
+            "UPDATE runtime_waiting SET ticket = ?1 WHERE run_id = ?2",
+            rusqlite::params![r#"{"not":"a ResumeTicket"}"#, &run.0],
+        )
+        .expect("isolate waiting ticket corruption");
+    drop(connection);
+
+    let reopened = SqliteCommitCoordinator::open(database.to_str().unwrap()).expect("CT2/E1");
+    assert!(
+        CommittedThreadView::resume_ticket(&reopened, &run).is_none(),
+        "CT2/E3 damaged ticket is not reply authority"
+    );
+    let snapshot = reopened
+        .recovery_snapshot(&thread, &run)
+        .await
+        .expect("CT2/E2 recovery remains available");
+    assert_eq!(snapshot.runs.len(), 1, "CT2/E2 Run fact");
+    assert_eq!(snapshot.runs[0].state, RunState::Awaiting, "CT2/E2");
+    assert_eq!(snapshot.messages.len(), 1, "CT2/E2 transcript");
+    assert_eq!(snapshot.state.len(), 1, "CT2/E2 state");
+    assert!(
+        snapshot
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::RunStateChanged),
+        "CT2/E2 Awaiting audit"
+    );
+    assert!(snapshot.resume_tickets.is_empty(), "CT2/E3");
+    assert_eq!(snapshot.thread_version, 1, "CT2/E2 fence");
+    let retained: String = rusqlite::Connection::open(&database)
+        .unwrap()
+        .query_row(
+            "SELECT ticket FROM runtime_waiting WHERE run_id = ?1",
+            rusqlite::params![&run.0],
+            |row| row.get(0),
+        )
+        .expect("CT2/E4 row retained");
+    assert_eq!(retained, r#"{"not":"a ResumeTicket"}"#, "CT2/E4");
+}
+
+#[tokio::test]
 async fn consumed_resume_ticket_and_applied_receipt_rehydrate_atomically() {
     // Cause/effect graph: C1 an Awaiting Run owns ticket T; C2 one accepted
     // reply commits Running plus ResumeApplied(O1) in the same ThreadCommit; C3

@@ -70,6 +70,57 @@ impl ManagedState {
         }
         let (links, child_snapshots) = self.coordinated_projection_prefix(session_id).await?;
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
+        let persisted_session = self
+            .application
+            .session(session_id)
+            .await
+            .map_err(StateError::from)?;
+        let interrupt_only = !events.is_empty()
+            && events
+                .iter()
+                .all(|event| matches!(event, InboundEvent::UserInterrupt { .. }));
+        if interrupt_only {
+            let snapshot_is_awaiting =
+                |snapshot: &awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot| {
+                    matches!(
+                        Self::current_recovery_run(snapshot).1,
+                        Some(awaken_agent_contract::agent::run::RunState::Awaiting)
+                    )
+                };
+            let has_awaiting_run = root_snapshot.as_ref().is_some_and(snapshot_is_awaiting)
+                || child_snapshots.values().any(snapshot_is_awaiting);
+            // Preserve the existing accepted no-op for a pure budget pause, but
+            // never mistake an Awaiting Run with an isolated/corrupt ticket for
+            // that no-op. Interrupt needs topology and lifecycle facts, not reply
+            // authority, so it deliberately does not materialize ResumeTickets.
+            if !persisted_session.budget.can_admit_model_request()
+                && persisted_session.execution == SessionExecutionState::Idle
+                && !has_awaiting_run
+            {
+                return Ok(ValidatedEventBatch { inputs: Vec::new() });
+            }
+            let inputs = events
+                .iter()
+                .map(|event| {
+                    let InboundEvent::UserInterrupt { session_thread_id } = event else {
+                        unreachable!("interrupt-only batch was classified above")
+                    };
+                    let targets = Self::interrupt_targets(
+                        session_id,
+                        session_thread_id.as_deref(),
+                        &links,
+                        &child_snapshots,
+                    )?;
+                    Ok(SessionEventInput::Interrupt(SessionEventInterrupt {
+                        requested_target: session_thread_id.as_deref().map(|thread_id| {
+                            session_thread_target_from_public(session_id, thread_id)
+                        }),
+                        targets,
+                    }))
+                })
+                .collect::<Result<Vec<_>, StateError>>()?;
+            return Ok(ValidatedEventBatch { inputs });
+        }
         let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
         let mut candidates = Vec::new();
         if let Some(snapshot) = root_snapshot.as_ref()
@@ -148,11 +199,6 @@ impl ManagedState {
                 candidate.projected_event_id = projected_event_id;
             }
         }
-        let persisted_session = self
-            .application
-            .session(session_id)
-            .await
-            .map_err(StateError::from)?;
         let retained_replies =
             Self::retained_tool_reply_identities(&persisted_session, &candidates);
         let mut unresolved = candidates

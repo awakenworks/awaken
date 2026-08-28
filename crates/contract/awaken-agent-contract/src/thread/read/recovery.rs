@@ -23,6 +23,54 @@ pub struct RunResumeTicket {
     pub ticket: ResumeTicket,
 }
 
+/// A persisted waiting row is usable only when its closed ticket decodes and
+/// names the same Run/Thread as the row and recovery partition. Keeping this
+/// invariant in the neutral recovery contract prevents each durable adapter or
+/// protocol projection from inventing a different corruption policy.
+#[derive(Debug, thiserror::Error)]
+pub enum ResumeTicketRecoveryError {
+    #[error("persisted ResumeTicket is unreadable: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("ResumeTicket run_id does not match its waiting row")]
+    RunMismatch,
+    #[error("ResumeTicket thread_id does not match its recovery partition")]
+    ThreadMismatch,
+}
+
+pub fn validate_resume_ticket_owner(
+    ticket: &ResumeTicket,
+    row_run_id: &RunId,
+    expected_thread_id: &ThreadId,
+) -> Result<(), ResumeTicketRecoveryError> {
+    if &ticket.run_id != row_run_id {
+        return Err(ResumeTicketRecoveryError::RunMismatch);
+    }
+    if &ticket.thread_id != expected_thread_id {
+        return Err(ResumeTicketRecoveryError::ThreadMismatch);
+    }
+    Ok(())
+}
+
+pub fn decode_resume_ticket_value_for_owner(
+    value: serde_json::Value,
+    row_run_id: &RunId,
+    expected_thread_id: &ThreadId,
+) -> Result<ResumeTicket, ResumeTicketRecoveryError> {
+    let ticket = serde_json::from_value(value)?;
+    validate_resume_ticket_owner(&ticket, row_run_id, expected_thread_id)?;
+    Ok(ticket)
+}
+
+pub fn decode_resume_ticket_json_for_owner(
+    raw: &str,
+    row_run_id: &RunId,
+    expected_thread_id: &ThreadId,
+) -> Result<ResumeTicket, ResumeTicketRecoveryError> {
+    let ticket = serde_json::from_str(raw)?;
+    validate_resume_ticket_owner(&ticket, row_run_id, expected_thread_id)?;
+    Ok(ticket)
+}
+
 /// One internally consistent prefix of committed Thread truth.
 ///
 /// `thread_version` is the count of commits on this Thread and is therefore the
@@ -125,5 +173,49 @@ mod tests {
         legacy.as_object_mut().unwrap().remove("events");
         let decoded: RunRecoverySnapshot = serde_json::from_value(legacy).expect("R1/E1");
         assert!(decoded.events.is_empty(), "R1/E1");
+    }
+
+    #[test]
+    fn persisted_resume_ticket_requires_exact_row_and_partition_ownership() {
+        // Cause/effect graph: C1=wire decodes vs is malformed; C2=ticket Run
+        // matches its waiting-row Run; C3=ticket Thread matches the recovery
+        // partition. Effect E1=return the typed reply authority only for the
+        // exact product; E2=reject every damaged product without mutation.
+        // Decision table: T1=C1+C2+C3=>E1; T2=!C1=>E2; T3=C1+!C2=>E2;
+        // T4=C1+C2+!C3=>E2. This is the single invariant shared by stores and
+        // strict protocol admission.
+        let run = RunId("ticket-owner-run".into());
+        let thread = ThreadId("ticket-owner-thread".into());
+        let ticket = ResumeTicket::new(
+            "ticket-owner-correlation",
+            run.clone(),
+            thread.clone(),
+            "ticket-owner-snapshot",
+            "ticket-owner-catalog",
+            crate::agent::awaiting::AwaitTarget::Pause(crate::agent::awaiting::PauseReason::Manual),
+        );
+        let value = serde_json::to_value(&ticket).unwrap();
+        assert_eq!(
+            decode_resume_ticket_value_for_owner(value.clone(), &run, &thread).expect("T1/E1"),
+            ticket
+        );
+        assert!(
+            decode_resume_ticket_json_for_owner("{}", &run, &thread).is_err(),
+            "T2/E2"
+        );
+        assert!(
+            decode_resume_ticket_value_for_owner(
+                value.clone(),
+                &RunId("another-run".into()),
+                &thread,
+            )
+            .is_err(),
+            "T3/E2"
+        );
+        assert!(
+            decode_resume_ticket_value_for_owner(value, &run, &ThreadId("another-thread".into()),)
+                .is_err(),
+            "T4/E2"
+        );
     }
 }
