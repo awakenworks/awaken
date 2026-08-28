@@ -1644,6 +1644,11 @@ async fn unified_run_service_cancel_is_durable_for_a_queued_run() {
 
 #[tokio::test]
 async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
+    // Cause/effect graph: C1 one queued activation owns accepted input; C2 a
+    // durable cancel is claimed before ordinary execution; C3 the selected
+    // backend cancel succeeds. Effects: E1 C3 runs once; E2 input and Cancelled
+    // commit together; E3 the model is never needed. This integration guards
+    // the Worker wiring; Runtime's control suite owns the commit primitive.
     let runtime = text_runtime();
     let store = Arc::new(MemoryDispatchStore::new());
     let commit = Arc::new(MemoryCommitCoordinator::new());
@@ -1660,6 +1665,8 @@ async fn durable_cancel_invokes_the_selected_executor_before_terminal_commit() {
         .expect("durable cancellation");
 
     assert_eq!(selected.cancels.load(Ordering::SeqCst), 1);
+    assert_eq!(commit.committed().messages.len(), 1, "C1/E2");
+    assert_eq!(commit.committed().messages[0].id.0, "m1", "C1/E2");
     assert_eq!(
         awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView::run(
             commit.as_ref(),

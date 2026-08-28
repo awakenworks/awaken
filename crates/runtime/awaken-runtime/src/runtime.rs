@@ -662,6 +662,20 @@ impl Runtime {
         crate::engine::run_commands::cancel_run(self, run_id, thread_id, context).await
     }
 
+    /// Commit a claimed activation's accepted input and terminal cancellation
+    /// together. Durable dispatch uses this when cancellation fences a fresh
+    /// attempt before that attempt can publish its first commit.
+    pub async fn cancel_activation(
+        &self,
+        activation: awaken_runtime_contract::activation::RunActivation,
+        context: awaken_runtime_contract::runtime_context::RuntimeRunContext,
+    ) -> Result<
+        awaken_agent_contract::agent::run::RunState,
+        awaken_runtime_contract::execution::Error,
+    > {
+        crate::engine::run_commands::cancel_activation(self, activation, context).await
+    }
+
     /// Resolve an Awaiting tool Run's authoritative ToolBatch with fixed
     /// interruption errors and end it without sampling the model.
     pub async fn interrupt_awaiting_tools(
