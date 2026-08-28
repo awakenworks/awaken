@@ -124,22 +124,25 @@ def canonical_error(status: int, error_type: str) -> dict[str, object]:
 def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:
     # Transport decision table shared across the exact Python version matrix:
     # C1=one canonical Managed error envelope and request-id header; C2=status
-    # is 400/401/403/404/409/422/429/500; C3=max_retries=0. Effects: E1=the
+    # is 400/401/403/404/409/413/422/429/500/529; C3=max_retries=0. Effects: E1=the
     # exact SDK exception subclass/status/type/request-id is observable; E2=one
-    # request only. Retry graph: C4=500 then success, C5=max_retries=1,
-    # C6=explicit idempotency key and request body. Effects: E3=two attempts;
-    # E4=method/URL/body/idempotency identity is byte-stable. This owns Python
-    # transport behavior only; Awaken's production error mapping is owned by
-    # deployed/Rust operation cases.
+    # request only. Retry decision table: C4=status/override selects retry or
+    # rejection and C5=max_retries=2; E3=exactly three or one attempts. Mutation
+    # relation: C6=one retry with an explicit idempotency key and body; E4=the
+    # complete command identity is byte-stable. This owns Python transport
+    # behavior only; Awaken's production error mapping is owned by deployed/Rust
+    # operation cases.
     cases = (
         (400, "invalid_request_error", "BadRequestError"),
         (401, "authentication_error", "AuthenticationError"),
         (403, "permission_error", "PermissionDeniedError"),
         (404, "not_found_error", "NotFoundError"),
         (409, "conflict_error", "ConflictError"),
+        (413, "request_too_large", "RequestTooLargeError"),
         (422, "invalid_request_error", "UnprocessableEntityError"),
         (429, "rate_limit_error", "RateLimitError"),
         (500, "api_error", "InternalServerError"),
+        (529, "overloaded_error", "OverloadedError"),
     )
     for status, error_type, class_name in cases:
         requests = []
@@ -160,13 +163,62 @@ def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: A
         ) as client:
             try:
                 client.beta.sessions.create(agent="fixture", environment_id="fixture")
-            except getattr(anthropic_module, class_name) as error:
+            except anthropic_module.APIStatusError as error:
+                assert error.__class__.__name__ == class_name
                 assert error.status_code == status
                 assert error.body["error"]["type"] == error_type
                 assert error.request_id == f"req_header_{status}"
             else:
                 raise AssertionError(f"{status}: Python SDK accepted a Managed error")
         assert len(requests) == 1, f"{status}: client fault retried"
+
+    retry_cases = (
+        (400, False, None),
+        (408, True, None),
+        (409, True, None),
+        (413, False, None),
+        (422, False, None),
+        (429, True, None),
+        (500, True, None),
+        (529, True, None),
+        (400, True, "true"),
+        (500, False, "false"),
+    )
+    for status, retries, override in retry_cases:
+        attempts = []
+
+        def decide(request: object) -> object:
+            attempts.append(request)
+            if retries and len(attempts) == 3:
+                return transport_module.Response(200, request=request, json={})
+            headers = {"retry-after-ms": "0"}
+            if override is not None:
+                headers["x-should-retry"] = override
+            return transport_module.Response(
+                status,
+                request=request,
+                json=canonical_error(status, "api_error"),
+                headers=headers,
+            )
+
+        with anthropic_module.Anthropic(
+            api_key="retry-decision-contract",  # awaken-allow: secret
+            http_client=transport_module.Client(transport=transport_module.MockTransport(decide)),
+            max_retries=2,
+        ) as client:
+            try:
+                response = client.beta.sessions.with_raw_response.create(
+                    agent="fixture", environment_id="fixture"
+                )
+            except anthropic_module.APIStatusError as error:
+                assert not retries, f"{status}/{override}: retryable response was rejected"
+                assert error.status_code == status
+            else:
+                assert retries, f"{status}/{override}: non-retryable response was accepted"
+                assert response.status_code == 200
+        assert len(attempts) == (3 if retries else 1), (
+            f"{status}/{override}: exact retry bound"
+        )
 
     attempts = []
 
