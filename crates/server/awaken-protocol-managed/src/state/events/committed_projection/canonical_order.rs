@@ -197,13 +197,13 @@ pub(super) fn interval_lifecycle_open_event<'a>(
                 .copied()
                 .filter(|event| owner.matches(session_id, event));
             match owner.anchor {
-                Some(IntervalOwnerAnchor::InputAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::Input(anchor)) => matching
                     .filter(|event| event.source_commit_cursor >= anchor)
                     .min_by(lifecycle_opening_order),
-                Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::ReplyTerminal(anchor)) => matching
                     .filter(|event| event.source_commit_cursor <= anchor)
                     .max_by(lifecycle_opening_order),
-                Some(IntervalOwnerAnchor::ReplyAfterAwaitingAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::ReplyAfterAwaiting(anchor)) => matching
                     .filter(|event| event.source_commit_cursor > anchor)
                     .min_by(lifecycle_opening_order),
                 None => matching.min_by(lifecycle_opening_order),
@@ -242,13 +242,13 @@ enum IntervalOwnerTarget<'a> {
 #[derive(Clone, Copy)]
 enum IntervalOwnerAnchor {
     /// The retained User input is committed before or with its Run opening.
-    InputAt(u64),
+    Input(u64),
     /// A ToolReply projection anchor observes the resumed Run's complete reply
     /// prefix, so its opening is the latest one no later than that fence.
-    ReplyTerminalAt(u64),
+    ReplyTerminal(u64),
     /// Current ToolReply rows freeze the Awaiting commit before delivery; the
     /// resumed interval opens at the first later Running lifecycle commit.
-    ReplyAfterAwaitingAt(u64),
+    ReplyAfterAwaiting(u64),
 }
 
 fn lifecycle_opening_order(
@@ -282,7 +282,7 @@ fn interval_owner_openings(
                 target: IntervalOwnerTarget::Primary,
                 anchor: entry
                     .projection_anchor
-                    .map(|anchor| IntervalOwnerAnchor::InputAt(anchor.source_commit_cursor)),
+                    .map(|anchor| IntervalOwnerAnchor::Input(anchor.source_commit_cursor)),
             }),
             SessionEventCommand::ToolReply { reply, .. } => Some(IntervalOwnerOpening {
                 run_id: &reply.expected_run_id,
@@ -296,10 +296,10 @@ fn interval_owner_openings(
                 },
                 anchor: reply
                     .answered_pending_commit_cursor
-                    .map(IntervalOwnerAnchor::ReplyAfterAwaitingAt)
+                    .map(IntervalOwnerAnchor::ReplyAfterAwaiting)
                     .or_else(|| {
                         entry.projection_anchor.map(|anchor| {
-                            IntervalOwnerAnchor::ReplyTerminalAt(anchor.source_commit_cursor)
+                            IntervalOwnerAnchor::ReplyTerminal(anchor.source_commit_cursor)
                         })
                     }),
             }),
@@ -360,13 +360,13 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
                 .filter(is_opening)
                 .filter(|event| owner.matches(session_id, event));
             match owner.anchor {
-                Some(IntervalOwnerAnchor::InputAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::Input(anchor)) => matching
                     .filter(|event| event.source_commit_cursor >= anchor)
                     .min_by(lifecycle_opening_order),
-                Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::ReplyTerminal(anchor)) => matching
                     .filter(|event| event.source_commit_cursor <= anchor)
                     .max_by(lifecycle_opening_order),
-                Some(IntervalOwnerAnchor::ReplyAfterAwaitingAt(anchor)) => matching
+                Some(IntervalOwnerAnchor::ReplyAfterAwaiting(anchor)) => matching
                     .filter(|event| event.source_commit_cursor > anchor)
                     .min_by(lifecycle_opening_order),
                 None => matching.min_by(lifecycle_opening_order),

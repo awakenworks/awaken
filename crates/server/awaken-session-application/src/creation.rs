@@ -12,6 +12,12 @@ use awaken_session_contract::{
 
 use super::{SessionApplication, SessionMutationError, SessionRealizationError};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SessionCreationCompletion {
+    AwaitRealization,
+    AcceptDurableRoot,
+}
+
 /// Classify the repository-owned durable result at both create-replay entry
 /// points. `ActivationFailed` is retained for recovery but can never become a
 /// successful create merely because two callers passed protocol preflight
@@ -146,6 +152,36 @@ impl SessionApplication {
         &self,
         command: CreateSessionCommand,
     ) -> Result<PersistedSession, SessionCreationError> {
+        Box::pin(
+            self.create_session_with_completion(
+                command,
+                SessionCreationCompletion::AwaitRealization,
+            ),
+        )
+        .await
+    }
+
+    /// Accept one Session as soon as its complete root is durable. Physical
+    /// realization, activation, and disposable Work projection are resumed by
+    /// the existing lifecycle supervisor from that same aggregate.
+    pub async fn accept_session(
+        &self,
+        command: CreateSessionCommand,
+    ) -> Result<PersistedSession, SessionCreationError> {
+        Box::pin(
+            self.create_session_with_completion(
+                command,
+                SessionCreationCompletion::AcceptDurableRoot,
+            ),
+        )
+        .await
+    }
+
+    async fn create_session_with_completion(
+        &self,
+        command: CreateSessionCommand,
+        completion: SessionCreationCompletion,
+    ) -> Result<PersistedSession, SessionCreationError> {
         let CreateSessionCommand {
             owner_scope,
             session_id,
@@ -276,6 +312,15 @@ impl SessionApplication {
             // candidate that was never committed.
             SessionCreateResult::Replayed(session) => return validated_create_replay(session),
         };
+
+        if completion == SessionCreationCompletion::AcceptDurableRoot {
+            // The root contains the frozen baseline, initial Event plan, and
+            // idempotency receipt. Waking the sole recovery driver is only an
+            // optimization: startup scanning recovers the same Preparing root
+            // after process loss, without a Job row or a second lifecycle.
+            self.wake_lifecycle_supervisor();
+            return Ok(persisted);
+        }
 
         let realized = if self.requires_external_realization(&persisted) {
             self.install_dispatch_projection(&owner_scope, &persisted)

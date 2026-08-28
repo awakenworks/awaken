@@ -1009,8 +1009,10 @@ mod tool_binding_tests {
 
     #[test]
     fn legacy_exact_tool_configs_remain_readable_but_not_managed_authorable() {
-        let mut config = AgentConfig::default();
-        config.mcp_servers = vec![server("legacy")];
+        let config = AgentConfig {
+            mcp_servers: vec![server("legacy")],
+            ..AgentConfig::default()
+        };
         assert!(config.validate_tool_bindings().is_ok());
         assert!(config.validate_managed_tool_bindings().is_err());
     }
@@ -1021,9 +1023,11 @@ mod tool_binding_tests {
             ToolPermissionRequirement::AlwaysAsk,
             ToolPermissionRequirement::AlwaysAllow,
         ] {
-            let mut config = AgentConfig::default();
-            config.mcp_servers = vec![server("ops")];
-            config.toolsets = vec![mcp_policy("ops", permission)];
+            let config = AgentConfig {
+                mcp_servers: vec![server("ops")],
+                toolsets: vec![mcp_policy("ops", permission)],
+                ..AgentConfig::default()
+            };
             config
                 .validate_managed_tool_bindings()
                 .expect("valid policy");

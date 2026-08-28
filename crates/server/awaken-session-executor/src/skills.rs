@@ -264,12 +264,12 @@ pub(crate) async fn wire_skills(
     // `.skills` is one complete runtime-owned projection. Clear it before a
     // rebuild that carries either frozen bundles or config-only Skills, then
     // repopulate every selected Skill through this same projection path.
-    if delivered.is_some() || (filesystem_delivery && !configured.is_empty()) {
-        if let Some(env) = env.as_ref() {
-            env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
-                .await
-                .map_err(|error| error.to_string())?;
-        }
+    if (delivered.is_some() || (filesystem_delivery && !configured.is_empty()))
+        && let Some(env) = env.as_ref()
+    {
+        env.remove_projection_path(DELIVERED_SKILLS_SUBDIR)
+            .await
+            .map_err(|error| error.to_string())?;
     }
     let mut configured = configured.to_vec();
     if filesystem_delivery {

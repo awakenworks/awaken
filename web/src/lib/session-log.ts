@@ -5,6 +5,25 @@
 
 import type { ContentBlock, SessionEvent } from "./api/types";
 
+export type SessionStatusPresentation = "running" | "idle" | "preparing" | "terminated" | "unknown";
+
+/** Closed presentation of the aggregate-owned Session status. Unknown wire
+ * values fail closed instead of being presented as sendable/idle. */
+export function sessionStatusPresentation(status?: string): SessionStatusPresentation {
+  switch (status) {
+    case "running":
+      return "running";
+    case "idle":
+      return "idle";
+    case "rescheduling":
+      return "preparing";
+    case "terminated":
+      return "terminated";
+    default:
+      return "unknown";
+  }
+}
+
 /** The SSE event family the host names by `type` (a committed-replay stream). */
 export const SSE_EVENT_NAMES = [
   "agent.message",
@@ -97,10 +116,14 @@ export function canSendToSession(
   runtime: SessionRuntimeProjection,
   sessionStatus?: string,
 ): boolean {
-  const phase = runtime.phase === "unknown" ? sessionStatus : runtime.phase;
+  const phase = runtime.phase === "unknown"
+    ? sessionStatusPresentation(sessionStatus)
+    : runtime.phase;
   return phase != null
+    && phase !== "unknown"
     && phase !== "running"
-    && phase !== "rescheduling"
+    && phase !== "preparing"
+    && phase !== "terminated"
     && runtime.pendingConfirmIds.size === 0;
 }
 

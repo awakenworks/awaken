@@ -26,7 +26,7 @@ VARIABLES
     settledActivities, nextActivityEpoch, eventPhase, committedDisposition,
     projectionAnchor,
     workRowPresent, workState, workOwner, workEpoch, workHeartbeat, workExpires,
-    workNow, realizationWorkEpoch
+    workNow, realizationWorkEpoch, acceptedResponse
 
 rootVars == <<existence, owner, createPayload, createReceipt, baseline,
               execution, placement, revision, hasInitialEvent,
@@ -39,7 +39,8 @@ eventVars == <<dispatchExists, dispatchState, dispatchOwner, dispatchEpoch,
                eventPhase, committedDisposition, projectionAnchor>>
 workVars == <<workState, workOwner, workEpoch, workHeartbeat, workExpires,
               workNow>>
-vars == <<rootVars, eventVars, workRowPresent, workVars, realizationWorkEpoch>>
+vars == <<rootVars, eventVars, workRowPresent, workVars, realizationWorkEpoch,
+          acceptedResponse>>
 
 Root == INSTANCE SessionRootKernel WITH
     Owners <- Actors,
@@ -106,6 +107,7 @@ Init ==
     /\ WorkKernel!Init
     /\ workRowPresent = FALSE
     /\ realizationWorkEpoch = 0
+    /\ acceptedResponse = FALSE
 
 CurrentWork(worker) ==
     /\ workRowPresent
@@ -128,11 +130,13 @@ SessionExecutable ==
 CreateWithInitialEvent ==
     /\ Root!Create(SessionOwner, Payload, "Worker", TRUE)
     /\ Event!AcceptInitialEvent
+    /\ acceptedResponse' = TRUE
     /\ ~workRowPresent
     /\ UNCHANGED <<workRowPresent, workVars, realizationWorkEpoch>>
 
 ReplayCreate ==
     /\ Root!ExactCreateReplay(SessionOwner, Payload)
+    /\ acceptedResponse' = TRUE
     /\ UNCHANGED <<eventVars, workRowPresent, workVars, realizationWorkEpoch>>
 
 ProjectWork ==
@@ -279,9 +283,7 @@ TerminateSession ==
     /\ UNCHANGED <<eventVars, workRowPresent, workVars,
                    realizationWorkEpoch>>
 
-Next ==
-    \/ CreateWithInitialEvent
-    \/ ReplayCreate
+OtherNext ==
     \/ ProjectWork
     \/ LoseQueuedWorkProjection
     \/ \E worker \in Workers: ClaimWork(worker)
@@ -313,13 +315,17 @@ Next ==
          ReleaseWork(worker, epoch)
     \/ TerminateSession
 
+Next ==
+    \/ CreateWithInitialEvent
+    \/ ReplayCreate
+    \/ (UNCHANGED acceptedResponse /\ OtherNext)
+
 Spec == Init /\ [][Next]_vars
 
 \* Fault-free witness relation. Fault/replay actions remain in Spec for safety,
 \* while this smaller relation proves the intended create-to-release path is
 \* reachable under weak fairness without claiming liveness under endless loss.
-HappyNext ==
-    \/ CreateWithInitialEvent
+HappyOtherNext ==
     \/ ProjectWork
     \/ \E worker \in Workers: ClaimWork(worker)
     \/ \E worker \in Workers: BeginRealization(worker)
@@ -344,6 +350,10 @@ HappyNext ==
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
          ReleaseWork(worker, epoch)
 
+HappyNext ==
+    \/ CreateWithInitialEvent
+    \/ (UNCHANGED acceptedResponse /\ HappyOtherNext)
+
 FullySettled ==
     /\ existence = "Live"
     /\ execution = "Idle"
@@ -361,6 +371,10 @@ TypeOK ==
     /\ WorkKernel!TypeOK
     /\ workRowPresent \in BOOLEAN
     /\ realizationWorkEpoch \in 0..MaxEpoch
+    /\ acceptedResponse \in BOOLEAN
+
+AcceptedResponseIsDurableRoot ==
+    acceptedResponse => existence = "Live" /\ baseline = "Frozen" /\ createReceipt
 
 CompleteRootPrecedesEveryProjection ==
     (workRowPresent \/ dispatchExists) =>
@@ -384,5 +398,6 @@ Safety ==
     /\ CompleteRootPrecedesEveryProjection
     /\ WorkProjectionHasOneAuthority
     /\ IdleReleaseRequiresFullSettlement
+    /\ AcceptedResponseIsDurableRoot
 
 =============================================================================
