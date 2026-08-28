@@ -38,7 +38,6 @@ mod tests {
         // retain their existing resolver tables in this module.
         use awaken_run_ingress::{Clock, DispatchQueue};
 
-        let now = awaken_run_ingress::SystemClock.now_ms();
         let store = Arc::new(
             awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
         );
@@ -48,14 +47,18 @@ mod tests {
             .for_session(awaken_agent_contract::agent::thread::Id(session_id.into()));
         assert_eq!(
             store
-                .reserve_session_run(request, now)
+                .reserve_session_run(request, 1)
                 .await
                 .expect("R1 reserve"),
             awaken_run_ingress::SessionRunReservationOutcome::Reserved,
             "R1/C1"
         );
+        // C1 is governed by the queue-owned clock. Wait past the relative TTL,
+        // then sample the edge clock used by the existing execution-lease claim.
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let repair_now = awaken_run_ingress::SystemClock.now_ms();
         let claimed = store
-            .claim("repair-worker", 1_000, now + 1, &Default::default())
+            .claim("repair-worker", 1_000, repair_now, &Default::default())
             .await
             .expect("R1 recovery claim")
             .expect("R1 expired reservation is claimable");

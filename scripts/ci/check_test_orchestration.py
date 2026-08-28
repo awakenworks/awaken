@@ -267,7 +267,13 @@ def shared_conformance_errors(
     for backend in ("memory", "sqlite", "postgres"):
         if f"async fn {backend}_dispatch_conforms" not in ingress_tests:
             errors.append(f"dispatch conformance omits {backend} backend")
-    if ingress_tests.count("assert_dispatch_conformance(") != 3:
+    # Cause C7: a backend may inject its store-owned clock through the canonical
+    # conformance wrapper. Effect: exactly three backend bindings still execute
+    # one shared suite; neither helper spelling creates a parallel case list.
+    conformance_bindings = re.findall(
+        r"\bassert_dispatch_conformance(?:_with_clock)?\(", ingress_tests
+    )
+    if len(conformance_bindings) != 3:
         errors.append("dispatch conformance suite is not applied to exactly three backends")
     if ingress_tests.count("assert_dispatch_operational_feed_conformance(") != 3:
         errors.append("dispatch operational-feed suite is not applied to exactly three backends")

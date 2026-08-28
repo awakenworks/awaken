@@ -41,6 +41,9 @@ use awaken_run_ingress_contract::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition, RunDispatch,
 };
 
+mod store;
+pub use store::MemoryDispatchStore;
+
 #[derive(Debug, Clone)]
 struct Row {
     request: RunDispatch,
@@ -151,27 +154,7 @@ struct State {
     operations: Vec<DispatchOperationalEvent>,
 }
 
-/// In-memory durable-ingress store. Cloneable handles share one state.
-#[derive(Debug)]
-pub struct MemoryDispatchStore {
-    state: Mutex<State>,
-    authority: Arc<tokio::sync::Mutex<()>>,
-}
-
-impl Default for MemoryDispatchStore {
-    fn default() -> Self {
-        Self {
-            state: Mutex::new(State::default()),
-            authority: Arc::new(tokio::sync::Mutex::new(())),
-        }
-    }
-}
-
 impl MemoryDispatchStore {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
     /// Number of live dispatch rows (test introspection).
     pub fn dispatch_count(&self) -> usize {
         self.state.lock().map(|s| s.rows.len()).unwrap_or(0)
@@ -690,10 +673,9 @@ fn enqueue_new_local(
         epoch = crate::next_supersession_epoch(max_epoch)?;
         for row in state.rows.values_mut() {
             if *row.request.thread_id() == thread
-                && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
-                && !row.cancellation_requested
+                && let Some(next) = row.transition().supersede()
             {
-                row.state = DispatchState::Superseded;
+                row.apply_transition(next);
                 row.lease = None;
             }
         }
@@ -806,12 +788,14 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
-        reservation_deadline_ms: u64,
+        reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
+        let reservation_ttl_ms =
+            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
         let reservation_deadline_ms =
-            validate_session_run_reservation_request(&request, reservation_deadline_ms)?;
+            crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
         let run_id = request.run_id().clone();
         if let Some(row) = state.rows.get(&run_id) {
             return Ok(classify_live_session_run_reservation(
@@ -878,11 +862,14 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn reject_session_run_reservation(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
-        if state
-            .rows
-            .get(run_id)
-            .is_none_or(|row| row.state != DispatchState::Reserved || row.lease.is_some())
-        {
+        let removable = state.rows.get(run_id).is_some_and(|row| {
+            row.lease.is_none()
+                && matches!(
+                    row.transition().reject_reservation(),
+                    GuardedTransition::Removed
+                )
+        });
+        if !removable {
             return Ok(false);
         }
         state.rows.remove(run_id);
@@ -899,6 +886,12 @@ impl DispatchQueue for MemoryDispatchStore {
         resolution: SessionRunReservationResolution,
     ) -> Result<SettleOutcome, DispatchError> {
         let resolution = validate_session_run_reservation_resolution(resolution)?;
+        let retry_deadline_ms = match resolution {
+            SessionRunReservationResolution::Retry { reservation_ttl_ms } => Some(
+                crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms),
+            ),
+            _ => None,
+        };
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         let Some(row) = state.rows.get(&claim.run_id) else {
@@ -945,14 +938,12 @@ impl DispatchQueue for MemoryDispatchStore {
                             row.credential_bindings.clear();
                             row.credential_receipts.clear();
                         }
-                        SessionRunReservationResolution::Retry {
-                            reservation_deadline_ms,
-                        } => {
+                        SessionRunReservationResolution::Retry { .. } => {
                             row.lease = None;
                             row.assignment = None;
                             row.credential_bindings.clear();
                             row.credential_receipts.clear();
-                            row.reservation_deadline_ms = Some(reservation_deadline_ms);
+                            row.reservation_deadline_ms = retry_deadline_ms;
                         }
                         SessionRunReservationResolution::Rejected => unreachable!(),
                     }
@@ -1546,6 +1537,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     .clone()
                     .expect("an expired running row carries its lease");
                 let claim = RunClaim::from(&lease);
+                let claim_epoch = claim.epoch;
                 operations.push(DispatchOperation::LeaseLost {
                     claim: claim.clone(),
                     reason: LeaseLossReason::RetryExhausted,
@@ -1554,7 +1546,12 @@ impl DispatchQueue for MemoryDispatchStore {
                     claim,
                     attempt_count: row.attempt_count,
                 });
-                row.state = DispatchState::DeadLetter;
+                let GuardedTransition::Applied(next) =
+                    row.transition().exhaust_retries(claim_epoch, true)
+                else {
+                    continue;
+                };
+                row.apply_transition(next);
                 row.lease = None;
                 row.dead_lettered_at = Some(now_ms);
             }
@@ -1622,8 +1619,12 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
-            Some(row) if row.state == DispatchState::DeadLetter && !row.cancellation_requested => {
-                row.state = DispatchState::Pending;
+            Some(row) if row.transition().requeue_dead_letter().is_some() => {
+                let next = row
+                    .transition()
+                    .requeue_dead_letter()
+                    .expect("the guarded transition remains stable");
+                row.apply_transition(next);
                 row.lease = None;
                 row.attempt_count = 0;
                 Ok(true)

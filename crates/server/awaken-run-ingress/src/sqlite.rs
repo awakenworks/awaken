@@ -158,15 +158,43 @@ fn insert_dispatch_with_state(
             )
             .map_err(reject)?,
         )?;
-        tx.execute(
-            &format!(
-                "UPDATE {prefix}_dispatch SET status = 'superseded', lease_owner = NULL, \
-                 lease_until = NULL WHERE thread_id = ?1 AND status IN ('pending', 'awaiting') \
-                 AND cancel_requested = 0"
-            ),
-            params![request.thread_id().0],
-        )
-        .map_err(reject)?;
+        let candidates = {
+            let mut statement = tx
+                .prepare(&format!(
+                    "SELECT run_id, status, lease_epoch, cancel_requested \
+                     FROM {prefix}_dispatch WHERE thread_id = ?1"
+                ))
+                .map_err(reject)?;
+            let rows = statement
+                .query_map(params![request.thread_id().0], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                })
+                .map_err(reject)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
+        };
+        for (run_id, status, lease_epoch, cancellation_requested) in candidates {
+            let Some(next) = crate::persisted_dispatch_transition(
+                &status,
+                lease_epoch,
+                cancellation_requested != 0,
+            )?
+            .supersede() else {
+                continue;
+            };
+            tx.execute(
+                &format!(
+                    "UPDATE {prefix}_dispatch SET status = ?2, lease_owner = NULL, \
+                     lease_until = NULL WHERE run_id = ?1"
+                ),
+                params![run_id, crate::dispatch_state_db(next.state)],
+            )
+            .map_err(reject)?;
+        }
     }
 
     tx.execute(
@@ -238,6 +266,7 @@ pub struct SqliteDispatchStore {
     /// single-process backend; an owned guard can therefore span the separate
     /// commit database write without exposing a non-Send rusqlite transaction.
     authority: Arc<tokio::sync::Mutex<()>>,
+    clock: Arc<dyn crate::Clock>,
 }
 
 impl SqliteDispatchStore {
@@ -263,7 +292,15 @@ impl SqliteDispatchStore {
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             authority: Arc::new(tokio::sync::Mutex::new(())),
+            clock: Arc::new(crate::SystemClock),
         })
+    }
+
+    /// Replace the store-owned clock for deterministic embedded-store tests.
+    #[must_use]
+    pub fn with_clock(mut self, clock: Arc<dyn crate::Clock>) -> Self {
+        self.clock = clock;
+        self
     }
 
     /// Run a closure with the locked connection on a blocking thread. The closure

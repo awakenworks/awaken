@@ -149,15 +149,38 @@ async fn insert_dispatch_with_state(
         .await
         .map_err(reject)?;
         epoch = crate::next_supersession_epoch(max.unwrap_or(0))?;
-        sqlx::query(&format!(
-            "UPDATE {prefix}_dispatch SET status = 'superseded', lease_owner = NULL, \
-             lease_until = NULL WHERE thread_id = $1 AND status IN ('pending', 'awaiting') \
-             AND cancel_requested = 0"
+        let candidates = sqlx::query(&format!(
+            "SELECT run_id, status, lease_epoch, cancel_requested FROM {prefix}_dispatch \
+             WHERE thread_id = $1 FOR UPDATE"
         ))
         .bind(&request.thread_id().0)
-        .execute(&mut **tx)
+        .fetch_all(&mut **tx)
         .await
         .map_err(reject)?;
+        for candidate in candidates {
+            let run_id: String = candidate.try_get("run_id").map_err(reject)?;
+            let status: String = candidate.try_get("status").map_err(reject)?;
+            let lease_epoch: i64 = candidate.try_get("lease_epoch").map_err(reject)?;
+            let cancellation_requested: i64 =
+                candidate.try_get("cancel_requested").map_err(reject)?;
+            let Some(next) = crate::persisted_dispatch_transition(
+                &status,
+                lease_epoch,
+                cancellation_requested != 0,
+            )?
+            .supersede() else {
+                continue;
+            };
+            sqlx::query(&format!(
+                "UPDATE {prefix}_dispatch SET status = $2, lease_owner = NULL, \
+                 lease_until = NULL WHERE run_id = $1"
+            ))
+            .bind(run_id)
+            .bind(crate::dispatch_state_db(next.state))
+            .execute(&mut **tx)
+            .await
+            .map_err(reject)?;
+        }
     }
 
     let inserted = sqlx::query(&format!(

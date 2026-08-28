@@ -67,6 +67,9 @@ if command -v cargo-kani >/dev/null 2>&1; then
   run_kani awaken-agent-contract \
     --harness ended_is_absorbing_for_every_next_state \
     --harness legacy_wire_accepts_exactly_the_legal_dispositions \
+    --harness run_identity_binding_is_exactly_run_scoped \
+    --harness exclusive_state_conflict_requires_every_exact_precondition \
+    --harness state_materialization_effect_is_total_and_exact \
     --harness only_unsettled_relationships_occupy_a_parallel_slot \
     --harness every_relationship_effect_has_one_documented_precondition \
     --harness delegation_admission_requires_every_budget_and_lineage_guard \
@@ -187,7 +190,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
     --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \
-    --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows
+    --harness dispatch_claim_mints_exactly_one_epoch_and_never_reopens_closed_rows \
+    --harness dispatch_maintenance_transitions_are_closed_and_exact
   run_kani awaken-credential-materializer \
     --harness exact_vault_revision_accepts_only_a_positive_matching_or_unpinned_source \
     --harness platform_relay_local_gate_admits_only_exact_platform_relay
@@ -373,6 +377,9 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -metadir "$tlc_state_root/run-ingress" \
     -config formal/tla/RunIngress.cfg formal/tla/RunIngress.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/thread-state" \
+    -config formal/tla/ThreadState.cfg formal/tla/ThreadState.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/work-queue" \
     -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
@@ -556,6 +563,7 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -config formal/tla/ResourceLifecycleWorkflowReachability.cfg \
     formal/tla/ResourceLifecycleWorkflow.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
     -metadir "$tlc_state_root/session-run-protocol" \
     -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \

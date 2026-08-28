@@ -300,6 +300,8 @@ impl ThreadCommit {
                 ticket.thread_id.0, self.thread_id.0
             )));
         }
+        crate::agent::state::validate_batch(&self.state)
+            .map_err(|error| ValidationError(format!("invalid committed state batch: {error}")))?;
         Ok(())
     }
 }
@@ -320,6 +322,9 @@ mod assemble_tests {
 
     #[test]
     fn assemble_binds_run_scoped_state_to_the_committing_run() {
+        // Cause/effect rules: C1 Run scope -> E1 exact committing Run identity;
+        // C2 Thread/Shared/Profile scope -> E2 no Run binding. This case covers
+        // R1 through assembly; the closed selector's Kani proof covers R2.
         let run = RunId("run-owner".into());
         let command = crate::agent::state::Command::set(
             crate::agent::state::Scope::Run,
@@ -336,6 +341,36 @@ mod assemble_tests {
             Vec::new(),
         );
         assert_eq!(commit.state[0].run_id, Some(run));
+    }
+
+    #[test]
+    fn validate_rejects_the_exact_repeated_exclusive_set_batch() {
+        // Decision table: prior Exclusive Set + same scope/key + another
+        // Exclusive Set is R1/reject. Remove, another scope/key, or every
+        // non-Exclusive policy is R2/admit and is covered by the state kernel.
+        let repeated = vec![
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "lock",
+                serde_json::json!(1),
+            ),
+            Command::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "lock",
+                serde_json::json!(2),
+            ),
+        ];
+        let commit = ThreadCommit::assemble(
+            ThreadId("thread".into()),
+            RunDisposition::running(RunId("run".into())),
+            true,
+            Vec::new(),
+            repeated,
+            Vec::new(),
+        );
+        assert!(commit.validate().is_err(), "R1 must fail closed");
     }
 
     fn kinds(commit: &ThreadCommit) -> Vec<Kind> {

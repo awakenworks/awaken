@@ -135,6 +135,49 @@ fn next_claim_epoch(previous_epoch: i64) -> Result<u64, DispatchError> {
     })
 }
 
+/// Decode the authority-bearing SQL columns into the one transition kernel.
+/// Every SQL adapter uses this boundary before choosing a next state; unknown
+/// vocabulary and negative epochs fail closed instead of creating local policy.
+#[cfg(feature = "durable")]
+fn persisted_dispatch_transition(
+    status: &str,
+    lease_epoch: i64,
+    cancellation_requested: bool,
+) -> Result<awaken_run_ingress_contract::DispatchTransition, DispatchError> {
+    let state = DispatchState::from_db(status).ok_or_else(|| {
+        DispatchError::Rejected(format!("unknown persisted dispatch state `{status}`"))
+    })?;
+    Ok(awaken_run_ingress_contract::DispatchTransition {
+        state,
+        lease_epoch: durable_u64("dispatch lease epoch", lease_epoch)?,
+        cancellation_requested,
+    })
+}
+
+#[cfg(feature = "durable")]
+fn dispatch_state_db(state: DispatchState) -> &'static str {
+    match state {
+        DispatchState::Reserved => "reserved",
+        DispatchState::ReservationLeased => "reservation_running",
+        DispatchState::Pending => "pending",
+        DispatchState::Leased => "running",
+        DispatchState::Awaiting => "awaiting",
+        DispatchState::DeadLetter => "dead_letter",
+        DispatchState::Superseded => "superseded",
+    }
+}
+
+#[cfg(feature = "durable")]
+fn transition_error(error: awaken_run_ingress_contract::DispatchTransitionError) -> DispatchError {
+    match error {
+        awaken_run_ingress_contract::DispatchTransitionError::LeaseEpochExhausted => {
+            DispatchError::Rejected(
+                "dispatch claim epoch exhausted; refusing to wrap fencing authority".to_string(),
+            )
+        }
+    }
+}
+
 /// Decode one non-negative SQL integer used as durable ordering authority.
 ///
 /// SQL backends expose signed integers while the domain uses unsigned values.

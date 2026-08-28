@@ -1,8 +1,13 @@
-use awaken_run_ingress::{MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore};
+use std::sync::Arc;
+
+use awaken_run_ingress::{
+    ManualClock, MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore,
+};
 use awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance;
 use awaken_run_ingress_testkit::{
     ConformanceCapabilities, assert_atomic_report_continuation_conformance,
-    assert_dispatch_conformance, assert_session_reply_activity_rotation_conformance,
+    assert_dispatch_conformance, assert_dispatch_conformance_with_clock,
+    assert_session_reply_activity_rotation_conformance,
 };
 
 mod harness;
@@ -14,11 +19,14 @@ async fn memory_dispatch_conforms() {
     // continuation, and operational-feed rule must pass. Constraint/Invariant:
     // Memory has no backend-only behavior. Decision rule: bind matrix row M1 to
     // the three authoritative helpers rather than duplicating their cases here.
-    let store = MemoryDispatchStore::new();
-    assert_dispatch_conformance(
+    let clock = Arc::new(ManualClock::new(0));
+    let store = MemoryDispatchStore::new().with_clock(clock.clone());
+    let set_clock = move |now_ms| clock.set(now_ms);
+    assert_dispatch_conformance_with_clock(
         &store,
         "conformance-memory",
         ConformanceCapabilities::LOCAL_STORE,
+        &set_clock,
     )
     .await;
     assert_atomic_report_continuation_conformance(&store, "conformance-memory-report").await;
@@ -46,11 +54,16 @@ async fn sqlite_dispatch_conforms() {
     // atomic-continuation, durable-replay, and feed rule must pass. Constraint/
     // Invariant: SQL persistence cannot change neutral semantics. Decision rule:
     // bind matrix row S1 to the authoritative helpers without copying cases.
-    let store = SqliteDispatchStore::open_in_memory().expect("open sqlite conformance store");
-    assert_dispatch_conformance(
+    let clock = Arc::new(ManualClock::new(0));
+    let store = SqliteDispatchStore::open_in_memory()
+        .expect("open sqlite conformance store")
+        .with_clock(clock.clone());
+    let set_clock = move |now_ms| clock.set(now_ms);
+    assert_dispatch_conformance_with_clock(
         &store,
         "conformance-sqlite",
         ConformanceCapabilities::LOCAL_STORE,
+        &set_clock,
     )
     .await;
     assert_atomic_report_continuation_conformance(&store, "conformance-sqlite-report").await;

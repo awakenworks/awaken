@@ -280,9 +280,9 @@ impl DispatchQueue for AnyDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
-        reservation_deadline_ms: u64,
+        reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        delegate!(self, reserve_session_run(request, reservation_deadline_ms))
+        delegate!(self, reserve_session_run(request, reservation_ttl_ms))
     }
 
     async fn activate_session_run_reservation(

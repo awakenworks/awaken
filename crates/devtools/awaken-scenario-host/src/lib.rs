@@ -1359,7 +1359,7 @@ pub async fn build_config_router() -> Router {
 #[derive(Deserialize)]
 struct SessionReservationScenarioRequest {
     request: awaken_run_ingress::RunDispatch,
-    reservation_deadline_ms: u64,
+    reservation_ttl_ms: u64,
 }
 
 /// Scenario-only adapter for stopping at the real persistence-before-activity
@@ -1375,7 +1375,7 @@ fn session_reservation_scenario_router(
         use awaken_run_ingress::DispatchQueue as _;
 
         match dispatch
-            .reserve_session_run(command.request, command.reservation_deadline_ms)
+            .reserve_session_run(command.request, command.reservation_ttl_ms)
             .await
         {
             Ok(outcome) => (

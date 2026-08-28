@@ -457,12 +457,14 @@ function reservationRequest(base: any, sessionId: string, label: string): any {
 async function stageReservationCrashBoundary(
   storage: string,
   request: any,
-  deadlineMs: number,
+  ttlMs: number,
 ): Promise<string> {
+  const reservationStartedAt = Date.now();
   const reserved = await api('POST', '/v1/scenario/session-run/reserve', {
     request,
-    reservation_deadline_ms: deadlineMs,
+    reservation_ttl_ms: ttlMs,
   });
+  const reservationObservedAt = Date.now();
   assert.equal(
     reserved.status,
     200,
@@ -484,14 +486,23 @@ async function stageReservationCrashBoundary(
       `FROM runtime_dispatch WHERE run_id = ?`,
   ).get(runId) as Record<string, unknown>);
   assert.deepEqual(
-    { ...persisted },
+    {
+      status: persisted.status,
+      lease_owner: persisted.lease_owner,
+      activity_epoch: persisted.activity_epoch,
+    },
     {
       status: 'reserved',
       lease_owner: null,
-      lease_until: deadlineMs,
       activity_epoch: null,
     },
     `reservation fixture observes exactly one persisted pre-activity intent for ${runId}`,
+  );
+  const persistedDeadline = Number(persisted.lease_until);
+  assert.ok(
+    persistedDeadline >= reservationStartedAt + ttlMs &&
+      persistedDeadline <= reservationObservedAt + ttlMs,
+    `reservation fixture observes the Store-owned TTL conversion for ${runId}`,
   );
   return runId;
 }
@@ -1126,10 +1137,11 @@ async function main(): Promise<void> {
         'SELECT lease_until FROM runtime_dispatch WHERE run_id = ?',
         retryRunId,
       ));
-      assert.equal(
-        retryDeadline,
-        retried.resolution.Retry.reservation_deadline_ms,
-        'R3 persists the Worker-selected absolute retry deadline',
+      const retryTtl = Number(retried.resolution.Retry.reservation_ttl_ms);
+      assert.ok(retryTtl > 0, 'R3 Worker requests a nonzero relative retry TTL');
+      assert.ok(
+        retryDeadline > retryTtl,
+        'R3 store authority converts the relative TTL to its own absolute deadline',
       );
       const firstRetryEpoch = Number(retried.claim.epoch);
       sqliteRun(

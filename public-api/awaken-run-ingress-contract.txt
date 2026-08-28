@@ -99,7 +99,7 @@ pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Admi
 pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Admitted::session_activity_epoch: u64
 pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Rejected
 pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Retry
-pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Retry::reservation_deadline_ms: u64
+pub awaken_run_ingress_contract::dispatch::SessionRunReservationResolution::Retry::reservation_ttl_ms: u64
 pub enum awaken_run_ingress_contract::dispatch::SettleOutcome
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Applied
 pub awaken_run_ingress_contract::dispatch::SettleOutcome::Fenced
@@ -429,7 +429,7 @@ pub awaken_run_ingress_contract::SessionRunReservationResolution::Admitted
 pub awaken_run_ingress_contract::SessionRunReservationResolution::Admitted::session_activity_epoch: u64
 pub awaken_run_ingress_contract::SessionRunReservationResolution::Rejected
 pub awaken_run_ingress_contract::SessionRunReservationResolution::Retry
-pub awaken_run_ingress_contract::SessionRunReservationResolution::Retry::reservation_deadline_ms: u64
+pub awaken_run_ingress_contract::SessionRunReservationResolution::Retry::reservation_ttl_ms: u64
 pub enum awaken_run_ingress_contract::SettleOutcome
 pub awaken_run_ingress_contract::SettleOutcome::Applied
 pub awaken_run_ingress_contract::SettleOutcome::Fenced
@@ -524,10 +524,14 @@ impl awaken_run_ingress_contract::DispatchTransition
 pub fn awaken_run_ingress_contract::DispatchTransition::activate_reservation(self) -> core::option::Option<Self>
 pub fn awaken_run_ingress_contract::DispatchTransition::cancel(self) -> core::result::Result<awaken_run_ingress_contract::CancelTransition, awaken_run_ingress_contract::DispatchTransitionError>
 pub fn awaken_run_ingress_contract::DispatchTransition::claim(self) -> core::result::Result<core::option::Option<Self>, awaken_run_ingress_contract::DispatchTransitionError>
+pub fn awaken_run_ingress_contract::DispatchTransition::exhaust_retries(self, u64, bool) -> awaken_run_ingress_contract::GuardedTransition
 pub fn awaken_run_ingress_contract::DispatchTransition::recover_reservation(self) -> core::result::Result<core::option::Option<Self>, awaken_run_ingress_contract::DispatchTransitionError>
+pub fn awaken_run_ingress_contract::DispatchTransition::reject_reservation(self) -> awaken_run_ingress_contract::GuardedTransition
 pub fn awaken_run_ingress_contract::DispatchTransition::relinquish(self, u64, bool) -> awaken_run_ingress_contract::GuardedTransition
+pub fn awaken_run_ingress_contract::DispatchTransition::requeue_dead_letter(self) -> core::option::Option<Self>
 pub fn awaken_run_ingress_contract::DispatchTransition::resolve_reservation(self, u64, bool, core::option::Option<bool>) -> awaken_run_ingress_contract::GuardedTransition
 pub fn awaken_run_ingress_contract::DispatchTransition::settle(self, u64, bool) -> awaken_run_ingress_contract::GuardedTransition
+pub fn awaken_run_ingress_contract::DispatchTransition::supersede(self) -> core::option::Option<Self>
 pub struct awaken_run_ingress_contract::EnqueueRequest
 pub awaken_run_ingress_contract::EnqueueRequest::options: core::option::Option<awaken_run_ingress_contract::dispatch::SubmitOptions>
 pub awaken_run_ingress_contract::EnqueueRequest::request: awaken_run_ingress_contract::run_dispatch::RunDispatch

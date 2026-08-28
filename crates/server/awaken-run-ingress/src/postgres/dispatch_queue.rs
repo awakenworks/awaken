@@ -14,11 +14,14 @@ impl DispatchQueue for PostgresDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
-        reservation_deadline_ms: u64,
+        reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let deadline = validate_session_run_reservation_request(&request, reservation_deadline_ms)?;
+        let reservation_ttl_ms =
+            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+        let deadline = crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
         lock_run_identity(&mut tx, &request.run_id().0).await?;
         let live = sqlx::query(&format!(
             "SELECT status, request FROM {p}_dispatch WHERE run_id = $1"
@@ -75,7 +78,8 @@ impl DispatchQueue for PostgresDispatchStore {
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_run_identity(&mut tx, &run_id.0).await?;
         let current = sqlx::query(&format!(
-            "SELECT status, request FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+            "SELECT status, request, lease_epoch, cancel_requested \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&run_id.0)
         .fetch_optional(&mut *tx)
@@ -113,13 +117,23 @@ impl DispatchQueue for PostgresDispatchStore {
         let outcome = if let Some(outcome) = classified {
             outcome
         } else {
+            let lease_epoch: i64 = row.try_get("lease_epoch").map_err(reject)?;
+            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let next = crate::persisted_dispatch_transition(
+                &status,
+                lease_epoch,
+                cancellation_requested != 0,
+            )?
+            .activate_reservation()
+            .expect("the reservation classifier admitted only Reserved");
             request.session_activity_epoch = Some(session_activity_epoch);
             let changed = sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET request = $1, status = 'pending', \
+                "UPDATE {p}_dispatch SET request = $1, status = $3, \
                  lease_owner = NULL, lease_until = NULL WHERE run_id = $2 AND status = 'reserved'"
             ))
             .bind(Json(&request))
             .bind(&run_id.0)
+            .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
             .await
             .map_err(reject)?
@@ -138,6 +152,35 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         lock_run_identity(&mut tx, &run_id.0).await?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
+             WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let removable = if let Some(current) = current {
+            let status: String = current.try_get("status").map_err(reject)?;
+            let lease_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
+            let cancellation_requested: i64 =
+                current.try_get("cancel_requested").map_err(reject)?;
+            matches!(
+                crate::persisted_dispatch_transition(
+                    &status,
+                    lease_epoch,
+                    cancellation_requested != 0,
+                )?
+                .reject_reservation(),
+                awaken_run_ingress_contract::GuardedTransition::Removed
+            )
+        } else {
+            false
+        };
+        if !removable {
+            tx.commit().await.map_err(reject)?;
+            return Ok(false);
+        }
         let changed = sqlx::query(&format!(
             "DELETE FROM {p}_dispatch WHERE run_id = $1 AND status = 'reserved'"
         ))
@@ -167,7 +210,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let row = sqlx::query(&format!(
-            "SELECT request FROM {p}_dispatch WHERE run_id = $1 \
+            "SELECT request, cancel_requested FROM {p}_dispatch WHERE run_id = $1 \
              AND status = 'reservation_running' AND lease_owner = $2 \
              AND lease_epoch = $3 FOR UPDATE"
         ))
@@ -182,13 +225,29 @@ impl DispatchQueue for PostgresDispatchStore {
             return Ok(SettleOutcome::Fenced);
         };
         let Json(mut request): Json<RunDispatch> = row.try_get("request").map_err(reject)?;
+        let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+        let current = crate::persisted_dispatch_transition(
+            "reservation_running",
+            claim_epoch,
+            cancellation_requested != 0,
+        )?;
+        let resolution_value = match resolution {
+            SessionRunReservationResolution::Admitted { .. } => Some(true),
+            SessionRunReservationResolution::Retry { .. } => Some(false),
+            SessionRunReservationResolution::Rejected => None,
+        };
+        let transition = current.resolve_reservation(claim.epoch, true, resolution_value);
         let changed = match resolution {
             SessionRunReservationResolution::Admitted {
                 session_activity_epoch,
             } => {
                 request.session_activity_epoch = Some(session_activity_epoch);
+                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
+                else {
+                    unreachable!("the exact recovery claim is admitted by the kernel")
+                };
                 sqlx::query(&format!(
-                    "UPDATE {p}_dispatch SET request = $1, status = 'pending', \
+                    "UPDATE {p}_dispatch SET request = $1, status = $5, \
                      lease_owner = NULL, lease_until = NULL, worker_assignment = NULL, \
                      credential_bindings = NULL, credential_receipts = NULL \
                      WHERE run_id = $2 AND status = 'reservation_running' \
@@ -198,29 +257,42 @@ impl DispatchQueue for PostgresDispatchStore {
                 .bind(&claim.run_id.0)
                 .bind(&claim.owner)
                 .bind(claim_epoch)
+                .bind(crate::dispatch_state_db(next.state))
                 .execute(&mut *tx)
                 .await
                 .map_err(reject)?
                 .rows_affected()
             }
-            SessionRunReservationResolution::Retry {
-                reservation_deadline_ms,
-            } => sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET status = 'reserved', lease_owner = NULL, \
+            SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
+                let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
+                else {
+                    unreachable!("the exact recovery claim is admitted by the kernel")
+                };
+                let store_now_ms = crate::postgres_helpers::postgres_now_ms(&mut *tx).await?;
+                let reservation_deadline_ms =
+                    crate::clock::deadline_millis(store_now_ms, reservation_ttl_ms);
+                sqlx::query(&format!(
+                    "UPDATE {p}_dispatch SET status = $5, lease_owner = NULL, \
                      lease_until = $1, worker_assignment = NULL, credential_bindings = NULL, \
                      credential_receipts = NULL, created_at = CURRENT_TIMESTAMP \
                      WHERE run_id = $2 AND status = 'reservation_running' \
                      AND lease_owner = $3 AND lease_epoch = $4"
-            ))
-            .bind(crate::clock::db_millis(reservation_deadline_ms))
-            .bind(&claim.run_id.0)
-            .bind(&claim.owner)
-            .bind(claim_epoch)
-            .execute(&mut *tx)
-            .await
-            .map_err(reject)?
-            .rows_affected(),
+                ))
+                .bind(crate::clock::db_millis(reservation_deadline_ms))
+                .bind(&claim.run_id.0)
+                .bind(&claim.owner)
+                .bind(claim_epoch)
+                .bind(crate::dispatch_state_db(next.state))
+                .execute(&mut *tx)
+                .await
+                .map_err(reject)?
+                .rows_affected()
+            }
             SessionRunReservationResolution::Rejected => {
+                assert!(matches!(
+                    transition,
+                    awaken_run_ingress_contract::GuardedTransition::Removed
+                ));
                 let changed = sqlx::query(&format!(
                     "DELETE FROM {p}_dispatch WHERE run_id = $1 \
                      AND status = 'reservation_running' AND lease_owner = $2 \
@@ -971,8 +1043,36 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_owner, lease_epoch, cancel_requested \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&claim.run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let Some(current) = current else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
+        let status: String = current.try_get("status").map_err(reject)?;
+        let persisted_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
+        let persisted_owner: Option<String> = current.try_get("lease_owner").map_err(reject)?;
+        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+        let transition = crate::persisted_dispatch_transition(
+            &status,
+            persisted_epoch,
+            cancellation_requested != 0,
+        )?;
+        let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition.relinquish(
+            claim.epoch,
+            persisted_owner.as_deref() == Some(&claim.owner),
+        ) else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
         let changed = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = 'pending', lease_owner = NULL, \
+            "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
              lease_until = NULL, created_at = clock_timestamp() \
              WHERE run_id = $1 AND status = 'running' \
              AND lease_owner = $2 AND lease_epoch = $3"
@@ -980,6 +1080,7 @@ impl DispatchQueue for PostgresDispatchStore {
         .bind(&claim.run_id.0)
         .bind(&claim.owner)
         .bind(epoch)
+        .bind(crate::dispatch_state_db(next.state))
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
@@ -1010,12 +1111,10 @@ impl DispatchQueue for PostgresDispatchStore {
         let epoch_i64 = durable_i64("dispatch lease epoch", epoch)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let authority = sqlx::query(&format!(
-            "SELECT lease_owner, request FROM {p}_dispatch WHERE run_id = $1 \
-             AND status = 'running' AND lease_epoch = $2 AND lease_owner IS NOT NULL \
-             FOR UPDATE"
+            "SELECT status, lease_owner, lease_epoch, cancel_requested, request \
+             FROM {p}_dispatch WHERE run_id = $1 FOR UPDATE"
         ))
         .bind(&run_id.0)
-        .bind(epoch_i64)
         .fetch_optional(&mut *tx)
         .await
         .map_err(reject)?;
@@ -1023,7 +1122,27 @@ impl DispatchQueue for PostgresDispatchStore {
             let _ = tx.rollback().await;
             return Ok(SettleOutcome::Fenced);
         };
-        let owner: String = authority.try_get("lease_owner").map_err(reject)?;
+        let status: String = authority.try_get("status").map_err(reject)?;
+        let persisted_epoch: i64 = authority.try_get("lease_epoch").map_err(reject)?;
+        let cancellation_requested: i64 = authority.try_get("cancel_requested").map_err(reject)?;
+        let transition = crate::persisted_dispatch_transition(
+            &status,
+            persisted_epoch,
+            cancellation_requested != 0,
+        )?;
+        let transition = transition.settle(epoch, outcome == DispatchOutcome::Done);
+        if matches!(
+            transition,
+            awaken_run_ingress_contract::GuardedTransition::Fenced
+        ) {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        }
+        let owner: Option<String> = authority.try_get("lease_owner").map_err(reject)?;
+        let Some(owner) = owner else {
+            let _ = tx.rollback().await;
+            return Ok(SettleOutcome::Fenced);
+        };
         let Json(request): Json<RunDispatch> = authority.try_get("request").map_err(reject)?;
         let request_fingerprint = request.canonical_fingerprint();
         let claim = RunClaim {
@@ -1035,8 +1154,8 @@ impl DispatchQueue for PostgresDispatchStore {
         // current epoch. A stale owner (lower epoch) affects zero rows, so its settle
         // touches neither the dispatch nor its pending — the reclaimer's in-flight
         // state is inviolate.
-        let dispatch_rows = match outcome {
-            DispatchOutcome::Done => sqlx::query(&format!(
+        let dispatch_rows = match transition {
+            awaken_run_ingress_contract::GuardedTransition::Removed => sqlx::query(&format!(
                 "DELETE FROM {p}_dispatch WHERE run_id = $1 \
                  AND status = 'running' AND lease_epoch = $2"
             ))
@@ -1046,17 +1165,19 @@ impl DispatchQueue for PostgresDispatchStore {
             .await
             .map_err(reject)?
             .rows_affected(),
-            DispatchOutcome::Awaiting => sqlx::query(&format!(
-                "UPDATE {p}_dispatch SET status = 'awaiting', lease_owner = NULL, \
+            awaken_run_ingress_contract::GuardedTransition::Applied(next) => sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET status = $3, lease_owner = NULL, \
                  lease_until = NULL, attempt_count = 0 WHERE run_id = $1 \
                  AND status = 'running' AND lease_epoch = $2"
             ))
             .bind(&run_id.0)
             .bind(epoch_i64)
+            .bind(crate::dispatch_state_db(next.state))
             .execute(&mut *tx)
             .await
             .map_err(reject)?
             .rows_affected(),
+            awaken_run_ingress_contract::GuardedTransition::Fenced => unreachable!(),
         };
         if dispatch_rows == 0 {
             // Fenced: the run was re-claimed under a higher epoch (or already gone).
@@ -1130,23 +1251,17 @@ impl DispatchQueue for PostgresDispatchStore {
         let max_attempts_i64 = durable_i64("dispatch retry limit", max_attempts)?;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let rows = sqlx::query(&format!(
-            "WITH candidates AS ( \
-                 SELECT run_id, lease_owner, lease_epoch, attempt_count \
-                 FROM {p}_dispatch WHERE status = 'running' \
-                 AND lease_until IS NOT NULL AND lease_until < $1 \
-                 AND attempt_count >= $2 FOR UPDATE \
-             ) \
-             UPDATE {p}_dispatch AS dispatch SET status = 'dead_letter', \
-             lease_owner = NULL, lease_until = NULL, dead_lettered_at = $1 \
-             FROM candidates WHERE dispatch.run_id = candidates.run_id \
-             RETURNING dispatch.run_id, candidates.lease_owner, \
-                       candidates.lease_epoch, candidates.attempt_count"
+            "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
+             FROM {p}_dispatch WHERE status = 'running' \
+             AND lease_until IS NOT NULL AND lease_until < $1 \
+             AND attempt_count >= $2 FOR UPDATE"
         ))
         .bind(crate::clock::db_millis(now_ms))
         .bind(max_attempts_i64)
         .fetch_all(&mut *tx)
         .await
         .map_err(reject)?;
+        let mut quarantined = 0usize;
         for row in &rows {
             let owner = row
                 .try_get::<Option<String>, _>("lease_owner")
@@ -1158,10 +1273,38 @@ impl DispatchQueue for PostgresDispatchStore {
                 })?;
             let epoch = row.try_get::<i64, _>("lease_epoch").map_err(reject)?;
             let attempt_count = row.try_get::<i64, _>("attempt_count").map_err(reject)?;
+            let cancellation_requested: i64 = row.try_get("cancel_requested").map_err(reject)?;
+            let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+            let current = crate::persisted_dispatch_transition(
+                "running",
+                epoch,
+                cancellation_requested != 0,
+            )?;
+            let awaken_run_ingress_contract::GuardedTransition::Applied(next) =
+                current.exhaust_retries(claim_epoch, true)
+            else {
+                continue;
+            };
+            let run_id: String = row.try_get("run_id").map_err(reject)?;
+            let changed = sqlx::query(&format!(
+                "UPDATE {p}_dispatch SET status = $4, lease_owner = NULL, \
+                 lease_until = NULL, dead_lettered_at = $1 WHERE run_id = $2 \
+                 AND status = 'running' AND lease_epoch = $3"
+            ))
+            .bind(crate::clock::db_millis(now_ms))
+            .bind(&run_id)
+            .bind(epoch)
+            .bind(crate::dispatch_state_db(next.state))
+            .execute(&mut *tx)
+            .await
+            .map_err(reject)?;
+            if changed.rows_affected() != 1 {
+                continue;
+            }
             let claim = RunClaim {
-                run_id: RunId(row.try_get("run_id").map_err(reject)?),
+                run_id: RunId(run_id),
                 owner,
-                epoch: durable_u64("dispatch lease epoch", epoch)?,
+                epoch: claim_epoch,
             };
             insert_operation(
                 &mut tx,
@@ -1179,9 +1322,10 @@ impl DispatchQueue for PostgresDispatchStore {
                 },
             )
             .await?;
+            quarantined += 1;
         }
         tx.commit().await.map_err(reject)?;
-        Ok(rows.len())
+        Ok(quarantined)
     }
 
     async fn dead_letters(&self) -> Result<Vec<RunId>, DispatchError> {
@@ -1249,15 +1393,42 @@ impl DispatchQueue for PostgresDispatchStore {
 
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let p = NS;
+        let mut tx = self.pool.begin().await.map_err(reject)?;
+        let current = sqlx::query(&format!(
+            "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
+             WHERE run_id = $1 FOR UPDATE"
+        ))
+        .bind(&run_id.0)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(reject)?;
+        let Some(current) = current else {
+            tx.commit().await.map_err(reject)?;
+            return Ok(false);
+        };
+        let status: String = current.try_get("status").map_err(reject)?;
+        let lease_epoch: i64 = current.try_get("lease_epoch").map_err(reject)?;
+        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+        let Some(next) = crate::persisted_dispatch_transition(
+            &status,
+            lease_epoch,
+            cancellation_requested != 0,
+        )?
+        .requeue_dead_letter() else {
+            tx.commit().await.map_err(reject)?;
+            return Ok(false);
+        };
         let result = sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, lease_owner = NULL, \
+            "UPDATE {p}_dispatch SET status = $2, attempt_count = 0, lease_owner = NULL, \
              lease_until = NULL WHERE run_id = $1 AND status = 'dead_letter' \
              AND cancel_requested = 0"
         ))
         .bind(&run_id.0)
-        .execute(&self.pool)
+        .bind(crate::dispatch_state_db(next.state))
+        .execute(&mut *tx)
         .await
         .map_err(reject)?;
+        tx.commit().await.map_err(reject)?;
         Ok(result.rows_affected() > 0)
     }
 
@@ -1265,7 +1436,7 @@ impl DispatchQueue for PostgresDispatchStore {
         let p = NS;
         let mut tx = self.pool.begin().await.map_err(reject)?;
         let current = sqlx::query(&format!(
-            "SELECT thread_id, status, lease_owner, lease_epoch FROM {p}_dispatch \
+            "SELECT thread_id, status, lease_owner, lease_epoch, cancel_requested FROM {p}_dispatch \
              WHERE run_id = $1 AND status IN \
              ('reserved', 'reservation_running', 'pending', 'awaiting', 'running', 'dead_letter') \
              FOR UPDATE"
@@ -1284,36 +1455,37 @@ impl DispatchQueue for PostgresDispatchStore {
             .try_get::<Option<String>, _>("lease_owner")
             .map_err(reject)?;
         let previous_epoch = current.try_get::<i64, _>("lease_epoch").map_err(reject)?;
-        let claimed = matches!(status.as_str(), "running" | "reservation_running");
-        let next_epoch = if claimed {
-            Some(
-                i64::try_from(crate::next_claim_epoch(previous_epoch)?).map_err(|_| {
-                    DispatchError::Rejected(
-                        "dispatch claim epoch exceeds the Postgres authority range".to_string(),
-                    )
-                })?,
-            )
-        } else {
-            None
+        let cancellation_requested: i64 = current.try_get("cancel_requested").map_err(reject)?;
+        let transition = crate::persisted_dispatch_transition(
+            &status,
+            previous_epoch,
+            cancellation_requested != 0,
+        )?;
+        let awaken_run_ingress_contract::CancelTransition::Applied {
+            state: next,
+            revoked_lease,
+        } = transition.cancel().map_err(crate::transition_error)?
+        else {
+            tx.commit().await.map_err(reject)?;
+            return Ok(None);
         };
+        let next_epoch = durable_i64("dispatch lease epoch", next.lease_epoch)?;
         sqlx::query(&format!(
-            "UPDATE {p}_dispatch SET cancel_requested = 1, \
-             lease_epoch = CASE WHEN status IN ('running', 'reservation_running') \
-               THEN $2 ELSE lease_epoch END, \
-             lease_owner = CASE WHEN status IN ('running', 'reservation_running') \
-               THEN NULL ELSE lease_owner END, \
-             lease_until = CASE WHEN status = 'reservation_running' \
-               THEN 0 WHEN status = 'running' THEN NULL ELSE lease_until END, \
-             status = CASE WHEN status = 'running' THEN 'pending' \
-               WHEN status = 'reservation_running' THEN 'reserved' ELSE status END \
+            "UPDATE {p}_dispatch SET cancel_requested = $2, lease_epoch = $3, \
+             lease_owner = CASE WHEN $4 THEN NULL ELSE lease_owner END, \
+             lease_until = CASE WHEN $4 AND $5 = 'reserved' THEN 0 \
+               WHEN $4 THEN NULL ELSE lease_until END, status = $5 \
              WHERE run_id = $1"
         ))
         .bind(&run_id.0)
+        .bind(i64::from(next.cancellation_requested))
         .bind(next_epoch)
+        .bind(revoked_lease)
+        .bind(crate::dispatch_state_db(next.state))
         .execute(&mut *tx)
         .await
         .map_err(reject)?;
-        if claimed {
+        if revoked_lease {
             insert_operation(
                 &mut tx,
                 &DispatchOperation::LeaseLost {

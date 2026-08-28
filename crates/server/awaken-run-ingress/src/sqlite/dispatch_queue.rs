@@ -40,9 +40,11 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn reserve_session_run(
         &self,
         request: RunDispatch,
-        reservation_deadline_ms: u64,
+        reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
-        let deadline = validate_session_run_reservation_request(&request, reservation_deadline_ms)?;
+        let reservation_ttl_ms =
+            validate_session_run_reservation_request(&request, reservation_ttl_ms)?;
+        let deadline = crate::clock::deadline_millis(self.clock.now_ms(), reservation_ttl_ms);
         self.with_conn(move |conn, p| {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -109,15 +111,18 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            let current: Option<(String, String)> = tx
+            let current: Option<(String, String, i64, i64)> = tx
                 .query_row(
-                    &format!("SELECT status, request FROM {p}_dispatch WHERE run_id = ?1"),
+                    &format!(
+                        "SELECT status, request, lease_epoch, cancel_requested \
+                         FROM {p}_dispatch WHERE run_id = ?1"
+                    ),
                     params![run_id.0],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
                 )
                 .optional()
                 .map_err(reject)?;
-            let Some((status, request_json)) = current else {
+            let Some((status, request_json, lease_epoch, cancellation_requested)) = current else {
                 let completed = tx
                     .query_row(
                         &format!("SELECT 1 FROM {p}_dispatch_completion WHERE run_id = ?1"),
@@ -150,15 +155,26 @@ impl DispatchQueue for SqliteDispatchStore {
             let outcome = if let Some(outcome) = classified {
                 outcome
             } else {
+                let next = crate::persisted_dispatch_transition(
+                    &status,
+                    lease_epoch,
+                    cancellation_requested != 0,
+                )?
+                .activate_reservation()
+                .expect("the reservation classifier admitted only Reserved");
                 request.session_activity_epoch = Some(session_activity_epoch);
                 let changed = tx
                     .execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET request = ?1, status = 'pending', \
+                            "UPDATE {p}_dispatch SET request = ?1, status = ?3, \
                              lease_owner = NULL, lease_until = NULL WHERE run_id = ?2 \
                              AND status = 'reserved'"
                         ),
-                        params![json(&request)?, run_id.0],
+                        params![
+                            json(&request)?,
+                            run_id.0,
+                            crate::dispatch_state_db(next.state)
+                        ],
                     )
                     .map_err(reject)?;
                 if changed == 1 {
@@ -179,6 +195,34 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
+            let current: Option<(String, i64, i64)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
+                         WHERE run_id = ?1"
+                    ),
+                    params![run_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(reject)?;
+            let removable = if let Some((status, lease_epoch, cancellation_requested)) = current {
+                matches!(
+                    crate::persisted_dispatch_transition(
+                        &status,
+                        lease_epoch,
+                        cancellation_requested != 0,
+                    )?
+                    .reject_reservation(),
+                    awaken_run_ingress_contract::GuardedTransition::Removed
+                )
+            } else {
+                false
+            };
+            if !removable {
+                tx.commit().map_err(reject)?;
+                return Ok(false);
+            }
             let changed = tx
                 .execute(
                     &format!("DELETE FROM {p}_dispatch WHERE run_id = ?1 AND status = 'reserved'"),
@@ -204,53 +248,80 @@ impl DispatchQueue for SqliteDispatchStore {
         resolution: SessionRunReservationResolution,
     ) -> Result<SettleOutcome, DispatchError> {
         let resolution = validate_session_run_reservation_resolution(resolution)?;
+        let store_now_ms = self.clock.now_ms();
         let claim = claim.clone();
         self.with_conn(move |conn, p| {
             let claim_epoch = durable_i64("dispatch lease epoch", claim.epoch)?;
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            let request_json: Option<String> = tx
+            let current: Option<(String, i64)> = tx
                 .query_row(
                     &format!(
-                        "SELECT request FROM {p}_dispatch WHERE run_id = ?1 \
+                        "SELECT request, cancel_requested FROM {p}_dispatch WHERE run_id = ?1 \
                          AND status = 'reservation_running' AND lease_owner = ?2 \
                          AND lease_epoch = ?3"
                     ),
                     params![claim.run_id.0, claim.owner, claim_epoch],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()
                 .map_err(reject)?;
-            let Some(request_json) = request_json else {
+            let Some((request_json, cancellation_requested)) = current else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
             let mut request: RunDispatch =
                 serde_json::from_str(&request_json).map_err(json_err)?;
+            let transition = crate::persisted_dispatch_transition(
+                "reservation_running",
+                claim_epoch,
+                cancellation_requested != 0,
+            )?
+            .resolve_reservation(
+                claim.epoch,
+                true,
+                match resolution {
+                    SessionRunReservationResolution::Admitted { .. } => Some(true),
+                    SessionRunReservationResolution::Retry { .. } => Some(false),
+                    SessionRunReservationResolution::Rejected => None,
+                },
+            );
             let changed = match resolution {
                 SessionRunReservationResolution::Admitted {
                     session_activity_epoch,
                 } => {
                     request.session_activity_epoch = Some(session_activity_epoch);
+                    let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
+                    else {
+                        unreachable!("the exact recovery claim is admitted by the kernel")
+                    };
                     tx.execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET request = ?1, status = 'pending', \
+                            "UPDATE {p}_dispatch SET request = ?1, status = ?5, \
                              lease_owner = NULL, lease_until = NULL, worker_assignment = NULL, \
                              credential_bindings = NULL, credential_receipts = NULL \
                              WHERE run_id = ?2 AND status = 'reservation_running' \
                              AND lease_owner = ?3 AND lease_epoch = ?4"
                         ),
-                        params![json(&request)?, claim.run_id.0, claim.owner, claim_epoch],
+                        params![
+                            json(&request)?,
+                            claim.run_id.0,
+                            claim.owner,
+                            claim_epoch,
+                            crate::dispatch_state_db(next.state)
+                        ],
                     )
                     .map_err(reject)?
                 }
-                SessionRunReservationResolution::Retry {
-                    reservation_deadline_ms,
-                } => {
+                SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
+                    let awaken_run_ingress_contract::GuardedTransition::Applied(next) = transition
+                    else {
+                        unreachable!("the exact recovery claim is admitted by the kernel")
+                    };
                     tx.execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET status = 'reserved', lease_owner = NULL, \
+                            "UPDATE {p}_dispatch SET status = ?5, lease_owner = NULL, \
                              lease_until = ?1, worker_assignment = NULL, credential_bindings = NULL, \
                              credential_receipts = NULL, \
                              created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
@@ -258,15 +329,23 @@ impl DispatchQueue for SqliteDispatchStore {
                              AND lease_owner = ?3 AND lease_epoch = ?4"
                         ),
                         params![
-                            crate::clock::db_millis(reservation_deadline_ms),
+                            crate::clock::db_millis(crate::clock::deadline_millis(
+                                store_now_ms,
+                                reservation_ttl_ms,
+                            )),
                             claim.run_id.0,
                             claim.owner,
-                            claim_epoch
+                            claim_epoch,
+                            crate::dispatch_state_db(next.state)
                         ],
                     )
                     .map_err(reject)?
                 }
                 SessionRunReservationResolution::Rejected => {
+                    assert!(matches!(
+                        transition,
+                        awaken_run_ingress_contract::GuardedTransition::Removed
+                    ));
                     let changed = tx
                         .execute(
                             &format!(
@@ -1112,15 +1191,46 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
+            let current: Option<(String, Option<String>, i64, i64)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested \
+                         FROM {p}_dispatch WHERE run_id = ?1"
+                    ),
+                    params![claim.run_id.0],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .optional()
+                .map_err(reject)?;
+            let Some((status, owner, persisted_epoch, cancellation_requested)) = current else {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            };
+            let transition = crate::persisted_dispatch_transition(
+                &status,
+                persisted_epoch,
+                cancellation_requested != 0,
+            )?;
+            let awaken_run_ingress_contract::GuardedTransition::Applied(next) =
+                transition.relinquish(claim.epoch, owner.as_deref() == Some(&claim.owner))
+            else {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            };
             let changed = tx
                 .execute(
                     &format!(
-                        "UPDATE {p}_dispatch SET status = 'pending', lease_owner = NULL, \
+                        "UPDATE {p}_dispatch SET status = ?4, lease_owner = NULL, \
                          lease_until = NULL, created_at = strftime('%Y-%m-%d %H:%M:%f', 'now') \
                          WHERE run_id = ?1 AND status = 'running' \
                          AND lease_owner = ?2 AND lease_epoch = ?3"
                     ),
-                    params![claim.run_id.0, claim.owner, epoch],
+                    params![
+                        claim.run_id.0,
+                        claim.owner,
+                        epoch,
+                        crate::dispatch_state_db(next.state)
+                    ],
                 )
                 .map_err(reject)?;
             if changed != 1 {
@@ -1155,18 +1265,45 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            let authority: Option<(String, String)> = tx
+            let authority: Option<(String, Option<String>, i64, i64, String)> = tx
                 .query_row(
                     &format!(
-                        "SELECT lease_owner, request FROM {p}_dispatch \
-                         WHERE run_id = ?1 AND status = 'running' AND lease_epoch = ?2"
+                        "SELECT status, lease_owner, lease_epoch, cancel_requested, request \
+                         FROM {p}_dispatch WHERE run_id = ?1"
                     ),
-                    params![run_id, epoch_i64],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    params![run_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(reject)?;
-            let Some((owner, request_json)) = authority else {
+            let Some((status, owner, persisted_epoch, cancellation_requested, request_json)) =
+                authority
+            else {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            };
+            let transition = crate::persisted_dispatch_transition(
+                &status,
+                persisted_epoch,
+                cancellation_requested != 0,
+            )?
+            .settle(epoch, outcome == DispatchOutcome::Done);
+            if matches!(
+                transition,
+                awaken_run_ingress_contract::GuardedTransition::Fenced
+            ) {
+                let _ = tx.rollback();
+                return Ok(SettleOutcome::Fenced);
+            }
+            let Some(owner) = owner else {
                 let _ = tx.rollback();
                 return Ok(SettleOutcome::Fenced);
             };
@@ -1180,8 +1317,8 @@ impl DispatchQueue for SqliteDispatchStore {
             // Fence first: mutate the dispatch row ONLY while the caller still holds
             // the current epoch. A stale owner (lower epoch) affects zero rows, so
             // its settle touches neither the dispatch nor its pending.
-            let dispatch_rows = match outcome {
-                DispatchOutcome::Done => tx
+            let dispatch_rows = match transition {
+                awaken_run_ingress_contract::GuardedTransition::Removed => tx
                     .execute(
                         &format!(
                             "DELETE FROM {p}_dispatch WHERE run_id = ?1 \
@@ -1190,16 +1327,17 @@ impl DispatchQueue for SqliteDispatchStore {
                         params![run_id, epoch_i64],
                     )
                     .map_err(reject)?,
-                DispatchOutcome::Awaiting => tx
+                awaken_run_ingress_contract::GuardedTransition::Applied(next) => tx
                     .execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET status = 'awaiting', lease_owner = NULL, \
+                            "UPDATE {p}_dispatch SET status = ?3, lease_owner = NULL, \
                              lease_until = NULL, attempt_count = 0 \
                              WHERE run_id = ?1 AND status = 'running' AND lease_epoch = ?2"
                         ),
-                        params![run_id, epoch_i64],
+                        params![run_id, epoch_i64, crate::dispatch_state_db(next.state)],
                     )
                     .map_err(reject)?,
+                awaken_run_ingress_contract::GuardedTransition::Fenced => unreachable!(),
             };
             if dispatch_rows == 0 {
                 // Fenced: re-claimed under a higher epoch (or already gone). Change
@@ -1324,7 +1462,7 @@ impl DispatchQueue for SqliteDispatchStore {
             let candidates = {
                 let mut statement = tx
                     .prepare(&format!(
-                        "SELECT run_id, lease_owner, lease_epoch, attempt_count \
+                        "SELECT run_id, lease_owner, lease_epoch, attempt_count, cancel_requested \
                          FROM {p}_dispatch WHERE status = 'running' \
                          AND lease_until IS NOT NULL AND lease_until < ?1 \
                          AND attempt_count >= ?2 ORDER BY created_at"
@@ -1339,6 +1477,7 @@ impl DispatchQueue for SqliteDispatchStore {
                                 row.get::<_, Option<String>>(1)?,
                                 row.get::<_, i64>(2)?,
                                 row.get::<_, i64>(3)?,
+                                row.get::<_, i64>(4)?,
                             ))
                         },
                     )
@@ -1346,20 +1485,36 @@ impl DispatchQueue for SqliteDispatchStore {
                 rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
             };
             let mut quarantined = 0;
-            for (run_id, owner, epoch, attempt_count) in candidates {
+            for (run_id, owner, epoch, attempt_count, cancellation_requested) in candidates {
                 let Some(owner) = owner else {
                     return Err(DispatchError::Rejected(
                         "expired running dispatch has no persisted lease owner".to_string(),
                     ));
                 };
+                let claim_epoch = durable_u64("dispatch lease epoch", epoch)?;
+                let current = crate::persisted_dispatch_transition(
+                    "running",
+                    epoch,
+                    cancellation_requested != 0,
+                )?;
+                let awaken_run_ingress_contract::GuardedTransition::Applied(next) =
+                    current.exhaust_retries(claim_epoch, true)
+                else {
+                    continue;
+                };
                 let changed = tx
                     .execute(
                         &format!(
-                            "UPDATE {p}_dispatch SET status = 'dead_letter', \
+                            "UPDATE {p}_dispatch SET status = ?4, \
                              lease_owner = NULL, lease_until = NULL, dead_lettered_at = ?1 \
                              WHERE run_id = ?2 AND status = 'running' AND lease_epoch = ?3"
                         ),
-                        params![crate::clock::db_millis(now_ms), run_id, epoch],
+                        params![
+                            crate::clock::db_millis(now_ms),
+                            run_id,
+                            epoch,
+                            crate::dispatch_state_db(next.state)
+                        ],
                     )
                     .map_err(reject)?;
                 if changed == 0 {
@@ -1368,7 +1523,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 let claim = RunClaim {
                     run_id: RunId(run_id),
                     owner,
-                    epoch: durable_u64("dispatch lease epoch", epoch)?,
+                    epoch: claim_epoch,
                 };
                 insert_operation(
                     &tx,
@@ -1464,17 +1619,45 @@ impl DispatchQueue for SqliteDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let run_id = run_id.0.clone();
         self.with_conn(move |conn, p| {
-            let n = conn
+            let tx = conn
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .map_err(reject)?;
+            let current: Option<(String, i64, i64)> = tx
+                .query_row(
+                    &format!(
+                        "SELECT status, lease_epoch, cancel_requested FROM {p}_dispatch \
+                         WHERE run_id = ?1"
+                    ),
+                    params![run_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(reject)?;
+            let Some((status, lease_epoch, cancellation_requested)) = current else {
+                tx.commit().map_err(reject)?;
+                return Ok(false);
+            };
+            let Some(next) = crate::persisted_dispatch_transition(
+                &status,
+                lease_epoch,
+                cancellation_requested != 0,
+            )?
+            .requeue_dead_letter() else {
+                tx.commit().map_err(reject)?;
+                return Ok(false);
+            };
+            let n = tx
                 .execute(
                     &format!(
-                        "UPDATE {p}_dispatch SET status = 'pending', attempt_count = 0, \
+                        "UPDATE {p}_dispatch SET status = ?2, attempt_count = 0, \
                          lease_owner = NULL, lease_until = NULL \
                          WHERE run_id = ?1 AND status = 'dead_letter' \
                          AND cancel_requested = 0"
                     ),
-                    params![run_id],
+                    params![run_id, crate::dispatch_state_db(next.state)],
                 )
                 .map_err(reject)?;
+            tx.commit().map_err(reject)?;
             Ok(n > 0)
         })
         .await
@@ -1486,50 +1669,59 @@ impl DispatchQueue for SqliteDispatchStore {
             let tx = conn
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .map_err(reject)?;
-            let current: Option<(String, String, Option<String>, i64)> = tx
+            let current: Option<(String, String, Option<String>, i64, i64)> = tx
                 .query_row(
                     &format!(
-                        "SELECT thread_id, status, lease_owner, lease_epoch FROM {p}_dispatch \
+                        "SELECT thread_id, status, lease_owner, lease_epoch, cancel_requested FROM {p}_dispatch \
                          WHERE run_id = ?1 AND status IN \
                          ('reserved', 'reservation_running', 'pending', 'awaiting', 'running', 'dead_letter')"
                     ),
                     params![run_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
                 )
                 .optional()
                 .map_err(reject)?;
-            if let Some((_, status, _, epoch)) = &current {
-                let claimed = matches!(status.as_str(), "running" | "reservation_running");
-                let next_epoch = if claimed {
-                    Some(
-                        i64::try_from(crate::next_claim_epoch(*epoch)?).map_err(|_| {
-                            DispatchError::Rejected(
-                                "dispatch claim epoch exceeds the SQLite authority range"
-                                    .to_string(),
-                            )
-                        })?,
-                    )
-                } else {
-                    None
+            if let Some((_, status, _, epoch, cancellation_requested)) = &current {
+                let transition = crate::persisted_dispatch_transition(
+                    status,
+                    *epoch,
+                    *cancellation_requested != 0,
+                )?;
+                let awaken_run_ingress_contract::CancelTransition::Applied {
+                    state: next,
+                    revoked_lease,
+                } = transition.cancel().map_err(crate::transition_error)?
+                else {
+                    tx.commit().map_err(reject)?;
+                    return Ok(None);
                 };
                 tx.execute(
                     &format!(
-                        "UPDATE {p}_dispatch SET cancel_requested = 1, \
-                         lease_epoch = CASE WHEN status IN ('running', 'reservation_running') \
-                           THEN ?2 ELSE lease_epoch END, \
-                         lease_owner = CASE WHEN status IN ('running', 'reservation_running') \
-                           THEN NULL ELSE lease_owner END, \
-                         lease_until = CASE WHEN status = 'reservation_running' \
-                           THEN 0 WHEN status = 'running' THEN NULL ELSE lease_until END, \
-                         status = CASE WHEN status = 'running' THEN 'pending' \
-                           WHEN status = 'reservation_running' THEN 'reserved' ELSE status END \
+                        "UPDATE {p}_dispatch SET cancel_requested = ?2, lease_epoch = ?3, \
+                         lease_owner = CASE WHEN ?4 THEN NULL ELSE lease_owner END, \
+                         lease_until = CASE WHEN ?4 AND ?5 = 'reserved' THEN 0 \
+                           WHEN ?4 THEN NULL ELSE lease_until END, status = ?5 \
                          WHERE run_id = ?1"
                     ),
-                    params![run_id, next_epoch],
+                    params![
+                        run_id,
+                        i64::from(next.cancellation_requested),
+                        durable_i64("dispatch lease epoch", next.lease_epoch)?,
+                        revoked_lease,
+                        crate::dispatch_state_db(next.state)
+                    ],
                 )
                 .map_err(reject)?;
-                if claimed {
-                    let (_, _, owner, epoch) = current.as_ref().expect("current exists");
+                if revoked_lease {
+                    let (_, _, owner, epoch, _) = current.as_ref().expect("current exists");
                     insert_operation(
                         &tx,
                         p,
@@ -1553,7 +1745,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 }
             }
             tx.commit().map_err(reject)?;
-            Ok(current.map(|(thread, _, _, _)| ThreadId(thread)))
+            Ok(current.map(|(thread, _, _, _, _)| ThreadId(thread)))
         })
         .await
     }

@@ -905,7 +905,7 @@ impl SessionRuntime for ManagedHost {
         &self,
         command: awaken_session_contract::AdmitSessionRun,
     ) -> Result<awaken_session_contract::SessionRunReservation, RunError> {
-        use awaken_run_ingress::{Clock as _, DispatchQueue as _};
+        use awaken_run_ingress::DispatchQueue as _;
 
         let session_id = command.session_id.clone();
         if command.session_id.trim().is_empty()
@@ -951,14 +951,11 @@ impl SessionRuntime for ManagedHost {
                 .host
                 .resolved_dispatch_with_traceparent(activation, command.traceparent)
                 .map_err(to_run_error)?;
-            let deadline = awaken_run_ingress::SystemClock
-                .now_ms()
-                .saturating_add(30_000);
             match self
                 .host
                 .dispatch_store()
                 .map_err(to_run_error)?
-                .reserve_session_run(request, deadline)
+                .reserve_session_run(request, 30_000)
                 .await
                 .map_err(|error| RunError::unavailable(error.to_string()))?
             {
