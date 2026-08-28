@@ -1,7 +1,7 @@
-// The session transcript: a pure projection over the committed event log, with
-// inline HITL (approve/deny a gated tool) and a composer. Self-contained — it
-// owns the live log via useSessionLog — so the same engine backs the session
-// detail, the editor Sandbox, the Admin Assistant, and the model Test modal.
+// The session transcript: a pure view over one SessionLog owner, with inline
+// HITL and a composer. The default export is the thin standalone owner used by
+// isolated chats; parent surfaces can render TranscriptView with their existing
+// owner so controls never fork transport identity or pending state.
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -12,10 +12,10 @@ import {
   ToolCallCard as SharedToolCallCard,
 } from "@awaken/ui";
 import { Button, Pill } from "../ui";
-import type { ContentBlock, InboundEvent, SessionEvent } from "../../lib/api/types";
+import type { ContentBlock, InboundEvent, Session, SessionEvent } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { sessionErrorText, textOf } from "../../lib/session-log";
-import { useSessionLog } from "../../lib/useSessionLog";
+import { useSessionLog, type SessionLog } from "../../lib/useSessionLog";
 
 export function userFacingRunError(message: string, zh: boolean): string {
   if (message.includes("package requirements requested but backend cannot provision packages")) {
@@ -35,11 +35,13 @@ function ToolCard({
   ev,
   result,
   pendingConfirm,
+  resolutionEnabled,
   onConfirm,
 }: {
   ev: SessionEvent;
   result?: SessionEvent;
   pendingConfirm: boolean;
+  resolutionEnabled: boolean;
   onConfirm: (allow: boolean, note: string) => void;
 }) {
   const app = useApp();
@@ -76,17 +78,19 @@ function ToolCard({
         </>}
       />
       {pendingConfirm && (
-        <ChatApproval
-          title={<>{app.t("Approve", "批准")} <code>{name}</code> {app.t("execution?", "执行?")}</>}
-          note={note}
-          onNoteChange={setNote}
-          noteLabel={app.t("Decision note", "处理说明")}
-          notePlaceholder={app.t("deny note (optional)", "拒绝说明(可选)")}
-          approveLabel={app.t("Allow", "允许")}
-          rejectLabel={app.t("Deny", "拒绝")}
-          onApprove={() => onConfirm(true, note)}
-          onReject={() => onConfirm(false, note)}
-        />
+        <fieldset disabled={!resolutionEnabled} style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}>
+          <ChatApproval
+            title={<>{app.t("Approve", "批准")} <code>{name}</code> {app.t("execution?", "执行?")}</>}
+            note={note}
+            onNoteChange={setNote}
+            noteLabel={app.t("Decision note", "处理说明")}
+            notePlaceholder={app.t("deny note (optional)", "拒绝说明(可选)")}
+            approveLabel={app.t("Allow", "允许")}
+            rejectLabel={app.t("Deny", "拒绝")}
+            onApprove={() => onConfirm(true, note)}
+            onReject={() => onConfirm(false, note)}
+          />
+        </fieldset>
       )}
     </div>
   );
@@ -99,10 +103,8 @@ export interface TranscriptProps {
   queryKey: readonly unknown[];
   /** Show the message composer (default true). */
   composer?: boolean;
-  /** Show the per-message model-override field (default false). */
-  modelOverride?: boolean;
-  /** Pin every user message to this model (Test-a-model; hides the override field). */
-  fixedModel?: string;
+  /** Aggregate-owned status used by the shared conservative admission join. */
+  sessionStatus?: Session["status"];
   /** Placeholder for the composer input. */
   placeholder?: string;
   /** Rendered above the log (e.g. an empty-state hint). */
@@ -123,27 +125,56 @@ export interface TranscriptProps {
   onRunSettled?: () => void;
 }
 
+export type TranscriptViewProps = Omit<
+  TranscriptProps,
+  "base" | "queryKey" | "sessionStatus" | "live"
+> & {
+  sessionLog: SessionLog;
+};
+
 export default function Transcript({
   base,
   queryKey,
+  sessionStatus,
+  live = true,
+  ...viewProps
+}: TranscriptProps) {
+  const sessionLog = useSessionLog(base, queryKey, {
+    live,
+    followLive: viewProps.composer ?? true,
+    sessionStatus,
+  });
+  return <TranscriptView key={base} {...viewProps} sessionLog={sessionLog} />;
+}
+
+export function TranscriptView({
+  sessionLog,
   composer = true,
-  modelOverride = false,
   placeholder,
   header,
-  live = true,
   onLatency,
-  fixedModel,
   contextPrefix,
   autoMessage,
   onToolComplete,
   onRunSettled,
-}: TranscriptProps) {
+}: TranscriptViewProps) {
   const app = useApp();
-  const { log, results, pendingIds, running, freshCount, applyPending, send, sendPending, sendError, loadError } =
-    useSessionLog(base, queryKey, live, composer);
+  const {
+    admission,
+    log,
+    results,
+    pendingIds,
+    running,
+    freshCount,
+    applyPending,
+    send,
+    sendPending,
+    sendError,
+    loadError,
+    projectionError,
+  } = sessionLog;
   const [draft, setDraft] = useState("");
   const [pendingMessage, setPendingMessage] = useState<string | null>(null);
-  const [model, setModel] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
   const handledTools = useRef(new Set<string>());
   const handledAutoMessage = useRef<string | null>(null);
@@ -186,37 +217,39 @@ export default function Transcript({
     }
   }, [log, onToolComplete, results]);
 
-  const sendText = (userText: string, useModel = fixedModel || model) => {
+  const sendText = (userText: string) => {
     sentAt.current = Date.now();
     const text = contextPrefix ? `${contextPrefix}\n${userText}` : userText;
     setPendingMessage(userText);
     hadLocalActivity.current = true;
-    send([
+    // Cause: mutateAsync rejects on transport failure. Effect: consume the
+    // fire-and-forget promise because the shared mutation state renders it.
+    void send([
       {
         type: "user.message",
         content: [{ type: "text", text }],
-        ...(useModel ? { model: useModel } : {}),
       },
-    ]);
+    ]).catch(() => undefined);
   };
 
   useEffect(() => {
-    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || running || pendingIds.size > 0) return;
+    if (!autoMessage || handledAutoMessage.current === autoMessage.id || sendPending || !admission.canSendMessage) return;
     handledAutoMessage.current = autoMessage.id;
     sendText(autoMessage.text);
   // `sendText` intentionally uses the current session/context. An auto-message id is
   // the idempotency boundary; changing render-local callback identities must not resend.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoMessage?.id, pendingIds.size, running, sendPending]);
+  }, [admission.canSendMessage, autoMessage?.id, sendPending]);
 
   useEffect(() => {
-    if (running || sendPending) return;
+    if (!admission.canSendMessage || sendPending) return;
     if (!hadLocalActivity.current) return;
     hadLocalActivity.current = false;
     onRunSettled?.();
-  }, [onRunSettled, running, sendPending]);
+  }, [admission.canSendMessage, onRunSettled, sendPending]);
 
   const confirm = (ev: SessionEvent, allow: boolean, note: string) => {
+    if (!admission.canResolveTools) return;
     const inbound: InboundEvent =
       ev.type === "agent.custom_tool_use"
         ? {
@@ -231,11 +264,12 @@ export default function Transcript({
             result: allow ? "allow" : "deny",
             deny_message: allow ? undefined : note || undefined,
           };
-    send([inbound]);
+    // Tool replies use the same shared mutation error owner as messages.
+    void send([inbound]).catch(() => undefined);
   };
 
   const submit = () => {
-    if (!draft.trim() || sendPending || pendingIds.size > 0) return;
+    if (!draft.trim() || sendPending || !admission.canSendMessage) return;
     // Preserve the operator's exact multiline text (indentation and trailing newline
     // can be meaningful in code/prompts); trimming is only the emptiness check above.
     const userText = draft;
@@ -252,7 +286,12 @@ export default function Transcript({
           {freshCount} {app.t("new updates · Refresh", "条新事件 · 刷新")}
         </Button>
       )}
-      {loadError && <div className="err">{loadError.message}</div>}
+      {loadError && !projectionError && <div className="err">{loadError.message}</div>}
+      {projectionError && (
+        <div className="banner err">
+          {app.t("Committed Session history is inconsistent; input is disabled until the projection is reloaded.", "已提交的 Session 历史不一致；重新加载投影前已禁止输入。")}
+        </div>
+      )}
       {log.map((ev) => {
         switch (ev.type) {
           case "user.message":
@@ -281,6 +320,7 @@ export default function Transcript({
                 ev={ev}
                 result={results.get(ev.id)}
                 pendingConfirm={pendingIds.has(ev.id) && !results.get(ev.id)}
+                resolutionEnabled={admission.canResolveTools}
                 onConfirm={(allow, note) => confirm(ev, allow, note)}
               />
             );
@@ -358,22 +398,15 @@ export default function Transcript({
           value={draft}
           onChange={setDraft}
           onSubmit={submit}
-          busy={sendPending || pendingIds.size > 0}
+          busy={sendPending || !admission.canSendMessage}
           ariaLabel={app.t("Message to agent", "给 Agent 的消息")}
           placeholder={pendingIds.size > 0
             ? app.t("Resolve the pending tool request before sending a message.", "请先处理待审批工具，再发送消息。")
-            : placeholder ?? app.t("Message…", "输入消息…")}
+            : !admission.canSendMessage
+              ? app.t("Session input is not available in the current state.", "当前状态下无法向 Session 发送输入。")
+              : placeholder ?? app.t("Message…", "输入消息…")}
           sendLabel={sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}
           sendIcon={<span>{sendPending ? app.t("Sending…", "发送中…") : app.t("Send", "发送")}</span>}
-          leadingActions={modelOverride ? (
-            <input
-              className="input mono"
-              style={{ width: 170 }}
-              placeholder={app.t("model override", "覆盖模型")}
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-            />
-          ) : null}
           hint={app.t(
             "Enter to send · Shift+Enter for a new line · State the goal; tools and skills handle the details.",
             "Enter 发送 · Shift+Enter 换行 · 只需说明目标，细节交给工具和 Skill。",

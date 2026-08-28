@@ -45,6 +45,9 @@ importers:
       '@ai-sdk/react':
         specifier: ^4.0.39
         version: 4.0.39(react@19.2.7)(zod@4.4.3)
+      '@awaken/managed-sdk-oracle':
+        specifier: workspace:*
+        version: link:../packages/managed-sdk-oracle
       '@awaken/managed-session-projection':
         specifier: workspace:*
         version: link:../packages/managed-session-projection

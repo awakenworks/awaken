@@ -6,6 +6,23 @@
 
 import type * as Contract from "../../../../contracts/model-config";
 import type { ModelSelection } from "../../../../contracts/model-selection.generated";
+import type {
+  BetaManagedAgentsEventParams,
+  BetaManagedAgentsSendSessionEvents,
+  BetaManagedAgentsSession,
+  BetaManagedAgentsSessionEvent,
+  BetaManagedAgentsSessionEventsPageCursor,
+  BetaManagedAgentsSessionResource,
+  BetaManagedAgentsSessionResourcesPageCursor,
+  BetaManagedAgentsSessionsBidirectionalPageCursor,
+  BetaManagedAgentsSessionThread,
+  BetaManagedAgentsSessionThreadsPageCursor,
+  BetaManagedAgentsSessionThreadUsage,
+  BetaManagedAgentsSessionUsage,
+  ManagedSessionContentBlock,
+  SessionCreateParams,
+  SessionUpdateParams,
+} from "@awaken/managed-sdk-oracle/current-types";
 export type { ModelSelection } from "../../../../contracts/model-selection.generated";
 
 export type {
@@ -34,6 +51,13 @@ export type InferenceProfile = Contract.InferenceProfile;
 export type ProfileCandidate = Contract.PrimaryElement;
 export type ResolvedCandidatesView = Contract.ResolvedCandidatesView;
 
+/** Awaken control-plane collection shape; Managed pages use SDK-specific aliases below. */
+export interface Page<T> {
+  data: T[];
+  has_more: boolean;
+  next_page: string | null;
+}
+
 // ---- IAM (embedded) ----
 
 export interface IamTokenView {
@@ -50,153 +74,35 @@ export interface IamTokenView {
 
 // ---- managed sessions ----
 
-export interface SessionAgent {
-  id: string;
-  type: "agent";
-  version?: number;
-  /** A bare id or a `{ id }` object, depending on how the agent was authored. */
-  model?: string | { id: string };
-  name?: string;
-  tools?: unknown[];
-  mcp_servers?: unknown[];
-  skills?: unknown[];
-  multiagent?: MultiagentConfig | null;
-}
-/** Accumulated token usage for a session (zero until the first turn commits). */
-export interface SessionUsage {
-  input_tokens: number;
-  output_tokens: number;
-  cache_read_input_tokens: number;
-  cache_creation_input_tokens: number;
-}
-
-export interface Session {
-  id: string;
-  type: "session";
-  agent: SessionAgent;
-  usage?: SessionUsage;
-  environment_id?: string | null;
-  created_at: string;
-  updated_at: string;
-  archived_at?: string | null;
-  title?: string | null;
-  metadata: Record<string, string>;
-  resources: unknown[];
-  outcome_evaluations: unknown[];
-  status: "running" | "idle" | "rescheduling" | "terminated";
-  preparation?: {
-    status: "preparing" | "ready" | "failed";
-    error?: string;
-  };
-}
-
-export interface ContentBlockText {
-  type: "text";
-  text: string;
-}
-export type ContentBlock = ContentBlockText | { type: string; [k: string]: unknown };
-
-export type StopReason =
-  | { type: "end_turn" }
-  | { type: "requires_action"; event_ids: string[] }
-  | { type: "retries_exhausted" };
-
-export type OutboundKind =
-  | { type: "agent.message"; content: ContentBlock[] }
-  | {
-      type: "agent.tool_use";
-      name: string;
-      input: unknown;
-      evaluated_permission?: string;
-    }
-  | { type: "agent.tool_result"; tool_use_id: string; content: ContentBlock[]; is_error?: boolean }
-  | { type: "agent.custom_tool_use"; name: string; input: unknown }
-  | { type: "session.status_running" }
-  | { type: "session.status_idle"; stop_reason: StopReason }
-  | { type: "session.error"; error?: { type?: string; message?: string }; message?: string }
-  | { type: "span.outcome_evaluation_start"; outcome_id: string; iteration: number }
-  | {
-      type: "span.outcome_evaluation_end";
-      outcome_id: string;
-      iteration: number;
-      result: string;
-      explanation?: string;
-    }
-  | { type: string; [k: string]: unknown };
-
-export type SessionEvent = { id: string; processed_at?: string | null } & OutboundKind;
-
-export interface ListEventsResponse {
-  data: SessionEvent[];
-  next_page: string | null;
-  has_more: boolean;
-}
-
-export type InboundEvent =
-  | { type: "user.message"; content: ContentBlock[]; model?: string }
-  | {
-      type: "user.tool_confirmation";
-      tool_use_id: string;
-      result: "allow" | "deny";
-      deny_message?: string;
-    }
-  | { type: "user.custom_tool_result"; custom_tool_use_id: string; content?: ContentBlock[]; is_error?: boolean }
-  | { type: "user.define_outcome"; description: string; rubric: string; max_iterations?: number }
-  | { type: "user.interrupt" };
-
-export interface EventReceipt {
-  id: string;
-  type: string;
-  processed_at?: string | null;
-}
-
-export interface SendEventsResponse {
-  data: EventReceipt[];
-}
-
-export interface ListSessionsResponse {
-  data: Session[];
-  next_page: string | null;
-  has_more: boolean;
-}
-
-/** POST /v1/sessions/{id} — the session's client-mutable fields. */
-export interface UpdateSessionRequest {
-  title?: string | null;
-  metadata?: Record<string, string>;
-}
-
-export interface CreateSessionRequest {
-  agent: string
-    | { id: string; type: "agent"; version?: number }
-    | { id: string; type: "agent_with_overrides"; version?: number; model?: string };
-  environment_id?: string;
-  title?: string;
-  metadata?: Record<string, string>;
-  mcp_servers?: { name: string; url: string; prompts_as_skills?: boolean }[];
-  vault_ids?: string[];
-}
-
-// ---- Managed Agents SDK page shape (PageCursor: {data, has_more, next_page}) ----
-
-export interface Page<T> {
-  data: T[];
-  has_more: boolean;
-  next_page: string | null;
-}
-
-/** A resource mounted for a session (ADR-0038): the SDK-shaped item `/v1/sessions/:id/
- * resources` returns — a memory store / file / repo / Skill attached to the sandbox. */
-export interface SessionResourceDto {
-  id: string;
-  type: string; // "file" | "memory_store" | "github_repository" | "skill"
-  mount_path: string;
-  memory_store_id?: string;
-  file_id?: string;
-  url?: string;
-  resource_id?: string;
-  instructions?: string;
-}
+/** Exact current official Managed wire types, selected by the SDK oracle. */
+export type Session = BetaManagedAgentsSession;
+export type SessionAgent = BetaManagedAgentsSession["agent"];
+export type SessionUsage = BetaManagedAgentsSessionUsage;
+export type SessionEvent = BetaManagedAgentsSessionEvent;
+export type InboundEvent = BetaManagedAgentsEventParams;
+export type SendEventsResponse = BetaManagedAgentsSendSessionEvents;
+export type ListEventsResponse = Pick<
+  BetaManagedAgentsSessionEventsPageCursor,
+  "data" | "next_page"
+>;
+export type ListSessionsResponse = Pick<
+  BetaManagedAgentsSessionsBidirectionalPageCursor,
+  "data" | "next_page" | "prev_page"
+>;
+export type SessionThread = BetaManagedAgentsSessionThread;
+export type SessionThreadUsage = BetaManagedAgentsSessionThreadUsage;
+export type ListSessionThreadsResponse = Pick<
+  BetaManagedAgentsSessionThreadsPageCursor,
+  "data" | "next_page"
+>;
+export type SessionResource = BetaManagedAgentsSessionResource;
+export type ListSessionResourcesResponse = Pick<
+  BetaManagedAgentsSessionResourcesPageCursor,
+  "data" | "next_page"
+>;
+export type UpdateSessionRequest = Omit<SessionUpdateParams, "betas">;
+export type CreateSessionRequest = Omit<SessionCreateParams, "betas">;
+export type ContentBlock = ManagedSessionContentBlock;
 export type { FileArtifact, FileListResponse } from "./file-types";
 
 // ---- environments ----
@@ -482,43 +388,6 @@ export interface AgentConfigList {
   data: AgentConfigItem[];
 }
 
-export interface SessionThreadAgent {
-  id: string;
-  type: "agent";
-  version: number;
-  model: string | { id: string };
-  name: string;
-  description?: string | null;
-  tools: unknown[];
-  mcp_servers: unknown[];
-  skills: unknown[];
-}
-export interface SessionThreadUsage {
-  cache_read_input_tokens?: number;
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_creation?: {
-    ephemeral_1h_input_tokens?: number;
-    ephemeral_5m_input_tokens?: number;
-  };
-}
-export interface SessionThread {
-  id: string;
-  type: "session_thread";
-  session_id: string;
-  parent_thread_id: string | null;
-  agent: SessionThreadAgent;
-  created_at: string;
-  updated_at: string;
-  archived_at?: string | null;
-  status: "running" | "idle" | "rescheduling" | "terminated";
-  stats?: {
-    active_seconds?: number;
-    duration_seconds?: number;
-    startup_seconds?: number;
-  } | null;
-  usage?: SessionThreadUsage | null;
-}
 /** One validation problem from `/validate`, field-routed by the config domain (compile).
  * `path` is the config field the issue is about (`""` = whole config). */
 export interface ValidationIssue {

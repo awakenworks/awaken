@@ -1,14 +1,14 @@
 // The run's trace: the same committed event log read as ordered spans
 // (inference → tool → inference) with inter-event durations and a JSON drill-down
-// — the "see exactly why" view. Reuses useSessionLog, so it stays in lockstep with
-// the transcript over one source of truth.
+// — the "see exactly why" view. The owning surface passes the same committed
+// projection used by its controls and transcript.
 
 import { Pill } from "../ui";
 import { JsonInspector } from "../ui";
 import { useApp } from "../../lib/app-state";
+import type { SessionEvent } from "../../lib/api/types";
 import type { SpanKind } from "../../lib/session-log";
 import { traceSpans } from "../../lib/session-log";
-import { useSessionLog } from "../../lib/useSessionLog";
 
 const KIND_TONE: Record<SpanKind, "agent" | "neutral" | "ok" | "warn"> = {
   inference: "agent",
@@ -25,16 +25,13 @@ function fmtMs(ms?: number): string {
 }
 
 export default function TraceView({
-  base,
-  queryKey,
-  live = true,
+  log,
+  loadError,
 }: {
-  base: string;
-  queryKey: readonly unknown[];
-  live?: boolean;
+  log: SessionEvent[];
+  loadError: Error | null;
 }) {
   const app = useApp();
-  const { log, loadError } = useSessionLog(base, queryKey, live);
   const spans = traceSpans(log);
 
   if (loadError) return <div className="err">{loadError.message}</div>;

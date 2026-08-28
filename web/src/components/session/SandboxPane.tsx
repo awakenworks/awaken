@@ -6,14 +6,16 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, type UIMessage } from "ai";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
+  createManagedSession,
   getWorkspace,
   IdempotencyScope,
   issueApplicationAccessToken,
   type IssuedApplicationAccessToken,
   ws,
 } from "../../lib/api/client";
-import type { AgentConfig, InputBinding, Session } from "../../lib/api/types";
+import type { AgentConfig, InputBinding } from "../../lib/api/types";
 import { useApp } from "../../lib/app-state";
 import { Button, Card, EmptyState, Pill } from "../ui";
 
@@ -247,12 +249,11 @@ export default function SandboxPane({
         draftPreviewRequest(nextPreviewId, draft, resources),
       );
       registered = true;
-      const request = { agent: nextPreviewId };
-      const session = await api.post<Session>(
-        ws("/v1/sessions"),
-        request,
-        createIdentity.current.headersFor(request),
-      );
+      const request = {
+        agent: nextPreviewId,
+        environment_id: BUILTIN_LOCAL_ENVIRONMENT_ID,
+      };
+      const session = await createManagedSession(request, createIdentity.current);
       const token = await issueApplicationAccessToken({
         authority_id: "awaken-console",
         application_scope: previewApplicationScope(getWorkspace()),

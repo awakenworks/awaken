@@ -4,7 +4,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Fragment, useEffect, useRef, useState } from "react";
 import Transcript from "../components/session/Transcript";
 import { Button, Card, Modal, Pill, Skeleton, UsageBadges } from "../components/ui";
-import { api, IdempotencyScope, workspaceQuery, ws } from "../lib/api/client";
+import {
+  BUILTIN_LOCAL_ENVIRONMENT_ID,
+  api,
+  createManagedSession,
+  IdempotencyScope,
+  workspaceQuery,
+  ws,
+} from "../lib/api/client";
 import type {
   AgentConfig,
   CatalogSyncResult,
@@ -119,14 +126,11 @@ function TestChat({ model }: { model: string }) {
       );
       const request = {
         agent: config.id,
+        environment_id: BUILTIN_LOCAL_ENVIRONMENT_ID,
         title: `test · ${model}`,
         metadata: { "awaken.session.origin": "model-test" },
       };
-      return api.post<Session>(
-        ws("/v1/sessions"),
-        request,
-        createIdentity.current.headersFor(request),
-      );
+      return createManagedSession(request, createIdentity.current);
     },
     onSuccess: (s) => {
       createIdentity.current.complete();
@@ -182,7 +186,7 @@ function TestChat({ model }: { model: string }) {
       <Transcript
         base={ws(`/v1/sessions/${sid}`)}
         queryKey={["test-events", sid]}
-        fixedModel={model}
+        sessionStatus={session.data?.status}
         autoMessage={{
           id: `model-test-${sid}`,
           text: "Reply with a short confirmation that this model connection is working.",
