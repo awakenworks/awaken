@@ -21,7 +21,7 @@ use crate::types::skill::{
     SkillListParams, SkillObjectType, SkillSource, SkillVersion as SkillVersionDto,
     SkillVersionListParams, SkillVersionObjectType, SkillVersionWire, SkillWire,
 };
-use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
+use crate::types::{PageCursor, PageQuery, paginate};
 use awaken_resource_application::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, UploadedSkillBundleFile,
     canonicalize_skill_bundle, normalize_bundle_path,
@@ -35,6 +35,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+
+use super::managed_resource_error as err;
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -198,17 +200,6 @@ pub fn skills_router(
             get(version_file),
         )
         .with_state(state)
-}
-
-fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    let error_type = if status == StatusCode::NOT_FOUND {
-        "not_found_error"
-    } else if status.is_server_error() {
-        "api_error"
-    } else {
-        "invalid_request_error"
-    };
-    (status, Json(ErrorResponse::new(error_type, message))).into_response()
 }
 
 /// Collect a multipart body without decoding file bytes. Non-file text fields are

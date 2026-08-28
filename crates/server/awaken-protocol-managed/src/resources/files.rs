@@ -13,13 +13,15 @@ use crate::types::file::{
     BetaFileListParams, BetaFileMetadata, BetaFileScope, DeletedFile, DeletedFileObjectType,
     FileExpirySeconds, FileListParams, FileMetadata, FileObjectType, FileScopeObjectType,
 };
-use crate::types::{ErrorResponse, Page, PageCursor, PageQuery, paginate};
+use crate::types::{Page, PageCursor, PageQuery, paginate};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
 use axum::extract::{Multipart, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+
+use super::managed_resource_error as error;
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -58,14 +60,6 @@ fn beta_metadata(record: &FileRecord) -> BetaFileMetadata {
             kind: FileScopeObjectType::Session,
         }),
     }
-}
-
-fn error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    (
-        status,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-        .into_response()
 }
 
 async fn list_files(
