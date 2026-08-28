@@ -18,6 +18,7 @@ async-trait.workspace = true
 tokio = { workspace = true }
 serde.workspace = true
 serde_json.workspace = true
+tracing = "0.1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "net"] }

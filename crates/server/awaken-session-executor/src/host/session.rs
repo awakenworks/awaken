@@ -8,10 +8,7 @@ mod input_projection;
 
 use super::*;
 pub(super) use crate::config::{SessionToolsetProjection, project_session_tool_override};
-pub(super) use input_projection::{
-    ManagedCoordinationRole, project_frozen_session_model_override,
-    project_managed_coordination_surface,
-};
+pub(super) use input_projection::{ManagedCoordinationRole, project_managed_coordination_surface};
 use input_projection::{
     merge_acp_mcp_servers, merge_process_local_mcp_servers, pre_authorized_tool_ids,
 };
@@ -66,12 +63,17 @@ impl SharedHost {
                 "frozen Session Agent publication is unavailable",
             ));
         }
-        let model_override = baseline
-            .as_ref()
-            .and_then(|baseline| baseline.model_override.clone());
         let installed = installed
             .map(|snapshot| {
-                project_frozen_session_model_override(snapshot, model_override.as_ref(), &workspace)
+                baseline.as_ref().map_or(Ok(snapshot.clone()), |baseline| {
+                    awaken_session_contract::project_effective_agent_publication(
+                        baseline.model_override.as_ref(),
+                        &baseline.system_prompt,
+                        &workspace,
+                        snapshot,
+                    )
+                    .map_err(|error| HostError::internal(error.to_string()))
+                })
             })
             .transpose()?;
         let published_backend_ref = installed
@@ -1683,7 +1685,7 @@ impl SharedHost {
                 acp_memory_recall,
             ));
         let attempt_executor: Arc<dyn awaken_runtime_contract::execution::RunAttemptExecutor> =
-            Arc::new(crate::application::SessionPromptAttemptExecutor::new(
+            Arc::new(crate::application::SessionContextAttemptExecutor::new(
                 attempt_executor,
                 self.session_slots.clone(),
                 thread,

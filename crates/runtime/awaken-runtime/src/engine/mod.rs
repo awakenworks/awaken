@@ -132,16 +132,41 @@ fn map_resolver_error(err: resolver::Error) -> Error {
 /// committed Thread truth. The prefix is deliberately cloned into the attempt
 /// view and never returned as `new_messages`, so every execution path gets the
 /// same context semantics without creating another durable transcript.
-fn model_transcript(context: &RuntimeRunContext, committed: Vec<Message>) -> Vec<Message> {
-    let mut transcript = Vec::with_capacity(context.request_context.len() + committed.len());
-    if transcript_prefix_projects_to(TranscriptContextDestination::ModelRequest) {
-        transcript.extend(context.request_context.iter().cloned());
-    }
+fn model_transcript(
+    context: &RuntimeRunContext,
+    committed: Vec<Message>,
+    run_id: &RunId,
+    thread_id: &ThreadId,
+    publication_id: &str,
+    instructions: &str,
+) -> Vec<Message> {
+    let normalized = if transcript_prefix_projects_to(TranscriptContextDestination::ModelRequest) {
+        awaken_runtime_contract::NormalizedModelInput::new(
+            instructions,
+            &context.request_context,
+            &committed,
+        )
+    } else {
+        awaken_runtime_contract::NormalizedModelInput::new(instructions, &[], &committed)
+    };
+    let trace = normalized.trace();
+    tracing::debug!(
+        run_id = %run_id.0,
+        thread_id = %thread_id.0,
+        publication_id,
+        backend = "native",
+        has_instructions = trace.has_instructions,
+        request_context_supplied = trace.request_context_supplied,
+        request_context_visible = trace.request_context_visible,
+        durable_input_supplied = trace.durable_input_supplied,
+        durable_input_visible = trace.durable_input_visible,
+        legacy_derived_filtered = trace.legacy_derived_filtered,
+        "projected privacy-safe model input"
+    );
     debug_assert!(!transcript_prefix_projects_to(
         TranscriptContextDestination::DurableThreadTruth
     ));
-    transcript.extend(committed);
-    transcript
+    normalized.ordered_messages()
 }
 
 /// Partition an activation's accepted input against committed Thread truth.

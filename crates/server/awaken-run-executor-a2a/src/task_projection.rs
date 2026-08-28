@@ -9,16 +9,6 @@ use awaken_runtime_contract::execution::{Error, Result};
 use awaken_runtime_contract::resume::{PermissionDecision, ResumeResult};
 use awaken_runtime_contract::runtime_context::RuntimeRunContext;
 
-/// The Run's prompt: the concatenated text of the activation's input.
-pub(super) fn prompt_of(input: &[Message]) -> String {
-    input
-        .iter()
-        .map(Message::text_content)
-        .filter(|text| !text.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 /// The Agent's reply from a returned task: its durable artifacts, else the
 /// terminal status message, else the last history message.
 pub(super) fn task_reply(task: &Task) -> String {

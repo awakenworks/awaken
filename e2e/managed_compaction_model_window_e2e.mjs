@@ -2,7 +2,7 @@
 // compaction override. `AWAKEN_COMPACT_MAX_TOKENS` is deliberately UNSET; only the
 // model's published context window (`AWAKEN_MODEL_CONTEXT_WINDOW` — this harness's
 // projection of the catalog's `ModelSpec.context_window`) is configured. So the fold
-// firing proves `CompactConfig::effective_max_tokens` inherited the window from the
+// firing proves Config's typed default derived the effective window from the
 // model attribute end to end, against a live KIMI model.
 //
 // Run: KIMI_API_KEY=... node managed_compaction_model_window_e2e.mjs (self-skips w/o key).
@@ -29,7 +29,6 @@ async function main() {
   const { server, baseUrl } = spawnServer('compaction', PORT, {
     AWAKEN_MODEL_SOURCE: 'http',
     AWAKEN_MODEL_CONTEXT_WINDOW: '1000', // the model's published context window
-    AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
     AWAKEN_COMPACT_KEEP_LAST: '2',
     // AWAKEN_COMPACT_MAX_TOKENS intentionally UNSET — the agent pins no window.
   });

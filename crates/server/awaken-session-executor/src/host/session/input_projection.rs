@@ -117,39 +117,6 @@ pub(super) fn merge_process_local_mcp_servers(
     Ok(merged)
 }
 
-/// Apply the exact Session-scoped model route frozen at admission to an
-/// immutable Agent publication. Both co-located and claimed-Worker paths pass
-/// through this function: replay may therefore apply the same projection more
-/// than once, but may never re-resolve a model or retain candidates from the
-/// Agent's superseded route.
-pub(in crate::host) fn project_frozen_session_model_override(
-    mut snapshot: awaken_runtime_contract::ExecutableAgentSnapshot,
-    model_override: Option<&awaken_session_contract::SessionModelOverride>,
-    workspace_id: &str,
-) -> Result<awaken_runtime_contract::ExecutableAgentSnapshot, HostError> {
-    let Some(model_override) = model_override else {
-        return Ok(snapshot);
-    };
-    if let Some(publication) = &model_override.publication {
-        publication
-            .validate_for_workspace(workspace_id)
-            .map_err(|error| {
-                HostError::internal(format!(
-                    "frozen Session model override publication is invalid: {error}"
-                ))
-            })?;
-        snapshot.resolved_spec.model_binding = publication.primary.clone();
-        snapshot.resolved_spec.model_candidates = publication.candidates.clone();
-    }
-    snapshot.resolved_spec.plugin_config.inference = model_override.inference.clone();
-    snapshot.recompute_fingerprint().map_err(|error| {
-        HostError::internal(format!(
-            "frozen Session model override publication is invalid: {error}"
-        ))
-    })?;
-    Ok(snapshot)
-}
-
 #[cfg(test)]
 mod tests {
     use super::{merge_acp_mcp_servers, pre_authorized_tool_ids};

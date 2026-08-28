@@ -129,7 +129,8 @@ pub use resolver::{
 };
 pub use resume::{ResumeCommand, ResumeError, ResumeResult, validate_resume};
 pub use runtime_context::{
-    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, RuntimeRunContext,
+    AttemptOwnershipError, AttemptOwnershipVerifier, CaptureContext, ModelInputProjectionTrace,
+    NormalizedModelInput, RuntimeRunContext, is_legacy_derived_session_context,
 };
 pub use snapshot::{
     AgentConfigRevisionRef, AgentPublicationVersion, AgentSnapshotFingerprint,

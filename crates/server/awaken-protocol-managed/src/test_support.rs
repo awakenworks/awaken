@@ -111,6 +111,26 @@ impl ManagedTunnelApplication for EmptyManagedTunnelApplication {
     }
 }
 
+/// Validate the complete Session projection accepted by protocol test doubles
+/// and return the legacy preparation view only when the selected installation
+/// mode performs preparation. Keeping this rule here prevents each fake from
+/// recreating a partial projection or silently accepting empty coordinates.
+pub fn complete_session_projection_init(
+    thread: &str,
+    projection: &awaken_session_contract::FrozenSessionProjection,
+    mode: &awaken_session_contract::SessionProjectionInstallMode,
+) -> Result<Option<awaken_session_contract::SessionInit>, awaken_session_contract::RunError> {
+    if thread.is_empty()
+        || projection.workspace_id.is_empty()
+        || projection.baseline.agent_id.is_empty()
+    {
+        return Err(awaken_session_contract::RunError::bad_request(
+            "test Session projection must carry complete frozen coordinates",
+        ));
+    }
+    Ok(mode.prepares_session().then(|| projection.session_init()))
+}
+
 #[must_use]
 pub fn environment_components() -> (
     Arc<EnvironmentAuthoringState>,
@@ -442,6 +462,16 @@ impl CoordinatedRuntimeFake {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), awaken_session_contract::RunError> {
+        complete_session_projection_init(thread, &projection, &mode)?;
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_contract::AdmitSessionRun,

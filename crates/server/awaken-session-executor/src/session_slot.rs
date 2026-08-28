@@ -71,6 +71,9 @@ pub(crate) struct FrozenBaselineRuntimeProjection {
     /// Runtime may project this value into an immutable Agent publication, but
     /// must never resolve a new route from the public model id.
     pub model_override: Option<awaken_session_contract::SessionModelOverride>,
+    /// Session-owned system-prompt selection retained with the model override
+    /// so every compatibility projection calls the same pure lowering rule.
+    pub system_prompt: awaken_session_contract::SessionSystemPromptSelection,
     pub mounts: Vec<awaken_provisioning_contract::MountRequirement>,
     pub env: Vec<awaken_provisioning_contract::EnvVar>,
     pub prompts: Vec<String>,

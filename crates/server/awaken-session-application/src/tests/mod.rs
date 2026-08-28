@@ -38,6 +38,46 @@ where
     }
 }
 
+/// Execute the canonical complete-projection effects for a Session Application
+/// test double. Domain mode decisions come from `SessionProjectionInstallMode`;
+/// individual fakes override only the effect they need to observe.
+async fn install_complete_test_projection<R: SessionRuntime + ?Sized>(
+    runtime: &R,
+    thread: &str,
+    projection: awaken_session_contract::FrozenSessionProjection,
+    mode: awaken_session_contract::SessionProjectionInstallMode,
+) -> Result<(), RunError> {
+    if thread.is_empty()
+        || projection.workspace_id.is_empty()
+        || projection.baseline.agent_id.is_empty()
+    {
+        return Err(RunError::bad_request(
+            "test Session projection must carry complete frozen coordinates",
+        ));
+    }
+    runtime
+        .apply_session_inputs(
+            thread,
+            &projection.workspace_id,
+            projection.resource_revision,
+            &projection.resources,
+        )
+        .await?;
+    if mode.prepares_session() {
+        runtime
+            .prepare_session(thread, projection.session_init())
+            .await?;
+    }
+    if mode.adopts_resident_environment()
+        && let Some(binding) = projection.environment.binding()
+    {
+        runtime
+            .adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+            .await?;
+    }
+    Ok(())
+}
+
 struct NoopRuntime;
 
 #[derive(Default)]
@@ -621,6 +661,15 @@ impl awaken_resource_contract::FileCatalog for UnusedFileCatalog {
 
 #[async_trait::async_trait]
 impl SessionRuntime for NoopRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn session_budget_resume_tickets(
         &self,
         _session_id: &str,
@@ -692,6 +741,15 @@ impl SessionRuntime for NoopRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingReplyRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn coordinated_threads(
         &self,
         session_id: &str,
@@ -848,6 +906,15 @@ impl SessionRuntime for RecordingReplyRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingAgentAdmissionRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn coordinated_threads(
         &self,
         session_id: &str,
@@ -1040,6 +1107,15 @@ impl SessionRuntime for RecordingAgentAdmissionRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingBoundaryBudgetRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn session_budget_resume_tickets(
         &self,
         session_id: &str,
@@ -1174,6 +1250,15 @@ impl SessionRuntime for RecordingBoundaryBudgetRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCleanupRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn quiesce_terminal_delegations(
         &self,
         _thread: &str,

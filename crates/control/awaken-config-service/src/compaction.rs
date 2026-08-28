@@ -8,35 +8,44 @@ pub(crate) fn apply_compaction(
     context_window: Option<u32>,
     max_output_tokens: Option<u32>,
 ) {
-    let Some(effective) = strategy.effective_window(context_window, max_output_tokens) else {
-        return;
-    };
+    let effective = strategy.effective_window(context_window, max_output_tokens);
     if let Some(config) = plugin_config
         .get_mut("compact")
         .and_then(serde_json::Value::as_object_mut)
     {
-        if config
-            .get("max_tokens")
-            .is_none_or(serde_json::Value::is_null)
-        {
-            config.insert("max_tokens".into(), serde_json::json!(effective));
-            config.insert("trigger_ratio".into(), serde_json::json!(1.0));
+        // Message-count thresholds were the retired parallel trigger authoring
+        // path. Once publication owns the typed strategy they must not survive
+        // into the executable snapshot or perturb its fingerprint.
+        config.remove("threshold");
+        config.remove("trigger_ratio");
+        match effective {
+            Some(effective) => {
+                config.insert("max_tokens".into(), serde_json::json!(effective));
+            }
+            None => {
+                config.remove("max_tokens");
+            }
         }
-        if let Some(keep) = strategy.keep_recent
-            && config
-                .get("keep_last")
-                .is_none_or(serde_json::Value::is_null)
-        {
-            config.insert("keep_last".into(), serde_json::json!(keep));
+        match strategy.keep_recent {
+            Some(keep) => {
+                config.insert("keep_last".into(), serde_json::json!(keep));
+            }
+            None => {
+                config.remove("keep_last");
+            }
         }
     }
     if let Some(config) = plugin_config
         .get_mut("acp")
         .and_then(serde_json::Value::as_object_mut)
-        && config
-            .get("compact_window")
-            .is_none_or(serde_json::Value::is_null)
     {
-        config.insert("compact_window".into(), serde_json::json!(effective));
+        match effective {
+            Some(effective) => {
+                config.insert("compact_window".into(), serde_json::json!(effective));
+            }
+            None => {
+                config.remove("compact_window");
+            }
+        }
     }
 }

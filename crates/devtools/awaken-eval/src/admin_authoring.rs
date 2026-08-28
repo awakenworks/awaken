@@ -72,7 +72,7 @@ pub enum AdminCriterion {
     StateMachineHasReminder,
     CompactHasInstructions,
     CompactInstructionsAreProse,
-    CompactTriggerRatioSet,
+    CompactionWindowSet,
     InstructionsMinLength { min: usize },
     ToolsEmpty,
 }
@@ -99,7 +99,7 @@ impl AdminCriterion {
             Self::StateMachineHasReminder => "state_machine:has_reminder".into(),
             Self::CompactHasInstructions => "compact:has_instructions".into(),
             Self::CompactInstructionsAreProse => "compact:instructions_are_prose".into(),
-            Self::CompactTriggerRatioSet => "compact:trigger_ratio_set".into(),
+            Self::CompactionWindowSet => "compaction:window_set".into(),
             Self::InstructionsMinLength { min } => format!("instructions:min_length:{min}"),
             Self::ToolsEmpty => "tools:empty".into(),
         }
@@ -175,10 +175,11 @@ impl AdminCriterion {
                     value.len() > 20 && value.contains(' ') && value.parse::<u64>().is_err()
                 })
             }
-            Self::CompactTriggerRatioSet => plugin_config(config, "compact")
-                .and_then(|value| value.get("trigger_ratio"))
-                .and_then(Value::as_f64)
-                .is_some_and(|ratio| ratio > 0.0 && ratio <= 1.0),
+            Self::CompactionWindowSet => config
+                .get("compaction")
+                .and_then(|value| value.get("window"))
+                .and_then(Value::as_u64)
+                .is_some_and(|window| window > 0),
             Self::InstructionsMinLength { min } => config
                 .get("system")
                 .or_else(|| config.get("instructions"))
@@ -660,10 +661,11 @@ mod tests {
             "id": "eval-c2",
             "tools": ["bash", "read"],
             "plugins": ["permission", "state_machine", "compact"],
+            "compaction": {"window": 80000},
             "plugin_config": {
                 "permission": {"rules": [{"pattern": "bash(command ~ '*rm*')", "behavior": "deny"}]},
                 "state_machine": {"transitions": [{"on_violation": {"action": "warn", "reason": "read first"}}]},
-                "compact": {"instructions": "Keep key findings and all open questions.", "trigger_ratio": 0.8}
+                "compact": {"instructions": "Keep key findings and all open questions."}
             }
         });
         for criterion in [
@@ -677,7 +679,7 @@ mod tests {
             AdminCriterion::StateMachineHasReminder,
             AdminCriterion::CompactHasInstructions,
             AdminCriterion::CompactInstructionsAreProse,
-            AdminCriterion::CompactTriggerRatioSet,
+            AdminCriterion::CompactionWindowSet,
         ] {
             assert!(criterion.evaluate(Some(&config)), "{}", criterion.label());
         }

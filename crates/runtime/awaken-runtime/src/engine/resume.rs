@@ -68,7 +68,14 @@ pub(super) async fn drive_resumed(
     // resumes from both minting the former fixed `resume-step-1000` id.
     let resume_step_base =
         awaken_agent_contract::agent::message::next_assistant_step(&committed, run_id);
-    let mut transcript = model_transcript(context, committed);
+    let mut transcript = model_transcript(
+        context,
+        committed,
+        run_id,
+        thread_id,
+        &resolved.snapshot_id.0,
+        &resolved.spec.instructions,
+    );
     transcript.extend(fresh_context.iter().cloned());
     let mut store = store_from_commands(reader.committed_state(thread_id), run_id);
     let approved = matches!(

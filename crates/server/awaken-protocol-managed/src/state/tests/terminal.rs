@@ -1362,6 +1362,16 @@ struct EndSessionFailer;
 
 #[async_trait]
 impl SessionRuntime for EndSessionFailer {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        crate::test_support::complete_session_projection_init(thread, &projection, &mode)?;
+        Ok(())
+    }
+
     async fn quiesce_terminal_delegations(
         &self,
         _thread: &str,
