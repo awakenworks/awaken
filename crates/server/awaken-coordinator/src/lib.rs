@@ -1256,13 +1256,13 @@ fn mount_with_managed_over_and_models(
     let host_runs: Arc<dyn RunApplication> = Arc::new(RunApplicationHost::new(host.clone()));
     let workspace_host = host.clone();
     let agent_host = host.clone();
-    let admitted_runs: Arc<dyn RunApplication> =
-        Arc::new(awaken_session_application::SessionRunApplication::new(
-            host_runs,
-            session_application.clone(),
-            move |thread| workspace_host.thread_workspace(thread),
-            move |thread| agent_host.thread_agent_projection(thread),
-        ));
+    let session_runs = Arc::new(awaken_session_application::SessionRunApplication::new(
+        host_runs,
+        session_application.clone(),
+        move |thread| workspace_host.thread_workspace(thread),
+        move |thread| agent_host.thread_agent_projection(thread),
+    ));
+    let admitted_runs: Arc<dyn RunApplication> = session_runs.clone();
     let ai_sdk = awaken_protocol_ai_sdk::router(admitted_runs.clone());
     let ag_ui = awaken_protocol_ag_ui::router(admitted_runs.clone());
     let (ai_sdk, ag_ui) = match application_access {
@@ -1293,7 +1293,10 @@ fn mount_with_managed_over_and_models(
     host.ensure_terminal_dispatch_reconciliation();
     // The durable-ingress operations surface (slice E): ADR-0009 follow-on verbs
     // (supersede / reconcile / manual quarantine + GC) over the same shared host.
-    let durable_ops = durable_ops_router(host.clone());
+    let durable_ops = awaken_run_ingress_http::durable_ops_router_with_session_supersede(
+        host.clone(),
+        session_runs,
+    );
     // The Worker-facing cross-node seam: a dispatch-store-isolated Worker claims/settles runs
     // over the dispatch transport and pushes committed facts to the commit ingest.
     let dispatch = host

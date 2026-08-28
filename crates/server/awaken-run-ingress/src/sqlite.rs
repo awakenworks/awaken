@@ -32,8 +32,9 @@ use crate::dispatch::{
     retry_exhaustion_evidence_is_eligible, session_child_parent, session_child_thread,
     validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
-    validate_session_resume_target, validate_session_run_reservation_request,
-    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
+    validate_session_resume_target, validate_session_run_replacement_candidates,
+    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::{
@@ -177,6 +178,19 @@ fn insert_dispatch_with_state(
                 .map_err(reject)?;
             rows.collect::<Result<Vec<_>, _>>().map_err(reject)?
         };
+        validate_session_run_replacement_candidates(
+            request,
+            candidates
+                .iter()
+                .map(|(_, status, _, _)| {
+                    DispatchState::from_db(status).ok_or_else(|| {
+                        DispatchError::Rejected(format!(
+                            "unknown persisted dispatch state `{status}`"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )?;
         for (run_id, status, lease_epoch, cancellation_requested) in candidates {
             let Some(next) = crate::persisted_dispatch_transition(
                 &status,

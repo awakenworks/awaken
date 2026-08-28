@@ -956,7 +956,8 @@ impl SessionRuntime for ManagedHost {
             let mut request = self
                 .host
                 .resolved_dispatch_with_traceparent(activation, command.traceparent)
-                .map_err(to_run_error)?;
+                .map_err(to_run_error)?
+                .with_session_run_replacement(command.replacement);
             if !command
                 .execution_requirements
                 .required_worker_capabilities

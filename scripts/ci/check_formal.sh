@@ -187,6 +187,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness mcp_client_credential_admission_has_no_gateway_or_adapter_fallback
   run_kani awaken-run-ingress-contract \
     --harness session_resource_replacement_requires_exactly_a_newer_same_workspace_generation \
+    --harness only_awaiting_or_already_superseded_is_replacement_safe \
     --harness stale_dispatch_claim_cannot_modify_authoritative_state \
     --harness exact_dispatch_settlement_is_terminal_or_awaiting_only \
     --harness dispatch_cancel_revokes_old_epoch_and_is_idempotent \

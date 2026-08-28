@@ -30,8 +30,9 @@ use crate::dispatch::{
     installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
     session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
-    validate_session_resume_target, validate_session_run_reservation_request,
-    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
+    validate_session_resume_target, validate_session_run_replacement_candidates,
+    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
+    verify_credential_realization_receipt,
 };
 use crate::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
@@ -663,6 +664,14 @@ fn enqueue_new_local(
     let thread = request.thread_id().clone();
     let mut epoch = 0;
     if options.supersede {
+        validate_session_run_replacement_candidates(
+            &request,
+            state
+                .rows
+                .values()
+                .filter(|row| *row.request.thread_id() == thread)
+                .map(|row| row.state),
+        )?;
         let max_epoch = state
             .rows
             .values()
@@ -814,7 +823,11 @@ impl DispatchQueue for MemoryDispatchStore {
                 &request,
             ));
         }
-        enqueue_new_local(&mut state, request, SubmitOptions::default())?;
+        let options = SubmitOptions {
+            supersede: request.session_run_replacement.supersedes_prior(),
+            ..Default::default()
+        };
+        enqueue_new_local(&mut state, request, options)?;
         let row = state
             .rows
             .get_mut(&run_id)

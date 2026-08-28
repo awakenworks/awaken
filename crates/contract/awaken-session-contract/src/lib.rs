@@ -142,11 +142,11 @@ pub use resource_activation::{
 };
 pub use run_admission::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
-    SessionRunExecutionRequirements, SessionRunReservation, session_run_id,
+    SessionRunExecutionRequirements, SessionRunReplacement, SessionRunReservation, session_run_id,
 };
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,
-    blocks_text, epoch_millis_to_rfc3339, paginate_history,
+    SessionRunReplacementApplication, blocks_text, epoch_millis_to_rfc3339, paginate_history,
 };
 pub use session::{
     AgentCapabilities, BuiltinTool, CommittedOutcomeProjection, CustomTool, DelegatedRun,

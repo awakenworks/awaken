@@ -976,6 +976,7 @@ impl SessionRunApplication {
         requested_agent: Option<String>,
         messages: Vec<Message>,
         sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+        replacement: awaken_session_contract::SessionRunReplacement,
     ) -> Result<StepOutcome, RunApplicationError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
@@ -997,6 +998,7 @@ impl SessionRunApplication {
             data_subject_id: None,
             traceparent: None,
             execution_requirements: Default::default(),
+            replacement,
         };
         let owner_scope = (self.workspace)(thread);
         Box::pin(
@@ -1016,8 +1018,15 @@ impl RunApplication for SessionRunApplication {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_admitted(operation_id, thread, agent, messages, None)
-            .await
+        self.run_admitted(
+            operation_id,
+            thread,
+            agent,
+            messages,
+            None,
+            awaken_session_contract::SessionRunReplacement::PreservePrior,
+        )
+        .await
     }
 
     async fn run_streaming(
@@ -1028,8 +1037,15 @@ impl RunApplication for SessionRunApplication {
         messages: Vec<Message>,
         sink: Arc<dyn awaken_agent_contract::stream::sink::Sink>,
     ) -> Result<StepOutcome, RunApplicationError> {
-        self.run_admitted(operation_id, thread, agent, messages, Some(sink))
-            .await
+        self.run_admitted(
+            operation_id,
+            thread,
+            agent,
+            messages,
+            Some(sink),
+            awaken_session_contract::SessionRunReplacement::PreservePrior,
+        )
+        .await
     }
 
     async fn resume(
@@ -1068,5 +1084,26 @@ impl RunApplication for SessionRunApplication {
 
     async fn usage(&self, thread: &str) -> Result<(u64, u64), RunApplicationError> {
         self.runtime.usage(thread).await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRunReplacementApplication for SessionRunApplication {
+    async fn supersede_session_run(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        self.run_admitted(
+            operation_id,
+            thread,
+            agent,
+            messages,
+            None,
+            awaken_session_contract::SessionRunReplacement::SupersedePrior,
+        )
+        .await
     }
 }

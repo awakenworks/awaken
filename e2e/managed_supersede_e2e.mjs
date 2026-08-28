@@ -41,15 +41,33 @@ async function main() {
   fs.rmSync(STORE_DIR, { recursive: true, force: true });
   fs.mkdirSync(STORE_DIR, { recursive: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
-  await waitForPort(PORT);
+  let srv = null;
   try {
+    srv = spawnServer('real', PORT, { SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR, SESSION_DEPLOYMENT_INGRESS: 'durable', ...realServerEnv('probe', upstream) });
+    await waitForPort(PORT);
     // A first turn awaits on a tool confirmation — its dispatch is `awaiting`.
-    const session = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
-    // C1=exact first receipt; C2=its Awaiting terminal; C3=supersede wins.
+    const session = await client.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'agent_toolset_20260401',
+          configs: [{
+            name: 'write',
+            type: 'write',
+            enabled: true,
+            permission_policy: { type: 'always_ask' },
+          }],
+        }],
+      },
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
+    // C0=the Session explicitly makes write always_ask; C1=exact first receipt;
+    // C2=its occurrence-qualified Awaiting terminal; C3=supersede wins.
     // E1=only C2 after C1 establishes the stale dispatch. K: supersede HTTP
-    // remains its own durable-ops oracle. Decision S1 C1&&!C2=>retry; S2 C1+C2
-    // =>issue C3 and assert newest-wins.
+    // remains its own durable-ops oracle. Decision S1 C0+C1&&!C2=>retry;
+    // S2 C0+C1+C2=>issue C3 and assert newest-wins.
     const receipt = await client.beta.sessions.events.send(session.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'AWAIT-FIRST' }] }],
       betas: BETAS,
@@ -61,7 +79,13 @@ async function main() {
       session.id,
       receiptId,
       BETAS,
-      ({ delta }) => [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+      ({ delta }) => {
+        const pending = delta.find((event) => event.type === 'agent.tool_use');
+        const idle = [...delta].reverse().find((event) => event.type === 'session.status_idle');
+        return pending?.evaluated_permission === 'ask'
+          && idle?.stop_reason?.type === 'requires_action'
+          && idle.stop_reason.event_ids.includes(pending.id);
+      },
       'S1 first durable Run to commit its Awaiting terminal',
     );
     assert.equal(
@@ -77,7 +101,7 @@ async function main() {
 
     // A superseding submit: the newest turn wins over the awaiting run.
     const sup = await post(`/v1/durable/threads/${session.id}/supersede`, { text: 'SUPERSEDE-THE-AWAITING-RUN' });
-    assert.equal(sup.status, 200, 'supersede accepted');
+    assert.equal(sup.status, 200, `supersede accepted: ${JSON.stringify(sup.body)}`);
     assert.ok(Array.isArray(sup.body.superseded) && sup.body.superseded.length >= 1, 'the awaiting run was superseded');
     pass(`superseding submit marked ${sup.body.superseded.length} prior run(s) superseded: ${sup.body.superseded.join(', ')}`);
 
@@ -90,7 +114,7 @@ async function main() {
 
     console.log('E2E PASS: epoch supersession (ADR-0022) via the durable operations surface.');
   } finally {
-    await stopServer(srv.server);
+    if (srv) await stopServer(srv.server);
     upstream.close();
     fs.rmSync(STORE_DIR, { recursive: true, force: true });
   }

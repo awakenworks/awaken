@@ -21,6 +21,7 @@ pub use awaken_run_ingress_contract::RegisteredWorker
 pub use awaken_run_ingress_contract::RegistryError
 pub use awaken_run_ingress_contract::RegistryMutation
 pub use awaken_run_ingress_contract::SESSION_RESOURCES_CAPABILITY
+pub use awaken_run_ingress_contract::SessionRunReplacement
 pub use awaken_run_ingress_contract::WORKER_LOCAL_CREDENTIALS_CAPABILITY
 pub use awaken_run_ingress_contract::WorkerAcpCapabilityObservation
 pub use awaken_run_ingress_contract::WorkerAcpCapabilityRequirement
@@ -239,6 +240,7 @@ pub fn awaken_run_ingress_contract::dispatch::Outbox::stage<'life0, 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_run_ingress_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_run_ingress_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_run_ingress_contract::dispatch::can_admit_attempt_credentials(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> bool
 pub fn awaken_run_ingress_contract::dispatch::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_run_ingress_contract::DispatchCredentialAdmissionError>
+pub const fn awaken_run_ingress_contract::dispatch::session_run_replacement_candidate_is_safe(awaken_run_ingress_contract::dispatch::DispatchState) -> bool
 pub fn awaken_run_ingress_contract::dispatch::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>
 pub mod awaken_run_ingress_contract::operational
 pub enum awaken_run_ingress_contract::operational::DispatchOperation
@@ -299,6 +301,7 @@ pub awaken_run_ingress_contract::run_dispatch::RunDispatch::placement: awaken_wo
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::preferred_environment_shape: core::option::Option<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_activity_epoch: core::option::Option<u64>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
+pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_run_replacement: awaken_session_contract::run_admission::SessionRunReplacement
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_runtime: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_run_ingress_contract::run_dispatch::RunDispatch::traceparent: core::option::Option<alloc::string::String>
@@ -318,6 +321,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(se
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_preferred_environment_shape(self, awaken_provisioning_contract::spec::SandboxCapacityShapeId) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_activity_epoch(self, u64) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_run_replacement(self, awaken_session_contract::run_admission::SessionRunReplacement) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_runtime(self, awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope
@@ -582,6 +586,7 @@ pub awaken_run_ingress_contract::RunDispatch::placement: awaken_worker_contract:
 pub awaken_run_ingress_contract::RunDispatch::preferred_environment_shape: core::option::Option<awaken_provisioning_contract::spec::SandboxCapacityShapeId>
 pub awaken_run_ingress_contract::RunDispatch::session_activity_epoch: core::option::Option<u64>
 pub awaken_run_ingress_contract::RunDispatch::session_resources: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope>
+pub awaken_run_ingress_contract::RunDispatch::session_run_replacement: awaken_session_contract::run_admission::SessionRunReplacement
 pub awaken_run_ingress_contract::RunDispatch::session_runtime: core::option::Option<awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope>
 pub awaken_run_ingress_contract::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_run_ingress_contract::RunDispatch::traceparent: core::option::Option<alloc::string::String>
@@ -601,6 +606,7 @@ pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_placement(se
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_preferred_environment_shape(self, awaken_provisioning_contract::spec::SandboxCapacityShapeId) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_activity_epoch(self, u64) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_resources(self, awaken_run_ingress_contract::run_dispatch::SessionResourceEnvelope) -> Self
+pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_run_replacement(self, awaken_session_contract::run_admission::SessionRunReplacement) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_session_runtime(self, awaken_run_ingress_contract::run_dispatch::SessionRuntimeEnvelope) -> Self
 pub fn awaken_run_ingress_contract::run_dispatch::RunDispatch::with_traceparent(self, core::option::Option<alloc::string::String>) -> Self
 pub struct awaken_run_ingress_contract::SessionChildAdmission
@@ -727,4 +733,5 @@ pub fn awaken_run_ingress_contract::Outbox::stage_session_resume<'life0, 'life1,
 pub fn awaken_run_ingress_contract::compile_attempt_credential_bindings(&awaken_run_ingress_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_run_ingress_contract::DispatchCredentialAdmissionError>
 pub fn awaken_run_ingress_contract::retry_exhaustion_eligible(awaken_run_ingress_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_run_ingress_contract::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_run_ingress_contract::run_dispatch::SessionResourceInstallDecision
+pub const fn awaken_run_ingress_contract::session_run_replacement_candidate_is_safe(awaken_run_ingress_contract::dispatch::DispatchState) -> bool
 pub fn awaken_run_ingress_contract::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

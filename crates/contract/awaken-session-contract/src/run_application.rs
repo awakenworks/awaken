@@ -79,6 +79,23 @@ pub trait RunApplication: Send + Sync {
     }
 }
 
+/// Narrow application port for an explicit newest-wins Session Run.
+///
+/// Operational HTTP may expose this command, but only the Session application
+/// may turn it into a reservation/activity/activation sequence. Keeping it
+/// separate from ordinary [`RunApplication`] prevents public protocols from
+/// silently changing append semantics.
+#[async_trait]
+pub trait SessionRunReplacementApplication: Send + Sync {
+    async fn supersede_session_run(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<StepOutcome, RunApplicationError>;
+}
+
 /// Concatenate direct text blocks, dropping non-text blocks. Nested tool-result
 /// content is deliberately not flattened into the enclosing protocol message.
 #[must_use]

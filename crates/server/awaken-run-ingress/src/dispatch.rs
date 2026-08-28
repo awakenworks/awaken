@@ -109,6 +109,29 @@ pub(crate) fn validate_session_run_reservation_request(
     Ok(reservation_ttl_ms)
 }
 
+/// A Session replacement may cross only an already-settled Awaiting boundary.
+/// Pending/Leased/Reserved/DeadLetter work can still own an open Session
+/// activity; replacing it in the queue would strand that aggregate fact.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_session_run_replacement_candidates(
+    request: &RunDispatch,
+    candidates: impl IntoIterator<Item = DispatchState>,
+) -> Result<(), DispatchError> {
+    if !request.session_run_replacement.supersedes_prior() {
+        return Ok(());
+    }
+    if candidates
+        .into_iter()
+        .all(awaken_run_ingress_contract::session_run_replacement_candidate_is_safe)
+    {
+        Ok(())
+    } else {
+        Err(DispatchError::Rejected(
+            "Session Run replacement requires every prior live dispatch to be Awaiting".to_string(),
+        ))
+    }
+}
+
 /// Reject the one Session-root intent shape that must cross the durable
 /// activity-receipt boundary before it is executable. Every ordinary fresh-row
 /// path calls this before persistence; child and already activity-bound legacy

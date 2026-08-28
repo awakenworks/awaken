@@ -221,6 +221,11 @@ pub struct RunDispatch {
     /// Awaiting replies and is therefore excluded from caller-owned Run identity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_activity_epoch: Option<u64>,
+    /// Immutable newest-wins intent authored by the Session application. It is
+    /// persisted on the unclaimable reservation so crash recovery cannot turn
+    /// a replacement into an ordinary append.
+    #[serde(default)]
+    pub session_run_replacement: awaken_session_contract::SessionRunReplacement,
     /// W3C `traceparent` captured when the run was admitted, so a durably-dispatched
     /// execution continues the admitting request's distributed trace across the
     /// queue boundary. Absent when admitted without an active trace (or by an older
@@ -329,6 +334,7 @@ impl RunDispatch {
             activation,
             session_thread_id: None,
             session_activity_epoch: None,
+            session_run_replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
             traceparent: None,
             execution_scope: None,
             session_resources: None,
@@ -369,6 +375,17 @@ impl RunDispatch {
     #[must_use]
     pub fn with_session_activity_epoch(mut self, epoch: u64) -> Self {
         self.session_activity_epoch = Some(epoch);
+        self
+    }
+
+    /// Preserve the Session application's explicit replacement intent across
+    /// reservation recovery.
+    #[must_use]
+    pub fn with_session_run_replacement(
+        mut self,
+        replacement: awaken_session_contract::SessionRunReplacement,
+    ) -> Self {
+        self.session_run_replacement = replacement;
         self
     }
 

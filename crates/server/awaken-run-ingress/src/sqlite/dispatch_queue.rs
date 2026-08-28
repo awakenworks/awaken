@@ -84,11 +84,15 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.commit().map_err(reject)?;
                 return Ok(outcome);
             } else {
+                let options = SubmitOptions {
+                    supersede: request.session_run_replacement.supersedes_prior(),
+                    ..Default::default()
+                };
                 insert_dispatch_with_state(
                     &tx,
                     p,
                     &request,
-                    &SubmitOptions::default(),
+                    &options,
                     "reserved",
                     Some(crate::clock::db_millis(deadline)),
                 )?;

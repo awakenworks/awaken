@@ -518,6 +518,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                     data_subject_id: None,
                     traceparent: None,
                     execution_requirements: Default::default(),
+                    replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
                 },
                 Some(Arc::new(DiscardDreamProgress)),
             )

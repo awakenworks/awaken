@@ -8,6 +8,8 @@
 /// atomic compatible claim.
 /// C7 reservation input is a nonzero relative TTL interpreted by the store's
 /// authority clock, never a caller-authored absolute timestamp.
+/// C8 replacement intent preserves/supersedes prior live work and is replayed
+/// exactly from the immutable reservation.
 /// Effects: E1 persist one unclaimable intent; E2 never open or overwrite the
 /// wrong activity; E3 exact replay reports the durable phase; E4 repair never
 /// binds a Sandbox or executes; E5 admitted repair publishes ordinary Pending;
@@ -17,6 +19,8 @@
 /// for reservation repair; E11 an expired repair lease advances the epoch and
 /// fences its crashed owner; E12 initial and retry TTLs are converted to durable
 /// deadlines by the store authority rather than trusted as absolute caller time.
+/// E13 newest-wins reservation and prior-state transition share one store
+/// transaction; ordinary reservations never mutate prior work.
 ///
 /// | Rule | Identity/state | Epoch/claim | Command | Effect |
 /// |---|---|---|---|---|
@@ -29,6 +33,7 @@
 /// | SR6 | activated/completed/missing | exact | replay | E3/E8 |
 /// | SR7 | Reserved(cancelled) | before deadline | claim/activate | E9, then Pending(cancelled) |
 /// | SR8 | ReservationLeased | expired lease/retry TTL | every claim surface | E10-E12 |
+/// | SR9 | prior Awaiting/unsafe live phase | preserve/supersede/replay | reserve | preserve / E13 / reject / E3 |
 async fn session_run_reservation_is_atomic_and_recoverable(
     store: &dyn DispatchQueue,
     ns: &str,
@@ -335,6 +340,181 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         SessionRunReservationActivation::MissingOrRejected,
         "SR6/E3"
     );
+
+    // SR9 exercises the typed replacement axis independently of activity
+    // admission. Causes: C1 one older Session Run has reached Awaiting; C2 a
+    // second reservation says PreservePrior or SupersedePrior; C3 the exact
+    // replacement is replayed; C4 a prior row is still Pending. Effects: E1
+    // preserve leaves Awaiting unchanged; E2 supersede atomically stores the
+    // replacement as Reserved and marks the older row Superseded; E3 replay
+    // creates no additional state transition; E4 C4 rejects without inserting
+    // or mutating either row. Constraint: Awaiting has already crossed the
+    // Session activity-settlement boundary; every other live phase may still
+    // own activity and is therefore unsafe to replace in queue storage.
+    let replacement_session = thread_id(ns, "reservation-replacement-session");
+    let prior = dispatch(
+        ns,
+        "reservation-replacement-prior",
+        "reservation-replacement-session",
+    )
+    .for_session(replacement_session.clone());
+    store
+        .reserve_session_run(prior.clone(), RESERVATION_TTL_MS)
+        .await
+        .expect("SR9 reserve prior");
+    store
+        .activate_session_run_reservation(prior.run_id(), &replacement_session, 21)
+        .await
+        .expect("SR9 activate prior");
+    let prior_claim = store
+        .claim_run(
+            prior.run_id(),
+            "reservation-replacement-prior-worker",
+            LEASE_MS,
+            70_010,
+            &Default::default(),
+        )
+        .await
+        .expect("SR9 claim prior")
+        .expect("SR9 prior is executable");
+    assert_eq!(
+        store
+            .settle(
+                prior.run_id(),
+                prior_claim.lease.epoch,
+                DispatchOutcome::Awaiting,
+                &[],
+            )
+            .await
+            .expect("SR9 park prior Awaiting"),
+        SettleOutcome::Applied,
+        "SR9/C1"
+    );
+
+    let preserved = dispatch(
+        ns,
+        "reservation-replacement-preserve",
+        "reservation-replacement-session",
+    )
+    .for_session(replacement_session.clone());
+    store
+        .reserve_session_run(preserved.clone(), RESERVATION_TTL_MS)
+        .await
+        .expect("SR9 preserve reservation");
+    let rows = store.list_dispatches().await.expect("SR9 preserve rows");
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.run_id == *prior.run_id())
+            .map(|row| row.state),
+        Some(DispatchState::Awaiting),
+        "SR9/E1 preserve does not mutate prior work"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(preserved.run_id())
+            .await
+            .expect("SR9 remove preserve probe")
+    );
+
+    let replacement = dispatch(
+        ns,
+        "reservation-replacement-newest",
+        "reservation-replacement-session",
+    )
+    .for_session(replacement_session.clone())
+    .with_session_run_replacement(SessionRunReplacement::SupersedePrior);
+    assert_eq!(
+        store
+            .reserve_session_run(replacement.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("SR9 superseding reservation"),
+        SessionRunReservationOutcome::Reserved,
+        "SR9/E2"
+    );
+    let rows = store.list_dispatches().await.expect("SR9 replacement rows");
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.run_id == *prior.run_id())
+            .map(|row| row.state),
+        Some(DispatchState::Superseded),
+        "SR9/E2 prior transition is atomic with replacement reservation"
+    );
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.run_id == *replacement.run_id())
+            .map(|row| row.state),
+        Some(DispatchState::Reserved),
+        "SR9/E2 replacement is still unclaimable"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(replacement.clone(), RESERVATION_TTL_MS)
+            .await
+            .expect("SR9 exact replay"),
+        SessionRunReservationOutcome::AlreadyReserved,
+        "SR9/E3"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(replacement.run_id())
+            .await
+            .expect("SR9 remove replacement probe")
+    );
+
+    let unsafe_session = thread_id(ns, "reservation-replacement-unsafe-session");
+    let unsafe_prior = dispatch(
+        ns,
+        "reservation-replacement-unsafe-prior",
+        "reservation-replacement-unsafe-session",
+    )
+    .for_session(unsafe_session.clone());
+    store
+        .reserve_session_run(unsafe_prior.clone(), RESERVATION_TTL_MS)
+        .await
+        .expect("SR9 reserve unsafe prior");
+    store
+        .activate_session_run_reservation(unsafe_prior.run_id(), &unsafe_session, 22)
+        .await
+        .expect("SR9 activate unsafe prior");
+    let unsafe_replacement = dispatch(
+        ns,
+        "reservation-replacement-unsafe-new",
+        "reservation-replacement-unsafe-session",
+    )
+    .for_session(unsafe_session)
+    .with_session_run_replacement(SessionRunReplacement::SupersedePrior);
+    assert!(
+        store
+            .reserve_session_run(unsafe_replacement.clone(), RESERVATION_TTL_MS)
+            .await
+            .is_err(),
+        "SR9/E4 Pending Session activity cannot be stranded"
+    );
+    let rows = store.list_dispatches().await.expect("SR9 unsafe rows");
+    assert_eq!(
+        rows.iter()
+            .find(|row| row.run_id == *unsafe_prior.run_id())
+            .map(|row| row.state),
+        Some(DispatchState::Pending),
+        "SR9/E4 prior remains executable"
+    );
+    assert!(
+        rows.iter()
+            .all(|row| row.run_id != *unsafe_replacement.run_id()),
+        "SR9/E4 rejected replacement leaves no partial row"
+    );
+    let unsafe_claim = store
+        .claim_run(
+            unsafe_prior.run_id(),
+            "reservation-replacement-unsafe-worker",
+            LEASE_MS,
+            70_011,
+            &Default::default(),
+        )
+        .await
+        .expect("SR9 claim preserved unsafe prior")
+        .expect("SR9 unsafe prior remains claimable");
+    settle_done(store, &unsafe_claim).await;
 
     // SR7 models the initial caller's crash window without inventing a second
     // admission owner: cancellation records terminal intent, but the original

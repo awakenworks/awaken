@@ -33,8 +33,9 @@ use crate::dispatch::{
     retry_exhaustion_evidence_is_eligible, session_child_parent, session_child_thread,
     validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
-    validate_session_resume_target, validate_session_run_reservation_request,
-    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
+    validate_session_resume_target, validate_session_run_replacement_candidates,
+    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
+    verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::postgres_helpers::{
@@ -157,6 +158,20 @@ async fn insert_dispatch_with_state(
         .fetch_all(&mut **tx)
         .await
         .map_err(reject)?;
+        validate_session_run_replacement_candidates(
+            request,
+            candidates
+                .iter()
+                .map(|candidate| {
+                    let status: String = candidate.try_get("status").map_err(reject)?;
+                    DispatchState::from_db(&status).ok_or_else(|| {
+                        DispatchError::Rejected(format!(
+                            "unknown persisted dispatch state `{status}`"
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?,
+        )?;
         for candidate in candidates {
             let run_id: String = candidate.try_get("run_id").map_err(reject)?;
             let status: String = candidate.try_get("status").map_err(reject)?;

@@ -226,6 +226,7 @@ impl SessionApplication {
                 data_subject_id: command.data_subject_id,
                 traceparent: command.traceparent,
                 execution_requirements: Default::default(),
+                replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
             })
             .await
         })

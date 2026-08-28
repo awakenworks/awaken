@@ -9,10 +9,12 @@ use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_run_ingress_contract::RunDispatch;
+use awaken_run_ingress_contract::SessionRunReplacement;
 use awaken_run_ingress_contract::dispatch::{
     CasOutcome, ContinuationAdmission, CredentialRealizationReceipt, Dispatch, DispatchOutcome,
-    DispatchQueue, PendingInput, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
-    SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
+    DispatchQueue, DispatchState, PendingInput, RunClaim, SessionChildAdmission,
+    SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
+    SettleOutcome, SubmitOptions,
 };
 use awaken_run_ingress_contract::operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalFeed, LeaseLossReason,
