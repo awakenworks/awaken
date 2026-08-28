@@ -10,7 +10,7 @@
 //   C6 new key but desired set already converged -> E6 receipt-only root CAS, no domain effect
 //   C7 two names resolve to one canonical target -> E7 reject before effect
 //   C8 name/target is empty or logical name repeats -> E8 reject before effect
-//   C9 stage fails -> E9 terminal new generation, previous Active remains visible
+//   C9 stage fails -> E9 desired config remains readable; previous Active still executes
 //
 // Decision table:
 // | Rule | desired | key       | If-Match | Effect |
@@ -25,8 +25,8 @@
 // | H9   | empty name | new | current | 400, A remains active |
 // | H10  | empty target | new | current | 400, A remains active |
 // | H11  | duplicate name | new | current | 400, A remains active |
-// | H12  | replace | new | absent | stage 500, A remains active |
-// | H13  | retry failed desired | new | absent | new stage attempt, A remains active |
+// | H12  | replace | new | absent | stage 500, desired rejected server is readable, A executes |
+// | H13  | retry failed desired | new | absent | new stage attempt, desired remains readable, A executes |
 
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -256,10 +256,21 @@ async function main(): Promise<void> {
       assert.ok(firstFailedRequests > 0, 'H12 reaches the rejecting MCP upstream');
       assert.deepEqual(
         (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
-        [serverA],
-        'H12 keeps the previous Active generation visible',
+        [rejectedServer],
+        'H12 keeps the accepted desired config readable independently of activation',
       );
-      pass('H12 a failed replacement is terminal for its generation and preserves A');
+      await sendManagedMessage(client, sessionId, 'add 2 5', BETAS);
+      assert.equal(
+        fixtureA.calls.filter((call: any) => call.method === 'tools/call').length,
+        3,
+        'H12 keeps the previous Active generation executable',
+      );
+      assert.equal(
+        rejecting.requests(),
+        firstFailedRequests,
+        'H12 never publishes the failed desired generation as an execution route',
+      );
+      pass('H12 exposes desired config while the failed replacement preserves Active A');
 
       await assert.rejects(
         update(client, sessionId, [rejectedServer], {
@@ -274,10 +285,22 @@ async function main(): Promise<void> {
       );
       assert.deepEqual(
         (await client.beta.sessions.retrieve(sessionId, { betas: BETAS })).agent.mcp_servers,
-        [serverA],
-        'H13 keeps the previous Active generation visible after retry failure',
+        [rejectedServer],
+        'H13 keeps the accepted desired config readable after retry failure',
       );
-      pass('H13 retry allocates and attempts a new failed generation without disturbing A');
+      const requestsAfterRetry = rejecting.requests();
+      await sendManagedMessage(client, sessionId, 'add 4 6', BETAS);
+      assert.equal(
+        fixtureA.calls.filter((call: any) => call.method === 'tools/call').length,
+        4,
+        'H13 keeps the previous Active generation executable after retry failure',
+      );
+      assert.equal(
+        rejecting.requests(),
+        requestsAfterRetry,
+        'H13 never routes execution through either failed generation',
+      );
+      pass('H13 retry allocates a new failed generation while Active A keeps executing');
 
       const serialized = JSON.stringify({ added: added.data, events: await events(client, sessionId) });
       assert.ok(!serialized.includes(TOKEN_A) && !serialized.includes(TOKEN_B), 'state/events remain secret-free');
