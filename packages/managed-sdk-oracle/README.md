@@ -53,6 +53,14 @@ evidence from drifting from the external expectation:
   to HTTP resource types. A separate pre-import ESM export inventory is checked
   against the executable current modules; adding or removing a helper inside
   an already-owned file therefore cannot reuse that file's behavior evidence.
+  `test/managed-helper-contract.test.mjs` projects that inventory over every
+  TypeScript anchor and the reviewed candidate. Every public export must belong
+  to the closed behavior catalog and execute its developer-visible contract:
+  Zod parsing, error predicates/backoff, helper lifecycle/abort, Session event
+  accumulation, filesystem confinement and tools, persistent Bash state, Skill
+  resolution/admission, and Memory helper invariants. A newly exported symbol
+  therefore fails as unowned even when its entrypoint and file fingerprint were
+  already known.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
   closure rooted at the supported resources, Client, Session accumulator,
   EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client
