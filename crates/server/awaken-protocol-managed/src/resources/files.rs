@@ -14,7 +14,8 @@ use crate::types::file::{
     BetaFileScope, DeletedFile, DeletedFileObjectType, FileExpirySeconds, FileListParams,
     FileMetadata, FileObjectType, FileScopeObjectType,
 };
-use crate::types::{Page, PageCursor, PageQuery, paginate};
+use crate::types::page::paginate_id_page;
+use crate::types::{PageCursor, PageQuery, paginate};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
 use axum::extract::{Multipart, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
@@ -24,8 +25,6 @@ use axum::{Json, Router};
 
 use super::managed_resource_error as error;
 
-const DEFAULT_PAGE_SIZE: usize = 20;
-const MAX_PAGE_SIZE: usize = 1_000;
 pub fn files_router(files: Arc<dyn FileApplicationService>) -> Router {
     Router::new()
         .route("/v1/files", post(upload_file).get(list_files))
@@ -111,55 +110,29 @@ async fn list_beta_files(
         Ok(query) => query,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
-    let before_id = query.before_id.as_ref();
-    let after_id = query.after_id.as_ref();
-    if before_id.is_some() && after_id.is_some() {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "before_id and after_id cannot be used together",
-        );
-    }
-    let limit = query.limit.map_or(DEFAULT_PAGE_SIZE, usize::from);
-    if !(1..=MAX_PAGE_SIZE).contains(&limit) {
-        return error(
-            StatusCode::BAD_REQUEST,
-            format!("limit must be between 1 and {MAX_PAGE_SIZE}"),
-        );
-    }
     let records = match files.list(workspace, query.scope_id.as_deref()).await {
         Ok(records) => records,
         Err(error_value) => {
             return error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string());
         }
     };
-    let start = if let Some(cursor) = after_id.map(String::as_str) {
-        match records.iter().position(|record| record.id == cursor) {
-            Some(position) => position + 1,
-            None => return error(StatusCode::BAD_REQUEST, "after_id was not found"),
-        }
-    } else {
-        0
+    let page = match paginate_id_page(
+        &records,
+        query.before_id.as_deref(),
+        query.after_id.as_deref(),
+        query.limit.map(usize::from),
+        |record| record.id.as_str(),
+    ) {
+        Ok(page) => page,
+        Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
-    let end_bound = if let Some(cursor) = before_id.map(String::as_str) {
-        match records.iter().position(|record| record.id == cursor) {
-            Some(position) => position,
-            None => return error(StatusCode::BAD_REQUEST, "before_id was not found"),
-        }
-    } else {
-        records.len()
-    };
-    if start > end_bound {
-        return error(StatusCode::BAD_REQUEST, "cursor range is empty");
-    }
-    let selected = records[start..end_bound]
-        .iter()
-        .take(limit)
-        .collect::<Vec<_>>();
-    let has_more = start + selected.len() < end_bound;
-    let first_id = selected.first().map(|record| record.id.clone());
-    let last_id = selected.last().map(|record| record.id.clone());
-    let data = selected.into_iter().map(beta_metadata).collect::<Vec<_>>();
-    Json(Page::new(data, has_more, first_id, last_id)).into_response()
+    Json(crate::types::Page::new(
+        page.data.iter().map(beta_metadata).collect(),
+        page.has_more,
+        page.first_id,
+        page.last_id,
+    ))
+    .into_response()
 }
 
 async fn list_ga_files(

@@ -130,6 +130,27 @@ async function main() {
       assert.ok(models.some((m) => m.id === 'claude-opus-4-8'), 'the configured model is listed');
       pass(`beta.models.list -> Page<BetaModelInfo> (${models.length} models)`);
 
+      // PageParams causal graph: C1 one stable executable inventory; C2
+      // before_id is an exclusive upper boundary; C3 TS null serializes as an
+      // empty optional query while Python omits it. Effects: E1 the boundary
+      // page is empty instead of replaying the inventory; E2 both absent-value
+      // spellings select the same page; E3 unknown cursors fail closed. These
+      // assertions run through the official SDK paginator, not raw fetch alone.
+      const firstModel = models[0];
+      const beforeFirst = await client.beta.models.list({
+        before_id: firstModel.id,
+        limit: 1,
+        betas: BETAS,
+      });
+      assert.deepEqual(beforeFirst.data, [], 'E1 exclusive before_id');
+      const nullLimit = await client.beta.models.list({ limit: null, betas: BETAS });
+      assert.ok(nullLimit.data.some((model) => model.id === firstModel.id), 'E2 TS null');
+      await assert.rejects(
+        () => client.beta.models.list({ after_id: 'model_missing', betas: BETAS }),
+        (error) => error.status === 400,
+      );
+      pass('Beta Models PageParams boundaries/null/error semantics');
+
       const one = await client.beta.models.retrieve('claude-opus-4-8', { betas: BETAS });
       assert.equal(one.id, 'claude-opus-4-8');
       assert.equal(one.type, 'model');
@@ -149,6 +170,8 @@ async function main() {
       assert.equal(gaModel.id, 'claude-opus-4-8', 'R3 GA retrieve');
       assert.equal(gaModel.type, 'model');
       assert.equal(Object.hasOwn(gaModel, 'allowed_fallback_models'), false, 'R3 GA projection');
+      const gaBeforeFirst = await client.models.list({ before_id: gaModels[0].id, limit: 1 });
+      assert.deepEqual(gaBeforeFirst.data, [], 'R3 GA shares the PageParams kernel');
       pass('GA models.list/retrieve -> ModelInfo over the same executable inventory');
 
       await assert.rejects(

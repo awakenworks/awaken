@@ -15,16 +15,30 @@ use axum::extract::{Path, RawQuery, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::IntoResponse;
 use axum::routing::get;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::resources::flavor::{ManagedResourceApiSurface, resource_api_surface};
+use crate::resources::flavor::{
+    ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
+};
+use crate::types::page::{deserialize_optional_query_value, paginate_id_page};
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
 /// RFC-3339 `created_at`; a reproducible constant keeps tests stable).
 const CREATED_AT: &str = "2026-01-01T00:00:00Z";
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ModelListQuery {
+    #[serde(default, deserialize_with = "deserialize_optional_query_value")]
+    before_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_query_value")]
+    after_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_query_value")]
+    limit: Option<usize>,
+}
 
 /// One model the deployment can serve, projected to the `BetaModelInfo` core
 /// fields. `display_name` is human-facing; `id` is what an agent names as its
@@ -160,9 +174,7 @@ fn models_router_for(models: AvailableModels) -> Router {
         .with_state(models)
 }
 
-/// `GET /v1/models` — the full directory as a GA/Beta model `Page` (one page:
-/// `has_more:false`). `first_id` / `last_id` bracket the page for the SDK's
-/// id-cursor paginator; both `null` when the directory is empty.
+/// `GET /v1/models` — the executable directory as the GA/Beta id-cursor `Page`.
 async fn list_models(
     State(available): State<AvailableModels>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
@@ -176,6 +188,18 @@ async fn list_models(
                 return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
             }
         };
+    let query = match serde_urlencoded::from_str::<ModelListQuery>(&without_beta_selector(
+        raw.as_deref(),
+    )) {
+        Ok(query) => query,
+        Err(error) => {
+            return model_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                error.to_string(),
+            );
+        }
+    };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -183,12 +207,30 @@ async fn list_models(
             "model directory unavailable",
         );
     };
-    let data: Vec<_> = models.iter().map(|model| model.project(surface)).collect();
-    let first_id = models.first().map(|m| m.id.clone());
-    let last_id = models.last().map(|m| m.id.clone());
+    let page = match paginate_id_page(
+        &models,
+        query.before_id.as_deref(),
+        query.after_id.as_deref(),
+        query.limit,
+        |model| model.id.as_str(),
+    ) {
+        Ok(page) => page,
+        Err(error) => {
+            return model_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_request_error",
+                error.to_string(),
+            );
+        }
+    };
+    let data = page
+        .data
+        .iter()
+        .map(|model| model.project(surface))
+        .collect();
     (
         StatusCode::OK,
-        axum::Json(Page::new(data, false, first_id, last_id)),
+        axum::Json(Page::new(data, page.has_more, page.first_id, page.last_id)),
     )
         .into_response()
 }
@@ -320,6 +362,86 @@ mod tests {
                 fallback,
                 "{rule}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn models_list_honors_every_page_params_axis() {
+        // Causal graph: C1 ordered executable inventory; C2 before/after are
+        // mutually exclusive boundaries; C3 limit bounds the selected slice;
+        // C4 TypeScript null is `field=` while Python omission is absent.
+        // Effects: E1 cursor boundaries are exclusive; E2 has_more and edge ids
+        // describe exactly that slice; E3 malformed, competing, or unknown
+        // coordinates fail 400. This prevents a superficially decodable
+        // `Page` from silently ignoring the official SDK's paginator inputs.
+        let app = models_router(Arc::new(vec![
+            ModelEntry::new("a", "A"),
+            ModelEntry::new("b", "B"),
+            ModelEntry::new("c", "C"),
+        ]))
+        .layer(axum::Extension(awaken_tenancy::WorkspaceScope(
+            "default".into(),
+        )));
+        for (rule, uri, expected, has_more) in [
+            ("R1", "/v1/models?limit=1", vec!["a"], true),
+            ("R2", "/v1/models?after_id=a&limit=1", vec!["b"], true),
+            ("R3", "/v1/models?before_id=c", vec!["a", "b"], false),
+            (
+                "R4",
+                "/v1/models?beta=true&limit=",
+                vec!["a", "b", "c"],
+                false,
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{rule}");
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            let ids = value["data"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, expected, "{rule}");
+            assert_eq!(value["has_more"], has_more, "{rule}");
+            assert_eq!(
+                value["first_id"].as_str(),
+                expected.first().copied(),
+                "{rule}"
+            );
+            assert_eq!(
+                value["last_id"].as_str(),
+                expected.last().copied(),
+                "{rule}"
+            );
+        }
+        for (rule, uri) in [
+            ("R5", "/v1/models?before_id=c&after_id=a"),
+            ("R6", "/v1/models?after_id=missing"),
+            ("R7", "/v1/models?limit=0"),
+            ("R8", "/v1/models?unexpected=true"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .uri(uri)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{rule}");
         }
     }
 
