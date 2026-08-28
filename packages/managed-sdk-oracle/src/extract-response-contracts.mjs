@@ -58,9 +58,31 @@ function withoutUndefined(type) {
   return retained.length === 1 ? retained[0] : type;
 }
 
-function contractForType(checker, input, active = new Set()) {
+function openJsonPurpose(operationID, path) {
+  if (path.includes('input_schema')) return 'json-schema';
+  if (
+    operationID.startsWith('beta.sessions.')
+    && operationID.endsWith('.events.list')
+    && path.at(-2) === 'input'
+    && path.at(-1) === '*'
+  ) return 'tool-input';
+  return undefined;
+}
+
+function openJsonContract(operationID, path) {
+  const purpose = openJsonPurpose(operationID, path);
+  assert.ok(
+    purpose,
+    `${operationID} response contains unreviewed open JSON at $.${path.join('.')}`,
+  );
+  return Object.freeze({ kind: 'open-json', purpose });
+}
+
+function contractForType(checker, input, operationID, path = [], active = new Set()) {
   const type = withoutUndefined(input);
-  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) return Object.freeze({ kind: 'any' });
+  if (type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) {
+    return openJsonContract(operationID, path);
+  }
   if (type.flags & ts.TypeFlags.Never) return Object.freeze({ kind: 'never' });
   if (type.flags & ts.TypeFlags.Null) return Object.freeze({ kind: 'null' });
 
@@ -86,7 +108,7 @@ function contractForType(checker, input, active = new Set()) {
   if (type.isUnion()) {
     const variants = type.types
       .filter((candidate) => !(candidate.flags & ts.TypeFlags.Undefined))
-      .map((candidate) => contractForType(checker, candidate, active));
+      .map((candidate) => contractForType(checker, candidate, operationID, path, active));
     const unique = new Map(variants.map((variant) => [JSON.stringify(variant), variant]));
     return Object.freeze({ kind: 'union', variants: [...unique.values()] });
   }
@@ -111,13 +133,16 @@ function contractForType(checker, input, active = new Set()) {
   if (checker.isArrayType(type) || checker.isTupleType(type)) {
     const arguments_ = checker.getTypeArguments(type);
     const item = arguments_.length === 0
-      ? Object.freeze({ kind: 'any' })
-      : contractForType(checker, arguments_[0], active);
+      ? openJsonContract(operationID, [...path, '[]'])
+      : contractForType(checker, arguments_[0], operationID, [...path, '[]'], active);
     return Object.freeze({ kind: 'array', item });
   }
 
   const identity = type.id;
-  if (active.has(identity)) return Object.freeze({ kind: 'recursive' });
+  assert.ok(
+    !active.has(identity),
+    `${operationID} response contains a recursive type at $.${path.join('.')}`,
+  );
   active.add(identity);
   try {
     const properties = {};
@@ -126,7 +151,13 @@ function contractForType(checker, input, active = new Set()) {
       assert.ok(declaration, `${property.name}: public property has no declaration`);
       properties[property.name] = Object.freeze({
         required: (property.flags & ts.SymbolFlags.Optional) === 0,
-        value: contractForType(checker, checker.getTypeOfSymbolAtLocation(property, declaration), active),
+        value: contractForType(
+          checker,
+          checker.getTypeOfSymbolAtLocation(property, declaration),
+          operationID,
+          [...path, property.name],
+          active,
+        ),
       });
     }
     const index = checker.getIndexTypeOfType(type, ts.IndexKind.String);
@@ -135,14 +166,16 @@ function contractForType(checker, input, active = new Set()) {
       properties: Object.freeze(Object.fromEntries(
         Object.entries(properties).sort(([left], [right]) => left.localeCompare(right)),
       )),
-      additional: index ? contractForType(checker, index, active) : false,
+      additional: index
+        ? contractForType(checker, index, operationID, [...path, '*'], active)
+        : false,
     });
   } finally {
     active.delete(identity);
   }
 }
 
-function responseContract(checker, method, source) {
+function responseContract(checker, method, source, operationID) {
   assert.ok(method.type, `${method.name.getText(source)}: response type is absent`);
   const outer = method.type;
   const wrapper = referenceName(outer, source);
@@ -154,7 +187,11 @@ function responseContract(checker, method, source) {
   if (wrapper === 'PagePromise') {
     return Object.freeze({
       kind: 'json',
-      schema: contractForType(checker, checker.getTypeFromTypeNode(outer.typeArguments[0])),
+      schema: contractForType(
+        checker,
+        checker.getTypeFromTypeNode(outer.typeArguments[0]),
+        operationID,
+      ),
       // A structurally valid empty page says nothing about the element DTO.
       // Keep this generated evidence obligation adjacent to the official
       // PagePromise wrapper so every behavior owner must observe at least one
@@ -168,7 +205,7 @@ function responseContract(checker, method, source) {
   if (payload.kind === ts.SyntaxKind.VoidKeyword) return Object.freeze({ kind: 'empty' });
   return Object.freeze({
     kind: 'json',
-    schema: contractForType(checker, checker.getTypeFromTypeNode(payload)),
+    schema: contractForType(checker, checker.getTypeFromTypeNode(payload), operationID),
   });
 }
 
@@ -203,7 +240,12 @@ export function extractResponseContractsFromPackageRoot(root, scope, operationID
       if (ts.isMethodDeclaration(node) && node.name && ts.isIdentifier(node.name)) {
         const id = `${namespace}.${node.name.text}`;
         if (expected.has(id)) {
-          const contract = responseContract(checker, node, source);
+          let contract;
+          try {
+            contract = responseContract(checker, node, source, id);
+          } catch (error) {
+            throw new Error(`${sdk.version} ${id}: ${error.message}`, { cause: error });
+          }
           const prior = contracts.get(id);
           assert.ok(
             !prior || JSON.stringify(prior) === JSON.stringify(contract),

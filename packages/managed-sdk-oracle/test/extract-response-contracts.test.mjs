@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -107,4 +108,64 @@ test('official response extraction preserves closed fields, nesting, nullability
   );
   assert.deepEqual(contracts['files.download'], { kind: 'binary' }, 'R6');
   assert.deepEqual(contracts['beta.sessions.events.stream'], { kind: 'stream' }, 'R6');
+
+  const openPurposes = new Set();
+  const visit = (value) => {
+    if (!value || typeof value !== 'object') return;
+    assert.notEqual(value.kind, 'any', 'unnamed open response JSON is impossible');
+    assert.notEqual(value.kind, 'recursive', 'unchecked recursive response JSON is impossible');
+    if (value.kind === 'open-json') openPurposes.add(value.purpose);
+    for (const nested of Object.values(value)) visit(nested);
+  };
+  for (const contract of Object.values(contracts)) visit(contract);
+  assert.deepEqual(
+    openPurposes,
+    new Set(['json-schema', 'tool-input']),
+    'the official dynamic response boundary has exactly two named intents',
+  );
+});
+
+test('only intent-named open JSON and finite response types can produce behavior evidence', () => {
+  // Cause/effect graph: C1 an adjacent official declaration introduces `any`
+  // or `unknown`; C2 it introduces a recursive JSON type. Neither has a finite
+  // structural oracle or one of the two official extension intents. Effects:
+  // E1 extraction fails before a real-process owner can claim compatibility;
+  // E2 a future SDK change requires an explicit, reviewable validator instead
+  // of silently accepting every response. Decision table: bounded finite DTO
+  // or named JSON-Schema/tool-input extension -> extract; C1 -> E1; C2 -> E1.
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'managed-response-contract-'));
+  try {
+    fs.mkdirSync(path.join(root, 'resources/beta'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'resources'), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'package.json'),
+      JSON.stringify({ name: '@anthropic-ai/sdk', version: '0.0.0-test' }),
+    );
+    fs.writeFileSync(path.join(root, 'resources/beta/files.js'), 'export class Files {}\n');
+    const declaration = path.join(root, 'resources/beta/files.d.ts');
+    const extract = () => extractResponseContractsFromPackageRoot(
+      root,
+      { beta_resource_roots: ['files'], ga_resource_roots: [] },
+      ['beta.files.retrieve'],
+    );
+
+    fs.writeFileSync(declaration, [
+      'interface APIPromise<T> extends Promise<T> {}',
+      'export declare class Files {',
+      '  retrieve(): APIPromise<{ payload: unknown }>;',
+      '}',
+    ].join('\n'));
+    assert.throws(extract, /unreviewed open JSON.*payload/u, 'C1/E1');
+
+    fs.writeFileSync(declaration, [
+      'interface APIPromise<T> extends Promise<T> {}',
+      'interface Node { next: Node | null }',
+      'export declare class Files {',
+      '  retrieve(): APIPromise<Node>;',
+      '}',
+    ].join('\n'));
+    assert.throws(extract, /recursive type.*next/u, 'C2/E1');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -205,6 +205,40 @@ test('official response contract rejects missing, extra, primitive, and nested d
   }
 });
 
+test('intent-named open JSON does not weaken its enclosing response contract', () => {
+  // Cause/effect graph: C1 official tool input is schema-defined per Agent and
+  // therefore intentionally open; C2 its enclosing event DTO remains closed.
+  // Effects: E1 arbitrary nested JSON is accepted only at `input`; E2 an extra
+  // sibling or wrong enclosing primitive still fails. Decision table:
+  // C1+C2 -> E1; open payload + violated C2 -> E2. This proves `open-json` is a
+  // local protocol extension point, not a free-form escape hatch for the DTO.
+  const contract = {
+    kind: 'json',
+    schema: {
+      kind: 'object',
+      properties: {
+        id: { required: true, value: { kind: 'string' } },
+        input: { required: true, value: { kind: 'open-json', purpose: 'tool-input' } },
+      },
+      additional: false,
+    },
+  };
+  const input = {
+    kind: 'object',
+    fields: {
+      nested: { kind: 'array', items: [{ kind: 'boolean' }, { kind: 'null' }] },
+    },
+  };
+  assert.doesNotThrow(() => assertResponseContract({
+    kind: 'object',
+    fields: { id: { kind: 'string' }, input },
+  }, contract, 'tool event'), 'C1+C2/E1');
+  assert.throws(() => assertResponseContract({
+    kind: 'object',
+    fields: { id: { kind: 'string' }, input, leaked: { kind: 'string' } },
+  }, contract, 'tool event'), /field is not in the official type/u, 'C1+!C2/E2');
+});
+
 test('official literal contracts reject a wrong discriminator without retaining its value', async () => {
   // Causal graph: C1 the exact SDK declaration supplies a finite literal; C2
   // the completed JSON response supplies the observed value; C3 the receipt
@@ -381,7 +415,7 @@ test('response shape partitions JSON arrays, binary, stream, and empty bodies wi
     headers: { 'x-stainless-lang': 'js', 'x-stainless-package-version': sdkVersion },
   });
   const cases = [
-    new Response(JSON.stringify([{ token: 'must-not-leak' }, { token: 'another-secret' }]), {
+    new Response(JSON.stringify([{ token: 'must-not-leak' }, { token: 'another-secret' }]), { // awaken-allow: secret
       headers: { 'content-type': 'application/json; charset=utf-8' },
     }),
     new Response('bytes', { headers: { 'content-type': 'application/octet-stream' } }),
@@ -424,7 +458,7 @@ test('static subresources outrank placeholder identities during receipt attribut
   // retrieve and then be validated against the wrong DTO.
   const responseContract = {
     kind: 'json',
-    schema: { kind: 'object', properties: {}, additional: { kind: 'any' } },
+    schema: { kind: 'object', properties: {}, additional: false },
   };
   const retrieve = {
     sdkMethod: 'beta.environments.work.retrieve',

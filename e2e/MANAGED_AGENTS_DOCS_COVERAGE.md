@@ -111,7 +111,7 @@ execution graph, and owners that do not call the declared method.
 | `beta.environments.work.update` | `/v1/environments/{}/work/{}` | ✅ covered | `management_environment_work_depth_e2e.mjs` |
 | `beta.environments.work.worker` | `generated-worker-helper` | ✅ covered | `management_official_worker_e2e.mjs` |
 | `beta.files.delete` | `/v1/files/{}` | ✅ covered | `management_files_models_e2e.mjs` |
-| `beta.files.download` | `/v1/files/{}/content` | ✅ covered | `managed_resources_api_e2e.mjs` |
+| `beta.files.download` | `/v1/files/{}/content` | ✅ covered | `managed_dream_e2e.ts` |
 | `beta.files.list` | `/v1/files` | ✅ covered | `managed_resources_api_e2e.mjs` |
 | `beta.files.retrieveMetadata` | `/v1/files/{}` | ✅ covered | `managed_full_lifecycle_e2e.mjs` |
 | `beta.files.upload` | `/v1/files` | ✅ covered | `management_files_models_e2e.mjs` |
@@ -182,7 +182,7 @@ execution graph, and owners that do not call the declared method.
 | `beta.vaults.credentials.delete` | `/v1/vaults/{}/credentials/{}` | ✅ covered | `management_vaults_family_e2e.mjs` |
 | `beta.vaults.credentials.list` | `/v1/vaults/{}/credentials` | ✅ covered | `management_vaults_family_e2e.mjs` |
 | `beta.vaults.credentials.mcpOAuthValidate` | `/v1/vaults/{}/credentials/{}/mcp_oauth_validate` | ✅ covered | `management_vaults_e2e.mjs` |
-| `beta.vaults.credentials.retrieve` | `/v1/vaults/{}/credentials/{}` | ✅ covered | `management_vaults_family_e2e.mjs` |
+| `beta.vaults.credentials.retrieve` | `/v1/vaults/{}/credentials/{}` | ✅ covered | `management_vaults_e2e.mjs` |
 | `beta.vaults.credentials.update` | `/v1/vaults/{}/credentials/{}` | ✅ covered | `management_vaults_family_e2e.mjs` |
 | `beta.vaults.delete` | `/v1/vaults/{}` | ✅ covered | `management_vaults_e2e.mjs` |
 | `beta.vaults.list` | `/v1/vaults` | ✅ covered | `management_vaults_family_e2e.mjs` |
@@ -190,7 +190,7 @@ execution graph, and owners that do not call the declared method.
 | `beta.vaults.update` | `/v1/vaults/{}` | ✅ covered | `management_vaults_family_e2e.mjs` |
 | `beta.webhooks.unwrap` | `offline-standard-webhooks` | ✅ covered | `managed_webhooks_official_sdk_e2e.mjs` via `conformance/official_webhook_contract.mjs#exerciseOfficialWebhookContract` |
 | `files.delete` | `/v1/files/{}` | ✅ covered | `management_files_models_e2e.mjs` |
-| `files.download` | `/v1/files/{}/content` | ✅ covered | `management_files_models_e2e.mjs` |
+| `files.download` | `/v1/files/{}/content` | ✅ covered | `managed_dream_e2e.ts` |
 | `files.list` | `/v1/files` | ✅ covered | `management_files_models_e2e.mjs` |
 | `files.retrieveMetadata` | `/v1/files/{}` | ✅ covered | `management_files_models_e2e.mjs` |
 | `files.upload` | `/v1/files` | ✅ covered | `management_files_models_e2e.mjs` |

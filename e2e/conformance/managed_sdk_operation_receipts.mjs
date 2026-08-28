@@ -105,7 +105,7 @@ export function recordingFetch(fetchImplementation, record) {
 }
 
 function shapeFailures(actual, expected, path) {
-  if (expected.kind === 'any' || expected.kind === 'recursive') return [];
+  if (expected.kind === 'open-json') return [];
   if (expected.kind === 'union') {
     const attempts = expected.variants.map((variant) => shapeFailures(actual, variant, path));
     return attempts.some((failures) => failures.length === 0)

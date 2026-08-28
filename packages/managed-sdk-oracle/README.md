@@ -76,9 +76,12 @@ evidence from drifting from the external expectation:
   literal discriminators are enforced. Literal observations cross the process
   boundary only as run-scoped keyed fingerprints, so evidence cannot retain a
   credential, metadata value, or user payload. Page methods must additionally
-  observe a non-empty item at least once. A method present only in source text,
-  an empty page, or a same-primitive wrong discriminator cannot satisfy
-  qualification.
+  observe a non-empty item at least once. The only open JSON response positions
+  are named `json-schema` and `tool-input` contracts from the official protocol;
+  an `any`/`unknown` anywhere else, or an unchecked recursive response type,
+  fails extraction before behavior evidence can be admitted. A method present
+  only in source text, an empty page, or a same-primitive wrong discriminator
+  cannot satisfy qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
