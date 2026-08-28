@@ -533,27 +533,19 @@ pub trait SessionThreadLiveSubscription: Send {
 /// [`McpAttachmentRealizer`] because it has a distinct hot-attachment lifecycle.
 #[async_trait]
 pub trait SessionRuntime: Send + Sync {
-    /// Install the complete immutable baseline before local preparation. Remote
-    /// Workers receive this inside `FrozenSessionProjection`; this port keeps
-    /// co-located Native realization causally equivalent instead of dropping
-    /// baseline mounts, environment values, or system prompts from `SessionInit`.
-    fn install_session_baseline(
+    /// Install one complete Control-frozen Session projection. Dispatch and
+    /// realization are explicit modes of this single port; callers must never
+    /// lower publication, baseline, request context, Environment, or lease
+    /// fields independently.
+    async fn install_session_projection(
         &self,
         _thread: &str,
-        _baseline: &crate::SessionBaseline,
+        _projection: crate::FrozenSessionProjection,
+        _mode: crate::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
-        Ok(())
-    }
-
-    /// Install request-only messages derived from a frozen transcript prefix.
-    /// The default preserves compatibility for runtimes without model context;
-    /// implementations must never append these messages to `thread`.
-    fn install_session_request_context(
-        &self,
-        _thread: &str,
-        _messages: Vec<Message>,
-    ) -> Result<(), RunError> {
-        Ok(())
+        Err(RunError::unavailable(
+            "runtime does not implement complete Session projection installation",
+        ))
     }
 
     /// Install the durable callback used at the exact sandbox creation boundary.
@@ -612,24 +604,6 @@ pub trait SessionRuntime: Send + Sync {
         Err(RunError::unavailable(
             "runtime does not implement Session Run recovery",
         ))
-    }
-    /// Install the exact realization fence before any physical environment can
-    /// be published. Runtime adapters retain it only as an effect guard.
-    fn install_session_realization_lease(
-        &self,
-        _session_id: &str,
-        _lease: crate::SessionRealizationLease,
-    ) {
-    }
-    /// Project the durable Environment binding expectation before recovery I/O.
-    /// `Some` forbids creating a substitute environment if adoption later fails;
-    /// the binding itself remains owned by the Session aggregate.
-    fn install_expected_environment_binding(
-        &self,
-        _session_id: &str,
-        _binding: Option<String>,
-    ) -> Result<(), RunError> {
-        Ok(())
     }
     /// Read the runtime-owned, durable child-Run relationships for `thread`.
     /// Protocol adapters use this only to rebuild disposable projections after a

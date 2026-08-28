@@ -136,7 +136,8 @@ mod tests {
             .collect()
     }
 
-    /// Lifecycle wake cause/effect graph: C1 the receiver/application are composed
+    /// Lifecycle wake cause/effect graph: C1 the receiver/application and a
+    /// Runtime accepting the complete frozen Session projection are composed
     /// before traffic; C2 durable Session + child facts advance outside the
     /// Managed handler; C3 the fact names that Session (or an unknown object);
     /// C4 the same stable fact is replayed; C5 a webhook receiver is present.
@@ -156,8 +157,9 @@ mod tests {
     async fn one_outbox_fanout_refreshes_open_sse_and_replay_is_idempotent() {
         // Causes: the fixtures below establish `one outbox fanout refreshes open sse and replay`
         // with the concrete inputs, state, dependencies, and failure triggers used by this case.
-        // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
-        // delivery is best-effort and cannot replace committed replay truth.
+        // Constraints/invariants: Session creation uses only the complete projection port; the
+        // Coordinator routes one neutral Session/Run lifecycle; live delivery is best-effort and
+        // cannot replace committed replay truth.
         // Decision rule: evaluate every labeled cause partition in this test; each matching rule
         // selects only its stated effect and preserves the authority constraint.
         let state = Arc::new(ManagedState::new(CoordinatedRuntimeFake::default()));

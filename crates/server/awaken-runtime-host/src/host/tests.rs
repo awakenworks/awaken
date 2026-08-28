@@ -1287,6 +1287,8 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     #[derive(Default)]
     struct RepositoryClaimRecorder(Mutex<Vec<Option<awaken_run_ingress::RunClaim>>>);
 
+    struct FailingRepositoryVerifier;
+
     #[async_trait::async_trait]
     impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim> for RepositoryClaimRecorder {
         async fn verify(
@@ -1301,6 +1303,26 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         > {
             self.0.lock().unwrap().push(claim.cloned());
             Ok(awaken_resource_contract::RepositoryTransport::Direct)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::RepositoryBindingVerifier<awaken_run_ingress::RunClaim> for FailingRepositoryVerifier {
+        async fn verify(
+            &self,
+            _workspace_id: &str,
+            _repository_id: &str,
+            _config_version: awaken_resource_contract::ConfigVersion,
+            _claim: Option<&awaken_run_ingress::RunClaim>,
+        ) -> Result<
+            awaken_resource_contract::RepositoryTransport,
+            awaken_resource_contract::RepositoryBindingVerifierError,
+        > {
+            Err(
+                awaken_resource_contract::RepositoryBindingVerifierError::new(
+                    "injected binding failure",
+                ),
+            )
         }
     }
 
@@ -1325,29 +1347,47 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // B3 empty fingerprint -> reject; B4 different fingerprint -> reject;
     // B5 Environment already realized -> reject rather than run without the
     // frozen mounts/env/prompts.
-    let baseline_host = SharedHost::new(Arc::new(MemoryHostModel), "stub");
-    let first_baseline = projection("baseline-a", true).baseline;
+    let baseline_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let _baseline_runtime =
+        crate::ManagedHost::new(baseline_host.clone()).install_dispatch_session_runtime();
+    let first_projection = projection("baseline-a", true);
     baseline_host
-        .install_frozen_session_baseline("local-baseline", &first_baseline)
+        .install_frozen_session_projection(
+            "local-baseline",
+            first_projection.clone(),
+            None,
+            true,
+            None,
+        )
+        .await
         .expect("B1 valid baseline installs");
     baseline_host
-        .install_frozen_session_baseline("local-baseline", &first_baseline)
+        .install_frozen_session_projection(
+            "local-baseline",
+            first_projection.clone(),
+            None,
+            true,
+            None,
+        )
+        .await
         .expect("B2 same baseline is idempotent");
 
-    let mut empty = first_baseline.clone();
-    empty.fingerprint.0.clear();
+    let mut empty = first_projection.clone();
+    empty.baseline.fingerprint.0.clear();
     assert!(
         baseline_host
-            .install_frozen_session_baseline("empty-baseline", &empty)
+            .install_frozen_session_projection("empty-baseline", empty, None, true, None)
+            .await
             .unwrap_err()
             .message
             .contains("fingerprint must not be empty"),
         "B3"
     );
-    let conflicting = projection("baseline-b", true).baseline;
+    let conflicting = projection("baseline-b", true);
     assert!(
         baseline_host
-            .install_frozen_session_baseline("local-baseline", &conflicting)
+            .install_frozen_session_projection("local-baseline", conflicting, None, true, None,)
+            .await
             .unwrap_err()
             .message
             .contains("different frozen Session baseline"),
@@ -1359,11 +1399,46 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .expect("realize the negative-case Environment");
     assert!(
         baseline_host
-            .install_frozen_session_baseline("realized-before-baseline", &first_baseline)
+            .install_frozen_session_projection(
+                "realized-before-baseline",
+                first_projection,
+                None,
+                true,
+                None,
+            )
+            .await
             .unwrap_err()
             .message
             .contains("realized before its frozen Session baseline"),
         "B5"
+    );
+
+    // Fault-injection rule B6: any fallible Resource verification fails before
+    // publishing the complete logical projection. No baseline, workspace,
+    // Agent, manifest, prompt, or lease fragment may survive independently.
+    let failed_host = Arc::new(SharedHost::new(Arc::new(MemoryHostModel), "stub"));
+    let _failed_runtime = crate::ManagedHost::new(failed_host.clone())
+        .with_repository_binding_verifier(Arc::new(FailingRepositoryVerifier))
+        .install_dispatch_session_runtime();
+    let mut rejected = projection("must not publish", false);
+    rejected.resources = effective_repository(
+        "rejected-repository",
+        "https://example.invalid/rejected.git",
+        "/workspace/rejected",
+        None,
+    );
+    assert!(
+        failed_host
+            .install_frozen_session_projection("failed-projection", rejected, None, true, None)
+            .await
+            .unwrap_err()
+            .message
+            .contains("injected binding failure"),
+        "B6 injected fault"
+    );
+    assert!(
+        !failed_host.session_slots.contains("failed-projection"),
+        "B6 failed preparation cannot publish a partial Session slot"
     );
 
     let recorder = PromptRecorder::default();
@@ -1374,10 +1449,10 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         .with_repository_binding_verifier(repository_claims.clone())
         .install_dispatch_session_runtime();
     let frozen = projection("Use the bound Flow project.", true);
-    host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true)
+    host.install_frozen_session_projection("flow-thread", frozen.clone(), None, true, None)
         .await
         .expect("first frozen projection installs");
-    host.install_frozen_session_projection("flow-thread", frozen, None, true)
+    host.install_frozen_session_projection("flow-thread", frozen, None, true, None)
         .await
         .expect("same frozen fingerprint is idempotent");
 
@@ -1393,7 +1468,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
     // | B1   | T  | T          | F         | E1     |
     // | B2   | T  | F          | T         | E2     |
     let mut branch = projection("branch prompt", false);
-    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true)
+    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 baseline without materialized prefix");
     let stale = host
@@ -1405,7 +1480,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         Role::Assistant,
         "E2E_SOURCE_ONLY_exact",
     )];
-    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true)
+    host.install_frozen_session_projection("branch-thread", branch.clone(), None, true, None)
         .await
         .expect("B1 late materialized prefix");
     let rebuilt = host
@@ -1420,7 +1495,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         rebuilt.attempt_context.request_context, branch.request_context,
         "B1/E1 exact request-only prefix"
     );
-    host.install_frozen_session_projection("branch-thread", branch, None, true)
+    host.install_frozen_session_projection("branch-thread", branch, None, true, None)
         .await
         .expect("B2 identical replay");
     let replayed = host
@@ -1462,22 +1537,23 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         vec!["Use the bound Flow project."]
     );
 
-    // Cause graph:
-    // C1 = the frozen Session has a prompt; C2 = committed history is empty;
-    // C3 = the activation already carries the exact prompt.
-    // Effect E = prepend exactly one deterministic System message.
+    // Cause graph: C1 frozen Session prompt; C2 current attempt context absent;
+    // C3 activation already carries the exact explicit System message. Effects:
+    // E1 project exactly one request-only context message; E2 leave Thread input
+    // unchanged; E3 deduplicate equal explicit input without deleting it.
     //
     // | Rule | C1 | C2 | C3 | E |
     // | P1   | 0  | *  | *  | 0 |
     // | P2   | 1  | 1  | 0  | 1 |
     // | P3   | 1  | 1  | 1  | 0 (deduplicate) |
-    // | P4   | 1  | 0  | *  | 0 |
+    // | P4   | 1  | later Run | 0 | E1 again, never from history |
     host.run(None, "no-baseline", user("P1")).await.expect("P1");
     host.install_frozen_session_projection(
         "prompt-thread",
         projection("Use the bound Flow project.", false),
         None,
         true,
+        None,
     )
     .await
     .expect("P2/P4 projection");
@@ -1492,6 +1568,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         projection("exact prompt", false),
         None,
         true,
+        None,
     )
     .await
     .expect("P3 projection");
@@ -1533,10 +1610,19 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         assert_eq!(
             prompt_count(&requests[2], "Use the bound Flow project."),
             1,
-            "P4 history retains the original fact without reinjection"
+            "P4 fresh request context is projected exactly once"
         );
         assert_eq!(prompt_count(&requests[3], "exact prompt"), 1, "P3");
     }
+    assert!(
+        managed
+            .committed_messages("prompt-thread")
+            .await
+            .expect("prompt Thread truth")
+            .iter()
+            .all(|message| message.text_content() != "Use the bound Flow project."),
+        "E2 derived Session context must never enter a Thread delta"
+    );
 
     // Request-context decision rule C4: a frozen projection carries one
     // materialized source prefix. Effect E4: the model sees it before current
@@ -1548,7 +1634,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         Role::User,
         "prior branch context",
     )];
-    host.install_frozen_session_projection("context-thread", contextual, None, true)
+    host.install_frozen_session_projection("context-thread", contextual, None, true, None)
         .await
         .expect("C4 projection");
     host.run(None, "context-thread", user("current branch input"))
@@ -1587,7 +1673,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
 
     let replacement = projection("different", true);
     assert!(
-        host.install_frozen_session_projection("flow-thread", replacement, None, true)
+        host.install_frozen_session_projection("flow-thread", replacement, None, true, None)
             .await
             .is_err(),
         "a bound Session cannot switch frozen baselines"
@@ -1616,6 +1702,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         repository_projection.clone(),
         Some(&claim(1)),
         true,
+        None,
     )
     .await
     .expect("C1 first claim");
@@ -1624,6 +1711,7 @@ async fn control_frozen_baseline_is_the_only_worker_runtime_projection() {
         repository_projection,
         Some(&claim(2)),
         true,
+        None,
     )
     .await
     .expect("C2 replacement claim");
@@ -2573,7 +2661,7 @@ async fn compaction_summary_reaches_the_same_long_run() {
     // E2 C2 injects the committed summary into that Run's inference. Constraint/
     // Invariant: compaction changes context projection, not Thread identity or
     // committed history. Decision rule: execute C1 then C2 and distinguish replies.
-    let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(1, 1);
+    let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(1, 1);
     let user = |t: &str| vec![Message::text(MessageId(t.into()), Role::User, "hello")];
 
     // Run 1: only the single user message → below threshold, no summary injected.
@@ -2608,7 +2696,7 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
     // activates. Constraint/Invariant: window truncation requires committed prefix
     // coverage from a summary. Decision rule: keep C1 false for summary activation
     // and require both user messages remain visible.
-    let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(10, 1);
+    let host = SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(100, 1);
     let user = |id: &str| vec![Message::text(MessageId(id.into()), Role::User, id)];
 
     host.run(None, "t-before-fold", user("u1"))
@@ -2632,20 +2720,21 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
 }
 
 /// Durable compaction dispatch cause/effect graph: C1 an embedded Agent enables
-/// compaction with a non-default threshold; C2 reservation generates the
+/// compaction with a non-default effective token window; C2 reservation generates the
 /// immutable dispatch snapshot; C3 a claimed Worker rebuilds exclusively from
 /// that snapshot. Effects: E1 C1+C2 freezes the exact plugin id/config; E2
-/// C1+C2+C3 retains the same threshold and tail. Constraint: the generic
+/// C1+C2+C3 retains the same window and tail. Constraint: the generic
 /// `plugin_ids`/`plugin_config` projection is the sole configuration authority;
 /// no process-local compaction settings are consulted after publication.
 ///
-/// | Rule | configured | phase | threshold/keep_last | effect |
+/// | Rule | configured | phase | window/keep_last | effect |
 /// |---|---|---|---|---|
 /// | C7 | 2/1 | reservation | 2/1 | freeze exact config |
 /// | C8 | 2/1 | claimed rebuild | 2/1 | preserve exact config |
 #[tokio::test]
 async fn generated_compaction_config_survives_claimed_rebuild() {
-    let host = Arc::new(SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(2, 1));
+    let host =
+        Arc::new(SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction_tokens(2, 1));
 
     let provisional = host
         .ctx_for_session_reservation("durable-compact-config", Some("assistant"))
@@ -2664,7 +2753,11 @@ async fn generated_compaction_config_survives_claimed_rebuild() {
             snapshot.resolved_spec.plugin_config[awaken_ext_compact::COMPACT_PLUGIN_ID].clone(),
         )
         .expect("valid frozen CompactConfig");
-        assert_eq!((config.threshold, config.keep_last), (2, 1), "{rule}");
+        assert_eq!(
+            (config.max_tokens, config.keep_last),
+            (Some(2), 1),
+            "{rule}"
+        );
     };
     assert_exact_config(&provisional.config, "C7/E1");
 
@@ -5472,6 +5565,7 @@ async fn on_tool_use_legacy_delivered_filesystem_skill_forces_an_eager_environme
         },
         None,
         true,
+        None,
     )
     .await
     .expect("L8 cold legacy projection");
@@ -13682,10 +13776,12 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
     // O2 replay -> byte-identical fingerprint (idempotent);
     // O3 equal-id inference-only override -> Agent roster stays authoritative;
     // O4 malformed frozen roster -> fail before executor materialization.
-    let projected = super::session::project_frozen_session_model_override(
-        base.clone(),
+    let inherit = awaken_session_contract::SessionSystemPromptSelection::Inherit;
+    let projected = awaken_session_contract::project_effective_agent_publication(
         Some(&frozen),
+        &inherit,
         "workspace",
+        base.clone(),
     )
     .expect("O1 exact projection");
     assert_eq!(projected.resolved_spec.model_binding, primary, "O1");
@@ -13697,10 +13793,11 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
             .is_none(),
         "O1 superseded Agent route must not leak"
     );
-    let replayed = super::session::project_frozen_session_model_override(
-        projected.clone(),
+    let replayed = awaken_session_contract::project_effective_agent_publication(
         Some(&frozen),
+        &inherit,
         "workspace",
+        projected.clone(),
     )
     .expect("O2 idempotent replay");
     assert_eq!(replayed.fingerprint, projected.fingerprint, "O2");
@@ -13709,10 +13806,11 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
         publication: None,
         inference: Default::default(),
     };
-    let reused = super::session::project_frozen_session_model_override(
-        base.clone(),
+    let reused = awaken_session_contract::project_effective_agent_publication(
         Some(&inference_only),
+        &inherit,
         "workspace",
+        base.clone(),
     )
     .expect("O3 Agent publication reuse");
     assert_eq!(
@@ -13729,8 +13827,13 @@ fn frozen_session_model_override_replaces_the_complete_route_exactly_once() {
         inference: Default::default(),
     };
     assert!(
-        super::session::project_frozen_session_model_override(base, Some(&malformed), "workspace",)
-            .is_err(),
+        awaken_session_contract::project_effective_agent_publication(
+            Some(&malformed),
+            &inherit,
+            "workspace",
+            base,
+        )
+        .is_err(),
         "O4 duplicate route must fail closed"
     );
 }
@@ -14689,29 +14792,43 @@ async fn frozen_session_resolves_its_exact_agent_revision_instead_of_current() {
     .expect("valid revisioned publications");
     let host =
         SharedHost::new(Arc::new(OkModel), "stub").with_agent_publications(Arc::new(publications));
-    host.register_thread_workspace("frozen-revision", host.local_workspace());
-    host.register_thread_agent_projection("frozen-revision", "agent-a");
-    host.install_frozen_session_baseline(
+    let baseline = awaken_session_contract::SessionBaseline::compile(
+        awaken_session_contract::SessionBaselineInputs {
+            environment: on_tool_use_environment(),
+            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Local,
+            mcp_authoring: Default::default(),
+            agent_id: "agent-a".into(),
+            agent_revision: Some(2),
+            model: "stub".into(),
+            model_override: None,
+            runtime: None,
+            delegate_ids: Vec::new(),
+            toolsets: Vec::new(),
+            mounts: Vec::new(),
+            env: Vec::new(),
+            prompts: Vec::new(),
+            transcript_prefix: None,
+        },
+    );
+    host.install_frozen_session_projection(
         "frozen-revision",
-        &awaken_session_contract::SessionBaseline::compile(
-            awaken_session_contract::SessionBaselineInputs {
-                environment: on_tool_use_environment(),
-                runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
-                mcp_authoring: Default::default(),
-                agent_id: "agent-a".into(),
-                agent_revision: Some(2),
-                model: "stub".into(),
-                model_override: None,
-                runtime: None,
-                delegate_ids: Vec::new(),
-                toolsets: Vec::new(),
-                mounts: Vec::new(),
-                env: Vec::new(),
-                prompts: Vec::new(),
-                transcript_prefix: None,
-            },
-        ),
+        awaken_session_contract::FrozenSessionProjection {
+            workspace_id: host.local_workspace().to_string(),
+            revision: awaken_session_contract::SessionRevision(1),
+            environment: Default::default(),
+            resource_revision: 0,
+            resources: Default::default(),
+            tools: Default::default(),
+            mcp: Vec::new(),
+            request_context: Vec::new(),
+            agent_publication: None,
+            baseline,
+        },
+        None,
+        true,
+        None,
     )
+    .await
     .expect("frozen baseline");
 
     let (_, _, selected) = host

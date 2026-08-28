@@ -68,7 +68,6 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         lease: &awaken_session_contract::SessionRealizationLease,
         prepare_session: bool,
     ) -> Result<(), awaken_session_contract::RunError> {
-        let resolved_publication;
         let retained_publication = self
             .host
             .session_slots
@@ -93,24 +92,7 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
             .agent_publication
             .as_ref()
             .or(self.published_snapshot);
-        let published_snapshot = match delivered_publication {
-            Some(snapshot) => Some(snapshot),
-            None if retained_publication.is_some() => retained_publication.as_ref(),
-            None => {
-                resolved_publication = self
-                    .host
-                    .resolve_session_publication(
-                        session_id,
-                        Some(&projection.baseline.agent_id),
-                        None,
-                    )
-                    .map_err(|error| {
-                        awaken_session_contract::RunError::internal(error.to_string())
-                    })?
-                    .2;
-                resolved_publication.as_ref()
-            }
-        };
+        let published_snapshot = delivered_publication.or(retained_publication.as_ref());
         match awaken_session_contract::frozen_agent_publication_decision(
             &projection.baseline,
             published_snapshot,
@@ -131,26 +113,6 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
                 ));
             }
         }
-        if let Some(snapshot) = published_snapshot {
-            let conflict = self.host.session_slots.update(session_id, |slot| {
-                if slot
-                    .published_snapshot
-                    .as_ref()
-                    .is_some_and(|retained| retained != snapshot)
-                {
-                    true
-                } else {
-                    slot.published_snapshot = Some(snapshot.clone());
-                    false
-                }
-            });
-            if conflict {
-                return Err(awaken_session_contract::RunError::classified(
-                    "session_runtime_publication_conflict",
-                    "Session realization cannot replace its immutable Agent publication",
-                ));
-            }
-        }
         // A claim authorizes live Resource revalidation. A preparation Stage
         // authorizes local realization. Lease-only MCP renewal has neither and
         // must reuse the already-resident Resource/Skill projection instead of
@@ -159,18 +121,20 @@ impl awaken_session_contract::SessionProjectionSynchronizer for WorkerProjection
         // Control materializes current context on every directive. Install the
         // supplied projection even for a lease-only Complete action so a
         // Session command accepted between Runs cannot leave a warm slot stale.
-        let projection = projection.clone();
+        let mut projection = projection.clone();
+        if projection.agent_publication.is_none() {
+            projection.agent_publication = published_snapshot.cloned();
+        }
         self.host
             .install_frozen_session_projection(
                 session_id,
                 projection.clone(),
                 self.claim,
                 synchronize_resources,
+                Some(lease.clone()),
             )
             .await
             .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))?;
-        self.host
-            .install_session_realization_lease(session_id, lease.clone());
         let environment_absent = self.host.session_environment(session_id).await.is_none();
         let has_environment_binding =
             environment_absent && projection.environment.binding().is_some();
@@ -902,7 +866,7 @@ mod tests {
         let host = Arc::new(SharedHost::new(Arc::new(AdoptionModel), "stub"));
         let _managed = crate::ManagedHost::new(host.clone()).install_dispatch_session_runtime();
         let resident = frozen_projection();
-        host.install_frozen_session_projection(thread, resident.clone(), None, true)
+        host.install_frozen_session_projection(thread, resident.clone(), None, true, None)
             .await
             .expect("M1 establish resident baseline");
         let mut remote = resident;

@@ -111,231 +111,9 @@ impl TransportResolver for AnonymousHttpTransportResolver {
     }
 }
 
-fn ensure_supported_narrowing(
-    activation: &RunActivation,
-    context: &RuntimeRunContext,
-) -> Result<()> {
-    if activation.tool_capability_narrowing == ToolCapabilityNarrowing::DenyAll
-        || context.tool_permission_policy.is_some()
-    {
-        return Err(Error::Execution(
-            "A2A cannot prove enforcement of this Run's deny-all tool capability".to_string(),
-        ));
-    }
-    Ok(())
-}
-
-#[async_trait]
-impl RunExecutor for A2aRunExecutor {
-    fn capabilities(&self) -> ExecutorCapabilities {
-        ExecutorCapabilities {
-            cancellation: Cancellation::RemoteAbort,
-            wait: Wait::Both,
-        }
-    }
-
-    async fn execute(
-        &self,
-        activation: RunActivation,
-        context: RuntimeRunContext,
-    ) -> Result<RunState> {
-        ensure_supported_narrowing(&activation, &context)?;
-        let Ok(candidate) = remote_candidate_of(&activation) else {
-            // Reached without a remote backend — a wiring fault; fail closed.
-            let mut messages = activation.input.clone();
-            messages.push(assistant_message(
-                &context,
-                &activation,
-                "backend is not an A2A endpoint",
-            ));
-            return finish_terminal(
-                &context,
-                &activation,
-                messages,
-                EndCause::Error(Failure::Inference {
-                    code: "a2a_config".to_string(),
-                    message: "backend is not a2a".to_string(),
-                }),
-            )
-            .await;
-        };
-        let endpoint = endpoint_of(candidate)?;
-
-        let restored = match restored_task_reference(&context, &activation) {
-            Ok(restored) => restored,
-            Err(error) => {
-                return finish_invalid_task_reference(&context, &activation, error).await;
-            }
-        };
-        if let Some(reference) = &restored
-            && let Err(error) = ensure_endpoint(reference, &endpoint)
-        {
-            return finish_invalid_task_reference(&context, &activation, error).await;
-        }
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let transport = self
-            .transport_resolver
-            .resolve(candidate, &context)
-            .await
-            .map_err(Error::Execution)?;
-        let task = match restored {
-            Some(reference) => {
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                get_task(transport.as_ref(), &reference.task_id)
-                    .await
-                    .map_err(|error| Error::Execution(error.to_string()))?
-            }
-            None => {
-                let prompt = prompt_of(&activation.input);
-                let message_id = format!("a2a-msg-{}", activation.run_id.0);
-                verify_attempt_ownership(context.ownership.as_deref()).await?;
-                let task = match send_message(
-                    transport.as_ref(),
-                    None,
-                    &activation.thread_id.0,
-                    &message_id,
-                    &prompt,
-                )
-                .await
-                {
-                    Ok(task) => task,
-                    Err(err) => {
-                        let mut messages = activation.input.clone();
-                        messages.push(assistant_message(
-                            &context,
-                            &activation,
-                            format!("remote agent error: {err}"),
-                        ));
-                        return finish_terminal(
-                            &context,
-                            &activation,
-                            messages,
-                            EndCause::Error(Failure::Inference {
-                                code: "a2a_error".to_string(),
-                                message: err.to_string(),
-                            }),
-                        )
-                        .await;
-                    }
-                };
-                commit_boundary(
-                    &context,
-                    &activation,
-                    RunDisposition::running(activation.run_id.clone()),
-                    activation.input.clone(),
-                    vec![task_reference_state(&TaskReference::from_task(
-                        &endpoint, &task,
-                    ))?],
-                )
-                .await?;
-                task
-            }
-        };
-        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
-    }
-}
-
-#[async_trait]
-impl RunAttemptExecutor for A2aRunExecutor {
-    async fn resume(
-        &self,
-        activation: RunActivation,
-        command: ResumeCommand,
-        context: RuntimeRunContext,
-    ) -> Result<RunState> {
-        ensure_supported_narrowing(&activation, &context)?;
-        let reader = context
-            .reader
-            .as_ref()
-            .ok_or_else(|| Error::Execution("A2A resume requires committed history".to_string()))?;
-        let ticket = reader
-            .resume_ticket(&activation.run_id)
-            .ok_or_else(|| Error::Execution("A2A run is not awaiting a resume".to_string()))?;
-        validate_resume(&ticket, &command)
-            .map_err(|error| Error::Execution(format!("invalid A2A resume: {error}")))?;
-        let candidate = remote_candidate_of(&activation)?;
-        let endpoint = endpoint_of(candidate)?;
-        let reference = match restored_task_reference(&context, &activation) {
-            Ok(Some(reference)) => reference,
-            Ok(None) => {
-                return finish_invalid_task_reference(
-                    &context,
-                    &activation,
-                    Error::Execution("A2A resume is missing its durable remote task".to_string()),
-                )
-                .await;
-            }
-            Err(error) => {
-                return finish_invalid_task_reference(&context, &activation, error).await;
-            }
-        };
-        if let Err(error) = ensure_endpoint(&reference, &endpoint) {
-            return finish_invalid_task_reference(&context, &activation, error).await;
-        }
-        let text = resume_text(&command.result)?;
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let transport = self
-            .transport_resolver
-            .resolve(candidate, &context)
-            .await
-            .map_err(Error::Execution)?;
-        let message_id = format!(
-            "a2a-resume-{}-{}",
-            activation.run_id.0, ticket.correlation_id
-        );
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let task = send_message(
-            transport.as_ref(),
-            None,
-            &reference.context_id,
-            &message_id,
-            &text,
-        )
-        .await
-        .map_err(|error| Error::Execution(error.to_string()))?;
-        commit_boundary(
-            &context,
-            &activation,
-            RunDisposition::running(activation.run_id.clone()),
-            Vec::new(),
-            vec![task_reference_state(&TaskReference::from_task(
-                &endpoint, &task,
-            ))?],
-        )
-        .await?;
-        task_driver::drive_task(transport, &endpoint, &activation, &context, task).await
-    }
-
-    async fn cancel(&self, activation: RunActivation, context: RuntimeRunContext) -> Result<()> {
-        let candidate = remote_candidate_of(&activation)?;
-        let endpoint = endpoint_of(candidate)?;
-        let Some(reference) = restored_task_reference(&context, &activation)? else {
-            return Ok(());
-        };
-        ensure_endpoint(&reference, &endpoint)?;
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let transport = self
-            .transport_resolver
-            .resolve(candidate, &context)
-            .await
-            .map_err(Error::Execution)?;
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        let task = get_task(transport.as_ref(), &reference.task_id)
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))?;
-        if matches!(
-            task.status.state,
-            TaskState::Completed | TaskState::Failed | TaskState::Canceled | TaskState::Rejected
-        ) {
-            return Ok(());
-        }
-        verify_attempt_ownership(context.ownership.as_deref()).await?;
-        try_cancel_task(transport.as_ref(), &reference.task_id)
-            .await
-            .map_err(|error| Error::Execution(error.to_string()))
-    }
-}
-
+mod executor;
+#[cfg(test)]
+use executor::ensure_supported_narrowing;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -677,7 +455,7 @@ mod tests {
         );
     }
 
-    // ---- pure translation units (prompt_of / task_reply / end_cause_of) ----
+    // ---- pure translation units (task_reply / end_cause_of) ----
 
     /// A text agent message for the A2A wire shape (helper for task fixtures).
     fn a2a_msg(text: &str) -> A2aMessage {
@@ -721,23 +499,6 @@ mod tests {
                 .collect(),
             metadata: None,
         }
-    }
-
-    #[test]
-    fn prompt_of_joins_inputs_with_newlines_and_drops_empty_text() {
-        // Multi-Step input: the non-empty texts are joined by "\n"; a message whose
-        // text is empty contributes nothing (not a blank line).
-        let input = vec![
-            Message::text(MessageId("u0".into()), Role::User, "first"),
-            Message::text(MessageId("u1".into()), Role::User, ""),
-            Message::text(MessageId("u2".into()), Role::Assistant, "second"),
-        ];
-        assert_eq!(prompt_of(&input), "first\nsecond");
-    }
-
-    #[test]
-    fn prompt_of_empty_input_is_the_empty_prompt() {
-        assert_eq!(prompt_of(&[]), "");
     }
 
     #[test]
@@ -1047,6 +808,67 @@ mod tests {
         assert!(
             body.contains(r#""agentId":null"#),
             "agentId is null: {body}"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a2a_projects_normalized_context_but_commits_only_durable_input() {
+        // Cause/effect graph: C1 frozen instructions, C2 request-only Session
+        // context, and C3 durable User input. Effects: E1 the wire prompt orders
+        // C1 then C2 then C3; E2 Thread commits contain C3 and the remote reply
+        // but never C2. Rule N1 C1+C2+C3 -> E1+E2. This is the A2A row of the
+        // Native/ACP/A2A normalized-input equivalence table.
+        let (backend, cap) = serve_capturing().await;
+        let mut activation = activation(&backend);
+        activation.snapshot.resolved_spec.instructions = "follow frozen policy".into();
+        let request_context = Message::text(
+            MessageId("session-context:resource-r2".into()),
+            Role::System,
+            "use resource revision two",
+        );
+        let rec = Arc::new(Rec::default());
+        let mut context = RuntimeRunContext::new().with_commit(rec.clone());
+        context.request_context.push(Message::text(
+            MessageId("session-baseline:historical".into()),
+            Role::System,
+            "obsolete resource revision",
+        ));
+        context.request_context.push(request_context);
+
+        A2aRunExecutor::over_http()
+            .execute(activation, context)
+            .await
+            .expect("normalized A2A execution");
+
+        let body = cap
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("wire request")
+            .1
+            .clone();
+        let policy = body.find("follow frozen policy").expect("C1/E1");
+        let resource = body.find("use resource revision two").expect("C2/E1");
+        let input = body.find("go").expect("C3/E1");
+        assert!(policy < resource && resource < input, "N1/E1: {body}");
+        assert!(
+            !body.contains("obsolete resource revision"),
+            "N1/E1 legacy derived context reached A2A: {body}"
+        );
+        let committed = rec
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .flat_map(|commit| commit.messages.iter())
+            .map(Message::text_content)
+            .collect::<Vec<_>>();
+        assert!(committed.iter().any(|text| text == "go"), "N1/E2");
+        assert!(
+            committed
+                .iter()
+                .all(|text| !text.contains("resource revision two")),
+            "N1/E2 request context leaked into Thread truth: {committed:?}"
         );
     }
 

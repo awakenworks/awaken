@@ -27,11 +27,11 @@ use awaken_runtime_contract::tool::{RawTool, ToolCall, invoke_raw_tool};
 use crate::agent::SUMMARIZE_PROMPT;
 use crate::backend::{CompactArtifact, CompactBackend, CompactRequest};
 use crate::config::CompactConfig;
-use crate::fold::{fold_point, prefetch_fold_point, token_fold_point};
+use crate::fold::{prefetch_fold_point, token_fold_point};
 
 /// A rough, deterministic token estimate (~4 chars/token) over a message slice.
 /// Cheap enough to run every `BeforeInference` without a real tokenizer; it drives
-/// the token-aware compaction trigger (`max_tokens` × `trigger_ratio`).
+/// the publication-frozen token-aware compaction trigger (`max_tokens`).
 fn estimate_tokens(messages: &[Message]) -> u64 {
     let chars: usize = messages.iter().map(|m| m.text_content().len()).sum();
     (chars / 4) as u64
@@ -135,22 +135,17 @@ struct CompactHook {
 
 impl CompactHook {
     fn fold_to(&self, conversation: &[Message]) -> Option<usize> {
-        // Token-aware when the model's window is known (fold at `trigger_ratio` of
-        // it), else the message-count `threshold`.
-        match self.config.max_tokens {
-            Some(max_tokens) => token_fold_point(
+        // Config publication already derived the one effective token window.
+        // Absent means there is no trigger basis; Runtime never invents a
+        // message-count fallback or a second ratio.
+        self.config.max_tokens.and_then(|max_tokens| {
+            token_fold_point(
                 estimate_tokens(conversation),
                 max_tokens,
-                self.config.trigger_ratio,
                 conversation.len(),
                 self.config.keep_last,
-            ),
-            None => fold_point(
-                conversation.len(),
-                self.config.threshold,
-                self.config.keep_last,
-            ),
-        }
+            )
+        })
     }
 
     fn seed(&self, conversation: &[Message], fold_to: usize) -> Vec<Message> {
@@ -207,12 +202,11 @@ impl CompactHook {
         let estimated_tokens = estimate_tokens(conversation);
         let Some(fold_to) = self.fold_to(conversation) else {
             if let Some((scope, backend)) = &self.backend
+                && let Some(max_tokens) = self.config.max_tokens
                 && let Some(prefetch_to) = prefetch_fold_point(
                     conversation.len(),
                     estimated_tokens,
-                    self.config.threshold,
-                    self.config.max_tokens,
-                    self.config.trigger_ratio,
+                    max_tokens,
                     self.config.prefetch_ratio,
                     self.config.keep_last,
                 )
@@ -446,8 +440,8 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn short_conversation_injects_nothing() {
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 40,
             keep_last: 8,
+            max_tokens: Some(1_000),
             ..Default::default()
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -464,8 +458,8 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         });
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_agent_tool(summarizer.clone());
@@ -483,16 +477,16 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn soft_threshold_prefetches_without_blocking_or_marking_a_fold() {
+    async fn soft_token_window_prefetches_without_blocking_or_marking_a_fold() {
         // Test design — Causes: conversation crosses only the soft prefetch
-        // threshold. Effects: one prefix is prefetched with no injected summary,
+        // token window. Effects: one prefix is prefetched with no injected summary,
         // synchronous summarize call, or marker. Constraints/invariants: prefetch
         // is non-blocking and not a fold authority. Decision rule P1: soft-only=>
         // one prefetch request and zero committed fold effects.
         let backend = fake_backend(None);
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 10,
             keep_last: 2,
+            max_tokens: Some(20),
             prefetch_ratio: 0.5,
             ..Default::default()
         })
@@ -511,7 +505,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn hard_fold_reuses_ready_prefix_and_bridges_every_uncovered_message() {
-        // Test design — Causes: the hard threshold is crossed with a ready cached
+        // Test design — Causes: the hard token window is crossed with a ready cached
         // summary covering five messages. Effects: cache is reused and every
         // uncovered pre-tail message is bridged before the marker. Constraints/
         // invariants: no second summary is generated and message order is exact.
@@ -523,8 +517,8 @@ mod tests {
             summary: "soft summary".into(),
         }));
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_backend("thread-a", backend.clone());
@@ -548,15 +542,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn hard_cache_miss_awaits_the_exact_stable_request() {
-        // Test design — Causes: hard threshold is crossed and no prefix is cached.
+        // Test design — Causes: hard token window is crossed and no prefix is cached.
         // Effects: the exact eight-message prefix is summarized, injected, and
         // marked. Constraints/invariants: one stable request owns the fold and
         // the retained tail is excluded. Decision rule H2: hard+miss=>one await,
         // one summary block, one run marker.
         let backend = fake_backend(None);
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_backend("thread-a", backend.clone());
@@ -597,8 +591,8 @@ mod tests {
         });
         // With no override, the built-in summarize prompt is used.
         let default_plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_agent_tool(recorder.clone());
@@ -610,8 +604,8 @@ mod tests {
         // With an override, the per-agent instructions replace it verbatim.
         let custom = "Keep only the API endpoints mentioned.";
         let tuned_plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             instructions: Some(custom.to_string()),
             ..Default::default()
         })
@@ -630,8 +624,8 @@ mod tests {
         // fold and is readable by the canonical helper. Decision rule M1:
         // successful fold=>three commands, marker=true, retained window=2.
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -652,13 +646,13 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_short_conversation_stages_no_marker() {
-        // Test design — Causes: conversation remains below the hard threshold.
+        // Test design — Causes: conversation remains below the hard token window.
         // Effects: only the no-fold evaluation is staged and no marker appears.
         // Constraints/invariants: evaluation alone cannot claim compaction.
         // Decision rule M2: short input=>zero summary/marker and one no-fold row.
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 40,
             keep_last: 8,
+            max_tokens: Some(1_000),
             ..Default::default()
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -678,8 +672,8 @@ mod tests {
         // emit-once per Run. Decision rule I1: absent marker=>fold once;
         // recorded marker=>no messages and no state.
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -707,18 +701,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn token_budget_triggers_the_fold_despite_a_huge_message_threshold() {
-        // Test design — Causes: estimated tokens exceed the configured budget
-        // while message count cannot trigger. Effects: the older slice folds and
-        // records a marker. Constraints/invariants: token and count triggers feed
-        // the same fold path. Decision rule T1: token-over+count-under=>one fold.
+    async fn frozen_token_window_triggers_the_fold() {
+        // Test design — Cause: estimated tokens reach the sole publication-frozen
+        // effective window. Effects: the older slice folds and records a marker.
+        // Decision rule T1: token-at-or-over-window=>one fold.
         let plugin = CompactPlugin::new(CompactConfig {
             agent_id: crate::COMPACT_AGENT_ID.to_string(),
             agent_instructions: None,
-            threshold: 9999, // message mode would never fire
             keep_last: 2,
-            max_tokens: Some(10), // budget = 0.8 * 10 = 8 tokens
-            trigger_ratio: 0.8,
+            max_tokens: Some(10),
             prefetch_ratio: 0.75,
             instructions: None,
         })
@@ -726,7 +717,7 @@ mod tests {
             seen_len: std::sync::Mutex::new(0),
         }));
         let hook = &plugin.resolve().phase_hooks[0];
-        // 10 short messages (~15 est. tokens) exceed the 8-token budget.
+        // 10 short messages exceed the 10-token effective window.
         let reaction = hook.on_phase(&phase_ctx(), &convo(10), &Store::new()).await;
         assert_eq!(
             injected(&reaction).len(),
@@ -738,17 +729,15 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_wide_token_window_does_not_fold_a_small_conversation() {
-        // Test design — Causes: both token usage and message count remain below
-        // their thresholds. Effects: no summary and no marker are staged.
+        // Test design — Cause: token usage remains below the frozen window.
+        // Effects: no summary and no marker are staged.
         // Constraints/invariants: configured capacity is not treated as usage.
         // Decision rule T2: token-under+count-under=>no fold effects.
         let plugin = CompactPlugin::new(CompactConfig {
             agent_id: crate::COMPACT_AGENT_ID.to_string(),
             agent_instructions: None,
-            threshold: 9999,
             keep_last: 2,
-            max_tokens: Some(1_000_000), // budget far beyond a tiny conversation
-            trigger_ratio: 0.8,
+            max_tokens: Some(1_000_000),
             prefetch_ratio: 0.75,
             instructions: None,
         })
@@ -778,8 +767,8 @@ mod tests {
         // No Agent-backed tool wired: even a long conversation folds nothing. The hook
         // still records the "evaluated, did not fold" entry, but stages no marker.
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 4,
             keep_last: 2,
+            max_tokens: Some(1),
             ..Default::default()
         });
         let hook = &plugin.resolve().phase_hooks[0];
@@ -844,8 +833,8 @@ mod tests {
             Arc::new(ErrSummarizer),
         ] {
             let plugin = CompactPlugin::new(CompactConfig {
-                threshold: 4,
                 keep_last: 2,
+                max_tokens: Some(1),
                 ..Default::default()
             })
             .with_agent_tool(runner);
@@ -862,16 +851,16 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_no_fold_step_gates_a_later_grown_conversation() {
-        // Test design — Causes: a Run first evaluates below threshold, persists
-        // that decision, then its conversation grows past threshold. Effects:
+        // Test design — Causes: a Run first evaluates below its frozen window,
+        // persists that decision, then its conversation grows past it. Effects:
         // the later call remains inert. Constraints/invariants: evaluation is
         // emit-once per Run, whether it folded or not. Decision rule G1:
         // recorded no-fold+later growth=>no late fold.
         // The None branch records an empty ContextMessages entry so a run that once
         // decided not to fold does not fold late when the conversation later grows.
         let plugin = CompactPlugin::new(CompactConfig {
-            threshold: 40,
             keep_last: 8,
+            max_tokens: Some(100),
             ..Default::default()
         })
         .with_agent_tool(Arc::new(FixedSummarizer {
@@ -887,7 +876,7 @@ mod tests {
         for command in &first.state {
             state.apply(command);
         }
-        // Step 2: the conversation has grown past threshold, but the run already
+        // Step 2: the conversation has grown past the frozen window, but the run already
         // evaluated compaction → it must not fold late (emit-once per run).
         let second = hook.on_phase(&phase_ctx(), &convo(100), &state).await;
         assert!(second.state.is_empty(), "no late fold once evaluated");

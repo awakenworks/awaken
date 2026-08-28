@@ -100,49 +100,6 @@ fn contains_id(list: &Value, key: &str, id: &str) -> bool {
         .is_some_and(|a| a.iter().any(|v| v == id))
 }
 
-fn baseline_with_unavailable_publication() -> awaken_session_contract::SessionBaseline {
-    let holder = awaken_runtime_contract::PlaintextHolder::new(
-        awaken_runtime_contract::PlaintextBoundary::Worker,
-        "test.worker",
-    );
-    awaken_session_contract::SessionBaseline::compile(
-        awaken_session_contract::SessionBaselineInputs {
-            environment: awaken_session_contract::EnvironmentSnapshot {
-                environment_id: "env".into(),
-                revision: awaken_session_contract::EnvironmentRevision(1),
-                self_hosted: false,
-                config_fingerprint: awaken_session_contract::EnvironmentFingerprint(
-                    "env-fingerprint".into(),
-                ),
-                sandbox: Default::default(),
-                sandbox_provisioning: Default::default(),
-                idle_retention: Default::default(),
-                packages: Default::default(),
-                prepared_image: None,
-                network: awaken_session_contract::SessionNetworkPolicy::Unrestricted,
-                credential_realization: awaken_runtime_contract::CredentialRealizationProfile {
-                    inference_holder: holder.clone(),
-                    mcp_holder: holder.clone(),
-                    resource_holder: holder,
-                },
-            },
-            runtime_placement: awaken_session_contract::SessionRuntimePlacement::Worker,
-            mcp_authoring: Default::default(),
-            agent_id: "missing-monitor-agent".into(),
-            agent_revision: Some(7),
-            model_override: None,
-            model: "model".into(),
-            runtime: None,
-            delegate_ids: Vec::new(),
-            toolsets: Vec::new(),
-            mounts: Vec::new(),
-            env: Vec::new(),
-            prompts: Vec::new(),
-            transcript_prefix: None,
-        },
-    )
-}
-
 #[tokio::test(flavor = "multi_thread")]
 async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
     // Cause/effect decision table: C1 durable queue configured, C2 run lease
@@ -289,8 +246,7 @@ async fn durable_operational_verbs_drive_the_dispatch_lifecycle() {
 #[tokio::test]
 async fn monitoring_reads_committed_dispatches_without_materializing_a_session() {
     /* Cause/effect decision table. Causes: C1 one durable Dispatch store is
-     * configured; C2 the Thread has a frozen Agent revision whose publication is
-     * unavailable; C3 queue rows belong to the requested or another Thread; C4
+     * configured; C2 the Thread has no materialized Runtime projection; C3 queue rows belong to the requested or another Thread; C4
      * requested rows are DeadLetter, Superseded, or Pending. Effects: E1 all
      * three monitoring GETs read committed queue truth without SessionCtx; E2
      * each response excludes the other Thread; E3 each specialized projection
@@ -305,13 +261,6 @@ async fn monitoring_reads_committed_dispatches_without_materializing_a_session()
     ));
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(any));
     let thread = "cold-monitor";
-    awaken_session_contract::SessionRuntime::install_session_baseline(
-        &awaken_runtime_host::ManagedHost::new(host.clone()),
-        thread,
-        &baseline_with_unavailable_publication(),
-    )
-    .expect("install frozen baseline without its publication");
-
     mem.enqueue(RunDispatch::new(activation("run-dead", thread)))
         .await
         .unwrap();

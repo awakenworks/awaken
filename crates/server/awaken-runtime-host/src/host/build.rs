@@ -812,35 +812,12 @@ impl SharedHost {
         self.capture_decision.level
     }
 
-    /// Enable context compaction. Once a Run's conversation exceeds `threshold`
-    /// messages, the `compact` plugin's `BeforeInference` hook summarizes everything
-    /// but the last `keep_last` messages (through a `compactor` sub-agent) and injects
-    /// the summary as request-only context and then activates a matching Run-scoped
-    /// window so those covered raw Steps drop from the model view. Non-destructive:
-    /// committed truth is never rewritten (G13). The bounds are also exposed as the
-    /// `compact` config section, so a per-run `plugin_config` can override them.
-    pub fn with_compaction(self, threshold: usize, keep_last: usize) -> Self {
-        self.enable_compaction(CompactConfig {
-            threshold,
-            keep_last,
-            ..CompactConfig::default()
-        })
-    }
-
-    /// Enable **token-aware** context compaction: fold once the estimated context
-    /// reaches `trigger_ratio` of the model's `max_tokens` window (the "auto-compact
-    /// at N% of the window" behavior), keeping the last `keep_last` messages. This
-    /// is how compaction becomes aware of the model's max token instead of a bare
-    /// message count. The request window activates only after a summary succeeds.
-    pub fn with_compaction_tokens(
-        self,
-        max_tokens: u32,
-        trigger_ratio: f64,
-        keep_last: usize,
-    ) -> Self {
+    /// Install the already-derived effective compaction window used by embedded
+    /// test/development Hosts. Production obtains the same value from Config
+    /// publication; this seam must not derive a ratio or message-count fallback.
+    pub fn with_compaction_tokens(self, max_tokens: u32, keep_last: usize) -> Self {
         self.enable_compaction(CompactConfig {
             max_tokens: Some(max_tokens),
-            trigger_ratio,
             keep_last,
             ..CompactConfig::default()
         })

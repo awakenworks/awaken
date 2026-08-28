@@ -9,6 +9,7 @@ use awaken_tool_pattern::tool_id_match;
 use crate::config::{AgentConfig, AgentKind};
 
 mod agent_bindings;
+mod executable_projection;
 mod fingerprint;
 mod processing_geography;
 mod tool_presentation;
@@ -390,9 +391,13 @@ fn compile_with_models(
     }
 
     // Compile authoring integrations into the typed runtime contract. Empty
-    // bindings are explicit capability absence.
+    // bindings are explicit capability absence. Only executable plugin sections
+    // enter the snapshot/content address; inactive authoring residue remains in
+    // AgentConfig for lossless editing but cannot perturb runtime identity.
+    let mut executable_config = config.clone();
+    executable_config.plugin_config = executable_projection::plugin_config(config);
     let fingerprint = fingerprint_of(
-        config,
+        &executable_config,
         &descriptors,
         &metadata,
         &model,
@@ -407,7 +412,7 @@ fn compile_with_models(
         .delegation_limits(config.delegation_limits)
         .tools(descriptors)
         .plugins(config.plugin_ids.clone())
-        .plugin_config(config.plugin_config.clone())
+        .plugin_config(executable_config.plugin_config)
         .agent_bindings(bindings)
         .inference_options(config.inference.clone())
         .context_policy(config.context_policy.clone())
@@ -1247,6 +1252,11 @@ mod tests {
 
     #[test]
     fn compile_carries_plugin_ids_and_config_sections() {
+        // Cause/effect table: C1 section id is selected -> E1 it enters the
+        // executable snapshot/fingerprint; C2 section is inactive -> E2 it is
+        // retained only in AgentConfig and cannot change the snapshot or
+        // fingerprint; C3 active section value changes -> E3 fingerprint moves;
+        // C4 backend-owned ACP section is active only for an ACP backend.
         let mut cfg = config(&["echo"]);
         cfg.plugin_ids = vec!["state_machine".to_string()];
         cfg.plugin_config.insert(
@@ -1260,15 +1270,56 @@ mod tests {
             spec.plugin_config.get("state_machine"),
             Some(&serde_json::json!({"machines": []}))
         );
-        // The sections are part of the fingerprinted config surface.
-        let mut other = config(&["echo"]);
+        let mut inactive = cfg.clone();
+        inactive.plugin_config.insert(
+            "unused".to_string(),
+            serde_json::json!({"secret-free-residue": "different"}),
+        );
+        let inactive_snapshot = compile(&inactive, &[tool("echo")]).unwrap();
+        assert_eq!(inactive_snapshot, snapshot, "C2/E2");
+        assert!(
+            !inactive_snapshot
+                .resolved_spec
+                .plugin_config
+                .contains_key("unused"),
+            "C2/E2"
+        );
+        let mut native_acp_residue = cfg.clone();
+        native_acp_residue
+            .plugin_config
+            .insert("acp".into(), serde_json::json!({"compact_window": 64}));
+        assert_eq!(
+            compile(&native_acp_residue, &[tool("echo")]).unwrap(),
+            snapshot,
+            "C4 native publication ignores ACP-only residue"
+        );
+        let mut acp = native_acp_residue;
+        acp.model_binding = ModelSelection::pinned("p", "m", "acp:claude");
+        let acp_snapshot = compile(&acp, &[tool("echo")]).unwrap();
+        assert_eq!(
+            acp_snapshot.resolved_spec.plugin_config.get("acp"),
+            Some(&serde_json::json!({"compact_window": 64})),
+            "C4 ACP publication retains its backend-owned section"
+        );
+        let mut acp_changed = acp;
+        acp_changed
+            .plugin_config
+            .insert("acp".into(), serde_json::json!({"compact_window": 65}));
+        assert_ne!(
+            acp_snapshot.fingerprint,
+            compile(&acp_changed, &[tool("echo")]).unwrap().fingerprint,
+            "C4 executable ACP config changes its fingerprint"
+        );
+
+        let mut other = cfg;
         other.plugin_config.insert(
             "state_machine".to_string(),
             serde_json::json!({"machines": [{"name": "m"}]}),
         );
         assert_ne!(
             snapshot.fingerprint.0,
-            compile(&other, &[tool("echo")]).unwrap().fingerprint.0
+            compile(&other, &[tool("echo")]).unwrap().fingerprint.0,
+            "C3/E3"
         );
     }
 

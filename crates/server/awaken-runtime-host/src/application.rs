@@ -111,17 +111,17 @@ mod realization_renewal_tests {
 /// Mutating only Host state cannot affect an already-serialized activation.
 /// Wrapping the authoritative attempt router keeps one mechanism for every
 /// topology. The projection applies the complete Session tool replacement and
-/// deterministic baseline prompts without mutating the retained publication.
-/// Deterministic message ids make a retried uncommitted attempt
-/// byte-for-byte stable; committed history prevents later Runs from reinjecting
-/// the baseline.
-pub(crate) struct SessionPromptAttemptExecutor {
+/// request-only Session context without mutating the retained publication or
+/// the durable activation input. Deterministic message ids make a retried
+/// attempt byte-for-byte stable while each new attempt reads only the current
+/// Resource/MemoryStore/Skill projection.
+pub(crate) struct SessionContextAttemptExecutor {
     inner: Arc<dyn RunAttemptExecutor>,
     slots: crate::session_slot::SessionRuntimeSlots,
     session_id: String,
 }
 
-impl SessionPromptAttemptExecutor {
+impl SessionContextAttemptExecutor {
     pub(crate) fn new(
         inner: Arc<dyn RunAttemptExecutor>,
         slots: crate::session_slot::SessionRuntimeSlots,
@@ -137,6 +137,7 @@ impl SessionPromptAttemptExecutor {
     fn project(
         &self,
         mut activation: RunActivation,
+        context: &mut awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunActivation> {
         if let Some(result) = self
             .slots
@@ -157,47 +158,50 @@ impl SessionPromptAttemptExecutor {
         if prompts.is_empty() {
             return Ok(activation);
         }
-        let already_present = |prompt: &str| {
-            activation.input.iter().any(|message| {
-                message.role == Role::System
-                    && message.content.iter().any(|content| {
-                        matches!(
-                            content,
-                            awaken_agent_contract::agent::content::ContentBlock::Text { text }
-                                if text == prompt
-                        )
-                    })
-            })
-        };
-        let mut projected = prompts
+        let already_present = context
+            .request_context
             .iter()
-            .enumerate()
-            .filter(|(_, prompt)| !already_present(prompt))
-            .map(|(index, prompt)| {
-                Message::text(
-                    MessageId(format!(
-                        "session-baseline:{}:{index}",
-                        activation.thread_id.0
-                    )),
-                    Role::System,
-                    prompt.clone(),
-                )
+            .chain(&activation.input)
+            .filter(|message| message.role == Role::System)
+            .flat_map(|message| &message.content)
+            .filter_map(|content| match content {
+                awaken_agent_contract::agent::content::ContentBlock::Text { text } => {
+                    Some(text.clone())
+                }
+                _ => None,
             })
-            .collect::<Vec<_>>();
-        projected.append(&mut activation.input);
-        activation.input = projected;
+            .collect::<std::collections::BTreeSet<_>>();
+        context.request_context.extend(
+            prompts
+                .iter()
+                .filter(|prompt| !already_present.contains(prompt.as_str()))
+                .map(|prompt| {
+                    Message::text(
+                        MessageId(format!(
+                            "session-context:{}",
+                            awaken_session_contract::stable_fingerprint(&(
+                                self.session_id.as_str(),
+                                prompt.as_str(),
+                            ))
+                        )),
+                        Role::System,
+                        prompt.clone(),
+                    )
+                }),
+        );
         Ok(activation)
     }
 }
 
 #[async_trait::async_trait]
-impl awaken_runtime_contract::execution::RunExecutor for SessionPromptAttemptExecutor {
+impl awaken_runtime_contract::execution::RunExecutor for SessionContextAttemptExecutor {
     async fn execute(
         &self,
         activation: RunActivation,
-        context: awaken_runtime_contract::RuntimeRunContext,
+        mut context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        self.inner.execute(self.project(activation)?, context).await
+        let activation = self.project(activation, &mut context)?;
+        self.inner.execute(activation, context).await
     }
 
     fn capabilities(&self) -> ExecutorCapabilities {
@@ -206,16 +210,15 @@ impl awaken_runtime_contract::execution::RunExecutor for SessionPromptAttemptExe
 }
 
 #[async_trait::async_trait]
-impl RunAttemptExecutor for SessionPromptAttemptExecutor {
+impl RunAttemptExecutor for SessionContextAttemptExecutor {
     async fn resume(
         &self,
         activation: RunActivation,
         command: awaken_runtime_contract::resume::ResumeCommand,
-        context: awaken_runtime_contract::RuntimeRunContext,
+        mut context: awaken_runtime_contract::RuntimeRunContext,
     ) -> awaken_runtime_contract::execution::Result<RunState> {
-        self.inner
-            .resume(self.project(activation)?, command, context)
-            .await
+        let activation = self.project(activation, &mut context)?;
+        self.inner.resume(activation, command, context).await
     }
 
     async fn cancel(
@@ -356,19 +359,19 @@ mod acp_context_tests {
         )
     }
 
-    /// Session prompt FMECA cause/effect graph:
-    /// C1=frozen prompts exist, C2=the durable User input was committed before
-    /// the Worker claim, C3=the exact deterministic prompt is already present.
-    /// E1=prepend the prompt exactly once, E2=leave input byte-stable.
-    /// Decision rules: C1 C2 !C3 -> E1; C1 * C3 -> E2; !C1 * * -> E2.
-    /// Runtime's committed-id filter, rather than transcript emptiness, owns
-    /// replay/later-Run de-duplication; a committed User Message is not proof
-    /// that the frozen System prompt has ever reached inference.
+    /// Session context FMECA cause/effect graph: C1=frozen prompts exist,
+    /// C2=durable User input exists, C3=the exact prompt is already in this
+    /// attempt context. Effects: E1=append one request-only System message;
+    /// E2=leave activation input byte-stable; E3=do not duplicate a replay.
+    /// Rules: C1+C2+!C3 -> E1+E2; C1+*+C3 -> E2+E3; !C1 -> E2.
     #[test]
-    fn session_prompt_projection_survives_precommitted_user_input_without_duplication() {
+    fn session_context_is_request_only_and_attempt_idempotent() {
         let slots = crate::session_slot::SessionRuntimeSlots::default();
-        let executor =
-            SessionPromptAttemptExecutor::new(Arc::new(UnusedExecutor), slots.clone(), "session-1");
+        let executor = SessionContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            slots.clone(),
+            "session-1",
+        );
         // Construction happens before the claim-fenced frozen projection is
         // accepted; realization installs the one authoritative slot later.
         slots.update("session-1", |slot| {
@@ -377,40 +380,132 @@ mod acp_context_tests {
                 agent_id: "agent".into(),
                 agent_revision: None,
                 model_override: None,
+                system_prompt: awaken_session_contract::SessionSystemPromptSelection::Inherit,
                 mounts: Vec::new(),
                 env: Vec::new(),
                 prompts: vec!["frozen session prompt".into()],
             });
         });
-        let projected = executor.project(activation("genai")).unwrap();
-        assert_eq!(projected.input.len(), 2, "C1+C2+!C3 -> E1");
-        assert_eq!(projected.input[0].role, Role::System, "E1");
+        let durable = activation("genai");
+        let mut context = awaken_runtime_contract::RuntimeRunContext::default();
+        let projected = executor.project(durable.clone(), &mut context).unwrap();
+        assert_eq!(projected.input, durable.input, "E2");
+        assert_eq!(context.request_context.len(), 1, "C1+C2+!C3 -> E1");
+        assert_eq!(context.request_context[0].role, Role::System, "E1");
         assert_eq!(
-            projected.input[0].text_content(),
+            context.request_context[0].text_content(),
             "frozen session prompt",
             "E1"
         );
-        let replayed = executor.project(projected).unwrap();
-        assert_eq!(
-            replayed
-                .input
-                .iter()
-                .filter(|message| message.role == Role::System)
-                .count(),
-            1,
-            "C1+C3 -> E2"
-        );
+        let replayed = executor.project(projected, &mut context).unwrap();
+        assert_eq!(context.request_context.len(), 1, "C1+C3 -> E3");
+        assert_eq!(replayed.input, durable.input, "E2");
 
-        let empty = SessionPromptAttemptExecutor::new(
+        let empty = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             crate::session_slot::SessionRuntimeSlots::default(),
             "session-1",
         );
+        let mut empty_context = awaken_runtime_contract::RuntimeRunContext::default();
+        let unchanged = activation("genai");
         assert_eq!(
-            empty.project(activation("genai")).unwrap().input.len(),
-            1,
+            empty
+                .project(unchanged.clone(), &mut empty_context)
+                .unwrap(),
+            unchanged,
             "!C1 -> E2"
         );
+        assert!(empty_context.request_context.is_empty(), "!C1");
+    }
+
+    #[test]
+    fn resource_revision_replacement_exposes_only_current_context() {
+        // Cause/effect table: C1 revision R1 owns prompt P1 -> attempt A1 sees
+        // only P1; C2 the same slot atomically advances to R2/P2 -> fresh A2
+        // sees only P2; C3 A1 already captured P1 -> it remains immutable but
+        // cannot contaminate A2. Every activation input stays byte-identical.
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        let executor = SessionContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            slots.clone(),
+            "session-1",
+        );
+        slots.update("session-1", |slot| {
+            slot.resources.prompts = vec!["resource revision one".into()]
+        });
+        let durable = activation("genai");
+        let mut first = awaken_runtime_contract::RuntimeRunContext::default();
+        let projected = executor.project(durable.clone(), &mut first).unwrap();
+        assert_eq!(projected.input, durable.input, "C1");
+        assert_eq!(
+            first.request_context[0].text_content(),
+            "resource revision one",
+            "C1"
+        );
+
+        slots.update("session-1", |slot| {
+            slot.resources.prompts = vec!["resource revision two".into()]
+        });
+        let mut second = awaken_runtime_contract::RuntimeRunContext::default();
+        let projected = executor.project(durable.clone(), &mut second).unwrap();
+        assert_eq!(projected.input, durable.input, "C2");
+        assert_eq!(second.request_context.len(), 1, "C2");
+        assert_eq!(
+            second.request_context[0].text_content(),
+            "resource revision two",
+            "C2"
+        );
+        assert_eq!(
+            first.request_context[0].text_content(),
+            "resource revision one",
+            "C3"
+        );
+    }
+
+    #[test]
+    fn concurrent_attempt_waits_for_one_complete_resource_context_revision() {
+        // Concurrency decision table: C1=R1 is resident; C2=the sole slot lock
+        // is held while replacing the complete prompt vector with R2; C3=a new
+        // attempt reads during C2. Effect E1=C3 waits and observes all of R2,
+        // never a mixed R1/R2 vector. The barrier makes the interleaving exact:
+        // the reader starts only after the writer owns the publication lock.
+        let slots = crate::session_slot::SessionRuntimeSlots::default();
+        slots.update("session-1", |slot| {
+            slot.resources.prompts = vec!["r1-a".into(), "r1-b".into()]
+        });
+        let executor = Arc::new(SessionContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            slots.clone(),
+            "session-1",
+        ));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        let (writer_locked_tx, writer_locked_rx) = std::sync::mpsc::channel();
+        let writer_slots = slots.clone();
+        let writer_release = release.clone();
+        let writer = std::thread::spawn(move || {
+            writer_slots.update("session-1", |slot| {
+                writer_locked_tx.send(()).unwrap();
+                writer_release.wait();
+                slot.resources.prompts = vec!["r2-a".into(), "r2-b".into()];
+            });
+        });
+        writer_locked_rx.recv().unwrap();
+
+        let (reader_started_tx, reader_started_rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            reader_started_tx.send(()).unwrap();
+            let mut context = awaken_runtime_contract::RuntimeRunContext::default();
+            executor.project(activation("genai"), &mut context).unwrap();
+            context
+                .request_context
+                .iter()
+                .map(Message::text_content)
+                .collect::<Vec<_>>()
+        });
+        reader_started_rx.recv().unwrap();
+        release.wait();
+        writer.join().unwrap();
+        assert_eq!(reader.join().unwrap(), ["r2-a", "r2-b"], "C1+C2+C3 -> E1");
     }
 
     #[test]
@@ -434,8 +529,11 @@ mod acp_context_tests {
         // | R3 | yes | enabled MCP + client | yes | E4 |
         // | R4 | yes | absent | no | unchanged |
         let slots = crate::session_slot::SessionRuntimeSlots::default();
-        let executor =
-            SessionPromptAttemptExecutor::new(Arc::new(UnusedExecutor), slots.clone(), "session-1");
+        let executor = SessionContextAttemptExecutor::new(
+            Arc::new(UnusedExecutor),
+            slots.clone(),
+            "session-1",
+        );
         let publication = activation("genai");
         let retained = publication.snapshot.clone();
         let flow_policy = |enabled| awaken_session_contract::SessionToolConfiguration {
@@ -460,7 +558,10 @@ mod acp_context_tests {
         };
         slots.update("session-1", |slot| slot.tools = Some(flow_policy(true)));
 
-        let projected = executor.project(publication).expect("R1 projection");
+        let mut context = awaken_runtime_contract::RuntimeRunContext::default();
+        let projected = executor
+            .project(publication, &mut context)
+            .expect("R1 projection");
         assert_eq!(
             projected
                 .snapshot
@@ -493,12 +594,14 @@ mod acp_context_tests {
             "R1/E2"
         );
 
-        let replayed = executor.project(projected.clone()).expect("R3 replay");
+        let replayed = executor
+            .project(projected.clone(), &mut context)
+            .expect("R3 replay");
         assert_eq!(replayed.snapshot, projected.snapshot, "R3/E4");
 
         slots.update("session-1", |slot| slot.tools = Some(flow_policy(false)));
         let disabled = executor
-            .project(activation("genai"))
+            .project(activation("genai"), &mut context)
             .expect("R2 projection");
         assert_eq!(
             disabled
@@ -512,14 +615,17 @@ mod acp_context_tests {
             "R2/E3"
         );
 
-        let absent = SessionPromptAttemptExecutor::new(
+        let absent = SessionContextAttemptExecutor::new(
             Arc::new(UnusedExecutor),
             crate::session_slot::SessionRuntimeSlots::default(),
             "session-1",
         );
         let unchanged = activation("genai");
+        let mut absent_context = awaken_runtime_contract::RuntimeRunContext::default();
         assert_eq!(
-            absent.project(unchanged.clone()).expect("R4 projection"),
+            absent
+                .project(unchanged.clone(), &mut absent_context)
+                .expect("R4 projection"),
             unchanged,
             "R4"
         );
@@ -1090,6 +1196,7 @@ impl crate::SharedHost {
         projection: awaken_session_contract::FrozenSessionProjection,
         claim: Option<&RunClaim>,
         synchronize_resources: bool,
+        realization_lease: Option<awaken_session_contract::SessionRealizationLease>,
     ) -> Result<(), crate::HostError> {
         if projection.baseline.fingerprint.0.trim().is_empty() {
             return Err(crate::HostError::internal(
@@ -1106,6 +1213,68 @@ impl crate::SharedHost {
         let expected_environment_binding = projection.environment.binding().map(str::to_owned);
         let baseline = baseline_projection(&projection.baseline);
         let init = projection.session_init();
+        match awaken_session_contract::frozen_agent_publication_decision(
+            &projection.baseline,
+            projection.agent_publication.as_ref(),
+        ) {
+            awaken_session_contract::FrozenAgentPublicationDecision::Unpinned
+            | awaken_session_contract::FrozenAgentPublicationDecision::OptionalMissing
+            | awaken_session_contract::FrozenAgentPublicationDecision::Exact => {}
+            awaken_session_contract::FrozenAgentPublicationDecision::MissingRequired => {
+                return Err(crate::HostError::internal(
+                    "Worker Session realization requires its exact frozen Agent publication",
+                ));
+            }
+            awaken_session_contract::FrozenAgentPublicationDecision::Mismatch => {
+                return Err(crate::HostError::internal(
+                    "Session Agent publication does not match its frozen identity, revision, or runtime",
+                ));
+            }
+        }
+        if let Some(asserted) = &projection.agent_publication
+            && self
+                .session_slots
+                .read(thread, |slot| {
+                    slot.published_snapshot
+                        .as_ref()
+                        .is_some_and(|existing| existing != asserted)
+                })
+                .unwrap_or(false)
+        {
+            return Err(crate::HostError::internal(
+                "Session realization cannot replace its immutable Agent publication",
+            ));
+        }
+        if self
+            .session_slots
+            .read(thread, |slot| {
+                matches!(
+                    (&slot.expected_environment_binding, &expected_environment_binding),
+                    (Some(existing), Some(asserted)) if existing != asserted
+                )
+            })
+            .unwrap_or(false)
+        {
+            return Err(crate::HostError::internal(format!(
+                "Session {thread} is already bound to a different durable environment"
+            )));
+        }
+        let environment_projection = crate::provisioning::project_environment(&init.environment);
+        if self
+            .session_slots
+            .read(thread, |slot| {
+                slot.environment_projection
+                    .as_ref()
+                    .is_some_and(|existing| {
+                        existing.fingerprint != environment_projection.fingerprint
+                    })
+            })
+            .unwrap_or(false)
+        {
+            return Err(crate::HostError::internal(format!(
+                "thread {thread} is already bound to a different frozen Environment"
+            )));
+        }
 
         if let Some(existing) = self
             .session_slots
@@ -1117,10 +1286,6 @@ impl crate::SharedHost {
                     "thread {thread} is already bound to a different frozen Session baseline"
                 )));
             }
-            self.install_expected_environment_binding(
-                thread,
-                expected_environment_binding.clone(),
-            )?;
             // The baseline is immutable, but a remote Resource verification is
             // authorized by the current dispatch claim. Re-stage the exact
             // manifest on every claimed replay so Repository checks never retain
@@ -1136,11 +1301,21 @@ impl crate::SharedHost {
                     .await
                     .map_err(|error| crate::HostError::internal(error.to_string()))?;
             }
+            self.install_expected_environment_binding(
+                thread,
+                expected_environment_binding.clone(),
+            )?;
             self.project_session_init(thread, &init)?;
             self.install_session_request_context(thread, projection.request_context.clone());
             self.session_slots.update(thread, |slot| {
                 slot.has_mcp_projection = has_mcp_projection;
+                if let Some(publication) = &projection.agent_publication {
+                    slot.published_snapshot = Some(publication.clone());
+                }
             });
+            if let Some(lease) = realization_lease {
+                self.install_session_realization_lease(thread, lease);
+            }
             return Ok(());
         }
 
@@ -1158,9 +1333,6 @@ impl crate::SharedHost {
         }
 
         validate_baseline_projection(&baseline, &built_in_mounts)?;
-        self.install_expected_environment_binding(thread, expected_environment_binding)?;
-        self.project_session_init(thread, &init)?;
-        self.install_session_request_context(thread, projection.request_context.clone());
         if !synchronize_resources && projection.resource_revision > 0 {
             return Err(crate::HostError::internal(format!(
                 "thread {thread} cannot cold-materialize frozen Session Resources during lease-only renewal"
@@ -1176,54 +1348,19 @@ impl crate::SharedHost {
                 .await
                 .map_err(|error| crate::HostError::internal(error.to_string()))?;
         }
+        self.install_expected_environment_binding(thread, expected_environment_binding)?;
+        self.project_session_init(thread, &init)?;
+        self.install_session_request_context(thread, projection.request_context.clone());
         self.session_slots.update(thread, |slot| {
             slot.baseline = Some(baseline);
             slot.has_mcp_projection = has_mcp_projection;
-        });
-        Ok(())
-    }
-
-    /// Install the immutable baseline for the co-located realization path.
-    /// Claimed Workers use `install_frozen_session_projection`; local Native
-    /// execution reaches this method through the protocol-neutral SessionRuntime
-    /// port before `prepare_session`, so both paths expose identical mounts,
-    /// environment values, and prompts.
-    pub(crate) fn install_frozen_session_baseline(
-        &self,
-        thread: &str,
-        baseline: &awaken_session_contract::SessionBaseline,
-    ) -> Result<(), crate::HostError> {
-        if baseline.fingerprint.0.trim().is_empty() {
-            return Err(crate::HostError::internal(
-                "frozen Session baseline fingerprint must not be empty",
-            ));
-        }
-        let baseline = baseline_projection(baseline);
-        let current = self.session_slots.read(thread, |slot| {
-            (
-                slot.baseline.clone(),
-                slot.environment.is_some(),
-                slot.resources.mounts.clone(),
-            )
-        });
-        let (existing, environment_realized, resource_mounts) =
-            current.unwrap_or_else(|| (None, false, Vec::new()));
-        if let Some(existing) = existing {
-            if existing.fingerprint != baseline.fingerprint {
-                return Err(crate::HostError::internal(format!(
-                    "thread {thread} is already bound to a different frozen Session baseline"
-                )));
+            if let Some(publication) = projection.agent_publication {
+                slot.published_snapshot = Some(publication);
             }
-            return Ok(());
+        });
+        if let Some(lease) = realization_lease {
+            self.install_session_realization_lease(thread, lease);
         }
-        if environment_realized {
-            return Err(crate::HostError::internal(format!(
-                "thread {thread} was realized before its frozen Session baseline"
-            )));
-        }
-        validate_baseline_projection(&baseline, &resource_mounts)?;
-        self.session_slots
-            .update(thread, |slot| slot.baseline = Some(baseline));
         Ok(())
     }
 
@@ -1325,6 +1462,7 @@ fn baseline_projection(
         agent_id: baseline.agent_id.clone(),
         agent_revision: baseline.agent_revision,
         model_override: baseline.model_override.clone(),
+        system_prompt: (*baseline.system_prompt).clone(),
         mounts: baseline.mounts.clone(),
         env: baseline.env.clone(),
         prompts: baseline.prompts.clone(),

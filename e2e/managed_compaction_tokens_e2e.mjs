@@ -1,11 +1,10 @@
 // Token-aware compaction end-to-end (deterministic model). Proves the new
-// `max_tokens` × `trigger_ratio` trigger fires through the *real server wire*
+// publication-frozen effective `max_tokens` trigger fires through the *real server wire*
 // (HTTP + official SDK + env config → token fold → compactor sub-run → event),
 // independent of a live LLM: the server runs in `compaction` mode with the
 // deterministic model but a *token* budget (AWAKEN_COMPACT_MAX_TOKENS), so a
-// couple of large turns cross 0.5 × 200 = 100 est. tokens and the older slice
-// folds — something the default message threshold (40) would never do this fast,
-// which is exactly what distinguishes token mode from message mode.
+// couple of large turns cross the 100-token effective window and the older slice
+// folds. There is no Runtime-owned ratio or message-count fallback.
 //
 // The live-LLM twin is `managed_compaction_real_e2e.mjs` (KIMI/Anthropic keys).
 //
@@ -26,8 +25,7 @@ async function allEvents(client, id) {
 
 async function main() {
   const { server, baseUrl } = spawnServer('compaction', PORT, {
-    AWAKEN_COMPACT_MAX_TOKENS: '200', // budget = 0.5 * 200 = 100 est. tokens
-    AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
+    AWAKEN_COMPACT_MAX_TOKENS: '100',
     AWAKEN_COMPACT_KEEP_LAST: '1',
   });
   try {
@@ -40,8 +38,7 @@ async function main() {
     });
 
     // Large turns (~200 est. tokens each) push the committed transcript past the
-    // 100-token budget within a couple of turns — far below the 40-message
-    // default threshold, so a fold here can only be token-triggered.
+    // 100-token window within a couple of turns, so a fold can only be token-triggered.
     const big = (n) => `Turn ${n}: ` + 'filler '.repeat(120);
     let compacted = false;
     let turns = 0;
@@ -79,7 +76,7 @@ async function main() {
     assert.equal(typeof ev.processed_at, 'string');
     pass('agent.thread_context_compacted has the SDK shape');
 
-    console.log('E2E PASS: token-aware compaction (fold at a fraction of max_tokens) via the server wire.');
+    console.log('E2E PASS: token-aware compaction at the frozen effective window via the server wire.');
   } finally {
     await stopServer(server);
   }

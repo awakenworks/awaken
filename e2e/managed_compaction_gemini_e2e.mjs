@@ -2,7 +2,7 @@
 // the official @anthropic-ai/sdk against awaken-server in `compaction` mode
 // backed by a REAL model (Gemini AI Studio via AWAKEN_MODEL_SOURCE=gemini), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
-// large turns crosses the trigger ratio and the compactor sub-agent — itself a
+// large turns crosses the frozen effective window and the compactor sub-agent — itself a
 // real model run — folds the older slice. Proves the token-aware trigger fires
 // against a live LLM with large real input/output and surfaces
 // `agent.thread_context_compacted` on the wire, then keeps replying afterward.
@@ -40,8 +40,7 @@ async function main() {
     GEMINI_API_KEY: KEY,
     GOOGLE_API_KEY: KEY,
     GEMINI_MODEL: process.env.GEMINI_MODEL ?? 'gemini-2.5-flash',
-    AWAKEN_COMPACT_MAX_TOKENS: '1200',
-    AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
+    AWAKEN_COMPACT_MAX_TOKENS: '600',
     AWAKEN_COMPACT_KEEP_LAST: '2',
   });
   try {
@@ -108,7 +107,7 @@ async function main() {
     assert.ok(after.length >= turns + 1, `session still replies after the fold (${after.length} agent.message)`);
     pass('the session keeps replying after compaction');
 
-    console.log('E2E PASS: real-Gemini token-aware compaction (fold at a fraction of max_tokens, live LLM).');
+    console.log('E2E PASS: real-Gemini token-aware compaction at the frozen effective window.');
     process.exitCode = 0;
   } catch (err) {
     console.error('E2E FAIL:', err);

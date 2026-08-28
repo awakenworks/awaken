@@ -225,7 +225,7 @@ pub async fn build_full_chain_router_with_deployment(
     )
 }
 
-/// A router with context compaction (the compaction e2e): a low threshold folds
+/// A router with context compaction (the compaction e2e): a low token window folds
 /// the older transcript into a summary after a few Runs. The deterministic
 /// model returns a fixed summary on the `compactor` sub-run and otherwise
 /// reports the compaction context it received, so an e2e can observe the folded
@@ -236,29 +236,21 @@ pub fn build_compaction_router() -> Router {
     // canonical Scenario platform so durable Session/resource identity is
     // reconstructed from the same storage root after restart.
     let host = resource_host(model, model_ref);
-    // Token-aware when the model's context window is configured
-    // (`AWAKEN_COMPACT_MAX_TOKENS`): fold at `AWAKEN_COMPACT_TRIGGER_RATIO` of it
-    // (default 0.8), keeping `AWAKEN_COMPACT_KEEP_LAST` (default 2) messages. This
-    // is the real-model path (a small window trips compaction on large input).
-    // Without it, the deterministic message-count trigger (fold after 2 messages).
+    // `AWAKEN_COMPACT_MAX_TOKENS` is an exact effective trigger override, matching
+    // the publication output rather than reopening a ratio decision in the Host.
+    // Otherwise derive the typed default (3/4 of the model window); the fully
+    // deterministic fixture uses a one-token window when it publishes no model
+    // capability. `AWAKEN_COMPACT_KEEP_LAST` defaults to 2 messages.
     let env_u = |k: &str| std::env::var(k).ok().and_then(|v| v.parse::<u32>().ok());
     // Harness-local window wiring: an explicit override (`AWAKEN_COMPACT_MAX_TOKENS`) wins,
     // else the model's published context window (`AWAKEN_MODEL_CONTEXT_WINDOW` — this harness's
     // projection of the catalog's `ModelSpec.context_window`). Production derives the effective
     // trigger at publish (config-service `apply_compaction`); this driver sets it directly.
-    let window =
-        env_u("AWAKEN_COMPACT_MAX_TOKENS").or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW"));
-    let host = match window {
-        Some(max_tokens) => {
-            let ratio = std::env::var("AWAKEN_COMPACT_TRIGGER_RATIO")
-                .ok()
-                .and_then(|v| v.parse::<f64>().ok())
-                .unwrap_or(0.8);
-            let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
-            host.map_host(|host| host.with_compaction_tokens(max_tokens, ratio, keep_last))
-        }
-        None => host.map_host(|host| host.with_compaction(2, 1)),
-    };
+    let window = env_u("AWAKEN_COMPACT_MAX_TOKENS")
+        .or_else(|| env_u("AWAKEN_MODEL_CONTEXT_WINDOW").map(|window| window / 4 * 3))
+        .unwrap_or(1);
+    let keep_last = env_u("AWAKEN_COMPACT_KEEP_LAST").unwrap_or(2) as usize;
+    let host = host.map_host(|host| host.with_compaction_tokens(window, keep_last));
     mount(host)
 }
 

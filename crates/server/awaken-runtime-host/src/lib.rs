@@ -499,21 +499,6 @@ impl ManagedHost {
         Ok(())
     }
 
-    async fn stage_effective_inputs(
-        &self,
-        thread: &str,
-        workspace: &str,
-        resource_revision: u64,
-        inputs: &awaken_session_contract::ResolvedSessionResources,
-        claim: Option<&awaken_run_ingress::RunClaim>,
-    ) -> Result<(), RunError> {
-        let compiled = self
-            .compile_effective_inputs(thread, workspace, inputs, claim)
-            .await?;
-        self.install_effective_inputs(thread, workspace, resource_revision, inputs, compiled)
-            .await
-    }
-
     /// Install one already-resolved Session resource manifest. This is shared by
     /// managed Session creation and cold durable workers; neither path reads Agent
     /// defaults or selects a newer mutable-resource configuration.
@@ -525,7 +510,6 @@ impl ManagedHost {
         resources: &awaken_session_contract::ResolvedSessionResources,
         claim: Option<&awaken_run_ingress::RunClaim>,
     ) -> Result<(), RunError> {
-        self.host.register_thread_workspace(thread, workspace);
         let desired = awaken_session_contract::SessionResourceManifest::at_revision(
             workspace,
             resource_revision,
@@ -546,11 +530,20 @@ impl ManagedHost {
             .load_pinned(workspace, resources.skills(), claim)
             .await
             .map_err(skill_store_run_error)?;
+        let compiled = self
+            .compile_effective_inputs(thread, workspace, resources, claim)
+            .await?;
+        // Publish only after every fallible Resource/Skill read has succeeded.
+        // The slot lock then exposes one complete logical Resource generation;
+        // failed compilation leaves no workspace, manifest, prompt, or binding
+        // residue that a later attempt could mistake for Session truth.
+        self.host.register_thread_workspace(thread, workspace);
+        self.install_effective_inputs(thread, workspace, desired.revision, resources, compiled)
+            .await?;
         self.host
             .session_slots
             .update(thread, |slot| slot.skills = Some(versions));
-        self.stage_effective_inputs(thread, workspace, desired.revision, resources, claim)
-            .await
+        Ok(())
     }
 
     async fn validate_thread_resource_bindings(&self, thread: &str) -> Result<(), RunError> {
@@ -852,22 +845,33 @@ impl ManagedHost {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ManagedHost {
-    fn install_session_baseline(
+    async fn install_session_projection(
         &self,
         thread: &str,
-        baseline: &awaken_session_contract::SessionBaseline,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
+        let realization_lease = mode.realization_lease().cloned();
         self.host
-            .install_frozen_session_baseline(thread, baseline)
-            .map_err(to_run_error)
-    }
-
-    fn install_session_request_context(
-        &self,
-        thread: &str,
-        messages: Vec<Message>,
-    ) -> Result<(), RunError> {
-        self.host.install_session_request_context(thread, messages);
+            .install_frozen_session_projection(
+                thread,
+                projection.clone(),
+                None,
+                true,
+                realization_lease,
+            )
+            .await
+            .map_err(to_run_error)?;
+        if mode.prepares_session() {
+            self.prepare_session(thread, projection.session_init())
+                .await?;
+        }
+        if mode.adopts_resident_environment()
+            && let Some(binding) = projection.environment.binding()
+        {
+            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+                .await?;
+        }
         Ok(())
     }
 
@@ -880,25 +884,6 @@ impl SessionRuntime for ManagedHost {
             .environment_binding_sink
             .write()
             .expect("environment binding sink lock poisoned") = Some(sink);
-    }
-
-    fn install_session_realization_lease(
-        &self,
-        session_id: &str,
-        lease: awaken_session_contract::SessionRealizationLease,
-    ) {
-        self.host
-            .install_session_realization_lease(session_id, lease);
-    }
-
-    fn install_expected_environment_binding(
-        &self,
-        session_id: &str,
-        binding: Option<String>,
-    ) -> Result<(), awaken_session_contract::RunError> {
-        self.host
-            .install_expected_environment_binding(session_id, binding)
-            .map_err(|error| awaken_session_contract::RunError::internal(error.to_string()))
     }
 
     async fn reserve_session_run(

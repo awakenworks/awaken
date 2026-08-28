@@ -900,18 +900,14 @@ pub(crate) mod resource_prompt_tests {
         // the fold point IS the trigger (headroom + ratio already baked in).
         let mut cfg = agent_config("a1");
         cfg.model_binding = pin();
-        cfg.plugin_config
-            .insert("compact".into(), serde_json::json!({ "keep_last": 4 }));
+        cfg.plugin_ids.push("compact".into());
         let out = resolve_config(&service, cfg).await;
         assert_eq!(out.plugin_config["compact"]["max_tokens"], 120_000);
-        assert_eq!(out.plugin_config["compact"]["trigger_ratio"], 1.0);
+        assert!(out.plugin_config["compact"].get("trigger_ratio").is_none());
 
         // ACP (acp section): the same effective window flows to the CLI's compact_window.
         let mut cfg_acp = agent_config("a-acp");
-        cfg_acp.model_binding = pin();
-        cfg_acp
-            .plugin_config
-            .insert("acp".into(), serde_json::json!({}));
+        cfg_acp.model_binding = ModelSelection::Pinned(ModelBinding::new("p", "m-x", "acp:claude"));
         let out_acp = resolve_config(&service, cfg_acp).await;
         assert_eq!(out_acp.plugin_config["acp"]["compact_window"], 120_000);
 
@@ -930,15 +926,19 @@ pub(crate) mod resource_prompt_tests {
         assert_eq!(out2.plugin_config["compact"]["max_tokens"], 90_000);
         assert_eq!(out2.plugin_config["acp"]["compact_window"], 90_000);
 
-        // An operator-pinned compact.max_tokens is never clobbered.
+        // The typed strategy is the only trigger authority. A legacy JSON
+        // trigger is overwritten at publication instead of creating a second
+        // executable decision path.
         let mut cfg3 = agent_config("a3");
         cfg3.model_binding = pin();
-        cfg3.plugin_config
-            .insert("compact".into(), serde_json::json!({ "max_tokens": 50 }));
-        assert_eq!(
-            resolve_config(&service, cfg3).await.plugin_config["compact"]["max_tokens"],
-            50
+        cfg3.plugin_ids.push("compact".into());
+        cfg3.plugin_config.insert(
+            "compact".into(),
+            serde_json::json!({ "max_tokens": 50, "threshold": 2 }),
         );
+        let out3 = resolve_config(&service, cfg3).await;
+        assert_eq!(out3.plugin_config["compact"]["max_tokens"], 120_000);
+        assert!(out3.plugin_config["compact"].get("threshold").is_none());
 
         // No compact/acp section → untouched (neither realization was opted into).
         let mut cfg4 = agent_config("a4");

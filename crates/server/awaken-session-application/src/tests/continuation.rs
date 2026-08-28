@@ -19,6 +19,15 @@ struct ContinuationRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for ContinuationRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn execute_terminal_cleanup(
         &self,
         command: awaken_session_contract::SessionCleanupCommand,

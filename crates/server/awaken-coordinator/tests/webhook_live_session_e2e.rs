@@ -111,7 +111,10 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
     // replay ownership remain identical to production.
     let delivery = webhooks::loopback_lifecycle_delivery(store, secrets, None);
     let host = Arc::new(SharedHost::new(Arc::new(DeadModel), "test"));
-    let managed = Arc::new(ManagedState::new(ManagedHost::new(host)).with_session_repo(sessions));
+    let managed = Arc::new(
+        ManagedState::new(ManagedHost::new(host).install_dispatch_session_runtime())
+            .with_session_repo(sessions),
+    );
     install_managed_lifecycle_delivery(&managed, Some(delivery), &service_lifecycle)
         .expect("L1 bind the sole lifecycle notifier before traffic");
     let engine = Arc::new(EnforceEngine::seeded());
@@ -140,8 +143,14 @@ async fn a_guarded_live_session_delivers_a_signed_scoped_webhook() {
         )))
         .unwrap();
     let resp = app.clone().oneshot(request).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK, "guarded create succeeds");
+    let status = resp.status();
     let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "guarded create succeeds: {}",
+        String::from_utf8_lossy(&body)
+    );
     let session: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let session_id = session["id"].as_str().unwrap().to_string();
 

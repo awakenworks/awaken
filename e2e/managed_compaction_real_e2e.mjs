@@ -2,7 +2,7 @@
 // Anthropic TS SDK against awaken-server in `compaction` mode backed by a
 // REAL Anthropic-compatible model (KIMI via AWAKEN_MODEL_SOURCE=http), with a
 // small *configured* context window (AWAKEN_COMPACT_MAX_TOKENS) so a handful of
-// large turns crosses the trigger ratio and the compactor sub-agent — itself a
+// large turns crosses the frozen effective window and the compactor sub-agent — itself a
 // real model run — folds the older slice. Proves the token-aware trigger fires
 // against a live LLM and surfaces `agent.thread_context_compacted` on the wire.
 //
@@ -31,8 +31,7 @@ async function main() {
   // estimated tokens, keeping the last 2 messages verbatim.
   const { server, baseUrl } = spawnServer('compaction', PORT, {
     AWAKEN_MODEL_SOURCE: 'http',
-    AWAKEN_COMPACT_MAX_TOKENS: '1000',
-    AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
+    AWAKEN_COMPACT_MAX_TOKENS: '500',
     AWAKEN_COMPACT_KEEP_LAST: '2',
   });
   try {
@@ -78,7 +77,7 @@ async function main() {
     assert.equal(typeof ev.processed_at, 'string');
     pass('agent.thread_context_compacted has the SDK shape (id + processed_at)');
 
-    console.log('E2E PASS: real-model token-aware compaction (fold at a fraction of max_tokens).');
+    console.log('E2E PASS: real-model token-aware compaction at the frozen effective window.');
   } finally {
     await stopServer(server);
   }

@@ -29,6 +29,20 @@ struct EndSessionRecorder {
 
 #[async_trait]
 impl SessionRuntime for EndSessionRecorder {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        if let Some(init) =
+            crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
+        {
+            self.prepare_session(thread, init).await?;
+        }
+        Ok(())
+    }
+
     async fn quiesce_terminal_delegations(
         &self,
         _thread: &str,

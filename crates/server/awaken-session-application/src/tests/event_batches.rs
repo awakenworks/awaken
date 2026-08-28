@@ -107,6 +107,15 @@ impl EventBatchRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for EventBatchRuntime {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        install_complete_test_projection(self, thread, projection, mode).await
+    }
+
     async fn prepare_session(
         &self,
         thread: &str,

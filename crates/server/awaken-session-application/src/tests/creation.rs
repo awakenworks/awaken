@@ -8,21 +8,23 @@ struct RecordingCreateRuntime {
 
 #[async_trait::async_trait]
 impl SessionRuntime for RecordingCreateRuntime {
-    fn install_session_baseline(
+    async fn install_session_projection(
         &self,
         _thread: &str,
-        _baseline: &awaken_session_contract::SessionBaseline,
+        _projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
     ) -> Result<(), RunError> {
         self.baseline_installs.fetch_add(1, Ordering::SeqCst);
-        Ok(())
-    }
-
-    async fn prepare_session(
-        &self,
-        _thread: &str,
-        _init: awaken_session_contract::SessionInit,
-    ) -> Result<(), RunError> {
-        self.preparations.fetch_add(1, Ordering::SeqCst);
+        if matches!(
+            mode,
+            awaken_session_contract::SessionProjectionInstallMode::Dispatch
+                | awaken_session_contract::SessionProjectionInstallMode::Realization {
+                    prepare_session: true,
+                    ..
+                }
+        ) {
+            self.preparations.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(())
     }
 
@@ -754,9 +756,11 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
     // durable root; C2 physical realization is not started/then reconciled; C3
     // the process survives/restarts. Effects: E1 accept returns Preparing before
     // any Runtime effect; E2 the repository contains the complete same root; E3
-    // the canonical realization reconciler advances it to Idle exactly once;
-    // E4 no Job row or alternate state machine participates. Rules: Q1
-    // accept+not-started=>E1+E2+E4; Q2 accepted root+reconcile=>E3+E4.
+    // the canonical realization reconciler advances it to Idle, reasserting the
+    // one complete projection at the Stage and terminal directives while
+    // preparing physical state exactly once; E4 no Job row or alternate state
+    // machine participates. Rules: Q1 accept+not-started=>E1+E2+E4; Q2 accepted
+    // root+reconcile=>E3+E4.
     let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
         awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
             .expect("accepted create repository"),
@@ -798,7 +802,7 @@ async fn accepted_create_is_recovered_from_the_same_preparing_root() {
         awaken_session_contract::SessionExecutionState::Idle,
         "Q2/E3"
     );
-    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "Q2/E3");
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 2, "Q2/E3");
     assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "Q2/E3");
 }
 

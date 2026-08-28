@@ -227,6 +227,22 @@ pub(crate) async fn prepare_agent_publication(
         .iter()
         .map(|candidate| candidate.binding().clone())
         .collect();
+    if config.plugin_ids.iter().any(|id| id == "compact") {
+        config
+            .plugin_config
+            .entry("compact".into())
+            .or_insert_with(|| serde_json::json!({}));
+    }
+    if config
+        .model_binding
+        .resolved()
+        .is_some_and(|binding| binding.backend_ref.starts_with("acp:"))
+    {
+        config
+            .plugin_config
+            .entry("acp".into())
+            .or_insert_with(|| serde_json::json!({}));
+    }
     let strategy = config.compaction.clone().unwrap_or_default();
     apply_compaction(
         &mut config.plugin_config,

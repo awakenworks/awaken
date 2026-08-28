@@ -108,6 +108,26 @@ fn unsupported_runtime_operation() -> RunError {
 
 #[async_trait::async_trait]
 impl SessionRuntime for QueueFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        _mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        // Test-fixture cause/effect rule: complete thread/workspace/Agent coordinates are
+        // accepted so live-inbox cases can reach their subject; any missing coordinate fails
+        // before queue state exists. The typed port makes every partial installation impossible.
+        if thread.is_empty()
+            || projection.workspace_id.is_empty()
+            || projection.baseline.agent_id.is_empty()
+        {
+            return Err(RunError::bad_request(
+                "live-inbox test Session projection is incomplete",
+            ));
+        }
+        Ok(())
+    }
+
     async fn reserve_session_run(
         &self,
         command: awaken_session_contract::AdmitSessionRun,
@@ -328,6 +348,17 @@ fn app_with_session_application(
     struct Shared(Arc<QueueFake>);
     #[async_trait::async_trait]
     impl SessionRuntime for Shared {
+        async fn install_session_projection(
+            &self,
+            thread: &str,
+            projection: awaken_session_contract::FrozenSessionProjection,
+            mode: awaken_session_contract::SessionProjectionInstallMode,
+        ) -> Result<(), RunError> {
+            self.0
+                .install_session_projection(thread, projection, mode)
+                .await
+        }
+
         async fn reserve_session_run(
             &self,
             command: awaken_session_contract::AdmitSessionRun,

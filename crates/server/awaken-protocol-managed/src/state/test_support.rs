@@ -269,6 +269,25 @@ impl RehydrateFake {
 
 #[async_trait]
 impl SessionRuntime for RehydrateFake {
+    async fn install_session_projection(
+        &self,
+        thread: &str,
+        projection: awaken_session_contract::FrozenSessionProjection,
+        mode: awaken_session_contract::SessionProjectionInstallMode,
+    ) -> Result<(), RunError> {
+        let adopts_environment = mode.adopts_resident_environment();
+        if let Some(init) =
+            crate::test_support::complete_session_projection_init(thread, &projection, &mode)?
+        {
+            self.prepare_session(thread, init).await?;
+        }
+        if adopts_environment && let Some(binding) = projection.environment.binding() {
+            self.adopt_session_environment(&projection.baseline.agent_id, thread, binding)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn prepare_session(&self, thread: &str, init: SessionInit) -> Result<(), RunError> {
         self.order.lock().unwrap().push("runtime");
         self.restored_runtimes.lock().unwrap().push((

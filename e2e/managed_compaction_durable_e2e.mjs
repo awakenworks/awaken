@@ -25,8 +25,7 @@ const STORE_DIR = `/tmp/awaken-compact-durable-e2e-${process.pid}`;
 const ENV = {
   SESSION_DEPLOYMENT_STORAGE_DIR: STORE_DIR,
   SESSION_DEPLOYMENT_INGRESS: 'durable',
-  AWAKEN_COMPACT_MAX_TOKENS: '200', // budget = 0.5 * 200 = 100 est. tokens
-  AWAKEN_COMPACT_TRIGGER_RATIO: '0.5',
+  AWAKEN_COMPACT_MAX_TOKENS: '100',
   AWAKEN_COMPACT_KEEP_LAST: '1',
 };
 

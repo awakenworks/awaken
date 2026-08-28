@@ -67,7 +67,8 @@ impl SessionTranscriptJsonlExporter {
         messages: &[awaken_agent_contract::agent::message::Message],
     ) -> Result<Vec<u8>, serde_json::Error> {
         let mut bytes = Vec::new();
-        for (ordinal, message) in messages.iter().enumerate() {
+        let visible = awaken_runtime_contract::NormalizedModelInput::new("", &[], messages);
+        for (ordinal, message) in visible.durable_input.iter().enumerate() {
             serde_json::to_writer(
                 &mut bytes,
                 &serde_json::json!({
@@ -667,9 +668,17 @@ mod tests {
         // Transcript cause/effect rules: C1 committed user/assistant/tool sequence
         // -> E1 one JSON object per message in the same order; C2 tool-use input
         // and tool-result content -> E2 retained without text flattening; C3 empty
-        // transcript -> E3 empty file. These rules answer whether Dream sees full
-        // history and tool results: it sees the complete committed prefix only.
+        // transcript -> E3 empty file; C4 historical derived Session prompt -> E4
+        // retained in Thread storage but excluded here; C5 explicit System event
+        // -> E5 retained. Dream and model requests share this exact visibility
+        // rule instead of maintaining protocol-specific cleanup logic.
         let messages = vec![
+            Message::text(
+                Id("session-baseline:sesn_1:0".into()),
+                Role::System,
+                "stale resource prompt",
+            ),
+            Message::text(Id("system-event-1".into()), Role::System, "operator policy"),
             Message::text(Id("m1".into()), Role::User, "inspect"),
             Message::new(
                 Id("m2".into()),
@@ -695,11 +704,15 @@ mod tests {
             .lines()
             .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4, "E4 removes only the legacy derived row");
         assert_eq!(rows[0]["ordinal"], 0);
-        assert_eq!(rows[1]["message"]["content"][0]["input"]["path"], "/a.md");
         assert_eq!(
-            rows[2]["message"]["content"][0]["content"][0]["text"],
+            rows[0]["message"]["content"][0]["text"], "operator policy",
+            "E5"
+        );
+        assert_eq!(rows[2]["message"]["content"][0]["input"]["path"], "/a.md");
+        assert_eq!(
+            rows[3]["message"]["content"][0]["content"][0]["text"],
             "file contents"
         );
         assert!(
