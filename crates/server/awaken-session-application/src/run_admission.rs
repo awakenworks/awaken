@@ -973,6 +973,7 @@ impl SessionRunApplication {
             messages,
             data_subject_id: None,
             traceparent: None,
+            execution_requirements: Default::default(),
         };
         let owner_scope = (self.workspace)(thread);
         Box::pin(

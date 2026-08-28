@@ -1802,13 +1802,14 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
     // Environment; C2 its User Event requires a durable reservation; C3 a
     // Worker has not claimed it. Effects: E1 persist one unclaimable
     // reservation; E2 create no Environment; E3 evict the envelope-only Runtime
-    // so the claimed Worker must rebuild from frozen dispatch truth.
+    // so the claimed Worker must rebuild from frozen dispatch truth; E4 freeze
+    // application restrictions into that same dispatch row.
     // Constraint: physical realization remains in the existing claimed Worker
     // path; reservation introduces no second executor or store.
     //
     // | Rule | cold | reservation | claimed | Effects |
     // |---|---|---|---|---|
-    // | R1 | yes | requested | no | E1+E2+E3 |
+    // | R1 | yes | requested | no | E1+E2+E3+E4 |
     let thread = "cold-session-reservation";
     let run_id = RunId("cold-session-reservation-run".into());
     let dispatch = Arc::new(
@@ -1834,6 +1835,13 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
                 )],
                 data_subject_id: None,
                 traceparent: None,
+                execution_requirements: awaken_session_contract::SessionRunExecutionRequirements {
+                    tool_capability_narrowing:
+                        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+                    required_worker_capabilities: std::collections::BTreeSet::from([
+                        "application:test-session-envelope/v1".to_string(),
+                    ]),
+                },
             })
             .await
             .expect("R1 reservation"),
@@ -1865,6 +1873,59 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
             .flatten()
             .is_none(),
         "R1/E3"
+    );
+    assert_eq!(
+        dispatch
+            .activate_session_run_reservation(
+                &RunId("cold-session-reservation-run".into()),
+                &ThreadId(thread.into()),
+                1,
+            )
+            .await
+            .expect("R1 activate exact reservation"),
+        awaken_run_ingress::SessionRunReservationActivation::Activated,
+        "R1/E4 inspection uses the ordinary post-activity transition"
+    );
+    let mut manifest = awaken_run_ingress::WorkerManifest::default();
+    manifest
+        .capabilities
+        .insert("application:test-session-envelope/v1".into());
+    let capability_fingerprint = manifest
+        .fingerprint()
+        .expect("R1 deterministic Worker capability fingerprint");
+    let worker = awaken_run_ingress::WorkerSnapshot {
+        identity: awaken_run_ingress::WorkerIdentity::new("inspection-worker", "boot-1", 1),
+        state: awaken_run_ingress::WorkerState::Ready,
+        manifest,
+        capability_fingerprint,
+        in_flight: 0,
+        warm_environment_shapes: Default::default(),
+        credential_observations: Default::default(),
+        acp_capability_observations: Default::default(),
+        expires_at_ms: 10_000,
+    };
+    let claimed = dispatch
+        .claim_compatible(&worker, 1_000, 0)
+        .await
+        .expect("R1 inspect executable dispatch")
+        .expect("R1 exact executable dispatch");
+    assert_eq!(
+        claimed.request.activation.tool_capability_narrowing,
+        awaken_runtime_contract::permission::ToolCapabilityNarrowing::DenyAll,
+        "R1/E4 application restrictions only narrow Session tool authority"
+    );
+    assert_eq!(
+        claimed.request.placement.location,
+        awaken_run_ingress::ExecutionLocation::RemoteRequired,
+        "R1/E4 application protocol cannot fall back to a generic local executor"
+    );
+    assert!(
+        claimed
+            .request
+            .placement
+            .required_capabilities
+            .contains("application:test-session-envelope/v1"),
+        "R1/E4 capability is frozen in the one durable dispatch"
     );
 }
 

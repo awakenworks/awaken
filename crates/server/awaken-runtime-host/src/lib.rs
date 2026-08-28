@@ -940,6 +940,12 @@ impl SessionRuntime for ManagedHost {
                 ctx.runtime
                     .prepare(&ctx.config, command.session_id.clone(), input);
             activation.run_id = command.run_id;
+            // Application requirements are a monotone restriction over the
+            // Session-owned activation: a caller can remove tool authority but
+            // cannot restore authority removed by the frozen Session profile.
+            activation.tool_capability_narrowing = activation
+                .tool_capability_narrowing
+                .intersect(command.execution_requirements.tool_capability_narrowing);
             activation.model_ref_override = self
                 .host
                 .inference_routing
@@ -947,10 +953,32 @@ impl SessionRuntime for ManagedHost {
             activation.data_subject_id = command
                 .data_subject_id
                 .map(awaken_runtime_contract::DataSubjectId);
-            let request = self
+            let mut request = self
                 .host
                 .resolved_dispatch_with_traceparent(activation, command.traceparent)
                 .map_err(to_run_error)?;
+            if !command
+                .execution_requirements
+                .required_worker_capabilities
+                .is_empty()
+            {
+                // An application protocol capability is implemented only by a
+                // registered Worker. Requiring it must never fall back to the
+                // generic in-process executor, even in a mixed deployment.
+                let strict_remote = awaken_run_ingress::PlacementRequirements::remote_required();
+                request.placement.location = strict_remote.location;
+                if request.placement.contract_version == 0 {
+                    request.placement.contract_version = strict_remote.contract_version;
+                    request.placement.dispatch_contract_version =
+                        strict_remote.dispatch_contract_version;
+                    request.placement.runtime_protocol_version =
+                        strict_remote.runtime_protocol_version;
+                }
+                request
+                    .placement
+                    .required_capabilities
+                    .extend(command.execution_requirements.required_worker_capabilities);
+            }
             match self
                 .host
                 .dispatch_store()

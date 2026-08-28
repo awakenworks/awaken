@@ -517,6 +517,7 @@ impl DreamExecutor for BuiltInDreamAgent {
                     messages: vec![message],
                     data_subject_id: None,
                     traceparent: None,
+                    execution_requirements: Default::default(),
                 },
                 Some(Arc::new(DiscardDreamProgress)),
             )

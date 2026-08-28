@@ -4,8 +4,24 @@
 //! dispatch authorities with these values. They own no queue, completion
 //! registry, or second Run lifecycle.
 
+use std::collections::BTreeSet;
+
 use awaken_agent_contract::agent::message::Message;
 use awaken_agent_contract::agent::run::Id as RunId;
+use awaken_runtime_contract::permission::ToolCapabilityNarrowing;
+
+/// Immutable execution restrictions contributed by the application that owns
+/// a Session Run. These values can only narrow tool authority or require a
+/// more-specific executor; they cannot replace the Session's frozen Agent,
+/// Environment, Resource, credential, or tool configuration.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRunExecutionRequirements {
+    pub tool_capability_narrowing: ToolCapabilityNarrowing,
+    /// Opaque application protocol capabilities advertised by an eligible
+    /// registered Worker. The Runtime treats them solely as hard placement
+    /// requirements and never interprets their names as authorization.
+    pub required_worker_capabilities: BTreeSet<String>,
+}
 
 /// Derive the stable internal Run identity for a public Session mutation.
 ///
@@ -31,6 +47,9 @@ pub struct AdmitSessionRun {
     /// W3C trace context frozen by the admitting edge. Recovery relays this
     /// exact value instead of capturing a supervisor's ambient span.
     pub traceparent: Option<String>,
+    /// Per-Run application requirements intersected with the canonical Session
+    /// runtime projection before the reservation becomes durable.
+    pub execution_requirements: SessionRunExecutionRequirements,
 }
 
 impl AdmitSessionRun {

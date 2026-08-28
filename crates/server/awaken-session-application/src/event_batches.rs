@@ -225,6 +225,7 @@ impl SessionApplication {
                 messages,
                 data_subject_id: command.data_subject_id,
                 traceparent: command.traceparent,
+                execution_requirements: Default::default(),
             })
             .await
         })
