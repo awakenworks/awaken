@@ -304,6 +304,29 @@ impl SessionApplication {
         .await
     }
 
+    /// Publish one already-admitted Session Run without observing its terminal
+    /// result. Background product coordinators use this after
+    /// [`Self::admit_session_run_for_owner`] and consume the canonical lifecycle
+    /// feed independently; they never need access to the dispatch store.
+    pub async fn activate_admitted_session_run(
+        &self,
+        admitted: AdmittedSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunActivation, RunError> {
+        match admitted {
+            AdmittedSessionRun::Reserved(delivery)
+            | AdmittedSessionRun::AlreadyReserved(delivery)
+            | AdmittedSessionRun::AlreadyActivated(delivery) => {
+                self.runtime().activate_session_run(delivery).await
+            }
+            AdmittedSessionRun::RecoveryClaimed { .. } => {
+                Ok(awaken_session_contract::SessionRunActivation::RecoveryClaimed)
+            }
+            AdmittedSessionRun::Completed { .. } => {
+                Ok(awaken_session_contract::SessionRunActivation::Completed)
+            }
+        }
+    }
+
     /// Read the one durable Session projection used by every protocol without
     /// driving Runtime effects. Queries must remain projections; realization is
     /// owned by create, run admission, Worker claims, and reconciliation.
