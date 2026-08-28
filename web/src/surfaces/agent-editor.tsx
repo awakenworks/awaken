@@ -28,7 +28,9 @@ import SandboxPane from "../components/session/SandboxPane";
 import Drawer from "../components/ui/Drawer";
 import { useToast } from "../components/ui/Toast";
 import {
+  BUILTIN_LOCAL_ENVIRONMENT_ID,
   api,
+  createManagedSession,
   IdempotencyScope,
   isAbsent,
   workspaceQuery,
@@ -42,7 +44,6 @@ import type {
   CredentialSource,
   InputBinding,
   PublishResult,
-  Session,
   ValidationIssue,
   ValidationResult,
 } from "../lib/api/types";
@@ -70,7 +71,6 @@ export default function AgentEditorSurface() {
   const qc = useQueryClient();
   const toast = useToast();
   const quickRunCreateIdentity = useRef(new IdempotencyScope("quick-run-session-create"));
-  const quickRunEventIdentity = useRef(new IdempotencyScope("quick-run-session-events"));
   const deploymentCapabilities = useConfigCapabilities();
   const managedRuntime = hasSurface(deploymentCapabilities.data, "managed_runtime");
   const { ws: wsId = "default", id = "new" } = useParams();
@@ -447,30 +447,23 @@ export default function AgentEditorSurface() {
         // Coordinator can either load that publication or fail creation
         // closed; it must never run an unversioned fallback configuration.
         agent: { id: targetId(), type: "agent", version: publication.source_revision },
-        environment_id: intent.environmentId,
-        title: app.t("Quickstart first run", "Quickstart 首次运行"),
-      };
-      const session = await api.post<Session>(
-        ws("/v1/sessions"),
-        request,
-        quickRunCreateIdentity.current.headersFor(request),
-      );
-      const eventRequest = {
-        events: [{
+        environment_id: intent.environmentId ?? BUILTIN_LOCAL_ENVIRONMENT_ID,
+        // The official create boundary owns initial_events atomically. A
+        // second POST would create a partial Session on transport failure and
+        // duplicate idempotency/retry semantics already owned by creation.
+        initial_events: [{
           type: "user.message",
           content: [{ type: "text", text: intent.task }],
         }],
+        title: app.t("Quickstart first run", "Quickstart 首次运行"),
       };
-      await api.post(
-        ws(`/v1/sessions/${session.id}/events`),
-        eventRequest,
-        quickRunEventIdentity.current.headersFor(eventRequest),
+      return createManagedSession(
+        request,
+        quickRunCreateIdentity.current,
       );
-      return session;
     },
     onSuccess: (session) => {
       quickRunCreateIdentity.current.complete();
-      quickRunEventIdentity.current.complete();
       setDirty(false);
       setResourcesDirty(false);
       setQuickRunIntent(undefined);

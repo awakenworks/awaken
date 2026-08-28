@@ -8,24 +8,25 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
-import Transcript from "../components/session/Transcript";
+import { TranscriptView } from "../components/session/Transcript";
 import { Button, Card, Pill, Skeleton } from "../components/ui";
 import { assistantContextForLocation, type AssistantSurfaceContext } from "../lib/assistant-guidance";
-import { api, IdempotencyScope, ws } from "../lib/api/client";
+import {
+  BUILTIN_LOCAL_ENVIRONMENT_ID,
+  api,
+  createManagedSession,
+  IdempotencyScope,
+  ws,
+} from "../lib/api/client";
 import { presentApiProblem } from "../lib/api-problem";
-import type { AgentConfig, Session } from "../lib/api/types";
+import type { AgentConfig, Session, SessionEvent } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { useGate } from "../lib/useGate";
+import { useSessionLog } from "../lib/useSessionLog";
 import { useModels } from "../lib/useModels";
 
 const ASSISTANT_ID = "__admin_assistant";
 const DRAFT_TOOLS = ["admin_draft_agent", "admin_patch_agent"];
-
-interface EventLike {
-  type: string;
-  name?: string;
-  input?: { id?: string };
-}
 
 /** A rich status card for one drafted/patched agent — reads the persisted config so it
  * shows exactly what the assistant authored (tools, overrides, plugins), with a deep
@@ -66,19 +67,17 @@ function DraftCard({ id, wsId }: { id: string; wsId: string }) {
 }
 
 /** The agents this session drafted so far, read from its own tool calls. */
-function DraftedAgents({ base, wsId }: { base: string; wsId: string }) {
+function DraftedAgents({ events, wsId }: { events: readonly SessionEvent[]; wsId: string }) {
   const app = useApp();
-  const events = useQuery({
-    queryKey: ["assistant-drafts", base],
-    queryFn: () => api.get<{ data: EventLike[] }>(`${base}/events`),
-    refetchInterval: 3000,
-  });
   const ids = Array.from(
     new Set(
-      (events.data?.data ?? [])
-        .filter((e) => e.type === "agent.tool_use" && e.name && DRAFT_TOOLS.includes(e.name))
-        .map((e) => e.input?.id)
-        .filter((id): id is string => !!id),
+      events.flatMap((event) => (
+        event.type === "agent.tool_use"
+        && DRAFT_TOOLS.includes(event.name)
+        && typeof event.input.id === "string"
+          ? [event.input.id]
+          : []
+      )),
     ),
   );
   if (ids.length === 0) return null;
@@ -91,6 +90,47 @@ function DraftedAgents({ base, wsId }: { base: string; wsId: string }) {
         <DraftCard key={id} id={id} wsId={wsId} />
       ))}
     </div>
+  );
+}
+
+function AssistantConversation({
+  sid,
+  wsId,
+  sessionStatus,
+  placeholder,
+  contextPrefix,
+  autoMessage,
+  onRunSettled,
+  onToolComplete,
+}: {
+  sid: string;
+  wsId: string;
+  sessionStatus?: Session["status"];
+  placeholder: string;
+  contextPrefix: string;
+  autoMessage?: { id: string; text: string };
+  onRunSettled?: () => void;
+  onToolComplete: (tool: SessionEvent, result: SessionEvent) => void;
+}) {
+  const base = ws(`/v1/sessions/${sid}`);
+  const sessionLog = useSessionLog(base, ["assistant-events", sid], {
+    sessionStatus,
+    live: true,
+    followLive: true,
+  });
+  return (
+    <>
+      <TranscriptView
+        key={sid}
+        sessionLog={sessionLog}
+        placeholder={placeholder}
+        contextPrefix={contextPrefix}
+        autoMessage={autoMessage}
+        onRunSettled={onRunSettled}
+        onToolComplete={onToolComplete}
+      />
+      <DraftedAgents events={sessionLog.log} wsId={wsId} />
+    </>
   );
 }
 
@@ -194,15 +234,22 @@ export function AssistantPanel({
   const start = useMutation({
     mutationFn: () => {
       const request = {
-      agent: ASSISTANT_ID,
-      title: `Assistant · ${targetAgentId || surfaceContext.label}`,
+        agent: ASSISTANT_ID,
+        environment_id: BUILTIN_LOCAL_ENVIRONMENT_ID,
+        title: `Assistant · ${targetAgentId || surfaceContext.label}`,
       };
-      return api.post<Session>(ws("/v1/sessions"), request, createIdentity.current.headersFor(request));
+      return createManagedSession(request, createIdentity.current);
     },
     onSuccess: (s) => {
       createIdentity.current.complete();
       setSid(s.id);
     },
+  });
+  const session = useQuery({
+    queryKey: ["assistant-session", sid],
+    enabled: !!sid,
+    queryFn: () => api.get<Session>(ws(`/v1/sessions/${sid}`)),
+    refetchInterval: 4_000,
   });
   useEffect(() => {
     if (!started.current && models.ready.length > 0 && gate.status === "live") {
@@ -312,9 +359,10 @@ export function AssistantPanel({
                 </small>
               </span>
             </div>
-            <Transcript
-              base={ws(`/v1/sessions/${sid}`)}
-              queryKey={["assistant-events", sid]}
+            <AssistantConversation
+              sid={sid}
+              wsId={wsId}
+              sessionStatus={session.data?.status}
               placeholder={placeholder}
               contextPrefix={contextPrefix}
               autoMessage={promptRequest ?? autoMessage}
@@ -345,7 +393,6 @@ export function AssistantPanel({
                 }
               }}
             />
-            <DraftedAgents base={ws(`/v1/sessions/${sid}`)} wsId={wsId} />
           </>
         )}
     </>

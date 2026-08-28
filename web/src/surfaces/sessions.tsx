@@ -4,11 +4,21 @@
 // archive marks a row without removing it.
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  isManagedSessionActiveStatus,
+  managedSessionStatusPresentation,
+} from "@awaken/managed-session-projection";
 import { useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import Drawer from "../components/ui/Drawer";
 import { Button, Card, Modal, Pill, Segmented, TextField, useConfirm, useToast } from "../components/ui";
-import { api, IdempotencyScope, ws } from "../lib/api/client";
+import {
+  BUILTIN_LOCAL_ENVIRONMENT_ID,
+  api,
+  createManagedSession,
+  IdempotencyScope,
+  ws,
+} from "../lib/api/client";
 import type {
   AgentConfigList,
   CreateSessionRequest,
@@ -20,7 +30,6 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { visibleAgents } from "../lib/visible-agents";
-import { sessionStatusPresentation } from "../lib/session-log";
 import EnvironmentsSurface from "./environments";
 import AgentsSurface from "./agents";
 
@@ -29,7 +38,7 @@ export function StatusPill({ session }: { session: Session }) {
   if (session.archived_at) {
     return <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>;
   }
-  const status = sessionStatusPresentation(session.status);
+  const status = managedSessionStatusPresentation(session.status);
   if (status === "running") {
     return (
       <span className="pill agent">
@@ -41,8 +50,8 @@ export function StatusPill({ session }: { session: Session }) {
   if (status === "idle") {
     return <Pill tone="ok">{app.t("idle", "空闲")}</Pill>;
   }
-  if (status === "preparing") {
-    return <Pill tone="info">{app.t("preparing", "准备中")}</Pill>;
+  if (status === "rescheduling") {
+    return <Pill tone="info">{app.t("rescheduling", "重新调度中")}</Pill>;
   }
   if (status === "terminated") {
     return <Pill tone="neutral">{app.t("terminated", "已终止")}</Pill>;
@@ -54,10 +63,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   const app = useApp();
   const nav = useNavigate();
   const [agent, setAgent] = useState("");
-  const [environmentId, setEnvironmentId] = useState("");
+  const [environmentId, setEnvironmentId] = useState(BUILTIN_LOCAL_ENVIRONMENT_ID);
   const [title, setTitle] = useState("");
   const [vaultIds, setVaultIds] = useState<string[]>([]);
-  const [mcp, setMcp] = useState<{ name: string; url: string; prompts_as_skills: boolean }[]>([]);
+  const [mcp, setMcp] = useState<{ name: string; url: string }[]>([]);
   const [manage, setManage] = useState<"agents" | "environments" | null>(null);
   const createIdentity = useRef(new IdempotencyScope("console-session-create"));
   // Inline pickers over the config plane (published agents) + environments.
@@ -75,10 +84,7 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
-      api.post<Session>(ws("/v1/sessions"), body, {
-        ...createIdentity.current.headersFor(body),
-        Prefer: "respond-async",
-      }),
+      createManagedSession(body, createIdentity.current),
     onSuccess: (session) => {
       createIdentity.current.complete();
       nav(`/w/${wsId}/sessions/${session.id}`);
@@ -123,8 +129,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             value={environmentId}
             onChange={(e) => setEnvironmentId(e.target.value)}
           >
-            <option value="">{app.t("Default Environment", "默认运行环境")}</option>
-            {(envs.data?.data ?? []).filter((environment) => !environment.archived_at).map((e) => (
+            <option value={BUILTIN_LOCAL_ENVIRONMENT_ID}>{app.t("Local Environment", "本地运行环境")}</option>
+            {(envs.data?.data ?? []).filter((environment) => (
+              !environment.archived_at && environment.id !== BUILTIN_LOCAL_ENVIRONMENT_ID
+            )).map((e) => (
               <option key={e.id} value={e.id}>
                 {e.name} · {e.id}
               </option>
@@ -167,16 +175,6 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
                 value={m.name}
                 onChange={(e) => setMcp(mcp.map((x, j) => (j === i ? { ...x, name: e.target.value } : x)))}
               />
-              <label className="row" style={{ whiteSpace: "nowrap" }}>
-                <input
-                  type="checkbox"
-                  checked={m.prompts_as_skills}
-                  onChange={(e) => setMcp(mcp.map((x, j) => (
-                    j === i ? { ...x, prompts_as_skills: e.target.checked } : x
-                  )))}
-                />
-                {app.t("Prompts as skills", "Prompt 作为 Skill")}
-              </label>
               <input
                 className="input mono"
                 style={{ flex: 1 }}
@@ -189,10 +187,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
               </Button>
             </div>
           ))}
-          <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "", prompts_as_skills: false }])}>
+          <Button variant="ghost" onClick={() => setMcp([...mcp, { name: "", url: "" }])}>
             + {app.t("Add temporary server", "添加临时服务器")}
           </Button>
-          <span className="mut">{app.t("Use this only for a one-off override. Add reusable MCP servers to the Agent instead.", "此处仅用于一次性覆盖。可复用 MCP 服务器应添加到 Agent。")}</span>
+          <span className="mut">{app.t("A non-empty list is an official one-session replacement of the Agent's MCP servers. Add reusable servers to the Agent instead.", "非空列表会按官方协议在本次 Session 中替换 Agent 的 MCP 服务器。可复用服务器应添加到 Agent。")}</span>
           </div>
         </details>
         {create.error instanceof Error && <div className="err">{create.error.message}</div>}
@@ -204,12 +202,16 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
             variant="primary"
             disabled={create.isPending || !agent}
             onClick={() => {
+              const mcpServers = mcp
+                .filter((server) => server.name && server.url)
+                .map((server) => ({ type: "url" as const, ...server }));
               create.mutate({
-                agent,
-                environment_id: environmentId || undefined,
+                agent: mcpServers.length > 0
+                  ? { id: agent, type: "agent_with_overrides", mcp_servers: mcpServers }
+                  : agent,
+                environment_id: environmentId,
                 title: title || undefined,
                 vault_ids: vaultIds,
-                mcp_servers: mcp.filter((m) => m.name && m.url),
               });
             }}
           >
@@ -269,7 +271,7 @@ export default function SessionsSurface() {
       ? true
       : filter === "archived"
         ? !!s.archived_at
-        : s.status === "running" && !s.archived_at,
+        : isManagedSessionActiveStatus(s.status) && !s.archived_at,
   );
 
   return (

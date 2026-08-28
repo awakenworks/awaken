@@ -1,32 +1,26 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { isManagedSessionActiveStatus } from "@awaken/managed-session-projection";
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
-import type { ListEventsResponse, Page, SessionEvent, SessionThread } from "../../lib/api/types";
+import type {
+  ListEventsResponse,
+  ListSessionThreadsResponse,
+  SessionEvent,
+  SessionThread,
+} from "../../lib/api/types";
 import { api } from "../../lib/api/client";
 import { useApp } from "../../lib/app-state";
-import { Button, Card, EmptyState, Pill, useConfirm, useToast } from "../ui";
-
-function usageTotal(thread: SessionThread): number {
-  return (thread.usage?.input_tokens ?? 0)
-    + (thread.usage?.output_tokens ?? 0)
-    + (thread.usage?.cache_read_input_tokens ?? 0)
-    + (thread.usage?.cache_creation?.ephemeral_1h_input_tokens ?? 0)
-    + (thread.usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0);
-}
+import { Button, Card, EmptyState, Pill, usageTotal, useConfirm, useToast } from "../ui";
 
 function eventText(event: SessionEvent): string {
   if (event.type === "agent.message" && "content" in event && Array.isArray(event.content)) {
     const text = event.content
-      .filter((block) => block.type === "text" && typeof block.text === "string")
-      .map((block) => block.text)
+      .flatMap((block) => block.type === "text" ? [block.text] : [])
       .join("\n");
     if (text) return text;
   }
   if (event.type === "session.error") {
-    if ("error" in event && event.error && typeof event.error === "object" && "message" in event.error) {
-      return String(event.error.message ?? event.type);
-    }
-    if ("message" in event && typeof event.message === "string") return event.message;
+    return event.error.message;
   }
   return event.type;
 }
@@ -38,6 +32,12 @@ function statusTone(status: SessionThread["status"]): "ok" | "warn" | "danger" |
   return "agent";
 }
 
+function agentLabel(thread: SessionThread): string {
+  return thread.agent.type === "advisor"
+    ? thread.agent.model
+    : thread.agent.name || thread.agent.id;
+}
+
 export default function SessionThreads({ base, workspaceId }: { base: string; workspaceId: string }) {
   const app = useApp();
   const qc = useQueryClient();
@@ -47,8 +47,9 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
   const threadsKey = ["session-threads", workspaceId, base];
   const threads = useQuery({
     queryKey: threadsKey,
-    queryFn: () => api.get<Page<SessionThread>>(`${base}/threads`),
-    refetchInterval: (query) => query.state.data?.data.some((thread) => thread.status === "running") ? 3_000 : false,
+    queryFn: () => api.get<ListSessionThreadsResponse>(`${base}/threads`),
+    refetchInterval: (query) => query.state.data?.data.some((thread) =>
+      isManagedSessionActiveStatus(thread.status)) ? 3_000 : false,
   });
   const primary = threads.data?.data.find((thread) => thread.parent_thread_id == null);
   const children = threads.data?.data.filter((thread) => thread.parent_thread_id != null) ?? [];
@@ -60,12 +61,12 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
     queryKey: ["session-thread-events", workspaceId, base, selectedId],
     enabled: Boolean(selectedId),
     queryFn: () => api.get<ListEventsResponse>(`${base}/threads/${encodeURIComponent(selectedId)}/events?limit=100`),
-    refetchInterval: selected?.status === "running" ? 3_000 : false,
+    refetchInterval: isManagedSessionActiveStatus(selected?.status) ? 3_000 : false,
   });
   const stopThread = useMutation({
     mutationFn: (threadId: string) => api.post<SessionThread>(`${base}/threads/${encodeURIComponent(threadId)}/archive`),
     onSuccess: (thread) => {
-      toast.ok(app.t(`Stopped ${thread.agent.name || thread.agent.id}.`, `已停止 ${thread.agent.name || thread.agent.id}。`));
+      toast.ok(app.t(`Stopped ${agentLabel(thread)}.`, `已停止 ${agentLabel(thread)}。`));
       void qc.invalidateQueries({ queryKey: threadsKey });
     },
     onError: (error) => toast.err(error instanceof Error ? error.message : String(error)),
@@ -99,10 +100,10 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
         </div>
         <div className="row" style={{ flexWrap: "wrap" }}>
           <Pill tone="neutral">{app.t("Parent", "父运行")} {primary ? 1 : 0}</Pill>
-          <Pill tone={children.some((thread) => thread.status === "running") ? "agent" : "neutral"}>
+          <Pill tone={children.some((thread) => isManagedSessionActiveStatus(thread.status)) ? "agent" : "neutral"}>
             {app.t("Child runs", "子运行")} {children.length}
           </Pill>
-          <Pill tone="neutral">{app.t("Total tokens", "Token 总计")} {(threads.data?.data ?? []).reduce((sum, thread) => sum + usageTotal(thread), 0)}</Pill>
+          <Pill tone="neutral">{app.t("Total tokens", "Token 总计")} {(threads.data?.data ?? []).reduce((sum, thread) => sum + usageTotal(thread.usage ?? undefined), 0)}</Pill>
         </div>
       </Card>
 
@@ -120,7 +121,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
           {primary && (
             <div className="primary-thread-row">
               <Pill tone={statusTone(primary.status)}>{primary.status}</Pill>
-              <strong>{primary.agent.name || primary.agent.id}</strong>
+              <strong>{agentLabel(primary)}</strong>
               <span className="mono mut">{primary.id}</span>
             </div>
           )}
@@ -131,7 +132,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
             <div className="thread-node thread-node-primary">
               <div>
                 <span className="thread-node-kind">{app.t("Parent", "父运行")}</span>
-                <strong>{primary.agent.name || primary.agent.id}</strong>
+                <strong>{agentLabel(primary)}</strong>
                 <span className="mono mut">{primary.id}</span>
               </div>
               <Pill tone={statusTone(primary.status)}>{primary.status}</Pill>
@@ -144,13 +145,19 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
                   <span className="thread-tree-branch" aria-hidden="true">↳</span>
                   <div>
                     <span className="thread-node-kind">{app.t("Auxiliary Agent", "辅助 Agent")}</span>
-                    <strong>{thread.agent.name || thread.agent.id}</strong>
-                    <Link className="mono mut" to={`/w/${workspaceId}/agents/${thread.agent.id}`}>{thread.agent.id} · v{thread.agent.version}</Link>
+                    <strong>{agentLabel(thread)}</strong>
+                    {thread.agent.type === "agent" ? (
+                      <Link className="mono mut" to={`/w/${workspaceId}/agents/${thread.agent.id}`}>
+                        {thread.agent.id} · v{thread.agent.version}
+                      </Link>
+                    ) : (
+                      <span className="mono mut">{thread.agent.type} · {thread.agent.model}</span>
+                    )}
                   </div>
                 </div>
                 <div className="thread-node-metrics">
                   <Pill tone={statusTone(thread.status)}>{thread.status}</Pill>
-                  <span>{app.t("Tokens", "Token")} {usageTotal(thread) || "—"}</span>
+                  <span>{app.t("Tokens", "Token")} {usageTotal(thread.usage ?? undefined) || "—"}</span>
                   <span>{app.t("Duration", "耗时")} {thread.stats?.duration_seconds !== undefined ? `${thread.stats.duration_seconds.toFixed(1)}s` : "—"}</span>
                   <span>{app.t("Updated", "更新时间")} {new Date(thread.updated_at).toLocaleTimeString()}</span>
                 </div>
@@ -174,7 +181,7 @@ export default function SessionThreads({ base, workspaceId }: { base: string; wo
         <Card className="thread-event-panel">
           <div className="row" style={{ justifyContent: "space-between" }}>
             <div>
-              <h2>{selected.agent.name || selected.agent.id}</h2>
+              <h2>{agentLabel(selected)}</h2>
               <span className="mono mut">{selected.id}</span>
             </div>
             <Button variant="ghost" onClick={() => setSelectedId("")}>{app.t("Close", "关闭")}</Button>

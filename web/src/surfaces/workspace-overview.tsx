@@ -3,6 +3,7 @@
 // operates the platform; end users interact through the SDK.
 
 import { useQuery } from "@tanstack/react-query";
+import { isManagedSessionActiveStatus } from "@awaken/managed-session-projection";
 import { useNavigate, useParams } from "react-router";
 import { api, ws } from "../lib/api/client";
 import type { ListSessionsResponse } from "../lib/api/types";
@@ -30,7 +31,7 @@ export default function WorkspaceOverviewSurface() {
   });
   const rows = sessions.data?.data ?? [];
   const active = rows.filter((s) => !s.archived_at);
-  const running = active.filter((s) => s.status === "running").length;
+  const running = active.filter((s) => isManagedSessionActiveStatus(s.status)).length;
   const recent = active.slice(0, 5);
 
   return (

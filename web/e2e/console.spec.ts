@@ -363,8 +363,12 @@ test("Agent editor persists and publishes a direct MCP binding plus MCP tool ove
   await expect(page.getByRole("heading", { name: "Direct MCP servers" })).toBeVisible();
 });
 
-test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) => {
+test("new session sends the official synchronous MCP override", async ({ page }) => {
+  // Cause/effect rule: C1 a local Environment and one temporary URL MCP server
+  // are selected -> E1 the canonical create body carries required
+  // environment_id and agent_with_overrides; E2 no Prefer async track exists.
   let posted: Record<string, unknown> | undefined;
+  let postedHeaders: Record<string, string> | undefined;
   await page.route("**/v1/config/agents", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     await route.fulfill({
@@ -376,6 +380,7 @@ test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) =>
   await page.route("**/v1/sessions", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
     posted = route.request().postDataJSON() as Record<string, unknown>;
+    postedHeaders = route.request().headers();
     await route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -389,12 +394,18 @@ test("new session sends the inline MCP prompt-skill opt-in", async ({ page }) =>
   await page.getByRole("button", { name: /Add temporary server/ }).click();
   await page.getByPlaceholder("name").fill("docs");
   await page.getByPlaceholder("https://…").fill("https://docs.test/mcp");
-  await page.getByLabel("Prompts as skills").check();
   await page.locator(".modal").getByRole("button", { name: /Create/ }).click();
   await expect.poll(() => posted).toBeTruthy();
-  expect(posted?.mcp_servers).toEqual([
-    { name: "docs", url: "https://docs.test/mcp", prompts_as_skills: true },
-  ]);
+  expect(posted).toMatchObject({
+    agent: {
+      id: "prompt-skill-agent",
+      type: "agent_with_overrides",
+      mcp_servers: [{ type: "url", name: "docs", url: "https://docs.test/mcp" }],
+    },
+    environment_id: "env_local",
+  });
+  expect(posted).not.toHaveProperty("mcp_servers");
+  expect(postedHeaders?.prefer).toBeUndefined();
 });
 
 test("Agent orchestration authors a typed auxiliary roster, pins a version, and persists its safety budget", async ({ page, request }) => {

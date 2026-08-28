@@ -1,16 +1,32 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type {
+  BetaManagedAgentsSessionResource,
+  BetaManagedAgentsSessionResourcesPageCursor,
+  BetaManagedAgentsSessionThread,
+  BetaManagedAgentsSessionThreadsPageCursor,
+  BetaManagedAgentsSessionThreadUsage,
+} from "@awaken/managed-sdk-oracle/current-types";
 import {
   API_BETAS,
   ApiClientError,
   IdempotencyScope,
   api,
   betaForPath,
+  createManagedSession,
   getToken,
   setResolvedWorkspace,
   workspaceFromPath,
   workspaceIdForRequest,
   ws,
 } from "./client";
+import type {
+  ListSessionResourcesResponse,
+  ListSessionThreadsResponse,
+  Session,
+  SessionResource,
+  SessionThread,
+  SessionThreadUsage,
+} from "./types";
 
 describe("idempotent mutation identity", () => {
   it("reuses an exact payload after timeout and rotates when intent changes", () => {
@@ -33,6 +49,83 @@ describe("idempotent mutation identity", () => {
     scope.complete();
     const later = scope.headersFor({ agent: "a", title: "two" });
     expect(later["idempotency-key"]).not.toBe(changed["idempotency-key"]);
+  });
+});
+
+describe("Managed Session create protocol decision table", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  /**
+   * Cause/effect graph: C1 an official create body and one retry identity enter
+   * the canonical client; C2 the standard route is synchronous. Effects: E1
+   * POST exactly one SDK-compatible body; E2 add Managed beta/idempotency only;
+   * E3 return the Session directly. Rule S1 forbids Prefer and any preparation
+   * response shape, eliminating the former parallel async protocol.
+   */
+  it("uses only the synchronous official create contract", async () => {
+    setResolvedWorkspace("");
+    vi.stubGlobal("location", { pathname: "/" });
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      id: "session-1",
+      type: "session",
+      status: "idle",
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    }));
+    vi.stubGlobal("fetch", fetch);
+    const request = {
+      agent: "agent-1",
+      environment_id: "env_local",
+      initial_events: [{
+        type: "user.message" as const,
+        content: [{ type: "text" as const, text: "start atomically" }],
+      }],
+    };
+
+    const created = await createManagedSession(
+      request,
+      new IdempotencyScope("session-create"),
+    );
+
+    expect(created.id).toBe("session-1");
+    expect(fetch).toHaveBeenCalledOnce();
+    const [path, init] = fetch.mock.calls[0] as [string, RequestInit];
+    expect(path).toBe("/v1/sessions");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(String(init.body))).toEqual(request);
+    expect(init.headers).toMatchObject({
+      "anthropic-beta": API_BETAS.managed,
+      "content-type": "application/json",
+    });
+    expect(init.headers).toHaveProperty("idempotency-key");
+    expect(init.headers).not.toHaveProperty("Prefer");
+    expect(init.headers).not.toHaveProperty("prefer");
+    expectTypeOf<"preparation" extends keyof Session ? true : false>()
+      .toEqualTypeOf<false>();
+  });
+});
+
+describe("Managed Session nested wire type authority", () => {
+  /**
+   * Cause/effect rule T1: when the current SDK changes a Thread agent variant,
+   * required lifecycle/usage field, Resource variant, or PageCursor field, the
+   * Web aliases change in the same compile. Effects: advisor and full usage are
+   * representable, resource discrimination remains closed, and wire pages keep
+   * exactly data/next_page without a handwritten compatibility DTO.
+   */
+  it("projects Thread, Resource, usage, and cursor types only from the oracle", () => {
+    expectTypeOf<SessionThread>().toEqualTypeOf<BetaManagedAgentsSessionThread>();
+    expectTypeOf<SessionThreadUsage>().toEqualTypeOf<BetaManagedAgentsSessionThreadUsage>();
+    expectTypeOf<SessionResource>().toEqualTypeOf<BetaManagedAgentsSessionResource>();
+    expectTypeOf<ListSessionThreadsResponse>().toEqualTypeOf<Pick<
+      BetaManagedAgentsSessionThreadsPageCursor,
+      "data" | "next_page"
+    >>();
+    expectTypeOf<ListSessionResourcesResponse>().toEqualTypeOf<Pick<
+      BetaManagedAgentsSessionResourcesPageCursor,
+      "data" | "next_page"
+    >>();
   });
 });
 

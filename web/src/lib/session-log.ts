@@ -5,25 +5,6 @@
 
 import type { ContentBlock, SessionEvent } from "./api/types";
 
-export type SessionStatusPresentation = "running" | "idle" | "preparing" | "terminated" | "unknown";
-
-/** Closed presentation of the aggregate-owned Session status. Unknown wire
- * values fail closed instead of being presented as sendable/idle. */
-export function sessionStatusPresentation(status?: string): SessionStatusPresentation {
-  switch (status) {
-    case "running":
-      return "running";
-    case "idle":
-      return "idle";
-    case "rescheduling":
-      return "preparing";
-    case "terminated":
-      return "terminated";
-    default:
-      return "unknown";
-  }
-}
-
 /** Flatten a content-block array to display text (non-text blocks show a tag). */
 export function textOf(content: ContentBlock[] | undefined): string {
   return (content ?? [])
@@ -42,97 +23,10 @@ export function pairToolResults(log: SessionEvent[]): Map<string, SessionEvent> 
   return results;
 }
 
-export interface SessionRuntimeProjection {
-  phase: "unknown" | "running" | "idle" | "error";
-  pendingConfirmIds: Set<string>;
-  /** Exact accepted replies whose durable Session command has not yet exposed
-   * its processed commit anchor. They no longer need user approval, but remain
-   * interruptible/recoverable work. */
-  resolvingConfirmIds: Set<string>;
-  latestError?: SessionEvent;
-}
-
-/**
- * Fold the committed stream into its one current Runtime projection. Status,
- * Chat, Trace, send admission, and Stop controls must all consume this reducer;
- * historical `requires_action` frames are facts, not permanent pending state.
- */
-export function projectSessionRuntime(log: SessionEvent[]): SessionRuntimeProjection {
-  let phase: SessionRuntimeProjection["phase"] = "unknown";
-  let ids = new Set<string>();
-  let resolving = new Set<string>();
-  let latestError: SessionEvent | undefined;
-  for (const ev of log) {
-    if (ev.type === "session.status_running") {
-      phase = "running";
-      ids = new Set();
-      resolving = new Set();
-    } else if (ev.type === "session.status_idle" && "stop_reason" in ev) {
-      phase = "idle";
-      const sr = ev.stop_reason as { type: string; event_ids?: string[] };
-      ids = new Set(sr.type === "requires_action" ? sr.event_ids ?? [] : []);
-      resolving = new Set();
-    } else if (ev.type === "session.error") {
-      phase = "error";
-      ids = new Set();
-      resolving = new Set();
-      latestError = ev;
-    } else if (ev.type === "agent.tool_result" && "tool_use_id" in ev) {
-      ids.delete(String(ev.tool_use_id));
-      resolving.delete(String(ev.tool_use_id));
-    } else if (ev.type === "user.tool_confirmation" && "tool_use_id" in ev) {
-      const id = String(ev.tool_use_id);
-      ids.delete(id);
-      if (ev.processed_at) resolving.delete(id);
-      else resolving.add(id);
-    } else if (ev.type === "user.custom_tool_result" && "custom_tool_use_id" in ev) {
-      const id = String(ev.custom_tool_use_id);
-      ids.delete(id);
-      if (ev.processed_at) resolving.delete(id);
-      else resolving.add(id);
-    }
-  }
-  return { phase, pendingConfirmIds: ids, resolvingConfirmIds: resolving, latestError };
-}
-
-/** The currently unresolved tool ids from the canonical Runtime projection. */
-export function pendingConfirmIds(log: SessionEvent[]): Set<string> {
-  return projectSessionRuntime(log).pendingConfirmIds;
-}
-
-/** Whether the latest lifecycle frame says the run is still working. */
-export function isRunning(log: SessionEvent[]): boolean {
-  return projectSessionRuntime(log).phase === "running";
-}
-
-/** Send admission from the current event projection, falling back to the
- * Session row only while no lifecycle event has arrived. */
-export function canSendToSession(
-  runtime: SessionRuntimeProjection,
-  sessionStatus?: string,
-): boolean {
-  const phase = runtime.phase === "unknown"
-    ? sessionStatusPresentation(sessionStatus)
-    : runtime.phase;
-  return phase != null
-    && phase !== "unknown"
-    && phase !== "running"
-    && phase !== "preparing"
-    && phase !== "terminated"
-    && runtime.pendingConfirmIds.size === 0;
-}
-
 /** A concise, actionable explanation for a committed run failure. */
 export function sessionErrorText(event: SessionEvent): string {
   if (event.type !== "session.error") return "";
-  const raw = "error" in event && event.error && typeof event.error === "object"
-    ? (event.error as { type?: unknown; message?: unknown })
-    : {};
-  const message = typeof raw.message === "string"
-    ? raw.message
-    : "message" in event && typeof event.message === "string"
-      ? event.message
-      : "The run failed without an error message.";
+  const message = event.error.message;
   if (/usage limit|quota/i.test(message)) {
     return "Model-provider quota is exhausted. Check billing/quota or switch the credential or model, then retry.";
   }
@@ -169,7 +63,10 @@ function spanKind(type: string): SpanKind {
     case "agent.tool_result":
       return "tool_result";
     case "session.status_running":
+    case "session.status_rescheduled":
     case "session.status_idle":
+    case "session.status_terminated":
+    case "session.deleted":
     case "session.error":
       return "status";
     case "span.outcome_evaluation_start":
@@ -194,7 +91,7 @@ export function spanDurationMs(prev?: string | null, cur?: string | null): numbe
 export function traceSpans(log: SessionEvent[]): TraceSpan[] {
   return log.map((ev, i) => {
     const kind = spanKind(ev.type);
-    let label = ev.type;
+    let label: string = ev.type;
     if ((kind === "tool" || kind === "tool_result") && "name" in ev && typeof ev.name === "string") {
       label = ev.name;
     } else if (kind === "inference") {

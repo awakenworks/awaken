@@ -1,4 +1,5 @@
 import type { Dream, DreamInput, ManagedModel, Session } from "./api/types";
+import { isManagedSessionActiveStatus } from "@awaken/managed-session-projection";
 
 export function dreamMemoryStoreId(dream: Dream): string | undefined {
   return (dream.inputs.find((input): input is Extract<DreamInput, { type: "memory_store" }> =>
@@ -12,7 +13,7 @@ export function dreamSessionIds(dream: Dream): string[] {
 
 export function eligibleDreamSessions(sessions: readonly Session[]): Session[] {
   return sessions.filter((session) =>
-    session.status !== "running"
+    !isManagedSessionActiveStatus(session.status)
       && session.metadata?.["awaken.session.origin"] !== "dream"
       && !session.archived_at,
   );

@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../src", import.meta.url));
 const FETCH_ALLOWED = new Set(["lib/api/client.ts"]);
+const SESSION_CREATE_ALLOWED = new Set(["lib/api/client.ts"]);
 // Secret entry must go through the write-only SecretField seam (ADR-0038 invariant:
 // a stored secret is never read back into the UI). Only SecretField itself may host a
 // raw password input.
@@ -28,6 +29,17 @@ function walk(dir) {
     const text = readFileSync(path, "utf8");
     if (!FETCH_ALLOWED.has(rel) && /\bfetch\s*\(/.test(text)) {
       console.error(`no-raw-fetch: ${rel} calls fetch() — go through lib/api/client.ts`);
+      failed = true;
+    }
+    if (
+      !SESSION_CREATE_ALLOWED.has(rel)
+      && /\bapi\.post(?:<[^>]*>)?\s*\(\s*ws\(\s*["']\/v1\/sessions["']\s*\)/.test(text)
+    ) {
+      console.error(`single-session-create: ${rel} bypasses createManagedSession()`);
+      failed = true;
+    }
+    if (/respond-async/i.test(text)) {
+      console.error(`no-session-preparation-track: ${rel} opts into a parallel async create protocol`);
       failed = true;
     }
     if (!SECRET_ALLOWED.has(rel) && /type=["']password["']/.test(text)) {

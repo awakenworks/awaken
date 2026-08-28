@@ -10,6 +10,11 @@ import { useApp } from "../../lib/app-state";
 import type { SessionUsage } from "../../lib/api/types";
 
 // ---- usage badges (tokens / cache / client-measured latency) ----
+function cacheCreationTotal(usage: SessionUsage | undefined): number {
+  return (usage?.cache_creation?.ephemeral_1h_input_tokens ?? 0)
+    + (usage?.cache_creation?.ephemeral_5m_input_tokens ?? 0);
+}
+
 /** Sum of billable tokens in a usage record (input + output + both cache legs). */
 export function usageTotal(u: SessionUsage | undefined): number {
   if (!u) return 0;
@@ -17,7 +22,7 @@ export function usageTotal(u: SessionUsage | undefined): number {
     (u.input_tokens ?? 0) +
     (u.output_tokens ?? 0) +
     (u.cache_read_input_tokens ?? 0) +
-    (u.cache_creation_input_tokens ?? 0)
+    cacheCreationTotal(u)
   );
 }
 
@@ -29,7 +34,7 @@ export function UsageBadges({
   latencyMs?: number;
 }) {
   const hasTokens = usageTotal(usage) > 0;
-  const cache = (usage?.cache_read_input_tokens ?? 0) + (usage?.cache_creation_input_tokens ?? 0);
+  const cache = (usage?.cache_read_input_tokens ?? 0) + cacheCreationTotal(usage);
   if (!hasTokens && latencyMs == null) return null;
   return (
     <span className="row" style={{ gap: 6, flexWrap: "wrap" }}>

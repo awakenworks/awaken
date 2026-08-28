@@ -3,6 +3,8 @@
 // RFC 9457 problem+json (admin plane) and the managed error envelope
 // { type: "error", error: { type, message } } (sessions/vaults).
 
+import type { CreateSessionRequest, Session } from "./types";
+
 const CLOUD_SESSION_TOKEN_KEY = "awaken.product.session-bearer";
 
 export const API_BETAS = {
@@ -283,6 +285,25 @@ export class IdempotencyScope {
   complete(): void {
     this.current = undefined;
   }
+}
+
+/** The immutable built-in Environment selected by console-owned local flows. */
+export const BUILTIN_LOCAL_ENVIRONMENT_ID = "env_local";
+
+/**
+ * Canonical synchronous Managed Session creation seam. The standard SDK route
+ * returns the Session directly; callers cannot opt into a parallel preparation
+ * protocol or attach transport-specific headers.
+ */
+export function createManagedSession(
+  request: CreateSessionRequest,
+  identity: IdempotencyScope,
+): Promise<Session> {
+  return api.post<Session>(
+    ws("/v1/sessions"),
+    request,
+    identity.headersFor(request),
+  );
 }
 
 export async function resolveWorkspaceContext(): Promise<string> {

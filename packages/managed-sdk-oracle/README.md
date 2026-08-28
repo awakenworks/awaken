@@ -4,16 +4,23 @@ This package turns selected official `@anthropic-ai/sdk` releases into a
 deterministic compatibility oracle. It is development and CI tooling; runtime
 code does not depend on an SDK package.
 
-There are three independent authorities:
+The dependency direction is singular: the selected **current official SDK** is
+the external compatibility expectation; Awaken's closed Rust request/response
+types and routes are the internal implementation of that contract. Everything
+else is derived evidence:
 
-- `contracts/anthropic-managed/canonical-wire.schemas.generated.json` is the
-  Awaken wire contract generated from Rust types.
 - `contracts/anthropic-managed/upstream-oracle.generated.json` records the
-  normalized official SDK routes and scoped declaration fingerprints.
+  normalized official SDK routes and scoped declaration fingerprints;
+- `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
+  the wire schemas generated from the Rust implementation and is compared to
+  that oracle rather than treated as a competing protocol definition;
+- generated coverage/catalog/type gates prove that callers and behavior tests
+  stay on the same path;
 - Cloud qualification executes the same named SDK anchors against a deployed
-  product. It proves behavior; it does not redefine either contract.
+  product. It is runtime/deployment evidence, never another contract authority.
 
-Two generated verification artifacts prevent those authorities from drifting:
+Two generated verification artifacts prevent the implementation and its
+evidence from drifting from the external expectation:
 
 - `contracts/anthropic-managed/operation-coverage.generated.json` maps every
   current SDK operation and reviewed SDK-absent route to its Rust behavior-test
@@ -29,9 +36,11 @@ anchors. Operation inventories and type fingerprints must never be copied into
 another hand-maintained manifest.
 
 The generated current wire contract also owns the browser Session event catalog
-and the required/optional outer Session properties. Its TypeScript projection
-exports only the event names needed by browser consumers; the JSON oracle feeds
-the exact Session-response gate. The standalone E2E package's
+and the Session plus nested SessionAgent properties/shape. Its TypeScript seam
+exports the exact current official Session, request, response, event, page,
+content, and usage types needed by browser consumers; the generated catalog
+supplies runtime classification without a hand-maintained union. The JSON oracle
+feeds the exact Session-response gate. The standalone E2E package's
 `@anthropic-ai/sdk` dependency is an executable mirror only: `generate` and
 `check` reject it unless it exactly matches the current oracle version.
 
