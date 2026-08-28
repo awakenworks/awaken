@@ -591,6 +591,84 @@ test("session detail toggles Chat ⇄ Trace (the log read as spans)", async ({ p
   await expect(page.locator(".primary-thread-row")).toContainText(agent);
 });
 
+test("Session recovery interrupts committed pending tools through the shared event projection", async ({ page }) => {
+  // Cause/effect graph: C1 the authoritative Event log ends in
+  // requires_action; C2 the Session summary says idle; C3 the operator selects
+  // recovery; C4 the POST returns and the same log projects interrupt/end_turn.
+  // Effects: E1 UI shows pending=1/send=no despite summary idle; E2 recovery
+  // sends one user.interrupt with a stable key; E3 pending becomes 0/send=yes.
+  // | Rule | Event truth | Action/result | Effects |
+  // | U1 | requires_action | none | E1 |
+  // | U2 | U1 | interrupt accepted + terminal projection | E2+E3 |
+  const sessionId = "session-pending-recovery-ui";
+  let interrupted = false;
+  let idempotencyKey = "";
+  let postedBody: unknown;
+  await page.route(
+    new RegExp(`/v1/(?:workspaces/[^/]+/)?sessions/${sessionId}(?:/.*)?$`, "u"),
+    async (route) => {
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname.endsWith("/events") && request.method() === "POST") {
+      idempotencyKey = request.headers()["idempotency-key"] ?? "";
+      postedBody = request.postDataJSON();
+      interrupted = true;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ data: [{ id: "evt_interrupt", type: "user.interrupt" }] }),
+      });
+      return;
+    }
+    if (pathname.endsWith("/events")) {
+      const data = interrupted
+        ? [
+            { id: "tool_1", type: "agent.tool_use", name: "bash", evaluated_permission: "ask", input: { command: "git status" } },
+            { id: "idle_1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["tool_1"] } },
+            { id: "evt_interrupt", type: "user.interrupt", processed_at: "2026-08-27T00:00:01Z" },
+            { id: "idle_2", type: "session.status_idle", stop_reason: { type: "end_turn" }, processed_at: "2026-08-27T00:00:02Z" },
+          ]
+        : [
+            { id: "tool_1", type: "agent.tool_use", name: "bash", evaluated_permission: "ask", input: { command: "git status" } },
+            { id: "idle_1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["tool_1"] } },
+          ];
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, has_more: false, next_page: null }) });
+      return;
+    }
+    if (pathname.endsWith(sessionId)) {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          id: sessionId,
+          type: "session",
+          agent: { id: "assistant", type: "agent", tools: [], skills: [], mcp_servers: [] },
+          created_at: "2026-08-27T00:00:00Z",
+          updated_at: "2026-08-27T00:00:00Z",
+          archived_at: null,
+          metadata: {},
+          resources: [],
+          outcome_evaluations: [],
+          status: "idle",
+        }),
+      });
+      return;
+    }
+      await route.continue();
+    },
+  );
+
+  await page.goto(`/w/default/sessions/${sessionId}`);
+  await expect(page.getByText("Pending tools 1", { exact: true })).toBeVisible();
+  await expect(page.getByText("Can send message no", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Recover run/u }).click();
+  await page.getByRole("button", { name: "Recover run", exact: true }).click();
+  await expect.poll(() => postedBody).toEqual({ events: [{ type: "user.interrupt" }] });
+  await expect.poll(() => idempotencyKey).toMatch(/^session-control-/u);
+  await expect(page.getByText("Pending tools 0", { exact: true })).toBeVisible();
+  await expect(page.getByText("Can send message yes", { exact: true })).toBeVisible();
+});
+
 test("Session Child runs exposes a delegated thread, its projected events, and a scoped stop action", async ({ page }) => {
   const sessionId = "session-child-runs-ui";
   const childId = "run_child_1";

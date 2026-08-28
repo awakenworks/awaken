@@ -1355,6 +1355,7 @@ pub awaken_session_contract::SessionEventInterrupt::targets: alloc::vec::Vec<awa
 pub struct awaken_session_contract::SessionEventProjectionAnchor
 pub awaken_session_contract::SessionEventProjectionAnchor::source_commit_cursor: u64
 pub struct awaken_session_contract::SessionEventToolReply
+pub awaken_session_contract::SessionEventToolReply::answered_pending_commit_cursor: core::option::Option<u64>
 pub awaken_session_contract::SessionEventToolReply::expected_correlation_id: alloc::string::String
 pub awaken_session_contract::SessionEventToolReply::expected_run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_contract::SessionEventToolReply::expected_thread_version: core::option::Option<u64>

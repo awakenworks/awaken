@@ -139,6 +139,22 @@ fn install_test_session_application(host: &Arc<SharedHost>) {
         .expect("install one test Session application authority");
 }
 
+/// Install the existing recording coordination authority for tests that cross
+/// a real Session activity settlement boundary. Environment-only fixtures use
+/// the stricter rejecting authority above so an accidental coordination effect
+/// still fails closed.
+fn install_recording_session_application(host: &Arc<SharedHost>) {
+    static APPLICATION: std::sync::OnceLock<
+        Arc<dyn awaken_session_contract::SessionAgentCoordination>,
+    > = std::sync::OnceLock::new();
+    let application = APPLICATION.get_or_init(|| {
+        Arc::new(crate::coordination::RecordingSessionAgentCoordination::default())
+    });
+    crate::ManagedHost::new(host.clone())
+        .install_agent_coordination_application(Arc::downgrade(application))
+        .expect("install recording Session application authority");
+}
+
 fn resource_registry() -> Arc<awaken_resource_application::RegistryApplication> {
     let storage = Arc::new(
         awaken_resource_store::SqliteResourceStore::in_memory()
@@ -1712,6 +1728,154 @@ async fn durable_interrupt_returns_after_intent_before_the_blocked_attempt_finis
     gate.notify_waiters();
 }
 
+#[tokio::test]
+async fn managed_user_run_reservation_precedes_physical_environment_realization() {
+    use awaken_run_ingress::DispatchQueue as _;
+
+    // Cause/effect graph: C1 a cold Managed Session has no Runtime or
+    // Environment; C2 its User Event requires a durable reservation; C3 a
+    // Worker has not claimed it. Effects: E1 persist one unclaimable
+    // reservation; E2 create no Environment; E3 evict the envelope-only Runtime
+    // so the claimed Worker must rebuild from frozen dispatch truth.
+    // Constraint: physical realization remains in the existing claimed Worker
+    // path; reservation introduces no second executor or store.
+    //
+    // | Rule | cold | reservation | claimed | Effects |
+    // |---|---|---|---|---|
+    // | R1 | yes | requested | no | E1+E2+E3 |
+    let thread = "cold-session-reservation";
+    let run_id = RunId("cold-session-reservation-run".into());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory()
+            .expect("reservation dispatch"),
+    );
+    let host =
+        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone()));
+    install_test_session_application(&host);
+    let managed = crate::ManagedHost::new(host.clone());
+
+    assert_eq!(
+        managed
+            .reserve_session_user_run(awaken_session_contract::SessionUserRunCommand {
+                session_id: thread.into(),
+                agent_id: "assistant".into(),
+                operation_id: "cold-session-reservation-op".into(),
+                run_id,
+                content: vec![ContentBlock::text("reserve before realization")],
+                accompanying_system: None,
+                data_subject_id: None,
+                traceparent: None,
+            })
+            .await
+            .expect("R1 reservation"),
+        awaken_session_contract::SessionUserRunReservation::Reserved,
+        "R1/E1"
+    );
+    assert_eq!(
+        managed
+            .session_user_run_state(thread, &RunId("cold-session-reservation-run".into()))
+            .await
+            .expect("R1 read pre-claim state"),
+        None,
+        "R1/E2 recovery read observes committed Thread truth without realization"
+    );
+    let rows = dispatch
+        .list_dispatches()
+        .await
+        .expect("R1 inspect dispatch");
+    assert_eq!(rows.len(), 1, "R1/E1 exact reservation");
+    assert_eq!(
+        rows[0].state,
+        awaken_run_ingress::DispatchState::Reserved,
+        "R1/E1 remains unclaimable before activity activation"
+    );
+    assert!(host.session_environment(thread).await.is_none(), "R1/E2");
+    assert!(
+        host.session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+            .is_none(),
+        "R1/E3"
+    );
+}
+
+#[tokio::test]
+async fn managed_interrupt_cancels_cold_dispatch_without_realizing_an_environment() {
+    use awaken_run_ingress::{DispatchQueue as _, RunDispatch};
+
+    // Cause/effect graph: C1 one Session-affined dispatch exhausted retries; C2
+    // no Runtime context/Environment is resident; C3 Environment realization
+    // may be unavailable; C4 user.interrupt is accepted. Effects: E1 select and
+    // requeue the exact dead-letter row; E2 persist its cancellation so the
+    // ordinary Worker cancellation claim can settle it; E3 do not construct a
+    // Runtime context or touch Environment realization. Constraint: this test
+    // observes the canonical Session slot and dispatch store only; it adds no
+    // control registry or force-delete path.
+    //
+    // | Rule | dispatch | resident context | Environment | interrupt | Effects |
+    // |---|---|---|---|---|---|
+    // | C1 | unique dead letter | absent | unavailable/unknown | accepted | E1+E2+E3 |
+    // | C2 | absent | absent | unavailable/unknown | accepted | no-op+E3 (idle sibling) |
+    // | C3 | multiple | absent | any | accepted | reject (ambiguity sibling) |
+    let thread = "cold-managed-interrupt";
+    let run_id = RunId("cold-managed-interrupt-run".into());
+    let dispatch = Arc::new(
+        awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
+    );
+    dispatch
+        .enqueue(
+            RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
+                thread, &run_id.0,
+            ))
+            .for_session(ThreadId(thread.into()))
+            .with_session_activity_epoch(1),
+        )
+        .await
+        .expect("C1 executable Session dispatch");
+    let claimed = dispatch
+        .claim("failed-worker", 1, 0, &Default::default())
+        .await
+        .expect("C1 claim")
+        .expect("C1 exact claim");
+    assert_eq!(
+        dispatch
+            .quarantine_retry_exhausted(0, claimed.lease.expires_ms.saturating_add(1))
+            .await
+            .expect("C1 quarantine retry exhaustion"),
+        1,
+        "C1 exact dead letter"
+    );
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_dispatch_store(dispatch.clone());
+    assert!(
+        host.session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+            .is_none(),
+        "C2 precondition"
+    );
+
+    host.interrupt(thread).await.expect("C4 interrupt accepted");
+
+    let rows = dispatch
+        .list_dispatches()
+        .await
+        .expect("E1 inspect canonical dispatch");
+    assert_eq!(rows.len(), 1, "E1 exact row");
+    assert_eq!(
+        rows[0].state,
+        awaken_run_ingress::DispatchState::Pending,
+        "E1 dead letter reuses the same runnable row"
+    );
+    assert!(rows[0].cancellation_requested, "E2 durable cancellation");
+    assert!(
+        host.session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten()
+            .is_none(),
+        "E3 interrupt must not realize a cold Runtime/Environment"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_intent() {
     // Test design summary; the full L1 matrix is below. Causes: C1 an exact
@@ -1811,6 +1975,7 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
     // direct foreground plus a co-located process pool.
     host.deployment.durable = false;
     let host = Arc::new(host);
+    install_recording_session_application(&host);
     host.ensure_dispatch_pool();
 
     let mut activation =
@@ -1828,7 +1993,11 @@ async fn managed_interrupt_signals_the_registered_attempt_only_after_durable_int
         )
         .expect("coherent blocking remote candidate");
     dispatch
-        .enqueue(RunDispatch::new(activation).for_session(ThreadId(thread.into())))
+        .enqueue(
+            RunDispatch::new(activation)
+                .for_session(ThreadId(thread.into()))
+                .with_session_activity_epoch(1),
+        )
         .await
         .expect("L1 Managed Run admission");
     host.dispatch_pool_or_err().expect("L1 pool").notify().await;
@@ -1997,7 +2166,11 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
         awaken_run_ingress::AnyDispatchStore::open_sqlite_in_memory().expect("dispatch store"),
     );
     dispatch
-        .enqueue(RunDispatch::new(activation).for_session(ThreadId(thread.into())))
+        .enqueue(
+            RunDispatch::new(activation)
+                .for_session(ThreadId(thread.into()))
+                .with_session_activity_epoch(1),
+        )
         .await
         .expect("M1 Managed Run admission");
     let previous = dispatch
@@ -2024,6 +2197,7 @@ async fn managed_primary_interrupt_recovers_the_active_dispatch_without_a_local_
                 credential_realization: Default::default(),
             }),
     );
+    install_recording_session_application(&host);
     let ctx = host
         .ctx_for(thread, None)
         .await
@@ -2100,7 +2274,8 @@ async fn managed_primary_interrupt_fails_closed_on_ambiguous_dispatch_authority(
                 RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
                     thread, run,
                 ))
-                .for_session(ThreadId(thread.into())),
+                .for_session(ThreadId(thread.into()))
+                .with_session_activity_epoch(1),
             )
             .await
             .expect("A1 conflicting executable admission");
@@ -2274,6 +2449,57 @@ async fn compaction_keeps_full_history_until_a_summary_activates_the_window() {
         reply, "no-summary-users=2",
         "KeepLast must remain inactive until compaction supplies prefix coverage"
     );
+}
+
+/// Durable compaction dispatch cause/effect graph: C1 an embedded Agent enables
+/// compaction with a non-default threshold; C2 reservation generates the
+/// immutable dispatch snapshot; C3 a claimed Worker rebuilds exclusively from
+/// that snapshot. Effects: E1 C1+C2 freezes the exact plugin id/config; E2
+/// C1+C2+C3 retains the same threshold and tail. Constraint: the generic
+/// `plugin_ids`/`plugin_config` projection is the sole configuration authority;
+/// no process-local compaction settings are consulted after publication.
+///
+/// | Rule | configured | phase | threshold/keep_last | effect |
+/// |---|---|---|---|---|
+/// | C7 | 2/1 | reservation | 2/1 | freeze exact config |
+/// | C8 | 2/1 | claimed rebuild | 2/1 | preserve exact config |
+#[tokio::test]
+async fn generated_compaction_config_survives_claimed_rebuild() {
+    let host = Arc::new(SharedHost::new(Arc::new(CompactHostModel), "stub").with_compaction(2, 1));
+
+    let provisional = host
+        .ctx_for_session_reservation("durable-compact-config", Some("assistant"))
+        .await
+        .expect("C7 reservation context");
+    let assert_exact_config = |snapshot: &ExecutableAgentSnapshot, rule: &str| {
+        assert!(
+            snapshot
+                .resolved_spec
+                .plugin_ids
+                .iter()
+                .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID),
+            "{rule} selects compact"
+        );
+        let config: awaken_ext_compact::CompactConfig = serde_json::from_value(
+            snapshot.resolved_spec.plugin_config[awaken_ext_compact::COMPACT_PLUGIN_ID].clone(),
+        )
+        .expect("valid frozen CompactConfig");
+        assert_eq!((config.threshold, config.keep_last), (2, 1), "{rule}");
+    };
+    assert_exact_config(&provisional.config, "C7/E1");
+
+    host.evict_session_for_rebuild("durable-compact-config")
+        .await;
+    let executable = host
+        .ctx_for_snapshot_with_sandbox(
+            "durable-compact-config",
+            Some("assistant"),
+            Some(provisional.config.clone()),
+            None,
+        )
+        .await
+        .expect("C8 claimed-style context");
+    assert_exact_config(&executable.config, "C8/E2");
 }
 
 #[tokio::test]
@@ -3465,14 +3691,18 @@ async fn applying_readonly_file_to_live_workdir_fails_closed_without_partial_pro
 
 /// Committed-query cause/effect graph after execution provisioning fails:
 /// C1 a frozen read-only File is staged; C2 Workdir cannot enforce immutability;
-/// C3 no runtime/environment becomes resident; C4 a committed-state GET follows.
-/// C1+C2 cause E1 the Run to fail before inference. C3+C4 must cause E2 the
-/// query to open only committed truth, return the empty page, and leave the
-/// execution environment absent instead of retrying the failing provisioning.
+/// C3 a side-effect-free reservation preflight occurs; C4 no runtime/environment
+/// becomes resident; C5 a committed-state GET follows. C1+C2+C3 cause E1 the
+/// reservation to fail before activity or inference. C1+C2 cause E2 direct Run
+/// construction to fail identically. C4+C5 cause E3 the query to open only
+/// committed truth, return the empty page, and leave the execution environment
+/// absent instead of retrying the failing provisioning.
 ///
-/// | Rule | C1 | C2 | C3 | C4 | E1 Run denied | E2 query succeeds/no env |
+/// | Rule | C1 | C2 | C3 | C4 | C5 | Effect |
 /// |---|---|---|---|---|---|---|
-/// | Q1 | T | T | T | T | T | T |
+/// | Q1 | T | T | T | T | F | E1 reservation denied/no env |
+/// | Q2 | T | T | F | T | F | E2 direct Run denied/no env |
+/// | Q3 | T | T | F | T | T | E3 query succeeds/no env |
 #[tokio::test]
 async fn committed_queries_do_not_provision_a_failed_session_environment() {
     let mut deployment = crate::DeploymentConfig::ephemeral();
@@ -3524,6 +3754,26 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         .await
         .expect("stage frozen Session");
 
+    let reservation_error = match host
+        .ctx_for_session_reservation("t-query-after-provisioning-denial", Some("assistant"))
+        .await
+    {
+        Ok(_) => panic!("Q1 reservation preflight must reject an impossible projection"),
+        Err(error) => error,
+    };
+    assert!(
+        reservation_error
+            .message
+            .contains("does not enforce read-only"),
+        "Q1"
+    );
+    assert!(
+        host.session_environment("t-query-after-provisioning-denial")
+            .await
+            .is_none(),
+        "Q1 reservation preflight has no physical effect"
+    );
+
     let error = match host
         .run(
             None,
@@ -3539,12 +3789,12 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
         Ok(_) => panic!("Workdir must reject the read-only File"),
         Err(error) => error,
     };
-    assert!(error.message.contains("does not enforce read-only"), "Q1");
+    assert!(error.message.contains("does not enforce read-only"), "Q2");
     assert!(
         host.session_environment("t-query-after-provisioning-denial")
             .await
             .is_none(),
-        "Q1 failed provisioning must not publish an environment"
+        "Q2 failed provisioning must not publish an environment"
     );
 
     let feed = host
@@ -3558,12 +3808,12 @@ async fn committed_queries_do_not_provision_a_failed_session_environment() {
     )
     .await
     .expect("read empty committed lifecycle page");
-    assert!(page.events.is_empty(), "Q1 inference never committed a Run");
+    assert!(page.events.is_empty(), "Q3 inference never committed a Run");
     assert!(
         host.session_environment("t-query-after-provisioning-denial")
             .await
             .is_none(),
-        "Q1 committed query remains free of environment side effects"
+        "Q3 committed query remains free of environment side effects"
     );
 }
 
@@ -4693,6 +4943,115 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
         host.session_environment("deferred-filesystem-skill")
             .await
             .is_some()
+    );
+}
+
+/// Managed-filesystem reservation cause/effect graph: C1 the Session permits
+/// `read`; C2 it selects an instruction-only Skill; C3 reservation must remain
+/// side-effect free; C4 the claimed/local execution context is built afterward.
+/// Effects: E1 C1+C2+C3 projects the stable `SKILL.md` path without creating an
+/// Environment; E2 C1+C2+C4 eagerly creates the Environment and materializes
+/// that exact path. Constraint: reservation and execution share one Skill
+/// projection; semantic tools are never a fallback for a missing provisional
+/// directory.
+///
+/// | Rule | read | selected Skill | phase | Environment | path/body |
+/// |---|---|---|---|---|---|
+/// | L9 | yes | yes | reservation | absent | path only |
+/// | L10 | yes | yes | execution | present | same path + body |
+///
+/// L2 covers the complementary read-disabled semantic-delivery rule.
+#[tokio::test]
+async fn managed_filesystem_skill_path_survives_deferred_reservation() {
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![
+        awaken_ext_skills::SkillSpec::new(
+            "release-signal",
+            "Release signal",
+            "release safely",
+            "RESERVATION-SKILL-BODY",
+        ),
+    ]));
+    install_test_session_application(&host);
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "deferred-managed-filesystem-skill",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                tools: None,
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .expect("prepare lazy Session");
+
+    let provisional = host
+        .ctx_for_session_reservation("deferred-managed-filesystem-skill", Some("assistant"))
+        .await
+        .expect("L9 provisional reservation context");
+    assert!(
+        provisional.env.is_none(),
+        "L9/E1 no reservation side effect"
+    );
+    let provisional_prompt = host
+        .session_slots
+        .read("deferred-managed-filesystem-skill", |slot| {
+            slot.skill_prompt.clone()
+        })
+        .flatten()
+        .expect("L9/E1 projected Skill metadata");
+    assert!(
+        provisional_prompt.contains(".skills/release-signal/SKILL.md"),
+        "L9/E1 stable path: {provisional_prompt}"
+    );
+    assert_eq!(
+        provisional
+            .config
+            .resolved_spec
+            .plugin_config
+            .agent
+            .skills
+            .iter()
+            .map(|skill| skill.skill_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["release-signal"],
+        "L9/E1 generated dispatch snapshot freezes the selected catalog"
+    );
+
+    host.evict_session_for_rebuild("deferred-managed-filesystem-skill")
+        .await;
+    let executable = host
+        .ctx_for_snapshot_with_sandbox(
+            "deferred-managed-filesystem-skill",
+            Some("assistant"),
+            Some(provisional.config.clone()),
+            None,
+        )
+        .await
+        .expect("L10 claimed-style executable context");
+    let environment = executable.env.as_ref().expect("L10/E2 eager Environment");
+    let files = environment.scan_skill_dir(crate::skills::DELIVERED_SKILLS_SUBDIR);
+    let materialized = files
+        .iter()
+        .find(|file| file.id == "release-signal")
+        .expect("L10/E2 exact Skill path materialized");
+    assert!(materialized.content.contains("RESERVATION-SKILL-BODY"));
+    assert_eq!(
+        host.session_slots
+            .read("deferred-managed-filesystem-skill", |slot| {
+                slot.skill_prompt.clone()
+            })
+            .flatten()
+            .as_deref(),
+        Some(provisional_prompt.as_str()),
+        "L10/E2 execution retains the reservation path"
     );
 }
 
@@ -11819,7 +12178,8 @@ async fn coordinator_terminal_quiescence_waits_for_remote_parent_and_child_settl
                 RunDispatch::new(crate::host::worker_resolver::test_support::test_activation(
                     &thread.0, &run.0,
                 ))
-                .for_session(parent.clone()),
+                .for_session(parent.clone())
+                .with_session_activity_epoch(1),
             )
             .await
             .expect("Q1 active dispatch");

@@ -1,8 +1,10 @@
 ------------------------------ MODULE RunIngress ------------------------------
 EXTENDS Naturals, RuntimeVocabulary
 
-\* Runtime/run-ingress lifecycle model. Managed environment WorkQueue is a
-\* distinct aggregate modeled in WorkQueue.tla.
+\* Runtime/run-ingress lifecycle after admission activation. Session Run
+\* reservation and activity-before-Pending are composed with WorkQueue and
+\* realization ownership in SessionRunWorkflow.tla; this model deliberately
+\* begins at executable Pending and owns only claim/settlement fencing.
 CONSTANTS Owners, NoOwner, MaxEpoch
 
 DispatchStates == {

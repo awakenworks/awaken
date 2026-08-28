@@ -62,7 +62,11 @@ use awaken_runtime_contract::llm::{
 };
 use awaken_runtime_contract::resolved::{ModelBinding, ResolvedModelCandidate, ToolKind};
 use awaken_runtime_contract::snapshot::{AgentId, ExecutableAgentSnapshot};
-use axum::Router;
+use axum::extract::State;
+use axum::http::StatusCode;
+use axum::routing::post;
+use axum::{Json, Router};
+use serde::Deserialize;
 
 // This Scenario platform depends on each authoritative owner directly.
 pub use awaken_config_service::{ConfigService, capabilities_router, config_router};
@@ -1314,6 +1318,9 @@ pub async fn build_config_router() -> Router {
             .with_admin_tools(admin_execs)
             .with_remote_attempt_executor(awaken_coordinator::a2a_attempt_executor(None))
     });
+    let scenario_dispatch = host
+        .dispatch_store()
+        .expect("config scenario installs one Dispatch authority");
     // The reserved value owns only configuration/tool visibility. Install the
     // executable in the Host's real platform Workspace so Sessions, resources,
     // credentials, and runtime lookup share one coordinate.
@@ -1342,10 +1349,49 @@ pub async fn build_config_router() -> Router {
     // never a reason to rebuild ManagedState through a parallel in-memory path.
     let flat = mount_with_agent_source(host, executable_agent_catalog)
         .merge(config_router(plane))
-        .merge(agents);
+        .merge(agents)
+        .merge(session_reservation_scenario_router(scenario_dispatch));
     let flat =
         awaken_coordinator::workspace_path::with_platform_workspace(flat, platform_workspace);
     awaken_coordinator::workspace_path::with_workspace_path_addressing(flat)
+}
+
+#[derive(Deserialize)]
+struct SessionReservationScenarioRequest {
+    request: awaken_run_ingress::RunDispatch,
+    reservation_deadline_ms: u64,
+}
+
+/// Scenario-only adapter for stopping at the real persistence-before-activity
+/// crash boundary. It delegates the production Dispatch command and owns no
+/// state, transition, clock, or SQL mutation of its own.
+fn session_reservation_scenario_router(
+    dispatch: Arc<awaken_run_ingress::AnyDispatchStore>,
+) -> Router {
+    async fn reserve(
+        State(dispatch): State<Arc<awaken_run_ingress::AnyDispatchStore>>,
+        Json(command): Json<SessionReservationScenarioRequest>,
+    ) -> (StatusCode, Json<serde_json::Value>) {
+        use awaken_run_ingress::DispatchQueue as _;
+
+        match dispatch
+            .reserve_session_run(command.request, command.reservation_deadline_ms)
+            .await
+        {
+            Ok(outcome) => (
+                StatusCode::OK,
+                Json(serde_json::json!({ "outcome": outcome })),
+            ),
+            Err(error) => (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({ "error": error.to_string() })),
+            ),
+        }
+    }
+
+    Router::new()
+        .route("/v1/scenario/session-run/reserve", post(reserve))
+        .with_state(dispatch)
 }
 
 #[cfg(test)]

@@ -481,10 +481,22 @@ async fn session_child_admission_is_atomic_and_bounded(store: &dyn DispatchQueue
 
     let session_root =
         dispatch(ns, "managed-session-root", "managed-parent").for_session(parent.clone());
-    store
-        .enqueue(session_root.clone())
-        .await
-        .expect("SC11 enqueue canonical Session root");
+    assert_eq!(
+        store
+            .reserve_session_run(session_root.clone(), 49_000)
+            .await
+            .expect("SC11 reserve canonical Session root"),
+        SessionRunReservationOutcome::Reserved,
+        "SC11 root uses the canonical reservation boundary"
+    );
+    assert_eq!(
+        store
+            .activate_session_run_reservation(session_root.run_id(), &parent, 1)
+            .await
+            .expect("SC11 activate canonical Session root"),
+        SessionRunReservationActivation::Activated,
+        "SC11 root is executable only after its activity receipt"
+    );
     let root_claim = store
         .claim_run(
             session_root.run_id(),

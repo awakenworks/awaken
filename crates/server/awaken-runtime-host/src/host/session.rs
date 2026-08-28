@@ -244,15 +244,7 @@ impl SharedHost {
         provider: &crate::session_environment::SessionEnvironmentProvider,
         spec: &awaken_provisioning_contract::SandboxSpec,
     ) -> Result<crate::session_environment::SessionEnvironment, HostError> {
-        if spec.isolation >= awaken_provisioning_contract::IsolationClass::Namespace {
-            let required = awaken_provisioning_contract::SandboxRequirements::from_spec(spec, true);
-            let capabilities = provider.capabilities();
-            if !capabilities.satisfies_requirements(&required) {
-                return Err(HostError::internal(format!(
-                    "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes: required={required:?}, provider={capabilities:?}",
-                )));
-            }
-        }
+        self.validate_session_environment_capabilities(provider, spec)?;
         self.cache_volume_prewarmer
             .prepare_mounts(&spec.mounts)
             .await
@@ -261,6 +253,29 @@ impl SharedHost {
             .create(spec)
             .await
             .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    /// Validate one exact physical projection without creating it. Reservation
+    /// uses this shared classifier when durable admission must remain
+    /// side-effect free but the eventual execution cannot be deferred; actual
+    /// creation reuses it immediately before effects.
+    fn validate_session_environment_capabilities(
+        &self,
+        provider: &crate::session_environment::SessionEnvironmentProvider,
+        spec: &awaken_provisioning_contract::SandboxSpec,
+    ) -> Result<(), HostError> {
+        let capabilities = provider.capabilities();
+        if spec.isolation >= awaken_provisioning_contract::IsolationClass::Namespace
+            && (!capabilities.tool_transparent || !capabilities.path_fidelity)
+        {
+            let required = awaken_provisioning_contract::SandboxRequirements::from_spec(spec, true);
+            return Err(HostError::internal(format!(
+                "Session environment cannot preserve one sandbox-absolute workspace path across Hand, Bash, Git, and Agent processes: required={required:?}, provider={capabilities:?}",
+            )));
+        }
+        awaken_provisioning_contract::prepare_environment(spec, &capabilities)
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        Ok(())
     }
 
     /// Materialize the deferred environment at the first Sandbox-target tool.
@@ -509,6 +524,19 @@ impl SharedHost {
         self.ctx_for_with_sandbox(thread, agent, None).await
     }
 
+    /// Build only the immutable dispatch envelope for a Session User Run. A
+    /// first reservation must not realize the physical Environment: that effect
+    /// belongs to the Worker that later claims the activated row. Existing
+    /// resident contexts are reused unchanged.
+    pub(crate) async fn ctx_for_session_reservation(
+        &self,
+        thread: &str,
+        agent: Option<&str>,
+    ) -> Result<Arc<SessionCtx>, HostError> {
+        self.ctx_for_snapshot_with_attempt(thread, agent, None, None, None, true)
+            .await
+    }
+
     /// Open a session over an already-adopted sandbox, or create one when this is
     /// the first placement. The recovery adapter owns parsing/provider selection;
     /// session construction only enforces that a resident thread cannot be rebound
@@ -533,7 +561,7 @@ impl SharedHost {
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         adopted: Option<crate::session_environment::SessionEnvironment>,
     ) -> Result<Arc<SessionCtx>, HostError> {
-        self.ctx_for_snapshot_with_attempt(thread, agent, published_snapshot, adopted, None)
+        self.ctx_for_snapshot_with_attempt(thread, agent, published_snapshot, adopted, None, false)
             .await
     }
 
@@ -551,6 +579,7 @@ impl SharedHost {
             Some(published_snapshot),
             adopted,
             Some(attempt),
+            false,
         )
         .await
     }
@@ -562,6 +591,7 @@ impl SharedHost {
         published_snapshot: Option<awaken_runtime_contract::ExecutableAgentSnapshot>,
         adopted: Option<crate::session_environment::SessionEnvironment>,
         claimed_attempt: Option<ClaimedRuntimeInput>,
+        force_defer_environment: bool,
     ) -> Result<Arc<SessionCtx>, HostError> {
         let lifecycle = self
             .session_slots
@@ -742,14 +772,25 @@ impl SharedHost {
             installed.as_ref(),
             frozen_skill_versions.as_ref(),
         )?;
-        let deferred = retained.is_none()
-            && adopted.is_none()
-            && self.can_defer_session_environment(
-                thread,
-                Some(selected_agent.as_str()),
-                installed.as_ref(),
-                has_published_multiagent,
-            );
+        let can_defer = self.can_defer_session_environment(
+            thread,
+            Some(selected_agent.as_str()),
+            installed.as_ref(),
+            has_published_multiagent,
+        );
+        // Reservation cannot create a physical Environment before its immutable
+        // dispatch is durable. It must still reject a deterministic substrate
+        // mismatch before the Session activity opens; otherwise an impossible
+        // mount remains `running` while the queue repeatedly relinquishes it.
+        if force_defer_environment && !self.deployment.disable_local_pool && !a2a_only && !can_defer
+        {
+            self.validate_session_environment_capabilities(
+                self.session_environment_provider(provisioning)?,
+                &self.sandbox_spec(thread),
+            )?;
+        }
+        let deferred =
+            retained.is_none() && adopted.is_none() && (force_defer_environment || can_defer);
         let (env, needs_provision, needs_registration) = match (retained, adopted) {
             (Some(existing), Some(adopted)) => {
                 if existing.handle() != adopted.handle() {
@@ -1066,6 +1107,26 @@ impl SharedHost {
             (skills, None) => skills,
             (None, Some(_)) => None,
         };
+        // An embedded/default Agent has no immutable publication to carry its
+        // Session-selected host catalog. Freeze the exact configured/delivered
+        // ids into the generated snapshot that crosses durable dispatch, so the
+        // claimed rebuild applies the same selection filter instead of treating
+        // an empty binding list as an explicit denial.
+        let generated_skill_bindings = installed.is_none().then(|| {
+            let ids = filtered_specs
+                .iter()
+                .map(|skill| skill.id.clone())
+                .chain(
+                    filtered_delivered
+                        .iter()
+                        .flatten()
+                        .map(|version| version.skill_id.to_string()),
+                )
+                .collect::<std::collections::BTreeSet<_>>();
+            ids.iter()
+                .map(|id| awaken_agent_contract::AgentSkillBinding::custom(id.clone()))
+                .collect::<Vec<_>>()
+        });
         if let Some(wiring) = crate::skills::wire_skills(
             &filtered_specs,
             mcp.skill_registries.clone(),
@@ -1082,8 +1143,7 @@ impl SharedHost {
             &skills_subdir,
             &repository_skill_roots,
             commit.clone(),
-            content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem
-                && !self.deployment.disable_local_pool,
+            content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
         )
         .await
         .map_err(HostError::internal)?
@@ -1256,22 +1316,24 @@ impl SharedHost {
         // Compaction is a plugin too: a BeforeInference hook that folds the older
         // slice into a summary and injects it request-only. A successful fold
         // activates its matching Run-scoped window; before that history stays whole.
-        let published_compact = installed.as_ref().and_then(|snapshot| {
-            snapshot
-                .resolved_spec
-                .plugin_ids
-                .iter()
-                .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
-                .then_some(snapshot)
-        });
-        let compact_config = match published_compact {
-            Some(snapshot) => Some(
-                snapshot
-                    .resolved_spec
-                    .plugin_config
+        // The selected plugin id/config pair is the sole compaction authority in
+        // both an immutable publication and the generated dispatch snapshot. In
+        // particular, a claimed Worker must not reconstruct host defaults after
+        // the coordinator froze a non-default threshold.
+        let compact_source = installed
+            .as_ref()
+            .map(|snapshot| &snapshot.resolved_spec)
+            .filter(|spec| {
+                spec.plugin_ids
+                    .iter()
+                    .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
+            });
+        let compact_config = match compact_source {
+            Some(spec) => Some(
+                spec.plugin_config
                     .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
                     .cloned()
-                    .map(serde_json::from_value)
+                    .map(serde_json::from_value::<awaken_ext_compact::CompactConfig>)
                     .transpose()
                     .map_err(|error| {
                         HostError::bad_request(format!(
@@ -1280,10 +1342,27 @@ impl SharedHost {
                     })?
                     .unwrap_or_default(),
             ),
-            None => self
-                .compaction
-                .as_ref()
-                .map(|compaction| compaction.config.clone()),
+            None if installed.is_none()
+                && self
+                    .plugin_ids
+                    .iter()
+                    .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID) =>
+            {
+                Some(
+                    self.plugin_config
+                        .get(awaken_ext_compact::COMPACT_PLUGIN_ID)
+                        .cloned()
+                        .map(serde_json::from_value::<awaken_ext_compact::CompactConfig>)
+                        .transpose()
+                        .map_err(|error| {
+                            HostError::bad_request(format!(
+                                "invalid host compact plugin config: {error}"
+                            ))
+                        })?
+                        .unwrap_or_default(),
+                )
+            }
+            None => None,
         };
         let context_policy = match compact_config {
             Some(compact_config) => {
@@ -1307,7 +1386,12 @@ impl SharedHost {
                 let backend = build_compact_backend(agent_tool, self.memory.background());
                 let plugin = CompactPlugin::new(compact_config).with_backend(thread, backend);
                 runtime = runtime.with_plugin(Arc::new(plugin));
-                plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
+                if !plugin_ids
+                    .iter()
+                    .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
+                {
+                    plugin_ids.push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
+                }
                 awaken_runtime_contract::resolved::ContextPolicy::KeepAll
             }
             None => awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
@@ -1358,6 +1442,10 @@ impl SharedHost {
         // `agent_with_overrides` surface, while preserving built-in, Skill, MCP,
         // and delegation ownership.
         let mut config_changed = false;
+        if let Some(skills) = generated_skill_bindings {
+            config.resolved_spec.plugin_config.agent.skills = skills;
+            config_changed = true;
+        }
         if let Some(session_tools) = &session_tools {
             config_changed |= project_session_tool_override(
                 &mut config,

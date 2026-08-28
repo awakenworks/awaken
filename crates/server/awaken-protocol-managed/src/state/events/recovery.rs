@@ -3,6 +3,50 @@
 use super::*;
 
 impl ManagedState {
+    /// Apply the canonical coordinated-Thread terminal policy to one committed
+    /// disposition and latest Run state. This is a pure classifier; link and
+    /// recovery-snapshot lookup remain the caller's responsibility.
+    pub(super) fn coordinated_thread_is_interruptible(
+        target: &CoordinatedThreadTarget,
+        disposition: awaken_agent_contract::ThreadDisposition,
+        latest_state: Option<&awaken_agent_contract::agent::run::RunState>,
+    ) -> bool {
+        if disposition == awaken_agent_contract::ThreadDisposition::Archived {
+            return false;
+        }
+        latest_state.is_none_or(|state| {
+            !coordinated_child_run_is_terminal(
+                matches!(target, CoordinatedThreadTarget::Advisor { .. }),
+                state,
+            )
+        })
+    }
+
+    /// Read the complete committed lifecycle prefix through its one paginated
+    /// Runtime port. Admission and projection use this same helper so neither
+    /// can silently truncate or reinterpret Awaiting commit coordinates.
+    pub(super) async fn committed_lifecycle_prefix(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<RunLifecycleEvent>, StateError> {
+        const PAGE_SIZE: usize = 256;
+        let mut read_cursor = awaken_agent_contract::RunLifecycleCursor::default();
+        let mut lifecycle_events = Vec::new();
+        loop {
+            let page = self
+                .application
+                .committed_run_lifecycle(session_id, read_cursor, PAGE_SIZE)
+                .await
+                .map_err(StateError::Run)?;
+            let count = page.events.len();
+            lifecycle_events.extend(page.events);
+            if page.next_cursor == read_cursor || count < PAGE_SIZE {
+                return Ok(lifecycle_events);
+            }
+            read_cursor = page.next_cursor;
+        }
+    }
+
     /// Classify one coordinated child from the same Runtime prefix already read
     /// for Event admission. Link membership is the topology authority; committed
     /// Thread disposition and latest Run state are its terminal authorities.
@@ -37,13 +81,11 @@ impl ManagedState {
                     "coordinated Thread recovery omitted its latest Run state",
                 ))
             })?;
-        Ok(
-            disposition == awaken_agent_contract::ThreadDisposition::Archived
-                || coordinated_child_run_is_terminal(
-                    matches!(&link.target, CoordinatedThreadTarget::Advisor { .. }),
-                    latest_state,
-                ),
-        )
+        Ok(!Self::coordinated_thread_is_interruptible(
+            &link.target,
+            disposition,
+            Some(latest_state),
+        ))
     }
 
     /// Resolve the public optional Thread selector onto the Runtime's canonical
@@ -355,6 +397,37 @@ impl ManagedState {
         ))
     }
 
+    /// Select the immutable Awaiting commit from the same fenced recovery
+    /// prefix that exposed a reply candidate. Retaining this coordinate with
+    /// the root command prevents a post-delivery read racing the next Awaiting.
+    pub(super) fn answered_pending_commit_cursor(
+        thread_id: &awaken_agent_contract::agent::thread::Id,
+        run_id: &awaken_agent_contract::agent::run::Id,
+        snapshot_store_cursor: u64,
+        lifecycle_events: &[RunLifecycleEvent],
+    ) -> Result<u64, StateError> {
+        lifecycle_events
+            .iter()
+            .filter(|event| {
+                &event.thread_id == thread_id
+                    && &event.run_id == run_id
+                    && event.kind == RunLifecycleEventKind::Awaiting
+                    && event.source_commit_cursor != 0
+                    && event.source_commit_cursor <= snapshot_store_cursor
+            })
+            .max_by(|left, right| {
+                left.source_commit_cursor
+                    .cmp(&right.source_commit_cursor)
+                    .then_with(|| left.cursor.cmp(&right.cursor))
+            })
+            .map(|event| event.source_commit_cursor)
+            .ok_or_else(|| {
+                StateError::Run(RunError::unavailable(
+                    "committed pending lifecycle is not yet visible",
+                ))
+            })
+    }
+
     /// Resolve a tool reply once at batch admission from committed pending
     /// snapshots. Anthropic Managed multiagent replies route by the qualified
     /// tool-use Event id. A pre-qualification id has no embedded owner, so it is
@@ -383,6 +456,7 @@ impl ManagedState {
                 .ok_or_else(Self::invalid_tool_reply)?;
             return Ok(ResolvedToolReply {
                 key: candidate.key.clone(),
+                answered_pending_commit_cursor: candidate.answered_pending_commit_cursor,
             });
         }
 
@@ -401,6 +475,7 @@ impl ManagedState {
         }
         Ok(ResolvedToolReply {
             key: candidate.key.clone(),
+            answered_pending_commit_cursor: candidate.answered_pending_commit_cursor,
         })
     }
 

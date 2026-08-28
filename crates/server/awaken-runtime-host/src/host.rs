@@ -250,12 +250,6 @@ pub struct SharedHost {
     /// Host-level memory auxiliary-agent capability. It owns no store: every
     /// recall/extraction operation requires a Session-scoped governed binding.
     pub(crate) memory: Arc<crate::memory::MemoryRuntime>,
-    /// Context compaction, when enabled with [`with_compaction`]: the resolved config
-    /// plus the `compactor` sub-agent runner, sealed as one [`crate::compact::Compaction`]
-    /// so the pair is present-or-absent atomically. The config drives the `compact`
-    /// plugin (a `BeforeInference` hook) and a matching `KeepLast` window so summarized
-    /// older Steps leave the model view.
-    compaction: Option<crate::compact::Compaction>,
     /// Runtime-only view of immutable Agent publications.
     pub(crate) agent_publications:
         Option<Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>>,

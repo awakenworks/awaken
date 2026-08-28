@@ -68,35 +68,29 @@ impl ManagedState {
                 "system.message must be final and immediately follow user.message, user.tool_result, or user.custom_tool_result",
             )));
         }
-        let links = self
-            .application
-            .coordinated_threads(session_id)
-            .await
-            .map_err(StateError::Run)?;
-        let child_snapshots = self
-            .coordinated_recovery_snapshots(session_id, &links)
-            .await?;
+        let (links, child_snapshots) = self.coordinated_projection_prefix(session_id).await?;
         let root_snapshot = self.recovery_snapshot(session_id, session_id).await?;
-        let root_pending = root_snapshot
-            .as_ref()
-            .map(|snapshot| {
-                Self::pending_ticket_from_recovery_snapshot(snapshot)
-                    .map(|pending| pending.map(|pending| (snapshot.thread_version, pending)))
-            })
-            .transpose()?
-            .flatten();
-        let mut candidates = root_pending
-            .into_iter()
-            .map(|(thread_version, (run_id, correlation_id, pending))| {
-                PendingToolReplyCandidate::from_pending(
-                    SessionThreadTarget::Primary,
-                    thread_version,
-                    run_id,
-                    correlation_id,
-                    pending,
-                )
-            })
-            .collect::<Vec<_>>();
+        let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
+        let mut candidates = Vec::new();
+        if let Some(snapshot) = root_snapshot.as_ref()
+            && let Some((run_id, correlation_id, pending)) =
+                Self::pending_ticket_from_recovery_snapshot(snapshot)?
+        {
+            let answered_pending_commit_cursor = Self::answered_pending_commit_cursor(
+                &snapshot.thread_id,
+                &run_id,
+                snapshot.store_cursor,
+                &lifecycle_events,
+            )?;
+            candidates.push(PendingToolReplyCandidate::from_pending(
+                SessionThreadTarget::Primary,
+                snapshot.thread_version,
+                answered_pending_commit_cursor,
+                run_id,
+                correlation_id,
+                pending,
+            ));
+        }
         for (thread_id, snapshot) in &child_snapshots {
             let disposition =
                 awaken_agent_contract::thread_disposition_from_committed_state(&snapshot.state)
@@ -111,11 +105,18 @@ impl ManagedState {
             if let Some((run_id, correlation_id, pending)) =
                 Self::pending_ticket_from_recovery_snapshot(snapshot)?
             {
+                let answered_pending_commit_cursor = Self::answered_pending_commit_cursor(
+                    &snapshot.thread_id,
+                    &run_id,
+                    snapshot.store_cursor,
+                    &lifecycle_events,
+                )?;
                 candidates.push(PendingToolReplyCandidate::from_pending(
                     SessionThreadTarget::Child(awaken_agent_contract::agent::thread::Id(
                         thread_id.clone(),
                     )),
                     snapshot.thread_version,
+                    answered_pending_commit_cursor,
                     run_id,
                     correlation_id,
                     pending,
@@ -217,6 +218,7 @@ impl ManagedState {
                     expected_run_id: resolved.key.expected_run_id,
                     expected_correlation_id: resolved.key.expected_correlation_id,
                     expected_thread_version: Some(resolved.key.expected_thread_version),
+                    answered_pending_commit_cursor: Some(resolved.answered_pending_commit_cursor),
                     runtime_tool_use_id: resolved.key.runtime_call_id,
                     reply: retained_reply,
                 }));
@@ -504,10 +506,18 @@ impl ManagedState {
         // this best-effort drive considers only reply/interrupt commands in the
         // just-admitted batch. It cannot race an older DefineOutcome and block
         // this request behind that Outcome's external execution.
-        let _ = self
+        if let Err(error) = self
             .application
             .drive_session_event_batches(session_id, Some(&accepted.batch_id))
-            .await;
+            .await
+        {
+            tracing::warn!(
+                %session_id,
+                batch_id = %accepted.batch_id,
+                %error,
+                "accepted Session Event batch remains queued for lifecycle recovery"
+            );
+        }
         let persisted = self
             .application
             .session(session_id)
@@ -523,15 +533,15 @@ impl ManagedState {
                     "accepted Session Event batch disappeared from the root",
                 ))
             })?;
-        let receipts = accepted_inbound_receipts(session_id, accepted)
+        let receipt_projections = accepted_inbound_receipts(session_id, accepted);
+        let receipts = receipt_projections
             .iter()
             .map(|projection| projection.event.clone())
             .collect::<Vec<_>>();
-        let projections = durable_inbound_projections(session_id, std::slice::from_ref(accepted));
         let mut sessions = self.sessions.lock().unwrap();
         let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
         let start = record.events.len();
-        merge_durable_inbound_projections(record, projections);
+        merge_durable_inbound_projections(record, receipt_projections);
         self.broadcast_committed_from(session_id, record, start);
         Ok(SendEventsResponse { data: receipts })
     }

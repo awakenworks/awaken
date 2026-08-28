@@ -1010,71 +1010,80 @@ impl SessionRuntime for ManagedHost {
     ) -> Result<awaken_session_contract::SessionUserRunReservation, RunError> {
         use awaken_run_ingress::{Clock as _, DispatchQueue as _};
 
+        let session_id = command.session_id.clone();
         let input = session_user_run_messages(&command)?;
         self.validate_thread_resource_bindings(&command.session_id)
             .await?;
         let ctx = self
             .host
-            .ctx_for(&command.session_id, Some(&command.agent_id))
+            .ctx_for_session_reservation(&command.session_id, Some(&command.agent_id))
             .await
             .map_err(to_run_error)?;
-        let input = match &ctx.skill_registry {
-            Some(registry) => awaken_ext_skills::expand_slash_commands(
-                registry.as_ref(),
-                &command.session_id,
-                input,
-            ),
-            None => input,
-        };
-        let (_, mut activation) =
-            ctx.runtime
-                .prepare(&ctx.config, command.session_id.clone(), input);
-        activation.run_id = command.run_id;
-        activation.model_ref_override = self
-            .host
-            .inference_routing
-            .override_for(&command.session_id);
-        activation.data_subject_id = command
-            .data_subject_id
-            .map(awaken_runtime_contract::DataSubjectId);
-        let request = self
-            .host
-            .resolved_dispatch_with_traceparent(activation, command.traceparent)
-            .map_err(to_run_error)?;
-        let deadline = awaken_run_ingress::SystemClock
-            .now_ms()
-            .saturating_add(30_000);
-        match self
-            .host
-            .dispatch_store()
-            .map_err(to_run_error)?
-            .reserve_session_run(request, deadline)
-            .await
-            .map_err(|error| RunError::unavailable(error.to_string()))?
-        {
-            awaken_run_ingress::SessionRunReservationOutcome::Reserved => {
-                Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
-            }
-            awaken_run_ingress::SessionRunReservationOutcome::AlreadyReserved => {
-                Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved)
-            }
-            awaken_run_ingress::SessionRunReservationOutcome::RecoveryClaimed => {
-                Ok(awaken_session_contract::SessionUserRunReservation::RecoveryClaimed)
-            }
-            awaken_run_ingress::SessionRunReservationOutcome::AlreadyActivated {
-                session_activity_epoch,
-            } => Ok(
-                awaken_session_contract::SessionUserRunReservation::AlreadyActivated {
+        let reservation_context_is_ephemeral = ctx.env.is_none();
+        let reservation = async {
+            let input = match &ctx.skill_registry {
+                Some(registry) => awaken_ext_skills::expand_slash_commands(
+                    registry.as_ref(),
+                    &command.session_id,
+                    input,
+                ),
+                None => input,
+            };
+            let (_, mut activation) =
+                ctx.runtime
+                    .prepare(&ctx.config, command.session_id.clone(), input);
+            activation.run_id = command.run_id;
+            activation.model_ref_override = self
+                .host
+                .inference_routing
+                .override_for(&command.session_id);
+            activation.data_subject_id = command
+                .data_subject_id
+                .map(awaken_runtime_contract::DataSubjectId);
+            let request = self
+                .host
+                .resolved_dispatch_with_traceparent(activation, command.traceparent)
+                .map_err(to_run_error)?;
+            let deadline = awaken_run_ingress::SystemClock
+                .now_ms()
+                .saturating_add(30_000);
+            match self
+                .host
+                .dispatch_store()
+                .map_err(to_run_error)?
+                .reserve_session_run(request, deadline)
+                .await
+                .map_err(|error| RunError::unavailable(error.to_string()))?
+            {
+                awaken_run_ingress::SessionRunReservationOutcome::Reserved => {
+                    Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
+                }
+                awaken_run_ingress::SessionRunReservationOutcome::AlreadyReserved => {
+                    Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved)
+                }
+                awaken_run_ingress::SessionRunReservationOutcome::RecoveryClaimed => {
+                    Ok(awaken_session_contract::SessionUserRunReservation::RecoveryClaimed)
+                }
+                awaken_run_ingress::SessionRunReservationOutcome::AlreadyActivated {
                     session_activity_epoch,
-                },
-            ),
-            awaken_run_ingress::SessionRunReservationOutcome::Completed => {
-                Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+                } => Ok(
+                    awaken_session_contract::SessionUserRunReservation::AlreadyActivated {
+                        session_activity_epoch,
+                    },
+                ),
+                awaken_run_ingress::SessionRunReservationOutcome::Completed => {
+                    Ok(awaken_session_contract::SessionUserRunReservation::Completed)
+                }
+                awaken_run_ingress::SessionRunReservationOutcome::Conflict => Err(
+                    RunError::bad_request("Session User Run id was reused with different input"),
+                ),
             }
-            awaken_run_ingress::SessionRunReservationOutcome::Conflict => Err(
-                RunError::bad_request("Session User Run id was reused with different input"),
-            ),
         }
+        .await;
+        if reservation_context_is_ephemeral {
+            self.host.evict_session_for_rebuild(&session_id).await;
+        }
+        reservation
     }
 
     async fn activate_session_user_run(
@@ -1103,12 +1112,12 @@ impl SessionRuntime for ManagedHost {
         session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
     ) -> Result<Option<awaken_agent_contract::agent::run::RunState>, RunError> {
-        let ctx = self
+        let commit = self
             .host
-            .ctx_for(session_id, None)
+            .commit_for_read(session_id)
             .await
             .map_err(to_run_error)?;
-        ctx.commit
+        commit
             .authoritative_run(run_id)
             .await
             .map(|record| record.map(|record| record.state))

@@ -43,6 +43,28 @@ impl SharedHost {
         Ok(accepted)
     }
 
+    /// Recover one operator-selected Session dispatch before persisting its
+    /// cancellation. A retry-exhausted row still owns the accepted User Event;
+    /// requeueing that same row makes the ordinary cancellation claim capable of
+    /// committing `Cancelled` and settling the receipt. Other dispatch phases
+    /// make `requeue` an idempotent no-op. Terminal Session fencing deliberately
+    /// continues to call [`Self::persist_dispatch_cancellation`] directly so it
+    /// can seal dead letters without reopening execution.
+    pub(crate) async fn persist_recoverable_dispatch_cancellation(
+        &self,
+        run_id: &RunId,
+        live_runtime: Option<&Runtime>,
+    ) -> Result<bool, HostError> {
+        use awaken_run_ingress::DispatchQueue as _;
+
+        self.dispatch_store()?
+            .requeue(run_id)
+            .await
+            .map_err(|error| HostError::internal(error.to_string()))?;
+        self.persist_dispatch_cancellation(run_id, live_runtime)
+            .await
+    }
+
     /// Cancel a run by id through the durable live-control seam (ADR-0018, slice E
     /// follow-up): records the durable intent first, then nudges an in-flight local
     /// attempt while the pool commits the terminal `Cancelled` fact. Fail-closed:

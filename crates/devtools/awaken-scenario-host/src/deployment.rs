@@ -38,6 +38,15 @@ impl ScenarioPlatform {
     ) {
         (self.host, self.resources)
     }
+
+    /// Borrow the platform's one durable Dispatch authority for scenario-only
+    /// protocol adapters. The adapter may invoke existing commands, but it may
+    /// not own lifecycle state or open another store.
+    pub(crate) fn dispatch_store(
+        &self,
+    ) -> Result<Arc<awaken_run_ingress::AnyDispatchStore>, awaken_runtime_host::HostError> {
+        self.host.dispatch_store()
+    }
 }
 
 static SCENARIO_RUNTIME_AUTHORITY: std::sync::OnceLock<

@@ -1049,7 +1049,8 @@ mod tests {
                 ))
                 .for_session(awaken_agent_contract::agent::thread::Id(
                     "ordinary-remote".into(),
-                )),
+                ))
+                .with_session_activity_epoch(1),
             )
             .await
             .expect("O1 enqueue");

@@ -793,6 +793,12 @@ impl SessionApplication {
                     operation_id,
                     reply,
                 } => {
+                    let answered_pending_anchor = reply
+                        .answered_pending_commit_cursor
+                        .filter(|cursor| *cursor != 0)
+                        .map(|source_commit_cursor| SessionEventProjectionAnchor {
+                            source_commit_cursor,
+                        });
                     let accompanying_system =
                         adjacent_system_input(session, &batch_id, &operation_id);
                     SessionAgentCoordination::reply_session_thread_tool(
@@ -801,13 +807,20 @@ impl SessionApplication {
                     )
                     .await?;
                     let target_thread = reply.target.thread_id(&session.session_id);
-                    let anchor = self
-                        .run_snapshot_projection_anchor(
-                            &session.session_id,
-                            &target_thread.0,
-                            &reply.expected_run_id,
-                        )
-                        .await?;
+                    // Current admissions freeze the Awaiting commit before
+                    // delivery. Legacy rows lack it and retain the old
+                    // post-delivery recovery fallback for compatibility.
+                    let anchor = match answered_pending_anchor {
+                        Some(anchor) => anchor,
+                        None => {
+                            self.run_snapshot_projection_anchor(
+                                &session.session_id,
+                                &target_thread.0,
+                                &reply.expected_run_id,
+                            )
+                            .await?
+                        }
+                    };
                     self.settle_event_batch_wake(session, &batch_id).await?;
                     self.mark_session_event_processed(
                         &session.session_id,

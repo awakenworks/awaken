@@ -675,7 +675,14 @@ async fn list_threads(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
 ) -> Result<Json<PageCursor<SessionThread>>, WireErr> {
-    state.ensure_session(&id).await.map_err(error_response)?;
+    // Thread DTOs are a disposable view over the same committed transcript and
+    // lifecycle feed as Thread Events. Refresh through that one projector so a
+    // direct list cannot retain idle while the Runtime has already committed
+    // Running (or skip directly from idle to terminal).
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     state
         .list_threads(&id)
         .map(PageCursor::single)
@@ -687,7 +694,10 @@ async fn get_thread(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
 ) -> Result<Json<SessionThread>, WireErr> {
-    state.ensure_session(&id).await.map_err(error_response)?;
+    state
+        .refresh_committed_events(&id)
+        .await
+        .map_err(error_response)?;
     state
         .get_thread(&id, &tid)
         .map(Json)

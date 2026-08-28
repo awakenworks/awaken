@@ -38,7 +38,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
@@ -298,10 +298,12 @@ async function main() {
 
     // Artifact handoff decision table: C1 a sandbox commit exists; C2 archive
     // harvested all four outputs; C3 patch and manifest hashes agree; C4 the
-    // external checkout is still at the recorded base. Effects: E1 remote stays
-    // unchanged; E2 `git apply --check` succeeds; E3 apply changes only CHAIN.txt;
-    // E4 the repository-owned test and diff scan pass. Any missing/hash/base
-    // condition fails closed before applying or claiming acceptance.
+    // external checkout is still at the recorded base; C5 an operator explicitly
+    // selects a review ref. Effects: E1 main stays unchanged; E2 `git apply
+    // --check` succeeds; E3 apply changes only CHAIN.txt; E4 repository test and
+    // diff scan pass; E5 only the explicit review ref receives the accepted
+    // commit. Negative rules: changed bytes fail hash validation, base drift
+    // fails the base guard, and a conflicting tree fails apply --check.
     const artifacts = files?.data ?? files?.files ?? files ?? [];
     const arr = Array.isArray(artifacts) ? artifacts : artifacts.data ?? [];
     const artifactNamed = (name) => arr.find((file) =>
@@ -332,19 +334,49 @@ async function main() {
     assert.equal(manifestShaBytes.toString('utf8').trim(), sha256(manifestBytes), 'SHA file authenticates manifest');
     assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'archive does not publish the sandbox commit');
 
+    // Negative partitions are checked before the successful application so
+    // none can borrow success from the happy-path worktree.
+    const tamperedPatch = Buffer.concat([patchBytes, Buffer.from('\n# tampered')]);
+    assert.notEqual(sha256(tamperedPatch), manifest.patch_sha256, 'changed patch bytes fail authentication');
+    const drifted = `${TMP}/drifted`;
+    git(['clone', '-q', bare, drifted]);
+    git(['config', 'user.email', 'operator@t'], drifted);
+    git(['config', 'user.name', 'operator'], drifted);
+    fs.appendFileSync(`${drifted}/README.md`, '\nlocal drift\n');
+    git(['add', 'README.md'], drifted);
+    git(['commit', '-q', '-m', 'local drift'], drifted);
+    assert.notEqual(git(['rev-parse', 'HEAD'], drifted).trim(), manifest.base_commit, 'drifted base fails the manifest guard');
+    const conflicting = `${TMP}/conflicting`;
+    git(['clone', '-q', bare, conflicting]);
+    fs.writeFileSync(`${conflicting}/CHAIN.txt`, 'conflicting local bytes');
+    const patchPath = `${TMP}/change.patch`;
+    fs.writeFileSync(patchPath, patchBytes);
+    assert.notEqual(
+      spawnSync('git', ['apply', '--check', patchPath], { cwd: conflicting, stdio: 'ignore' }).status,
+      0,
+      'conflicting worktree fails apply --check',
+    );
+
     const acceptance = `${TMP}/acceptance`;
     git(['clone', '-q', bare, acceptance]);
     assert.equal(git(['rev-parse', 'HEAD'], acceptance).trim(), manifest.base_commit, 'external checkout matches manifest base');
-    const patchPath = `${TMP}/change.patch`;
-    fs.writeFileSync(patchPath, patchBytes);
     git(['apply', '--check', patchPath], acceptance);
     git(['apply', patchPath], acceptance);
     assert.equal(fs.readFileSync(`${acceptance}/CHAIN.txt`, 'utf8'), REPO_MARKER, 'external worktree received exact change');
     assert.deepEqual(git(['status', '--porcelain'], acceptance).trim().split('\n'), ['?? CHAIN.txt'], 'only the intended file changed');
     execFileSync('bash', ['verify.sh'], { cwd: acceptance, stdio: 'pipe' });
     git(['diff', '--check'], acceptance);
-    assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'acceptance does not push the remote');
-    pass('patch + manifest + SHA downloaded, verified, externally applied, tested, and scanned without remote publication');
+    git(['config', 'user.email', 'operator@t'], acceptance);
+    git(['config', 'user.name', 'operator'], acceptance);
+    git(['add', 'CHAIN.txt'], acceptance);
+    git(['commit', '-q', '-m', 'operator: accept full-chain patch'], acceptance);
+    const acceptedCommit = git(['rev-parse', 'HEAD'], acceptance).trim();
+    assert.equal(git(['rev-parse', 'HEAD^'], acceptance).trim(), manifest.base_commit, 'operator commit is based on the authenticated baseline');
+    git(['push', '-q', 'origin', 'HEAD:refs/heads/review/session-full-chain'], acceptance);
+    assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'operator push never mutates main');
+    assert.equal(git(['rev-parse', 'review/session-full-chain'], bare).trim(), acceptedCommit, 'only the selected review ref receives the operator commit');
+    assert.equal(git(['show', 'review/session-full-chain:CHAIN.txt'], bare), REPO_MARKER, 'review ref contains exact accepted bytes');
+    pass('patch evidence failed tamper/drift/conflict cases, then applied, tested, scanned, and was explicitly pushed to a review ref');
 
     // 4) Attached and repository-local Skills share the sole filesystem path.
     // Causes: C6 the Session has filesystem tools and one frozen attached Skill;

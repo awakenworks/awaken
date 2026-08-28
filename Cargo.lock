@@ -2233,6 +2233,7 @@ dependencies = [
  "awaken-worker-transport-security",
  "axum",
  "rusqlite",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",

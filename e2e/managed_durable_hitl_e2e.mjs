@@ -20,7 +20,7 @@ import {
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const PORT = 38275;
+const PORT = Number(process.env.E2E_PORT ?? 38275);
 const STORE = `/tmp/awaken-durable-hitl-${process.pid}`;
 async function dispatches(thread) {
   const response = await fetch(`http://127.0.0.1:${PORT}/v1/durable/threads/${thread}/dispatches`);
@@ -44,7 +44,8 @@ async function main() {
 
     // Cause/effect graph: C1 durable first turn; C2 committed approval ticket;
     // C3 exact approval input+Idempotency-Key; C4 resumed Run ends; C5 process
-    // restarts after the response could have been lost. Effects: E1 one Awaiting
+    // restarts over the same deployment database after the response could have
+    // been lost. Effects: E1 one Awaiting
     // dispatch exists before approval; E2 the dispatch Worker resumes; E3 Done
     // removes the row; E4 the Managed projection reaches end_turn; E5 an exact
     // retry returns the original receipt; E6 key reuse with another decision is

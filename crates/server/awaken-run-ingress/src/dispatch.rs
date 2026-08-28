@@ -5,7 +5,7 @@
 pub use awaken_run_ingress_contract::dispatch::*;
 
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
-use awaken_run_ingress_contract::RunDispatch;
+use awaken_run_ingress_contract::{DispatchAdmissionShape, RunDispatch};
 
 /// Backend-neutral shape read while locking one claimed dispatch epoch. SQLite
 /// stores the request as JSON text and PostgreSQL decodes it through `Json<T>`,
@@ -95,9 +95,7 @@ pub(crate) fn validate_session_run_reservation_request(
     request: &RunDispatch,
     reservation_deadline_ms: u64,
 ) -> Result<u64, DispatchError> {
-    if request.session_thread_id.as_ref() != Some(request.thread_id())
-        || request.session_activity_epoch.is_some()
-    {
+    if request.admission_shape() != DispatchAdmissionShape::SessionRootAwaitingActivity {
         return Err(DispatchError::Rejected(
             "Session Run reservation requires self-affinity and no activity epoch".to_string(),
         ));
@@ -109,6 +107,28 @@ pub(crate) fn validate_session_run_reservation_request(
         ));
     }
     Ok(reservation_deadline_ms)
+}
+
+/// Reject the one Session-root intent shape that must cross the durable
+/// activity-receipt boundary before it is executable. Every ordinary fresh-row
+/// path calls this before persistence; child and already activity-bound legacy
+/// shapes retain their existing dedicated policy checks.
+#[cfg(any(feature = "durable", test, feature = "test-support"))]
+pub(crate) fn validate_executable_dispatch_admission(
+    request: &RunDispatch,
+) -> Result<(), DispatchError> {
+    match request.admission_shape() {
+        DispatchAdmissionShape::SessionRootAwaitingActivity => Err(DispatchError::Rejected(
+            "Session root awaiting an activity receipt must use Session Run reservation"
+                .to_string(),
+        )),
+        DispatchAdmissionShape::InvalidZeroActivityEpoch => Err(DispatchError::Rejected(
+            "Session activity epoch must be nonzero".to_string(),
+        )),
+        DispatchAdmissionShape::OrdinaryRoot
+        | DispatchAdmissionShape::SessionRootWithActivity
+        | DispatchAdmissionShape::SessionChild => Ok(()),
+    }
 }
 
 /// Classify the complete durable evidence for binding one Session activity to
@@ -485,18 +505,16 @@ pub(crate) fn retry_exhaustion_evidence_is_eligible(
     max_attempts: u64,
     now_ms: u64,
 ) -> Result<bool, DispatchError> {
-    let phase = DispatchState::from_db(status)
-        .ok_or_else(|| {
-            DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
-        })?
-        .transition_phase();
+    let state = DispatchState::from_db(status).ok_or_else(|| {
+        DispatchError::Rejected(format!("unknown persisted dispatch state {status}"))
+    })?;
     let lease_until = lease_until
         .map(crate::clock::millis_from_db)
         .transpose()
         .map_err(|error| DispatchError::Rejected(error.to_string()))?;
     let attempt_count = crate::durable_u64("dispatch attempt count", attempt_count)?;
     Ok(awaken_run_ingress_contract::retry_exhaustion_eligible(
-        phase,
+        state,
         lease_until,
         attempt_count,
         max_attempts,

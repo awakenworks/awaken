@@ -39,6 +39,22 @@ struct DurableInboundProjection {
     event: Event,
 }
 
+fn inbound_projections_matching(
+    session_id: &str,
+    batches: &[awaken_session_contract::SessionEventBatch],
+    mut include: impl FnMut(&awaken_session_contract::SessionEventEntry) -> bool,
+) -> Vec<DurableInboundProjection> {
+    let mut projections = Vec::new();
+    for batch in batches {
+        for entry in &batch.events {
+            if include(entry) {
+                projections.push(inbound_projection(session_id, entry));
+            }
+        }
+    }
+    projections
+}
+
 /// Rebuild every accepted inbound Event from the Session root's sole retained
 /// command provenance. Thread/dispatch/Outcome owners decide when an entry's
 /// `processed` bit may advance; the disposable Managed cache never infers the
@@ -47,30 +63,31 @@ fn durable_inbound_projections(
     session_id: &str,
     batches: &[awaken_session_contract::SessionEventBatch],
 ) -> Vec<DurableInboundProjection> {
-    batches
-        .iter()
-        .flat_map(|batch| {
-            batch
-                .events
-                .iter()
-                // `processed && no anchor` is the isolated pre-anchor schema.
-                // Preserve its functional history at the legacy prefix; only
-                // new unprocessed/unanchored receipts stay non-listable.
-                .filter(|entry| entry.projection_anchor.is_some() || entry.processed)
-                .map(move |entry| inbound_projection(session_id, entry))
-        })
-        .collect()
+    inbound_projections_matching(session_id, batches, |entry| {
+        // `processed && no anchor` is the isolated pre-anchor schema. Preserve
+        // its functional history at the legacy prefix; new unprocessed and
+        // unanchored receipts belong only to the pending suffix.
+        entry.projection_anchor.is_some() || entry.processed
+    })
+}
+
+/// Accepted root commands that deliberately have no Runtime ordering anchor
+/// yet. They are exposed only as a pending suffix; the committed projector
+/// continues to withhold every dependent Runtime fact until the anchor CAS.
+fn unanchored_inbound_projections(
+    session_id: &str,
+    batches: &[awaken_session_contract::SessionEventBatch],
+) -> Vec<DurableInboundProjection> {
+    inbound_projections_matching(session_id, batches, |entry| {
+        !entry.processed && entry.projection_anchor.is_none()
+    })
 }
 
 fn accepted_inbound_receipts(
     session_id: &str,
     batch: &awaken_session_contract::SessionEventBatch,
 ) -> Vec<DurableInboundProjection> {
-    batch
-        .events
-        .iter()
-        .map(|entry| inbound_projection(session_id, entry))
-        .collect()
+    inbound_projections_matching(session_id, std::slice::from_ref(batch), |_| true)
 }
 
 fn inbound_projection(
@@ -676,6 +693,7 @@ impl ToolReplyFamily {
 #[derive(Debug, Clone)]
 struct PendingToolReplyCandidate {
     key: PendingToolReplyKey,
+    answered_pending_commit_cursor: u64,
     projected_event_id: Option<String>,
     projected_family: Option<ProjectedToolUseFamily>,
 }
@@ -684,6 +702,7 @@ impl PendingToolReplyCandidate {
     fn from_pending(
         target: SessionThreadTarget,
         expected_thread_version: u64,
+        answered_pending_commit_cursor: u64,
         expected_run_id: awaken_agent_contract::agent::run::Id,
         expected_correlation_id: String,
         pending: Pending,
@@ -697,6 +716,7 @@ impl PendingToolReplyCandidate {
                 runtime_call_id: pending.tool_use_id,
                 client_executed: pending.client_executed,
             },
+            answered_pending_commit_cursor,
             projected_event_id: None,
             projected_family: None,
         }
@@ -722,6 +742,7 @@ struct PendingToolReplyKey {
 #[derive(Debug, Clone)]
 struct ResolvedToolReply {
     key: PendingToolReplyKey,
+    answered_pending_commit_cursor: u64,
 }
 
 /// Fully validated protocol lowering for one atomic Session-root admission.

@@ -272,7 +272,42 @@ pub struct RunDispatch {
     pub placement: PlacementRequirements,
 }
 
+/// Closed classification of the Session coordinates carried by one dispatch.
+///
+/// This is descriptive evidence, not a second lifecycle. Admission ports use it
+/// to reject a Session root intent at every executable enqueue path while the
+/// dedicated reservation port accepts exactly that shape.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DispatchAdmissionShape {
+    OrdinaryRoot,
+    SessionRootAwaitingActivity,
+    SessionRootWithActivity,
+    SessionChild,
+    InvalidZeroActivityEpoch,
+}
+
 impl RunDispatch {
+    /// Classify the immutable routing/activity coordinates before persistence.
+    /// The caller still owns port-specific authorization; this method only makes
+    /// the previously implicit shape distinction total and shared.
+    #[must_use]
+    pub fn admission_shape(&self) -> DispatchAdmissionShape {
+        if self.session_activity_epoch == Some(0) {
+            return DispatchAdmissionShape::InvalidZeroActivityEpoch;
+        }
+        match self.session_thread_id.as_ref() {
+            None => DispatchAdmissionShape::OrdinaryRoot,
+            Some(session) if session == self.thread_id() => {
+                if self.session_activity_epoch.is_some() {
+                    DispatchAdmissionShape::SessionRootWithActivity
+                } else {
+                    DispatchAdmissionShape::SessionRootAwaitingActivity
+                }
+            }
+            Some(_) => DispatchAdmissionShape::SessionChild,
+        }
+    }
+
     fn canonicalized(&self) -> Self {
         let mut canonical = self.clone();
         canonical.traceparent = None;
@@ -414,6 +449,51 @@ impl RunDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatch_admission_shape_is_total_and_port_neutral() {
+        // Cause/effect graph: C1 Session affinity is absent/self/other; C2 the
+        // activity coordinate is absent/positive/zero. Effects: E1 ordinary
+        // root; E2 root intent awaiting Session activity; E3 activity-bound root;
+        // E4 child; E5 explicit invalid-zero evidence. Constraint: classification
+        // persists nothing and grants no admission authority. Decision table:
+        // R1=!C1+any valid -> E1; R2=self+absent -> E2; R3=self+positive -> E3;
+        // R4=other+absent/positive -> E4; R5=any+zero -> E5.
+        let ordinary = RunDispatch::new(activation());
+        assert_eq!(
+            ordinary.admission_shape(),
+            DispatchAdmissionShape::OrdinaryRoot,
+            "R1/E1"
+        );
+        let session = ordinary.thread_id().clone();
+        let intent = ordinary.clone().for_session(session.clone());
+        assert_eq!(
+            intent.admission_shape(),
+            DispatchAdmissionShape::SessionRootAwaitingActivity,
+            "R2/E2"
+        );
+        assert_eq!(
+            intent
+                .clone()
+                .with_session_activity_epoch(7)
+                .admission_shape(),
+            DispatchAdmissionShape::SessionRootWithActivity,
+            "R3/E3"
+        );
+        assert_eq!(
+            ordinary
+                .clone()
+                .for_session(ThreadId("session-parent".into()))
+                .admission_shape(),
+            DispatchAdmissionShape::SessionChild,
+            "R4/E4"
+        );
+        assert_eq!(
+            intent.with_session_activity_epoch(0).admission_shape(),
+            DispatchAdmissionShape::InvalidZeroActivityEpoch,
+            "R5/E5"
+        );
+    }
 
     #[test]
     fn session_resource_install_decision_follows_the_complete_table() {

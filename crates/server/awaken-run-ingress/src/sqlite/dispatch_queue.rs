@@ -314,6 +314,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 return Ok(());
             }
 
+            validate_executable_dispatch_admission(&request)?;
             insert_new_dispatch(&tx, p, &request, &options)?;
             tx.commit().map_err(reject)?;
             Ok(())
@@ -375,6 +376,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.commit().map_err(reject)?;
                 return Ok(claimed);
             }
+            validate_executable_dispatch_admission(&request)?;
             if !can_claim_locally(&request.placement) {
                 tx.commit().map_err(reject)?;
                 return Ok(None);
@@ -422,6 +424,7 @@ impl DispatchQueue for SqliteDispatchStore {
                 tx.commit().map_err(reject)?;
                 return Ok(claimed);
             }
+            validate_executable_dispatch_admission(&request)?;
             if can_assign(&worker, &request.placement, None, false, now_ms).is_err() {
                 tx.commit().map_err(reject)?;
                 return Ok(None);

@@ -436,13 +436,28 @@ impl SharedHost {
     /// running. Never blocks on the run's own state lock — it only touches the
     /// separate cancel slot — so it works from a concurrent request.
     pub async fn interrupt(&self, thread: &str) -> Result<(), HostError> {
-        let ctx = self.ctx_for(thread, None).await?;
-        let active_run = ctx
-            .active_run
-            .lock()
-            .expect("active run mutex poisoned")
-            .clone();
-        if let (Some(ingress), Some(run_id)) = (&ctx.durable_ingress, active_run.as_ref()) {
+        // Cancellation is a control-plane operation. Resolve only an already
+        // resident Runtime accelerator; creating a context here would make an
+        // operator unable to recover the exact Runs whose Environment cannot be
+        // realized. Durable dispatch and committed Thread truth remain the
+        // authorities for cold Managed Sessions.
+        let resident = self
+            .session_slots
+            .read(thread, |slot| slot.runtime.clone())
+            .flatten();
+        let active_run = resident.as_ref().and_then(|ctx| {
+            ctx.active_run
+                .lock()
+                .expect("active run mutex poisoned")
+                .clone()
+        });
+        if let (Some(ctx), Some(ingress), Some(run_id)) = (
+            resident.as_ref(),
+            resident
+                .as_ref()
+                .and_then(|ctx| ctx.durable_ingress.as_ref()),
+            active_run.as_ref(),
+        ) {
             if self.dispatch_pool.get().is_some() {
                 // The process pool is the sole durable claim driver. This edge
                 // accepts the cancellation intent and returns; its drainer owns
@@ -471,14 +486,20 @@ impl SharedHost {
         // authority is installed, and require the Session's one executable root
         // row so an interrupt cannot broaden into unrelated queued work.
         if self.optional_dispatch_store().is_some() {
+            let logical_thread_id = resident
+                .as_ref()
+                .map_or_else(|| ThreadId(thread.to_string()), |ctx| ctx.thread_id.clone());
             let executable = self
-                .executable_session_dispatch_runs(thread, &ctx.thread_id)
+                .executable_session_dispatch_runs(thread, &logical_thread_id)
                 .await?;
             match executable.as_slice() {
                 [] => {}
                 [run_id] => {
-                    self.persist_dispatch_cancellation(run_id, Some(ctx.runtime.as_ref()))
-                        .await?;
+                    self.persist_recoverable_dispatch_cancellation(
+                        run_id,
+                        resident.as_ref().map(|ctx| ctx.runtime.as_ref()),
+                    )
+                    .await?;
                 }
                 _ => {
                     return Err(HostError::internal(format!(
@@ -490,7 +511,9 @@ impl SharedHost {
         // Direct/foreground ACP attempts retain this exact token outside the
         // Runtime registry. Durable paths reach it only after intent persistence;
         // direct paths have no durable ordering precondition.
-        if let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref() {
+        if let Some(ctx) = resident
+            && let Some(token) = ctx.cancel.lock().expect("cancel mutex poisoned").as_ref()
+        {
             token.cancel();
         }
         Ok(())
@@ -933,14 +956,18 @@ impl SharedHost {
             .executable_session_dispatch_runs(session_id, child_thread_id)
             .await?;
         for run_id in child_runs {
-            self.persist_dispatch_cancellation(&run_id, None).await?;
+            self.persist_recoverable_dispatch_cancellation(&run_id, None)
+                .await?;
         }
         Ok(())
     }
 
-    /// Select executable work only from the one Session-affined dispatch
-    /// authority. Primary interruption requires one result; child interruption
-    /// deliberately consumes every result so a raced continuation is fenced too.
+    /// Select interruptible work only from the one Session-affined dispatch
+    /// authority. Retry-exhausted work remains interruptible because it still
+    /// owns an accepted Session Event; the control path requeues that same row
+    /// only to let the canonical cancellation claim settle it. Primary
+    /// interruption requires one result; child interruption deliberately
+    /// consumes every result so a raced continuation is fenced too.
     async fn executable_session_dispatch_runs(
         &self,
         session_id: &str,
@@ -965,6 +992,7 @@ impl SharedHost {
                             | awaken_run_ingress::DispatchState::Pending
                             | awaken_run_ingress::DispatchState::Leased
                             | awaken_run_ingress::DispatchState::Awaiting
+                            | awaken_run_ingress::DispatchState::DeadLetter
                     )
             })
             .filter(|dispatch| {

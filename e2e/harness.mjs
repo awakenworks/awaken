@@ -471,6 +471,33 @@ export async function allowManagedToolBoundaries({
   );
 }
 
+// Canonical SessionToolRunner start fence. Causes: C1 an exact task receipt is
+// processed; C2 the named custom tool and requires_action are committed after
+// C1. Effects: E1 return the official runner's durable reconciliation input;
+// E2 never execute or acknowledge the tool. Rules: T1 !C1|!C2=>retry;
+// T2 C1+C2=>E1+E2. This observation helper owns no Worker lifecycle state.
+export function waitForSessionCustomToolBoundary(
+  client,
+  sessionId,
+  receiptId,
+  betas,
+  toolName,
+  description,
+) {
+  return waitForSessionEventReceipt(
+    client,
+    sessionId,
+    receiptId,
+    betas,
+    ({ delta }) => delta.some((event) => (
+      event.type === 'agent.custom_tool_use' && event.name === toolName
+    )) && [...delta].reverse().find(
+      (event) => event.type === 'session.status_idle',
+    )?.stop_reason?.type === 'requires_action',
+    description,
+  );
+}
+
 export function childDirectories(parent) {
   return fs.existsSync(parent)
     ? fs.readdirSync(parent, { withFileTypes: true })

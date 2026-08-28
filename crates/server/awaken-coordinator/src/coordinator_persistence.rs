@@ -5,10 +5,9 @@
 //! process globals; Local startup may migrate and connect; Server startup only
 //! verifies ledgers before connecting.
 
-use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
-
 use super::runtime_authority::SchemaAccess;
 use super::worker_registry::WorkerDirectoryHandle;
+use awaken_runtime_host::{DeploymentConfig, DispatchBackend, StoreKind};
 
 #[derive(Clone)]
 pub struct CoordinatorPersistence {

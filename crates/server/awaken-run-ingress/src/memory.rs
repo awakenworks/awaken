@@ -20,15 +20,15 @@ use awaken_runtime_contract::resume::ResumeResult;
 use crate::dispatch::{
     AttemptCredentialBinding, CasOutcome, Claimed, CommitEpochGuard, ContinuationAdmission,
     CredentialRealizationReceipt, DispatchCompletion, DispatchError, DispatchOutcome,
-    DispatchQueue, DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox, PendingInput,
-    PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
+    DispatchQueue, DispatchState, DispatchSummary, ExactClaimMode, Inbox, Lease, Outbox,
+    PendingInput, PendingRecord, RunClaim, RunIdentityDecision, SessionChildAdmission,
     SessionRunReservationActivation, SessionRunReservationOutcome, SessionRunReservationResolution,
     SettleOutcome, StoredRunIdentity, SubmitOptions, can_admit_attempt_credentials,
     classify_completed_session_run_reservation, classify_exact_claim_mode,
     classify_live_session_run_reservation, classify_session_run_reservation_activation,
     compile_attempt_credential_bindings, decide_run_identity, ensure_session_child_capacity,
     installed_worker_credential_capabilities, normalize_pending_millis, session_child_parent,
-    session_child_thread, validate_outbox_continuation,
+    session_child_thread, validate_executable_dispatch_admission, validate_outbox_continuation,
     validate_session_resume_activity_transition, validate_session_resume_evidence,
     validate_session_resume_target, validate_session_run_reservation_request,
     validate_session_run_reservation_resolution, verify_credential_realization_receipt,
@@ -41,14 +41,10 @@ use awaken_run_ingress_contract::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition, RunDispatch,
 };
 
-mod row_state;
-
-use row_state::RowState;
-
 #[derive(Debug, Clone)]
 struct Row {
     request: RunDispatch,
-    state: RowState,
+    state: DispatchState,
     /// Set before signalling a live attempt. It remains true across lease expiry
     /// and recovery until the worker commits Cancelled and settles Done.
     cancellation_requested: bool,
@@ -79,7 +75,7 @@ struct Row {
 fn guarded_claim_row(
     state: &State,
     claim: &RunClaim,
-    required_state: RowState,
+    required_state: DispatchState,
 ) -> Option<(RunDispatch, u64, bool)> {
     state.rows.get(&claim.run_id).and_then(|row| {
         (row.state == required_state
@@ -104,22 +100,22 @@ fn guarded_claim_row(
 impl Row {
     fn transition(&self) -> DispatchTransition {
         DispatchTransition {
-            phase: self.state.transition_phase(),
+            state: self.state,
             lease_epoch: self.lease_epoch,
             cancellation_requested: self.cancellation_requested,
         }
     }
 
     fn apply_transition(&mut self, transition: DispatchTransition) {
-        self.state = RowState::from_transition_phase(transition.phase);
+        self.state = transition.state;
         self.lease_epoch = transition.lease_epoch;
         self.cancellation_requested = transition.cancellation_requested;
     }
 
     fn exact_claim_deadline(&self) -> Option<u64> {
         match self.state {
-            RowState::Reserved => self.reservation_deadline_ms,
-            RowState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms),
+            DispatchState::Reserved => self.reservation_deadline_ms,
+            DispatchState::ReservationLeased => self.lease.as_ref().map(|lease| lease.expires_ms),
             _ => None,
         }
     }
@@ -188,7 +184,7 @@ impl MemoryDispatchStore {
         let dead: Vec<RunId> = state
             .rows
             .iter()
-            .filter(|(_, row)| row.state == RowState::DeadLetter && keep(row))
+            .filter(|(_, row)| row.state == DispatchState::DeadLetter && keep(row))
             .map(|(run, _)| run.clone())
             .collect();
         for run in &dead {
@@ -215,7 +211,7 @@ impl MemoryDispatchStore {
     async fn lock_claim_epoch_in_state(
         &self,
         claim: &RunClaim,
-        required_state: RowState,
+        required_state: DispatchState,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
         let guard = self.authority.clone().lock_owned().await;
         let state = lock(&self.state)?;
@@ -289,8 +285,10 @@ fn thread_has_claim_blocking_peer(
     state.rows.iter().any(|(run_id, peer)| {
         run_id != candidate_run
             && peer.request.thread_id() == candidate.request.thread_id()
-            && (matches!(peer.state, RowState::ReservationLeased | RowState::Leased)
-                || (include_awaiting && peer.state == RowState::Awaiting))
+            && (matches!(
+                peer.state,
+                DispatchState::ReservationLeased | DispatchState::Leased
+            ) || (include_awaiting && peer.state == DispatchState::Awaiting))
     })
 }
 
@@ -308,7 +306,7 @@ fn select_where(
     // Both reservation phases use the same deadline classifier as exact claims.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+            && classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 == ExactClaimMode::ReservationRecovery
             && !thread_has_claim_blocking_peer(state, run, false)
         {
@@ -322,7 +320,7 @@ fn select_where(
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
             && row.cancellation_requested
-            && matches!(row.state, RowState::Pending | RowState::Awaiting)
+            && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
             && !thread_has_claim_blocking_peer(state, run, false)
         {
             return Some(run.clone());
@@ -332,7 +330,7 @@ fn select_where(
     // Recovery: re-own an expired-lease running row (first-match in enqueue order).
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.state == RowState::Leased
+            && row.state == DispatchState::Leased
             && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms)
             && compatible(row)
         {
@@ -344,7 +342,7 @@ fn select_where(
     // fresh peer execution.
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.state == RowState::Awaiting
+            && row.state == DispatchState::Awaiting
             && state
                 .pending
                 .iter()
@@ -360,7 +358,7 @@ fn select_where(
     let mut best: Option<(&RunId, i64)> = None;
     for run in &state.order {
         if let Some(row) = state.rows.get(run)
-            && row.state == RowState::Pending
+            && row.state == DispatchState::Pending
             && !thread_has_claim_blocking_peer(state, run, true)
             && compatible(row)
             && best.is_none_or(|(_, p)| row.priority > p)
@@ -376,13 +374,13 @@ fn select_where(
 fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     let now_ms = crate::clock::normalize_millis(now_ms);
     let row = state.rows.get(run_id)?;
-    if classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+    if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
         == ExactClaimMode::ReservationRecovery
         && !thread_has_claim_blocking_peer(state, run_id, false)
     {
         return Some(false);
     }
-    if row.state == RowState::Leased
+    if row.state == DispatchState::Leased
         && row
             .lease
             .as_ref()
@@ -394,7 +392,7 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     if thread_busy {
         return None;
     }
-    if row.state == RowState::Awaiting
+    if row.state == DispatchState::Awaiting
         && (row.cancellation_requested
             || state
                 .pending
@@ -403,7 +401,7 @@ fn runnable(state: &State, run_id: &RunId, now_ms: u64) -> Option<bool> {
     {
         return Some(false);
     }
-    (row.state == RowState::Pending).then_some(false)
+    (row.state == DispatchState::Pending).then_some(false)
 }
 
 fn claim_exact(
@@ -419,7 +417,7 @@ fn claim_exact(
         .rows
         .get(requested_run)
         .map_or(ExactClaimMode::Runnable, |row| {
-            classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+            classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
         });
     claim_exact_with_mode(
         state,
@@ -462,8 +460,8 @@ fn claim_exact_with_mode(
             let Some(row) = state.rows.get(requested_run) else {
                 return Ok(None);
             };
-            let expired_recovery = row.state == RowState::ReservationLeased;
-            if classify_exact_claim_mode(row.state.public(), row.exact_claim_deadline(), now_ms)
+            let expired_recovery = row.state == DispatchState::ReservationLeased;
+            if classify_exact_claim_mode(row.state, row.exact_claim_deadline(), now_ms)
                 != ExactClaimMode::ReservationRecovery
                 || thread_has_claim_blocking_peer(state, requested_run, false)
             {
@@ -478,14 +476,14 @@ fn claim_exact_with_mode(
             let Some(row) = state.rows.get(requested_run) else {
                 return Ok(None);
             };
-            let expired_running = row.state == RowState::Leased
+            let expired_running = row.state == DispatchState::Leased
                 && row
                     .lease
                     .as_ref()
                     .is_some_and(|lease| lease.expires_ms < now_ms);
             let thread_busy = thread_has_claim_blocking_peer(state, requested_run, false);
             let quiescent_awaiting =
-                row.state == RowState::Awaiting && row.lease.is_none() && !thread_busy;
+                row.state == DispatchState::Awaiting && row.lease.is_none() && !thread_busy;
             if !quiescent_awaiting && !expired_running {
                 return Ok(None);
             }
@@ -498,7 +496,7 @@ fn claim_exact_with_mode(
                 return Ok(None);
             };
             if !retry_exhaustion_eligible(
-                row.state.transition_phase(),
+                row.state,
                 row.lease.as_ref().map(|lease| lease.expires_ms),
                 row.attempt_count,
                 max_attempts,
@@ -647,23 +645,34 @@ fn known_run_identity(state: &State, request: &RunDispatch) -> Result<bool, Disp
     decide_run_identity(stored, request).map(|decision| decision == RunIdentityDecision::Replay)
 }
 
-/// The one in-memory enqueue kernel. Every command performs any additional
-/// admission check before entering this function, then shares exact Run replay,
-/// caller dedupe, supersession, and row construction here.
+/// The ordinary in-memory enqueue kernel. Exact replay is classified before
+/// executable admission so an existing reservation remains recoverable; only a
+/// genuinely new row reaches the ordinary-shape guard and insertion kernel.
 fn enqueue_with_local(
     state: &mut State,
     request: RunDispatch,
     options: SubmitOptions,
 ) -> Result<(), DispatchError> {
-    let run_id = request.run_id().clone();
     if known_run_identity(state, &request)? {
         return Ok(());
     }
+    validate_executable_dispatch_admission(&request)?;
+    enqueue_new_local(state, request, options)
+}
+
+/// Insert one identity-checked row. Session reservation is the only caller
+/// allowed to bypass ordinary executable admission, and it reaches this helper
+/// only after its dedicated shape and replay checks have succeeded.
+fn enqueue_new_local(
+    state: &mut State,
+    request: RunDispatch,
+    options: SubmitOptions,
+) -> Result<(), DispatchError> {
+    let run_id = request.run_id().clone();
     if let Some(key) = &options.dedupe_key
-        && state
-            .rows
-            .values()
-            .any(|row| row.dedupe_key.as_deref() == Some(key) && row.state != RowState::DeadLetter)
+        && state.rows.values().any(|row| {
+            row.dedupe_key.as_deref() == Some(key) && row.state != DispatchState::DeadLetter
+        })
     {
         return Ok(());
     }
@@ -681,10 +690,10 @@ fn enqueue_with_local(
         epoch = crate::next_supersession_epoch(max_epoch)?;
         for row in state.rows.values_mut() {
             if *row.request.thread_id() == thread
-                && matches!(row.state, RowState::Pending | RowState::Awaiting)
+                && matches!(row.state, DispatchState::Pending | DispatchState::Awaiting)
                 && !row.cancellation_requested
             {
-                row.state = RowState::Superseded;
+                row.state = DispatchState::Superseded;
                 row.lease = None;
             }
         }
@@ -693,7 +702,7 @@ fn enqueue_with_local(
         run_id.clone(),
         Row {
             request,
-            state: RowState::Pending,
+            state: DispatchState::Pending,
             cancellation_requested: false,
             lease: None,
             reservation_deadline_ms: None,
@@ -766,7 +775,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let owner = identity.lease_owner();
         let state = lock(&self.state)?;
         Ok(state.rows.get(run_id).and_then(|row| {
-            (row.state == RowState::Leased && !row.cancellation_requested)
+            (row.state == DispatchState::Leased && !row.cancellation_requested)
                 .then_some(row.lease.as_ref())
                 .flatten()
                 .filter(|lease| lease.owner == owner && lease.expires_ms >= now_ms)
@@ -782,7 +791,7 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_state(claim, RowState::Leased)
+        self.lock_claim_epoch_in_state(claim, DispatchState::Leased)
             .await
     }
 
@@ -790,7 +799,7 @@ impl DispatchQueue for MemoryDispatchStore {
         &self,
         claim: &RunClaim,
     ) -> Result<Option<CommitEpochGuard>, DispatchError> {
-        self.lock_claim_epoch_in_state(claim, RowState::ReservationLeased)
+        self.lock_claim_epoch_in_state(claim, DispatchState::ReservationLeased)
             .await
     }
 
@@ -807,7 +816,7 @@ impl DispatchQueue for MemoryDispatchStore {
         if let Some(row) = state.rows.get(&run_id) {
             return Ok(classify_live_session_run_reservation(
                 &row.request,
-                row.state.public(),
+                row.state,
                 &request,
             ));
         }
@@ -821,12 +830,12 @@ impl DispatchQueue for MemoryDispatchStore {
                 &request,
             ));
         }
-        enqueue_with_local(&mut state, request, SubmitOptions::default())?;
+        enqueue_new_local(&mut state, request, SubmitOptions::default())?;
         let row = state
             .rows
             .get_mut(&run_id)
             .expect("newly reserved dispatch exists");
-        row.state = RowState::Reserved;
+        row.state = DispatchState::Reserved;
         row.reservation_deadline_ms = Some(reservation_deadline_ms);
         Ok(SessionRunReservationOutcome::Reserved)
     }
@@ -843,10 +852,7 @@ impl DispatchQueue for MemoryDispatchStore {
             .completions
             .iter()
             .any(|completion| &completion.run_id == run_id);
-        let live = state
-            .rows
-            .get(run_id)
-            .map(|row| (&row.request, row.state.public()));
+        let live = state.rows.get(run_id).map(|row| (&row.request, row.state));
         if let Some(outcome) = classify_session_run_reservation_activation(
             live,
             completed,
@@ -875,7 +881,7 @@ impl DispatchQueue for MemoryDispatchStore {
         if state
             .rows
             .get(run_id)
-            .is_none_or(|row| row.state != RowState::Reserved || row.lease.is_some())
+            .is_none_or(|row| row.state != DispatchState::Reserved || row.lease.is_some())
         {
             return Ok(false);
         }
@@ -1136,7 +1142,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 &row.request,
                 policy.as_ref(),
                 DispatchPlacement {
-                    recovered: row.state == RowState::Leased,
+                    recovered: row.state == DispatchState::Leased,
                     previous: row.assignment.as_ref(),
                     sandbox_bound: row.sandbox.is_some(),
                     requester: &requester.identity,
@@ -1233,7 +1239,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(run_id) = state.order.iter().find_map(|run_id| {
             state.rows.get(run_id).and_then(|row| {
                 retry_exhaustion_eligible(
-                    row.state.transition_phase(),
+                    row.state,
                     row.lease.as_ref().map(|lease| lease.expires_ms),
                     row.attempt_count,
                     max_attempts,
@@ -1286,7 +1292,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(row) = state.rows.get_mut(&claim.run_id) else {
             return Ok(SettleOutcome::Fenced);
         };
-        if row.state != RowState::Leased
+        if row.state != DispatchState::Leased
             || row.lease_epoch != claim.epoch
             || row
                 .lease
@@ -1322,7 +1328,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let _authority = self.authority.lock().await;
         let mut state = lock(&self.state)?;
         if let Some(row) = state.rows.get_mut(&claim.run_id)
-            && row.state == RowState::Leased
+            && row.state == DispatchState::Leased
             && row.lease_epoch == claim.epoch
             && row
                 .lease
@@ -1355,8 +1361,10 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
             Some(row)
-                if matches!(row.state, RowState::ReservationLeased | RowState::Leased)
-                    && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
+                if matches!(
+                    row.state,
+                    DispatchState::ReservationLeased | DispatchState::Leased
+                ) && row.lease.as_ref().is_some_and(|l| l.owner == owner) =>
             {
                 if let Some(lease) = row.lease.as_mut() {
                     lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
@@ -1379,11 +1387,13 @@ impl DispatchQueue for MemoryDispatchStore {
         // out and is skipped until it approaches expiry (ADR-0024).
         let near_expiry = crate::clock::deadline_millis(now_ms, lease_ms / 2);
         for row in state.rows.values_mut() {
-            if matches!(row.state, RowState::ReservationLeased | RowState::Leased)
-                && row
-                    .lease
-                    .as_ref()
-                    .is_some_and(|l| l.owner == owner && l.expires_ms < near_expiry)
+            if matches!(
+                row.state,
+                DispatchState::ReservationLeased | DispatchState::Leased
+            ) && row
+                .lease
+                .as_ref()
+                .is_some_and(|l| l.owner == owner && l.expires_ms < near_expiry)
             {
                 if let Some(lease) = row.lease.as_mut() {
                     lease.expires_ms = crate::clock::deadline_millis(now_ms, lease_ms);
@@ -1528,7 +1538,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let mut state = lock(&self.state)?;
         let mut operations = Vec::new();
         for row in state.rows.values_mut() {
-            let expired = row.state == RowState::Leased
+            let expired = row.state == DispatchState::Leased
                 && row.lease.as_ref().is_some_and(|l| l.expires_ms < now_ms);
             if expired && row.attempt_count >= max_attempts {
                 let lease = row
@@ -1544,7 +1554,7 @@ impl DispatchQueue for MemoryDispatchStore {
                     claim,
                     attempt_count: row.attempt_count,
                 });
-                row.state = RowState::DeadLetter;
+                row.state = DispatchState::DeadLetter;
                 row.lease = None;
                 row.dead_lettered_at = Some(now_ms);
             }
@@ -1564,7 +1574,7 @@ impl DispatchQueue for MemoryDispatchStore {
             .filter(|run| {
                 matches!(
                     state.rows.get(run).map(|r| r.state),
-                    Some(RowState::DeadLetter)
+                    Some(DispatchState::DeadLetter)
                 )
             })
             .cloned()
@@ -1579,7 +1589,7 @@ impl DispatchQueue for MemoryDispatchStore {
             .filter(|run| {
                 matches!(
                     state.rows.get(run).map(|r| r.state),
-                    Some(RowState::Superseded)
+                    Some(DispatchState::Superseded)
                 )
             })
             .cloned()
@@ -1597,10 +1607,10 @@ impl DispatchQueue for MemoryDispatchStore {
                     thread_id: row.request.thread_id().clone(),
                     session_thread_id: row.request.session_thread_id.clone(),
                     session_activity_epoch: row.request.session_activity_epoch,
-                    reservation_deadline_ms: (row.state == RowState::Reserved)
+                    reservation_deadline_ms: (row.state == DispatchState::Reserved)
                         .then_some(row.reservation_deadline_ms)
                         .flatten(),
-                    state: row.state.public(),
+                    state: row.state,
                     cancellation_requested: row.cancellation_requested,
                     attempt_count: row.attempt_count,
                     sandbox_bound: row.sandbox.is_some(),
@@ -1612,8 +1622,8 @@ impl DispatchQueue for MemoryDispatchStore {
     async fn requeue(&self, run_id: &RunId) -> Result<bool, DispatchError> {
         let mut state = lock(&self.state)?;
         match state.rows.get_mut(run_id) {
-            Some(row) if row.state == RowState::DeadLetter && !row.cancellation_requested => {
-                row.state = RowState::Pending;
+            Some(row) if row.state == DispatchState::DeadLetter && !row.cancellation_requested => {
+                row.state = DispatchState::Pending;
                 row.lease = None;
                 row.attempt_count = 0;
                 Ok(true)
@@ -1628,7 +1638,7 @@ impl DispatchQueue for MemoryDispatchStore {
         let Some(row) = state.rows.get(run_id) else {
             return Ok(None);
         };
-        let was_reservation_claim = row.state == RowState::ReservationLeased;
+        let was_reservation_claim = row.state == DispatchState::ReservationLeased;
         let transition = row.transition().cancel().map_err(transition_error)?;
         let CancelTransition::Applied {
             state: next,
@@ -1649,7 +1659,7 @@ impl DispatchQueue for MemoryDispatchStore {
                 None
             };
             row.apply_transition(next);
-            if was_reservation_claim && row.state == RowState::Reserved {
+            if was_reservation_claim && row.state == DispatchState::Reserved {
                 row.reservation_deadline_ms = Some(0);
             }
             (thread, lost)
@@ -1673,7 +1683,7 @@ impl DispatchQueue for MemoryDispatchStore {
             .iter()
             .find(|run| {
                 state.rows.get(*run).is_some_and(|row| {
-                    row.state == RowState::Awaiting
+                    row.state == DispatchState::Awaiting
                         && !row.cancellation_requested
                         && row.request.thread_id() == thread_id
                 })
@@ -1825,7 +1835,8 @@ impl Outbox for MemoryDispatchStore {
         let accepts_new_resume = !row.cancellation_requested
             && matches!(
                 (row.state, row.lease.is_some()),
-                (RowState::Pending | RowState::Awaiting, false) | (RowState::Leased, true)
+                (DispatchState::Pending | DispatchState::Awaiting, false)
+                    | (DispatchState::Leased, true)
             );
         let exact = validate_session_resume_evidence(
             &input,

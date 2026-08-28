@@ -45,16 +45,17 @@ pub use dispatch::{
     compile_attempt_credential_bindings, worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
-    CancelTransition, DispatchPhase, DispatchTransition, DispatchTransitionError,
-    GuardedTransition, retry_exhaustion_eligible,
+    CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
+    retry_exhaustion_eligible,
 };
 pub use operational::{
     DispatchCursor, DispatchOperation, DispatchOperationalEvent, DispatchOperationalFeed,
     DispatchPage, LeaseLossReason,
 };
 pub use run_dispatch::{
-    ExecutionScopeRef, PlacementRequirements, RunDispatch, SessionResourceEnvelope,
-    SessionResourceInstallDecision, SessionRuntimeEnvelope, session_resource_install_decision,
+    DispatchAdmissionShape, ExecutionScopeRef, PlacementRequirements, RunDispatch,
+    SessionResourceEnvelope, SessionResourceInstallDecision, SessionRuntimeEnvelope,
+    session_resource_install_decision,
 };
 pub use worker_transport::{
     BindSandboxRequest, CheckpointRequest, ClaimNewRunRequest, ClaimRunRequest, ClaimWorkerRequest,

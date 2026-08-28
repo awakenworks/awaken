@@ -14,7 +14,7 @@ import {
   spawnServer,
   stopServer,
   waitForPort,
-  waitForSessionEventReceipt,
+  waitForSessionCustomToolBoundary,
 } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -48,13 +48,12 @@ async function sendTask(client, sessionID) {
   });
   const receiptId = receipt.data[0]?.id;
   assert.equal(typeof receiptId, 'string', 'T1 exact SessionToolRunner task receipt');
-  await waitForSessionEventReceipt(
+  await waitForSessionCustomToolBoundary(
     client,
     sessionID,
     receiptId,
     BETAS,
-    ({ delta }) => delta.some((event) => event.type === 'agent.custom_tool_use')
-      && [...delta].reverse().find((event) => event.type === 'session.status_idle')?.stop_reason?.type === 'requires_action',
+    'submit_answer',
     'T1 custom tool task to commit before SessionToolRunner starts',
   );
 }

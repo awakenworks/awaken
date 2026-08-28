@@ -7,9 +7,9 @@ mod historical_pending;
 mod interval_aggregate_projection;
 mod refresh_entrypoint;
 mod run_observation_projection;
-#[cfg(test)]
-pub(super) use canonical_order::budget_reach_close_cursor;
 use canonical_order::*;
+#[cfg(test)]
+pub(super) use canonical_order::{budget_reach_close_cursor, budget_reach_projection_close_cursor};
 use historical_pending::historical_pending_by_lifecycle;
 
 impl ManagedState {
@@ -20,6 +20,8 @@ impl ManagedState {
         root_snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
         outcome_projections: &[AnchoredOutcomeProjection],
         delegation_evidence: DelegationProjectionEvidence<'_>,
+        root_pending: Option<&Pending>,
+        child_pending: &std::collections::HashMap<String, Pending>,
     ) -> Result<(), StateError> {
         let DelegationProjectionEvidence {
             links,
@@ -47,12 +49,20 @@ impl ManagedState {
                 } else {
                     continue;
                 };
+                let phase = match &entry.event {
+                    SessionEventCommand::ToolReply { reply, .. }
+                        if reply.answered_pending_commit_cursor.is_some() =>
+                    {
+                        110
+                    }
+                    _ => 0,
+                };
                 retain_earliest_order(
                     &mut orders,
                     durable_inbound_event_id(&record.session.id, entry.event.operation_id()),
                     CanonicalEventOrder {
                         source_commit_cursor,
-                        phase: 0,
+                        phase,
                         ordinal: batch_index
                             .saturating_mul(batch_stride)
                             .saturating_add(ordinal),
@@ -73,6 +83,36 @@ impl ManagedState {
         for (cursor, pending) in historical_pending {
             if let Some(awaiting) = lifecycle_events.iter().find(|event| {
                 event.cursor == *cursor && event.kind == RunLifecycleEventKind::Awaiting
+            }) {
+                let public_owner_thread_id =
+                    public_thread_id(&record.session.id, &awaiting.thread_id.0);
+                retain_earliest_order(
+                    &mut orders,
+                    managed_tool_event_id(
+                        &public_owner_thread_id,
+                        &awaiting.run_id.0,
+                        &pending.tool_use_id,
+                    ),
+                    CanonicalEventOrder {
+                        source_commit_cursor: awaiting.source_commit_cursor,
+                        phase: 50,
+                        ordinal: 0,
+                    },
+                );
+            }
+        }
+        for (thread_id, pending) in std::iter::once((record.session.id.as_str(), root_pending))
+            .chain(
+                child_pending
+                    .iter()
+                    .map(|(thread_id, pending)| (thread_id.as_str(), Some(pending))),
+            )
+            .filter_map(|(thread_id, pending)| pending.map(|pending| (thread_id, pending)))
+        {
+            if let Some(awaiting) = lifecycle_events.iter().rev().find(|event| {
+                event.thread_id.0 == thread_id
+                    && event.kind == RunLifecycleEventKind::Awaiting
+                    && historical_pending.get(&event.cursor) != Some(pending)
             }) {
                 let public_owner_thread_id =
                     public_thread_id(&record.session.id, &awaiting.thread_id.0);
@@ -537,7 +577,8 @@ impl ManagedState {
         }
 
         for (index, transition) in persisted.budget.reach_transitions().iter().enumerate() {
-            let Some(source_commit_cursor) = budget_reach_close_cursor(persisted, transition)
+            let Some(source_commit_cursor) =
+                budget_reach_projection_close_cursor(persisted, transition, lifecycle_events)
             else {
                 continue;
             };
@@ -713,11 +754,14 @@ impl ManagedState {
                 .iter()
                 .any(|entry| !entry.processed && entry.projection_anchor.is_none())
         }) {
-            // The accepted response remains available to the caller, but a
-            // listable Runtime suffix cannot cross the earliest command whose
-            // effect has not yet supplied its immutable anchor. Holding the
-            // prior disposable prefix prevents the eventual input from being
-            // inserted before an already-issued lifecycle cursor.
+            // Project only root-owned accepted receipts at the end of the issued
+            // prefix. Runtime-derived facts remain withheld until the anchor CAS.
+            let projections = unanchored_inbound_projections(session_id, &persisted.event_batches);
+            let mut sessions = self.sessions.lock().unwrap();
+            let record = sessions.get_mut(session_id).ok_or(StateError::NotFound)?;
+            let start = record.events.len();
+            merge_durable_inbound_projections(record, projections);
+            self.broadcast_committed_from(session_id, record, start);
             return Ok(true);
         }
         let price_snapshot = persisted.budget.price_snapshot().cloned();
@@ -795,25 +839,10 @@ impl ManagedState {
         // were read atomically. A terminal can therefore never close SSE before
         // that same prefix exposes its final output; opaque lifecycle event
         // cursors are never compared with commit-sequence cursors.
-        const LIFECYCLE_PAGE_SIZE: usize = 256;
         // The disposable cursor is only a live-delivery optimization. Canonical
         // list reconstruction always folds the complete retained lifecycle so a
         // cold replica and a warm replica derive the same interval buckets.
-        let mut read_cursor = awaken_agent_contract::RunLifecycleCursor::default();
-        let mut lifecycle_events = Vec::new();
-        loop {
-            let page = self
-                .application
-                .committed_run_lifecycle(session_id, read_cursor, LIFECYCLE_PAGE_SIZE)
-                .await
-                .map_err(StateError::Run)?;
-            let count = page.events.len();
-            lifecycle_events.extend(page.events);
-            if page.next_cursor == read_cursor || count < LIFECYCLE_PAGE_SIZE {
-                break;
-            }
-            read_cursor = page.next_cursor;
-        }
+        let lifecycle_events = self.committed_lifecycle_prefix(session_id).await?;
         let mut transcripts = child_snapshots
             .iter()
             .map(|(thread_id, snapshot)| (thread_id.clone(), snapshot.messages.clone()))
@@ -1764,6 +1793,8 @@ impl ManagedState {
             root_snapshot.as_ref(),
             &durable_outcome_projections,
             delegation_evidence,
+            root_pending,
+            &child_pending,
         )?;
         self.broadcast_new_event_ids(session_id, record, &previous_event_ids);
         Ok(true)
