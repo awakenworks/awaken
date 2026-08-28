@@ -15,6 +15,10 @@ import {
 import { officialBetaResourceProjection } from './resource-projection.mjs';
 import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
+import {
+  officialReferenceFromEnvironment,
+  parseHostedArguments,
+} from './hosted-configuration.mjs';
 import { extractOperationsFromPackageRoot } from '../extract-operations.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
@@ -38,17 +42,29 @@ CeFKdLr8W7pyoxEwCgYIKoZIzj0EAwIDSAAwRQIgS4B6fQj5UHT+4K9gknAevKBq
 9Q==
 -----END CERTIFICATE-----`;
 const clients = await loadConformanceClients();
-const baseURL = process.env.AWAKEN_MANAGED_BASE_URL;
-const apiKey = process.env.AWAKEN_MANAGED_API_KEY;
-const tunnelAccessToken = process.env.AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN;
-const agent = process.env.AWAKEN_MANAGED_AGENT_ID;
-const environmentId = process.env.AWAKEN_MANAGED_ENVIRONMENT_ID;
-const workspaceId = process.env.AWAKEN_MANAGED_WORKSPACE_ID;
-const userProfileId = process.env.AWAKEN_MANAGED_USER_PROFILE_ID;
-const userProfileAccessType = process.env.AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE;
-const referenceBaseURL = process.env.ANTHROPIC_MANAGED_REFERENCE_BASE_URL;
-const referenceApiKey = process.env.ANTHROPIC_MANAGED_REFERENCE_API_KEY;
-const referenceTunnelAccessToken = process.env.ANTHROPIC_MANAGED_REFERENCE_TUNNEL_ACCESS_TOKEN;
+const hostedArguments = parseHostedArguments(process.argv.slice(2));
+const reference = officialReferenceFromEnvironment(process.env, hostedArguments);
+const awaken = {
+  baseURL: process.env.AWAKEN_MANAGED_BASE_URL,
+  apiKey: process.env.AWAKEN_MANAGED_API_KEY,
+  tunnelAccessToken: process.env.AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN,
+  agent: process.env.AWAKEN_MANAGED_AGENT_ID,
+  environmentId: process.env.AWAKEN_MANAGED_ENVIRONMENT_ID,
+  workspaceId: process.env.AWAKEN_MANAGED_WORKSPACE_ID,
+  userProfileId: process.env.AWAKEN_MANAGED_USER_PROFILE_ID,
+  userProfileAccessType: process.env.AWAKEN_MANAGED_USER_PROFILE_ACCESS_TYPE,
+};
+const target = hostedArguments.referenceLifecycles ? reference : awaken;
+const {
+  baseURL,
+  apiKey,
+  tunnelAccessToken,
+  agent,
+  environmentId,
+  workspaceId,
+  userProfileId,
+  userProfileAccessType,
+} = target;
 
 for (const [name, value] of Object.entries({
   baseURL, apiKey, tunnelAccessToken, agent, environmentId, workspaceId,
@@ -648,20 +664,15 @@ for (const releaseClient of releaseClients) {
   await exerciseConcurrencyPaginationAndReconnect(releaseClient.Client);
   await exerciseTunnelPublicLifecycle(releaseClient.Client);
 }
-const referenceValues = [referenceBaseURL, referenceApiKey, referenceTunnelAccessToken];
-assert.ok(
-  referenceValues.every(Boolean) || referenceValues.every((value) => !value),
-  'official reference endpoint, API key, and Tunnel bearer must be configured together',
-);
-await exerciseDeployedOperationSweep({
-  actual: { name: 'awaken', baseURL, apiKey, tunnelAccessToken },
-  reference: referenceBaseURL ? {
-    name: 'anthropic',
-    baseURL: referenceBaseURL,
-    apiKey: referenceApiKey,
-    tunnelAccessToken: referenceTunnelAccessToken,
-  } : undefined,
-});
+if (!hostedArguments.referenceLifecycles) {
+  await exerciseDeployedOperationSweep({
+    actual: { name: 'awaken', baseURL, apiKey, tunnelAccessToken },
+    reference: reference ? {
+      name: 'anthropic',
+      ...reference,
+    } : undefined,
+  });
+}
 console.log(
-  `Managed public-ingress SDK matrix passed for ${clients.map(({ version }) => version).join(', ')}, including the User Profiles change point, all-operation public routing, pagination/idempotency/reconnect, Files/Resources, and the WIF-only Tunnel/Certificate lifecycle${referenceBaseURL ? ' with official-service differential evidence' : ''}`,
+  `Managed ${hostedArguments.referenceLifecycles ? 'official-reference' : 'public-ingress'} SDK matrix passed for ${clients.map(({ version }) => version).join(', ')}, including the User Profiles change point, ${hostedArguments.referenceLifecycles ? '' : 'all-operation public routing, '}pagination/idempotency/reconnect, Files/Resources, and the WIF-only Tunnel/Certificate lifecycle${reference && !hostedArguments.referenceLifecycles ? ' with official-service differential evidence' : ''}`,
 );

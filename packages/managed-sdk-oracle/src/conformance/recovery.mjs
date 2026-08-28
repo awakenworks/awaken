@@ -21,6 +21,70 @@ export function assertRecoverySdkIdentity(state, client) {
   assert.equal(state.sdk_role, expected.sdk_role, 'recovery phases use one exact SDK role');
 }
 
+const RECOVERY_STATE_FIELDS = Object.freeze([
+  'agent',
+  'command_key',
+  'environment_id',
+  'file_id',
+  'marker',
+  'schema_version',
+  'sdk_role',
+  'sdk_version',
+  'session_id',
+]);
+
+export function validateRecoveryState(state) {
+  assert.ok(state && typeof state === 'object' && !Array.isArray(state), 'recovery state object');
+  assert.deepEqual(Object.keys(state).sort(), [...RECOVERY_STATE_FIELDS].sort(), 'recovery state fields');
+  assert.equal(state.schema_version, 1, 'recovery state schema');
+  for (const field of RECOVERY_STATE_FIELDS.filter((field) => field !== 'schema_version')) {
+    assert.ok(
+      typeof state[field] === 'string' && state[field].trim().length > 0,
+      `recovery state ${field}`,
+    );
+  }
+  assert.match(state.sdk_version, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u, 'recovery SDK version');
+  assert.ok(
+    ['current_oracle', 'candidate'].includes(state.sdk_role),
+    'recovery SDK role',
+  );
+  return state;
+}
+
+export function writeRecoveryState(stateFile, state) {
+  validateRecoveryState(state);
+  assert.equal(fs.existsSync(stateFile), false, 'recovery state file must be new');
+  const temporary = `${stateFile}.tmp-${process.pid}`;
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, {
+      mode: 0o600,
+      flag: 'wx',
+    });
+    // Publishing through a hard link is both atomic and no-replace. Unlike a
+    // preflight exists check followed by rename, a concurrent writer cannot be
+    // silently overwritten between those two operations.
+    fs.linkSync(temporary, stateFile);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+export async function persistPreparedRecovery({ client, stateFile, state, write = writeRecoveryState }) {
+  try {
+    write(stateFile, state);
+  } catch (writeFailure) {
+    try {
+      await cleanupRecovery({ client, state });
+    } catch (cleanupFailure) {
+      throw new AggregateError(
+        [writeFailure, cleanupFailure],
+        'recovery state persistence and compensation both failed',
+      );
+    }
+    throw writeFailure;
+  }
+}
+
 async function drain(page) {
   const values = [];
   for await (const value of page) values.push(value);
@@ -50,13 +114,30 @@ export async function prepareRecovery({ client, toFile, agent, environmentId, ma
     const created = attempts
       .filter(({ status }) => status === 'fulfilled')
       .map(({ value }) => value.id);
-    await Promise.allSettled([
+    const compensation = await Promise.allSettled([
       ...[...new Set(created)].map(
         (sessionID) => client.beta.sessions.delete(sessionID, { betas: managedBetas }),
       ),
       client.beta.files.delete(file.id),
     ]);
-    throw new AggregateError(failed.map(({ reason }) => reason), 'concurrent recovery prepare failed');
+    const prepareFailure = new AggregateError(
+      failed.map(({ reason }) => reason),
+      'concurrent recovery prepare failed',
+    );
+    const compensationFailed = compensation.filter(({ status }) => status === 'rejected');
+    if (compensationFailed.length > 0) {
+      throw new AggregateError(
+        [
+          prepareFailure,
+          new AggregateError(
+            compensationFailed.map(({ reason }) => reason),
+            'concurrent recovery prepare compensation failed',
+          ),
+        ],
+        'concurrent recovery prepare and compensation both failed',
+      );
+    }
+    throw prepareFailure;
   }
   const [first, concurrentReplay] = attempts.map(({ value }) => value);
   assert.equal(concurrentReplay.id, first.id, 'concurrent command converges to one Session');
@@ -147,13 +228,17 @@ async function main() {
       environmentId,
       marker,
     });
-    fs.writeFileSync(stateFile, `${JSON.stringify({
-      ...state,
-      ...recoverySdkIdentity(selected),
-    }, null, 2)}\n`, { mode: 0o600 });
+    await persistPreparedRecovery({
+      client,
+      stateFile,
+      state: {
+        ...state,
+        ...recoverySdkIdentity(selected),
+      },
+    });
     return;
   }
-  const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  const state = validateRecoveryState(JSON.parse(fs.readFileSync(stateFile, 'utf8')));
   assertRecoverySdkIdentity(state, selected);
   if (phase === 'verify') await verifyRecovery({ client, state });
   else await cleanupRecovery({ client, state });

@@ -1,12 +1,18 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
   assertRecoverySdkIdentity,
   cleanupRecovery,
+  persistPreparedRecovery,
   prepareRecovery,
   recoverySdkIdentity,
+  validateRecoveryState,
   verifyRecovery,
+  writeRecoveryState,
 } from '../src/conformance/recovery.mjs';
 
 function page(values) {
@@ -100,6 +106,43 @@ test('failed concurrent prepare compensates every partially created resource', a
   assert.deepEqual(new Set(deleted.map(([kind]) => kind)), new Set(['session', 'file']));
 });
 
+test('failed concurrent prepare preserves both primary and compensation failures', async () => {
+  // FMECA composition: one Session create succeeds, its concurrent peer fails,
+  // then both cleanup arms fail. The outer AggregateError must retain the
+  // prepare aggregate and the compensation aggregate in causal order; hiding
+  // either would make a release failure or leaked staging resource invisible.
+  let creates = 0;
+  const client = { beta: {
+    files: {
+      upload: async () => ({ id: 'file-partial' }),
+      delete: async () => { throw new Error('file cleanup failure'); },
+    },
+    sessions: {
+      create: async () => {
+        creates += 1;
+        if (creates === 2) throw new Error('create failure');
+        return { id: 'session-partial' };
+      },
+      delete: async () => { throw new Error('session cleanup failure'); },
+    },
+  } };
+  await assert.rejects(
+    () => prepareRecovery({
+      client,
+      toFile: async () => ({}),
+      agent: 'agent',
+      environmentId: 'environment',
+      marker: 'dual-failure',
+    }),
+    (error) => error instanceof AggregateError
+      && error.errors[0] instanceof AggregateError
+      && error.errors[0].errors[0].message === 'create failure'
+      && error.errors[1] instanceof AggregateError
+      && error.errors[1].errors.map(({ message }) => message).sort().join(',')
+        === 'file cleanup failure,session cleanup failure',
+  );
+});
+
 test('recovery evidence is bound to the exact admitted SDK', () => {
   // Cause/effect graph: C1 prepare records an exact package role+version; C2
   // verify/cleanup run with that same selection. C1+C2 succeeds. A promoted,
@@ -114,4 +157,88 @@ test('recovery evidence is bound to the exact admitted SDK', () => {
   ]) {
     assert.throws(() => assertRecoverySdkIdentity(identity, selected), /one exact SDK/u);
   }
+});
+
+function completeRecoveryState() {
+  return {
+    schema_version: 1,
+    marker: 'marker-1',
+    command_key: 'managed-recovery-marker-1',
+    session_id: 'session-1',
+    file_id: 'file-1',
+    agent: 'agent-1',
+    environment_id: 'environment-1',
+    sdk_version: '0.122.0',
+    sdk_role: 'candidate',
+  };
+}
+
+test('recovery state has one closed, atomic, private wire format', () => {
+  // Grammar/commit table: the exact nine-field v1 record is admitted; missing,
+  // extra, blank, wrong-version, or wrong-role states fail before any service
+  // read. Persistence publishes the whole 0600 file by an atomic no-replace
+  // hard link and refuses to
+  // overwrite prior evidence, so a partial/stale phase cannot impersonate it.
+  const state = completeRecoveryState();
+  assert.deepEqual(validateRecoveryState(state), state);
+  const mutations = [
+    [(value) => { delete value.file_id; }, /fields/u],
+    [(value) => { value.extra = true; }, /fields/u],
+    [(value) => { value.marker = ' '; }, /marker/u],
+    [(value) => { value.sdk_version = 'latest'; }, /SDK version/u],
+    [(value) => { value.sdk_role = 'oldest_supported'; }, /SDK role/u],
+  ];
+  for (const [mutate, pattern] of mutations) {
+    const invalid = structuredClone(state);
+    mutate(invalid);
+    assert.throws(() => validateRecoveryState(invalid), pattern);
+  }
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'awaken-recovery-state-'));
+  const stateFile = path.join(directory, 'state.json');
+  try {
+    writeRecoveryState(stateFile, state);
+    assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')), state);
+    assert.equal(fs.statSync(stateFile).mode & 0o777, 0o600);
+    assert.throws(() => writeRecoveryState(stateFile, state), /must be new/u);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('failed recovery-state commit compensates prepared resources without hiding failures', async () => {
+  // FMECA: resource prepare commits, then local evidence write fails. Both
+  // Session and File are deleted before the write error escapes. If compensation
+  // also fails, AggregateError retains the primary and cleanup causes.
+  const { calls, client } = recoveryFake();
+  const state = completeRecoveryState();
+  await assert.rejects(
+    () => persistPreparedRecovery({
+      client,
+      stateFile: '/not-written',
+      state,
+      write: () => { throw new Error('write failure'); },
+    }),
+    /write failure/u,
+  );
+  assert.deepEqual(calls, [
+    ['session.delete', 'session-1'],
+    ['file.delete', 'file-1'],
+  ]);
+
+  const failingCleanup = { beta: {
+    sessions: { delete: async () => { throw new Error('session cleanup failure'); } },
+    files: { delete: async () => { throw new Error('file cleanup failure'); } },
+  } };
+  await assert.rejects(
+    () => persistPreparedRecovery({
+      client: failingCleanup,
+      stateFile: '/not-written',
+      state,
+      write: () => { throw new Error('write failure'); },
+    }),
+    (error) => error instanceof AggregateError
+      && error.errors[0].message === 'write failure'
+      && error.errors[1] instanceof AggregateError,
+  );
 });
