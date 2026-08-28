@@ -728,6 +728,7 @@ pub awaken_session_contract::ActivateSessionRealization::session_id: alloc::stri
 pub struct awaken_session_contract::AdmitSessionRun
 pub awaken_session_contract::AdmitSessionRun::agent_id: alloc::string::String
 pub awaken_session_contract::AdmitSessionRun::data_subject_id: core::option::Option<alloc::string::String>
+pub awaken_session_contract::AdmitSessionRun::execution_requirements: awaken_session_contract::SessionRunExecutionRequirements
 pub awaken_session_contract::AdmitSessionRun::messages: alloc::vec::Vec<awaken_agent_contract::agent::message::Message>
 pub awaken_session_contract::AdmitSessionRun::operation_id: alloc::string::String
 pub awaken_session_contract::AdmitSessionRun::run_id: awaken_agent_contract::agent::run::Id
@@ -1568,6 +1569,9 @@ pub struct awaken_session_contract::SessionRunDelivery
 pub awaken_session_contract::SessionRunDelivery::run_id: awaken_agent_contract::agent::run::Id
 pub awaken_session_contract::SessionRunDelivery::session_activity_epoch: u64
 pub awaken_session_contract::SessionRunDelivery::session_id: alloc::string::String
+pub struct awaken_session_contract::SessionRunExecutionRequirements
+pub awaken_session_contract::SessionRunExecutionRequirements::required_worker_capabilities: alloc::collections::btree::set::BTreeSet<alloc::string::String>
+pub awaken_session_contract::SessionRunExecutionRequirements::tool_capability_narrowing: awaken_runtime_contract::permission::ToolCapabilityNarrowing
 pub struct awaken_session_contract::SessionRuntimeInterval
 pub awaken_session_contract::SessionRuntimeInterval::activity_epoch: u64
 pub awaken_session_contract::SessionRuntimeInterval::closed_revision: awaken_session_contract::SessionRevision
