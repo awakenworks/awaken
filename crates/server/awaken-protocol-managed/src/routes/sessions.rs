@@ -453,38 +453,13 @@ async fn create_session(
     // is loud rather than a half-provisioned session.
     let workspace_id = workspace.map(|w| w.0.0.clone());
     let idempotency_key = parse_idempotency_key(&headers)?;
-    let respond_async = headers
-        .get_all("prefer")
-        .iter()
-        .filter_map(|value| value.to_str().ok())
-        .flat_map(|value| value.split(','))
-        .any(|preference| {
-            preference
-                .split(';')
-                .next()
-                .is_some_and(|name| name.trim().eq_ignore_ascii_case("respond-async"))
-        });
-    let session = match (respond_async, idempotency_key.as_deref()) {
-        (true, Some(key)) => {
-            Box::pin(state.accept_session_idempotent(req, workspace_id.clone(), key)).await
-        }
-        (true, None) => Box::pin(state.accept_session(req, workspace_id.clone())).await,
-        (false, Some(key)) => {
-            Box::pin(state.create_session_idempotent(req, workspace_id.clone(), key)).await
-        }
-        (false, None) => Box::pin(state.create_session(req, workspace_id.clone())).await,
+    let session = match idempotency_key.as_deref() {
+        Some(key) => Box::pin(state.create_session_idempotent(req, workspace_id, key)).await,
+        None => Box::pin(state.create_session(req, workspace_id)).await,
     }
     .map_err(error_response)?;
     let (response_headers, body) = versioned_session_response(&state, session).await?;
-    Ok((
-        if respond_async {
-            StatusCode::ACCEPTED
-        } else {
-            StatusCode::OK
-        },
-        response_headers,
-        body,
-    ))
+    Ok((StatusCode::OK, response_headers, body))
 }
 
 pub(crate) fn parse_idempotency_key(headers: &HeaderMap) -> Result<Option<String>, WireErr> {

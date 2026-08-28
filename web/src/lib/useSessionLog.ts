@@ -4,12 +4,17 @@
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  MANAGED_SESSION_EVENT_TYPES,
+  MANAGED_SESSION_PREVIEW_TYPES,
+  isCommittedStreamEvent,
+  mergeCommittedEvents,
+  type ManagedStreamEvent,
+} from "@awaken/managed-session-projection";
 import { api, IdempotencyScope, streamUrl } from "./api/client";
 import type { InboundEvent, ListEventsResponse, SessionEvent } from "./api/types";
 import {
-  SSE_EVENT_NAMES,
   isRunning,
-  mergeEvents,
   pairToolResults,
   pendingConfirmIds,
 } from "./session-log";
@@ -60,18 +65,24 @@ export function useSessionLog(
     const source = new EventSource(streamUrl(`${base}/events/stream`));
     const onAny = (raw: MessageEvent) => {
       try {
-        const ev = JSON.parse(raw.data as string) as SessionEvent;
-        if (!ev.id) return;
+        const frame = JSON.parse(raw.data as string) as ManagedStreamEvent;
+        // This product consumes committed history only. Preview frames are
+        // subscribed from the same generated SDK catalog but never enter the
+        // durable log; products that request deltas use reduceLivePreview.
+        if (!isCommittedStreamEvent(frame)) return;
+        const ev = frame as unknown as SessionEvent;
         if (followLive) {
-          qc.setQueryData<SessionEvent[]>(queryKey, (old) => mergeEvents(old ?? [], [ev]));
+          qc.setQueryData<SessionEvent[]>(queryKey, (old) => mergeCommittedEvents(old ?? [], [ev]));
           return;
         }
-        setPending((buf) => (buf.some((b) => b.id === ev.id) ? buf : [...buf, ev]));
+        setPending((buf) => mergeCommittedEvents(buf, [ev]));
       } catch {
         /* non-JSON frame */
       }
     };
-    for (const name of SSE_EVENT_NAMES) source.addEventListener(name, onAny);
+    for (const name of [...MANAGED_SESSION_EVENT_TYPES, ...MANAGED_SESSION_PREVIEW_TYPES]) {
+      source.addEventListener(name, onAny);
+    }
     // EventSource reconnects automatically. Reconcile from the committed list
     // on every disconnect so frames between the break and reconnect cannot
     // leave Chat/Trace on a different projection.
@@ -86,7 +97,7 @@ export function useSessionLog(
 
   const freshCount = pending.filter((p) => !log.some((e) => e.id === p.id)).length;
   const applyPending = () => {
-    qc.setQueryData<SessionEvent[]>(queryKey, (old) => mergeEvents(old ?? [], pending));
+    qc.setQueryData<SessionEvent[]>(queryKey, (old) => mergeCommittedEvents(old ?? [], pending));
     setPending([]);
   };
 

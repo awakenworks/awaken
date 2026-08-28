@@ -28,10 +28,17 @@ of documented routes that are intentionally absent from the selected SDK
 anchors. Operation inventories and type fingerprints must never be copied into
 another hand-maintained manifest.
 
+The generated current wire contract also owns the browser Session event catalog
+and the required/optional outer Session properties. Its TypeScript projection
+exports only the event names needed by browser consumers; the JSON oracle feeds
+the exact Session-response gate. The standalone E2E package's
+`@anthropic-ai/sdk` dependency is an executable mirror only: `generate` and
+`check` reject it unless it exactly matches the current oracle version.
+
 ## Updating an SDK anchor
 
-1. Change the exact npm alias version in `package.json` and the corresponding
-   version in `config/anchors.json`.
+1. Change the exact npm alias version in `package.json` and the E2E executable
+   mirror. `config/anchors.json` keeps the stable role-to-module mapping.
 2. Run `pnpm install` at the repository root.
 3. Run `pnpm --filter @awaken/managed-sdk-oracle generate`.
 4. Review route deltas and declaration fingerprint changes as API changes, not

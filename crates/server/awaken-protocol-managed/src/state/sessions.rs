@@ -80,49 +80,6 @@ fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
     }
 }
 
-const fn session_preparation_status(
-    execution: SessionExecutionState,
-) -> crate::types::SessionPreparationStatus {
-    match execution {
-        SessionExecutionState::Preparing
-        | SessionExecutionState::Activating
-        | SessionExecutionState::Rescheduling => crate::types::SessionPreparationStatus::Preparing,
-        SessionExecutionState::ActivationFailed => crate::types::SessionPreparationStatus::Failed,
-        SessionExecutionState::Running
-        | SessionExecutionState::Idle
-        | SessionExecutionState::Terminated => crate::types::SessionPreparationStatus::Ready,
-    }
-}
-
-#[cfg(kani)]
-#[kani::proof]
-fn session_preparation_projection_is_total_exact_and_non_strengthening() {
-    let code: u8 = kani::any();
-    let execution = match code % 7 {
-        0 => SessionExecutionState::Preparing,
-        1 => SessionExecutionState::Activating,
-        2 => SessionExecutionState::ActivationFailed,
-        3 => SessionExecutionState::Running,
-        4 => SessionExecutionState::Rescheduling,
-        5 => SessionExecutionState::Idle,
-        _ => SessionExecutionState::Terminated,
-    };
-    let projected = session_preparation_status(execution);
-    assert_eq!(
-        projected == crate::types::SessionPreparationStatus::Failed,
-        execution == SessionExecutionState::ActivationFailed
-    );
-    assert_eq!(
-        projected == crate::types::SessionPreparationStatus::Preparing,
-        matches!(
-            execution,
-            SessionExecutionState::Preparing
-                | SessionExecutionState::Activating
-                | SessionExecutionState::Rescheduling
-        )
-    );
-}
-
 impl ManagedState {
     fn resolved_session_multiagent(
         &self,
@@ -205,15 +162,6 @@ impl ManagedState {
         }
     }
 
-    pub(super) fn wire_session_preparation(
-        persisted: &PersistedSession,
-    ) -> crate::types::SessionPreparation {
-        crate::types::SessionPreparation {
-            status: session_preparation_status(persisted.execution),
-            error: persisted.realization_progress.last_error.clone(),
-        }
-    }
-
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
@@ -227,7 +175,6 @@ impl ManagedState {
             return Ok(());
         };
         record.session.status = Self::wire_session_status(persisted.execution);
-        record.session.preparation = Self::wire_session_preparation(persisted);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -1014,7 +961,6 @@ impl ManagedState {
             // realization acknowledges the exact frozen projection; hardcoding
             // non-Application creation to idle created a second, unsafe status.
             status: Self::wire_session_status(persisted.execution),
-            preparation: Self::wire_session_preparation(&persisted),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -1104,7 +1050,6 @@ impl ManagedState {
             agent_skills,
             vault_ids,
             status,
-            preparation,
             archived_at,
         ) = {
             let p = persisted;
@@ -1134,7 +1079,6 @@ impl ManagedState {
             let vault_ids = baseline.mcp_authoring.ordered_vault_ids.clone();
             let mcp_servers = typed_mcp_servers(p.configured_mcp_servers());
             let archived_at = p.archived_at().map(str::to_owned);
-            let preparation = Self::wire_session_preparation(&p);
             (
                 agent_id,
                 agent_revision,
@@ -1149,7 +1093,6 @@ impl ManagedState {
                 agent_skills,
                 vault_ids,
                 Self::wire_session_status(p.execution),
-                preparation,
                 archived_at,
             )
         };
@@ -1226,7 +1169,6 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status,
-            preparation,
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids,

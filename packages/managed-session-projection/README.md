@@ -9,10 +9,11 @@ shared by Awaken reference products:
   arrives;
 - prevent volatile stream envelopes from entering durable product projections.
 
-The official `@anthropic-ai/sdk` event union remains the wire-type authority.
-This package does not interpret product tools, derive product phases, open SSE
-connections, or own Session state. Pilot and Harness keep those responsibilities
-in their own domain and application layers.
+The current official SDK selected by `@awaken/managed-sdk-oracle` remains the
+wire-type and generated event-catalog authority. This package introduces no SDK
+version pin or hand-maintained event list. It does not interpret product tools,
+derive product phases, open SSE connections, or own Session state. Pilot and
+Harness keep those responsibilities in their own domain and application layers.
 
 The package is private while Awaken `1.0.0-dev` is consumed from a sibling
 checkout. Reference products use a `file:` dependency on this directory. A
@@ -24,4 +25,3 @@ Run its complete gate from the Awaken repository root:
 ```sh
 pnpm check
 ```
-
