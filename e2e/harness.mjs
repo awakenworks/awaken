@@ -362,26 +362,38 @@ export async function waitForSessionEventReceipt(
   );
 }
 
-// Canonical negative oracle for a retryable command that failed before it
-// acquired a committed projection anchor. Causes: C1=admission returned an
-// exact receipt; C2=the command remains unanchored; C3=committed history may
-// already contain effects from older commands. Effects: E1=the receipt is not
-// fabricated as committed history; E2=only events added after C3 are checked;
+// Canonical oracle for a retryable command that failed before it acquired a
+// committed projection anchor. Causes: C1=admission returned an exact receipt;
+// C2=the root retains that receipt without processing it; C3=history may
+// already contain effects from older commands. Effects: E1=events.list exposes
+// exactly one pending receipt; E2=only events added after C3 are checked;
 // E3=no forbidden execution/terminal effect is added. Decision rules:
-// U1 C1+C2=>E1; U2 C1+C2+C3=>E1+E2+E3.
-export function committedEffectsAfterUnanchoredReceipt({
+// U1 C1+C2=>E1; U2 C1+C2+C3=>E1+E2+E3. The pending receipt is durable command
+// provenance, not evidence that its Runtime effect committed.
+export function assertPendingReceiptHasNoRuntimeEffects({
   history,
   priorHistory = [],
   receiptId,
   forbiddenEventTypes,
   description,
 }) {
-  if (history.some((event) => event.id === receiptId)) {
-    throw new Error(`${description} fabricated an unanchored receipt as committed history`);
+  const matchingReceipts = history.filter((event) => event.id === receiptId);
+  if (matchingReceipts.length !== 1) {
+    throw new Error(
+      `${description} must expose one pending receipt; observed ${matchingReceipts.length}`,
+    );
+  }
+  if (matchingReceipts[0].processed_at !== null) {
+    throw new Error(`${description} falsely marked the pending receipt as processed`);
   }
   const priorIds = new Set(priorHistory.map((event) => event.id));
   const added = history.filter((event) => !priorIds.has(event.id));
-  const forbidden = added.filter((event) => forbiddenEventTypes.has(event.type));
+  if (!added.some((event) => event.id === receiptId)) {
+    throw new Error(`${description} did not add the exact pending receipt`);
+  }
+  const forbidden = added.filter(
+    (event) => event.id !== receiptId && forbiddenEventTypes.has(event.type),
+  );
   if (forbidden.length > 0) {
     throw new Error(
       `${description} fabricated execution or terminal effects: ${forbidden.map((event) => event.type)}`,

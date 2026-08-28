@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   pass,
   waitForSessionEventReceipt,
   withRealServer,
@@ -76,8 +76,8 @@ async function main() {
     // Read-only realization causes: C1=the User batch is durably admitted;
     // C2=Workdir cannot enforce the frozen read-only File mount; C3=one bounded
     // reconciliation window elapses. Effects: E1=admission returns the exact
-    // unprocessed receipt; E2=the unanchored command is absent from committed
-    // history; E3=the Session remains idle/nonterminal; E4=no model/tool/terminal
+    // unprocessed receipt; E2=events.list exposes it exactly once as pending;
+    // E3=the Session remains idle/nonterminal; E4=no model/tool/terminal
     // effect or MemoryStore mutation occurs. K: the Session root owns retryable
     // command provenance while events.list owns committed history. Decision
     // R2a C1+C2=>E1; R2b C1+C2+C3=>E2+E3+E4.
@@ -93,7 +93,7 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(session.id, { betas: BETAS })) {
       deniedEvents.push(event);
     }
-    committedEffectsAfterUnanchoredReceipt({
+    assertPendingReceiptHasNoRuntimeEffects({
       history: deniedEvents,
       receiptId: acceptedDenied.id,
       forbiddenEventTypes: EXECUTION_OR_TERMINAL_EVENT_TYPES,
@@ -176,7 +176,7 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(memorySession.id, { betas: BETAS })) {
       afterArchive.push(event);
     }
-    committedEffectsAfterUnanchoredReceipt({
+    assertPendingReceiptHasNoRuntimeEffects({
       history: afterArchive,
       priorHistory: eventsBeforeArchiveDeny,
       receiptId: acceptedArchiveDenied.id,

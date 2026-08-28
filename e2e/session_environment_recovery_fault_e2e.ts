@@ -13,7 +13,7 @@ import path from 'node:path';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import {
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   REPO_ROOT,
   stopServer,
   waitForPort,
@@ -218,7 +218,7 @@ async function expectRestoreFailure(
   //
   // | Rule | Admission | Runtime restore | Observable outcome |
   // | F1 | reject | not run | HTTP 500 error |
-  // | F2 | accept | corrupt/unavailable | HTTP 200 receipt; no unanchored list effect |
+  // | F2 | accept | corrupt/unavailable | HTTP 200 receipt; one pending list receipt |
   if (response.status === 500) {
     assert.ok(body.includes('error'), `${marker} returned a structured error: ${body}`);
     return;
@@ -228,12 +228,12 @@ async function expectRestoreFailure(
   const acceptedId = accepted?.id;
   assert.equal(typeof acceptedId, 'string', `${marker} exact User Event receipt`);
   assert.equal(accepted.processed_at, null, `${marker} effect failure is not falsely processed`);
-  // Absence is observed over one bounded reconciliation window. A positive wait
-  // would be the wrong oracle because retryable custody intentionally has no
-  // terminal event until the damaged external binding is repaired.
+  // Pending custody is observed over one bounded reconciliation window. Waiting
+  // for a terminal event would be the wrong oracle because retryable custody
+  // intentionally remains pending until the damaged binding is repaired.
   await new Promise((resolve) => setTimeout(resolve, 750));
   const observed = await listHistory();
-  committedEffectsAfterUnanchoredReceipt({
+  assertPendingReceiptHasNoRuntimeEffects({
     history: observed,
     priorHistory,
     receiptId: acceptedId,

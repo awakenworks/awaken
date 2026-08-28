@@ -21,7 +21,7 @@
 import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import {
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   pass,
   waitForSessionEventReceipt,
   withScenarioServer,
@@ -227,11 +227,11 @@ async function main() {
       assert.equal(acceptedMount?.processed_at, null, 'R2 effect failure is not falsely processed');
       // The request/CAS is already durable, so a later capability repair retries
       // this same command. Observe one bounded reconciliation window: the
-      // unanchored receipt must not appear in committed history, and the runtime
+      // pending receipt must remain visible but unprocessed, and the runtime
       // must not invent model/tool/terminal effects.
       await new Promise((resolve) => setTimeout(resolve, 750));
       const pendingMount = await listEvents(client, resourceSession.id);
-      committedEffectsAfterUnanchoredReceipt({
+      assertPendingReceiptHasNoRuntimeEffects({
         history: pendingMount,
         receiptId: acceptedMount.id,
         forbiddenEventTypes: new Set([

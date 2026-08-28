@@ -24,7 +24,7 @@ import { spawn, execFileSync as rawExecFileSync, spawnSync } from 'node:child_pr
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { ensureCanonicalSandboxImage } from './fixtures/sandbox_image.mjs';
 import {
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   REPO_ROOT,
   waitForPort,
   waitForSessionEventReceipt,
@@ -225,13 +225,13 @@ async function exerciseContainerEnvironment(
         );
         // Failure decision rules: F1 synchronous admission error => surface it;
         // F2 accepted command + retryable provider/capability failure => return
-        // the exact unprocessed admission receipt, exclude it from unanchored
-        // committed history, and create no Agent/terminal effect over one bounded
+        // the exact unprocessed admission receipt, expose it once as the pending
+        // suffix, and create no Agent/terminal effect over one bounded
         // reconciliation window. F2 is not a session.error until a separate
         // authority classifies the fault as permanently quarantined.
         await new Promise((resolve) => setTimeout(resolve, 750));
         events = await listSessionEvents(client, session.id);
-        committedEffectsAfterUnanchoredReceipt({
+        assertPendingReceiptHasNoRuntimeEffects({
           history: events,
           receiptId: acceptedId,
           forbiddenEventTypes: new Set([

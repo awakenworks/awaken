@@ -36,7 +36,7 @@ import type {
   BetaManagedAgentsUserDefineOutcomeEvent,
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JS harness deliberately serves both JS and TS scenarios.
-import { committedEffectsAfterUnanchoredReceipt, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
+import { assertPendingReceiptHasNoRuntimeEffects, pass, realServerEnv, spawnServer, startUpstream, stopServer, waitForPort, waitForSessionEventReceipt, waitForValue } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const BASE_PORT = Number(process.env.E2E_PORT);
@@ -297,7 +297,7 @@ async function competingOutcomeCommands(port: number) {
 
     // R2/F2: the first retained command is in a real Provider request when the
     // second distinct command is accepted. Busy is retryable internal state:
-    // the second receipt remains unprocessed and absent from committed history,
+    // the second receipt remains visible exactly once as unprocessed history,
     // with no Outcome spans until the first aggregate terminates; the sole
     // supervisor then anchors and advances it.
     const first = outcomeReceipt(await defineOutcome(client, session.id, 'FINAL', 3));
@@ -314,7 +314,7 @@ async function competingOutcomeCommands(port: number) {
     assert.notEqual(second.outcome_id, first.outcome_id, 'R2 competing root commands have distinct ids');
     assert.equal(second.processed_at, null, 'R2 Busy leaves the competing root Event unprocessed');
     const whileBusy = await listEvents(client, session.id);
-    committedEffectsAfterUnanchoredReceipt({
+    assertPendingReceiptHasNoRuntimeEffects({
       history: whileBusy,
       priorHistory: beforeSecond,
       receiptId: second.id,
