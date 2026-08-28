@@ -17,7 +17,7 @@ and resource ownership to presentation hierarchy.
 
 The stable Agents Workspace id remains the product and persistence coordinate.
 IAM stores its independent placement as
-`ProductSpaceRef { product: "agents", space_id: "workspace/<opaque-id>" }`.
+`ProductSpaceRef { product_id: "agents", space_id: "workspace/<opaque-id>" }`.
 Local embedded boot reconciles the hidden Org and calls IAM's canonical
 `EnsureProductSpacePlacement` through the existing `DirectoryApi` and shared
 SQLite store. IAM alone derives the node id, canonical slug, timestamp, active
