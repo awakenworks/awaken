@@ -85,7 +85,12 @@ fn ready_dispatch_worker(ns: &str, suffix: &str) -> WorkerSnapshot {
         warm_environment_shapes: Default::default(),
         credential_observations: Default::default(),
         acp_capability_observations: Default::default(),
-        expires_at_ms: 100_000,
+        // This fixture models a Worker that remains Ready for the whole
+        // conformance scenario. Memory/SQLite consume the scenario's logical
+        // clock, while PostgreSQL deliberately consumes its authoritative
+        // database clock; a small synthetic deadline would therefore test an
+        // expired Worker on PostgreSQL instead of the intended claim policy.
+        expires_at_ms: u64::MAX,
     }
 }
 
@@ -122,7 +127,10 @@ fn credential_worker(ns: &str, holder: &PlaintextHolder, capable: bool) -> Worke
         warm_environment_shapes: Default::default(),
         credential_observations: Default::default(),
         acp_capability_observations: Default::default(),
-        expires_at_ms: 100_000,
+        // Credential conformance varies the immutable manifest axis only. A
+        // backend-authoritative wall clock must not turn that partition into
+        // the unrelated "expired Worker" rejection.
+        expires_at_ms: u64::MAX,
     }
 }
 
