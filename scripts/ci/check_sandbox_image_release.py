@@ -29,6 +29,16 @@ PREDICATE_TYPE = (
 IMAGE_REPOSITORY = "ghcr.io/awakenworks/awaken-sandbox"
 SOURCE_REPOSITORY = "https://github.com/awakenworks/awaken"
 CANONICAL_BUILD = 'deploy/images/sandbox/build.sh "$STAGING_TAG"'
+SIGNATURE_CREATE_BLOCK = """            case "$SIGNATURE_STATE" in
+              absent)
+                cosign sign --yes "$IMAGE"
+                query_release_signature "$IMAGE" staging-after-sign
+                test "$SIGNATURE_STATE" = reuse
+                ;;
+              reuse) ;;
+              *) echo "unexpected image-signature state: $SIGNATURE_STATE" >&2; exit 1 ;;
+            esac
+"""
 PINNED_ACTION_RE = re.compile(r"uses:\s+\S+@[0-9a-f]{40}(?:\s+#.*)?")
 CANONICAL_WORKFLOW = ".github/workflows/release.yml"
 EXPECTED_REGISTRY_WRITE_OWNERS = {CANONICAL_WORKFLOW}
@@ -97,7 +107,8 @@ def validate(
 
     # Cause/effect graph:
     # protected exact tag/revision + canonical build owner -> one accepted image
-    # absent semver tag -> stage, resolve, sign/attest/verify, then promote digest
+    # absent semver tag -> stage, resolve, query/create/requery signature and
+    # predicate independently, verify, then promote the exact digest
     # present tag + exact current-workflow image signature + one exact predicate
     # + exact OCI labels -> reuse its immutable digest without any build
     # present tag + missing/wrong/conflicting proof or labels -> fail closed
@@ -105,14 +116,13 @@ def validate(
     # -> untrusted or competing release authority
     #
     # Decision table (self_test owns every negative rule):
-    # tag | staged proof | exact release proof | labels | effect
-    #  0  |      0       |          -          | exact  | attest/verify/promote
-    #  0  |   1 exact    |          -          | exact  | verify/reuse/promote
-    #  0  | 2+/conflict  |          -          |   *    | reject ambiguity
-    #  1  |      -       | signature + one pred| exact  | reuse; skip build
-    #  1  |      -       | missing/wrong/2+    |   *    | reject preseed
-    #  1  |      -       |        exact        | wrong  | reject drift
-    #  *  |      *       |          *          |   *    | reject 0/2+ owners
+    # tag | signature S | predicate P | labels | effect
+    #  0  |      0      |      0      | exact  | sign/requery, attest/requery
+    #  0  |      1      |      0      | exact  | reuse S, attest/requery
+    #  0  |      1      |      1      | exact  | reuse both, promote
+    #  0  |      0      |      1      |   *    | reject broken order
+    #  1  |      1      |      1      | exact  | zero-write reuse; final read
+    #  *  |    2+/bad   | 2+/bad/other |   *   | reject ambiguity/drift
     required = (
         "name: release-awaken-sandbox-image",
         "tags:",
@@ -149,6 +159,8 @@ def validate(
         'before="$(scripts/release/resolve_awaken_sandbox_release_image.sh',
         'after="$(scripts/release/resolve_awaken_sandbox_release_image.sh',
         'test "$after" = "present $IMAGE"',
+        'final_existing="$(scripts/release/resolve_awaken_sandbox_release_image.sh',
+        'test "$final_existing" = "present $IMAGE"',
         '--certificate-github-workflow-repository "$GITHUB_REPOSITORY"',
         '--certificate-github-workflow-ref "$GITHUB_REF"',
         '--certificate-github-workflow-sha "$SOURCE_REVISION"',
@@ -165,6 +177,15 @@ def validate(
         '[[ ! -s "$output" ]] && grep -Fqi \'no attestations\' "$download_error"',
         'cat "$download_error" >&2',
         '--predicate-type "$PREDICATE_TYPE"',
+        'cosign download signature "$image"',
+        "publisher-signature-state",
+        'query_release_signature "$IMAGE" existing',
+        'query_release_signature "$IMAGE" staging-initial',
+        'query_release_signature "$IMAGE" staging-after-sign',
+        'test "$SIGNATURE_STATE" = reuse',
+        'if [[ -s "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" ]]; then\n'
+        '            test "$SIGNATURE_STATE" = reuse',
+        SIGNATURE_CREATE_BLOCK,
         'cosign sign --yes "$IMAGE"',
         "cosign attest --yes",
         "cosign verify \\",
@@ -197,13 +218,17 @@ def validate(
         "cosign attest --yes": 1,
         "cosign verify \\": 1,
         "cosign verify-attestation": 1,
+        "cosign download signature": 1,
         "cosign download attestation": 1,
+        "publisher-signature-state": 1,
+        'query_release_signature "$IMAGE"': 3,
+        'test "$SIGNATURE_STATE" = reuse': 3,
         "awaken_sandbox_image_provenance.py emit": 1,
         "validate-attestations": 2,
         'verify_release_proof "$IMAGE"': 3,
         "docker buildx imagetools create": 1,
         "validate-promotion": 1,
-        "scripts/release/resolve_awaken_sandbox_release_image.sh": 4,
+        "scripts/release/resolve_awaken_sandbox_release_image.sh": 5,
         "\n                --tag ": 1,
     }
     for marker, expected in exact_counts.items():
@@ -286,14 +311,29 @@ def validate(
     release_lookup_index = workflow.find(
         'initial="$(scripts/release/resolve_awaken_sandbox_release_image.sh'
     )
+    existing_signature_index = workflow.find(
+        'query_release_signature "$IMAGE" existing'
+    )
+    existing_signature_admission_index = workflow.find(
+        'test "$SIGNATURE_STATE" = reuse'
+    )
     existing_proof_index = workflow.find('verify_release_proof "$IMAGE"')
+    final_existing_index = workflow.find(
+        'final_existing="$(scripts/release/resolve_awaken_sandbox_release_image.sh'
+    )
     existing_exit_index = workflow.find("            exit 0")
     build_index = workflow.find(CANONICAL_BUILD)
     staging_push_index = workflow.find('docker push "$STAGING_TAG"')
     staging_resolution_index = workflow.find(
         'staging="$(scripts/release/resolve_awaken_sandbox_release_image.sh'
     )
+    initial_signature_index = workflow.find(
+        'query_release_signature "$IMAGE" staging-initial'
+    )
     sign_index = workflow.find('cosign sign --yes "$IMAGE"')
+    post_sign_query_index = workflow.find(
+        'query_release_signature "$IMAGE" staging-after-sign'
+    )
     attest_index = workflow.find("cosign attest --yes")
     final_proof_index = workflow.rfind('verify_release_proof "$IMAGE"')
     before_promotion_index = workflow.find(
@@ -306,12 +346,17 @@ def validate(
     )
     ordered_indexes = (
         release_lookup_index,
+        existing_signature_index,
+        existing_signature_admission_index,
         existing_proof_index,
+        final_existing_index,
         existing_exit_index,
         build_index,
         staging_push_index,
         staging_resolution_index,
+        initial_signature_index,
         sign_index,
+        post_sign_query_index,
         attest_index,
         final_proof_index,
         before_promotion_index,
@@ -668,7 +713,53 @@ def self_test(
             workflow.replace('test -s "$raw_attestations"', ": # missing proof accepted"),
         ),
         ("existing proof bypassed", unsigned_preseed_bypass),
+        (
+            "existing image signature bypassed",
+            workflow.replace(
+                '              test "$SIGNATURE_STATE" = reuse\n'
+                '              download_release_attestations "$IMAGE"',
+                "              : # existing signature was not admitted\n"
+                '              download_release_attestations "$IMAGE"',
+                1,
+            ),
+        ),
         ("raw predicate selected before verification", raw_before_verification),
+        (
+            "staged predicate substitutes for an image signature",
+            workflow.replace(
+                'if [[ -s "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" ]]; then\n'
+                '            test "$SIGNATURE_STATE" = reuse',
+                'if [[ -s "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" ]]; then\n'
+                "            : # predicate presence incorrectly substitutes for S1",
+                1,
+            ),
+        ),
+        (
+            "crash-after-sign retry signs an existing signature again",
+            workflow.replace(
+                SIGNATURE_CREATE_BLOCK,
+                '            cosign sign --yes "$IMAGE"\n'
+                '            query_release_signature "$IMAGE" staging-after-sign\n'
+                '            test "$SIGNATURE_STATE" = reuse\n',
+                1,
+            ),
+        ),
+        (
+            "signature write is not followed by an exact requery",
+            workflow.replace(
+                '                query_release_signature "$IMAGE" staging-after-sign',
+                "                : # missing post-sign registry requery",
+                1,
+            ),
+        ),
+        (
+            "signature classifier is bypassed",
+            workflow.replace(
+                "publisher-signature-state \\",
+                "emit-absence-without-classification \\",
+                1,
+            ),
+        ),
         (
             "failed-job rerun repeats attestation",
             workflow.replace(
@@ -729,6 +820,14 @@ def self_test(
             workflow.replace(
                 'after="$(scripts/release/resolve_awaken_sandbox_release_image.sh',
                 'after="present $IMAGE #',
+                1,
+            ),
+        ),
+        (
+            "existing reuse skips its final stable-tag closure",
+            workflow.replace(
+                'final_existing="$(scripts/release/resolve_awaken_sandbox_release_image.sh',
+                'final_existing="present $IMAGE #',
                 1,
             ),
         ),

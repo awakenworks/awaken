@@ -6,7 +6,8 @@
   2026-07-24 (credential broker composition — see Amendment 2);
   2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3);
   2026-08-24 (one signed sandbox-image publisher — see Amendment 4);
-  2026-08-28 (prove immutable staging before release promotion — see Amendment 5)
+  2026-08-28 (prove immutable staging before release promotion — see Amendment 5);
+  2026-08-28 (independent signature and predicate retry closure — see Amendment 6)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -387,3 +388,48 @@ release tag, so retry can rebuild safely or reuse proof for an identical staged
 digest. A crash after promotion follows the existing-tag path and reuses the
 verified immutable digest. Consumers retain their strict exactly-one verified
 predicate rule throughout; publisher retry logic does not weaken it.
+
+## Amendment 6 (2026-08-28): independent signature and predicate retry closure
+
+This amendment closes the remaining crash window inside Amendment 5's immutable
+proof step. An image signature and the Open provenance predicate are independent
+registry effects. Predicate absence does not imply signature absence: a runner
+may stop after `cosign sign` commits but before `cosign attest` commits. Repeating
+both effects on retry would create ambiguous signature evidence even though the
+immutable image bytes did not change.
+
+Static structure remains single-owner. The existing provenance module now owns
+both strict predicate interpretation and the bounded publisher-side image
+signature classification; it reuses the same strict JSON, DSSE statement,
+subject-digest, and input-bound primitives. The sole workflow remains the only
+signature and attestation writer. The static release checker locks the one
+query/create/requery sequence and its repository-wide writer inventory. No
+ledger, signature schema, publisher, registry adapter, or compatibility path is
+added.
+
+Signature state is derived independently from predicate state. `S0` means the
+exact pinned Cosign v3.0.6 zero-signature response—exit 1, empty stdout, and the
+exact two-line `no signatures associated` stderr for the requested immutable
+image—or a successful, non-empty, raw-and-verified bundle stream containing no
+image-signature predicate. An empty successful response or an unverified bundle
+stream is contract drift and fails. `S1` requires exactly one raw
+image-signature record and exactly one
+cryptographically verified record under the existing exact repository,
+workflow, ref, SHA, trigger, and issuer constraints, both bound to the requested
+digest. A Sigstore bundle for another predicate is ignored as non-signature
+evidence and never substitutes for `S1`. Extra, malformed, foreign, mismatched,
+or query-error evidence is `SX` and fails closed. Changing the pinned Cosign
+version requires changing this classification contract and its causal tests in
+the same commit.
+
+Dynamic behavior follows one decision table. For a fresh immutable staging
+digest, `S0/P0` signs once, re-queries to require `S1`, then attests once and
+requires the existing exactly-one predicate proof. `S1/P0`, including a crash
+after signing, performs no signature write and creates only the missing
+predicate. `S1/P1` reuses both facts without a registry write. `S0/P1`, `SX`,
+or conflicting predicate state is an invalid publication order and terminates
+without repair-by-duplication. An existing semantic release tag is reusable
+only in `S1/P1`, and the workflow resolves that tag again immediately before
+returning success. Thus retry converges across the sign/attest boundary without
+weakening consumer cardinality or treating one evidence type as authority for
+the other.

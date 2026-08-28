@@ -94,6 +94,29 @@ jobs:
             --certificate-github-workflow-trigger push
           )
 
+          query_release_signature() {
+            local image=$1 prefix=$2 download_exit=0
+            local raw="$RUNNER_TEMP/${prefix}-signatures.raw.jsonl"
+            local verified="$RUNNER_TEMP/${prefix}-signatures.verified.json"
+            local download_error="$RUNNER_TEMP/${prefix}-signatures.stderr"
+            if cosign download signature "$image" > "$raw" 2> "$download_error"; then
+              cosign verify \
+                "${VERIFY_IDENTITY_ARGS[@]}" \
+                --output json \
+                "$image" > "$verified"
+            else
+              download_exit=$?
+              : > "$verified"
+            fi
+            SIGNATURE_STATE="$(python3 scripts/release/awaken_sandbox_image_provenance.py \
+              publisher-signature-state \
+              --image "$image" \
+              --download-exit-code "$download_exit" \
+              --signatures "$raw" \
+              --verified-signatures "$verified" \
+              --download-error "$download_error")"
+          }
+
           download_release_attestations() {
             local image=$1 output=$2 download_error="${2}.stderr"
             if ! cosign download attestation \
@@ -111,9 +134,6 @@ jobs:
           verify_release_proof() {
             local image=$1 raw_attestations=$2 prefix=$3 raw_sha256 verified_sha256
             test -s "$raw_attestations"
-            cosign verify \
-              "${VERIFY_IDENTITY_ARGS[@]}" \
-              "$image" > "$RUNNER_TEMP/${prefix}-awaken-sandbox-image-signature.json"
             cosign verify-attestation \
               --type "$PREDICATE_TYPE" \
               "${VERIFY_IDENTITY_ARGS[@]}" \
@@ -150,6 +170,8 @@ jobs:
             absent) ;;
             "present ${IMAGE_REPOSITORY}@sha256:"*)
               IMAGE="${initial#present }"
+              query_release_signature "$IMAGE" existing
+              test "$SIGNATURE_STATE" = reuse
               download_release_attestations "$IMAGE" \
                 "$RUNNER_TEMP/existing-awaken-sandbox-image-attestations.raw.json"
               verify_release_proof "$IMAGE" \
@@ -158,6 +180,12 @@ jobs:
               printf 'mode=reuse\n' >> "$GITHUB_OUTPUT"
               printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
               printf 'sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
+              final_existing="$(scripts/release/resolve_awaken_sandbox_release_image.sh \
+                "$RELEASE_TAG" \
+                "$SOURCE_REVISION" \
+                "$GITHUB_REF" \
+                "$RUNNER_TEMP/final-existing-awaken-sandbox-release")"
+              test "$final_existing" = "present $IMAGE"
               exit 0
               ;;
             *) echo "unexpected Awaken Sandbox release resolution: $initial" >&2; exit 1 ;;
@@ -177,10 +205,12 @@ jobs:
             "present ${IMAGE_REPOSITORY}@sha256:"*) IMAGE="${staging#present }" ;;
             *) echo "staging tag did not resolve to exact published bytes" >&2; exit 1 ;;
           esac
+          query_release_signature "$IMAGE" staging-initial
           download_release_attestations "$IMAGE" \
             "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json"
 
           if [[ -s "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" ]]; then
+            test "$SIGNATURE_STATE" = reuse
             verify_release_proof "$IMAGE" \
               "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" \
               staging-reuse
@@ -193,7 +223,15 @@ jobs:
               --run-id "$GITHUB_RUN_ID" \
               --run-attempt "$GITHUB_RUN_ATTEMPT" \
               --output "$RUNNER_TEMP/emitted-awaken-sandbox-image-provenance.json")"
-            cosign sign --yes "$IMAGE"
+            case "$SIGNATURE_STATE" in
+              absent)
+                cosign sign --yes "$IMAGE"
+                query_release_signature "$IMAGE" staging-after-sign
+                test "$SIGNATURE_STATE" = reuse
+                ;;
+              reuse) ;;
+              *) echo "unexpected image-signature state: $SIGNATURE_STATE" >&2; exit 1 ;;
+            esac
             cosign attest --yes \
               --type "$PREDICATE_TYPE" \
               --predicate "$RUNNER_TEMP/emitted-awaken-sandbox-image-provenance.json" \
