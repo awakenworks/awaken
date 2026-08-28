@@ -1,9 +1,58 @@
 use super::*;
 use awaken_session_contract::{
-    AdmitSessionRun, AdmittedSessionRun, SessionRunReservation, StepOutcome,
+    AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
+    SessionRunReservation, StepOutcome,
 };
 
 struct ProtocolProjectionRuntime;
+
+#[derive(Default)]
+struct ActivationOnlySessionRunRuntime {
+    deliveries: Mutex<Vec<SessionRunDelivery>>,
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime {
+    async fn run(
+        &self,
+        _agent: &str,
+        _thread: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("activation-only test never executes inline")
+    }
+
+    async fn resume(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _decision: awaken_session_contract::ToolPermissionDecision,
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("activation-only test never resumes")
+    }
+
+    async fn resume_custom(
+        &self,
+        _thread: &str,
+        _tool_use_id: &str,
+        _content: Vec<awaken_agent_contract::agent::content::ContentBlock>,
+        _is_error: bool,
+    ) -> Result<StepOutcome, RunError> {
+        unreachable!("activation-only test never resumes custom input")
+    }
+
+    async fn activate_session_run(
+        &self,
+        delivery: SessionRunDelivery,
+    ) -> Result<SessionRunActivation, RunError> {
+        self.deliveries.lock().unwrap().push(delivery);
+        Ok(SessionRunActivation::Activated)
+    }
+
+    fn model(&self) -> String {
+        "activation-only-session-run".into()
+    }
+}
 
 struct BlockingSessionRunRuntime {
     entered: Arc<tokio::sync::Semaphore>,
@@ -123,6 +172,65 @@ impl awaken_session_contract::SessionRuntime for BlockingSessionRunRuntime {
     fn model(&self) -> String {
         "blocking-session-run".into()
     }
+}
+
+#[tokio::test]
+async fn background_activation_uses_the_session_runtime_without_a_second_queue_port() {
+    // Cause/effect graph: C1 admission returns a delivery, recovery-claimed, or
+    // completed; C2 the caller wants asynchronous observation. Effects: E1 an
+    // exact delivery crosses the SessionRuntime activation port once; E2 closed
+    // recovery/terminal outcomes are projected without touching Runtime.
+    // Constraint: SessionApplication exposes no dispatch repository or raw row.
+    // Decision table: R1=C1.delivery+C2=>E1; R2=C1.recovery=>E2.RecoveryClaimed;
+    // R3=C1.completed=>E2.Completed.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let application = application_with_runtime(
+        runtime.clone(),
+        repository,
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+    let delivery = SessionRunDelivery {
+        session_id: "background-session".into(),
+        run_id: awaken_agent_contract::agent::run::Id("background-run".into()),
+        session_activity_epoch: 7,
+    };
+    assert_eq!(
+        application
+            .activate_admitted_session_run(AdmittedSessionRun::Reserved(delivery.clone()))
+            .await
+            .expect("R1 activation"),
+        SessionRunActivation::Activated,
+        "R1/E1"
+    );
+    assert_eq!(&*runtime.deliveries.lock().unwrap(), &[delivery], "R1/E1");
+    assert_eq!(
+        application
+            .activate_admitted_session_run(AdmittedSessionRun::RecoveryClaimed {
+                session_id: "background-session".into(),
+                run_id: awaken_agent_contract::agent::run::Id("background-run".into()),
+            })
+            .await
+            .expect("R2 projection"),
+        SessionRunActivation::RecoveryClaimed,
+        "R2/E2"
+    );
+    assert_eq!(runtime.deliveries.lock().unwrap().len(), 1, "R2/E2");
+    assert_eq!(
+        application
+            .activate_admitted_session_run(AdmittedSessionRun::Completed {
+                session_id: "background-session".into(),
+                run_id: awaken_agent_contract::agent::run::Id("background-run".into()),
+            })
+            .await
+            .expect("R3 projection"),
+        SessionRunActivation::Completed,
+        "R3/E2"
+    );
+    assert_eq!(runtime.deliveries.lock().unwrap().len(), 1, "R3/E2");
 }
 
 #[tokio::test]

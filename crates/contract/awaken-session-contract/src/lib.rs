@@ -142,7 +142,7 @@ pub use resource_activation::{
 };
 pub use run_admission::{
     AdmitSessionRun, AdmittedSessionRun, SessionRunActivation, SessionRunDelivery,
-    SessionRunReservation, session_run_id,
+    SessionRunExecutionRequirements, SessionRunReservation, session_run_id,
 };
 pub use run_application::{
     CursorParams, EventForwardingSink, HistoryPage, RunApplication, RunApplicationError, RunResume,
