@@ -112,21 +112,28 @@ async function main() {
     assert.ok(Array.isArray(bad.body.issues) && bad.body.issues.length > 0, 'a structured issue is reported');
     pass('invalid config reported invalid (unknown tool)');
 
-    // MCP and Skill references are authoring metadata compiled into one normalized,
-    // secret-free binding section. Validate them on a separate Agent so this test
-    // covers the configuration boundary without making the executable greeter dial
-    // an external MCP endpoint.
+    // MCP servers, their execution policies, and Skill selectors are typed
+    // authoring metadata compiled into one normalized, secret-free binding
+    // section. Validate them on a separate Agent so this test covers the
+    // configuration boundary without making the executable greeter dial an
+    // external MCP endpoint.
     const bindingsAgent = 'binding-normalization';
     const bindingConfig = {
       name: bindingsAgent,
       system: 'Validate resource-like Agent bindings.',
       model: { id: 'config-model' },
-      tools: [],
-      mcp_servers: [
-        { name: 'docs', url: 'https://mcp.example.invalid/v1' },
-        { name: 'local', url: 'http://127.0.0.1:9/mcp' },
+      tools: [
+        { type: 'mcp_toolset', mcp_server_name: 'docs' },
+        { type: 'mcp_toolset', mcp_server_name: 'local' },
       ],
-      skills: ['skill-a', { id: 'skill-b' }],
+      mcp_servers: [
+        { type: 'url', name: 'docs', url: 'https://mcp.example.invalid/v1' },
+        { type: 'url', name: 'local', url: 'http://127.0.0.1:9/mcp' },
+      ],
+      skills: [
+        { type: 'custom', skill_id: 'skill-a' },
+        { type: 'custom', skill_id: 'skill-b' },
+      ],
     };
     const bindingsValid = await json(
       'POST',
@@ -136,34 +143,56 @@ async function main() {
     assert.equal(bindingsValid.status, 200);
     assert.equal(bindingsValid.body.valid, true, JSON.stringify(bindingsValid.body));
 
-    // Validation transport decision table: R1 malformed typed JSON -> 400;
-    // R2 well-formed binding with a semantic compile error -> 200/valid:false.
-    // The cases retain both partitions while the config-plane unit test owns
-    // the detailed compiler causes.
+    // Validation transport decision table: R1 malformed typed JSON or a broken
+    // Managed server/toolset admission invariant -> 400/valid:false; R2 an
+    // admitted binding with a later compile error -> 200/valid:false. Each row
+    // keeps every unrelated server/toolset or Skill axis coherent, so its named
+    // cause is the only possible failure authority. The config-plane unit test
+    // owns the detailed compiler causes.
     const invalidBindingCases = [
       { value: { mcp_servers: ['not-an-object'], skills: [] }, status: 400 },
       {
-        value: { mcp_servers: [{ url: 'https://mcp.example.invalid' }], skills: [] },
+        value: { mcp_servers: [{ type: 'url', url: 'https://mcp.example.invalid' }] },
         status: 400,
       },
-      { value: { mcp_servers: [{ name: 'docs' }], skills: [] }, status: 400 },
+      { value: { mcp_servers: [{ type: 'url', name: 'docs' }] }, status: 400 },
       {
-        value: { mcp_servers: [{ name: 'docs', url: 'file:///tmp/mcp' }], skills: [] },
-        status: 200,
+        value: {
+          mcp_servers: [{ type: 'url', name: 'docs', url: 'file:///tmp/mcp' }],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'docs' }],
+        },
+        status: 400,
       },
       {
         value: {
           mcp_servers: [
-            { name: 'duplicate', url: 'https://one.example.invalid' },
-            { name: 'duplicate', url: 'https://two.example.invalid' },
+            { type: 'url', name: 'duplicate', url: 'https://one.example.invalid' },
+            { type: 'url', name: 'duplicate', url: 'https://two.example.invalid' },
           ],
-          skills: [],
+          tools: [{ type: 'mcp_toolset', mcp_server_name: 'duplicate' }],
+        },
+        status: 400,
+      },
+      { value: { mcp_servers: [], tools: [], skills: [7] }, status: 400 },
+      {
+        value: {
+          mcp_servers: [],
+          tools: [],
+          skills: [{ type: 'custom', skill_id: '' }],
         },
         status: 200,
       },
-      { value: { mcp_servers: [], skills: [7] }, status: 400 },
-      { value: { mcp_servers: [], skills: [{ id: '' }] }, status: 200 },
-      { value: { mcp_servers: [], skills: ['skill-a', { id: 'skill-a' }] }, status: 200 },
+      {
+        value: {
+          mcp_servers: [],
+          tools: [],
+          skills: [
+            { type: 'custom', skill_id: 'skill-a' },
+            { type: 'custom', skill_id: 'skill-a' },
+          ],
+        },
+        status: 200,
+      },
     ];
     for (const invalidBindings of invalidBindingCases) {
       const verdict = await json(
