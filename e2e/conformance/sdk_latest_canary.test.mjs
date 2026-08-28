@@ -247,8 +247,13 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
   );
   assert.match(
     pythonRunner,
-    /await exercisePythonResponseContracts\(python, temporary\);[\s\S]*await withScenarioServer/u,
+    /const responseContracts = writePythonResponseContracts\(temporary\);[\s\S]*await exercisePythonResponseContracts\(python, responseContracts\);[\s\S]*await withScenarioServer/u,
     'the all-operation Python response proof precedes selected real-process lifecycles',
+  );
+  assert.match(
+    pythonRunner,
+    /exerciseHistoricalMatrix\([\s\S]*responseContracts[\s\S]*AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: responseContracts/u,
+    'the same current response corpus reaches every historical wheel',
   );
   const responseDriver = readFileSync(
     new URL('./managed_python_sdk_response_contract_e2e.py', import.meta.url),
@@ -257,9 +262,24 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
   for (const edge of [
     'PYTHON_DECLARATION_VARIANCES',
     'TypeAdapter(response_type).json_schema()',
-    'exercise_sync(operations, contracts)',
-    'exercise_async(operations, contracts)',
+    'assert_witness_coverage(contract["schema"])',
+    'assert decoded == witness',
+    'probe.warning_modes == ["error", False]',
+    'exercise_sync(anthropic, httpx2, operations, contracts)',
+    'exercise_async(anthropic, httpx2, operations, contracts)',
   ]) {
     assert.ok(responseDriver.includes(edge), `Python response proof is missing ${edge}`);
+  }
+  const historicalDriver = readFileSync(
+    new URL('./managed_python_sdk_matrix_e2e.py', import.meta.url),
+    'utf8',
+  );
+  for (const edge of [
+    'exercise_current_response_compatibility(',
+    'verify_declarations=False',
+    'current response corpus lacks historical operations',
+    'assert sync_count == async_count',
+  ]) {
+    assert.ok(historicalDriver.includes(edge), `historical response proof is missing ${edge}`);
   }
 });

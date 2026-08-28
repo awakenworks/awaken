@@ -395,34 +395,109 @@ def value_matches(value: Any, schema: dict[str, Any]) -> bool:
     return True
 
 
-def decoded_json(value: object) -> Any:
+def assert_witness_coverage(schema: dict[str, Any]) -> None:
+    """Inductively verify the generator closes every finite schema cause."""
+    generated = witnesses(schema)
+    kind = schema["kind"]
+    if kind == "never":
+        assert generated == []
+        return
+    assert generated
+    assert all(value_matches(value, schema) for value in generated)
+    if kind == "union":
+        for variant in schema["variants"]:
+            assert_witness_coverage(variant)
+            if variant["kind"] != "never":
+                assert any(value_matches(value, variant) for value in generated)
+    elif kind == "array":
+        assert_witness_coverage(schema["item"])
+        for item in witnesses(schema["item"]):
+            assert [item] in generated
+    elif kind == "object":
+        for name, property_ in schema["properties"].items():
+            assert_witness_coverage(property_["value"])
+            for value in witnesses(property_["value"]):
+                assert any(
+                    name in candidate and candidate[name] == value
+                    for candidate in generated
+                )
+            if not property_["required"]:
+                assert any(name not in candidate for candidate in generated)
+        additional = schema["additional"]
+        if additional is not False:
+            assert_witness_coverage(additional)
+            for value in witnesses(additional):
+                assert any(
+                    "managed_additional_fixture" in candidate
+                    and candidate["managed_additional_fixture"] == value
+                    for candidate in generated
+                )
+
+
+def decoded_json(value: object, *, tolerate_declared_variance: bool) -> Any:
     dump = getattr(value, "model_dump", None)
     if dump is not None:
         # Generated Python models materialize absent optional fields as None.
         # Validate the decoded wire fact rather than those client-only defaults;
         # otherwise omitting a non-nullable optional TS field appears to add a
         # null that was never present on the wire.
-        return dump(mode="json", exclude_unset=True)
+        # A value admitted by the installed SDK's own declaration must also
+        # serialize without Pydantic's union/literal mismatch warnings. A newer
+        # additive wire branch can only be forward-compatible if the permissive
+        # model retains it byte-for-value; serializer warnings are expected for
+        # a branch that could not exist when that historical wheel was built.
+        return dump(
+            mode="json",
+            exclude_unset=True,
+            warnings=False if tolerate_declared_variance else "error",
+        )
     return value
 
 
-def response_for(contract: dict[str, Any], witness: Any) -> httpx2.Response:
+def assert_decoded_json(
+    parsed: object,
+    witness: Any,
+    contract: dict[str, Any],
+    declared: dict[str, Any],
+    operation_id: str,
+) -> None:
+    declared_accepts = value_matches(witness, declared)
+    decoded = decoded_json(
+        parsed,
+        tolerate_declared_variance=not declared_accepts,
+    )
+    assert decoded == witness, operation_id
+    assert value_matches(decoded, contract["schema"]), operation_id
+
+
+def declared_json_schema(method: object) -> dict[str, Any]:
+    return normalized_python_schema(
+        TypeAdapter(declared_response_type(method)).json_schema()
+    )
+
+
+def response_for(
+    transport_module: object,
+    contract: dict[str, Any],
+    witness: Any,
+) -> object:
+    response = getattr(transport_module, "Response")
     if contract["kind"] == "json":
-        # `httpx2.Response(json=None)` means "no json argument" rather than a
+        # `Response(json=None)` means "no json argument" rather than a
         # JSON null body. Encode explicitly so nullable response branches cross
         # the same content-type and parser path as every other JSON witness.
-        return httpx2.Response(
+        return response(
             200,
             content=json.dumps(witness, separators=(",", ":")).encode(),
             headers={"content-type": "application/json"},
         )
     if contract["kind"] == "binary":
-        return httpx2.Response(
+        return response(
             200,
             content=BINARY_BODY,
             headers={"content-type": "application/octet-stream"},
         )
-    return httpx2.Response(
+    return response(
         200,
         content=b"",
         headers={"content-type": "text/event-stream"},
@@ -475,25 +550,60 @@ def assert_witness_design() -> None:
     assert not value_matches({"choice": "c"}, schema)
     assert not value_matches({"choice": "a", "extension": True}, schema)
 
+    class DumpProbe:
+        def __init__(self) -> None:
+            self.warning_modes: list[object] = []
 
-def exercise_sync(operations: list[dict[str, Any]], contracts: dict[str, Any]) -> int:
+        def model_dump(self, **options: object) -> dict[str, str]:
+            self.warning_modes.append(options["warnings"])
+            return {"choice": "a"}
+
+    # Mutation guard for the historical compatibility split: declared values
+    # must make serializer disagreement fatal; only an additive branch outside
+    # the older declaration may suppress that diagnostic while the caller still
+    # checks exact lossless output.
+    probe = DumpProbe()
+    assert decoded_json(probe, tolerate_declared_variance=False) == {"choice": "a"}
+    assert decoded_json(probe, tolerate_declared_variance=True) == {"choice": "a"}
+    assert probe.warning_modes == ["error", False]
+
+
+def exercise_sync(
+    anthropic_module: object,
+    transport_module: object,
+    operations: list[dict[str, Any]],
+    contracts: dict[str, Any],
+    *,
+    verify_declarations: bool = True,
+) -> int:
     current: dict[str, Any] = {}
     requests: list[object] = []
 
-    def respond(request: object) -> httpx2.Response:
+    def respond(request: object) -> object:
         requests.append(request)
-        return response_for(current["contract"], current["witness"])
+        return response_for(
+            transport_module,
+            current["contract"],
+            current["witness"],
+        )
 
     count = 0
-    with anthropic.Anthropic(
+    with anthropic_module.Anthropic(
         api_key="response-contract-sync",  # awaken-allow: secret
-        http_client=httpx2.Client(transport=httpx2.MockTransport(respond)),
+        http_client=transport_module.Client(
+            transport=transport_module.MockTransport(respond)
+        ),
         max_retries=0,
     ) as client:
         for operation in operations:
             contract = contracts[operation["id"]]
             method = resource_method(client, operation["id"])
-            assert_declared_response(method, contract, operation["id"])
+            assert return_kind(method) == contract["kind"], operation["id"]
+            if verify_declarations:
+                assert_declared_response(method, contract, operation["id"])
+            declared = (
+                declared_json_schema(method) if contract["kind"] == "json" else None
+            )
             positional, keyword = required_arguments(method)
             for witness in operation_witnesses(contract):
                 current.update(contract=contract, witness=witness)
@@ -502,7 +612,14 @@ def exercise_sync(operations: list[dict[str, Any]], contracts: dict[str, Any]) -
                 assert len(requests) == before + 1, operation["id"]
                 assert_operation_request(operation, requests[-1])
                 if contract["kind"] == "json":
-                    assert value_matches(decoded_json(parsed), contract["schema"]), operation["id"]
+                    assert declared is not None
+                    assert_decoded_json(
+                        parsed,
+                        witness,
+                        contract,
+                        declared,
+                        operation["id"],
+                    )
                 elif contract["kind"] == "binary":
                     assert parsed.read() == BINARY_BODY, operation["id"]
                     parsed.close()
@@ -513,24 +630,42 @@ def exercise_sync(operations: list[dict[str, Any]], contracts: dict[str, Any]) -
     return count
 
 
-async def exercise_async(operations: list[dict[str, Any]], contracts: dict[str, Any]) -> int:
+async def exercise_async(
+    anthropic_module: object,
+    transport_module: object,
+    operations: list[dict[str, Any]],
+    contracts: dict[str, Any],
+    *,
+    verify_declarations: bool = True,
+) -> int:
     current: dict[str, Any] = {}
     requests: list[object] = []
 
-    async def respond(request: object) -> httpx2.Response:
+    async def respond(request: object) -> object:
         requests.append(request)
-        return response_for(current["contract"], current["witness"])
+        return response_for(
+            transport_module,
+            current["contract"],
+            current["witness"],
+        )
 
     count = 0
-    async with anthropic.AsyncAnthropic(
+    async with anthropic_module.AsyncAnthropic(
         api_key="response-contract-async",  # awaken-allow: secret
-        http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(respond)),
+        http_client=transport_module.AsyncClient(
+            transport=transport_module.MockTransport(respond)
+        ),
         max_retries=0,
     ) as client:
         for operation in operations:
             contract = contracts[operation["id"]]
             method = resource_method(client, operation["id"])
-            assert_declared_response(method, contract, operation["id"])
+            assert return_kind(method) == contract["kind"], operation["id"]
+            if verify_declarations:
+                assert_declared_response(method, contract, operation["id"])
+            declared = (
+                declared_json_schema(method) if contract["kind"] == "json" else None
+            )
             positional, keyword = required_arguments(method)
             for witness in operation_witnesses(contract):
                 current.update(contract=contract, witness=witness)
@@ -539,7 +674,14 @@ async def exercise_async(operations: list[dict[str, Any]], contracts: dict[str, 
                 assert len(requests) == before + 1, operation["id"]
                 assert_operation_request(operation, requests[-1])
                 if contract["kind"] == "json":
-                    assert value_matches(decoded_json(parsed), contract["schema"]), operation["id"]
+                    assert declared is not None
+                    assert_decoded_json(
+                        parsed,
+                        witness,
+                        contract,
+                        declared,
+                        operation["id"],
+                    )
                 elif contract["kind"] == "binary":
                     assert await parsed.read() == BINARY_BODY, operation["id"]
                     await parsed.close()
@@ -573,9 +715,11 @@ def main() -> None:
     media = {kind: 0 for kind in ("json", "binary", "stream")}
     for contract in contracts.values():
         media[contract["kind"]] += 1
+        if contract["kind"] == "json":
+            assert_witness_coverage(contract["schema"])
     assert media == {"json": 122, "binary": 3, "stream": 2}
-    sync_count = exercise_sync(operations, contracts)
-    async_count = asyncio.run(exercise_async(operations, contracts))
+    sync_count = exercise_sync(anthropic, httpx2, operations, contracts)
+    async_count = asyncio.run(exercise_async(anthropic, httpx2, operations, contracts))
     assert sync_count == async_count
     assert sync_count > len(operations)
     print(

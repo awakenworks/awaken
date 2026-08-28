@@ -171,8 +171,7 @@ function writePythonResponseContracts(temporary) {
   return destination;
 }
 
-async function exercisePythonResponseContracts(python, temporary) {
-  const contracts = writePythonResponseContracts(temporary);
+async function exercisePythonResponseContracts(python, contracts) {
   await runDriver(python, RESPONSE_CONTRACT_DRIVER, 'http://managed-response.invalid', {
     extraEnv: { AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: contracts },
   });
@@ -213,7 +212,13 @@ async function exerciseRecovery(python, temporary) {
   }
 }
 
-async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion) {
+async function exerciseHistoricalMatrix(
+  python,
+  pip,
+  temporary,
+  responseContracts,
+  selectedVersion,
+) {
   // Version-axis graph: all configured historical rows are reviewed change
   // points, never arbitrary patches. Each target installation is constrained
   // by the generated official wheel SHA; one shared exact dependency closure
@@ -233,7 +238,10 @@ async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion)
     for (const anchor of anchors) {
       await runDriver(python, MATRIX_DRIVER, baseURL, {
         args: [anchor.version, baseURL],
-        extraEnv: { PYTHONPATH: roots.get(anchor.version) },
+        extraEnv: {
+          AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: responseContracts,
+          PYTHONPATH: roots.get(anchor.version),
+        },
       });
     }
   });
@@ -252,15 +260,22 @@ async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion)
 const temporary = mkdtempSync(resolve(tmpdir(), 'awaken-python-managed-sdk-'));
 try {
   const { python, pip } = provisionPython(temporary);
+  const responseContracts = writePythonResponseContracts(temporary);
   const selectedVersion = process.argv[2];
   if (selectedVersion) {
     // Explicit CLI selection is a developer diagnostic only. The release npm
     // command supplies no argument and therefore cannot silently narrow the
     // configured matrix.
-    await exerciseHistoricalMatrix(python, pip, temporary, selectedVersion);
+    await exerciseHistoricalMatrix(
+      python,
+      pip,
+      temporary,
+      responseContracts,
+      selectedVersion,
+    );
     process.exitCode = 0;
   } else {
-    await exercisePythonResponseContracts(python, temporary);
+    await exercisePythonResponseContracts(python, responseContracts);
     await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
       await runDriver(python, DRIVER, baseURL);
     });
@@ -268,7 +283,7 @@ try {
       await runDriver(python, HELPER_DRIVER, baseURL);
     });
     await exerciseRecovery(python, temporary);
-    await exerciseHistoricalMatrix(python, pip, temporary);
+    await exerciseHistoricalMatrix(python, pip, temporary, responseContracts);
     const pinned = readFileSync(LOCK, 'utf8').match(/^anthropic==(\S+)$/mu)?.[1];
     console.log(`E2E PASS: official Python Managed SDK ${pinned} runtime compatibility.`);
   }

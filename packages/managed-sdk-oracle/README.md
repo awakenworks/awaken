@@ -155,7 +155,12 @@ evidence from drifting from the external expectation:
   dispatcher, and response converter. The return annotation's Pydantic JSON
   Schema is independently normalized and compared property-for-property, so
   permissive `BaseModel` extra-field retention cannot impersonate a declared
-  DTO. The sole reviewed upstream type variance is fail-closed: six Work
+  DTO. A structural verifier inductively proves that the generated corpus
+  reaches every finite union branch, array item, object field, optional-field
+  omission, and map value in the actual declaration graph. Parsed JSON must
+  equal its input witness exactly; values inside an installed declaration also
+  make every Pydantic serializer warning fatal. The sole reviewed upstream type
+  variance is fail-closed: six Work
   operations share `BetaSelfHostedWork.data`, whose Python 1.2 annotation omits
   the official `healthcheck` union branch. The original two-branch wire
   witnesses still decode in both client modes, while the live Python poller
@@ -168,8 +173,18 @@ evidence from drifting from the external expectation:
   export and handwritten transport-source fingerprints, constructs every
   operation through both sync and async clients, projects one shared decision
   table through both clients to prove the canonical Python error subclasses,
-  retry policy, and byte-identical idempotent retries, and runs live Session/SSE
-  and Memory lifecycles. Before either runtime driver sends a request, one
+  retry policy, and byte-identical idempotent retries, and projects the current
+  declaration-derived response corpus onto every operation still exposed by
+  that historical wheel. Every nested union/optional response witness traverses
+  the wheel's own sync and async media dispatcher and generated converter; this
+  proves old clients consume current service-line responses without duplicating
+  fixtures. Values already covered by the older declaration must remain
+  warning-free; later additive fields and variants may be unknown to the older
+  type graph but must still round-trip every wire value exactly. This avoids
+  incorrectly requiring old declarations to equal newer additive declarations
+  or mistaking permissive but lossy parsing for compatibility. It also runs live
+  Session/SSE and Memory lifecycles. Before
+  either runtime driver sends a request, one
   shared installed-evidence adapter re-extracts that wheel's complete Managed
   source graph. The current wheel compares every DTO path and hash; historical
   wheels compare the same closure's exact count and fingerprint, avoiding
