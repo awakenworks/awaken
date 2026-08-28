@@ -51,9 +51,16 @@ type checking are valuable executable evidence, but are not formal proofs.
 - HTTP idempotency keys now pass an exact byte/length admission kernel, keeping
   their original wire identity. Header libraries, proxies, TCP, and TLS remain
   outside the proof.
-- The in-memory durable-ingress path consumes one claim-fenced reducer for
-  claim, settlement, relinquishment, and cancellation. SQLite/PostgreSQL must
-  still be migrated to this reducer and checked as external transaction adapters.
+- Memory, SQLite, and PostgreSQL consume one Dispatch transition reducer for
+  reservation activation/rejection/recovery, claim/reclaim, settlement,
+  relinquishment, cancellation, retry exhaustion/requeue, and supersession.
+  Initial and repair reservation commands carry a relative TTL; each adapter
+  converts it with its store-owned clock, so a caller clock cannot pre-expire or
+  extend admission authority. The shared conformance table checks this mapping;
+  real database-clock accuracy remains environmental evidence.
+  SQL still owns row locking, compare-and-set predicates, pending-input writes,
+  timestamps, and transaction durability; those adapter properties are checked
+  by the shared backend conformance suite rather than proved by Kani.
 - AG-UI and AI-SDK terminal emission consume one fail-closed absorbing kernel;
   their wire-category mappings are exhaustive. Unbounded tool reconciliation,
   network delivery, client interpretation, and rendering remain outside proof.

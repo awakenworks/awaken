@@ -863,12 +863,11 @@ impl<S: Dispatch + 'static> DispatchWorker<S> {
                         .await?;
                 }
                 Err(error) => {
-                    let retry_at = crate::clock::deadline_millis(clock.now_ms(), self.lease_ms);
                     self.store
                         .resolve_claimed_session_run_reservation(
                             &claim,
                             SessionRunReservationResolution::Retry {
-                                reservation_deadline_ms: retry_at,
+                                reservation_ttl_ms: self.lease_ms,
                             },
                         )
                         .await?;

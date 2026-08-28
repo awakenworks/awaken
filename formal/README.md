@@ -179,12 +179,21 @@ production logic.
 
 ## TLA+ specifications
 
-- `RunIngress.tla` is the dispatch-only component: reservation publication,
+- `RunIngressKernel.tla` is the single parameterized Dispatch transition
+  authority. `RunIngress.tla` is its standalone exhaustive instance:
+  reservation publication (relative TTL is converted by the store authority),
   claim/lease-epoch fencing, crash reclaim, pending-input delivery,
   cancellation, settlement, dead-letter, requeue, and supersession. It never
-  mutates Run disposition or tickets. `SessionRunProtocol.tla` instances those
-  operators and adds only cross-authority ordering for Session activity, Work,
-  realization, committed Thread observation, and settlement.
+  mutates Run disposition or tickets. `SessionRunProtocol.tla` directly
+  instances that same kernel for a root Run and two child Runs, and adds only
+  cross-authority ordering for overlapping Session activities, one physical
+  Work owner, per-Thread execution exclusion, realization, committed Thread
+  observation, and settlement.
+- `ThreadState.tla` covers atomic typed-state batch admission, exact Run-scope
+  binding, crash/rejection stuttering, version advancement, deterministic
+  materialization, and replay equality. The Rust state selectors are the same
+  functions consumed by `ThreadCommit::validate`, `ThreadCommit::assemble`, and
+  `Store::rebuild`; Kani and a real in-memory commit test link those boundaries.
 - `WorkQueue.tla` covers the distinct Managed environment queue: transactional
   single-active claim, durable owner/epoch/expiry, exact-boundary reclaim,
   heartbeat, acknowledgement, stop, and environment removal.
@@ -396,13 +405,15 @@ graphs with zero invariant violations and zero states left on the queue:
 
 | Model | Generated | Distinct | Max depth |
 | --- | ---: | ---: | ---: |
-| RunIngress | 3,215 | 118 | 10 |
+| RunIngress | 3,124 | 115 | 9 |
+| ThreadState | 15,001 | 3,031 | 5 |
+| SessionRunProtocol | 10,430,739 | 1,023,397 | 32 |
 | WorkQueue | 26,521 | 4,206 | 15 |
 | Delegation | 5,835 | 1,097 | 14 |
 | ToolBatch | 1,414 | 979 | 12 |
 | RuntimeSystem | 110,923 | 12,896 | 13 |
 | RuntimeImplementation | 1,323,147 | 619,008 | 24 |
-| RustCommitSystem | 4,446 | 1,277 | 9 |
+| RustCommitSystem | 4,943 | 1,397 | 9 |
 | RemoteTool | 421 | 200 | 10 |
 | RemoteAttempt | 701 | 356 | 16 |
 | AuthzKernel | 180 | 18 | 1 |
@@ -421,7 +432,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | ErasureSaga | 2,469 | 588 | 11 |
 | CredentialCreation | 14 | 8 | 5 |
 | MemoryCAS | 3,511 | 563 | 11 |
-| ToolResultProtocol | 213 | 56 | 9 |
+| ToolResultProtocol | 273,949 | 18,744 | 14 |
 | WorkerDrain | 44 | 26 | 11 |
 | WorkerCredentialLiveness | 753,391 | 17,784 | 16 |
 | AuditCommit | 10 | 6 | 4 |
@@ -452,7 +463,6 @@ graphs with zero invariant violations and zero states left on the queue:
 | Deployment execution reachability | 15 | 15 | 5 |
 | Resource lifecycle workflow | 50 | 22 | 9 |
 | Resource lifecycle reachability | 6 | 6 | 6 |
-| Session run protocol | 7,475 | 432 | 18 |
 
 These are bounded exhaustive checks, not unbounded liveness proofs. The bounds
 are explicit in the corresponding `.cfg` files.
@@ -532,10 +542,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 332/332 formalizable obligations model-linked or
+checkpoint the ledger is 347/347 formalizable obligations model-linked or
 kernel-proved, plus 11 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 196
-model-checked, 27 model-proved, 163 Kani-kernel-proved, and 6 linked to the
+evidence coverage. The evidence dimensions are reported independently: 209
+model-checked, 23 model-proved, 173 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -547,7 +557,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The denominator (previously 295 and now 330 as new obligations were discovered)
+The current denominator of 347 formalizable obligations
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -555,16 +565,16 @@ curated denominator from hiding an unenumerated module,
 authorization decisions, state machines, synchronization, durable fences and
 transactions, recovery/retry protocols, and plaintext credential boundaries.
 The formal gate prints both denominators on every run. At this checkpoint the
-source-oriented inventory finds 590 candidate modules: all 590 are classified,
-340 have checked formal evidence associated with the production file, 216 have
-a direct Kani/trace proof link, and 192 are linked to an explicit product
+source-oriented inventory finds 720 candidate modules: all 720 are classified,
+383 have checked formal evidence associated with the production file, 242 have
+a direct Kani/trace proof link, and 269 are linked to an explicit product
 requirement boundary. This deliberately over-approximating inventory is not a
 claim that every signal in every listed file
 is itself a distinct proof obligation. A module may leave the uncovered set
 only through a ledger link or a reviewed `formal/surface-exclusions.json`
 boundary with a concrete reason. Both strict targets are now enforced: zero
 uncovered source surfaces and zero executable-only formalizable obligations.
-The source tree and strict CI name the same 220 unique Kani harnesses; repeated
+The source tree and strict CI name the same 231 unique Kani harnesses; repeated
 ledger references are allowed only when one production proof supports more than
 one precisely stated obligation.
 
@@ -579,7 +589,7 @@ remaining product limits honest. Every requirement-only surface, plus any
 feature explicitly marked as retaining an external tail after its kernel proof, has one exact
 external, semantic, unbounded-input, effect-adapter, or UI/human boundary plus
 an architecture change, target proof method, and acceptance gate. The boundary
-checker currently requires all 42 residual requirements and rejects missing or
+checker currently requires all 43 residual requirements and rejects missing or
 invented rows. This documents how typestate permits, bounded protocol algebras,
 event-sourced reducers, commit receipts, and durable inbox/outbox identities can
 move additional adapter behavior under proof without claiming that networks,

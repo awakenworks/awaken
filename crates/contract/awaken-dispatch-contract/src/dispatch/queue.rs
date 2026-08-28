@@ -2,13 +2,13 @@
 #[async_trait]
 pub trait DispatchQueue: Send + Sync {
     /// Persist one complete self-affine Session Run intent without making it
-    /// claimable. The deadline grants the admitting caller an exclusive window
-    /// to commit the Session activity and activate this same row. Exact Run-id
-    /// replay is idempotent; another payload is rejected.
+    /// claimable. The store applies this TTL using its own clock, granting an
+    /// exclusive window to commit the Session activity and activate this row.
+    /// Exact Run-id replay is idempotent; another payload is rejected.
     async fn reserve_session_run(
         &self,
         _request: RunDispatch,
-        _reservation_deadline_ms: u64,
+        _reservation_ttl_ms: u64,
     ) -> Result<SessionRunReservationOutcome, DispatchError> {
         Err(DispatchError::Rejected(
             "backend does not support Session Run reservations".to_string(),

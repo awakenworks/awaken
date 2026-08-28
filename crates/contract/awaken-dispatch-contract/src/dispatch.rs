@@ -348,8 +348,8 @@ pub enum SessionRunReservationResolution {
     /// the reservation without writing a Run completion tombstone.
     Rejected,
     /// Admission authority was unavailable. Return the exact claim to Reserved
-    /// until this absolute deadline, retaining the same Run identity.
-    Retry { reservation_deadline_ms: u64 },
+    /// for this store-clock TTL, retaining the same Run identity.
+    Retry { reservation_ttl_ms: u64 },
 }
 
 /// Closed evidence returned when a caller binds a committed Session activity to
