@@ -2049,7 +2049,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
                 "mcp_server_name": "docs",
                 "default_config": {
                     "enabled": true,
-                    "permission_policy": {"type": "always_allow"}
+                    "permission_policy": {"type": "always_ask"}
                 },
                 "configs": []
             },
@@ -2058,7 +2058,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
                 "mcp_server_name": "public-docs",
                 "default_config": {
                     "enabled": true,
-                    "permission_policy": {"type": "always_allow"}
+                    "permission_policy": {"type": "always_ask"}
                 },
                 "configs": []
             }
