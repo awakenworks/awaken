@@ -49,6 +49,23 @@ impl awaken_session_contract::ManagedListPriceProvider for ScenarioListPriceProv
     }
 }
 
+fn management_scenario_adapters(rate_limit_transition: bool) -> awaken_cli::ManagedServiceAdapters {
+    let adapters = awaken_cli::ManagedServiceAdapters::default()
+        .with_list_price_provider(Arc::new(ScenarioListPriceProvider));
+    if !rate_limit_transition {
+        return adapters;
+    }
+    adapters.with_request_limiter(Arc::new(
+        awaken_protocol_managed::ManagedRateLimiter::with_limits(
+            "scenario-organization",
+            awaken_protocol_managed::ManagedRateLimits {
+                create_per_minute: 3,
+                read_per_minute: 1_200,
+            },
+        ),
+    ))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     awaken_cli::block_on_service(async_main())
 }
@@ -132,7 +149,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         // The management scenario drives the REAL management router but with the
         // deterministic MCP scenario model as an explicit HostExecutor selection;
         // env-driven store selection + IAM are identical to production.
-        Ok("management") => {
+        Ok(mode @ ("management" | "management-rate-limit")) => {
             let (model, model_ref) = awaken_scenario_host::scenario_model(
                 std::sync::Arc::new(awaken_scenario_host::McpToolModel),
                 "management",
@@ -140,8 +157,7 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             awaken_cli::build_all_in_one_router_with_scenario_model(
                 model,
                 model_ref,
-                awaken_cli::ManagedServiceAdapters::default()
-                    .with_list_price_provider(Arc::new(ScenarioListPriceProvider)),
+                management_scenario_adapters(mode == "management-rate-limit"),
             )
             .await
         }
@@ -257,6 +273,7 @@ fn mode_uses_shared_scenario_runtime(mode: Option<&str>) -> bool {
         mode,
         Some(
             "management"
+                | "management-rate-limit"
                 | "management-agents"
                 | "management-web"
                 | "management-providers"
@@ -394,6 +411,7 @@ mod dispatch_tests {
         );
         for mode in [
             "management",
+            "management-rate-limit",
             "management-agents",
             "management-web",
             "management-providers",
