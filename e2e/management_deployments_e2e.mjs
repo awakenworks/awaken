@@ -69,6 +69,15 @@ async function main() {
   try {
     await withScenarioServer('management', 'mcp', 38140, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
+      // Keep mutation/error assertions on a no-retry client so the suite sees
+      // the first wire response. Eventual projection reads deliberately use the
+      // official SDK retry policy: a seqlock conflict is a retryable 503 while a
+      // Session is committing, not a terminal application outcome.
+      const eventualClient = new Anthropic({
+        apiKey: 'e2e-dummy',
+        baseURL: baseUrl,
+        maxRetries: 4,
+      });
       const environment = await client.beta.environments.create({
         name: 'deployment-e2e',
         config: { type: 'cloud' },
@@ -369,7 +378,7 @@ async function main() {
       });
       const lowBudgetRun = await client.beta.deployments.run(lowBudgetDeployment.id, { betas: BETAS });
       const requiresAction = await waitForValue(
-        () => drain(client.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
+        () => drain(eventualClient.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
         (events) => events.some((event) =>
           event.type === 'session.status_idle' && event.stop_reason.type === 'requires_action'),
         'D13 Deployment Session reaches its client-tool boundary',
@@ -381,7 +390,7 @@ async function main() {
         betas: BETAS,
       });
       await waitForValue(
-        () => drain(client.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
+        () => drain(eventualClient.beta.sessions.events.list(lowBudgetRun.session_id, { betas: BETAS })),
         (events) => events.some((event) =>
           event.type === 'session.status_idle' && event.stop_reason.type === 'budget_reached'),
         'D13 copied Deployment budget reaches the canonical Session gate',
@@ -416,46 +425,55 @@ async function main() {
       assert.equal(defined?.max_iterations, 3, 'D11 exact outcome bound');
       pass('sole user.define_outcome initial event launches through the official SDK');
 
-      const rateLimitTarget = await client.beta.deployments.create({
-        agent: deploymentAgent.id,
-        environment_id: environment.id,
-        name: 'rate-limit-target',
-        initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
-        betas: BETAS,
-      });
-      let createRateLimited = false;
-      for (let index = 0; index < 450; index += 1) {
-        try {
-          await client.beta.deployments.create({
-            agent: deploymentAgent.id,
-            environment_id: environment.id,
-            name: `rate-drain-${index}`,
-            initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
-            betas: BETAS,
-          });
-        } catch (error) {
-          assert.equal(error?.status, 429, `D14 official SDK surfaces HTTP rate limit: ${error}`);
-          createRateLimited = true;
-          break;
-        }
-      }
-      assert.ok(createRateLimited, 'D14 deterministic local create bucket is exhausted');
-      const rateLimitedRun = await client.beta.deployments.run(rateLimitTarget.id, { betas: BETAS });
-      assert.equal(rateLimitedRun.session_id, null, 'D14 failed launch creates no Session');
-      assert.equal(rateLimitedRun.error?.type, 'session_rate_limited_error', 'D14 typed SDK union');
-      assert.equal(rateLimitedRun.trigger_context.type, 'manual');
-      const rateLimitRuns = await drain(client.beta.deploymentRuns.list({
-        deployment_id: rateLimitTarget.id,
-        betas: BETAS,
-      }));
-      assert.deepEqual(rateLimitRuns.map((item) => item.id), [rateLimitedRun.id], 'D14 no retry row');
-      const rateLimitDeployment = await client.beta.deployments.retrieve(rateLimitTarget.id, {
-        betas: BETAS,
-      });
-      assert.equal(rateLimitDeployment.status, 'active', 'D14 transient rate limit does not pause');
-      assert.equal(rateLimitDeployment.paused_reason, null, 'D14');
-      pass('official SDK sees session_rate_limited_error without retry or auto-pause');
     });
+
+    // D14 causal isolation and transition table:
+    // C1 a fresh process owns one three-token organization Create bucket;
+    // C2 Environment, Agent, and Deployment authoring consume those three tokens;
+    // C3 the Deployment's internal Session launch consumes the same bucket.
+    // C1+C2+C3 -> one persisted DeploymentRun whose terminal union is
+    // session_rate_limited_error, no Session, no retry row, and no Deployment
+    // pause. A separate process removes elapsed time, prior requests, client
+    // connection concurrency, and storage speed from the preconditions. The
+    // low limit is injected only through the scenario composition's existing
+    // ManagedRequestLimiter port; production code and public configuration are
+    // unchanged.
+    await withScenarioServer(
+      'management-rate-limit',
+      'mcp',
+      38140,
+      async (baseUrl) => {
+        const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl, maxRetries: 0 });
+        const environment = await client.beta.environments.create({
+          name: 'deployment-rate-limit', config: { type: 'cloud' }, betas: BETAS,
+        });
+        const agent = await client.beta.agents.create({
+          name: 'deployment-rate-limit-agent', model: 'claude-opus-4-8', betas: BETAS,
+        });
+        const deployment = await client.beta.deployments.create({
+          agent: agent.id,
+          environment_id: environment.id,
+          name: 'rate-limit-target',
+          initial_events: [{ type: 'user.message', content: [{ type: 'text', text: 'go' }] }],
+          betas: BETAS,
+        });
+        const rateLimitedRun = await client.beta.deployments.run(deployment.id, { betas: BETAS });
+        assert.equal(rateLimitedRun.session_id, null, 'D14 failed launch creates no Session');
+        assert.equal(rateLimitedRun.error?.type, 'session_rate_limited_error', 'D14 typed SDK union');
+        assert.equal(rateLimitedRun.trigger_context.type, 'manual');
+        const rateLimitRuns = await drain(client.beta.deploymentRuns.list({
+          deployment_id: deployment.id,
+          betas: BETAS,
+        }));
+        assert.deepEqual(rateLimitRuns.map((item) => item.id), [rateLimitedRun.id], 'D14 no retry row');
+        const rateLimitDeployment = await client.beta.deployments.retrieve(deployment.id, {
+          betas: BETAS,
+        });
+        assert.equal(rateLimitDeployment.status, 'active', 'D14 transient rate limit does not pause');
+        assert.equal(rateLimitDeployment.paused_reason, null, 'D14');
+        pass('official SDK sees session_rate_limited_error without retry or auto-pause');
+      },
+    );
 
     console.log('E2E PASS: the deployments + deployment-runs families round-trip through the official @anthropic-ai/sdk.');
     process.exitCode = 0;

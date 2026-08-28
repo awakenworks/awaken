@@ -188,8 +188,9 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     // contains one visible and one missing id, C4 ids[] combines with page/limit.
     // Effects: E1 GA metadata has expires_at and no beta scope, E2 ids[] returns a
     // single next_page:null page and silently omits missing ids, E3 mixed pagination
-    // is rejected without mutation. Decision table: G1 C1+C2->E1; G2 C1+C3->E2;
-    // G3 C1+C4->E3. The same FileApplication/FileCatalog owns every rule.
+    // is rejected without mutation, E4 retrieve/download/delete complete the GA
+    // lifecycle. Decision table: G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3;
+    // G4 C1+created File->E4. The same FileApplication/FileCatalog owns every rule.
     let router = router();
     let mut body = multipart_file("ga.txt", b"ga");
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
@@ -247,9 +248,48 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     assert_eq!(
-        router.oneshot(request).await.unwrap().status(),
+        router.clone().oneshot(request).await.unwrap().status(),
         StatusCode::BAD_REQUEST,
         "G3/E3"
+    );
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/files/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::OK,
+        "G4/retrieve metadata"
+    );
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/files/{id}/content"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    assert_eq!(
+        router.clone().oneshot(request).await.unwrap().status(),
+        StatusCode::BAD_REQUEST,
+        "G4/uploaded Files are not downloadable in GA either"
+    );
+    let mut request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/files/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    assert_eq!(
+        router.oneshot(request).await.unwrap().status(),
+        StatusCode::OK,
+        "G4/delete"
     );
 }
 

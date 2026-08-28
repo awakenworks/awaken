@@ -1,30 +1,25 @@
 // Representative CRUD and cross-version ownership transfer for every shared
-// mutable non-Session Managed resource family. Focused E2Es own the full state
-// machines; this suite owns old-create/current-operate and
-// current-create/old-operate. The read-only Models catalog remains owned by
-// `management_files_models_e2e.mjs`, which provisions its canonical inventory
-// and verifies both Beta and GA projections without duplicating that setup here.
+// non-Session Managed resource family. Focused E2Es own the full state machines;
+// this suite owns old-create/current-operate and current-create/old-operate.
 //
 // Cause/effect graph: creator SDK -> canonical resource row -> operator SDK ->
 // update/list/subresource/terminal mutation. Effect: one wire schema and one
 // aggregate survive the client change without a compatibility copy.
-// Decision table: creator/operator = 0.105/0.117, 0.117/0.105,
-// 0.117/current and current/0.117; each resource must cross the handoff and
-// terminate through the opposite generated client.
+// Decision table: every pair of distinct supported creator/operator anchors;
+// each resource must cross the handoff and terminate through the opposite
+// generated client. Same-version lifecycles are owned by the canonical hosted
+// runner, so they are deliberately not duplicated here.
 
 import assert from 'node:assert/strict';
-import AnthropicCurrent, { toFile as toFileCurrent } from '@anthropic-ai/sdk';
-import Anthropic0105, { toFile as toFile0105 } from '@anthropic-ai/sdk-0-105';
-import Anthropic0117, { toFile as toFile0117 } from '@anthropic-ai/sdk-0-117';
-import { pass, withScenarioServer } from '../harness.mjs';
-import { sdkVersionBinding } from './catalog.mjs';
+import {
+  loadQualifiedClients,
+  qualifiedClient,
+} from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
+import { FAKE_KEY, pass, withScenarioServer } from '../harness.mjs';
 
-const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
-const CLIENTS = [
-  ['0.105.0', Anthropic0105, toFile0105],
-  ['0.117.1', Anthropic0117, toFile0117],
-  [CURRENT_SDK_VERSION, AnthropicCurrent, toFileCurrent],
-];
+const QUALIFIED_CLIENTS = await loadQualifiedClients();
+const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client, toFile }) => [version, Client, toFile]);
+const QUALIFIED_VERSIONS = QUALIFIED_CLIENTS.map(({ version }) => version).join(', ');
 
 async function drain(items) {
   const values = [];
@@ -149,16 +144,91 @@ async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
   pass(`shared resource CRUD handoff ${creatorVersion} -> ${operatorVersion}`);
 }
 
+async function configureModelDirectory(baseURL, upstreamURL) {
+  const providerID = `sdk-compat-${process.pid}`;
+  const connected = await fetch(`${baseURL}/v1/config/provider-connections`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      idempotency_key: providerID,
+      workspace_id: 'default',
+      provider_id: providerID,
+      display_name: 'SDK compatibility model directory',
+      dialect: 'anthropic_messages',
+      base_url: `${upstreamURL}/v1/`,
+      timeout_secs: 30,
+      secret: FAKE_KEY,
+    }),
+  });
+  assert.equal(connected.status, 201, await connected.text());
+  const authored = await fetch(`${baseURL}/v1/config/agents/sdk-compat-model`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      id: 'sdk-compat-model',
+      name: 'SDK compatibility model',
+      instructions: 'Expose one model for the SDK differential.',
+      model: {
+        mode: 'pinned',
+        provider_identity_ref: providerID,
+        model_ref: 'fake-haiku',
+        backend_ref: 'genai',
+      },
+      tools: [],
+    }),
+  });
+  assert.equal(authored.status, 200, await authored.text());
+  const published = await fetch(`${baseURL}/v1/config/agents/sdk-compat-model/publish`, {
+    method: 'POST',
+  });
+  assert.equal(published.status, 200, await published.text());
+}
+
 await withScenarioServer(
   'management',
   'mcp',
   38188,
   async (baseURL) => {
-    await exerciseResources(baseURL, CLIENTS[0], CLIENTS[1]);
-    await exerciseResources(baseURL, CLIENTS[1], CLIENTS[0]);
-    await exerciseResources(baseURL, CLIENTS[1], CLIENTS[2]);
-    await exerciseResources(baseURL, CLIENTS[2], CLIENTS[1]);
+    for (const creator of CLIENTS) {
+      for (const operator of CLIENTS) {
+        if (creator !== operator) await exerciseResources(baseURL, creator, operator);
+      }
+    }
   },
 );
 
-console.log('E2E PASS: all shared mutable Managed resource families survive bidirectional SDK handoff.');
+await withScenarioServer(
+  'management-providers',
+  'mcp',
+  38191,
+  async (baseURL, upstream) => {
+    await configureModelDirectory(baseURL, upstream.url);
+    const oldest = qualifiedClient(QUALIFIED_CLIENTS, 'oldest_supported');
+    const changePoint = qualifiedClient(QUALIFIED_CLIENTS, 'protocol_change_point');
+    const current = qualifiedClient(QUALIFIED_CLIENTS, 'current_oracle');
+    const oldClient = new oldest.Client({ apiKey: 'e2e-dummy', baseURL });
+    const currentClient = new changePoint.Client({ apiKey: 'e2e-dummy', baseURL });
+    const latestClient = new current.Client({ apiKey: 'e2e-dummy', baseURL });
+    const oldModels = await drain(oldClient.beta.models.list());
+    const currentModels = await drain(currentClient.beta.models.list());
+    const latestModels = await drain(latestClient.beta.models.list());
+    assert.deepEqual(
+      oldModels.map((model) => [model.id, Object.keys(model).sort()]),
+      currentModels.map((model) => [model.id, Object.keys(model).sort()]),
+      'Models list DTOs are cross-version identical',
+    );
+    assert.equal((await oldClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
+    assert.equal((await currentClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
+    assert.deepEqual(
+      latestModels,
+      currentModels,
+      `${current.version} Beta Models retains the ${changePoint.version} DTO`,
+    );
+    assert.equal((await latestClient.beta.models.retrieve('fake-haiku')).id, 'fake-haiku');
+    pass(`Models list/retrieve decode identically in SDK ${QUALIFIED_VERSIONS}`);
+  },
+  {},
+  { upstream: { models: ['fake-haiku'] } },
+);
+
+console.log('E2E PASS: all shared Managed resource families survive bidirectional SDK handoff.');

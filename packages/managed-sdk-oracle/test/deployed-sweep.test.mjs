@@ -18,7 +18,7 @@ const operations = [
   { id: 'documented.organizationTunnels.list', method: 'GET', path: '/v1/organizations/tunnels', resource: 'tunnels', betas: ['mcp-tunnels-2026-05-19'] },
   { id: 'documented.skills.versions.retrieveFile', method: 'GET', path: '/v1/skills/{}/versions/{}/files/{}', transport_query: 'beta=true', resource: 'skills', betas: ['skills-2025-10-02'] },
 ];
-const coverage = { schema_version: 1, operations };
+const coverage = { schema_version: 2, operations };
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('deployed probe plan closes operations with one auth and beta policy', () => {

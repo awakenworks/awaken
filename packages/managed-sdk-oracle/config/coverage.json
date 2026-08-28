@@ -1,44 +1,305 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "resources": {
     "agents": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+          "test": "agent_lifecycle_projects_every_official_sdk_operation",
+          "operations": ["beta.agents.*"]
+        }
+      ]
     },
     "deploymentRuns": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+          "test": "deployment_lifecycle_and_runs",
+          "operations": ["beta.deploymentRuns.*"]
+        }
+      ]
     },
     "deployments": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+          "test": "deployment_lifecycle_and_runs",
+          "operations": ["beta.deployments.*"]
+        }
+      ]
     },
     "dreams": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+          "test": "official_create_retrieve_list_archive_and_failure_shapes",
+          "operations": [
+            "beta.dreams.archive",
+            "beta.dreams.create",
+            "beta.dreams.list",
+            "beta.dreams.retrieve"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+          "test": "cancellation_is_immediate_idempotent_and_retains_prepared_output",
+          "operations": ["beta.dreams.cancel"]
+        }
+      ]
     },
     "environments": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/environments.rs",
+          "test": "environment_crud_and_work_lifecycle",
+          "operations": ["beta.environments.*"]
+        }
+      ]
     },
     "files": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+          "test": "upload_download_metadata_and_delete_roundtrip",
+          "operations": [
+            "beta.files.delete",
+            "beta.files.download",
+            "beta.files.retrieveMetadata",
+            "beta.files.upload"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+          "test": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "operations": ["beta.files.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+          "test": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "operations": ["files.*"]
+        }
+      ]
     },
     "memoryStores": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+          "test": "store_lifecycle_create_get_list_update_archive_delete",
+          "operations": [
+            "beta.memoryStores.archive",
+            "beta.memoryStores.create",
+            "beta.memoryStores.delete",
+            "beta.memoryStores.list",
+            "beta.memoryStores.retrieve",
+            "beta.memoryStores.update"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+          "test": "memory_crud_with_precondition_and_version_log",
+          "operations": [
+            "beta.memoryStores.memories.*",
+            "beta.memoryStores.memoryVersions.*",
+            "documented.memoryStores.memories.patch"
+          ]
+        }
+      ]
     },
     "models": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/src/control/models.rs",
+          "test": "models_route_uses_the_canonical_header_flavor_without_splitting_inventory",
+          "operations": ["beta.models.list", "models.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/src/control/models.rs",
+          "test": "retrieve_accepts_complete_slash_bearing_model_id",
+          "operations": ["beta.models.retrieve", "models.retrieve"]
+        }
+      ]
     },
     "sessions": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+          "test": "session_create_idempotency_replays_one_canonical_session",
+          "operations": ["beta.sessions.create", "beta.sessions.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+          "test": "session_get_projects_the_durable_activity_lifecycle",
+          "operations": ["beta.sessions.retrieve"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/projection.rs",
+          "test": "updating_a_session_commits_a_session_updated_event",
+          "operations": ["beta.sessions.update"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/mcp_sessions.rs",
+          "test": "archive_session_commits_the_terminated_fact_once",
+          "operations": ["beta.sessions.archive"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/mcp_sessions.rs",
+          "test": "delete_session_commits_the_deleted_fact_with_the_owner",
+          "operations": ["beta.sessions.delete"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+          "test": "happy_path_projects_message_and_idle",
+          "operations": ["beta.sessions.events.send"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+          "test": "events_are_paged_by_cursor",
+          "operations": ["beta.sessions.events.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+          "test": "retrieve_session_and_sse_event_names",
+          "operations": ["beta.sessions.events.stream"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+          "test": "file_resource_attaches_to_a_live_session",
+          "operations": ["beta.sessions.resources.add"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+          "test": "create_time_resources_are_backfilled_and_addressable",
+          "operations": [
+            "beta.sessions.resources.list",
+            "beta.sessions.resources.retrieve"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+          "test": "repository_authorization_is_sealed_pinned_and_rotated_without_echo",
+          "operations": ["beta.sessions.resources.update"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/session_resources.rs",
+          "test": "a_file_resource_can_be_detached_from_a_live_session",
+          "operations": ["beta.sessions.resources.delete"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/projection.rs",
+          "test": "a_delegation_projects_the_child_thread_lifecycle",
+          "operations": [
+            "beta.sessions.threads.events.list",
+            "beta.sessions.threads.list",
+            "beta.sessions.threads.retrieve"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/streaming.rs",
+          "test": "stream_thread_events_backfills_the_primary_thread",
+          "operations": ["beta.sessions.threads.events.stream"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/streaming.rs",
+          "test": "child_thread_sse_is_isolated_and_archive_projects_durable_terminal",
+          "operations": ["beta.sessions.threads.archive"]
+        }
+      ]
     },
     "skills": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+          "test": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "operations": ["beta.skills.*"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+          "test": "ga_skill_and_version_projection_match_sdk_0120",
+          "operations": ["skills.*"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+          "test": "multipart_bundle_preserves_binary_support_files",
+          "operations": ["documented.skills.versions.retrieveFile"]
+        }
+      ]
     },
     "tunnels": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+          "test": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "operations": ["beta.tunnels.*", "documented.organizationTunnels.*"]
+        }
+      ]
     },
     "userProfiles": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+          "test": "user_profile_crud_and_metadata_merge",
+          "operations": ["beta.userProfiles.*"]
+        }
+      ]
     },
     "vaults": {
-      "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+      "rust_behavior_cases": [
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "vault_credential_lifecycle_and_resolution",
+          "operations": [
+            "beta.vaults.create",
+            "beta.vaults.credentials.create",
+            "beta.vaults.credentials.mcpOAuthValidate",
+            "beta.vaults.credentials.retrieve"
+          ]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "list_vaults_returns_one_full_page_sorted_by_id",
+          "operations": ["beta.vaults.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "replacement_control_instance_reads_the_same_vault_authority",
+          "operations": ["beta.vaults.retrieve"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "update_vault_replaces_name_and_patches_metadata",
+          "operations": ["beta.vaults.update"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "archive_vault_soft_deletes_and_hides_from_default_list",
+          "operations": ["beta.vaults.archive"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "delete_vault_fences_children_and_converges_after_rollout_ack",
+          "operations": ["beta.vaults.delete"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "list_credentials_is_scoped_to_the_vault_and_404s_unknown",
+          "operations": ["beta.vaults.credentials.list"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "update_credential_patches_fields_reseals_secret_and_rejects_type_change",
+          "operations": ["beta.vaults.credentials.update"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "archive_credential_soft_deletes_and_hides_from_list",
+          "operations": ["beta.vaults.credentials.archive"]
+        },
+        {
+          "path": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+          "test": "delete_credential_removes_one_and_scopes_by_vault",
+          "operations": ["beta.vaults.credentials.delete"]
+        }
+      ]
     }
   }
 }

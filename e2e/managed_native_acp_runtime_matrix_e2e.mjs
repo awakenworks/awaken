@@ -377,12 +377,16 @@ async function exerciseDirectMatrix() {
         }],
         betas: BETAS,
       });
-      await waitForValue(
-        () => fs.existsSync(readyPath),
-        (ready) => ready,
-        `${runtime}: slow ACP prompt to reach its blocking branch`,
-        { timeoutMs: 10_000, pollMs: 10 },
-      );
+      const [activeReceipt] = await Promise.all([
+        active.then((receipt) => receipt.data[0]),
+        waitForValue(
+          () => fs.existsSync(readyPath),
+          (ready) => ready,
+          `${runtime}: slow ACP prompt to reach its blocking branch`,
+          { timeoutMs: 10_000, pollMs: 10 },
+        ),
+      ]);
+      assert.equal(activeReceipt?.type, 'user.message', `${runtime}: exact interrupted User receipt`);
       const interrupted = await sendBatch(
         client,
         sessionId,
@@ -391,8 +395,6 @@ async function exerciseDirectMatrix() {
           && delta.some((event) => event.type === 'session.status_idle'),
         `${runtime}: ACP interrupt to terminal idle`,
       );
-      const activeReceipt = (await active).data[0];
-      assert.equal(activeReceipt?.type, 'user.message', `${runtime}: exact interrupted User receipt`);
       await waitForSessionEventReceipt(
         client,
         sessionId,

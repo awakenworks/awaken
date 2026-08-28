@@ -2,10 +2,18 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
-import Anthropic from '@anthropic-ai/sdk';
+import {
+  loadQualifiedClients,
+  qualifiedClient,
+} from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { MANAGED_TS_METHOD_MANIFEST } from './managed_ts_sdk_method_manifest.mjs';
 
 const E2E = resolve(import.meta.dirname, '..');
+const Anthropic = qualifiedClient(await loadQualifiedClients(), 'current_oracle').Client;
+const operationCoverage = JSON.parse(readFileSync(resolve(
+  E2E,
+  '../contracts/anthropic-managed/operation-coverage.generated.json',
+), 'utf8'));
 
 function publicMethods(resource, prefix = '', depth = 0, found = []) {
   if (!resource || depth > 4) return found;
@@ -21,9 +29,12 @@ function publicMethods(resource, prefix = '', depth = 0, found = []) {
 }
 
 function officialManagedMethods(client) {
+  const betaRoots = new Set(MANAGED_TS_METHOD_MANIFEST
+    .filter(({ sdkRoot }) => sdkRoot === 'beta')
+    .map(({ relativeMethod }) => relativeMethod.split('.')[0]));
   return [
     ...publicMethods(client.beta)
-      .filter((method) => !method.startsWith('messages.'))
+      .filter((method) => betaRoots.has(method.split('.')[0]))
       .map((method) => `beta.${method}`),
     ...publicMethods(client.models, 'models.'),
     ...publicMethods(client.files, 'files.'),
@@ -36,6 +47,36 @@ function assertExactMethodInventory(manifest, actual) {
   assert.equal(new Set(expected).size, expected.length, 'each SDK method appears exactly once');
   assert.deepEqual(expected, actual, 'new/removed SDK methods require an explicit manifest decision');
 }
+
+test('real-process ownership derives every HTTP method from the canonical operation ledger', () => {
+  // Cause/effect graph: C1=current official SDK operations are generated once
+  // into the canonical ledger; C2=the E2E ownership projection adds only four
+  // non-HTTP generated helpers. Effects: E1=every HTTP id and route is identical
+  // to C1, E2=no stale hand-copied operation can survive, E3=documented
+  // SDK-absent routes cannot be presented as SDK calls. Decision table:
+  // C1+C2 -> E1+E2+E3; a missing, duplicate, renamed, or extra HTTP row fails
+  // exact map equality before source-level invocation checks run.
+  const expected = new Map(operationCoverage.operations
+    .filter(({ id }) => !id.startsWith('documented.'))
+    .map(({ id, path }) => [id, path]));
+  const helpers = MANAGED_TS_METHOD_MANIFEST
+    .filter(({ route }) => route.startsWith('generated-') || route === 'offline-standard-webhooks');
+  const actual = new Map(MANAGED_TS_METHOD_MANIFEST
+    .filter(({ sdkMethod }) => expected.has(sdkMethod))
+    .map(({ sdkMethod, route }) => [sdkMethod, route]));
+  assert.deepEqual(actual, expected, 'C1/E1/E2/E3');
+  assert.deepEqual(
+    helpers.map(({ sdkMethod }) => sdkMethod).sort(),
+    [
+      'beta.environments.work.poller',
+      'beta.environments.work.worker',
+      'beta.sessions.events.toolRunner',
+      'beta.webhooks.unwrap',
+    ],
+    'C2/E2',
+  );
+  assert.equal(MANAGED_TS_METHOD_MANIFEST.length, expected.size + helpers.length);
+});
 
 test('every official TypeScript Managed SDK method has one executable owner', () => {
   // Cause/effect graph: C1=the Beta Managed methods exactly match the manifest;

@@ -186,11 +186,12 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
 #[tokio::test]
 async fn ga_skill_and_version_projection_match_sdk_0120() {
     // Cause/effect graph: C1 no beta selector, C2 GA display_name multipart,
-    // C3 source=custom list, C4 latest version retrieval. Effects: E1 Skill uses
+    // C3 source=custom list, C4 complete version lifecycle. Effects: E1 Skill uses
     // display_name/latest_version_id/source object and no beta fields; E2 list is
     // PageCursor; E3 SkillVersion omits beta directory/version. Decision table:
-    // G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3. All projections read the same
-    // SkillStore aggregate and immutable version rows.
+    // G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3. The create/retrieve/list/delete
+    // Skill operations and create/retrieve/list/delete Version operations all
+    // execute here without a Beta selector, over one SkillStore aggregate.
     let (router, _store, dir) = router_with_store();
     let body = multipart_files_with_fields(
         &[(
@@ -217,7 +218,18 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     assert_eq!(skill["source"]["type"], "custom", "G1/E1");
     assert!(skill["latest_version_id"].is_string(), "G1/E1");
     assert!(skill.get("display_title").is_none(), "G1/E1");
-    let id = skill["id"].as_str().unwrap();
+    let id = skill["id"].as_str().unwrap().to_owned();
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/skills/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, retrieved) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G1/retrieve {retrieved}");
+    assert_eq!(retrieved["id"], id, "G1/retrieve");
 
     let mut request = Request::builder()
         .uri("/v1/skills?source=custom")
@@ -238,7 +250,7 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
         "G2/E2"
     );
 
-    let latest = skill["latest_version_id"].as_str().unwrap();
+    let latest = skill["latest_version_id"].as_str().unwrap().to_owned();
     let mut request = Request::builder()
         .uri(format!("/v1/skills/{id}/versions/{latest}"))
         .body(Body::empty())
@@ -251,6 +263,61 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     assert!(version.get("directory").is_none(), "G3/E3");
     assert!(version.get("version").is_none(), "G3/E3");
     assert_eq!(version["name"], "ga-skill", "G3/E3");
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/skills/{id}/versions"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, versions) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G3/list {versions}");
+    assert_eq!(versions["data"].as_array().unwrap().len(), 1, "G3/list");
+
+    let next_body = multipart_files(&[(
+        "ga-skill/SKILL.md",
+        b"---\nname: ga-skill\ndescription: ga-v2\n---\n",
+    )]);
+    let mut request = Request::builder()
+        .method("POST")
+        .uri(format!("/v1/skills/{id}/versions"))
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={BOUNDARY}"),
+        )
+        .body(Body::from(next_body))
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, created_version) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G3/create {created_version}");
+    let created_version_id = created_version["id"].as_str().unwrap();
+
+    let mut request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/skills/{id}/versions/{created_version_id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, deleted_version) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G3/delete {deleted_version}");
+    assert_eq!(deleted_version["id"], created_version_id, "G3/delete");
+
+    let mut request = Request::builder()
+        .method("DELETE")
+        .uri(format!("/v1/skills/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, deleted_skill) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G1/delete {deleted_skill}");
+    assert_eq!(deleted_skill["id"], id, "G1/delete");
     let _ = std::fs::remove_dir_all(dir);
 }
 

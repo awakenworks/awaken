@@ -1154,6 +1154,17 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
         .unwrap();
     assert_eq!(child["parent_thread_id"], primary_thread_id);
     assert_eq!(child["agent"]["name"], "researcher");
+    let retrieved_child = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/threads/{child_thread_id}"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        retrieved_child, *child,
+        "M1/E1 retrieve equals list projection"
+    );
     let status_types_for = |thread_id: &str| {
         list["data"]
             .as_array()
