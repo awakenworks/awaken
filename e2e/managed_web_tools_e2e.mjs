@@ -126,9 +126,22 @@ async function main() {
         idempotency_key: 'managed-web-tools-e2e-search',
         workspace_id: 'ignored-by-platform-scope',
         kind: 'vault',
-        provider_id: SEARCH_PROVIDER,
         env_key: null,
         secret: SEARCH_SECRET,
+        descriptor: {
+          provider: SEARCH_PROVIDER,
+          material: { kind: 'secret', type_id: 'awaken.secret/v1' },
+          targets: [{
+            target: {
+              purpose: { type: 'web_provider_authorization' },
+              audience: SEARCH_PROVIDER,
+            },
+            usage: {
+              type: 'http_header',
+              name: 'X-Scenario-Web-Key',
+            },
+          }],
+        },
       });
       assert.equal(credential.status, 201, JSON.stringify(credential.body));
       assert.ok(!JSON.stringify(credential.body).includes(SEARCH_SECRET), 'credential response is secret-free');
@@ -233,11 +246,12 @@ async function main() {
       pass('F1/F2/F3: allowed, capped, PDF, and pre-I/O blocked WebFetch execute end to end');
 
       // Search cause/effect graph:
-      // C5 selected paid provider is in the process registry; C6 exact active
-      // workspace/revision/provider/usage pin resolves; C7 full approximate
-      // location exists; C8 provider returns allow+block URLs. Effects E5 provider
-      // accepts secret+location, E6 production post-filter retains only allow,
-      // E7 one linked durable tool lifecycle, E8 plaintext never appears.
+      // C5 selected paid provider is in the process registry; C6 the described
+      // credential freezes exact Web-provider audience, header usage, active
+      // workspace, and revision; C7 full approximate location exists; C8
+      // provider returns allow+block URLs. Effects E5 provider accepts
+      // secret+location, E6 production post-filter retains only allow, E7 one
+      // linked durable tool lifecycle, E8 plaintext never appears.
       // Constraints K2 one registry clone feeds Control+Host, K4 WebSearchPlugin is
       // the Brain owner, K5 SDK owns Session/events, K6 fixture makes no live search.
       // Decision S1: C5+C6+C7+C8=>E5+E6+E7+E8.
