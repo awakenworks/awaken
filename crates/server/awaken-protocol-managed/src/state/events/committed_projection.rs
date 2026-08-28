@@ -1240,6 +1240,24 @@ impl ManagedState {
                         cursor: event.cursor.0,
                     },
                 )
+            })
+            .or_else(|| {
+                // A fast Run can be first observed only at its terminal
+                // boundary. In that case there is no retained opening cursor,
+                // but the terminal prefix already reconstructs the primary
+                // Thread Running edge. Use the same immutable terminal cursor
+                // for a distinct aggregate fallback identity; an exact opening
+                // always wins when one is available.
+                root_terminal.map(|terminal| {
+                    managed_multiagent_event_id(
+                        &record.session.id,
+                        &record.session.id,
+                        "aggregate-terminal-status-running",
+                        ManagedMultiagentEventProvenance::LifecyclePrefix {
+                            cursor: terminal.cursor.0,
+                        },
+                    )
+                })
             });
         let aggregate_running_transition =
             Self::should_append_aggregate_running(record, persisted_status);

@@ -3226,6 +3226,91 @@ async fn recovered_terminal_brackets_output_in_warm_and_cold_projections() {
 }
 
 #[tokio::test]
+async fn terminal_only_recovery_brackets_primary_output_with_one_aggregate_running() {
+    // Cause/effect graph: C1 a fast primary Run has already committed output
+    // and Completed before the protocol's first read; C2 the recovery source
+    // therefore exposes the terminal lifecycle fact but no opening fact; C3
+    // the disposable projection is read repeatedly. Effects: E1 the terminal
+    // cursor deterministically reconstructs aggregate Running, then primary
+    // Thread Running; E2 both precede output and the closing Idle edge; E3 C3
+    // never duplicates the fallback. Decision table: opening present is owned
+    // by the adjacent warm/cold test; opening absent + terminal present =>
+    // exactly one terminal-prefix aggregate bracket; neither fact => no bracket.
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let run_id = RunId("terminal-only-recovery".into());
+    runtime.messages.lock().unwrap().push(Message::text(
+        MessageId("terminal-only-output".into()),
+        Role::Assistant,
+        "done",
+    ));
+    runtime.message_cursors.lock().unwrap().push(2);
+    runtime.lifecycle.lock().unwrap().push(lifecycle(
+        2,
+        &session.id,
+        &run_id,
+        RunLifecycleEventKind::Completed,
+        RunState::Ended(EndCause::NaturalEnd),
+    ));
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let first = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    let types = first.iter().map(Event::type_str).collect::<Vec<_>>();
+    let aggregate = types
+        .iter()
+        .position(|kind| *kind == "session.status_running")
+        .expect("E1 aggregate Running");
+    let thread = types
+        .iter()
+        .position(|kind| *kind == "session.thread_status_running")
+        .expect("E1 primary Thread Running");
+    let output = types
+        .iter()
+        .position(|kind| *kind == "agent.message")
+        .expect("E2 output");
+    let idle = types
+        .iter()
+        .position(|kind| *kind == "session.status_idle")
+        .expect("E2 aggregate Idle");
+    assert!(
+        aggregate < thread && thread < output && output < idle,
+        "E1-E2"
+    );
+    assert_eq!(
+        types
+            .iter()
+            .filter(|kind| **kind == "session.status_running")
+            .count(),
+        1,
+        "E3"
+    );
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let replay = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(
+        serde_json::to_value(replay).unwrap(),
+        serde_json::to_value(first).unwrap(),
+        "E3"
+    );
+}
+
+#[tokio::test]
 async fn first_interval_lineage_preserves_the_issued_legacy_lifecycle_prefix() {
     // Cause/effect graph: C1 a pre-interval Session has one completed Run and
     // has already issued every legacy lifecycle-derived cursor; C2 the same Run
