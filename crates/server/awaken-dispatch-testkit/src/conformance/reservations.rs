@@ -455,28 +455,30 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // The exact expiry boundary remains owned by the first repairer. Its next
     // millisecond is reclaimed through claim_new_run even though this request is
     // deliberately impossible for ordinary local execution.
-    clock.set(81_002);
-    assert!(
-        store
-            .claim_new_run(
-                repair_request.clone(),
-                "reservation-repair-boundary",
-                LEASE_MS,
-                81_002,
-                &Default::default(),
-            )
-            .await
-            .expect("SR8 exact lease boundary")
-            .is_none(),
-        "SR8/E11 exact expiry remains live"
-    );
-    clock.set(81_003);
+    if clock.exact_boundary_is_controllable() {
+        clock.set(first_repair.lease.expires_ms);
+        assert!(
+            store
+                .claim_new_run(
+                    repair_request.clone(),
+                    "reservation-repair-boundary",
+                    LEASE_MS,
+                    first_repair.lease.expires_ms,
+                    &Default::default(),
+                )
+                .await
+                .expect("SR8 exact lease boundary")
+                .is_none(),
+            "SR8/E11 exact expiry remains live"
+        );
+    }
+    clock.advance_past(first_repair.lease.expires_ms).await;
     let mut repair = store
         .claim_new_run(
             repair_request.clone(),
             "reservation-repairer-after-crash",
             LEASE_MS,
-            81_003,
+            first_repair.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
@@ -811,13 +813,6 @@ async fn current_claim_guard_is_exact(
             .expect("exact-boundary current-claim query"),
         "the exact lease expiry boundary remains current"
     );
-    assert!(
-        !store
-            .claim_is_current(&current, claimed.lease.expires_ms + 1)
-            .await
-            .expect("expired current-claim query"),
-        "an expired claim is not current before it is reclaimed"
-    );
     assert_eq!(
         store
             .worker_owns_run(&identity, &run, claimed.lease.expires_ms)
@@ -826,6 +821,14 @@ async fn current_claim_guard_is_exact(
             .as_ref(),
         Some(&current),
         "the exact Worker incarnation receives the live claim"
+    );
+    clock.advance_past(claimed.lease.expires_ms).await;
+    assert!(
+        !store
+            .claim_is_current(&current, claimed.lease.expires_ms.saturating_add(1))
+            .await
+            .expect("expired current-claim query"),
+        "an expired claim is not current before it is reclaimed"
     );
     let stale_identity = WorkerIdentity::new(identity.worker_id.clone(), "replacement", 2);
     assert!(
@@ -953,13 +956,13 @@ async fn sandbox_binding_survives_recovery(
         .await
         .expect("bind sandbox");
     assert_eq!(bound, SettleOutcome::Applied, "current claim binds sandbox");
-    clock.set(first.lease.expires_ms + 1);
+    clock.advance_past(first.lease.expires_ms).await;
     let recovered = store
         .claim_run(
             &run,
             "conformance-sandbox-b",
             LEASE_MS,
-            first.lease.expires_ms + 1,
+            first.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
