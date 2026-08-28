@@ -47,7 +47,7 @@ export function receiptMatchesOperation(receipt, operation, expectedSdkVersion) 
     && receipt.sdkVersion === expectedSdkVersion
     && Number.isInteger(receipt.status)
     && receipt.status >= 200
-    && receipt.status < 500
+    && receipt.status < 300
     && receipt.method === operation.method
     && pathMatches(operation.route, receipt.path)
     && receipt.beta === (operation.transportQuery === 'beta=true' ? 'true' : null)
@@ -61,16 +61,17 @@ export function assertOwnerOperationReceipts(manifest, owner, receipts, expected
     'operation ownership requires one exact SDK version',
   );
   const expected = manifest.filter((entry) => entry.owner === owner && entry.method);
-  for (const operation of expected) {
-    assert.ok(
-      receipts.some((receipt) => receiptMatchesOperation(
+  const missing = expected.filter(
+    (operation) => !receipts.some((receipt) => receiptMatchesOperation(
         receipt,
         operation,
         expectedSdkVersion,
       )),
-      `${owner}: no official SDK runtime receipt for ${operation.sdkMethod} `
-        + `${operation.method} ${operation.route} from SDK ${expectedSdkVersion}`,
-    );
-  }
+  );
+  assert.deepEqual(
+    missing.map(({ sdkMethod, method, route }) => `${sdkMethod} ${method} ${route}`),
+    [],
+    `${owner}: operations without one successful official SDK ${expectedSdkVersion} response`,
+  );
   return expected.length;
 }

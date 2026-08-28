@@ -58,7 +58,7 @@ evidence from drifting from the external expectation:
   declarations; unrelated Messages/Organization modules remain outside the
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
-  real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
+  real-process owner and records successful 2xx official-SDK HTTP exchanges.
   It projects the same owner graph over all 99/114/127 HTTP operations exposed
   by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
   four helpers for every admitted candidate. A package-selection hook resolves unchanged
@@ -204,7 +204,7 @@ side effects, cursor traversal, rejected mutations, missing/deleted identities,
 immutable version archives, cross-root identity, and a real process restart over
 one durable store, including Session/Event, Memory, File, and Skill recovery.
 A shared transport receipt encoder requires every discovered
-Beta Files/Skills operation to reach a real non-5xx resource response with its
+Beta Files/Skills operation to reach a successful 2xx resource response with its
 exact method, route, selector, capability, and official-SDK marker; 401/403
 policy failures cannot impersonate resource-owner coverage. The runner also
 executes every webhook parser exposed by that SDK. Changes in the Managed

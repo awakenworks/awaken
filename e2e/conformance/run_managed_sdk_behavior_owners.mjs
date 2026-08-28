@@ -120,6 +120,7 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_SKILLS_PROJECTION: skillsProjection,
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
+        AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',
         NODE_OPTIONS: RECEIPT_NODE_OPTIONS,
       },
       stdio: ['inherit', 'pipe', 'pipe'],
@@ -195,6 +196,7 @@ function assertExactSdkResolution(owner, resolutionFile) {
 // SDK-surface checks run immediately before this gate; the receipts prove those
 // attributed calls execute from the selected SDK rather than merely exist.
 let receiptCount = 0;
+const ownerFailures = [];
 const executableDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-binaries-'));
 try {
   const snapshotExecutable = (source) => {
@@ -216,20 +218,31 @@ try {
       console.log(`[managed-sdk ${index + 1}/${owners.length}] ${owner}`);
       const receiptFile = resolve(receiptDirectory, `${index}.jsonl`);
       const resolutionFile = resolve(receiptDirectory, `${index}.resolution.jsonl`);
-      await executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment);
-      assertExactSdkResolution(owner, resolutionFile);
-      receiptCount += assertOwnerOperationReceipts(
-        behaviorManifest,
-        owner,
-        loadReceipts(receiptFile),
-        sdkVersion,
-      );
+      try {
+        await executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment);
+        assertExactSdkResolution(owner, resolutionFile);
+        receiptCount += assertOwnerOperationReceipts(
+          behaviorManifest,
+          owner,
+          loadReceipts(receiptFile),
+          sdkVersion,
+        );
+      } catch (error) {
+        ownerFailures.push(error);
+      }
     }
   } finally {
     rmSync(receiptDirectory, { recursive: true, force: true });
   }
 } finally {
   rmSync(executableDirectory, { recursive: true, force: true });
+}
+
+if (ownerFailures.length > 0) {
+  throw new AggregateError(
+    ownerFailures,
+    `${ownerFailures.length} Managed SDK behavior owner(s) failed for ${sdkVersion}`,
+  );
 }
 
 console.log(

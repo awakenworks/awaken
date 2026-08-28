@@ -142,6 +142,27 @@ impl awaken_runtime_contract::llm::LlmExecutor for DreamScenarioModel {
         use awaken_agent_contract::agent::message::Role;
         use awaken_runtime_contract::llm::{AssistantOutput, ChatResponse, ToolCall};
 
+        // The process-level SDK conformance scenario needs one deterministic
+        // Running Dream so it can observe the prepared transcript and exercise
+        // cancellation without racing this deliberately fast scripted model.
+        // Delay only the first inference: the marker remains in conversation
+        // history, so delaying every turn would turn one cause into an accidental
+        // multi-turn timeout and obscure the cancellation behavior under test.
+        if request
+            .messages
+            .last()
+            .is_some_and(|message| message.role != Role::Tool)
+            && request.messages.iter().any(|message| {
+                awaken_runtime_host::block_text(&message.content)
+                    .contains("[awaken-test:hold-dream-for-cancellation]")
+            })
+        {
+            // Bounded below the Session terminal-quiescence deadline: a broken
+            // cancellation delivery can still settle naturally instead of
+            // stranding the process fixture forever.
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+
         let is_dream = request.messages.iter().any(|message| {
             message.role == Role::User
                 && awaken_runtime_host::block_text(&message.content).contains("[dream-job:")

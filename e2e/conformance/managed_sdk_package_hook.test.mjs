@@ -114,7 +114,7 @@ test('candidate behavior replay cannot opt into the historical subset rule', () 
   assert.match(result.stderr, /candidate SDK cannot use the historical operation-subset rule/u);
 });
 
-test('version-projected GA capability inputs form one closed boolean domain', () => {
+test('version-projected capability inputs form one closed boolean domain', () => {
   // Configuration fault partition: the owner runner emits only `0` or `1` for
   // SDK-derived GA availability. A typo or ad-hoc boolean spelling must fail at
   // module admission before a server starts; otherwise a historical SDK could
@@ -122,6 +122,7 @@ test('version-projected GA capability inputs form one closed boolean domain', ()
   for (const [script, variable, pattern] of [
     ['management_files_models_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_FILES', /GA Files capability/u],
     ['management_skills_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_SKILLS', /GA Skills capability/u],
+    ['managed_dream_e2e.ts', 'AWAKEN_MANAGED_SDK_HAS_DREAMS', /Dreams capability/u],
   ]) {
     const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', script)], {
       encoding: 'utf8',

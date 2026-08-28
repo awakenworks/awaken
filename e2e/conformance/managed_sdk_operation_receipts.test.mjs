@@ -81,16 +81,21 @@ test('an adjacent SDK version cannot satisfy executable ownership', () => {
   assert.equal(receiptMatchesOperation(betaReceipt, betaOperation, '0.122.0'), false);
 });
 
-test('a request attempt without one non-server-fault response is not behavior evidence', () => {
-  // Cause/effect partitions: no response, a 2xx/4xx application response, and
-  // a 5xx server fault. Only a completed non-5xx exchange proves the SDK crossed
-  // the product boundary; an attempted or failed transport cannot certify it.
+test('only a successful application response is positive operation evidence', () => {
+  // Cause/effect partitions: no response, a 2xx success, a 4xx application
+  // rejection, and a 5xx server fault. Only 2xx proves the advertised operation
+  // can complete. Error taxonomy has its own differential matrix, so accepting
+  // 4xx here would let an implementation reject every call while appearing to
+  // implement the entire SDK surface.
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, status: undefined }, betaOperation, sdkVersion,
   ), false);
   assert.equal(receiptMatchesOperation(
-    { ...betaReceipt, status: 404 }, betaOperation, sdkVersion,
+    { ...betaReceipt, status: 200 }, betaOperation, sdkVersion,
   ), true);
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, status: 404 }, betaOperation, sdkVersion,
+  ), false);
   assert.equal(receiptMatchesOperation(
     { ...betaReceipt, status: 500 }, betaOperation, sdkVersion,
   ), false);
@@ -112,6 +117,12 @@ test('owner qualification fails closed for every missing runtime edge', () => {
     () => assertOwnerOperationReceipts(manifest, 'files.mjs', [betaReceipt], sdkVersion),
     /files\.retrieveMetadata/u,
     'R2',
+  );
+  assert.throws(
+    () => assertOwnerOperationReceipts(manifest, 'files.mjs', [], sdkVersion),
+    (error) => error.message.includes('beta.files.retrieveMetadata')
+      && error.message.includes('files.retrieveMetadata'),
+    'R2 reports every missing edge in one run',
   );
 });
 
@@ -167,7 +178,7 @@ test('in-process and child-process receipt collection share one encoder', async 
   // same request/response coordinates or one proof path could accept behavior
   // rejected by the other. The wrapper also must return the original Response
   // object so instrumentation cannot change SDK decoding semantics.
-  const response = new Response('{}', { status: 409 });
+  const response = new Response('{}', { status: 200 });
   const receipts = [];
   const input = new Request('https://managed.invalid/v1/files/file_1?beta=true', {
     headers: {
@@ -180,7 +191,7 @@ test('in-process and child-process receipt collection share one encoder', async 
   const fetch = recordingFetch(async () => response, (receipt) => receipts.push(receipt));
   assert.equal(await fetch(input), response, 'instrumentation preserves response identity');
   assert.deepEqual(receipts, [managedSdkReceipt(input, undefined, response)]);
-  assert.deepEqual(receipts[0], { ...betaReceipt, status: 409 });
+  assert.deepEqual(receipts[0], { ...betaReceipt, status: 200 });
   assert.ok(!JSON.stringify(receipts).includes('must-not-leak'), 'credential non-interference');
 });
 
