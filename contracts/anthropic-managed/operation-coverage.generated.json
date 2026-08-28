@@ -1,14 +1,25 @@
 {
   "operations": [
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.archive",
       "method": "POST",
@@ -18,17 +29,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.create",
       "method": "POST",
@@ -38,17 +61,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.list",
       "method": "GET",
@@ -58,17 +93,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.retrieve",
       "method": "GET",
@@ -78,17 +125,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.update",
       "method": "POST",
@@ -98,17 +157,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.agents.versions.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.agents.versions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.agents.versions.list",
       "method": "GET",
@@ -118,17 +189,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deploymentRuns.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deploymentRuns.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deploymentRuns.list",
       "method": "GET",
@@ -138,17 +221,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deploymentRuns.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deploymentRuns.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deploymentRuns.retrieve",
       "method": "GET",
@@ -158,17 +253,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.archive",
       "method": "POST",
@@ -178,17 +285,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.create",
       "method": "POST",
@@ -198,17 +317,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.list",
       "method": "GET",
@@ -218,17 +349,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.pause.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.pause.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.pause",
       "method": "POST",
@@ -238,17 +381,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.retrieve",
       "method": "GET",
@@ -258,17 +413,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.run.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.run.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.run",
       "method": "POST",
@@ -278,17 +445,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.unpause.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.unpause.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.unpause",
       "method": "POST",
@@ -298,17 +477,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.deployments.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.deployments.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.deployments.update",
       "method": "POST",
@@ -318,16 +509,28 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "dreaming-2026-04-21"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.dreams.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.archive",
       "method": "POST",
@@ -336,16 +539,28 @@
       "sdk_anchors": [
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "dreaming-2026-04-21"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.dreams.cancel.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.cancel.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.cancel",
       "method": "POST",
@@ -354,16 +569,28 @@
       "sdk_anchors": [
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "dreaming-2026-04-21"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.dreams.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.create",
       "method": "POST",
@@ -372,16 +599,28 @@
       "sdk_anchors": [
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "dreaming-2026-04-21"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.dreams.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.list",
       "method": "GET",
@@ -390,16 +629,28 @@
       "sdk_anchors": [
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "dreaming-2026-04-21"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.dreams.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.dreams.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.dreams.retrieve",
       "method": "GET",
@@ -408,17 +659,29 @@
       "sdk_anchors": [
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.archive",
       "method": "POST",
@@ -428,17 +691,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.create",
       "method": "POST",
@@ -448,17 +723,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.delete",
       "method": "DELETE",
@@ -468,17 +755,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.list",
       "method": "GET",
@@ -488,17 +787,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.retrieve",
       "method": "GET",
@@ -508,17 +819,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.update",
       "method": "POST",
@@ -528,17 +851,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.ack.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.ack.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.ack",
       "method": "POST",
@@ -548,17 +883,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.heartbeat.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.heartbeat.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.heartbeat",
       "method": "POST",
@@ -568,17 +915,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.list",
       "method": "GET",
@@ -588,17 +947,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.poll.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.poll.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.poll",
       "method": "GET",
@@ -608,17 +979,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.retrieve",
       "method": "GET",
@@ -628,17 +1011,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.stats.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.stats.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.stats",
       "method": "GET",
@@ -648,17 +1043,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.stop.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.stop.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.stop",
       "method": "POST",
@@ -668,17 +1075,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.environments.work.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.environments.work.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.environments.work.update",
       "method": "POST",
@@ -688,17 +1107,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "files-api-2025-04-14"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.files.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.delete",
       "method": "DELETE",
@@ -708,17 +1139,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "files-api-2025-04-14"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.files.download.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.download.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.download",
       "method": "GET",
@@ -728,17 +1171,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "files-api-2025-04-14"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.files.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.list",
       "method": "GET",
@@ -748,17 +1203,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "files-api-2025-04-14"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.files.retrieveMetadata.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.retrieveMetadata.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.retrieveMetadata",
       "method": "GET",
@@ -768,17 +1235,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "files-api-2025-04-14"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.files.upload.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.files.upload.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.files.upload",
       "method": "POST",
@@ -788,17 +1267,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.archive",
       "method": "POST",
@@ -808,17 +1299,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.create",
       "method": "POST",
@@ -828,17 +1331,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.delete",
       "method": "DELETE",
@@ -848,17 +1363,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.list",
       "method": "GET",
@@ -868,17 +1395,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memories.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.create",
       "method": "POST",
@@ -888,17 +1427,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memories.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.delete",
       "method": "DELETE",
@@ -908,17 +1459,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memories.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.list",
       "method": "GET",
@@ -928,17 +1491,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memories.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.retrieve",
       "method": "GET",
@@ -948,17 +1523,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memories.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memories.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memories.update",
       "method": "POST",
@@ -968,17 +1555,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memoryVersions.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.list",
       "method": "GET",
@@ -988,17 +1587,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memoryVersions.redact.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.redact.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.redact",
       "method": "POST",
@@ -1008,17 +1619,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.memoryVersions.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.memoryVersions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.memoryVersions.retrieve",
       "method": "GET",
@@ -1028,17 +1651,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.retrieve",
       "method": "GET",
@@ -1048,17 +1683,29 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.memoryStores.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.memoryStores.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.memoryStores.update",
       "method": "POST",
@@ -1068,19 +1715,1986 @@
         "oldest",
         "user_profiles_legacy",
         "current"
-      ]
+      ],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.models.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "beta.models.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
       "id": "beta.models.list",
+      "method": "GET",
+      "path": "/v1/models",
+      "resource": "models",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.models.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.models.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.models.retrieve",
+      "method": "GET",
+      "path": "/v1/models/{}",
+      "resource": "models",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.archive",
+      "method": "POST",
+      "path": "/v1/sessions/{}/archive",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.create",
+      "method": "POST",
+      "path": "/v1/sessions",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.delete",
+      "method": "DELETE",
+      "path": "/v1/sessions/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.events.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.events.list",
+      "method": "GET",
+      "path": "/v1/sessions/{}/events",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.events.send.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.send.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.events.send",
+      "method": "POST",
+      "path": "/v1/sessions/{}/events",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.events.stream.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.events.stream.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.events.stream",
+      "method": "GET",
+      "path": "/v1/sessions/{}/events/stream",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.list",
+      "method": "GET",
+      "path": "/v1/sessions",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.resources.add.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.add.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.resources.add",
+      "method": "POST",
+      "path": "/v1/sessions/{}/resources",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.resources.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.resources.delete",
+      "method": "DELETE",
+      "path": "/v1/sessions/{}/resources/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.resources.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.resources.list",
+      "method": "GET",
+      "path": "/v1/sessions/{}/resources",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.resources.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.resources.retrieve",
+      "method": "GET",
+      "path": "/v1/sessions/{}/resources/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.resources.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.resources.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.resources.update",
+      "method": "POST",
+      "path": "/v1/sessions/{}/resources/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.retrieve",
+      "method": "GET",
+      "path": "/v1/sessions/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.threads.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.threads.archive",
+      "method": "POST",
+      "path": "/v1/sessions/{}/threads/{}/archive",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.threads.events.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.events.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.threads.events.list",
+      "method": "GET",
+      "path": "/v1/sessions/{}/threads/{}/events",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.threads.events.stream.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.events.stream.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.threads.events.stream",
+      "method": "GET",
+      "path": "/v1/sessions/{}/threads/{}/stream",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.threads.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.threads.list",
+      "method": "GET",
+      "path": "/v1/sessions/{}/threads",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.threads.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.threads.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.threads.retrieve",
+      "method": "GET",
+      "path": "/v1/sessions/{}/threads/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.sessions.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.sessions.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.sessions.update",
+      "method": "POST",
+      "path": "/v1/sessions/{}",
+      "resource": "sessions",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.create",
+      "method": "POST",
+      "path": "/v1/skills",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.delete",
+      "method": "DELETE",
+      "path": "/v1/skills/{}",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.list",
+      "method": "GET",
+      "path": "/v1/skills",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.retrieve",
+      "method": "GET",
+      "path": "/v1/skills/{}",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.versions.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.versions.create",
+      "method": "POST",
+      "path": "/v1/skills/{}/versions",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.versions.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.versions.delete",
+      "method": "DELETE",
+      "path": "/v1/skills/{}/versions/{}",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.versions.download.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.download.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.versions.download",
+      "method": "GET",
+      "path": "/v1/skills/{}/versions/{}/content",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.versions.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.versions.list",
+      "method": "GET",
+      "path": "/v1/skills/{}/versions",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "skills-2025-10-02"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.skills.versions.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.skills.versions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.skills.versions.retrieve",
+      "method": "GET",
+      "path": "/v1/skills/{}/versions/{}",
+      "resource": "skills",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.archive",
+      "method": "POST",
+      "path": "/v1/tunnels/{}/archive",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.certificates.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.certificates.archive",
+      "method": "POST",
+      "path": "/v1/tunnels/{}/certificates/{}/archive",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.certificates.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.certificates.create",
+      "method": "POST",
+      "path": "/v1/tunnels/{}/certificates",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.certificates.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.certificates.list",
+      "method": "GET",
+      "path": "/v1/tunnels/{}/certificates",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.certificates.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.certificates.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.certificates.retrieve",
+      "method": "GET",
+      "path": "/v1/tunnels/{}/certificates/{}",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.create",
+      "method": "POST",
+      "path": "/v1/tunnels",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.list",
+      "method": "GET",
+      "path": "/v1/tunnels",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.retrieve",
+      "method": "GET",
+      "path": "/v1/tunnels/{}",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.revealToken.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.revealToken.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.revealToken",
+      "method": "POST",
+      "path": "/v1/tunnels/{}/reveal_token",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "mcp-tunnels-2026-06-22"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.tunnels.rotateToken.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.tunnels.rotateToken.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.tunnels.rotateToken",
+      "method": "POST",
+      "path": "/v1/tunnels/{}/rotate_token",
+      "resource": "tunnels",
+      "sdk_anchors": [
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "user-profiles-2026-08-18"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.userProfiles.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.userProfiles.create",
+      "method": "POST",
+      "path": "/v1/user_profiles",
+      "resource": "userProfiles",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "user-profiles-2026-08-18"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.userProfiles.createEnrollmentURL.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.createEnrollmentURL.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.userProfiles.createEnrollmentURL",
+      "method": "POST",
+      "path": "/v1/user_profiles/{}/enrollment_url",
+      "resource": "userProfiles",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "user-profiles-2026-08-18"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.userProfiles.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.userProfiles.list",
+      "method": "GET",
+      "path": "/v1/user_profiles",
+      "resource": "userProfiles",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "user-profiles-2026-08-18"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.userProfiles.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.userProfiles.retrieve",
+      "method": "GET",
+      "path": "/v1/user_profiles/{}",
+      "resource": "userProfiles",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "user-profiles-2026-08-18"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.userProfiles.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.userProfiles.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.userProfiles.update",
+      "method": "POST",
+      "path": "/v1/user_profiles/{}",
+      "resource": "userProfiles",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.archive",
+      "method": "POST",
+      "path": "/v1/vaults/{}/archive",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.create",
+      "method": "POST",
+      "path": "/v1/vaults",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.archive.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.archive",
+      "method": "POST",
+      "path": "/v1/vaults/{}/credentials/{}/archive",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.create",
+      "method": "POST",
+      "path": "/v1/vaults/{}/credentials",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.delete",
+      "method": "DELETE",
+      "path": "/v1/vaults/{}/credentials/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.list",
+      "method": "GET",
+      "path": "/v1/vaults/{}/credentials",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.mcpOAuthValidate.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.mcpOAuthValidate.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.mcpOAuthValidate",
+      "method": "POST",
+      "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.retrieve",
+      "method": "GET",
+      "path": "/v1/vaults/{}/credentials/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.credentials.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.credentials.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.credentials.update",
+      "method": "POST",
+      "path": "/v1/vaults/{}/credentials/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.delete",
+      "method": "DELETE",
+      "path": "/v1/vaults/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.list",
+      "method": "GET",
+      "path": "/v1/vaults",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.retrieve",
+      "method": "GET",
+      "path": "/v1/vaults/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [
+        "managed-agents-2026-04-01"
+      ],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "beta.vaults.update.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "beta.vaults.update.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "beta.vaults.update",
+      "method": "POST",
+      "path": "/v1/vaults/{}",
+      "resource": "vaults",
+      "sdk_anchors": [
+        "oldest",
+        "user_profiles_legacy",
+        "current"
+      ],
+      "transport_query": "beta=true"
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "files.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "files.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "files.delete",
+      "method": "DELETE",
+      "path": "/v1/files/{}",
+      "resource": "files",
+      "sdk_anchors": [
+        "current"
+      ]
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "files.download.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "files.download.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "files.download",
+      "method": "GET",
+      "path": "/v1/files/{}/content",
+      "resource": "files",
+      "sdk_anchors": [
+        "current"
+      ]
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "files.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "files.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "files.list",
+      "method": "GET",
+      "path": "/v1/files",
+      "resource": "files",
+      "sdk_anchors": [
+        "current"
+      ]
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "files.retrieveMetadata.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "files.retrieveMetadata.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "files.retrieveMetadata",
+      "method": "GET",
+      "path": "/v1/files/{}",
+      "resource": "files",
+      "sdk_anchors": [
+        "current"
+      ]
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "files.upload.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "files.upload.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "files.upload",
+      "method": "POST",
+      "path": "/v1/files",
+      "resource": "files",
+      "sdk_anchors": [
+        "current"
+      ]
+    },
+    {
+      "betas": [],
+      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "models.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
+        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
+        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "sdk_surface_compile": [
+          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
+          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
+        ],
+        "sdk_transport": {
+          "case_id": "models.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
+      },
+      "id": "models.list",
       "method": "GET",
       "path": "/v1/models",
       "resource": "models",
@@ -1091,16 +3705,25 @@
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "models.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "models.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.models.retrieve",
+      "id": "models.retrieve",
       "method": "GET",
       "path": "/v1/models/{}",
       "resource": "models",
@@ -1111,1134 +3734,266 @@
       ]
     },
     {
+      "betas": [],
       "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.archive",
-      "method": "POST",
-      "path": "/v1/sessions/{}/archive",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.create",
-      "method": "POST",
-      "path": "/v1/sessions",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.delete",
-      "method": "DELETE",
-      "path": "/v1/sessions/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.events.list",
-      "method": "GET",
-      "path": "/v1/sessions/{}/events",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.events.send",
-      "method": "POST",
-      "path": "/v1/sessions/{}/events",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.events.stream",
-      "method": "GET",
-      "path": "/v1/sessions/{}/events/stream",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.list",
-      "method": "GET",
-      "path": "/v1/sessions",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.resources.add",
-      "method": "POST",
-      "path": "/v1/sessions/{}/resources",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.resources.delete",
-      "method": "DELETE",
-      "path": "/v1/sessions/{}/resources/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.resources.list",
-      "method": "GET",
-      "path": "/v1/sessions/{}/resources",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.resources.retrieve",
-      "method": "GET",
-      "path": "/v1/sessions/{}/resources/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.resources.update",
-      "method": "POST",
-      "path": "/v1/sessions/{}/resources/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.retrieve",
-      "method": "GET",
-      "path": "/v1/sessions/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.threads.archive",
-      "method": "POST",
-      "path": "/v1/sessions/{}/threads/{}/archive",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.threads.events.list",
-      "method": "GET",
-      "path": "/v1/sessions/{}/threads/{}/events",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.threads.events.stream",
-      "method": "GET",
-      "path": "/v1/sessions/{}/threads/{}/stream",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.threads.list",
-      "method": "GET",
-      "path": "/v1/sessions/{}/threads",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.threads.retrieve",
-      "method": "GET",
-      "path": "/v1/sessions/{}/threads/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.sessions.update",
-      "method": "POST",
-      "path": "/v1/sessions/{}",
-      "resource": "sessions",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.create",
+      "id": "skills.create",
       "method": "POST",
       "path": "/v1/skills",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.delete",
+      "id": "skills.delete",
       "method": "DELETE",
       "path": "/v1/skills/{}",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.list",
+      "id": "skills.list",
       "method": "GET",
       "path": "/v1/skills",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.retrieve",
+      "id": "skills.retrieve",
       "method": "GET",
       "path": "/v1/skills/{}",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.versions.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.versions.create.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.versions.create",
+      "id": "skills.versions.create",
       "method": "POST",
       "path": "/v1/skills/{}/versions",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.versions.delete.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.versions.delete.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.versions.delete",
+      "id": "skills.versions.delete",
       "method": "DELETE",
       "path": "/v1/skills/{}/versions/{}",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.versions.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.versions.list.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.versions.download",
-      "method": "GET",
-      "path": "/v1/skills/{}/versions/{}/content",
-      "resource": "skills",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.skills.versions.list",
+      "id": "skills.versions.list",
       "method": "GET",
       "path": "/v1/skills/{}/versions",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "skills.versions.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
         "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
+        ],
+        "sdk_transport": {
+          "case_id": "skills.versions.retrieve.transport.current",
+          "owner": "packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts"
+        }
       },
-      "id": "beta.skills.versions.retrieve",
+      "id": "skills.versions.retrieve",
       "method": "GET",
       "path": "/v1/skills/{}/versions/{}",
       "resource": "skills",
       "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
         "current"
       ]
     },
     {
+      "betas": [
+        "skills-2025-10-02"
+      ],
       "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.archive",
-      "method": "POST",
-      "path": "/v1/tunnels/{}/archive",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.certificates.archive",
-      "method": "POST",
-      "path": "/v1/tunnels/{}/certificates/{}/archive",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.certificates.create",
-      "method": "POST",
-      "path": "/v1/tunnels/{}/certificates",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.certificates.list",
-      "method": "GET",
-      "path": "/v1/tunnels/{}/certificates",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.certificates.retrieve",
-      "method": "GET",
-      "path": "/v1/tunnels/{}/certificates/{}",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.create",
-      "method": "POST",
-      "path": "/v1/tunnels",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.list",
-      "method": "GET",
-      "path": "/v1/tunnels",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.retrieve",
-      "method": "GET",
-      "path": "/v1/tunnels/{}",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.revealToken",
-      "method": "POST",
-      "path": "/v1/tunnels/{}/reveal_token",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.tunnels.rotateToken",
-      "method": "POST",
-      "path": "/v1/tunnels/{}/rotate_token",
-      "resource": "tunnels",
-      "sdk_anchors": [
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.userProfiles.create",
-      "method": "POST",
-      "path": "/v1/user_profiles",
-      "resource": "userProfiles",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.userProfiles.createEnrollmentURL",
-      "method": "POST",
-      "path": "/v1/user_profiles/{}/enrollment_url",
-      "resource": "userProfiles",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.userProfiles.list",
-      "method": "GET",
-      "path": "/v1/user_profiles",
-      "resource": "userProfiles",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.userProfiles.retrieve",
-      "method": "GET",
-      "path": "/v1/user_profiles/{}",
-      "resource": "userProfiles",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.userProfiles.update",
-      "method": "POST",
-      "path": "/v1/user_profiles/{}",
-      "resource": "userProfiles",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.archive",
-      "method": "POST",
-      "path": "/v1/vaults/{}/archive",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.create",
-      "method": "POST",
-      "path": "/v1/vaults",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.archive",
-      "method": "POST",
-      "path": "/v1/vaults/{}/credentials/{}/archive",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.create",
-      "method": "POST",
-      "path": "/v1/vaults/{}/credentials",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.delete",
-      "method": "DELETE",
-      "path": "/v1/vaults/{}/credentials/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.list",
-      "method": "GET",
-      "path": "/v1/vaults/{}/credentials",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.mcpOAuthValidate",
-      "method": "POST",
-      "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.retrieve",
-      "method": "GET",
-      "path": "/v1/vaults/{}/credentials/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.credentials.update",
-      "method": "POST",
-      "path": "/v1/vaults/{}/credentials/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.delete",
-      "method": "DELETE",
-      "path": "/v1/vaults/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.list",
-      "method": "GET",
-      "path": "/v1/vaults",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.retrieve",
-      "method": "GET",
-      "path": "/v1/vaults/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
-        "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
-        "sdk_surface_compile": [
-          "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
-          "packages/managed-sdk-oracle/fixtures/generated/current.ts"
-        ]
-      },
-      "id": "beta.vaults.update",
-      "method": "POST",
-      "path": "/v1/vaults/{}",
-      "resource": "vaults",
-      "sdk_anchors": [
-        "oldest",
-        "user_profiles_legacy",
-        "current"
-      ]
-    },
-    {
-      "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.skills.versions.retrieveFile.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.skills.versions.retrieveFile",
       "method": "GET",
       "path": "/v1/skills/{}/versions/{}/files/{}",
       "resource": "skills",
-      "sdk_anchors": []
+      "sdk_anchors": [],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "agent-memory-2026-07-22"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.memoryStores.memories.patch.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.memoryStores.memories.patch",
       "method": "PATCH",
       "path": "/v1/memory_stores/{}/memories/{}",
       "resource": "memoryStores",
-      "sdk_anchors": []
+      "sdk_anchors": [],
+      "transport_query": "beta=true"
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.create",
       "method": "POST",
@@ -2247,10 +4002,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.list",
       "method": "GET",
@@ -2259,10 +4024,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.retrieve",
       "method": "GET",
@@ -2271,10 +4046,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.archive",
       "method": "POST",
@@ -2283,10 +4068,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.revealToken.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.revealToken",
       "method": "POST",
@@ -2295,10 +4090,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.rotateToken.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.rotateToken",
       "method": "POST",
@@ -2307,10 +4112,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.certificates.create.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.create",
       "method": "POST",
@@ -2319,10 +4134,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.certificates.list.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.list",
       "method": "GET",
@@ -2331,10 +4156,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.certificates.retrieve.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.retrieve",
       "method": "GET",
@@ -2343,10 +4178,20 @@
       "sdk_anchors": []
     },
     {
+      "betas": [
+        "mcp-tunnels-2026-05-19"
+      ],
       "evidence": {
+        "deployed_route_semantics": {
+          "case_id": "documented.organizationTunnels.certificates.archive.deployed.actual-reference",
+          "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
+        },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
-        "sdk_surface_compile": []
+        "sdk_surface_compile": [],
+        "sdk_transport": {
+          "not_applicable": "sdk_absent_documented_route"
+        }
       },
       "id": "documented.organizationTunnels.certificates.archive",
       "method": "POST",

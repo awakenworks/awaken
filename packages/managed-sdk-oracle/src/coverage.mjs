@@ -5,6 +5,7 @@ import path from 'node:path';
 export function resourceOf(operation) {
   const parts = operation.id.split('.');
   if (parts[0] === 'beta') return parts[1];
+  if (['files', 'models', 'skills'].includes(parts[0])) return parts[0];
   if (parts[0] === 'documented') {
     return parts[1] === 'organizationTunnels' ? 'tunnels' : parts[1];
   }
@@ -52,15 +53,28 @@ export function operationCoverage({
       .filter(({ operations: anchorOperations }) =>
         anchorOperations.some(({ id }) => id === operation.id))
       .map(({ id }) => id);
+    const sdkTransport = !operation.id.startsWith('documented.')
+      ? {
+          case_id: `${operation.id}.transport.current`,
+          owner: 'packages/managed-sdk-oracle/test/sdk-wire-lifecycle.test.ts',
+        }
+      : { not_applicable: 'sdk_absent_documented_route' };
     return {
       id: operation.id,
       method: operation.method,
       path: operation.path,
+      betas: operation.betas ?? [],
+      ...(operation.transport_query ? { transport_query: operation.transport_query } : {}),
       resource,
       sdk_anchors: sdkAnchors,
       evidence: {
+        deployed_route_semantics: {
+          case_id: `${operation.id}.deployed.actual-reference`,
+          owner: 'packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs',
+        },
         route_inventory: 'scripts/ci/_managed_protocol_boundary.py',
         rust_behavior: rustBehavior,
+        sdk_transport: sdkTransport,
         sdk_surface_compile: sdkAnchors.map(
           (id) => `packages/managed-sdk-oracle/fixtures/generated/${id}.ts`,
         ),
