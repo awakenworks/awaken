@@ -925,29 +925,32 @@ impl DreamApplication {
             }
         };
         let terminal_job = match self.commit_job_update(&id, |job| {
+            // Cancel is an absorbing terminal transition. The cancel command
+            // owns resource cleanup and clears `cleanup_pending` only after it
+            // succeeds. A worker future that resolves after that command must
+            // neither publish another terminal nor resurrect cleanup intent.
+            if job.status == DreamStatus::Canceled || cancellation.is_canceled() {
+                return Ok(());
+            }
             match &result {
                 Ok(()) => {
-                    if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
-                        job.status = job
-                            .status
-                            .transition(DreamStatusEvent::Complete)
-                            .ok_or_else(|| {
-                                DreamApiError::Conflict("only a running Dream can complete".into())
-                            })?;
-                        job.ended_at = Some(now_ms());
-                    }
+                    job.status = job
+                        .status
+                        .transition(DreamStatusEvent::Complete)
+                        .ok_or_else(|| {
+                            DreamApiError::Conflict("only a running Dream can complete".into())
+                        })?;
+                    job.ended_at = Some(now_ms());
                 }
                 Err(error) => {
-                    if job.status != DreamStatus::Canceled && !cancellation.is_canceled() {
-                        job.status =
-                            job.status
-                                .transition(DreamStatusEvent::Fail)
-                                .ok_or_else(|| {
-                                    DreamApiError::Conflict("only a running Dream can fail".into())
-                                })?;
-                        job.error = Some(error.clone());
-                        job.ended_at = Some(now_ms());
-                    }
+                    job.status =
+                        job.status
+                            .transition(DreamStatusEvent::Fail)
+                            .ok_or_else(|| {
+                                DreamApiError::Conflict("only a running Dream can fail".into())
+                            })?;
+                    job.error = Some(error.clone());
+                    job.ended_at = Some(now_ms());
                 }
             }
             job.cleanup_pending = !cleanup_completed;
@@ -962,6 +965,10 @@ impl DreamApplication {
                 return;
             }
         };
+        if terminal_job.status == DreamStatus::Canceled || cancellation.is_canceled() {
+            self.cancellations.lock().unwrap().remove(&id);
+            return;
+        }
         if terminal_job.status == DreamStatus::Completed
             && let Some(key) = &terminal_job.policy_key
         {
