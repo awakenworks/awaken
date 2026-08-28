@@ -3,17 +3,25 @@
 
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import http from 'node:http';
 import https from 'node:https';
 
-import { loadQualifiedClients, qualifiedClient } from './clients.mjs';
+import {
+  currentAndCandidateClients,
+  loadConformanceClients,
+  qualifiedClient,
+} from './clients.mjs';
+import { officialBetaResourceProjection } from './resource-projection.mjs';
 import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
+import { extractOperationsFromPackageRoot } from '../extract-operations.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
 const FILE_BETAS = [...BETAS, 'files-api-2025-04-14'];
 const TUNNEL_BETAS = ['mcp-tunnels-2026-06-22'];
 const LEGACY_TUNNEL_BETA = 'mcp-tunnels-2026-05-19';
+const SCOPE = JSON.parse(fs.readFileSync(new URL('../../config/scope.json', import.meta.url), 'utf8'));
 // Test-only public CA. The private key is not retained; the certificate has
 // critical CA:TRUE, keyCertSign, SKI, P-256 and SHA-256, matching the public
 // Tunnel admission policy through 2036-08-15.
@@ -29,7 +37,7 @@ CeFKdLr8W7pyoxEwCgYIKoZIzj0EAwIDSAAwRQIgS4B6fQj5UHT+4K9gknAevKBq
 8k0PPK18p/elo3zGUcwCIQDZxbSfMgPw97DvxbmjL+NLlXlclN+jg/3u+XSbsuno
 9Q==
 -----END CERTIFICATE-----`;
-const clients = await loadQualifiedClients();
+const clients = await loadConformanceClients();
 const baseURL = process.env.AWAKEN_MANAGED_BASE_URL;
 const apiKey = process.env.AWAKEN_MANAGED_API_KEY;
 const tunnelAccessToken = process.env.AWAKEN_MANAGED_TUNNEL_ACCESS_TOKEN;
@@ -239,7 +247,6 @@ async function exercise(version, Client, toFile) {
   const client = new Client({ apiKey, baseURL });
   const file = await client.beta.files.upload({
     file: await toFile(Buffer.from(`cloud-sdk-matrix-file-${version}`), `matrix-${version}.txt`),
-    betas: FILE_BETAS,
   });
   let session;
   try {
@@ -273,10 +280,10 @@ async function exercise(version, Client, toFile) {
       resources.some((resource) => resource.type === 'file' && resource.file_id === file.id),
       `${version}: Files resource`,
     );
-    const metadata = await client.beta.files.retrieveMetadata(file.id, { betas: FILE_BETAS });
+    const metadata = await client.beta.files.retrieveMetadata(file.id);
     assert.equal(metadata.downloadable, false, `${version}: uploaded Files stay input-only`);
     await assert.rejects(
-      () => client.beta.files.download(file.id, { betas: FILE_BETAS }),
+      () => client.beta.files.download(file.id),
       (error) => error?.status === 400,
       `${version}: input File download fails closed`,
     );
@@ -294,11 +301,58 @@ async function exercise(version, Client, toFile) {
     assert.ok(archived.archived_at, `${version}: archive`);
   } finally {
     if (session) await client.beta.sessions.delete(session.id, { betas: BETAS });
-    await client.beta.files.delete(file.id, { betas: FILE_BETAS });
+    await client.beta.files.delete(file.id);
   }
 }
 
-async function exerciseGa(CurrentClient, toFile) {
+async function exerciseSkillLifecycle(skills, toFile, marker, label, projection) {
+  const definition = (description) => Buffer.from(
+    `---\nname: qualification-${marker}\ndescription: ${description}\n---\n# Qualification\n`,
+  );
+  let skill;
+  let extraVersion;
+  try {
+    skill = await skills.create({
+      ...(projection === 'beta'
+        ? { display_title: `${label} qualification ${marker}` }
+        : { display_name: `${label} qualification ${marker}` }),
+      files: [await toFile(definition('initial'), 'SKILL.md')],
+    });
+    assert.equal((await skills.retrieve(skill.id)).id, skill.id, `${label} Skill retrieve`);
+    assert.ok((await drain(skills.list())).some(({ id }) => id === skill.id), `${label} Skill list`);
+    extraVersion = await skills.versions.create(skill.id, {
+      files: [await toFile(definition('updated'), 'SKILL.md')],
+    });
+    const versionReference = projection === 'beta' ? extraVersion.version : extraVersion.id;
+    assert.equal(
+      projection === 'beta'
+        ? (await skills.versions.retrieve(versionReference, { skill_id: skill.id })).version
+        : (await skills.versions.retrieve(versionReference, { skill_id: skill.id })).id,
+      versionReference,
+      `${label} Skill Version retrieve`,
+    );
+    assert.ok(
+      (await drain(skills.versions.list(skill.id))).some((version) => (
+        (projection === 'beta' ? version.version : version.id) === versionReference
+      )),
+      `${label} Skill Version list`,
+    );
+    assert.equal(
+      (await skills.versions.delete(versionReference, { skill_id: skill.id })).id,
+      versionReference,
+      `${label} Skill Version delete`,
+    );
+    extraVersion = undefined;
+  } finally {
+    if (extraVersion && skill) {
+      const versionReference = projection === 'beta' ? extraVersion.version : extraVersion.id;
+      await skills.versions.delete(versionReference, { skill_id: skill.id });
+    }
+    if (skill) await skills.delete(skill.id);
+  }
+}
+
+async function exerciseGaAndBetaProjection(version, CurrentClient, toFile, betaProjection) {
   const client = new CurrentClient({ apiKey, baseURL });
   const marker = `${Date.now()}-${crypto.randomUUID()}`;
   const modelPage = await drain(client.models.list({ limit: 1 }));
@@ -306,8 +360,6 @@ async function exerciseGa(CurrentClient, toFile) {
   assert.equal((await client.models.retrieve(modelPage[0].id)).id, modelPage[0].id, 'GA Models retrieve');
 
   let file;
-  let skill;
-  let extraVersion;
   try {
     const bytes = Buffer.from(`ga-file-${marker}`);
     file = await client.files.upload({
@@ -327,38 +379,19 @@ async function exerciseGa(CurrentClient, toFile) {
       'GA uploaded File download fails closed',
     );
 
-    const definition = (description) => Buffer.from(
-      `---\nname: qualification-${marker}\ndescription: ${description}\n---\n# Qualification\n`,
+    await exerciseSkillLifecycle(client.skills, toFile, `${marker}-ga`, `${version} GA`, 'ga');
+    // Cause/effect graph: 0.121 injects the legacy Skills capability while
+    // 0.122 keeps beta=true but adopts the GA projection. Hand-authoring a
+    // beta list would mask that generated-code change, so this public-ingress
+    // proof deliberately calls both SDK roots with their defaults.
+    await exerciseSkillLifecycle(
+      client.beta.skills,
+      toFile,
+      `${marker}-beta`,
+      `${version} Beta`,
+      betaProjection,
     );
-    skill = await client.skills.create({
-      display_name: `GA qualification ${marker}`,
-      files: [await toFile(definition('initial'), 'SKILL.md')],
-    });
-    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'GA Skill retrieve');
-    assert.ok((await drain(client.skills.list())).some(({ id }) => id === skill.id), 'GA Skill list');
-    extraVersion = await client.skills.versions.create(skill.id, {
-      files: [await toFile(definition('updated'), 'SKILL.md')],
-    });
-    assert.equal(
-      (await client.skills.versions.retrieve(extraVersion.id, { skill_id: skill.id })).id,
-      extraVersion.id,
-      'GA Skill Version retrieve',
-    );
-    assert.ok(
-      (await drain(client.skills.versions.list(skill.id))).some(({ id }) => id === extraVersion.id),
-      'GA Skill Version list',
-    );
-    assert.equal(
-      (await client.skills.versions.delete(extraVersion.id, { skill_id: skill.id })).id,
-      extraVersion.id,
-      'GA Skill Version delete',
-    );
-    extraVersion = undefined;
   } finally {
-    if (extraVersion && skill) {
-      await client.skills.versions.delete(extraVersion.id, { skill_id: skill.id });
-    }
-    if (skill) await client.skills.delete(skill.id);
     if (file) await client.files.delete(file.id);
   }
 }
@@ -587,18 +620,34 @@ async function exerciseTunnelPublicLifecycle(CurrentClient) {
 const oldest = qualifiedClient(clients, 'oldest_supported');
 const userProfilesLegacy = qualifiedClient(clients, 'protocol_change_point');
 const current = qualifiedClient(clients, 'current_oracle');
+const releaseClients = currentAndCandidateClients(clients).map((client) => ({
+  ...client,
+  betaSkillProjection: officialBetaResourceProjection(
+    extractOperationsFromPackageRoot(client.root, SCOPE).operations,
+    'skills',
+  ).projection,
+}));
 await exerciseVersionSelectionBoundary(oldest, current);
-await exerciseUserProfileChangePoint({
-  profileID: userProfileId,
-  expectedAccessType: userProfileAccessType,
-  legacyClient: new userProfilesLegacy.Client({ apiKey, baseURL }),
-  currentClient: new current.Client({ apiKey, baseURL }),
-});
+for (const releaseClient of releaseClients) {
+  await exerciseUserProfileChangePoint({
+    profileID: userProfileId,
+    expectedAccessType: userProfileAccessType,
+    legacyClient: new userProfilesLegacy.Client({ apiKey, baseURL }),
+    currentClient: new releaseClient.Client({ apiKey, baseURL }),
+  });
+}
 await exerciseIngressHeaderFidelity();
 for (const client of clients) await exercise(client.version, client.Client, client.toFile);
-await exerciseGa(current.Client, current.toFile);
-await exerciseConcurrencyPaginationAndReconnect(current.Client);
-await exerciseTunnelPublicLifecycle(current.Client);
+for (const releaseClient of releaseClients) {
+  await exerciseGaAndBetaProjection(
+    releaseClient.version,
+    releaseClient.Client,
+    releaseClient.toFile,
+    releaseClient.betaSkillProjection,
+  );
+  await exerciseConcurrencyPaginationAndReconnect(releaseClient.Client);
+  await exerciseTunnelPublicLifecycle(releaseClient.Client);
+}
 const referenceValues = [referenceBaseURL, referenceApiKey, referenceTunnelAccessToken];
 assert.ok(
   referenceValues.every(Boolean) || referenceValues.every((value) => !value),

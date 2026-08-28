@@ -109,6 +109,13 @@ export async function loadConformanceClients(
   }];
 }
 
+export function currentAndCandidateClients(clients) {
+  const current = qualifiedClient(clients, 'current_oracle');
+  const candidates = clients.filter(({ role }) => role === 'candidate');
+  assert.ok(candidates.length <= 1, 'expected at most one reviewed candidate SDK client');
+  return [current, ...candidates];
+}
+
 export function qualifiedClient(clients, role) {
   const matches = clients.filter((client) => client.role === role);
   assert.equal(matches.length, 1, `expected exactly one ${role} SDK client`);

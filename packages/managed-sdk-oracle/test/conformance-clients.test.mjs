@@ -5,6 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
+  currentAndCandidateClients,
   installedPackageVersion,
   loadConformanceClients,
   loadQualifiedClients,
@@ -96,6 +97,11 @@ test('a reviewed candidate joins every shared conformance suite without becoming
   assert.equal(clients.length, matrix.length + 1, 'E1');
   assert.equal(clients.at(-1).role, 'candidate', 'E1');
   assert.equal(clients.at(-1).version, candidateVersion, 'E1');
+  assert.deepEqual(
+    currentAndCandidateClients(clients).map(({ role }) => role),
+    ['current_oracle', 'candidate'],
+    'E1: release-depth suites execute current and candidate',
+  );
   assert.deepEqual(readSdkMatrix(), matrix, 'E2');
   await assert.rejects(
     loadConformanceClients(matrix, '@anthropic-ai/sdk', candidateVersion),
@@ -107,6 +113,23 @@ test('a reviewed candidate joins every shared conformance suite without becoming
     /must match its reviewed version/u,
     'E3',
   );
+  assert.throws(
+    () => currentAndCandidateClients([
+      ...clients,
+      { ...clients.at(-1), id: 'candidate-duplicate' },
+    ]),
+    /at most one reviewed candidate/u,
+    'E3: ambiguous candidate evidence fails closed',
+  );
+
+  for (const relativePath of [
+    'packages/managed-sdk-oracle/src/conformance/hosted.mjs',
+    'packages/managed-sdk-oracle/src/conformance/recovery.mjs',
+  ]) {
+    const source = fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+    assert.match(source, /loadConformanceClients/u, `${relativePath} admits the exact candidate`);
+    assert.doesNotMatch(source, /loadQualifiedClients/u, `${relativePath} cannot bypass admission`);
+  }
 
   const scripts = JSON.parse(
     fs.readFileSync(path.join(repoRoot, 'e2e/package.json'), 'utf8'),

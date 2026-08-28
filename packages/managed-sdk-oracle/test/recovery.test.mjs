@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { cleanupRecovery, prepareRecovery, verifyRecovery } from '../src/conformance/recovery.mjs';
+import {
+  assertRecoverySdkIdentity,
+  cleanupRecovery,
+  prepareRecovery,
+  recoverySdkIdentity,
+  verifyRecovery,
+} from '../src/conformance/recovery.mjs';
 
 function page(values) {
   return { async *[Symbol.asyncIterator]() { yield* values; } };
@@ -92,4 +98,20 @@ test('failed concurrent prepare compensates every partially created resource', a
     /concurrent recovery prepare failed/u,
   );
   assert.deepEqual(new Set(deleted.map(([kind]) => kind)), new Set(['session', 'file']));
+});
+
+test('recovery evidence is bound to the exact admitted SDK', () => {
+  // Cause/effect graph: C1 prepare records an exact package role+version; C2
+  // verify/cleanup run with that same selection. C1+C2 succeeds. A promoted,
+  // downgraded, absent, or differently admitted candidate fails before any
+  // resource read or cleanup, so two SDKs cannot fabricate one recovery proof.
+  const candidate = { role: 'candidate', version: '0.122.0' };
+  const identity = recoverySdkIdentity(candidate);
+  assert.doesNotThrow(() => assertRecoverySdkIdentity(identity, candidate));
+  for (const selected of [
+    { role: 'current_oracle', version: '0.121.0' },
+    { role: 'candidate', version: '0.123.0' },
+  ]) {
+    assert.throws(() => assertRecoverySdkIdentity(identity, selected), /one exact SDK/u);
+  }
 });

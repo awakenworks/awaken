@@ -3,10 +3,23 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { loadQualifiedClients, qualifiedClient } from './clients.mjs';
+import {
+  currentAndCandidateClients,
+  loadConformanceClients,
+} from './clients.mjs';
 
 const managedBetas = ['managed-agents-2026-04-01'];
 const fileBetas = [...managedBetas, 'files-api-2025-04-14'];
+
+export function recoverySdkIdentity(client) {
+  return { sdk_version: client.version, sdk_role: client.role };
+}
+
+export function assertRecoverySdkIdentity(state, client) {
+  const expected = recoverySdkIdentity(client);
+  assert.equal(state.sdk_version, expected.sdk_version, 'recovery phases use one exact SDK version');
+  assert.equal(state.sdk_role, expected.sdk_role, 'recovery phases use one exact SDK role');
+}
 
 async function drain(page) {
   const values = [];
@@ -18,7 +31,6 @@ export async function prepareRecovery({ client, toFile, agent, environmentId, ma
   const commandKey = `managed-recovery-${marker}`;
   const file = await client.beta.files.upload({
     file: await toFile(Buffer.from(`managed recovery ${marker}`), `${marker}.txt`),
-    betas: fileBetas,
   });
   const params = {
     agent,
@@ -42,7 +54,7 @@ export async function prepareRecovery({ client, toFile, agent, environmentId, ma
       ...[...new Set(created)].map(
         (sessionID) => client.beta.sessions.delete(sessionID, { betas: managedBetas }),
       ),
-      client.beta.files.delete(file.id, { betas: fileBetas }),
+      client.beta.files.delete(file.id),
     ]);
     throw new AggregateError(failed.map(({ reason }) => reason), 'concurrent recovery prepare failed');
   }
@@ -63,7 +75,7 @@ export async function verifyRecovery({ client, state }) {
   assert.equal(state.schema_version, 1, 'recovery state schema');
   const session = await client.beta.sessions.retrieve(state.session_id, { betas: managedBetas });
   assert.equal(session.metadata?.qualification_marker, state.marker, 'Session metadata survived restart');
-  const file = await client.beta.files.retrieveMetadata(state.file_id, { betas: fileBetas });
+  const file = await client.beta.files.retrieveMetadata(state.file_id);
   assert.equal(file.id, state.file_id, 'File metadata survived restart');
   const resources = await drain(client.beta.sessions.resources.list(state.session_id, { betas: fileBetas }));
   assert.ok(
@@ -105,7 +117,7 @@ export async function verifyRecovery({ client, state }) {
 export async function cleanupRecovery({ client, state }) {
   const cleanup = await Promise.allSettled([
     client.beta.sessions.delete(state.session_id, { betas: managedBetas }),
-    client.beta.files.delete(state.file_id, { betas: fileBetas }),
+    client.beta.files.delete(state.file_id),
   ]);
   const failed = cleanup.filter(({ status }) => status === 'rejected');
   if (failed.length > 0) {
@@ -124,15 +136,25 @@ async function main() {
   for (const [name, value] of Object.entries({ baseURL, apiKey, agent, environmentId, stateFile })) {
     assert.ok(value, `${name} is required`);
   }
-  const current = qualifiedClient(await loadQualifiedClients(), 'current_oracle');
-  const client = new current.Client({ apiKey, baseURL });
+  const selected = currentAndCandidateClients(await loadConformanceClients()).at(-1);
+  const client = new selected.Client({ apiKey, baseURL });
   if (phase === 'prepare') {
     const marker = `${Date.now()}-${crypto.randomUUID()}`;
-    const state = await prepareRecovery({ client, toFile: current.toFile, agent, environmentId, marker });
-    fs.writeFileSync(stateFile, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+    const state = await prepareRecovery({
+      client,
+      toFile: selected.toFile,
+      agent,
+      environmentId,
+      marker,
+    });
+    fs.writeFileSync(stateFile, `${JSON.stringify({
+      ...state,
+      ...recoverySdkIdentity(selected),
+    }, null, 2)}\n`, { mode: 0o600 });
     return;
   }
   const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+  assertRecoverySdkIdentity(state, selected);
   if (phase === 'verify') await verifyRecovery({ client, state });
   else await cleanupRecovery({ client, state });
 }

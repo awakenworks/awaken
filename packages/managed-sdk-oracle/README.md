@@ -182,3 +182,13 @@ version-number table, uses type escape hatches, or silently falls back to the
 installed current anchor. After the observation window, a passing candidate
 proof still fails the release gate until that exact version is promoted to the
 canonical current oracle.
+
+Supplying the same exact candidate module and version to `conformance:hosted`
+and every `conformance:recovery:*` phase also admits it to public-ingress and
+process-replacement evidence. Those paths cover the candidate's GA and Beta
+resource projections, User Profiles, pagination/idempotency/reconnect, and
+Tunnel/WIF behavior. Recovery records the selected SDK role and version and
+rejects a later phase run with a different package. Beta Files and Skills are
+invoked without hand-authored capability headers, ensuring that the deployed
+service receives the official SDK's generated 0.121 legacy-Beta or 0.122
+GA-projection behavior rather than a test-masked approximation.
