@@ -3,6 +3,8 @@
     {
       "baseline_version": "0.121.0",
       "candidate_version": "0.122.0",
+      "module": "@anthropic-ai/sdk-candidate",
+      "package_integrity": "sha512-GGPNftt0caaz9MDlmNQGHX8855Ojaduyy5pm9Sm1h7HalCn0cWNb5/bweadJF+4yzbal+QL6ztBa09WAAOzLmQ==",
       "delta_fingerprint": "444a9bdd3e4837c56a7fda9a696a216a59837bb104ee965c5d80e6c53eb992ee",
       "evidence_groups": [
         {

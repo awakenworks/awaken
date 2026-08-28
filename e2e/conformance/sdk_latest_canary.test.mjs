@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { latestCanaryPlan } from './sdk_latest_canary_lib.mjs';
+import {
+  executeLatestCanaryPlan,
+  latestCandidateQualification,
+  latestCanaryPlan,
+} from './sdk_latest_canary_lib.mjs';
+
+const candidateQualification = Object.freeze({
+  baseline_version: '0.120.0',
+  candidate_version: '0.121.0',
+  module: '@anthropic-ai/sdk-candidate',
+  package_integrity: 'sha512-Y2FuZGlkYXRl',
+});
+const candidateDependencies = Object.freeze({
+  '@anthropic-ai/sdk-candidate': 'npm:@anthropic-ai/sdk@0.121.0',
+});
 
 test('registry latest reuses the generated current oracle only when all versions agree', () => {
   // Cause/effect graph: C1 generated current oracle is exact; C2 installed
@@ -10,9 +24,10 @@ test('registry latest reuses the generated current oracle only when all versions
   // version or policy evidence is invalid. Effects: E1 run the installed oracle;
   // E2 quarantine without installing the candidate; E3 require regeneration;
   // E4 reject stale node_modules; E5 reject ambiguous evidence. Decision table:
-  // R1 C1+C2+C3=>E1; R2 C1+C2+!C3+C4=>E1+E2;
-  // R3 C1+C2+!C3+C5=>E3; R4 C1+!C2=>E4; R5 C6=>E5. Constraint:
-  // the canary never downloads or fingerprints a second SDK outside the oracle.
+  // R1 C1+C2+C3=>E1; R2 C1+C2+!C3+C4=>E1+E2+candidate;
+  // R3 C1+C2+!C3+C5=>candidate+E3; R4 C1+!C2=>E4; R5 C6=>E5.
+  // Candidate execution is distinct from promotion: release age can defer the
+  // latter, never the former, and only a reviewed exact alias may execute.
   assert.deepEqual(latestCanaryPlan('0.121.0', '0.121.0', '0.121.0'), {
     oracle: '0.121.0', latest: '0.121.0', installed: '0.121.0',
   });
@@ -30,20 +45,143 @@ test('a newer registry version remains quarantined during the dependency observa
       oracle: '0.120.0',
       latest: '0.121.0',
       installed: '0.120.0',
+      candidateRequired: true,
       quarantinedUntil: '2026-08-28T20:35:25.000Z',
     },
   );
 });
 
-test('a mature newer registry version fails closed until the current oracle is regenerated', () => {
-  // R3: elapsed observation time turns drift into required oracle maintenance.
-  assert.throws(
-    () => latestCanaryPlan('0.120.0', '0.121.0', '0.120.0', {
+test('a mature newer registry version schedules verification before requiring promotion', async () => {
+  // R3 cause/effect graph: C1=release age elapsed, C2=current proof succeeds,
+  // C3=candidate proof succeeds. Effects: E1=both exact roots execute in order;
+  // E2=the gate then fails and requires oracle promotion. If C3 fails, its
+  // original error wins, so stale-oracle reporting cannot mask incompatibility.
+  const plan = latestCanaryPlan('0.120.0', '0.121.0', '0.120.0', {
       latestPublishedAt: '2026-08-27T20:35:25.000Z',
       minimumReleaseAgeMinutes: 1_440,
       now: Date.parse('2026-08-28T20:35:25.000Z'),
+  });
+  assert.deepEqual(plan, {
+    oracle: '0.120.0',
+    latest: '0.121.0',
+    installed: '0.120.0',
+    candidateRequired: true,
+    promotionRequired: true,
+  });
+  const calls = [];
+  await assert.rejects(
+    executeLatestCanaryPlan(plan, {
+      current: () => calls.push('current'),
+      candidate: () => calls.push('candidate'),
     }),
-    /update the current anchor and regenerate/u,
+    /candidate verification passed, update the current anchor/u,
+  );
+  assert.deepEqual(calls, ['current', 'candidate']);
+});
+
+test('quarantined drift executes the current and reviewed candidate roots', async () => {
+  // R2 decision table: no drift => current only; quarantined drift => current
+  // then candidate; missing candidate verifier => fail before partial success.
+  const stable = latestCanaryPlan('0.121.0', '0.121.0', '0.121.0');
+  const quarantined = latestCanaryPlan('0.120.0', '0.121.0', '0.120.0', {
+    latestPublishedAt: '2026-08-27T20:35:25.000Z',
+    minimumReleaseAgeMinutes: 1_440,
+    now: Date.parse('2026-08-27T22:35:25.000Z'),
+  });
+  const calls = [];
+  await executeLatestCanaryPlan(stable, {
+    current: () => calls.push('stable'),
+  });
+  await executeLatestCanaryPlan(quarantined, {
+    current: () => calls.push('current'),
+    candidate: () => calls.push('candidate'),
+  });
+  assert.deepEqual(calls, ['stable', 'current', 'candidate']);
+  await assert.rejects(
+    executeLatestCanaryPlan(quarantined, { current() {} }),
+    /requires every scheduled runtime verifier/u,
+  );
+});
+
+test('candidate selection binds version pair, installed alias, and registry integrity', () => {
+  // Supply-chain cause/effect graph: C1=registry drift, C2=one reviewed version
+  // pair, C3=exact installed alias, C4=reviewed sha512 equals registry metadata.
+  // Only C1+C2+C3+C4 permits later import; duplicates, missing fields, or a
+  // same-version registry rewrite fail while all candidate code is still data.
+  const plan = {
+    oracle: '0.120.0', latest: '0.121.0', installed: '0.120.0', candidateRequired: true,
+  };
+  assert.equal(
+    latestCandidateQualification(
+      plan,
+      [candidateQualification],
+      'sha512-Y2FuZGlkYXRl',
+      candidateDependencies,
+    ),
+    candidateQualification,
+  );
+  for (const qualifications of [
+    [],
+    [candidateQualification, candidateQualification],
+    [{ ...candidateQualification, module: '' }],
+    [{ ...candidateQualification, package_integrity: 'sha256-not-sha512' }],
+  ]) {
+    assert.throws(
+      () => latestCandidateQualification(
+        plan,
+        qualifications,
+        'sha512-Y2FuZGlkYXRl',
+        candidateDependencies,
+      ),
+      /requires one exact qualification|module alias|sha512 integrity/u,
+    );
+  }
+  assert.throws(
+    () => latestCandidateQualification(
+      plan,
+      [candidateQualification],
+      'sha512-dGFtcGVyZWQ=',
+      candidateDependencies,
+    ),
+    /integrity does not match/u,
+  );
+  for (const dependencies of [
+    undefined,
+    {},
+    { '@anthropic-ai/sdk-candidate': 'npm:@anthropic-ai/sdk@^0.121.0' },
+    { '@anthropic-ai/sdk-candidate': 'npm:@anthropic-ai/sdk@0.122.0' },
+  ]) {
+    assert.throws(
+      () => latestCandidateQualification(
+        plan,
+        [candidateQualification],
+        'sha512-Y2FuZGlkYXRl',
+        dependencies,
+      ),
+      /must use exact dependency/u,
+    );
+  }
+  assert.equal(
+    latestCandidateQualification(
+      { oracle: '0.121.0', latest: '0.121.0', installed: '0.121.0' },
+      undefined,
+      undefined,
+      undefined,
+    ),
+    undefined,
+  );
+});
+
+test('candidate incompatibility is reported before a mature promotion warning', async () => {
+  // Fault injection: the candidate runtime is the stronger fact. A failed
+  // behavior proof must not be replaced by the administrative promotion error.
+  const candidateFailure = new Error('candidate behavior mismatch');
+  await assert.rejects(
+    executeLatestCanaryPlan({ candidateRequired: true, promotionRequired: true }, {
+      current() {},
+      candidate() { throw candidateFailure; },
+    }),
+    (error) => error === candidateFailure,
   );
 });
 

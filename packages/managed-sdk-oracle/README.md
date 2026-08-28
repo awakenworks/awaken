@@ -119,10 +119,15 @@ fixtures, so stale or unowned compatibility claims fail closed.
 
 ## Qualifying a newer candidate
 
-`npm --prefix e2e run test:sdk-latest-canary` observes the registry but never
-downloads or executes a release during the repository's minimum-release-age
-window. Once supply-chain policy has provisioned an exact SDK package root, the
-same runtime proof can be applied before changing the canonical anchor:
+`npm --prefix e2e run test:sdk-latest-canary` keeps promotion and verification
+as separate decisions. A newer registry release remains in the repository's
+minimum-release-age window, but a reviewed exact candidate alias is still run
+through the compatibility proof. Its version pair, registry sha512 integrity,
+installed version, complete Managed source/type/runtime delta, and executable
+behavior ownership must all agree before candidate code is imported. An
+unreviewed release therefore fails closed instead of being reported as merely
+quarantined. The same proof can also be applied to an already provisioned exact
+SDK package root while preparing its reviewed qualification:
 
 ```bash
 ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT=/absolute/path/to/node_modules/@anthropic-ai/sdk \
@@ -155,4 +160,6 @@ bounded file reads, `setupSkills("latest")` after process replacement, bare-Blob
 multipart admission, invalid-upload diagnostics, cross-realm aborts, configured
 SSE logging, and exact SDK self-identification. It never chooses behavior from a
 version-number table, uses type escape hatches, or silently falls back to the
-installed current anchor.
+installed current anchor. After the observation window, a passing candidate
+proof still fails the release gate until that exact version is promoted to the
+canonical current oracle.
