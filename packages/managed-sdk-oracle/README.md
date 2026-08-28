@@ -65,8 +65,12 @@ evidence from drifting from the external expectation:
   locked Python client closure in an isolated virtual environment and drives a
   real Awaken process. It owns Python-specific sync/async calls, cursor and SSE
   decoding, typed errors, multipart encoding, beta/GA resource handoff, and the
-  standard-webhooks adapter; the existing shared behavior owners continue to
-  own service-domain semantics.
+  standard-webhooks adapter. Before that real-process slice, a recording
+  transport invokes all 127 Python methods through `with_raw_response` and
+  requires their exact generated verb, normalized route, query selector, and
+  beta-header set; a new required parameter fails closed until its fixture is
+  reviewed. The existing shared behavior owners continue to own service-domain
+  semantics, so this client sweep does not copy their resource state machines.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
 `config/python-anchors.json` selects behavior-changing Python releases from the
