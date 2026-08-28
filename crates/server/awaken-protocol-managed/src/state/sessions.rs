@@ -221,7 +221,7 @@ impl ManagedState {
         &self,
         persisted: &PersistedSession,
     ) -> Result<(), StateError> {
-        let mcp_servers = typed_mcp_servers(persisted.visible_mcp_servers());
+        let mcp_servers = typed_mcp_servers(persisted.configured_mcp_servers());
         let mut sessions = self.sessions.lock().unwrap();
         let Some(record) = sessions.get_mut(&persisted.session_id) else {
             return Ok(());
@@ -980,8 +980,10 @@ impl ManagedState {
                     .and_then(|profile| profile.description.clone()),
                 system: config_view.as_ref().and_then(|view| view.system.clone()),
                 tools: session_tools,
-                // Echo the accepted servers in the SDK's `{name, type:"url", url}` shape.
-                mcp_servers: typed_mcp_servers(persisted.visible_mcp_servers()),
+                // Echo accepted Agent configuration in the SDK shape. Runtime
+                // visibility is a separate state and can remain Requested while
+                // this immutable Session snapshot is already readable.
+                mcp_servers: typed_mcp_servers(persisted.configured_mcp_servers()),
                 skills: effective_skills.as_ref().map_or_else(
                     || project::agent_skills(&caps),
                     |skills| {
@@ -1130,7 +1132,7 @@ impl ManagedState {
                 .map(crate::types::agent::AgentSkill::from_resolved_binding)
                 .collect();
             let vault_ids = baseline.mcp_authoring.ordered_vault_ids.clone();
-            let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
+            let mcp_servers = typed_mcp_servers(p.configured_mcp_servers());
             let archived_at = p.archived_at().map(str::to_owned);
             let preparation = Self::wire_session_preparation(&p);
             (

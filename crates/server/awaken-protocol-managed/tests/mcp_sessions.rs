@@ -1087,7 +1087,9 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     // loses recovery; projecting a permanent failure as live admits Runs without
     // a Runtime; hiding it loses the durable cause and makes exact GET disagree
     // with the Session repository. The error kind and persisted retry budget
-    // distinguish those outcomes at the same realization boundary.
+    // distinguish those outcomes at the same realization boundary. The resolved
+    // Agent snapshot still echoes accepted MCP config in every state; Runtime
+    // activation is a separate fact and cannot erase API configuration.
     // Constraint K0: this preparation-only fixture commits no Run, so its one
     // atomic Thread recovery query returns None; unsupported production runtimes
     // remain fail-closed rather than falling back to split transcript reads.
@@ -1172,6 +1174,11 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
             );
             assert!(failed.visible_mcp_servers().is_empty(), "R1/R2: {kind:?}");
         }
+        assert_eq!(
+            read["agent"]["mcp_servers"],
+            json!([{ "name": "calc", "type": "url", "url": MCP_URL }]),
+            "{kind:?} accepted config is independent of Runtime visibility"
+        );
     }
 }
 
@@ -2352,8 +2359,8 @@ async fn update_cas_retry_tests_are_generated_from_decision_table() {
     );
     assert_eq!(
         current["agent"]["mcp_servers"],
-        json!([{"type": "url", "name": "cas", "url": "https://cas-2.example/mcp"}]),
-        "C4 GET keeps the prior canonical visible/Active generation"
+        json!([{"type": "url", "name": "cas", "url": "https://cas-3.example/mcp"}]),
+        "C4 GET returns the committed desired config while activation recovers"
     );
 }
 
