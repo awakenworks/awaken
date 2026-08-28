@@ -4,6 +4,27 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../../.." && pwd)"
 source "$repo_root/scripts/ci/_deadline.sh"
 
+release_image_labels=()
+
+configure_release_image_labels() {
+  release_image_labels=()
+  local source=${AWAKEN_SANDBOX_IMAGE_SOURCE:-}
+  local revision=${AWAKEN_SANDBOX_IMAGE_REVISION:-}
+  local version=${AWAKEN_SANDBOX_IMAGE_VERSION:-}
+  if [[ -z $source && -z $revision && -z $version ]]; then
+    return 0
+  fi
+  if [[ -z $source || -z $revision || -z $version ]]; then
+    echo "sandbox release image labels must be supplied as one complete set" >&2
+    return 2
+  fi
+  release_image_labels=(
+    --label "org.opencontainers.image.source=$source"
+    --label "org.opencontainers.image.revision=$revision"
+    --label "org.opencontainers.image.version=$version"
+  )
+}
+
 make_public_build_input() {
   chmod 0644 "$1"
 }
@@ -19,11 +40,13 @@ file_mode() {
 # Build-harness cause/effect graph and decision table:
 # C1=external command completes before its deadline; C2=deadline expires while
 # it is still active; C3=a secret-free generated Docker input inherits a
-# restrictive caller umask. E1=preserve the command's status; E2=terminate it
-# and return the stable timeout status 124; E3=make the copied contract readable
-# by the image's non-root runtime user. H1 C1,!C2=>E1; H2 !C1,C2=>E2;
-# H3 C3=>E3. These self-tests own every rule without invoking Cargo, Docker, or
-# a package mirror.
+# restrictive caller umask; C4=release OCI source/revision/version labels are
+# all absent, all present, or partial. E1=preserve the command's status;
+# E2=terminate it and return 124; E3=make the copied contract readable by the
+# image's non-root user; E4=project the complete label set or reject a partial
+# set. H1 C1,!C2=>E1; H2 !C1,C2=>E2; H3 C3=>E3; H4 absent=>no labels;
+# H5 complete=>three labels; H6 partial=>refuse. These self-tests own every rule
+# without invoking Cargo, Docker, or a package mirror.
 if [[ ${1:-} == --self-test ]]; then
   run_with_deadline 2 bash -c 'exit 0'
   timeout_status=0
@@ -56,6 +79,29 @@ if [[ ${1:-} == --self-test ]]; then
     exit 1
   }
   rm -f "$contract"
+  unset AWAKEN_SANDBOX_IMAGE_SOURCE AWAKEN_SANDBOX_IMAGE_REVISION \
+    AWAKEN_SANDBOX_IMAGE_VERSION
+  configure_release_image_labels
+  [[ ${#release_image_labels[@]} -eq 0 ]] || {
+    echo "sandbox image label self-test: absent labels must stay absent" >&2
+    exit 1
+  }
+  AWAKEN_SANDBOX_IMAGE_SOURCE=https://github.com/awakenworks/awaken
+  AWAKEN_SANDBOX_IMAGE_REVISION=$(printf 'a%.0s' {1..40})
+  AWAKEN_SANDBOX_IMAGE_VERSION=v1.2.3
+  configure_release_image_labels
+  [[ ${#release_image_labels[@]} -eq 6 ]] \
+    && [[ ${release_image_labels[1]} == org.opencontainers.image.source=https://github.com/awakenworks/awaken ]] \
+    && [[ ${release_image_labels[3]} == org.opencontainers.image.revision="$AWAKEN_SANDBOX_IMAGE_REVISION" ]] \
+    && [[ ${release_image_labels[5]} == org.opencontainers.image.version=v1.2.3 ]] || {
+    echo "sandbox image label self-test: complete labels were not projected exactly" >&2
+    exit 1
+  }
+  unset AWAKEN_SANDBOX_IMAGE_REVISION
+  if configure_release_image_labels; then
+    echo "sandbox image label self-test: partial labels must be refused" >&2
+    exit 1
+  fi
   echo "sandbox image build deadline self-test passed"
   exit 0
 fi
@@ -85,6 +131,7 @@ operation_timeout_seconds=${AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS:-60}
   echo "AWAKEN_SANDBOX_OPERATION_TIMEOUT_SECONDS must be a positive integer" >&2
   exit 2
 }
+configure_release_image_labels
 
 # A selected docker-container Buildx driver does not load `docker build` results
 # into the local image store unless the output is explicit. The production-image
@@ -149,11 +196,13 @@ cargo run --quiet -p awaken-run-executor-acp --example image_runtime_contract \
 make_public_build_input "$generated_contract"
 if [[ -n "${AWAKEN_SANDBOX_BUILD_NETWORK:-}" ]]; then
   build_image --network "$AWAKEN_SANDBOX_BUILD_NETWORK" \
+    "${release_image_labels[@]}" \
     --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 else
-  build_image --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
+  build_image "${release_image_labels[@]}" \
+    --build-arg ACP_RUNTIME_IDS="$runtime_ids" \
     --build-arg ACP_RUNTIME_CONTRACT=deploy/images/sandbox/.acp-runtimes.generated.json \
     -f deploy/images/sandbox/Dockerfile -t "$image" .
 fi

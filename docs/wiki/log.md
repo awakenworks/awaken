@@ -1,5 +1,29 @@
 # Wiki Update Log
 
+## 2026-08-28 — Prove Sandbox staging before release-tag promotion
+
+- Kept the existing Sandbox build script, release workflow, strict predicate,
+  and validator as the only build, publisher, and provenance owners; no second
+  publisher, ledger, schema, or compatibility path was added.
+- Made the workflow resolve a pre-existing semantic tag before any build and
+  reuse it only with exact OCI labels, exact current repository/workflow
+  SHA/ref/push-trigger keyless proof, and exactly one verified predicate.
+  Missing or conflicting proof now rejects the preseeded tag instead of signing
+  it or treating labels as authorization.
+- Moved new publication to a run-scoped staging tag. The workflow resolves and
+  proves its immutable digest first, then promotes the same manifest to the
+  semantic tag only after a write-before comparison, then resolves the tag
+  again and requires the same exact digest and OCI identity.
+- Made retries closed around the promotion boundary: a pre-promotion crash
+  leaves no release tag and an identical digest can reuse its proof; a
+  post-promotion retry reuses the already-proven immutable digest. Consumer
+  validation remains exactly-one and fail-closed.
+- Added one executable registry resolver decision table and a repository-wide
+  writer inventory. Static gates reject unsigned preseed, alternate publisher
+  primitives, extra release tags, weakened workflow claims, incomplete labels,
+  pre-proof promotion, and tag/config drift. This record does not claim a live
+  GHCR publication.
+
 ## 2026-08-28 — Bind explicit Repository publication to terminal cleanup
 
 - Kept `SessionCleanupOperation` as the sole terminal-effect authority: one
