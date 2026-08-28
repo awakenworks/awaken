@@ -28,20 +28,39 @@ const STORE = `/tmp/awaken-durable-hitl-deny-${process.pid}`;
 async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   const upstream = await startUpstream('probe');
-  const srv = spawnServer('real', PORT, {
-    SESSION_DEPLOYMENT_INGRESS: 'durable',
-    SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
-    ...realServerEnv('probe', upstream),
-  });
-  await waitForPort(PORT);
-  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+  let srv = null;
   try {
-    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+    srv = spawnServer('real', PORT, {
+      SESSION_DEPLOYMENT_INGRESS: 'durable',
+      SESSION_DEPLOYMENT_STORAGE_DIR: STORE,
+      ...realServerEnv('probe', upstream),
+    });
+    await waitForPort(PORT);
+    const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    const s = await client.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'agent_toolset_20260401',
+          configs: [{
+            name: 'write',
+            type: 'write',
+            enabled: true,
+            permission_policy: { type: 'always_ask' },
+          }],
+        }],
+      },
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
     const MARK = 'DENY-THIS-WRITE';
-    // C1=exact User receipt; C2=Awaiting ticket; C3=exact deny receipt;
-    // C4=end_turn without the denied effect. E1=C2 is after C1; E2=C4 is after
-    // C3. K: a historical idle/result is ineligible. Decision D1 C1&&!C2=>retry;
-    // D2 C1+C2+C3&&!C4=>retry; D3 all=>assert denial and exactly-once.
+    // C0=the Session explicitly makes write always_ask while read inherits the
+    // official allow default; C1=exact User receipt; C2=Awaiting ticket;
+    // C3=exact deny receipt; C4=end_turn without the denied effect. E1=C2 is
+    // after C1; E2=C4 is after C3. K: a historical idle/result is ineligible.
+    // Decision D1 C0+C1&&!C2=>retry; D2 C1+C2+C3&&!C4=>retry; D3 all=>assert
+    // denial, linked read-back, and exactly-once.
     const initialReceipt = await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: MARK }] }],
       betas: BETAS,
@@ -85,11 +104,20 @@ async function main() {
     );
     pass('durable ingress: worker resumed the awaiting run after DENY and reached end_turn');
 
-    // The effect is refused: probe.txt was never written, so the read-back tool
-    // result does NOT contain the marker text.
+    // The effect is refused: the denied write has one error result and the
+    // inherited-allow read is actually executed, but its linked result does not
+    // contain the marker. Requiring the read/result pair prevents a vacuous
+    // pass where no observation of the filesystem occurred.
     const results = ended.filter((e) => e.type === 'agent.tool_result');
+    const deniedWrite = results.filter((result) => result.tool_use_id === toolUse.id);
+    assert.equal(deniedWrite.length, 1, 'DENY records one result for the write occurrence');
+    assert.equal(deniedWrite[0].is_error, true, 'the denied write is a model-visible error');
+    const readUses = ended.filter((event) => event.type === 'agent.tool_use' && event.name === 'read');
+    assert.equal(readUses.length, 1, 'the inherited-allow read executes exactly once after denial');
+    const readResults = results.filter((result) => result.tool_use_id === readUses[0].id);
+    assert.equal(readResults.length, 1, 'the read has one linked durable result');
     assert.ok(
-      !JSON.stringify(results.map((r) => r.content)).includes(MARK),
+      !JSON.stringify(readResults[0].content).includes(MARK),
       'DENY blocked the write — the read-back never sees the marker text (effect refused)',
     );
     pass('DENY refused the tool effect: write blocked, read-back has no marker');
@@ -108,7 +136,7 @@ async function main() {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
   } finally {
-    await stopServer(srv.server);
+    if (srv) await stopServer(srv.server);
     upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
   }
