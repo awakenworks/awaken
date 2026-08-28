@@ -209,23 +209,59 @@ pub struct ConformanceCapabilities {
 /// Optional bridge for transports whose authoritative clock lives on the server.
 /// Direct stores ignore it because their `now_ms` command argument is already the
 /// clock input under test.
+#[async_trait::async_trait]
 pub trait ConformanceClock: Send + Sync {
     fn set(&self, now_ms: u64);
+
+    /// Whether the suite can hold the authority clock at an exact millisecond.
+    /// Live database/server clocks still exercise recovery, but their moving
+    /// boundary is covered by the shared pure transition tests instead of a
+    /// timing-sensitive integration assertion.
+    fn exact_boundary_is_controllable(&self) -> bool;
+
+    /// Advance the authority strictly beyond a persisted lease deadline.
+    async fn advance_past(&self, deadline_ms: u64);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DirectCommandClock;
 
+#[async_trait::async_trait]
 impl ConformanceClock for DirectCommandClock {
     fn set(&self, _now_ms: u64) {}
+
+    fn exact_boundary_is_controllable(&self) -> bool {
+        false
+    }
+
+    async fn advance_past(&self, deadline_ms: u64) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("conformance host clock is after the Unix epoch")
+            .as_millis() as u64;
+        // The margin absorbs host/database clock skew without weakening the
+        // tested predicate: the subsequent claim must still recover the exact
+        // persisted row and advance its fencing epoch.
+        let wait_ms = deadline_ms.saturating_sub(now_ms).saturating_add(25);
+        tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
+    }
 }
 
+#[async_trait::async_trait]
 impl<F> ConformanceClock for F
 where
     F: Fn(u64) + Send + Sync,
 {
     fn set(&self, now_ms: u64) {
         self(now_ms);
+    }
+
+    fn exact_boundary_is_controllable(&self) -> bool {
+        true
+    }
+
+    async fn advance_past(&self, deadline_ms: u64) {
+        self(deadline_ms.saturating_add(1));
     }
 }
 
@@ -271,8 +307,8 @@ pub async fn assert_dispatch_conformance_with_clock(
         local_claims_skip_remote_only_work(store, namespace).await;
     }
     exact_claim_recovery_and_fencing(store, namespace, clock).await;
-    retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace).await;
-    attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities).await;
+    retry_exhaustion_claim_is_atomic_and_policy_exact(store, namespace, clock).await;
+    attempt_credentials_are_atomic_and_epoch_fenced(store, namespace, capabilities, clock).await;
     incompatible_credentials_do_not_poison_broad_claims(store, namespace).await;
     parent_mediated_commands_are_atomic(store, namespace, clock).await;
     caller_owned_run_identity_is_exact(store, namespace).await;
@@ -281,7 +317,7 @@ pub async fn assert_dispatch_conformance_with_clock(
     sandbox_binding_survives_recovery(store, namespace, capabilities, clock).await;
     completion_is_atomic_and_prevents_resurrection(store, namespace, capabilities, clock).await;
     if capabilities.completion_events {
-        committed_terminal_recovery_reuses_fenced_settlement(store, namespace).await;
+        committed_terminal_recovery_reuses_fenced_settlement(store, namespace, clock).await;
     }
     // This rule intentionally leaves 25 distinct unarchived child Threads as its
     // postcondition, so run it after every conformance rule that broadly claims

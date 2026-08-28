@@ -3,11 +3,14 @@ use std::sync::Arc;
 use awaken_run_ingress::{
     ManualClock, MemoryDispatchStore, PostgresDispatchStore, SqliteDispatchStore,
 };
-use awaken_run_ingress_testkit::assert_dispatch_operational_feed_conformance;
 use awaken_run_ingress_testkit::{
     ConformanceCapabilities, assert_atomic_report_continuation_conformance,
     assert_dispatch_conformance, assert_dispatch_conformance_with_clock,
     assert_session_reply_activity_rotation_conformance,
+};
+use awaken_run_ingress_testkit::{
+    assert_dispatch_operational_feed_conformance,
+    assert_dispatch_operational_feed_conformance_with_clock,
 };
 
 mod harness;
@@ -30,7 +33,12 @@ async fn memory_dispatch_conforms() {
     )
     .await;
     assert_atomic_report_continuation_conformance(&store, "conformance-memory-report").await;
-    assert_dispatch_operational_feed_conformance(&store, "conformance-memory").await;
+    assert_dispatch_operational_feed_conformance_with_clock(
+        &store,
+        "conformance-memory",
+        &set_clock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -67,7 +75,12 @@ async fn sqlite_dispatch_conforms() {
     )
     .await;
     assert_atomic_report_continuation_conformance(&store, "conformance-sqlite-report").await;
-    assert_dispatch_operational_feed_conformance(&store, "conformance-sqlite").await;
+    assert_dispatch_operational_feed_conformance_with_clock(
+        &store,
+        "conformance-sqlite",
+        &set_clock,
+    )
+    .await;
 }
 
 #[tokio::test]

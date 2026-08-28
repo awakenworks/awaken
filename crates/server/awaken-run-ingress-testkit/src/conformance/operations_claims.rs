@@ -9,6 +9,18 @@ pub async fn assert_dispatch_operational_feed_conformance<S>(store: &S, namespac
 where
     S: DispatchQueue + DispatchOperationalFeed + ?Sized,
 {
+    assert_dispatch_operational_feed_conformance_with_clock(store, namespace, &DirectCommandClock)
+        .await;
+}
+
+/// Clock-explicit variant used by deterministic reference backends.
+pub async fn assert_dispatch_operational_feed_conformance_with_clock<S>(
+    store: &S,
+    namespace: &str,
+    clock: &dyn ConformanceClock,
+) where
+    S: DispatchQueue + DispatchOperationalFeed + ?Sized,
+{
     let baseline = store
         .events_after(DispatchCursor(0), usize::MAX)
         .await
@@ -35,12 +47,13 @@ where
         .await
         .expect("first operational claim")
         .expect("settled run is runnable");
+    clock.advance_past(first.lease.expires_ms).await;
     let recovered = store
         .claim_run(
             &settled_run,
             "operations-b",
             LEASE_MS,
-            LEASE_MS + 1,
+            first.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
@@ -86,20 +99,22 @@ where
         .await
         .expect("dead-letter first claim")
         .expect("dead-letter run is runnable");
+    clock.advance_past(dead_first.lease.expires_ms).await;
     let dead_recovered = store
         .claim_run(
             &dead_run,
             "operations-d",
             LEASE_MS,
-            dead_first.lease.expires_ms + 1,
+            dead_first.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
         .expect("dead-letter recovery")
         .expect("dead-letter run is recoverable");
+    clock.advance_past(dead_recovered.lease.expires_ms).await;
     assert_eq!(
         store
-            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms + 1)
+            .quarantine_retry_exhausted(1, dead_recovered.lease.expires_ms.saturating_add(1),)
             .await
             .expect("manually quarantine exhausted run"),
         1
@@ -311,12 +326,15 @@ async fn local_claims_skip_remote_only_work(store: &dyn DispatchQueue, ns: &str)
         credential_observations: [WorkerCredentialObservation::available(
             required_credential,
             0,
-            10_000,
+            // The matrix asserts exact credential matching, not expiry. Keep
+            // the evidence valid under both the logical clocks used by the
+            // reference stores and PostgreSQL's authoritative database clock.
+            u64::MAX,
         )]
         .into_iter()
         .collect(),
         acp_capability_observations: Default::default(),
-        expires_at_ms: 10_000,
+        expires_at_ms: u64::MAX,
     };
     let remote = store
         .claim_compatible(&worker, LEASE_MS, 0)
@@ -381,28 +399,30 @@ async fn exact_claim_recovery_and_fencing(
         SettleOutcome::Applied
     );
 
-    clock.set(LEASE_MS);
-    assert!(
-        store
-            .claim_run(
-                &target,
-                "conformance-b",
-                LEASE_MS,
-                LEASE_MS,
-                &Default::default(),
-            )
-            .await
-            .expect("live-boundary claim")
-            .is_none(),
-        "a lease remains live at its exact expiry boundary"
-    );
-    clock.set(LEASE_MS + 1);
+    if clock.exact_boundary_is_controllable() {
+        clock.set(first.lease.expires_ms);
+        assert!(
+            store
+                .claim_run(
+                    &target,
+                    "conformance-b",
+                    LEASE_MS,
+                    first.lease.expires_ms,
+                    &Default::default(),
+                )
+                .await
+                .expect("live-boundary claim")
+                .is_none(),
+            "a lease remains live at its exact expiry boundary"
+        );
+    }
+    clock.advance_past(first.lease.expires_ms).await;
     let recovered = store
         .claim_run(
             &target,
             "conformance-b",
             LEASE_MS,
-            LEASE_MS + 1,
+            first.lease.expires_ms.saturating_add(1),
             &Default::default(),
         )
         .await
