@@ -1236,11 +1236,7 @@ impl SessionRuntime for ManagedHost {
             .await
             .map_err(to_run_error)?;
         let completion =
-            awaken_session_contract::SessionCleanupCompletion::new_with_artifact_bundles(
-                &command,
-                artifacts.receipts,
-                artifacts.bundle_receipts,
-            );
+            awaken_session_contract::SessionCleanupCompletion::new(&command, artifacts.receipts);
         completion
             .verify(&command)
             .map_err(|error| RunError::internal(error.to_string()))?;

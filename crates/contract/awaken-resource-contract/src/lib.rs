@@ -28,12 +28,12 @@ mod memory_application;
 mod registry;
 
 pub use execution::{
-    ArtifactBundleCompletionReceipt, ArtifactBundlePurpose, ArtifactPublication,
-    ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher, FileContentSource,
-    FileContentSourceError, FileReadPurpose, MemoryMaterializationReferenceEncoder,
-    MemoryMaterializationReferenceError, RepositoryBindingVerifier, RepositoryBindingVerifierError,
-    RepositoryGatewayCapability, RepositoryTransport, ResolvedFileContent,
-    UnavailableArtifactPublisher, UnavailableFileContentSource, complete_artifact_bundle,
+    ArtifactPublication, ArtifactPublicationError, ArtifactPublicationReceipt, ArtifactPublisher,
+    FileContentSource, FileContentSourceError, FileReadPurpose,
+    MemoryMaterializationReferenceEncoder, MemoryMaterializationReferenceError,
+    RepositoryBindingVerifier, RepositoryBindingVerifierError, RepositoryGatewayCapability,
+    RepositoryTransport, ResolvedFileContent, UnavailableArtifactPublisher,
+    UnavailableFileContentSource,
 };
 pub use input::{
     BindingId, FileId, InputBinding, InputResourceId, MemoryStoreId, RepositoryId, ResourceAccess,
