@@ -1253,12 +1253,17 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
 
 // --- CE: session.updated event -----------------------------------------------
 
-/// Causes: C1 one title+metadata patch targets an active Session. Effects: E1
-/// the mutation commits one `session.updated`; E2 its payload carries the new
-/// title and full metadata bag so listing clients observe the same mutation as
-/// the Session view. Decision rule U1=C1=>E1+E2. Constraint K1: the Session
-/// aggregate/repository remains the mutation authority; this event is its
-/// projection and owns no second title or metadata state.
+/// Causes: C1 a field actually changes; C2 title changes to text/null; C3
+/// metadata changes to non-empty/empty; C4 an unchanged field remains non-empty
+/// in durable state; C5 a command is a no-op. Effects: E1 one `session.updated`
+/// is emitted; E2 changed title is present as text/null; E3 changed non-empty
+/// metadata is present; E4 unchanged or cleared-empty fields are absent; E5 no
+/// event is emitted. Decision rules: U1=C1+C2(text)=>E1+E2(text)+E4(metadata);
+/// U2=C1+C2(null)=>E1+E2(null)+E4(metadata); U3=C1+C3(non-empty)=>E1+E3+
+/// E4(title); U4=C1+C3(empty)=>E1+E4(title,metadata); U5=C5=>E5. The initial
+/// combined update covers both changed fields in one event. Constraint K1: the
+/// Session aggregate and its `SessionUpdateOutcome.changes` remain the mutation
+/// and change-mask authorities; this event owns no second field state.
 #[tokio::test]
 async fn updating_a_session_commits_a_session_updated_event() {
     let app = router(Arc::new(ManagedState::new(ScriptFake::new(|| {
@@ -1272,15 +1277,66 @@ async fn updating_a_session_commits_a_session_updated_event() {
         serde_json::json!({ "title": "renamed", "metadata": { "team": "research" } }),
     )
     .await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        serde_json::json!({ "metadata": { "team": "delivery" } }),
+    )
+    .await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        serde_json::json!({ "title": "retitled" }),
+    )
+    .await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        serde_json::json!({ "title": null }),
+    )
+    .await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        serde_json::json!({ "metadata": null }),
+    )
+    .await;
+    json_call(
+        &app,
+        "POST",
+        &format!("/v1/sessions/{id}"),
+        serde_json::json!({ "title": null }),
+    )
+    .await;
     let list = list_events(&app, &id).await;
     let updated = list["data"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|e| e["type"] == "session.updated")
-        .unwrap();
-    assert_eq!(updated["title"], "renamed");
-    assert_eq!(updated["metadata"]["team"], "research");
+        .filter(|event| event["type"] == "session.updated")
+        .collect::<Vec<_>>();
+    assert_eq!(updated.len(), 5, "U1-U4 emit once; U5 emits nothing");
+    assert_eq!(updated[0]["title"], "renamed", "combined update title");
+    assert_eq!(
+        updated[0]["metadata"]["team"], "research",
+        "combined metadata"
+    );
+    assert_eq!(updated[1]["metadata"]["team"], "delivery", "U3/E3");
+    assert!(updated[1].get("title").is_none(), "U3/E4");
+    assert_eq!(updated[2]["title"], "retitled", "U1/E2");
+    assert!(updated[2].get("metadata").is_none(), "U1/E4");
+    assert_eq!(
+        updated[3].get("title"),
+        Some(&serde_json::Value::Null),
+        "U2/E2"
+    );
+    assert!(updated[3].get("metadata").is_none(), "U2/E4");
+    assert!(updated[4].get("title").is_none(), "U4/E4");
+    assert!(updated[4].get("metadata").is_none(), "U4/E4");
 }
 
 // --- CE: archive commits the terminal event + makes the session read-only ----

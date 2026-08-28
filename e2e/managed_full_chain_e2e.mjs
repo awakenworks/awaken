@@ -297,7 +297,7 @@ async function main() {
     }
 
     // Artifact handoff decision table: C1 a sandbox commit exists; C2 archive
-    // harvested all three outputs; C3 the manifest authenticates the patch; C4 the
+    // harvested all three outputs; C3 the manifest binds the exact patch bytes; C4 the
     // external checkout is still at the recorded base; C5 an operator explicitly
     // selects a review ref. Effects: E1 main stays unchanged; E2 `git apply
     // --check` succeeds; E3 apply changes only CHAIN.txt; E4 repository test and
