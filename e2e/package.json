@@ -70,7 +70,7 @@
     "test:real:codex": "cross-env CODEX_ACP_LIVE=1 node codex_acp_live_e2e.mjs",
     "test:conformance": "node conformance/gate_event_catalog_e2e.mjs && node conformance/gate_beta_sentinel_e2e.mjs && node conformance/gate_event_golden_e2e.mjs && node conformance/when_online_smoke_e2e.mjs",
     "test:sdk-surface": "node conformance/sdk_surface_coverage_e2e.mjs && node conformance/managed_docs_coverage_e2e.mjs && node --test conformance/managed_ts_sdk_method_manifest.test.mjs conformance/managed_event_behavior_manifest.test.mjs",
-    "test:sdk-behavior-owners": "node conformance/run_managed_sdk_behavior_owners.mjs",
+    "test:sdk-behavior-owners": "node --test conformance/managed_sdk_operation_receipts.test.mjs && node conformance/run_managed_sdk_behavior_owners.mjs",
     "test:sdk-latest-canary": "node --test conformance/sdk_latest_canary.test.mjs && node conformance/sdk_latest_canary.mjs",
     "test:managed-native-acp-matrix": "node managed_native_acp_runtime_matrix_e2e.mjs",
     "test:managed-sdk-matrix": "node conformance/managed_sdk_version_matrix_e2e.mjs && node conformance/managed_sdk_runtime_matrix_e2e.mjs && npm run test:managed-native-acp-matrix && node conformance/managed_sdk_resource_handoff_e2e.mjs && node conformance/managed_sdk_memory_depth_e2e.mjs && node managed_webhooks_official_sdk_e2e.mjs",

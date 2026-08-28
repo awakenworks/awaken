@@ -58,12 +58,22 @@ test('real-process ownership derives every HTTP method from the canonical operat
   // exact map equality before source-level invocation checks run.
   const expected = new Map(operationCoverage.operations
     .filter(({ id }) => !id.startsWith('documented.'))
-    .map(({ id, path }) => [id, path]));
+    .map(({ id, path, method, betas, transport_query: transportQuery }) => [id, {
+      route: path,
+      method,
+      betas,
+      ...(transportQuery ? { transportQuery } : {}),
+    }]));
   const helpers = MANAGED_TS_METHOD_MANIFEST
     .filter(({ route }) => route.startsWith('generated-') || route === 'offline-standard-webhooks');
   const actual = new Map(MANAGED_TS_METHOD_MANIFEST
     .filter(({ sdkMethod }) => expected.has(sdkMethod))
-    .map(({ sdkMethod, route }) => [sdkMethod, route]));
+    .map(({ sdkMethod, route, method, betas, transportQuery }) => [sdkMethod, {
+      route,
+      method,
+      betas,
+      ...(transportQuery ? { transportQuery } : {}),
+    }]));
   assert.deepEqual(actual, expected, 'C1/E1/E2/E3');
   assert.deepEqual(
     helpers.map(({ sdkMethod }) => sdkMethod).sort(),

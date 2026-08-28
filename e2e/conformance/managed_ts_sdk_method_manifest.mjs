@@ -103,6 +103,9 @@ const operations = coverage.operations
     sdkRoot: operation.id.startsWith('beta.') ? 'beta' : 'ga',
     relativeMethod: operation.id.replace(/^beta\./u, ''),
     route: operation.path,
+    method: operation.method,
+    betas: operation.betas,
+    ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
     owner: behaviorOwner(operation.id),
     ...(SDK_HELPER_CALLS.has(operation.id)
       ? { sdkHelper: SDK_HELPER_CALLS.get(operation.id) }

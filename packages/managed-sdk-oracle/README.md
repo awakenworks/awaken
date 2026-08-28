@@ -35,7 +35,12 @@ evidence from drifting from the external expectation:
   through a recording transport. This includes the Managed Beta namespaces and
   the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
   arguments while runtime assertions bind the exact method, normalized path,
-  transport selector, and capability set.
+  `beta=true` transport selector, and capability set.
+- `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
+  real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
+  It fails unless all current HTTP operations are observed with their exact
+  method, route, Beta/GA selector, and required capabilities. A method present
+  only in source text can therefore no longer satisfy behavior qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
