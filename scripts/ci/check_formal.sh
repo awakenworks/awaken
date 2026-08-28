@@ -149,6 +149,8 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness erasure_withdrawal_is_absorbing_and_idempotent \
     --harness revision_advance_is_strict_or_explicitly_exhausted
   run_kani awaken-credential-vault \
+    --harness injection_location_represents_exactly_the_three_usable_states \
+    --harness injection_location_partial_update_is_exact_and_never_allows_both_disabled \
     --harness provider_scope_never_widens_endpoint_scope \
     --harness disabled_credential_pool_members_are_never_eligible \
     --harness credential_cooldown_boundary_is_exact_and_inclusive \

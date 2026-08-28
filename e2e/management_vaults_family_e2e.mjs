@@ -65,6 +65,7 @@ async function main() {
         secret_name: 'K1',
         secret_value: 'sk-one', // awaken-allow: secret
         networking: { type: 'unrestricted' },
+        injection_location: { header: true },
         betas: BETAS,
       });
       const c2 = await client.beta.vaults.credentials.create(vaultA.id, {
@@ -74,6 +75,16 @@ async function main() {
         networking: { type: 'unrestricted' },
         betas: BETAS,
       });
+      assert.deepEqual(
+        c1.auth.injection_location,
+        { body: false, header: true },
+        'a present create object defaults its omitted member to false',
+      );
+      assert.deepEqual(
+        c2.auth.injection_location,
+        { body: true, header: true },
+        'an omitted create object defaults both locations to true',
+      );
       const credIds = (await drain(client.beta.vaults.credentials.list(vaultA.id, { betas: BETAS }))).map(
         (c) => c.id,
       );
@@ -87,6 +98,7 @@ async function main() {
           type: 'environment_variable',
           secret_value: 'sk-one-rotated', // awaken-allow: secret
           networking: { type: 'limited', allowed_hosts: ['api.example.com'] },
+          injection_location: { body: true },
         },
         display_name: 'renamed cred',
         metadata: { team: 'core' },
@@ -95,6 +107,11 @@ async function main() {
       assert.equal(updatedCred.auth.type, 'environment_variable');
       assert.equal(updatedCred.auth.networking.type, 'limited');
       assert.deepEqual(updatedCred.auth.networking.allowed_hosts, ['api.example.com']);
+      assert.deepEqual(
+        updatedCred.auth.injection_location,
+        { body: true, header: true },
+        'an omitted update member preserves its current value',
+      );
       assert.equal(updatedCred.display_name, 'renamed cred');
       assert.equal(updatedCred.metadata.team, 'core');
       assert.ok(!JSON.stringify(updatedCred).includes('sk-one-rotated'), 'rotated secret is never echoed');
