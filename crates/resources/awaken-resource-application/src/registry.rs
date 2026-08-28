@@ -141,11 +141,8 @@ impl ResourceInventory for RegistryApplication {
             .into_iter()
             .filter_map(|stored| {
                 (stored.aggregate.definition().workspace_id == workspace_id
-                    && !matches!(
-                        stored.aggregate.definition().state,
-                        ResourceState::Archived | ResourceState::Deleted
-                    ))
-                .then(|| stored.aggregate.into_definition())
+                    && stored.aggregate.definition().state != ResourceState::Deleted)
+                    .then(|| stored.aggregate.into_definition())
             })
             .collect::<Vec<_>>();
         definitions.sort_by(|left, right| left.id.cmp(&right.id));
@@ -424,5 +421,58 @@ mod tests {
             .expect("profile exists");
         assert_eq!(definition.name, "Renamed");
         assert_eq!(definition.timestamps.updated_unix_nanos, 42);
+    }
+
+    #[test]
+    fn inventory_retains_archived_definitions_but_never_deleted_tombstones() {
+        // Cause/effect graph: lifecycle is independent from inventory identity.
+        // Archived definitions remain queryable by management callers, while
+        // Deleted is a terminal tombstone and cannot re-enter a public list.
+        // Execution safety is proved separately by resolve_for_execution.
+        let repository = Arc::new(
+            awaken_resource_store::SqliteResourceStore::in_memory()
+                .expect("open test Registry repository"),
+        );
+        let registry = RegistryApplication::new(repository);
+        for (id, state) in [
+            ("active", ResourceState::Active),
+            ("archived", ResourceState::Archived),
+            ("deleted", ResourceState::Deleted),
+        ] {
+            registry
+                .register_memory_store(RegisterMemoryStore {
+                    definition: MemoryStoreDefinition {
+                        id: id.into(),
+                        workspace_id: "workspace".into(),
+                        name: id.into(),
+                        description: String::new(),
+                        metadata: Default::default(),
+                        state,
+                        current_config_version: ConfigVersion::INITIAL,
+                        timestamps: Default::default(),
+                    },
+                    initial_config: MemoryStoreConfigVersion {
+                        memory_store_id: id.into(),
+                        version: ConfigVersion::INITIAL,
+                        retention_policy: RetentionPolicy::default(),
+                    },
+                })
+                .expect("register lifecycle fixture");
+        }
+
+        let definitions = registry
+            .list_memory_stores("workspace")
+            .expect("list inventory");
+        assert_eq!(
+            definitions
+                .iter()
+                .map(|definition| definition.id.as_str())
+                .collect::<Vec<_>>(),
+            ["active", "archived"]
+        );
+        assert!(matches!(
+            registry.resolve_memory_store("workspace", "archived"),
+            Err(awaken_resource_contract::ResourceRegistryError::NotActive { .. })
+        ));
     }
 }

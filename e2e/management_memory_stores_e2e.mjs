@@ -84,6 +84,29 @@ async function main() {
 
       const storeIds = (await drain(client.beta.memoryStores.list())).map((s) => s.id);
       assert.ok(storeIds.includes(store.id));
+      // Store-list causal graph: lifecycle/time predicates narrow the durable
+      // registry before PageCursor pagination. Inclusive bounds use the exact
+      // second-precision timestamp returned to callers; TS null/empty query
+      // spellings equal omission; malformed time fails before reading a page.
+      const exactCreated = await drain(client.beta.memoryStores.list({
+        'created_at[gte]': store.created_at,
+        'created_at[lte]': store.created_at,
+      }));
+      assert.ok(exactCreated.some((candidate) => candidate.id === store.id));
+      assert.deepEqual(
+        await drain(client.beta.memoryStores.list({
+          'created_at[gte]': '9999-12-31T23:59:59Z',
+        })),
+        [],
+      );
+      const nullFilters = await drain(client.beta.memoryStores.list({
+        'created_at[gte]': null,
+        'created_at[lte]': null,
+        include_archived: null,
+        limit: null,
+        page: null,
+      }));
+      assert.ok(nullFilters.some((candidate) => candidate.id === store.id));
       pass('beta.memoryStores.list -> PageCursor<BetaManagedAgentsMemoryStore>');
 
       // Cause/effect boundary rule: C1 an Awaken-only MemoryStore behavior
@@ -234,9 +257,29 @@ async function main() {
 
       const archived = await client.beta.memoryStores.archive(store.id);
       assert.ok(archived.archived_at);
+      assert.ok(
+        !(await drain(client.beta.memoryStores.list())).some((candidate) => candidate.id === store.id),
+        'archived stores are excluded by default',
+      );
+      assert.ok(
+        (await drain(client.beta.memoryStores.list({ include_archived: true })))
+          .some((candidate) => candidate.id === store.id),
+        'include_archived restores archived stores',
+      );
+      const malformedStoreTime = await json(
+        baseUrl,
+        'GET',
+        '/v1/memory_stores?beta=true&created_at%5Bgte%5D=not-a-time',
+      );
+      assert.equal(malformedStoreTime.status, 400, 'malformed store time fails closed');
 
       const delStore = await client.beta.memoryStores.delete(store.id);
       assert.equal(delStore.type, 'memory_store_deleted');
+      assert.ok(
+        !(await drain(client.beta.memoryStores.list({ include_archived: true })))
+          .some((candidate) => candidate.id === store.id),
+        'deleted stores never reappear as archived',
+      );
       assert.equal(
         (
           await json(baseUrl, 'POST', configRoute, {

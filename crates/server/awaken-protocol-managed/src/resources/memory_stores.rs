@@ -176,6 +176,49 @@ struct MemoryStoreUpdateParams {
     metadata: Option<std::collections::BTreeMap<String, Option<String>>>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryStoreListParams {
+    #[serde(default, rename = "beta")]
+    _beta_selector: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    limit: Option<usize>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    page: Option<String>,
+    #[serde(
+        default,
+        rename = "created_at[gte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    created_at_gte: Option<String>,
+    #[serde(
+        default,
+        rename = "created_at[lte]",
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    created_at_lte: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    include_archived: Option<bool>,
+}
+
+impl MemoryStoreListParams {
+    fn page_query(&self) -> PageQuery {
+        PageQuery {
+            limit: self.limit,
+            page: self.page.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(transparent)]
 struct NullableString(Option<String>);
@@ -468,13 +511,49 @@ async fn get_store(
 async fn list_stores(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
-    Query(query): Query<PageQuery>,
+    Query(query): Query<MemoryStoreListParams>,
 ) -> axum::response::Response {
+    let created_at_gte = match query
+        .created_at_gte
+        .as_deref()
+        .map(|value| parse_version_time(value, "created_at[gte]"))
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
+    let created_at_lte = match query
+        .created_at_lte
+        .as_deref()
+        .map(|value| parse_version_time(value, "created_at[lte]"))
+        .transpose()
+    {
+        Ok(value) => value,
+        Err(message) => return err(StatusCode::BAD_REQUEST, message),
+    };
     let definitions = match state.stores.list(&workspace).await {
         Ok(definitions) => definitions,
         Err(error) => return application_error(error),
     };
-    let page = paginate(definitions, &query, |definition| definition.id.as_str());
+    let definitions = definitions
+        .into_iter()
+        .filter(|definition| {
+            let state_matches = match definition.state {
+                ResourceState::Deleted => false,
+                ResourceState::Archived => query.include_archived.unwrap_or(false),
+                ResourceState::Active | ResourceState::Suspended => true,
+            };
+            let created_at =
+                i64::try_from(definition.timestamps.created_unix_nanos / 1_000_000_000)
+                    .unwrap_or(i64::MAX);
+            state_matches
+                && created_at_gte.is_none_or(|lower| created_at >= lower)
+                && created_at_lte.is_none_or(|upper| created_at <= upper)
+        })
+        .collect();
+    let page = paginate(definitions, &query.page_query(), |definition| {
+        definition.id.as_str()
+    });
     let data: Vec<_> = page.data.iter().map(project_def).collect();
     (
         StatusCode::OK,
