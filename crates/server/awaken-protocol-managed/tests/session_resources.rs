@@ -1941,6 +1941,7 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     // | Agent binding | Session override | Expected behavior |
     // | exact credential@7 + toolset | absent | stage credential@7 with Agent origin |
     // | public URL + toolset | absent | preserve Agent URL and Agent origin |
+    // | one toolset per server | absent | preserve the exact server/toolset bijection |
     // | Skill + delegate | n/a | persist Skill pin and prepare delegate once |
     // FMECA: projecting the delegate as only its executable id loses its
     // publication-owned name/version/model/tools and makes the Session response
@@ -2039,6 +2040,30 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
             "url": "https://public.example.test"
         }),
         "the immutable Agent publication remains authoritative"
+    );
+    assert_eq!(
+        session["agent"]["tools"],
+        json!([
+            {
+                "type": "mcp_toolset",
+                "mcp_server_name": "docs",
+                "default_config": {
+                    "enabled": true,
+                    "permission_policy": {"type": "always_allow"}
+                },
+                "configs": []
+            },
+            {
+                "type": "mcp_toolset",
+                "mcp_server_name": "public-docs",
+                "default_config": {
+                    "enabled": true,
+                    "permission_policy": {"type": "always_allow"}
+                },
+                "configs": []
+            }
+        ]),
+        "each inherited server retains its exact published MCP toolset policy"
     );
     assert_eq!(
         session["agent"]["skills"][0],

@@ -101,7 +101,7 @@ function generated() {
       ),
     }),
     coverage: stableJson({
-      schema_version: 1,
+      schema_version: 2,
       operations: operationCoverage({
         extracted,
         documentedRoutes: scope.documented_routes,

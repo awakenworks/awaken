@@ -55,6 +55,8 @@ test('coverage ledger closes every current and documented operation exactly once
         'sdk_absent_documented_route',
       );
     }
+    assert.match(row.evidence.rust_behavior.owner, /\.rs$/u);
+    assert.match(row.evidence.rust_behavior.case_id, /^[a-z][a-z0-9_]+$/u);
   }
 
   assert.throws(
@@ -82,22 +84,53 @@ test('coverage ledger closes every current and documented operation exactly once
   );
 });
 
-test('coverage owner must point to executable Rust behavior tests', () => {
-  // Cause/effect graph: C1 a route with an owner but C2 no executable test
-  // marker must produce E1 a generator failure. A source-file reference alone
-  // is not accepted as behavioral evidence.
-  assert.throws(
-    () => operationCoverage({
-      extracted: [{ role: 'current_oracle', operations: [{
-        id: 'beta.files.list', method: 'GET', path: '/v1/files',
-      }] }],
+test('each operation owns one exact executable Rust behavior case', () => {
+  // Cause/effect graph: C1 an operation has no matching case, C2 two cases
+  // overlap, C3 the named function is absent/not a test, or C4 a configured
+  // pattern matches no operation. Each cause must fail closed. This prevents a
+  // broad source-file marker from being mistaken for per-operation evidence.
+  const oneOperation = [{
+    id: 'beta.files.list', method: 'GET', path: '/v1/files',
+  }];
+  const run = (resources, readText = () => '#[tokio::test]\nasync fn list_files() {}') =>
+    operationCoverage({
+      extracted: [{ role: 'current_oracle', operations: oneOperation }],
       documentedRoutes: [],
-      config,
+      config: { schema_version: 2, resources },
       repoRoot,
-      readText: () => 'fn helper() {}',
-    }),
-    /contains no behavior tests/u,
-    'C1+C2/E1',
+      readText,
+    });
+
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [{
+      path: 'files.rs', test: 'list_files', operations: ['beta.files.upload'],
+    }] } }),
+    /must have exactly one Rust behavior case; found 0/u,
+    'C1',
+  );
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [
+      { path: 'files.rs', test: 'list_files', operations: ['beta.files.*'] },
+      { path: 'files.rs', test: 'list_files_again', operations: ['beta.files.list'] },
+    ] } }, () => '#[test]\nfn list_files() {}\n#[test]\nfn list_files_again() {}'),
+    /must have exactly one Rust behavior case; found 2/u,
+    'C2',
+  );
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [{
+      path: 'files.rs', test: 'list_files', operations: ['beta.files.list'],
+    }] } }, () => 'async fn list_files() {}'),
+    /contains no behavior test list_files/u,
+    'C3',
+  );
+  assert.throws(
+    () => run({ files: { rust_behavior_cases: [{
+      path: 'files.rs',
+      test: 'list_files',
+      operations: ['beta.files.list', 'beta.files.upload'],
+    }] } }),
+    /dead operation pattern beta\.files\.upload/u,
+    'C4',
   );
 });
 

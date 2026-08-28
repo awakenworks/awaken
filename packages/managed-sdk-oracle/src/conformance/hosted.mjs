@@ -321,7 +321,11 @@ async function exerciseGa(CurrentClient, toFile) {
         .some(({ id }) => id === file.id),
       'GA Files ids filter silently omits missing ids',
     );
-    assert.equal(await (await client.files.download(file.id)).text(), bytes.toString(), 'GA File bytes');
+    await assert.rejects(
+      () => client.files.download(file.id),
+      (error) => error?.status === 400,
+      'GA uploaded File download fails closed',
+    );
 
     const definition = (description) => Buffer.from(
       `---\nname: qualification-${marker}\ndescription: ${description}\n---\n# Qualification\n`,

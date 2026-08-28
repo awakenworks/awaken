@@ -558,12 +558,22 @@ mod tests {
         let (status, listed) = response(&app, "GET", "/v1/agents").await;
         assert_eq!(status, StatusCode::OK, "A1/list");
         assert_eq!(listed["data"][0]["id"], "agent-policy", "A1/list");
+        assert_eq!(
+            request(
+                &app,
+                json!({"name": "updated lifecycle"}),
+                "/v1/agents/agent-policy",
+            )
+            .await,
+            StatusCode::OK,
+            "A1/update"
+        );
         let (status, versions) = response(&app, "GET", "/v1/agents/agent-policy/versions").await;
         assert_eq!(status, StatusCode::OK, "A1/versions");
-        assert_eq!(versions["data"][0]["version"], 1, "A1/versions");
+        assert_eq!(versions["data"][0]["version"], 2, "A1/versions");
         let (status, archived) = response(&app, "POST", "/v1/agents/agent-policy/archive").await;
         assert_eq!(status, StatusCode::OK, "A1/archive");
         assert!(archived["archived_at"].is_string(), "A1/archive");
-        assert_eq!(repository.writes.load(Ordering::SeqCst), 2, "A1");
+        assert_eq!(repository.writes.load(Ordering::SeqCst), 3, "A1");
     }
 }

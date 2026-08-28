@@ -19,7 +19,7 @@ function isCollectionRead(operation) {
 }
 
 export function buildDeployedProbePlan(coverage) {
-  assert.equal(coverage.schema_version, 1, 'unsupported operation coverage schema');
+  assert.equal(coverage.schema_version, 2, 'unsupported operation coverage schema');
   const seen = new Set();
   return coverage.operations.map((operation) => {
     assert.ok(!seen.has(operation.id), `duplicate deployed probe ${operation.id}`);
