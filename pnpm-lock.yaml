@@ -15,8 +15,8 @@ importers:
   packages/managed-sdk-oracle:
     dependencies:
       '@anthropic-ai/sdk-current':
-        specifier: npm:@anthropic-ai/sdk@0.121.0
-        version: '@anthropic-ai/sdk@0.121.0(zod@4.4.3)'
+        specifier: npm:@anthropic-ai/sdk@0.122.0
+        version: '@anthropic-ai/sdk@0.122.0(zod@4.4.3)'
       '@anthropic-ai/sdk-oldest':
         specifier: npm:@anthropic-ai/sdk@0.105.0
         version: '@anthropic-ai/sdk@0.105.0(zod@4.4.3)'
@@ -143,8 +143,8 @@ packages:
       zod:
         optional: true
 
-  '@anthropic-ai/sdk@0.121.0':
-    resolution: {integrity: sha512-WFzwcH8l49CZHv0vQ9QQT51VJ1/DLDQfNSs9awpGlnKBdaSnqtdZa+tw/3cxxosTPIgK8uw1GqsJ2dSbCBD1Lg==}
+  '@anthropic-ai/sdk@0.122.0':
+    resolution: {integrity: sha512-GGPNftt0caaz9MDlmNQGHX8855Ojaduyy5pm9Sm1h7HalCn0cWNb5/bweadJF+4yzbal+QL6ztBa09WAAOzLmQ==}
     hasBin: true
     peerDependencies:
       zod: ^3.25.0 || ^4.0.0
@@ -1273,7 +1273,7 @@ snapshots:
     optionalDependencies:
       zod: 4.4.3
 
-  '@anthropic-ai/sdk@0.121.0(zod@4.4.3)':
+  '@anthropic-ai/sdk@0.122.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
       standardwebhooks: 1.0.0
