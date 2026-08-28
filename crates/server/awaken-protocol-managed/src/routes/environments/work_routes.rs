@@ -139,7 +139,15 @@ fn parse_poll_params(raw: Option<&str>) -> Result<PollParams, WireError> {
 
 #[derive(serde::Deserialize)]
 pub(super) struct HeartbeatParams {
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     desired_ttl_seconds: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
     expected_last_heartbeat: Option<String>,
 }
 
@@ -379,6 +387,37 @@ fn worker_mutation(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nullable_work_queries_match_typescript_and_python_wire_forms() {
+        // Decision table: TS null is an empty query value; Python null is
+        // omission. Heartbeat's numeric/string fields and Poll's two timing
+        // fields must converge independently. Non-empty values remain typed.
+        let omitted: HeartbeatParams = serde_urlencoded::from_str("").unwrap();
+        let typescript_null: HeartbeatParams =
+            serde_urlencoded::from_str("desired_ttl_seconds=&expected_last_heartbeat=").unwrap();
+        assert_eq!(omitted.desired_ttl_seconds, None);
+        assert_eq!(typescript_null.desired_ttl_seconds, None);
+        assert_eq!(typescript_null.expected_last_heartbeat, None);
+        let populated: HeartbeatParams = serde_urlencoded::from_str(
+            "desired_ttl_seconds=30&expected_last_heartbeat=2026-01-01T00%3A00%3A00Z",
+        )
+        .unwrap();
+        assert_eq!(populated.desired_ttl_seconds, Some(30));
+        assert_eq!(
+            populated.expected_last_heartbeat.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+
+        let poll_omitted = parse_poll_params(None).unwrap();
+        let poll_null = parse_poll_params(Some("block_ms=&reclaim_older_than_ms=")).unwrap();
+        assert!(
+            poll_null.block_ms.is_none(),
+            "explicit null disables blocking"
+        );
+        assert_eq!(poll_null.reclaim_older_than_ms, None);
+        assert_eq!(poll_omitted.block_ms.unwrap().as_millis(), 999);
+    }
 
     #[test]
     fn application_failures_preserve_work_http_taxonomy() {

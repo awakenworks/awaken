@@ -349,11 +349,22 @@ pub struct AgentRetrieveParams {
 pub struct AgentListParams {
     #[serde(default)]
     pub limit: Option<usize>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub page: Option<String>,
-    #[serde(default, rename = "created_at[gte]")]
+    #[serde(
+        default,
+        rename = "created_at[gte]",
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub created_at_gte: Option<String>,
-    #[serde(default, rename = "created_at[lte]")]
+    #[serde(
+        default,
+        rename = "created_at[lte]",
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub created_at_lte: Option<String>,
     #[serde(default)]
     pub include_archived: bool,
@@ -428,6 +439,29 @@ pub struct Agent {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn agent_list_optional_query_values_match_both_official_sdk_spellings() {
+        // MC/DC: Python omits empty optional fields while TypeScript emits an
+        // empty query pair. Every independent field must converge to None; a
+        // non-empty cursor/time must remain Some. This covers the complete
+        // Agent-list adapter branch set derived from both official serializers.
+        let omitted: AgentListParams = serde_urlencoded::from_str("").unwrap();
+        let typescript_empty: AgentListParams =
+            serde_urlencoded::from_str("page=&created_at%5Bgte%5D=&created_at%5Blte%5D=").unwrap();
+        let populated: AgentListParams =
+            serde_urlencoded::from_str("page=agent_1&created_at%5Bgte%5D=2026-01-01T00%3A00%3A00Z")
+                .unwrap();
+        assert_eq!(omitted.page, None);
+        assert_eq!(typescript_empty.page, omitted.page);
+        assert_eq!(typescript_empty.created_at_gte, None);
+        assert_eq!(typescript_empty.created_at_lte, None);
+        assert_eq!(populated.page.as_deref(), Some("agent_1"));
+        assert_eq!(
+            populated.created_at_gte.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
 
     #[test]
     fn managed_advisor_model_policy_matches_the_official_pair_and_visibility_tables() {

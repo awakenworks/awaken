@@ -69,8 +69,12 @@ fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError>
     let mut params = DreamListParams::default();
     for (key, value) in form_urlencoded::parse(raw.unwrap_or_default().as_bytes()) {
         match key.as_ref() {
-            "created_at[gt]" => params.created_after = Some(value.into_owned()),
-            "created_at[lt]" => params.created_before = Some(value.into_owned()),
+            "created_at[gt]" if !value.is_empty() => {
+                params.created_after = Some(value.into_owned());
+            }
+            "created_at[lt]" if !value.is_empty() => {
+                params.created_before = Some(value.into_owned());
+            }
             "include_archived" => {
                 params.include_archived = value.parse().map_err(|_| {
                     DreamApiError::BadRequest("include_archived must be a boolean".into())
@@ -99,6 +103,7 @@ fn parse_list_query(raw: Option<&str>) -> Result<DreamListParams, DreamApiError>
                 }
                 params.limit = Some(limit);
             }
+            "page" if value.is_empty() => params.page = None,
             "page" => params.page = Some(value.into_owned()),
             _ => {}
         }
@@ -138,4 +143,31 @@ fn error_response(error: DreamApiError) -> (StatusCode, Json<ErrorResponse>) {
         DreamApiError::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "api_error"),
     };
     (status, Json(ErrorResponse::new(kind, error.to_string())))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_list_query;
+
+    #[test]
+    fn empty_dream_filters_match_python_omission() {
+        // Metamorphic relation: replacing Python's omitted optional filters
+        // with TypeScript's empty pairs preserves DreamListParams; each real
+        // value remains present. This crosses page and both timestamp branches.
+        let omitted = parse_list_query(None).unwrap();
+        let typescript_empty =
+            parse_list_query(Some("page=&created_at%5Bgt%5D=&created_at%5Blt%5D=")).unwrap();
+        let populated = parse_list_query(Some(
+            "page=dream_1&created_at%5Bgt%5D=2026-01-01T00%3A00%3A00Z",
+        ))
+        .unwrap();
+        assert_eq!(typescript_empty.page, omitted.page);
+        assert_eq!(typescript_empty.created_after, omitted.created_after);
+        assert_eq!(typescript_empty.created_before, omitted.created_before);
+        assert_eq!(populated.page.as_deref(), Some("dream_1"));
+        assert_eq!(
+            populated.created_after.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+    }
 }

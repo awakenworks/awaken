@@ -208,6 +208,10 @@ pub fn skills_router(
 
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
 /// read for `display_title`; bundle contents remain binary-safe end to end.
+fn optional_multipart_text(value: String) -> Option<String> {
+    (!value.is_empty()).then_some(value)
+}
+
 async fn read_multipart(
     mut multipart: Multipart,
 ) -> Result<(Option<String>, Vec<UploadedSkillBundleFile>), String> {
@@ -237,7 +241,8 @@ async fn read_multipart(
             if display_title.is_some() {
                 return Err("display_name/display_title may be supplied only once".into());
             }
-            display_title = Some(field.text().await.map_err(|error| error.to_string())?);
+            let value = field.text().await.map_err(|error| error.to_string())?;
+            display_title = optional_multipart_text(value);
         } else if name.as_deref() == Some("executable_paths") {
             if executable_paths.is_some() {
                 return Err("executable_paths may be supplied only once".into());
@@ -835,6 +840,19 @@ mod tests {
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
+
+    #[test]
+    fn empty_skill_display_name_matches_python_multipart_omission() {
+        // Metamorphic request relation derived from both official serializers:
+        // TS emits a `display_name` text part containing `""`; Python omits the
+        // part. Both must select the manifest-derived name, while non-empty
+        // input remains an explicit override.
+        assert_eq!(optional_multipart_text(String::new()), None);
+        assert_eq!(
+            optional_multipart_text("Managed Skill".into()).as_deref(),
+            Some("Managed Skill")
+        );
+    }
 
     #[test]
     fn skill_and_version_dtos_emit_only_official_response_fields() {

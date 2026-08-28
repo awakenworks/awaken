@@ -68,6 +68,19 @@ impl MemoryView {
     }
 }
 
+fn optional_query<'a>(
+    query: &'a std::collections::HashMap<String, String>,
+    name: &str,
+) -> Option<&'a str> {
+    query
+        .get(name)
+        .and_then(|value| crate::types::page::non_empty_query_value(value))
+}
+
+fn memory_path_prefix(query: &std::collections::HashMap<String, String>) -> &str {
+    optional_query(query, "path_prefix").unwrap_or("/")
+}
+
 fn parse_page_query(
     query: &std::collections::HashMap<String, String>,
 ) -> Result<PageQuery, &'static str> {
@@ -80,7 +93,7 @@ fn parse_page_query(
     };
     Ok(PageQuery {
         limit,
-        page: query.get("page").cloned(),
+        page: optional_query(query, "page").map(str::to_owned),
     })
 }
 
@@ -610,7 +623,7 @@ async fn list_memories(
         Ok(false) => return not_found("memory_store"),
         Err(error) => return application_error(error),
     }
-    let prefix = q.get("path_prefix").map(String::as_str).unwrap_or("/");
+    let prefix = memory_path_prefix(&q);
     if !prefix.starts_with('/') || !prefix.ends_with('/') {
         return err(
             StatusCode::BAD_REQUEST,
@@ -703,7 +716,7 @@ async fn list_memories(
     data.sort_by(|left, right| left.path().cmp(right.path()));
     let page = match awaken_agent_contract::page::paginate_by_key(
         &data,
-        q.get("page").map(String::as_str),
+        optional_query(&q, "page"),
         Some(limit),
         |item| item.path().to_string(),
     ) {
@@ -879,12 +892,10 @@ fn filter_versions(
     if operation.is_some_and(|value| !matches!(value, "created" | "modified" | "deleted")) {
         return Err("operation must be `created`, `modified`, or `deleted`".into());
     }
-    let created_at_gte = query
-        .get("created_at[gte]")
+    let created_at_gte = optional_query(query, "created_at[gte]")
         .map(|value| parse_version_time(value, "created_at[gte]"))
         .transpose()?;
-    let created_at_lte = query
-        .get("created_at[lte]")
+    let created_at_lte = optional_query(query, "created_at[lte]")
         .map(|value| parse_version_time(value, "created_at[lte]"))
         .transpose()?;
     Ok(versions
@@ -892,17 +903,16 @@ fn filter_versions(
         .filter(|version| {
             let created_at =
                 i64::try_from(version.created_unix_nanos / 1_000_000_000).unwrap_or(i64::MAX);
-            let actor_matches = query.get("api_key_id").is_none_or(|expected| {
+            let actor_matches = optional_query(query, "api_key_id").is_none_or(|expected| {
                 matches!(&version.created_by, Some(DomainMemoryActor::ApiActor { api_key_id }) if api_key_id == expected)
-            }) && query.get("session_id").is_none_or(|expected| {
+            }) && optional_query(query, "session_id").is_none_or(|expected| {
                 matches!(&version.created_by, Some(DomainMemoryActor::SessionActor { session_id }) if session_id == expected)
-            }) && query.get("service_account_id").is_none_or(|expected| {
+            }) && optional_query(query, "service_account_id").is_none_or(|expected| {
                 matches!(&version.created_by, Some(DomainMemoryActor::ServiceAccountActor { service_account_id }) if service_account_id == expected)
             });
             actor_matches
-                && query
-                    .get("memory_id")
-                    .is_none_or(|memory_id| memory_id == &version.memory_id)
+                && optional_query(query, "memory_id")
+                    .is_none_or(|memory_id| memory_id == version.memory_id.as_str())
                 && operation
                     .is_none_or(|operation| operation == version_operation_name(version.operation))
                 && created_at_gte.is_none_or(|lower| created_at >= lower)
@@ -1012,6 +1022,66 @@ async fn redact_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nullable_memory_page_matches_both_official_sdk_spellings() {
+        // The three Memory list operations share parse_page_query. Prove the
+        // central parser's TS-empty/Python-omitted equivalence and retain a
+        // real cursor, so every caller inherits the same behavior.
+        let omitted = parse_page_query(&std::collections::HashMap::new()).unwrap();
+        let typescript_null = parse_page_query(&std::collections::HashMap::from([(
+            "page".to_owned(),
+            String::new(),
+        )]))
+        .unwrap();
+        let cursor = parse_page_query(&std::collections::HashMap::from([(
+            "page".to_owned(),
+            "memory_1".to_owned(),
+        )]))
+        .unwrap();
+        assert_eq!(typescript_null, omitted);
+        assert_eq!(cursor.page.as_deref(), Some("memory_1"));
+    }
+
+    #[test]
+    fn empty_memory_filters_match_python_omission() {
+        // Causal graph: the official TS serializer supplies empty pairs for
+        // every optional free-text Memory filter; Python omits them. Exercise
+        // the shared lookup plus date parsing and actor/id filtering against a
+        // real version so an empty value cannot silently produce zero rows.
+        let names = [
+            "api_key_id",
+            "created_at[gte]",
+            "created_at[lte]",
+            "memory_id",
+            "path_prefix",
+            "service_account_id",
+            "session_id",
+        ];
+        let query = names
+            .into_iter()
+            .map(|name| (name.to_string(), String::new()))
+            .collect::<std::collections::HashMap<_, _>>();
+        for name in names {
+            assert_eq!(optional_query(&query, name), None, "{name}");
+        }
+        assert_eq!(memory_path_prefix(&query), "/");
+
+        let version = MemoryVersion {
+            id: "memver_1".into(),
+            memory_id: "mem_1".into(),
+            operation: MemoryVersionOperation::Created,
+            path: "/memory.md".into(),
+            content: Some("content".into()),
+            created_unix_nanos: 1_000_000_000,
+            created_by: Some(DomainMemoryActor::ApiActor {
+                api_key_id: "key_1".into(),
+            }),
+            redacted_unix_nanos: None,
+            redacted_by: None,
+        };
+        assert_eq!(filter_versions(vec![version], &query).unwrap().len(), 1);
+    }
 
     #[test]
     fn memory_list_union_and_delete_receipts_have_closed_wire_shapes() {

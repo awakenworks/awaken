@@ -58,8 +58,37 @@ impl<T> Page<T> {
 pub struct PageQuery {
     #[serde(default, deserialize_with = "deserialize_optional_usize")]
     pub limit: Option<usize>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_optional_query_value")]
     pub page: Option<String>,
+}
+
+/// Converge the official SDKs' two spellings for an absent optional query value.
+///
+/// Stainless' TypeScript serializer emits `field=` for both declared `null` and
+/// an explicitly empty optional string, while the Python serializer omits the
+/// pair. Applying this only to optional query fields makes both official clients
+/// one typed `None` without weakening path, body, or required-field validation.
+pub(crate) fn deserialize_optional_query_value<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    Option::<String>::deserialize(deserializer)?.map_or(Ok(None), |value| {
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            value.parse().map(Some).map_err(serde::de::Error::custom)
+        }
+    })
+}
+
+/// The same anti-corruption rule for hand-written query parsers.
+#[must_use]
+pub(crate) fn non_empty_query_value(value: &str) -> Option<&str> {
+    (!value.is_empty()).then_some(value)
 }
 
 fn deserialize_optional_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
@@ -145,5 +174,23 @@ mod tests {
         assert_eq!(page["has_more"], false);
         assert_eq!(page["first_id"], "a");
         assert!(page.get("next_page").is_none());
+    }
+
+    #[test]
+    fn nullable_page_query_has_one_typed_meaning_across_official_sdks() {
+        // Causal decision table (cross-language request chain):
+        // | SDK declaration value | TS wire | Python wire | typed effect |
+        // | omitted               | absent  | absent      | None         |
+        // | null                  | page=   | absent      | None         |
+        // | cursor                | page=p1 | page=p1     | Some("p1")  |
+        // Mutation guards: removing the field deserializer makes row 2
+        // Some("") and pagination returns an empty terminal page; globally
+        // accepting empty values would weaken unrelated query validation.
+        let omitted: PageQuery = serde_urlencoded::from_str("").unwrap();
+        let typescript_null: PageQuery = serde_urlencoded::from_str("page=").unwrap();
+        let cursor: PageQuery = serde_urlencoded::from_str("page=p1").unwrap();
+        assert_eq!(omitted.page, None, "omission");
+        assert_eq!(typescript_null, omitted, "TS null equals Python omission");
+        assert_eq!(cursor.page.as_deref(), Some("p1"), "cursor retained");
     }
 }

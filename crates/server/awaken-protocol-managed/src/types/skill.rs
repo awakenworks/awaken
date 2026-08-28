@@ -35,11 +35,17 @@ pub enum DeletedSkillVersionObjectType {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SkillListParams {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub page: Option<String>,
     #[serde(default)]
     pub limit: Option<u16>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub source: Option<String>,
 }
 
@@ -48,11 +54,17 @@ pub struct SkillListParams {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BetaSkillListParams {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub page: Option<String>,
     #[serde(default)]
     pub limit: Option<u16>,
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub source: Option<String>,
 }
 
@@ -61,7 +73,10 @@ pub struct BetaSkillListParams {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct SkillVersionListParams {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub page: Option<String>,
     #[serde(default)]
     pub limit: Option<u16>,
@@ -72,7 +87,10 @@ pub struct SkillVersionListParams {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct BetaSkillVersionListParams {
-    #[serde(default)]
+    #[serde(
+        default,
+        deserialize_with = "super::page::deserialize_optional_query_value"
+    )]
     pub page: Option<String>,
     #[serde(default)]
     pub limit: Option<u16>,
@@ -177,4 +195,31 @@ pub struct DeletedSkillVersion {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: DeletedSkillVersionObjectType,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn all_skill_list_surfaces_share_nullable_query_semantics() {
+        // Causal matrix: beta/GA x skills/versions crosses every distinct DTO;
+        // TS null (`field=`) and Python null (omission) converge to None, while
+        // non-empty page/source remain values. One missed serde annotation is
+        // exposed by its row instead of being hidden by route-level defaults.
+        let ga: SkillListParams = serde_urlencoded::from_str("page=&source=").unwrap();
+        let beta: BetaSkillListParams = serde_urlencoded::from_str("page=&source=").unwrap();
+        let ga_versions: SkillVersionListParams = serde_urlencoded::from_str("page=").unwrap();
+        let beta_versions: BetaSkillVersionListParams =
+            serde_urlencoded::from_str("page=").unwrap();
+        assert_eq!((ga.page, ga.source), (None, None), "GA skills");
+        assert_eq!((beta.page, beta.source), (None, None), "Beta skills");
+        assert_eq!(ga_versions.page, None, "GA versions");
+        assert_eq!(beta_versions.page, None, "Beta versions");
+
+        let populated: SkillListParams =
+            serde_urlencoded::from_str("page=skill_1&source=custom").unwrap();
+        assert_eq!(populated.page.as_deref(), Some("skill_1"));
+        assert_eq!(populated.source.as_deref(), Some("custom"));
+    }
 }
