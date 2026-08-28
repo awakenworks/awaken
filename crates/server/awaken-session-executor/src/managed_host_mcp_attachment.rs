@@ -31,6 +31,17 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 "MCP realization lease has expired",
             ));
         }
+        // `prompts_as_skills` is a lazy semantic registry/executor, not a
+        // versioned AgentSkillBinding with materializable bytes. This port is
+        // Managed-only, so reject the parallel Skill authority before creating
+        // or replaying any MCP realization. Direct MCP callers retain their
+        // compatibility adapter through the ordinary MCP wiring path.
+        if request.prompts_as_skills {
+            return Err(RunError::classified(
+                "mcp_prompt_skills_unsupported",
+                "Managed Sessions require versioned Agent Skills with filesystem progressive disclosure; MCP prompts-as-skills are direct-session compatibility only",
+            ));
+        }
         let request_fingerprint = request.fingerprint();
         if let Some(existing) = self.host.mcp_projection(&request.generation) {
             let exact_replay = existing.request.realization_id == request.realization_id
@@ -292,12 +303,6 @@ impl awaken_session_contract::McpAttachmentRealizer for ManagedHost {
                 },
             },
         };
-        if is_acp && server.prompts_as_skills {
-            return Err(RunError::classified(
-                "mcp_prompt_skills_unsupported",
-                "MCP prompts-as-skills requires the Native runtime; ACP does not expose a portable prompt-to-Skill projection",
-            ));
-        }
         let (native_wiring, mcp_process) = if is_acp {
             (None, None)
         } else if let Some(target) = sandbox_stdio.as_ref() {

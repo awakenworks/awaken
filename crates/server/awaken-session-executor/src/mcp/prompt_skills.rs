@@ -1,7 +1,9 @@
-//! MCP prompt-to-instruction-only-skill adapter.
+//! Direct/non-Managed MCP prompt-to-instruction-only-Skill compatibility adapter.
 //!
 //! Discovery snapshots prompt metadata (`prompts/list`). Activation keeps the
 //! remote semantics intact and resolves the body lazily with `prompts/get`.
+//! Managed admission rejects `prompts_as_skills` because this lazy source has no
+//! versioned `AgentSkillBinding` bytes to materialize.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

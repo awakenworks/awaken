@@ -1,7 +1,7 @@
-# ADR-0036: Skills Are a Runtime Extension — Two Semantic Tools over Optional Files
+# ADR-0036: Skills Are a Runtime Extension — One Registry, One Projection per Profile
 
 - Status: Accepted
-- Amendment: 2026-08-23 capability-selected delivery section below
+- Amendment: 2026-08-29 Managed filesystem convergence section below
 - Date: 2026-07-02
 - Supersedes: [ADR-0035](0035-environment-provisioning-tools-skills-resources.md) **D4** only
 - Retains: ADR-0035 D1–D3, D5–D8 (the provisioning seam still materializes the
@@ -9,51 +9,61 @@
 - Relates to: `design/resources-memory-files-skills.md`,
   `design/tool-and-capability.md`, [ADR-0004](0004-plugin-factory-contributions-and-capability-bound.md)
 
-## 2026-08-23 amendment: one Skill authority, two mutually-exclusive deliveries
+## 2026-08-29 amendment: Managed Skills have one filesystem projection
 
 This section is authoritative wherever the original D1-D3, D6-D8, consequences,
-or implementation text below implies that every Session always exposes the two
-semantic Skill tools. The original decision remains the semantic-tool design;
-this amendment adds the Anthropic Managed Agents filesystem projection without
-adding another Skill catalog or instruction truth.
+or implementation text below implies that a Managed Session may fall back to the
+two semantic Skill tools. It replaces the 2026-08-23 capability-only selection:
+the execution profile is the first discriminator, and capability is an admission
+condition inside that profile.
 
-The effective, frozen Agent/Session toolset selects delivery once per Session:
-
-| Effective capability | Delivery | Model-visible discovery | Full instructions |
+| Profile and selection | Filesystem capability | Skill projection | Outcome |
 |---|---|---|---|
-| any of `bash/read/write/edit/glob/grep` enabled | `ManagedFilesystem` | prompt metadata: name, description, exact `SKILL.md` path | model reads `SKILL.md` with ordinary file tools |
-| every filesystem tool disabled | `SemanticTools` | `list_skills` | `Skill` returns the selected body |
+| Managed + frozen selected Skill | enabled | `ManagedFilesystem` | metadata/path prompt; model reads exact materialized `SKILL.md` bytes |
+| Managed + frozen selected Skill | disabled | none | fail before inference |
+| Managed + no frozen selected Skill | disabled | none | non-Skill content may still use `SemanticTools`; no Skill tools are built |
+| direct/non-Managed compatibility caller | enabled | filesystem | existing progressive disclosure |
+| direct/non-Managed compatibility caller | disabled | semantic adapter | existing `list_skills`/`Skill` migration surface |
 
-Both rows consume the same frozen Skill versions and the same `SkillRegistry`.
-They are projections, not synchronized implementations:
+There is one authority and one projection for each profile:
 
-- `ManagedFilesystem` materializes every selected delivered bundle, including a
-  `SKILL.md`-only bundle, scans agent-created Skills at
-  `.claude/skills/<name>/SKILL.md` exactly one directory below the root, and does
-  **not** expose `list_skills` or `Skill`. The prompt contains metadata and path,
-  never the full body.
-- `SemanticTools` materializes no delivered Skill tree. Native Runtime exposes
-  the two existing tools through the Session dynamic-tool plugin; ACP exports
-  the exact same descriptors/executors through the Session MCP server. There is
-  no ACP-only eager body injection.
-- A selected filesystem/fork Skill with every filesystem tool disabled is an
-  invalid Session and fails before inference. It cannot silently receive a path
-  that its Agent cannot read.
-- A Session cannot switch delivery after its first runtime projection. Recovery
-  and rebuild reuse the same value, preventing simultaneous file and tool paths.
+- A Managed Skill is selected by `AgentSkillBinding`, resolved to an exact
+  `ResolvedSkillBinding`, and loaded as the hash-verified `SkillVersion` bytes.
+  The runtime builds one `SkillRegistry`, materializes those bytes, and derives
+  prompt metadata and paths from that registry. It never constructs
+  `ListSkillsTool`, `SkillTool`, their activation state, or their permission
+  gate for the Managed profile.
+- Host-static `SkillSpec` values, live durable-catalog scans, workspace/repository
+  Skill scans, and lazy MCP prompt registries have no Session-resolved
+  binding/version/bytes identity, so they are not Managed Skill authorities.
+  MCP prompts-as-skills fail Managed admission; Managed capabilities advertise
+  only version-backed catalog ids; the other sources remain direct-session
+  compatibility inputs. A Managed cold reservation with no frozen Skill bytes
+  projects no Skill, even if those live sources contain entries.
+- Direct/non-Managed callers may temporarily use the two-tool adapter. The
+  adapter receives the already-built registry; it owns neither a second catalog
+  nor a second body/version store. Removing that adapter later therefore does
+  not migrate Managed state.
+- The existing Managed API wire lowering is a thin conversion to canonical
+  `AgentSkillBinding`. No separate Agent SDK adapter/runtime was identified or
+  added by this decision. Any future provider or Agent SDK input adapter may
+  only perform that lowering; it must not introduce a registry, executor,
+  activation state, or version cache.
+- A physical Session freezes its content-delivery choice. Recovery and auxiliary
+  snapshots reuse it; a recovered Managed Skill cannot reopen a semantic path.
 
 Static ownership remains: `SkillStore` owns immutable versions,
 `ResolvedSessionResources` owns the frozen selection, `SkillRegistry` owns
-discovery/body resolution, and `SessionRuntimeSlot` owns only the derived
-delivery projection. Dynamically, Session construction selects the mode,
-materializes files **or** wires tools, injects the matching discovery metadata,
-then Native inference or ACP MCP calls the selected projection. Any descriptor /
-executor mismatch, missing filesystem capability, or attempted mode change
+discovery/body resolution, and `SessionRuntimeSlot` owns only the derived content
+projection. Dynamically, Managed construction verifies the frozen selection and
+filesystem capability, builds/materializes one registry, injects metadata, then
+ordinary `read`/`bash` tools consume it. Direct construction may instead wrap its
+registry in the compatibility adapter. Missing bytes, a hash mismatch, missing
+filesystem capability, unsupported lazy prompt source, or attempted mode change
 fails closed before the model receives a competing surface.
 
 ADR-0063 D9 remains authoritative for Managed Session version pinning. The
-historical unpinned-catalog statements in D7/D8 below apply only to direct,
-agent-created run-scoped Skills.
+run-scoped portions of D7/D8 below apply only to direct, agent-created Skills.
 
 ## Context
 
@@ -80,9 +90,14 @@ and both let the agent author skills mid-session.
 
 ## Decision
 
-### D1: The skill-specific tool surface is exactly two tools
+### D1: The direct compatibility tool surface is exactly two tools
 
-Skills are fronted by two *semantic* tools, and no more:
+When a direct/non-Managed caller cannot use filesystem disclosure, Skills are
+fronted by two *semantic* compatibility tools, and no more:
+
+This is an Awaken migration contract, not protocol or runtime equivalence with
+Anthropic's Agent SDK. Managed compatibility is the filesystem progressive-
+disclosure row above; it never routes through these tools.
 
 - **`Skill { skill, args? }`** — activate a skill: return its instructions as a
   tool result. The single activation entry point.
@@ -90,24 +105,27 @@ Skills are fronted by two *semantic* tools, and no more:
   catalog as data (id, name, description, when-to-use, provenance). Token-cheap;
   the model reads it to choose what to activate.
 
-A per-skill tool must never exist. Everything else a skill needs is done with the
+A per-skill tool must never exist. Managed Sessions expose neither semantic tool.
+Everything else a skill needs is done with the
 **built-in tools** operating on the skill's materialized files (D6): read a
 reference with `read`, run a bundled script with `bash`, author/edit a skill with
 `write` / `edit`. There is deliberately **no** `load_skill_resource`,
 `skill_script`, or `skill_manage` tool — those would duplicate built-ins.
 
-### D2: Discovery is `list_skills` (pull), not a pinned descriptor
+### D2: Direct semantic discovery is `list_skills`, not a pinned descriptor
 
-The catalog is served by `list_skills` at call time, **not** rendered into the
+For the direct semantic adapter, the catalog is served by `list_skills` at call
+time, **not** rendered into the
 `Skill` tool descriptor. The `Skill` descriptor is a stable schema plus a "use
 `list_skills` to discover" hint, so a changing skill set never perturbs a hashed
 descriptor (D7). Tier 1 is metadata only; tier 2 (full instructions) loads on
 `Skill` activation; tier 3 (references/scripts) is reached with built-in
 `read` / `bash`.
 
-### D3: Activation is an ordinary tool result
+### D3: Direct semantic activation is an ordinary tool result
 
-`Skill { skill, args? }` returns the skill's instructions as the tool result, the
+For the compatibility adapter, `Skill { skill, args? }` returns the Skill's
+instructions as the tool result, the
 runtime injects it into the transcript like any tool result and commits it as
 truth. The kernel never learns the concept "skill". `disable-model-invocation` is
 enforced at the tool; an unknown skill is a model-visible error, not a run abort.
@@ -115,9 +133,10 @@ enforced at the tool; an unknown skill is a model-visible error, not a run abort
 ### D4: The extension lives outside the kernel; the kernel is unchanged
 
 `awaken-ext-skills` owns `SkillSpec`, the `SKILL.md` reader, the `SkillRegistry`,
-and the two tools. It composes through existing neutral seams — the tool registry
-and the permission gate — with no new `awaken-runtime-contract` type. The kernel's
-view stays "tools + committed tool results".
+and the direct compatibility tools. Managed filesystem disclosure and the direct
+adapter compose through existing neutral seams — prompts/filesystem or the tool
+registry/permission gate — with no new `awaken-runtime-contract` type. The
+kernel's view stays ordinary files/tools plus committed facts.
 
 ### D5: `allowed_tools` is a selection over already-granted tools
 
@@ -129,10 +148,12 @@ now in `SkillSpec`; enforcement is a later slice.
 
 Every Skill declares one of two execution substrates:
 
-- **`instruction_only` (default)** — activation only expands instructions into
-  context. It has no `${SKILL_DIR}`, supporting files, scripts, filesystem tools,
-  or Hand requirement. It does not itself require a Sandbox, although another
-  Session capability may. MCP prompts always use this form.
+- **`instruction_only` (default)** — semantic activation only expands
+  instructions into context. In the direct compatibility profile it has no
+  `${SKILL_DIR}`, supporting files, scripts, filesystem tools, or Hand
+  requirement. A Managed selection still requires a Sandbox because its only
+  public contract is an on-demand materialized `SKILL.md` path. MCP prompts use
+  this form only for direct/non-Managed callers.
 - **`filesystem`** — activation may use bundled references/scripts/assets through
   built-in tools. It therefore requires a filesystem-capable Session environment;
   tool execution may use the local executor or a remote Hand.
@@ -149,33 +170,35 @@ Filesystem Skills live on two trust roots:
 - a **delivered** root — read-only, control-owned, trusted;
 - the agent **workspace** — writable, untrusted until promoted.
 
-`list_skills` scans both and tags each entry's **provenance by its root**
-(`delivered` vs `agent-created`) — no authoring tool needed to record it.
+In the direct semantic profile, `list_skills` scans both and tags each entry's
+**provenance by its root** (`delivered` vs `agent-created`) — no authoring tool
+is needed to record it.
 `${SKILL_DIR}` / `${SESSION_ID}` template tokens in a filesystem Skill resolve to the
 materialized path so instructions can point at their own references/scripts, run
 via built-in `read` / `bash`. Because materialization is a provisioning-time
 export of *data*, this is placement-agnostic: a remote/container sandbox works
 the same (the kernel never reads a filesystem).
 
-### D7: Skills are not pinned; replay is by the fact log
+### D7: Managed Skills are pinned; direct run-scoped Skills replay by facts
 
-The pinned, fingerprinted surface is the **executable configuration** (the
-`Skill` / `list_skills` tool schemas, model binding, instructions) — never the
-skill catalog or bodies. A skill activation is a committed tool-result fact
-([ADR-0006]); replay re-reads that fact, it does not re-resolve the catalog.
-`ResumeTicket.catalog_fingerprint` validates only the executable config, which is
-skill-set-independent, so a run resumes even if the skill set changed. Keeping the
-catalog out of the `Skill` descriptor (D2) is what makes this hold.
+Managed Sessions pin each selected Skill as a `ResolvedSkillBinding` and verify
+its exact `SkillVersion` bundle hash before materialization. Recovery reloads
+those bytes; it never consults the current catalog. For direct run-scoped or
+agent-created Skills, a semantic activation remains a committed tool-result fact
+([ADR-0006]); replay re-reads that fact instead of re-resolving a changing
+catalog. The direct adapter's executable tool schemas remain skill-set
+independent because the catalog stays out of the descriptor (D2).
 
 [ADR-0006]: 0006-fact-authority-run-record-is-cache.md
 
 ### D8: Agent-authored skills are run-scoped; publishing is a separate gate
 
-An agent authoring a skill this run (writing under the workspace root with
-`write` / `edit`) makes it usable **this run**: `list_skills` surfaces it
-(provenance `agent-created`) and `Skill` can activate it. This is perception, not
-authorization — every tool the skill then invokes is still gated per-call. A
-run-scoped skill is **not** pinned and does **not** cross the `PromotionGate`
+For a direct semantic caller, an agent authoring a Skill this run (writing under
+the workspace root with `write` / `edit`) makes it usable **this run**:
+`list_skills` surfaces it (provenance `agent-created`) and `Skill` can activate
+it. This is perception, not authorization — every tool the Skill then invokes
+is still gated per-call. A run-scoped Skill is **not** pinned and does **not**
+cross the `PromotionGate`
 (ADR-0035 D6) into the shared/trusted store; publishing stays an external,
 control-plane concern. The "read the skill before rewriting it" guard is provided
 by `awaken-ext-state-machine` (a declarative `read-before-write` machine keyed by
@@ -183,22 +206,24 @@ path), not a skill-specific tool.
 
 ## Consequences
 
-- The skill-specific tool face is fixed at two tools regardless of skill count;
-  everything else reuses built-ins on materialized files.
-- The pin hazard is removed: skills are runtime data; the fingerprint covers only
-  executable config; resume survives a changed skill set.
+- Managed Sessions have no Skill-specific tool face; direct compatibility has a
+  fixed two-tool adapter regardless of Skill count. Both reuse one registry.
+- Managed replay uses the frozen binding/version/hash bytes. Direct run-scoped
+  replay remains fact-based and independent of a changed catalog.
 - Provenance falls out of the two-root layout; agent self-authoring is first-class
   yet cannot self-promote or self-authorize.
-- Migration from ADR-0035 D4 is a clean removal (per-skill-tool path, `SkillMount`,
-  the sandbox `SkillTool`) plus `awaken-ext-skills`.
+- Migration from ADR-0035 D4 retains no per-Skill tool, `SkillMount`, or sandbox
+  `SkillTool`; Managed filesystem disclosure and the direct semantic adapter are
+  mutually exclusive projections of `awaken-ext-skills`.
 
 ## Implementation slices
 
-**Landed** (all in `awaken-ext-skills`, wired by `awaken-coordinator-local`; kernel
-unchanged; every commit tested):
+**Landed** (`awaken-ext-skills` owns behavior; the Runtime Host owns the single
+registry projection; kernel unchanged):
 
-- **Two-tool surface** — `Skill` + `list_skills`, catalog out of the descriptor,
-  `SkillSpec.provenance`, in-process registry.
+- **Profile-specific surface** — no semantic Skill tools for Managed filesystem
+  delivery; direct compatibility retains `Skill` + `list_skills` over the same
+  in-process registry, with the catalog out of the descriptor.
 - **`$ARGUMENTS`/`$1`..`$9`** argument substitution and **`${SKILL_DIR}`/
   `${SESSION_ID}`** template substitution on activation.
 - **Metadata size limits** (name/description caps + bounded catalog entries).
@@ -215,8 +240,8 @@ unchanged; every commit tested):
   `list_skills` hides a paths-scoped skill until a glob matches.
 - **Fork execution** (`context: fork`) via a `SubAgentRunner` port backed by the
   host's `run_subagent`.
-- **User `/skill-name`** invocation — the host expands a leading `/name` into the
-  skill body (`user_invocable` only).
+- **User `/skill-name`** invocation — the host expands a leading `/name` from the
+  active profile's one registry (`user_invocable` only).
 
 **Remaining:**
 

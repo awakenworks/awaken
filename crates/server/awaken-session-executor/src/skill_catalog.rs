@@ -62,11 +62,11 @@ fn anthropic_skill(id: &str) -> Option<SkillVersion> {
     })
 }
 
-/// Skills offered on every thread, plus the durable delivered-catalog and its
+/// Direct compatibility Skills plus the durable versioned catalog and its
 /// synchronous read cache. See the module docs for the coherence invariant.
 pub(crate) struct SkillCatalog {
-    /// Skills offered on every thread (ADR-0036). The whole set is fronted by the
-    /// single `Skill` tool; the model activates one by id to load its instructions.
+    /// Host-static Skills offered to direct/non-Managed threads (ADR-0036). They
+    /// are a compatibility source, not a versioned Managed Skill authority.
     specs: Vec<SkillSpec>,
     /// An optional durable delivered-skill catalog (resources plane). When set, its
     /// immutable versions are offered alongside the static `specs` and survive a restart, so
@@ -131,7 +131,7 @@ impl SkillCatalog {
         self.bundle_source = Some(source);
     }
 
-    /// The configured static skills offered on every thread.
+    /// The configured static Skills offered to direct/non-Managed threads.
     pub(crate) fn specs(&self) -> &[SkillSpec] {
         &self.specs
     }
@@ -354,27 +354,38 @@ impl SkillCatalog {
         workspace: &str,
         selected: Option<&std::collections::BTreeSet<String>>,
     ) -> bool {
-        self.ids_in(workspace)
+        self.direct_ids_in(workspace)
             .iter()
             .any(|id| selected.is_none_or(|ids| ids.contains(id)))
     }
 
-    /// The skill ids offered on every thread (advertised as the agent's `skills`):
-    /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
-    /// with the static set winning, so the advertisement matches what `list_skills`
-    /// resolves.
-    pub(crate) fn ids_in(&self, workspace: &str) -> Vec<String> {
+    /// Direct compatibility ids combine host-static specs and the durable
+    /// catalog. This is intentionally private so Managed advertisement cannot
+    /// accidentally regain the unversioned source.
+    fn direct_ids_in(&self, workspace: &str) -> Vec<String> {
         let mut ids: Vec<String> = self.specs.iter().map(|s| s.id.clone()).collect();
         // The durable catalog is read from the sync cache (refreshed on write and at
         // session setup); a network-DB store cannot be awaited from this sync path.
         // A durable skill is advertised by its tagged catalog id (not its name) so the
         // official worker can download it — `/v1/skills` resolves the same id.
-        for version in self.cache_snapshot_in(workspace) {
-            if !ids.iter().any(|id| id == version.skill_id.as_str()) {
-                ids.push(version.skill_id.to_string());
+        for id in self.managed_ids_in(workspace) {
+            if !ids.contains(&id) {
+                ids.push(id);
             }
         }
         ids
+    }
+
+    /// Skill ids safe to advertise through the Managed API: every id is backed
+    /// by an immutable catalog version that `resolve` can pin and `load_pinned`
+    /// can reproduce. Host-static specs are deliberately excluded.
+    pub(crate) fn managed_ids_in(&self, workspace: &str) -> Vec<String> {
+        self.cache_snapshot_in(workspace)
+            .into_iter()
+            .map(|version| version.skill_id.to_string())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect()
     }
 }
 

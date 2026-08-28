@@ -680,16 +680,24 @@ impl SharedHost {
             );
             (source, Some(frozen))
         };
-        // Legacy Session manifests carry no frozen Skill list. Refresh their
-        // canonical delivered catalog before deciding whether `on_tool_use` may
-        // defer the Environment; doing this later in Skill wiring can classify
-        // a cold cache as instruction-only and then discover support files after
-        // the sandbox-free decision has already been made.
+        // Managed dispatch is the profile boundary for every Skill source, not
+        // merely for its eventual presentation. Read it before any catalog I/O
+        // so an empty Managed projection never depends on or reloads the live
+        // direct-compatibility catalog.
+        let session_dispatch = self
+            .session_slots
+            .read(thread, |slot| slot.session_dispatch)
+            .unwrap_or(false);
+        // Legacy direct Session manifests carry no frozen Skill list. Refresh
+        // their canonical delivered catalog before deciding whether
+        // `on_tool_use` may defer the Environment; doing this later in Skill
+        // wiring can classify a cold cache as instruction-only and then discover
+        // support files after the sandbox-free decision has already been made.
         let frozen_skill_versions = self
             .session_slots
             .read(thread, |slot| slot.skills.clone())
             .flatten();
-        if frozen_skill_versions.is_none() {
+        if !session_dispatch && frozen_skill_versions.is_none() {
             self.skills
                 .reload_cache_in(&workspace)
                 .await
@@ -752,10 +760,6 @@ impl SharedHost {
         // tools. Ordinary/direct SDK sessions retain the existing synchronous
         // `agent_run` path. `session_dispatch` is the projection of the durable
         // Session admission fact; this is not a process-local feature mode.
-        let session_dispatch = self
-            .session_slots
-            .read(thread, |slot| slot.session_dispatch)
-            .unwrap_or(false);
         let managed_coordination = has_published_multiagent && session_dispatch;
         // `session_dispatch` is also the sole scope selector for per-request
         // budget admission. A Managed single-Agent Session needs that authority
@@ -770,7 +774,7 @@ impl SharedHost {
         let content_delivery = self.select_content_delivery(
             thread,
             installed.as_ref(),
-            frozen_skill_versions.as_ref(),
+            frozen_skill_versions.as_deref(),
         )?;
         let can_defer = self.can_defer_session_environment(
             thread,
@@ -933,10 +937,10 @@ impl SharedHost {
             || !toolsets.is_empty();
         let pre_authorized =
             pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, has_explicit_tool_policy);
-        // The workspace skill dir is negotiated by the agent/hand definition: its
-        // `plugin_config.skills_dir` (ADR-0036) overrides the default `skills` subdir,
-        // so a hand that authors skills elsewhere is discovered where it says — not a
-        // hardcoded path. Absent/blank → the default.
+        // The workspace Skill dir is negotiated by the Agent/Hand definition:
+        // `plugin_config.skills_dir` (ADR-0036) overrides the profile default.
+        // Direct callers may discover authored repository Skills there; Managed
+        // callers use it only as the materialization target for frozen bytes.
         let skills_subdir = installed
             .as_ref()
             .and_then(|c| {
@@ -954,7 +958,8 @@ impl SharedHost {
                     crate::skills::DEFAULT_SKILLS_SUBDIR.to_string()
                 }
             });
-        let repository_skill_roots = if installed.is_some()
+        let repository_skill_roots = if !session_dispatch
+            && installed.is_some()
             && self.session_allows_repository_skill_discovery(thread, installed.as_ref())
         {
             let mut roots = vec![skills_subdir.clone()];
@@ -1057,10 +1062,9 @@ impl SharedHost {
         {
             runtime = runtime.with_run_delegation(service);
         }
-        // Skills are fronted by two stable tools (ADR-0036); all skill behavior is
-        // in `awaken-ext-skills`. The host only wires the pieces it alone owns —
-        // the sandbox env, the sub-run capability, and the base gate — via
-        // `skills::wire_skills`.
+        // One registry owns Skill discovery/body resolution. Managed Sessions
+        // project its frozen bytes only through the filesystem; direct callers
+        // may adapt the same registry to the legacy two-tool contract.
         let mut skill_descriptors = Vec::new();
         let mut semantic_skill_tools = None;
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
@@ -1068,34 +1072,32 @@ impl SharedHost {
             Vec::new();
         // A managed Session consumes its exact frozen Skill versions. An embedded
         // direct Session without a manifest reads its configured Skill catalog.
-        let delivered = if frozen_skill_versions.is_some() {
-            frozen_skill_versions
-        } else {
-            self.skills
-                .has_application()
+        // Managed execution may consume only the exact bytes resolved into this
+        // Session's Resource projection. Only a direct Session without a frozen
+        // manifest may fall back to the live compatibility catalog.
+        let delivered = frozen_skill_versions.or_else(|| {
+            (!session_dispatch && self.skills.has_application())
                 .then(|| self.skills.cache_snapshot_in(&workspace))
-        };
+        });
         // A published Agent receives exactly its selected Skills. Embedded direct
         // Sessions without a publication use the host-configured catalog.
-        let selected_skills = installed.as_ref().map(|config| {
-            config
-                .resolved_spec
-                .plugin_config
-                .agent
-                .skills
-                .iter()
-                .map(|skill| skill.skill_id.clone())
-                .collect::<std::collections::BTreeSet<_>>()
-        });
-        let filtered_specs: Vec<SkillSpec> = match &selected_skills {
-            Some(selected) => self
-                .skills
-                .specs()
-                .iter()
-                .filter(|skill| selected.contains(&skill.id))
-                .cloned()
-                .collect(),
-            None => self.skills.specs().to_vec(),
+        let selected_skills = content_delivery::published_skill_ids(installed.as_ref());
+        let filtered_specs: Vec<SkillSpec> = if session_dispatch {
+            // Managed Skill truth is the resolved binding plus its exact frozen
+            // version bytes. Host-static specs have neither and therefore remain
+            // a direct-session compatibility source only.
+            Vec::new()
+        } else {
+            match &selected_skills {
+                Some(selected) => self
+                    .skills
+                    .specs()
+                    .iter()
+                    .filter(|skill| selected.contains(&skill.id))
+                    .cloned()
+                    .collect(),
+                None => self.skills.specs().to_vec(),
+            }
         };
         let filtered_delivered = match (delivered, &selected_skills) {
             (Some(skills), Some(selected)) => Some(
@@ -1127,55 +1129,72 @@ impl SharedHost {
                 .map(|id| awaken_agent_contract::AgentSkillBinding::custom(id.clone()))
                 .collect::<Vec<_>>()
         });
-        if let Some(wiring) = crate::skills::wire_skills(
+        if let Some(registry) = crate::skills::build_skill_registry(
             &filtered_specs,
-            mcp.skill_registries.clone(),
+            if session_dispatch {
+                // Managed admission rejects prompts-as-skills, but keep the
+                // construction boundary closed as well: lazy remote registries
+                // cannot become a second Managed Skill authority after recovery.
+                Vec::new()
+            } else {
+                mcp.skill_registries.clone()
+            },
             filtered_delivered,
             env.clone(),
-            self.llm.clone(),
-            &self.model_ref,
-            thread,
-            // The MCP-aware base gate, so a skill-wrapped gate keeps the thread's
-            // pre-authorized MCP tools (identical to `server_gate()` without MCP).
-            base_gate.clone(),
-            sub_base("skill-fork"),
-            self.skill_fork_placement,
             &skills_subdir,
-            &repository_skill_roots,
-            commit.clone(),
+            (!session_dispatch).then_some(repository_skill_roots.as_slice()),
             content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
         )
         .await
         .map_err(HostError::internal)?
         {
             if content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem {
-                let prompt = crate::skills::managed_filesystem_prompt(wiring.registry.as_ref());
+                let prompt = crate::skills::filesystem_skill_prompt(registry.as_ref());
                 self.session_slots
                     .update(thread, |slot| slot.skill_prompt = prompt);
             } else {
+                if session_dispatch {
+                    return Err(HostError::bad_request(
+                        "Managed Agent Skills require filesystem progressive disclosure, but this Session disables every filesystem tool",
+                    ));
+                }
+                // The MCP-aware base gate keeps this direct Session's
+                // pre-authorized MCP tools while the adapter narrows active
+                // Skill tools. Managed Sessions never construct this value.
+                let adapter = crate::skills::semantic_skill_adapter(
+                    registry.clone(),
+                    env.clone(),
+                    self.llm.clone(),
+                    &self.model_ref,
+                    thread,
+                    base_gate.clone(),
+                    sub_base("skill-fork"),
+                    self.skill_fork_placement,
+                    commit.clone(),
+                );
                 if installed.is_some() && !is_acp {
                     session_content_plugins.push(Arc::new(
                         crate::session_tools::SessionToolPlugin::new(
                             "awaken.session.skills",
-                            wiring.descriptors.clone(),
-                            vec![wiring.list_tool.clone(), wiring.activate_tool.clone()],
+                            adapter.descriptors.clone(),
+                            vec![adapter.list_tool.clone(), adapter.activate_tool.clone()],
                         )
                         .map_err(HostError::internal)?,
                     ));
                 }
                 if !is_acp {
                     runtime = runtime
-                        .with_gate(wiring.gate)
-                        .with_tool(wiring.list_tool.clone())
-                        .with_tool(wiring.activate_tool.clone());
+                        .with_gate(adapter.gate)
+                        .with_tool(adapter.list_tool.clone())
+                        .with_tool(adapter.activate_tool.clone());
                 }
-                skill_descriptors = wiring.descriptors.clone();
+                skill_descriptors = adapter.descriptors.clone();
                 semantic_skill_tools = Some((
-                    wiring.descriptors,
-                    vec![wiring.list_tool, wiring.activate_tool],
+                    adapter.descriptors,
+                    vec![adapter.list_tool, adapter.activate_tool],
                 ));
             }
-            skill_registry = Some(wiring.registry);
+            skill_registry = Some(registry);
         } else {
             self.session_slots
                 .update(thread, |slot| slot.skill_prompt = None);

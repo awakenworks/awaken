@@ -4,8 +4,8 @@
 //! environment (to discover workspace skills and resolve `${SKILL_DIR}`), the
 //! sub-run capability (for `context: fork`), and the base permission gate (to
 //! observe touched paths). Everything skill-*behavioral* lives in
-//! `awaken-ext-skills`; this module only wires those host-owned pieces to the
-//! extension's SPIs and assembles the two tools for a thread.
+//! `awaken-ext-skills`; this module builds one registry projection and, only for
+//! legacy/direct callers, adapts that same registry to the two semantic tools.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -197,39 +197,32 @@ impl RawTool for ForkAgentTool {
     }
 }
 
-/// The wired skill surface for one thread: the two tools, their descriptors, the
-/// registry (for `/name` expansion), and the base gate wrapped to observe paths.
-pub(crate) struct SkillWiring {
-    pub registry: Arc<dyn SkillRegistry>,
+/// A compatibility projection of one already-built registry onto the legacy
+/// semantic Skill tools. Managed Sessions never construct this adapter: their
+/// selected, pinned bytes are disclosed only through the materialized filesystem.
+pub(crate) struct SemanticSkillAdapter {
     pub descriptors: Vec<ToolDescriptor>,
     pub list_tool: Arc<dyn RawTool>,
     pub activate_tool: Arc<dyn RawTool>,
     pub gate: Arc<dyn ToolGateHook>,
 }
 
-/// Assemble the skill surface for a thread, or `None` when no skills are offered.
-/// `base_gate` is wrapped so conditional (`paths`) skills surface on file touch;
-/// `fork_base` is the sub-agent sandbox base for `context: fork` skills.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn wire_skills(
+/// Build the one Skill registry for a thread, or `None` when no Skills are
+/// offered. Filesystem delivery materializes the exact same registry inputs that
+/// its progressive-disclosure prompt later reads; it does not construct a second
+/// semantic executor.
+pub(crate) async fn build_skill_registry(
     configured: &[SkillSpec],
     external_registries: Vec<Arc<dyn SkillRegistry>>,
     delivered: Option<Vec<SkillVersion>>,
     env: Option<Arc<crate::session_environment::SessionEnvironment>>,
-    llm: Arc<dyn LlmExecutor>,
-    model_ref: &str,
-    session_id: &str,
-    base_gate: Arc<dyn ToolGateHook>,
-    fork_base: PathBuf,
-    placement: SkillForkPlacement,
     skills_subdir: &str,
-    repository_skill_roots: &[String],
-    execution: Arc<crate::store::HostCommit>,
+    workspace_skill_roots: Option<&[String]>,
     filesystem_delivery: bool,
-) -> Result<Option<SkillWiring>, String> {
-    if let Some(env) = &env {
+) -> Result<Option<Arc<dyn SkillRegistry>>, String> {
+    if let (Some(env), Some(roots)) = (&env, workspace_skill_roots) {
         env.register_skill_dir(skills_subdir);
-        for root in repository_skill_roots {
+        for root in roots {
             env.register_skill_dir(root);
         }
         if let Err(error) = env.refresh_skills().await {
@@ -240,12 +233,14 @@ pub(crate) async fn wire_skills(
     // later commit or in-sandbox write cannot mutate the announced catalog;
     // the next Session receives a new snapshot from its own checkout.
     let repository_files = env.as_ref().map_or_else(Vec::new, |env| {
-        snapshot_repository_skill_files(env, repository_skill_roots)
+        workspace_skill_roots.map_or_else(Vec::new, |roots| {
+            snapshot_repository_skill_files(env, roots)
+        })
     });
-    // Store availability is not a capability grant. Offer the tools only when
-    // this exact Session has a static, external, or delivered Skill. A later Run
-    // reloads the canonical catalog and may surface newly selected content; an
-    // empty store never creates an ambient tool surface by itself.
+    // Store availability is not a capability grant. Build a projection only
+    // when this exact Session has a static, external, delivered, or repository
+    // Skill. A later direct Run may reload its catalog; an empty store never
+    // creates an ambient Skill surface by itself.
     if configured.is_empty()
         && external_registries.is_empty()
         && delivered.as_ref().is_none_or(Vec::is_empty)
@@ -302,11 +297,10 @@ pub(crate) async fn wire_skills(
             skill.dir = Some(directory);
         }
     }
-    // Delivered skills come from two trusted sources: the static configured set and —
-    // when wired — the durable `/v1/skills` catalog snapshot (both `Delivered`
-    // provenance), plus a live scan of the workspace for skills the agent authored
-    // this run (`AgentCreated`). Static wins over durable wins over authored on a
-    // duplicate id.
+    // Registry precedence follows the admitted sources: configured direct
+    // compatibility specs, frozen delivered versions, external direct adapters,
+    // then direct workspace/repository discovery. Managed passes `None` for the
+    // final source and therefore performs no live workspace scan or refresh.
     let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
     if !configured.is_empty() {
         registries.push(Arc::new(FixedSkillRegistry::from_specs(configured)));
@@ -332,11 +326,11 @@ pub(crate) async fn wire_skills(
                     )
                 })?
                 .to_string();
-            // A bundle containing only SKILL.md is instruction-only unless the
-            // author explicitly declares a filesystem requirement. It stays in
-            // the host snapshot and is never projected into the Hand workspace.
-            // Any supporting file makes the requirement objective and forces
-            // materialization regardless of authored metadata.
+            // For the direct semantic adapter, a SKILL.md-only bundle stays in
+            // the host snapshot unless it declares a filesystem requirement.
+            // Managed delivery materializes every selected bundle because its
+            // only disclosure contract is the advertised path. Any supporting
+            // file also makes materialization objective regardless of metadata.
             let directory =
                 (filesystem_delivery || requires_filesystem(&version, &content)).then(|| {
                     format!(
@@ -381,7 +375,7 @@ pub(crate) async fn wire_skills(
             SkillProvenance::Repository,
         )));
     }
-    if repository_skill_roots.is_empty()
+    if workspace_skill_roots.is_some_and(<[String]>::is_empty)
         && let Some(env) = &env
     {
         registries.push(Arc::new(SourceSkillRegistry::new(
@@ -392,8 +386,24 @@ pub(crate) async fn wire_skills(
             SkillProvenance::AgentCreated,
         )));
     }
-    let registry: Arc<dyn SkillRegistry> = Arc::new(CompositeSkillRegistry::new(registries));
+    Ok(Some(Arc::new(CompositeSkillRegistry::new(registries))))
+}
 
+/// Adapt one canonical registry to the legacy/direct semantic tool contract.
+/// `base_gate` is wrapped so conditional (`paths`) Skills surface on file touch;
+/// `fork_base` is the sub-agent sandbox base for `context: fork` Skills.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn semantic_skill_adapter(
+    registry: Arc<dyn SkillRegistry>,
+    env: Option<Arc<crate::session_environment::SessionEnvironment>>,
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: &str,
+    session_id: &str,
+    base_gate: Arc<dyn ToolGateHook>,
+    fork_base: PathBuf,
+    placement: SkillForkPlacement,
+    execution: Arc<crate::store::HostCommit>,
+) -> SemanticSkillAdapter {
     let activations = PathActivations::new();
     let active_tools = ActiveSkillTools::new();
     let recording: Arc<dyn ToolGateHook> =
@@ -418,19 +428,18 @@ pub(crate) async fn wire_skills(
     }
     let activate: Arc<dyn RawTool> = Arc::new(activate);
 
-    Ok(Some(SkillWiring {
+    SemanticSkillAdapter {
         descriptors: vec![list_skills_descriptor(), skill_descriptor()],
         list_tool: list,
         activate_tool: activate,
         gate,
-        registry,
-    }))
+    }
 }
 
 /// Anthropic-compatible progressive-disclosure metadata. The prompt carries
 /// only name, description, and the exact `SKILL.md` path; the model reads full
 /// instructions with ordinary file tools when the Skill is relevant.
-pub(crate) fn managed_filesystem_prompt(registry: &dyn SkillRegistry) -> Option<String> {
+pub(crate) fn filesystem_skill_prompt(registry: &dyn SkillRegistry) -> Option<String> {
     let entries = registry
         .list()
         .into_iter()
@@ -617,6 +626,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn managed_registry_excludes_unbound_workspace_skill_files() {
+        // Source-authority decision table. C1 exact frozen version bytes exist;
+        // C2 an unbound `.claude/skills` file also exists; C3 the Managed caller
+        // passes no workspace source. Effect E1 only C1 enters the registry and
+        // filesystem prompt. Rule M1=C1+C2+C3=>E1. Complement M2=!C3+C2=>live
+        // AgentCreated discovery is owned by
+        // `agent_authored_skill_is_discovered_live_from_the_workspace`.
+        let base = std::env::temp_dir().join(format!(
+            "awaken-managed-skill-authority-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(&base)
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        ));
+        let unbound = base.join("t").join(MANAGED_SKILLS_SUBDIR).join("unbound");
+        std::fs::create_dir_all(&unbound).unwrap();
+        std::fs::write(
+            unbound.join("SKILL.md"),
+            "---\nname: Unbound\ndescription: must stay hidden\n---\nUNBOUND",
+        )
+        .unwrap();
+        let frozen = version_with(vec![awaken_skill_store::SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: Frozen\ndescription: pinned\n---\nFROZEN".to_vec(),
+            executable: false,
+        }]);
+
+        let registry = build_skill_registry(
+            &[],
+            Vec::new(),
+            Some(vec![frozen]),
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            None,
+            true,
+        )
+        .await
+        .unwrap()
+        .expect("M1 frozen Managed registry");
+        let listed = registry.list();
+        assert_eq!(listed.len(), 1, "M1/E1 no parallel workspace entry");
+        assert_eq!(listed[0].id, "test", "M1/E1 exact frozen id");
+        let prompt = filesystem_skill_prompt(registry.as_ref()).expect("M1 prompt");
+        assert!(
+            prompt.contains("Frozen") && !prompt.contains("Unbound"),
+            "M1/E1"
+        );
+
+        env.dispose().await.unwrap();
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
     async fn a_negotiated_skills_dir_is_scanned_instead_of_the_default() {
         // A hand/agent that authors skills under a non-default dir (its
         // `plugin_config.skills_dir`) is discovered there — the dir is not hardcoded.
@@ -713,7 +779,7 @@ mod tests {
         );
         assert_ne!(initial[0].id, initial[1].id, "R1 path-qualified identity");
         assert_ne!(initial[0].dir, initial[1].dir, "R1 distinct sandbox paths");
-        let prompt = managed_filesystem_prompt(frozen.as_ref()).expect("R1 prompt metadata");
+        let prompt = filesystem_skill_prompt(frozen.as_ref()).expect("R1 prompt metadata");
         assert_eq!(prompt.matches("- Shared:").count(), 2, "R1 both announced");
         assert!(prompt.contains("/workspace/a/.claude/skills/shared/SKILL.md"));
         assert!(prompt.contains("/workspace/b/.claude/skills/shared/SKILL.md"));
@@ -728,7 +794,7 @@ mod tests {
             frozen.clone(),
         ]);
         let combined_prompt =
-            managed_filesystem_prompt(&combined).expect("R1 combined prompt metadata");
+            filesystem_skill_prompt(&combined).expect("R1 combined prompt metadata");
         assert_eq!(
             combined_prompt.matches("- Shared:").count(),
             3,

@@ -810,15 +810,32 @@ pub async fn build_oauth_resolved_router() -> Router {
     )
 }
 
-/// Build the server router offering `skills` on every thread (ADR-0036): the whole
-/// set is fronted by the single `Skill` tool, whose catalog lists them and whose
-/// invocation returns the activated skill's instructions.
+/// Build a direct/non-Managed compatibility router from host-static Skills.
+/// Managed-Agent scenarios must use [`build_router_with_managed_skills`] so the
+/// Resources binding and immutable version bytes remain the sole authority.
 pub fn build_router_with_skills(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
     skills: Vec<SkillSpec>,
 ) -> Router {
     mount(resource_host(llm, model_ref).map_host(|host| host.with_skills(skills)))
+}
+
+/// Build a Managed-Agent router whose deterministic Skill fixtures travel the
+/// production path: Resources catalog version -> Agent binding -> frozen Session
+/// bytes -> filesystem progressive disclosure. This is the one Managed Skill
+/// fixture owner; it deliberately installs no host-static compatibility copy.
+pub async fn build_router_with_managed_skills(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+    skills: Vec<SkillSpec>,
+) -> Router {
+    let model_ref = model_ref.into();
+    let platform = resource_host(llm, model_ref.clone());
+    let bindings = platform.publish_managed_skills(&skills).await;
+    let publication = fixed_host_backend_publication("assistant", &model_ref, bindings);
+    let platform = platform.map_host(|host| host.with_agent_publications(publication.clone()));
+    mount_with_agent_source(platform, publication)
 }
 
 /// A router whose Outcomes are graded by the named Judge Agent through the

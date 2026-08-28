@@ -22,7 +22,11 @@ impl ManagedHost {
                     }
                 })
                 .collect(),
-            skills: self.host.skills.ids_in(workspace),
+            // Managed capabilities advertise only ids that resolve to immutable
+            // catalog versions. Host-static SkillSpec values belong to the
+            // direct compatibility adapter and cannot truthfully satisfy a
+            // Managed AgentSkillBinding.
+            skills: self.host.skills.managed_ids_in(workspace),
             delegates: self.host.delegate_ids_in(workspace),
         }
     }

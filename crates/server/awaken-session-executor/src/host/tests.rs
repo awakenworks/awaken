@@ -74,6 +74,41 @@ fn on_tool_use_environment() -> awaken_session_contract::EnvironmentSnapshot {
     environment
 }
 
+/// One test fixture for the production SkillVersion authority. Callers vary
+/// only identity/body/supporting files, so Managed tests cannot accidentally
+/// reintroduce host-static SkillSpec setup as a parallel source.
+fn frozen_skill_version(
+    id: &str,
+    name: &str,
+    description: &str,
+    body: &str,
+    supporting_files: &[(&str, &str)],
+) -> awaken_skill_store::SkillVersion {
+    let mut files = vec![awaken_skill_store::SkillBundleFile {
+        path: "SKILL.md".into(),
+        content: format!("---\nname: {id}\ndescription: {description}\n---\n{body}").into_bytes(),
+        executable: false,
+    }];
+    files.extend(supporting_files.iter().map(|(path, content)| {
+        awaken_skill_store::SkillBundleFile {
+            path: (*path).into(),
+            content: content.as_bytes().to_vec(),
+            executable: false,
+        }
+    }));
+    awaken_skill_store::SkillVersion {
+        id: format!("skver-{id}-1").into(),
+        skill_id: id.into(),
+        version: 1,
+        name: name.into(),
+        description: description.into(),
+        directory: format!("/skills/{id}"),
+        bundle_sha256: awaken_skill_store::bundle_sha256(&files),
+        files,
+        created_unix_nanos: 0,
+    }
+}
+
 /// Test-only proof that a Managed Session was composed with its required
 /// SessionApplication port. Individual coordination adapters have their own
 /// behavioral fakes; this one admits the ordinary unlimited model-request path
@@ -4832,64 +4867,56 @@ impl LlmExecutor for HandReadModel {
     }
 }
 
-/// L2: instruction-only Skill tools execute in the Brain and do not awaken Hand.
+/// L2: the direct-session compatibility adapter executes an instruction-only
+/// Skill in the Brain without awakening Hand.
 #[tokio::test]
-async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
-    // Test design. Causes: C1 a Brain-owned Skill is selected; C2 the Agent
-    // disables every filesystem tool; C3 Environment provisioning is OnToolUse.
-    // Effects: E1 `list_skills` reaches its canonical RawTool through the final
-    // Run executor; E2 the Skill catalog is returned without an error; E3 the
-    // Environment remains absent. Rule L2: C1+C2+C3 => E1+E2+E3. Constraint:
-    // semantic delivery cannot awaken Hand or retain a parallel filesystem path.
+async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
+    // Test design. Causes: C1 a direct (non-Managed) caller selects a Brain-owned
+    // Skill; C2 it disables every filesystem tool; C3 Environment provisioning
+    // is OnToolUse. Effects: E1 the compatibility `list_skills` adapter reaches
+    // the canonical registry; E2 it returns the catalog; E3 Hand remains absent.
+    // Rule L2: !Managed+C1+C2+C3 => E1+E2+E3. Constraint: the adapter consumes
+    // the one registry; it neither creates a second catalog nor grants Hand.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
     };
-    use awaken_session_contract::{SessionInit, SessionRuntime};
     let host = Arc::new(
         SharedHost::new(Arc::new(BrainSkillModel), "stub").with_skills(vec![
             awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
         ]),
     );
-    install_test_session_application(&host);
-    crate::ManagedHost::new(host.clone())
-        .prepare_session(
-            "deferred-brain",
-            SessionInit {
-                workspace_id: host.local_workspace().into(),
-                agent_id: "assistant".into(),
-                delegate_ids: Vec::new(),
-                tools: Some(awaken_session_contract::SessionToolConfiguration {
-                    toolsets: vec![ToolsetPolicy {
-                        source: ToolsetSource::Agent,
-                        default: ToolExecutionPolicy {
-                            enabled: false,
-                            permission: ToolPermissionRequirement::AlwaysAllow,
-                        },
-                        overrides: vec![ToolPolicyOverride::new(
-                            "web_fetch",
-                            ToolExecutionPolicy {
-                                enabled: true,
-                                permission: ToolPermissionRequirement::AlwaysAllow,
-                            },
-                        )],
-                    }],
-                    client_tools: Vec::new(),
-                }),
-                resource_revision: 0,
-                resources: Default::default(),
-                model: None,
-                runtime: None,
-                environment: on_tool_use_environment(),
-            },
-        )
-        .await
+    let thread = "direct-deferred-brain";
+    host.install_environment_projection(thread, &on_tool_use_environment())
         .unwrap();
+    let deferred: Arc<dyn awaken_runtime_contract::tool::ToolExecutor> = Arc::new(
+        crate::lazy_sandbox::DeferredSandboxExecutor::new(Arc::downgrade(&host), thread),
+    );
+    host.session_slots.update(thread, |slot| {
+        slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy {
+                    enabled: false,
+                    permission: ToolPermissionRequirement::AlwaysAllow,
+                },
+                overrides: vec![ToolPolicyOverride::new(
+                    "web_fetch",
+                    ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAllow,
+                    },
+                )],
+            }],
+            client_tools: Vec::new(),
+        });
+        slot.deferred_executor = Some(deferred);
+    });
 
     let result = host
         .run(
-            Some("assistant"),
-            "deferred-brain",
+            None,
+            thread,
             vec![Message::text(MessageId("u2".into()), Role::User, "skills")],
         )
         .await
@@ -4905,9 +4932,120 @@ async fn on_tool_use_brain_skill_call_keeps_the_environment_absent() {
         tool_results[0].contains("\"skills\"") && !tool_results[0].contains("unknown tool"),
         "L2/E2 canonical Skill catalog: {tool_results:?}"
     );
+    assert!(host.session_environment(thread).await.is_none(), "L2/E3");
+}
+
+#[tokio::test]
+async fn managed_session_ignores_unbound_host_skill_sources() {
+    // Authority decision table. C1 the caller is Managed; C2 its frozen Resource
+    // manifest selects no Skill; C3 a filesystem-requiring host-static Skill
+    // exists; C4 a durable catalog cache also contains an unbound Skill; C5 all
+    // filesystem tools are disabled. Effect E1 no Skill descriptor/executor or
+    // prompt is projected; E2 Hand stays absent. Rule
+    // A1=C1+C2+C3+C4+C5=>E1+E2.
+    // Counter-rule A2=!C1+instruction-only static Skill+C4=>the direct semantic
+    // adapter is covered by L2. This distinguishes a compatibility input from the Managed
+    // Binding/version/bytes authority instead of synchronizing both catalogs.
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+    };
+    use awaken_session_contract::{SessionInit, SessionRuntime};
+
+    let host_static = awaken_ext_skills::SkillSpec {
+        environment: awaken_ext_skills::SkillEnvironment::Filesystem,
+        dir: Some("skills/think".into()),
+        ..awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully.")
+    };
+    let storage = tempfile::tempdir().expect("Managed Skill authority test storage");
+    let host = Arc::new(
+        SharedHost::new(Arc::new(OkModel), "stub")
+            .with_skills(vec![host_static])
+            .with_skill_store(storage.path().join("skills")),
+    );
+    let durable = frozen_skill_version(
+        "cached",
+        "Cached",
+        "unbound durable catalog entry",
+        "Never project without a binding.",
+        &[],
+    );
+    host.skills
+        .create(
+            awaken_skill_store::SkillDefinition {
+                id: durable.skill_id.clone(),
+                workspace_id: host.local_workspace().into(),
+                display_title: None,
+                latest_version: durable.version,
+                last_version: durable.version,
+                timestamps: Default::default(),
+            },
+            durable,
+        )
+        .await
+        .expect("durable Skill store configured")
+        .expect("cache unbound Skill version");
+    assert_eq!(
+        host.skills.managed_ids_in(host.local_workspace()),
+        vec!["cached".to_string()],
+        "A1/C4 proves the live catalog contains an otherwise advertisable Skill"
+    );
+    install_test_session_application(&host);
+    crate::ManagedHost::new(host.clone())
+        .prepare_session(
+            "managed-no-frozen-skill",
+            SessionInit {
+                workspace_id: host.local_workspace().into(),
+                agent_id: "assistant".into(),
+                delegate_ids: Vec::new(),
+                tools: Some(awaken_session_contract::SessionToolConfiguration {
+                    toolsets: vec![ToolsetPolicy {
+                        source: ToolsetSource::Agent,
+                        default: ToolExecutionPolicy {
+                            enabled: false,
+                            permission: ToolPermissionRequirement::AlwaysAllow,
+                        },
+                        overrides: Vec::new(),
+                    }],
+                    client_tools: Vec::new(),
+                }),
+                resource_revision: 0,
+                resources: Default::default(),
+                model: None,
+                runtime: None,
+                environment: on_tool_use_environment(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let context = host
+        .ctx_for("managed-no-frozen-skill", Some("assistant"))
+        .await
+        .expect("A1 builds from the empty frozen Skill projection");
     assert!(
-        host.session_environment("deferred-brain").await.is_none(),
-        "L2/E3"
+        context
+            .config
+            .resolved_spec
+            .tool_descriptors
+            .iter()
+            .all(|descriptor| {
+                descriptor.id != awaken_ext_skills::SKILL_LIST_TOOL_ID
+                    && descriptor.id != awaken_ext_skills::SKILL_TOOL_ID
+            }),
+        "A1/E1 no semantic Skill compatibility surface"
+    );
+    assert_eq!(
+        host.session_slots
+            .read("managed-no-frozen-skill", |slot| slot.skill_prompt.clone())
+            .flatten(),
+        None,
+        "A1/E1 no unbound filesystem Skill prompt"
+    );
+    assert!(
+        host.session_environment("managed-no-frozen-skill")
+            .await
+            .is_none(),
+        "A1/E2"
     );
 }
 
@@ -4959,18 +5097,14 @@ async fn on_tool_use_runtime_hand_call_materializes_before_tool_execution() {
 /// broken `${SKILL_DIR}`.
 #[tokio::test]
 async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
-    // Test design. Causes: C1 a published skill requires filesystem projection.
-    // Effects: E1 the Environment is realized before skill execution. Constraint/
-    // Invariant: filesystem demand cannot run against an absent or partial sandbox.
-    // Decision rule: execute C1 and require one eager materialization.
+    // Test design. Causes: C1 a Managed Resource projection contains an exact
+    // frozen Skill version with a supporting file. Effects: E1 the Environment
+    // is realized before Skill execution. Constraint/Invariant: filesystem
+    // demand comes from frozen version bytes, never a host-static compatibility
+    // spec, and cannot run against an absent or partial sandbox. Decision rule:
+    // execute C1 and require one eager materialization.
     use awaken_session_contract::{SessionInit, SessionRuntime};
-    let filesystem_skill = awaken_ext_skills::SkillSpec {
-        environment: awaken_ext_skills::SkillEnvironment::Filesystem,
-        dir: Some("skills/files".into()),
-        ..awaken_ext_skills::SkillSpec::new("files", "Files", "inspect files", "Read files.")
-    };
-    let host =
-        Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![filesystem_skill]));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
@@ -4989,6 +5123,16 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
         )
         .await
         .unwrap();
+    host.session_slots
+        .update("deferred-filesystem-skill", |slot| {
+            slot.skills = Some(vec![frozen_skill_version(
+                "files",
+                "Files",
+                "inspect files",
+                "Read the guide.",
+                &[("references/guide.md", "guide")],
+            )]);
+        });
 
     let ctx = host
         .ctx_for("deferred-filesystem-skill", Some("assistant"))
@@ -5003,8 +5147,9 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
 }
 
 /// Managed-filesystem reservation cause/effect graph: C1 the Session permits
-/// `read`; C2 it selects an instruction-only Skill; C3 reservation must remain
-/// side-effect free; C4 the claimed/local execution context is built afterward.
+/// `read`; C2 its Resource projection contains an exact frozen instruction-only
+/// Skill version; C3 reservation must remain side-effect free; C4 the
+/// claimed/local execution context is built afterward.
 /// Effects: E1 C1+C2+C3 projects the stable `SKILL.md` path without creating an
 /// Environment; E2 C1+C2+C4 eagerly creates the Environment and materializes
 /// that exact path. Constraint: reservation and execution share one Skill
@@ -5016,19 +5161,13 @@ async fn on_tool_use_filesystem_skill_forces_an_eager_environment() {
 /// | L9 | yes | yes | reservation | absent | path only |
 /// | L10 | yes | yes | execution | present | same path + body |
 ///
-/// L2 covers the complementary read-disabled semantic-delivery rule.
+/// M3 in `skill_delivery_profile_uses_one_managed_filesystem_projection` covers
+/// the Managed read-disabled rejection. L2 is direct compatibility only.
 #[tokio::test]
 async fn managed_filesystem_skill_path_survives_deferred_reservation() {
     use awaken_session_contract::{SessionInit, SessionRuntime};
 
-    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![
-        awaken_ext_skills::SkillSpec::new(
-            "release-signal",
-            "Release signal",
-            "release safely",
-            "RESERVATION-SKILL-BODY",
-        ),
-    ]));
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     install_test_session_application(&host);
     crate::ManagedHost::new(host.clone())
         .prepare_session(
@@ -5047,6 +5186,16 @@ async fn managed_filesystem_skill_path_survives_deferred_reservation() {
         )
         .await
         .expect("prepare lazy Session");
+    host.session_slots
+        .update("deferred-managed-filesystem-skill", |slot| {
+            slot.skills = Some(vec![frozen_skill_version(
+                "release-signal",
+                "Release signal",
+                "release safely",
+                "RESERVATION-SKILL-BODY",
+                &[],
+            )]);
+        });
 
     let provisional = host
         .ctx_for_session_reservation("deferred-managed-filesystem-skill", Some("assistant"))
@@ -6821,6 +6970,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     // | H20 | authenticated ACP/complete provider evidence | exact | stage+publish+call | generation route injects; no inline secret |
     // | H21 | non-OAuth bearer/exact factory | exact | stage | - | one neutral challenge refresher; no Vault in Runtime |
     // | H22 | exact removed tombstone | exact request replay | stage | - | rebuild one staged projection/material |
+    // | H24 | Managed prompts-as-skills | any backend | stage | - | reject before projection/materialization |
     let exact_request = request("mcp-exact", "workspace-a", 1);
     let receipt = managed
         .stage_mcp_attachment(exact_request.clone())
@@ -6889,6 +7039,22 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     assert!(
         host.mcp_projection(&generation("mcp-usage")).is_none(),
         "H17"
+    );
+    let mut prompt_skill = request("mcp-native-prompt-skill", "workspace-a", 1);
+    prompt_skill.prompts_as_skills = true;
+    assert_eq!(
+        managed
+            .stage_mcp_attachment(prompt_skill)
+            .await
+            .unwrap_err()
+            .code,
+        "mcp_prompt_skills_unsupported",
+        "H24"
+    );
+    assert!(
+        host.mcp_projection(&generation("mcp-native-prompt-skill"))
+            .is_none(),
+        "H24"
     );
 
     let mut conflicting_renewal = request("mcp-exact", "workspace-a", 1);
@@ -7116,13 +7282,13 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             .unwrap_err()
             .code,
         "mcp_prompt_skills_unsupported",
-        "H19"
+        "H24 backend-independent Managed rejection"
     );
     assert!(
         acp_host
             .mcp_projection(&generation("mcp-acp-prompt-skill"))
             .is_none(),
-        "H19"
+        "H24"
     );
     acp_managed
         .stage_mcp_attachment(anonymous)
@@ -13633,8 +13799,10 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
     // | Rule | bash | read | filesystem | repository discovery |
     // | R1   | on   | off  | yes        | no                   |
     // | R2   | on   | on   | yes        | yes                  |
-    // Constraint: Anthropic repository discovery authority is the exact
-    // `read` policy; another filesystem capability cannot widen it.
+    // Constraint: direct Agent SDK-compatible repository discovery authority is
+    // the exact `read` policy; another filesystem capability cannot widen it.
+    // Managed Sessions never call this source because their frozen binding
+    // bytes are the only Skill authority.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -13676,6 +13844,117 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
     assert!(
         host.session_allows_repository_skill_discovery("repository-policy", None),
         "R2 exact read admission"
+    );
+}
+
+#[test]
+fn skill_delivery_profile_uses_one_managed_filesystem_projection() {
+    // Cause/effect graph: C1 profile is Managed; C2 an exact frozen Skill is
+    // selected; C3 at least one filesystem tool is enabled; C4 the frozen
+    // projection is present. Effects: E1 ManagedFilesystem is selected; E2 the
+    // direct compatibility SemanticTools projection is selected; E3 admission
+    // fails before inference; E4 a Skill-free Managed Session may retain
+    // SemanticTools for non-Skill content such as Memory.
+    //
+    // | Rule | C1 Managed | C2 Skill | C3 FS | C4 frozen | Effect |
+    // | M1 | no  | yes | no  | n/a | E2 direct compatibility adapter |
+    // | M2 | yes | yes | yes | yes | E1 filesystem-only Skill projection |
+    // | M3 | yes | yes | no  | yes | E3 reject; no semantic fallback |
+    // | M4 | yes | no  | no  | yes | E4 semantic non-Skill content allowed |
+    // | M5 | yes | bound | any | no | E3 missing selected version rejected |
+    use crate::session_slot::ManagedContentDelivery;
+    use awaken_agent_contract::{
+        ToolExecutionPolicy, ToolPermissionRequirement, ToolsetPolicy, ToolsetSource,
+    };
+
+    let deny_filesystem = || awaken_session_contract::SessionToolConfiguration {
+        toolsets: vec![ToolsetPolicy {
+            source: ToolsetSource::Agent,
+            default: ToolExecutionPolicy {
+                enabled: false,
+                permission: ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: Vec::new(),
+        }],
+        client_tools: Vec::new(),
+    };
+    let frozen = vec![frozen_skill_version(
+        "think",
+        "Think",
+        "reason",
+        "Think carefully.",
+        &[],
+    )];
+    let host = SharedHost::new(Arc::new(OkModel), "stub").with_skills(vec![
+        awaken_ext_skills::SkillSpec::new("think", "Think", "reason", "Think carefully."),
+    ]);
+
+    host.session_slots.update("direct-semantic", |slot| {
+        slot.tools = Some(deny_filesystem());
+    });
+    assert_eq!(
+        host.select_content_delivery("direct-semantic", None, None)
+            .expect("M1 direct compatibility projection"),
+        ManagedContentDelivery::SemanticTools,
+        "M1/E2"
+    );
+
+    host.session_slots.update("managed-filesystem", |slot| {
+        slot.session_dispatch = true;
+    });
+    assert_eq!(
+        host.select_content_delivery("managed-filesystem", None, Some(&frozen))
+            .expect("M2 Managed filesystem projection"),
+        ManagedContentDelivery::ManagedFilesystem,
+        "M2/E1"
+    );
+
+    host.session_slots.update("managed-denied", |slot| {
+        slot.session_dispatch = true;
+        slot.tools = Some(deny_filesystem());
+    });
+    let denied = host
+        .select_content_delivery("managed-denied", None, Some(&frozen))
+        .expect_err("M3 must not construct the semantic Skill adapter");
+    assert!(
+        denied
+            .to_string()
+            .contains("require filesystem progressive disclosure"),
+        "M3/E3: {denied}"
+    );
+
+    let empty_host = SharedHost::new(Arc::new(OkModel), "stub");
+    empty_host.session_slots.update("managed-no-skill", |slot| {
+        slot.session_dispatch = true;
+        slot.tools = Some(deny_filesystem());
+    });
+    assert_eq!(
+        empty_host
+            .select_content_delivery("managed-no-skill", None, Some(&[]))
+            .expect("M4 keeps semantic delivery available to non-Skill content"),
+        ManagedContentDelivery::SemanticTools,
+        "M4/E4"
+    );
+
+    empty_host
+        .session_slots
+        .update("managed-missing-freeze", |slot| {
+            slot.session_dispatch = true;
+        });
+    let selected_snapshot =
+        awaken_runtime_contract::ExecutableAgentSnapshot::builder("managed-selected-skill")
+            .model(test_model_binding())
+            .agent_bindings(awaken_runtime_contract::agent_bindings::AgentBindings {
+                skills: vec![awaken_agent_contract::AgentSkillBinding::custom("think")],
+                ..Default::default()
+            })
+            .build();
+    let missing = empty_host
+        .select_content_delivery("managed-missing-freeze", Some(&selected_snapshot), None)
+        .expect_err("M5 rejects an incomplete Managed projection");
+    assert!(
+        missing.to_string().contains("has no frozen version bytes"),
+        "M5/E3: {missing}"
     );
 }
 
