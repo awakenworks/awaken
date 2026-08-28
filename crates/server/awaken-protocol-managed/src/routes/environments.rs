@@ -19,6 +19,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 
 use crate::env_registry::{
     EnvUpdate, EnvironmentConfigMutation, EnvironmentFieldUpdate, EnvironmentNetworkingMutation,
@@ -249,19 +250,35 @@ async fn retrieve_env(
     Ok(Json(crate::env_registry::project_env(&item)))
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EnvironmentListParams {
+    #[serde(flatten)]
+    page: PageQuery,
+    #[serde(default, rename = "beta")]
+    _beta_selector: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    include_archived: Option<bool>,
+}
+
 async fn list_envs(
     State(state): State<Arc<EnvironmentAuthoringState>>,
-    Query(page): Query<PageQuery>,
+    Query(query): Query<EnvironmentListParams>,
 ) -> Result<Json<PageCursor<Environment>>, WireError> {
-    let data: Vec<Environment> = state
-        .application
-        .list_active()
-        .await
-        .map_err(map_environment_application_error)?
+    let definitions = if query.include_archived.unwrap_or(false) {
+        state.application.list_all().await
+    } else {
+        state.application.list_active().await
+    }
+    .map_err(map_environment_application_error)?;
+    let data: Vec<Environment> = definitions
         .iter()
         .map(crate::env_registry::project_env)
         .collect();
-    Ok(Json(paginate(data, &page, |e| e.id.as_str())))
+    Ok(Json(paginate(data, &query.page, |e| e.id.as_str())))
 }
 
 async fn update_env(

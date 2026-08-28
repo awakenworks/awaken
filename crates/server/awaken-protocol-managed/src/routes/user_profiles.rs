@@ -12,6 +12,7 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use serde::Deserialize;
 
 use crate::routes::ManagedJson;
 use crate::types::user_profile::{
@@ -233,19 +234,57 @@ async fn retrieve_profile(
         .map_err(error_response)
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+enum UserProfileListOrder {
+    #[default]
+    Asc,
+    Desc,
+}
+
+impl std::str::FromStr for UserProfileListOrder {
+    type Err = &'static str;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "asc" => Ok(Self::Asc),
+            "desc" => Ok(Self::Desc),
+            _ => Err("order must be `asc` or `desc`"),
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UserProfileListParams {
+    #[serde(flatten)]
+    page: PageQuery,
+    #[serde(default, rename = "beta")]
+    _beta_selector: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    order: Option<UserProfileListOrder>,
+}
+
 async fn list_profiles(
     State(state): State<Arc<UserProfileHttpState>>,
-    Query(page): Query<PageQuery>,
+    Query(query): Query<UserProfileListParams>,
 ) -> Result<Json<PageCursor<UserProfile>>, WireError> {
-    let data = state
+    let mut data = state
         .application
         .list_user_profiles(&state.org)
         .await
         .map_err(error_response)?
         .into_iter()
         .map(project)
-        .collect();
-    Ok(Json(paginate(data, &page, |profile| profile.id.as_str())))
+        .collect::<Vec<_>>();
+    if matches!(query.order, Some(UserProfileListOrder::Desc)) {
+        data.reverse();
+    }
+    Ok(Json(paginate(data, &query.page, |profile| {
+        profile.id.as_str()
+    })))
 }
 
 async fn update_profile(

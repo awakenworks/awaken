@@ -180,6 +180,16 @@ impl EnvironmentApplication {
         Ok(items)
     }
 
+    /// Management inventory, including archived definitions. Execution callers
+    /// continue to use [`Self::list_active`] so lifecycle policy cannot leak into
+    /// the store or HTTP adapter.
+    pub async fn list_all(&self) -> Result<Vec<EnvItem>, EnvironmentApplicationError> {
+        let mut items = self.envs.list_all().await?;
+        items.push(builtin_local_environment());
+        items.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(items)
+    }
+
     pub async fn create(
         &self,
         command: CreateEnvironmentCommand,
@@ -986,6 +996,24 @@ mod tests {
             .await
             .expect("T1");
         application.archive(&created.id).await.expect("T2");
+        assert!(
+            application
+                .list_active()
+                .await
+                .unwrap()
+                .iter()
+                .all(|item| item.id != created.id),
+            "T2 execution inventory excludes the tombstone"
+        );
+        assert!(
+            application
+                .list_all()
+                .await
+                .unwrap()
+                .iter()
+                .any(|item| item.id == created.id && item.archived_at.is_some()),
+            "T2 management inventory retains the archived definition"
+        );
 
         assert!(
             matches!(

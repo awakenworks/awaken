@@ -375,6 +375,25 @@ async function main() {
       // | T4 | true | delete | 200 | remains withdrawn |
       const archived = await client.beta.environments.archive(env.id, { betas: BETAS });
       assert.ok(archived.archived_at);
+      // List-lifecycle decision table: omitted/null excludes archived; true
+      // includes the same durable definition before cursor pagination. This
+      // proves the SDK option is consumed rather than accepted and ignored.
+      assert.ok(
+        !(await drain(client.beta.environments.list({ betas: BETAS })))
+          .some((candidate) => candidate.id === env.id),
+        'archived Environment is absent by default',
+      );
+      assert.ok(
+        (await drain(client.beta.environments.list({ include_archived: true, betas: BETAS })))
+          .some((candidate) => candidate.id === env.id),
+        'include_archived restores the archived Environment',
+      );
+      assert.ok(
+        !(await drain(client.beta.environments.list({
+          include_archived: null, limit: null, page: null, betas: BETAS,
+        }))).some((candidate) => candidate.id === env.id),
+        'TypeScript null query fields equal omission',
+      );
       await assert.rejects(
         client.beta.environments.update(env.id, { name: 'must-not-revive', betas: BETAS }),
         (error) => error?.status === 409,
