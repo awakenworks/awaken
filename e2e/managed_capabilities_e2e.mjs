@@ -47,24 +47,17 @@ async function main() {
         permission_policy: { type: 'always_allow' },
       });
       // Capability-member graph: C1=the current SDK models each built-in config
-      // as a discriminated union member; C2=the host enables or gates that named
-      // member. E1=each resolved object carries matching `name` and `type` plus
-      // its exact enable/permission policy. K=`type` cannot identify a different
-      // member than `name`. Decision rules: known matching member+C2=>E1;
-      // absent/mismatched discriminator=>wire-contract failure.
+      // as a discriminated union member; C2=the official Agent-toolset default
+      // enables and auto-allows registered local members; C3=a configured plugin
+      // has no routed execution owner. E1=C2 inherits `default_config` without a
+      // redundant member override; E2=C3 emits one disabled override carrying
+      // matching `name` and `type`. K=`type` cannot identify another member.
+      // This keeps execution admission and the advertised wire policy on the one
+      // Session-owned toolset authority.
       const cfg = Object.fromEntries(ts.configs.map((c) => [c.name, c]));
-      assert.deepEqual(cfg.bash, {
-        name: 'bash',
-        type: 'bash',
-        enabled: true,
-        permission_policy: { type: 'always_ask' },
-      });
-      assert.deepEqual(cfg.write, {
-        name: 'write',
-        type: 'write',
-        enabled: true,
-        permission_policy: { type: 'always_ask' },
-      });
+      for (const inherited of ['bash', 'read', 'write', 'edit', 'glob', 'grep']) {
+        assert.ok(!(inherited in cfg), `${inherited} inherits the exact Agent-toolset default`);
+      }
       assert.deepEqual(cfg.web_fetch, {
         name: 'web_fetch',
         type: 'web_fetch',
@@ -86,8 +79,6 @@ async function main() {
         enabled: false,
         permission_policy: { type: 'always_allow' },
       });
-      // read/glob/grep are auto-allowed → not present in configs (toolset default).
-      assert.ok(!('read' in cfg) && !('glob' in cfg) && !('grep' in cfg));
       assert.deepEqual(s.agent.mcp_servers, []);
       assert.deepEqual(s.agent.skills, []);
       assert.deepEqual(s.resources, []);
