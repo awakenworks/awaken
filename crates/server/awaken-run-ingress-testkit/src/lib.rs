@@ -224,10 +224,10 @@ pub trait ConformanceClock: Send + Sync {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
-pub struct DirectCommandClock;
+pub struct AuthoritativeWallClock;
 
 #[async_trait::async_trait]
-impl ConformanceClock for DirectCommandClock {
+impl ConformanceClock for AuthoritativeWallClock {
     fn set(&self, _now_ms: u64) {}
 
     fn exact_boundary_is_controllable(&self) -> bool {
@@ -245,6 +245,21 @@ impl ConformanceClock for DirectCommandClock {
         let wait_ms = deadline_ms.saturating_sub(now_ms).saturating_add(25);
         tokio::time::sleep(std::time::Duration::from_millis(wait_ms)).await;
     }
+}
+
+/// A backend whose command `now_ms` argument is the complete authority clock.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LogicalCommandClock;
+
+#[async_trait::async_trait]
+impl ConformanceClock for LogicalCommandClock {
+    fn set(&self, _now_ms: u64) {}
+
+    fn exact_boundary_is_controllable(&self) -> bool {
+        true
+    }
+
+    async fn advance_past(&self, _deadline_ms: u64) {}
 }
 
 #[async_trait::async_trait]
@@ -292,7 +307,7 @@ pub async fn assert_dispatch_conformance(
     namespace: &str,
     capabilities: ConformanceCapabilities,
 ) {
-    assert_dispatch_conformance_with_clock(store, namespace, capabilities, &DirectCommandClock)
+    assert_dispatch_conformance_with_clock(store, namespace, capabilities, &AuthoritativeWallClock)
         .await;
 }
 

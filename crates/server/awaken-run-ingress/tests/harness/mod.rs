@@ -15,6 +15,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_agent_contract::agent::run::Id as RunId;
 use awaken_agent_contract::agent::thread::Id as ThreadId;
+use awaken_run_ingress_testkit::ConformanceClock;
 use awaken_runtime::Runtime;
 #[cfg(feature = "test-support")]
 use awaken_runtime_contract::CredentialRealizationCapabilities;
@@ -1109,7 +1110,10 @@ pub async fn assert_message_idempotency_conflicts<S: awaken_run_ingress::Dispatc
 
 /// Shared spec for scheduled delivery (M4): a future-dated pending input is not
 /// claimable until its time has come; every backend must gate the wake the same.
-pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::{DispatchOutcome, PendingInput, RunDispatch};
     let run = RunId("run-1".to_string());
     store
@@ -1127,14 +1131,17 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
         .await
         .unwrap();
 
-    // Schedule a delivery for t=1000.
+    // The returned lease deadline is expressed in the backend's authority
+    // clock, so the same schedule remains future-dated for logical and live
+    // database clocks.
+    let delivery_at = claimed.lease.expires_ms;
     store
         .append(PendingInput {
             message_id: "sched".to_string(),
             run_id: run.clone(),
             thread_id: ThreadId(THREAD.to_string()),
             correlation_id: TICKET.to_string(),
-            available_at_ms: Some(1_000),
+            available_at_ms: Some(delivery_at),
             result: ResumeResult::allow(),
             context_messages: Vec::new(),
         })
@@ -1145,14 +1152,20 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
     // now-due input in hand.
     assert!(
         store
-            .claim("w", 1_000, 500, &Default::default())
+            .claim(
+                "w",
+                1_000,
+                delivery_at.saturating_sub(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),
         "a future delivery is not yet claimable"
     );
+    clock.advance_past(delivery_at.saturating_sub(1)).await;
     let claimed = store
-        .claim("w", 1_000, 1_000, &Default::default())
+        .claim("w", 1_000, delivery_at, &Default::default())
         .await
         .unwrap()
         .expect("a due delivery is claimable");
@@ -1163,7 +1176,10 @@ pub async fn assert_scheduled_due<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// Cause/effect rules CE-TM4..TM8/TM11/TM12. The public clock is `u64`, while
 /// SQL stores signed BIGINT; all backends must saturate at `i64::MAX`, never
 /// panic/wrap, never run a far-future delivery early, and keep a huge lease live.
-pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::{DispatchOutcome, PendingInput, RunDispatch};
 
     let max_signed = i64::MAX as u64;
@@ -1207,21 +1223,43 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S
                 .is_none(),
             "TM4..TM6: {available_at} must remain in the future"
         );
-        let due = store
-            .claim("at-boundary", 100, u64::MAX, &Default::default())
-            .await
-            .unwrap()
-            .expect("normalized signed maximum is inclusively due");
-        assert_eq!(due.pending.len(), 1);
-        store
-            .settle(
-                &run,
-                due.lease.epoch,
-                DispatchOutcome::Done,
-                &[format!("millis-message-{nth}")],
-            )
-            .await
-            .unwrap();
+        if clock.exact_boundary_is_controllable() {
+            let due = store
+                .claim("at-boundary", 100, u64::MAX, &Default::default())
+                .await
+                .unwrap()
+                .expect("normalized signed maximum is inclusively due");
+            assert_eq!(due.pending.len(), 1);
+            store
+                .settle(
+                    &run,
+                    due.lease.epoch,
+                    DispatchOutcome::Done,
+                    &[format!("millis-message-{nth}")],
+                )
+                .await
+                .unwrap();
+        } else {
+            // A live wall clock cannot be advanced to i64::MAX. PostgreSQL
+            // still proves saturation above and that the row never runs early;
+            // the exact inclusive boundary remains covered by controllable
+            // stores and the shared pure clock classifier.
+            store.cancel(&run).await.unwrap();
+            let cancelled = store
+                .claim("boundary-cleanup", 100, 1_000, &Default::default())
+                .await
+                .unwrap()
+                .expect("cancelled far-future row is control-claimable");
+            store
+                .settle(
+                    &run,
+                    cancelled.lease.epoch,
+                    DispatchOutcome::Done,
+                    &[format!("millis-message-{nth}")],
+                )
+                .await
+                .unwrap();
+        }
     }
 
     let lease_run = RunId("millis-lease".to_string());
@@ -1265,7 +1303,10 @@ pub async fn assert_millis_boundaries<S: awaken_run_ingress::Dispatch>(store: &S
 /// past its budget is dead-lettered and no longer claimed, `requeue` brings an
 /// ordinary row back, and a terminal cancellation fence makes it non-runnable.
 /// Every backend must match.
-pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::RunDispatch;
     let run = RunId("run-1".to_string());
     store
@@ -1275,37 +1316,56 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
 
     // A fresh claim does not spend the budget; each later recovery (expired
     // lease) does. With max_attempts = 2, two recoveries exhaust it.
-    assert!(
-        store
-            .claim("w", 100, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let first = store
+        .claim("w", 100, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("fresh poison claim");
+    clock.advance_past(first.lease.expires_ms).await;
     assert_eq!(
-        store.quarantine_retry_exhausted(2, 200).await.unwrap(),
+        store
+            .quarantine_retry_exhausted(2, first.lease.expires_ms.saturating_add(1))
+            .await
+            .unwrap(),
         0,
         "still within budget"
     );
-    assert!(
+    let second = store
+        .claim(
+            "w",
+            100,
+            first.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("first poison recovery");
+    clock.advance_past(second.lease.expires_ms).await;
+    assert_eq!(
         store
-            .claim("w", 100, 200, &Default::default())
+            .quarantine_retry_exhausted(2, second.lease.expires_ms.saturating_add(1))
             .await
-            .unwrap()
-            .is_some()
+            .unwrap(),
+        0
     );
-    assert_eq!(store.quarantine_retry_exhausted(2, 400).await.unwrap(), 0);
-    assert!(
-        store
-            .claim("w", 100, 400, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let third = store
+        .claim(
+            "w",
+            100,
+            second.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("second poison recovery");
+    clock.advance_past(third.lease.expires_ms).await;
 
     // Explicit quarantine moves the exhausted row to DeadLetter; it is no longer claimable.
     assert_eq!(
-        store.quarantine_retry_exhausted(2, 600).await.unwrap(),
+        store
+            .quarantine_retry_exhausted(2, third.lease.expires_ms.saturating_add(1))
+            .await
+            .unwrap(),
         1,
         "quarantined"
     );
@@ -1322,14 +1382,11 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     // Requeue restores it to a fresh budget.
     assert!(store.requeue(&run).await.unwrap());
     assert!(store.dead_letters().await.unwrap().is_empty());
-    assert!(
-        store
-            .claim("w", 100, 800, &Default::default())
-            .await
-            .unwrap()
-            .is_some(),
-        "a requeued run is claimable again"
-    );
+    let requeued = store
+        .claim("w", 100, 800, &Default::default())
+        .await
+        .unwrap()
+        .expect("a requeued run is claimable again");
 
     // Cause/effect decision table for terminal fencing of retained poison rows:
     // C1 an ordinary DeadLetter has no cancel bit; C2 terminal quiescence calls
@@ -1339,21 +1396,36 @@ pub async fn assert_dead_letter<S: awaken_run_ingress::Dispatch>(store: &S) {
     // | Rule | DeadLetter | cancel requested | Effect |
     // | D1 | yes | no | E1 |
     // | D2 | yes | yes | E2 |
-    assert!(
+    clock.advance_past(requeued.lease.expires_ms).await;
+    let requeued_second = store
+        .claim(
+            "w",
+            100,
+            requeued.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("first sealed-cycle recovery");
+    clock.advance_past(requeued_second.lease.expires_ms).await;
+    let requeued_third = store
+        .claim(
+            "w",
+            100,
+            requeued_second.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
+        .await
+        .unwrap()
+        .expect("second sealed-cycle recovery");
+    clock.advance_past(requeued_third.lease.expires_ms).await;
+    assert_eq!(
         store
-            .claim("w", 100, 1000, &Default::default())
+            .quarantine_retry_exhausted(2, requeued_third.lease.expires_ms.saturating_add(1),)
             .await
-            .unwrap()
-            .is_some()
+            .unwrap(),
+        1
     );
-    assert!(
-        store
-            .claim("w", 100, 1200, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
-    assert_eq!(store.quarantine_retry_exhausted(2, 1400).await.unwrap(), 1);
     assert!(
         store.cancel(&run).await.unwrap().is_some(),
         "D2 terminal fence seals the retained row"
@@ -1630,7 +1702,10 @@ pub async fn assert_cancel<S: awaken_run_ingress::Dispatch>(store: &S) {
 }
 
 /// Shared spec for priority, dedupe, and dead-letter GC. Every backend matches.
-pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::{DispatchOutcome, RunDispatch, SubmitOptions};
     // Each run on its own thread: priority/dedupe/GC are thread-orthogonal, and
     // single-writer-per-thread (ADR-0022) forbids claiming two runs of one thread at
@@ -1719,14 +1794,19 @@ pub async fn assert_priority_dedupe_gc<S: awaken_run_ingress::Dispatch>(store: &
         .enqueue_with(req("poison"), SubmitOptions::default())
         .await
         .unwrap();
-    assert!(
+    let poison = store
+        .claim("w", 1, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("poison claim");
+    clock.advance_past(poison.lease.expires_ms).await;
+    assert_eq!(
         store
-            .claim("w", 1, 0, &Default::default())
+            .quarantine_retry_exhausted(0, poison.lease.expires_ms.saturating_add(1))
             .await
-            .unwrap()
-            .is_some()
+            .unwrap(),
+        1
     );
-    assert_eq!(store.quarantine_retry_exhausted(0, 100).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
         vec![RunId("poison".to_string())]
@@ -1777,44 +1857,71 @@ pub async fn assert_list_dispatches<S: awaken_run_ingress::Dispatch>(store: &S) 
 /// Shared compatibility spec for the signed remote-owner bulk-renewal transport
 /// adapter (ADR-0024 D3): renewing that owner's claims prevents remote recovery.
 /// Local Service/Pool execution uses the exact-claim guard instead.
-pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_renew_owned_leases<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::RunDispatch;
 
     // owner-a claims two runs at t=0 with a 100ms lease (expire at 100). Distinct
     // threads: single-writer-per-thread (ADR-0022) means one owner holds at most one
     // in-flight run per thread, so "owner-a holds two leases" needs two threads.
+    let mut original_deadlines = Vec::new();
     for run in ["r1", "r2"] {
         store
             .enqueue(RunDispatch::new(activation_on(run, run)))
             .await
             .unwrap();
-        assert!(
+        original_deadlines.push(
             store
                 .claim("owner-a", 100, 0, &Default::default())
                 .await
                 .unwrap()
-                .is_some()
+                .expect("owner-a claim")
+                .lease
+                .expires_ms,
         );
     }
 
     // Renewing owner-a's leases at t=60 extends both to 160.
+    let original_expiry = *original_deadlines.iter().min().expect("two deadlines");
+    let renew_at = original_expiry.saturating_sub(40);
+    clock.advance_past(renew_at.saturating_sub(1)).await;
     assert_eq!(
-        store.renew_owned_leases("owner-a", 100, 60).await.unwrap(),
+        store
+            .renew_owned_leases("owner-a", 100, renew_at)
+            .await
+            .unwrap(),
         2
     );
     // At t=120 the original lease would have expired, but the renewed one has not.
+    let latest_original_expiry = *original_deadlines.iter().max().expect("two deadlines");
+    clock.advance_past(latest_original_expiry).await;
     assert!(
         store
-            .claim("owner-b", 100, 120, &Default::default())
+            .claim(
+                "owner-b",
+                100,
+                latest_original_expiry.saturating_add(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),
         "renewed leases are not yet reclaimable"
     );
     // Past the renewed expiry, recovery reclaims.
+    clock
+        .advance_past(latest_original_expiry.saturating_add(100))
+        .await;
     assert!(
         store
-            .claim("owner-b", 100, 200, &Default::default())
+            .claim(
+                "owner-b",
+                100,
+                latest_original_expiry.saturating_add(101),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_some()
@@ -1868,7 +1975,10 @@ pub async fn assert_relinquish_claim<S: awaken_run_ingress::Dispatch>(store: &S)
 /// Shared spec for the remote-owner bulk adapter's near-expiry policy (ADR-0024
 /// D3): it touches only leases within half a lease of expiry, so a fresh claim is
 /// left unchanged. Every backend must preserve this transport compatibility.
-pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::RunDispatch;
 
     // owner-a claims r1 at t=0 with a 100ms lease (expires at 100).
@@ -1876,27 +1986,31 @@ pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>
         .enqueue(RunDispatch::new(activation("r1")))
         .await
         .unwrap();
-    assert!(
-        store
-            .claim("owner-a", 100, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let claimed = store
+        .claim("owner-a", 500, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("owner-a claim");
 
     // At t=10 the lease still has 90ms left — more than half the 100ms lease — so
     // the bulk renewal skips it and reports zero renewed.
     assert_eq!(
-        store.renew_owned_leases("owner-a", 100, 10).await.unwrap(),
+        store.renew_owned_leases("owner-a", 500, 10).await.unwrap(),
         0,
         "a far-from-expiry lease is not renewed"
     );
 
     // Because it was left untouched, the original lease still expires at 100, so at
     // t=101 recovery reclaims it — proving the skip did not silently extend it.
+    clock.advance_past(claimed.lease.expires_ms).await;
     assert!(
         store
-            .claim("owner-b", 100, 101, &Default::default())
+            .claim(
+                "owner-b",
+                500,
+                claimed.lease.expires_ms.saturating_add(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_some(),
@@ -1906,7 +2020,10 @@ pub async fn assert_renew_skips_far_from_expiry<S: awaken_run_ingress::Dispatch>
 
 /// Shared spec for time-windowed dead-letter GC (ADR-0023): GC removes only
 /// dead-letters older than the cutoff; younger ones stay. Every backend matches.
-pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::RunDispatch;
 
     // A run is dead-lettered at t=1000 (claimed with a 1ms lease at t=0, then
@@ -1915,27 +2032,32 @@ pub async fn assert_dead_letter_ttl_gc<S: awaken_run_ingress::Dispatch>(store: &
         .enqueue(RunDispatch::new(activation("poison")))
         .await
         .unwrap();
-    assert!(
+    let claimed = store
+        .claim("w", 1, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("dead-letter source claim");
+    clock.advance_past(claimed.lease.expires_ms).await;
+    assert_eq!(
         store
-            .claim("w", 1, 0, &Default::default())
+            .quarantine_retry_exhausted(0, claimed.lease.expires_ms.saturating_add(1))
             .await
-            .unwrap()
-            .is_some()
+            .unwrap(),
+        1
     );
-    assert_eq!(store.quarantine_retry_exhausted(0, 1_000).await.unwrap(), 1);
     assert_eq!(
         store.dead_letters().await.unwrap(),
         vec![RunId("poison".to_string())]
     );
 
     // A GC cutoff before the dead-letter time spares it; a cutoff at/after it purges.
-    assert_eq!(store.purge_dead_letters_before(999).await.unwrap(), 0);
+    assert_eq!(store.purge_dead_letters_before(0).await.unwrap(), 0);
     assert_eq!(
         store.dead_letters().await.unwrap().len(),
         1,
         "a younger dead-letter is spared"
     );
-    assert_eq!(store.purge_dead_letters_before(1_000).await.unwrap(), 1);
+    assert_eq!(store.purge_dead_letters_before(u64::MAX).await.unwrap(), 1);
     assert!(store.dead_letters().await.unwrap().is_empty());
 }
 
@@ -2076,39 +2198,71 @@ pub async fn assert_idle_thread_inbox<S: awaken_run_ingress::Dispatch>(store: &S
 /// Shared spec for lease renewal (the multi-node liveness knob). A run's owner
 /// extends its lease so another node's recovery cannot steal it; a non-owner
 /// cannot renew; an un-renewed lease still expires. Every backend matches.
-pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::RunDispatch;
     let run = RunId("run-1".to_string());
     store
         .enqueue(RunDispatch::new(activation("run-1")))
         .await
         .unwrap();
-    assert!(
-        store
-            .claim("owner-a", 100, 0, &Default::default())
-            .await
-            .unwrap()
-            .is_some()
-    );
+    let first = store
+        .claim("owner-a", 100, 0, &Default::default())
+        .await
+        .unwrap()
+        .expect("owner-a claim");
 
     // owner-a renews at t=50 (extends to 150); a recovery claim at t=120 cannot
     // steal it because the lease has not expired.
-    assert!(store.renew_lease(&run, "owner-a", 100, 50).await.unwrap());
+    let renew_at = first.lease.expires_ms.saturating_sub(40);
+    clock.advance_past(renew_at.saturating_sub(1)).await;
     assert!(
         store
-            .claim("owner-b", 100, 120, &Default::default())
+            .renew_lease(&run, "owner-a", 100, renew_at)
+            .await
+            .unwrap()
+    );
+    clock.advance_past(first.lease.expires_ms).await;
+    assert!(
+        store
+            .claim(
+                "owner-b",
+                100,
+                first.lease.expires_ms.saturating_add(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),
         "a renewed lease is not yet expired"
     );
     // A non-owner cannot renew.
-    assert!(!store.renew_lease(&run, "owner-b", 100, 130).await.unwrap());
+    assert!(
+        !store
+            .renew_lease(
+                &run,
+                "owner-b",
+                100,
+                first.lease.expires_ms.saturating_add(2),
+            )
+            .await
+            .unwrap()
+    );
 
     // Once the renewed lease expires, recovery reclaims for the new owner.
+    clock
+        .advance_past(first.lease.expires_ms.saturating_add(100))
+        .await;
     assert_eq!(
         store
-            .claim("owner-b", 100, 200, &Default::default())
+            .claim(
+                "owner-b",
+                100,
+                first.lease.expires_ms.saturating_add(101),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .map(|c| c.lease.owner),
@@ -2120,7 +2274,10 @@ pub async fn assert_lease_renewal<S: awaken_run_ingress::Dispatch>(store: &S) {
 /// lease epoch monotonically; a settle applies only under the current epoch. A
 /// stale owner whose lease lapsed and was re-claimed cannot settle the dispatch out
 /// from under the reclaimer — its settle is fenced and changes nothing.
-pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::{DispatchOutcome, RunDispatch, SettleOutcome};
     let run = RunId("run-1".to_string());
     store
@@ -2137,8 +2294,14 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
     assert_eq!(a.lease.epoch, 1, "the first claim bumps the fence to 1");
 
     // A's lease lapses; owner B recovers it — the epoch bumps 1 -> 2.
+    clock.advance_past(a.lease.expires_ms).await;
     let b = store
-        .claim("owner-b", 100, 200, &Default::default())
+        .claim(
+            "owner-b",
+            100,
+            a.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("B reclaims the expired lease");
@@ -2161,7 +2324,12 @@ pub async fn assert_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(s
     // a fresh claim before B's lease expires finds nothing runnable.
     assert!(
         store
-            .claim("owner-c", 100, 250, &Default::default())
+            .claim(
+                "owner-c",
+                100,
+                b.lease.expires_ms.saturating_sub(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),
@@ -2363,8 +2531,10 @@ pub async fn assert_wake_suppressed_while_thread_running<S: awaken_run_ingress::
 /// Exactly one wins the epoch bump; the other finds nothing runnable — never double
 /// ownership. The in-memory store serializes via its mutex, sqlite/postgres via row
 /// locking, so the single-winner invariant holds on every backend.
-pub async fn assert_concurrent_recovery_yields_one_winner<S>(store: Arc<S>)
-where
+pub async fn assert_concurrent_recovery_yields_one_winner<S>(
+    store: Arc<S>,
+    clock: &dyn ConformanceClock,
+) where
     S: awaken_run_ingress::Dispatch + Send + Sync + 'static,
 {
     use awaken_run_ingress::RunDispatch;
@@ -2381,11 +2551,19 @@ where
     assert_eq!(a.lease.epoch, 1);
 
     // Two workers race to recover the one expired lease at t=200.
+    clock.advance_past(a.lease.expires_ms).await;
+    let recovery_now = a.lease.expires_ms.saturating_add(1);
     let s1 = store.clone();
     let s2 = store.clone();
     let (r1, r2) = tokio::join!(
-        tokio::spawn(async move { s1.claim("owner-b", 100, 200, &Default::default()).await }),
-        tokio::spawn(async move { s2.claim("owner-c", 100, 200, &Default::default()).await }),
+        tokio::spawn(async move {
+            s1.claim("owner-b", 100, recovery_now, &Default::default())
+                .await
+        }),
+        tokio::spawn(async move {
+            s2.claim("owner-c", 100, recovery_now, &Default::default())
+                .await
+        }),
     );
     let winners: Vec<_> = [r1.unwrap().expect("claim b"), r2.unwrap().expect("claim c")]
         .into_iter()
@@ -2404,7 +2582,10 @@ where
 
 /// Shared spec: a `Awaiting` settle is fenced the same way — a stale owner cannot
 /// re-await (and reset the crash-retry budget / clear the lease) behind a reclaimer.
-pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(store: &S) {
+pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Dispatch>(
+    store: &S,
+    clock: &dyn ConformanceClock,
+) {
     use awaken_run_ingress::{DispatchOutcome, RunDispatch, SettleOutcome};
     let run = RunId("run-1".to_string());
     store
@@ -2417,8 +2598,14 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Di
         .await
         .unwrap()
         .expect("A claims");
+    clock.advance_past(a.lease.expires_ms).await;
     let b = store
-        .claim("owner-b", 100, 200, &Default::default())
+        .claim(
+            "owner-b",
+            100,
+            a.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
         .await
         .unwrap()
         .expect("B reclaims");
@@ -2435,7 +2622,12 @@ pub async fn assert_awaiting_settle_fences_stale_epoch<S: awaken_run_ingress::Di
     );
     assert!(
         store
-            .claim("owner-c", 100, 250, &Default::default())
+            .claim(
+                "owner-c",
+                100,
+                b.lease.expires_ms.saturating_sub(1),
+                &Default::default(),
+            )
             .await
             .unwrap()
             .is_none(),

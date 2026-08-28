@@ -26,6 +26,7 @@ use awaken_run_ingress::{
     GuardedRunCommit, Inbox, PendingInput, PostgresDispatchStore, PostgresStreamCheckpointStore,
     RunClaim, RunDispatch, SubmitOptions,
 };
+use awaken_run_ingress_testkit::{AuthoritativeWallClock, ConformanceClock};
 use awaken_runtime::RunIngress;
 use awaken_runtime_contract::resume::ResumeResult;
 use awaken_store_postgres::PostgresCommitCoordinator;
@@ -213,6 +214,7 @@ async fn postgres_epoch_guard_prevents_reclaim_until_commit_returns() {
     let fenced = ClaimedCommitCoordinator::new(service, RunClaim::from(&lease));
     let committing = tokio::spawn(async move { fenced.commit(running_commit("guarded")).await });
     inner.entered.notified().await;
+    AuthoritativeWallClock.advance_past(lease.expires_ms).await;
 
     let reclaim_store = store.clone();
     let mut reclaiming = tokio::spawn(async move {
@@ -509,7 +511,8 @@ async fn scheduled_delivery_due_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_scheduled_due(&store).await;
+    harness::assert_scheduled_due(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -520,7 +523,8 @@ async fn millis_boundaries_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool)
         .await
         .expect("dispatch");
-    harness::assert_millis_boundaries(&store).await;
+    harness::assert_millis_boundaries(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -531,7 +535,7 @@ async fn dead_letter_budget_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_dead_letter(&store).await;
+    harness::assert_dead_letter(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock).await;
 }
 
 #[tokio::test]
@@ -553,7 +557,8 @@ async fn priority_dedupe_gc_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_priority_dedupe_gc(&store).await;
+    harness::assert_priority_dedupe_gc(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -564,7 +569,8 @@ async fn lease_renewal_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_lease_renewal(&store).await;
+    harness::assert_lease_renewal(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -650,7 +656,11 @@ async fn settle_fences_stale_epoch_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_settle_fences_stale_epoch(&store).await;
+    harness::assert_settle_fences_stale_epoch(
+        &store,
+        &awaken_run_ingress_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -664,7 +674,11 @@ async fn concurrent_recovery_yields_one_winner_on_postgres() {
             .await
             .expect("dispatch"),
     );
-    harness::assert_concurrent_recovery_yields_one_winner(store).await;
+    harness::assert_concurrent_recovery_yields_one_winner(
+        store,
+        &awaken_run_ingress_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -675,7 +689,11 @@ async fn awaiting_settle_fences_stale_epoch_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_awaiting_settle_fences_stale_epoch(&store).await;
+    harness::assert_awaiting_settle_fences_stale_epoch(
+        &store,
+        &awaken_run_ingress_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -686,7 +704,8 @@ async fn dead_letter_ttl_gc_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_dead_letter_ttl_gc(&store).await;
+    harness::assert_dead_letter_ttl_gc(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -697,7 +716,8 @@ async fn renew_owned_leases_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_renew_owned_leases(&store).await;
+    harness::assert_renew_owned_leases(&store, &awaken_run_ingress_testkit::AuthoritativeWallClock)
+        .await;
 }
 
 #[tokio::test]
@@ -719,7 +739,11 @@ async fn renew_skips_far_from_expiry_on_postgres() {
     let store = PostgresDispatchStore::with_pool(pool.clone())
         .await
         .expect("dispatch");
-    harness::assert_renew_skips_far_from_expiry(&store).await;
+    harness::assert_renew_skips_far_from_expiry(
+        &store,
+        &awaken_run_ingress_testkit::AuthoritativeWallClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -784,15 +808,23 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
         .await
         .expect("enqueue");
 
-    // Owner A drives in the background; it blocks inside the tool after committing the
-    // run's first `Running` fact (mid-step, no awaiting ticket).
+    // Owner A claims explicitly, then drives in the background. Retaining the
+    // exact lease lets the test terminate A's whole execution/renewal scope at
+    // the crash boundary rather than pretending a healthy renewing Worker can
+    // be stolen.
+    let claimed_a = store
+        .claim("owner-a", LEASE, 0, &Default::default())
+        .await
+        .expect("A claim query")
+        .expect("A claims");
+    let lease_a = claimed_a.lease.clone();
     let worker_a = Arc::new(
         DispatchWorker::new(runtime.clone(), store.clone(), commit_a.clone(), "owner-a")
             .with_lease_ms(LEASE),
     );
     let a_handle = {
         let worker_a = worker_a.clone();
-        tokio::spawn(async move { worker_a.tick(harness::clock(0)).await })
+        tokio::spawn(async move { worker_a.drive_claimed(claimed_a, harness::clock(0)).await })
     };
 
     // Wait until A is frozen inside the tool.
@@ -811,6 +843,21 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
         "A committed a mid-flight Running"
     );
 
+    // Crash A after its external effect and Running commit. Aborting the drive
+    // also drops its exact renewal guard; execution does not remain alive while
+    // a separate renewal task falsely advertises ownership.
+    a_handle.abort();
+    assert!(
+        a_handle
+            .await
+            .expect_err("A task is aborted")
+            .is_cancelled(),
+        "A crash terminates the drive and renewal scope together"
+    );
+    AuthoritativeWallClock
+        .advance_past(lease_a.expires_ms)
+        .await;
+
     // Owner B's lease-expired reclaim recovers the committed Executing phase and
     // completes the run without entering the non-recoverable tool again.
     let worker_b = DispatchWorker::new(runtime, store.clone(), commit_b.clone(), "owner-b")
@@ -825,20 +872,15 @@ async fn postgres_mid_flight_reclaim_applies_never_replay_policy() {
         "B reclaimed the still-running run and drove it to completion"
     );
 
-    // Release A; its re-commit over the now-terminal run is FENCED (B already settled
-    // Done under a higher epoch and removed the row). A's terminal settle applies
-    // nothing, so A's tick resolves cleanly to `None` — it durably settled nothing and
-    // abandons, rather than reporting a completion it did not own (the memory analogue
-    // is `lease_semantics::mid_flight_reclaim_keeps_the_committed_log_exactly_once`).
-    release.add_permits(1);
-    let a_result = tokio::time::timeout(std::time::Duration::from_secs(10), a_handle)
-        .await
-        .expect("A joined")
-        .expect("A did not panic")
-        .expect("A resolved without a fatal error");
-    assert_eq!(
-        a_result, None,
-        "the stale owner's re-drive is fenced: it settles nothing and abandons"
+    // A delayed post-crash write carrying epoch 1 is fenced before it reaches
+    // committed Thread truth. This independently preserves the slow/stale
+    // message partition without requiring the crashed Worker to keep renewing.
+    let stale_service: Arc<dyn ClaimedRunCommit> =
+        Arc::new(GuardedRunCommit::new(commit_a.clone(), store.clone()));
+    let stale_commit = ClaimedCommitCoordinator::new(stale_service, RunClaim::from(&lease_a));
+    assert!(
+        stale_commit.commit(running_commit("run-1")).await.is_err(),
+        "the crashed owner's delayed commit is fenced"
     );
 
     // The persisted Executing phase prevents an unsafe second invocation.

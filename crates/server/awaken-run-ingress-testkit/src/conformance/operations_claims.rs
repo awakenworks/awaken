@@ -9,8 +9,12 @@ pub async fn assert_dispatch_operational_feed_conformance<S>(store: &S, namespac
 where
     S: DispatchQueue + DispatchOperationalFeed + ?Sized,
 {
-    assert_dispatch_operational_feed_conformance_with_clock(store, namespace, &DirectCommandClock)
-        .await;
+    assert_dispatch_operational_feed_conformance_with_clock(
+        store,
+        namespace,
+        &AuthoritativeWallClock,
+    )
+    .await;
 }
 
 /// Clock-explicit variant used by deterministic reference backends.

@@ -219,13 +219,14 @@ async fn message_idempotency_conflicts_on_sqlite() {
 #[tokio::test]
 async fn scheduled_delivery_due_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_scheduled_due(&store).await;
+    harness::assert_scheduled_due(&store, &awaken_run_ingress_testkit::LogicalCommandClock).await;
 }
 
 #[tokio::test]
 async fn millis_boundaries_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().unwrap();
-    harness::assert_millis_boundaries(&store).await;
+    harness::assert_millis_boundaries(&store, &awaken_run_ingress_testkit::LogicalCommandClock)
+        .await;
 }
 
 #[tokio::test]
@@ -389,7 +390,7 @@ fn latest_schema_removes_the_obsolete_delegation_table() {
 #[tokio::test]
 async fn dead_letter_budget_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_dead_letter(&store).await;
+    harness::assert_dead_letter(&store, &awaken_run_ingress_testkit::LogicalCommandClock).await;
 }
 
 #[tokio::test]
@@ -401,13 +402,14 @@ async fn cancel_on_sqlite() {
 #[tokio::test]
 async fn priority_dedupe_gc_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_priority_dedupe_gc(&store).await;
+    harness::assert_priority_dedupe_gc(&store, &awaken_run_ingress_testkit::LogicalCommandClock)
+        .await;
 }
 
 #[tokio::test]
 async fn lease_renewal_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_lease_renewal(&store).await;
+    harness::assert_lease_renewal(&store, &awaken_run_ingress_testkit::LogicalCommandClock).await;
 }
 
 #[tokio::test]
@@ -425,31 +427,45 @@ async fn supersession_on_sqlite() {
 #[tokio::test]
 async fn settle_fences_stale_epoch_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_settle_fences_stale_epoch(&store).await;
+    harness::assert_settle_fences_stale_epoch(
+        &store,
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_sqlite() {
     let store = std::sync::Arc::new(SqliteDispatchStore::open_in_memory().expect("open"));
-    harness::assert_concurrent_recovery_yields_one_winner(store).await;
+    harness::assert_concurrent_recovery_yields_one_winner(
+        store,
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn awaiting_settle_fences_stale_epoch_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_awaiting_settle_fences_stale_epoch(&store).await;
+    harness::assert_awaiting_settle_fences_stale_epoch(
+        &store,
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_dead_letter_ttl_gc(&store).await;
+    harness::assert_dead_letter_ttl_gc(&store, &awaken_run_ingress_testkit::LogicalCommandClock)
+        .await;
 }
 
 #[tokio::test]
 async fn renew_owned_leases_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_renew_owned_leases(&store).await;
+    harness::assert_renew_owned_leases(&store, &awaken_run_ingress_testkit::LogicalCommandClock)
+        .await;
 }
 
 #[tokio::test]
@@ -461,7 +477,11 @@ async fn relinquish_claim_on_sqlite() {
 #[tokio::test]
 async fn renew_skips_far_from_expiry_on_sqlite() {
     let store = SqliteDispatchStore::open_in_memory().expect("open");
-    harness::assert_renew_skips_far_from_expiry(&store).await;
+    harness::assert_renew_skips_far_from_expiry(
+        &store,
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]

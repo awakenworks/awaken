@@ -1537,17 +1537,29 @@ async fn staged_delivery_relays_and_resumes_an_awaiting_run() {
 
 #[tokio::test]
 async fn scheduled_delivery_due_store_spec() {
-    harness::assert_scheduled_due(&MemoryDispatchStore::new()).await;
+    harness::assert_scheduled_due(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn millis_boundaries_store_spec() {
-    harness::assert_millis_boundaries(&MemoryDispatchStore::new()).await;
+    harness::assert_millis_boundaries(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn dead_letter_budget_store_spec() {
-    harness::assert_dead_letter(&MemoryDispatchStore::new()).await;
+    harness::assert_dead_letter(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1938,12 +1950,20 @@ async fn send_message_does_not_bind_to_a_client_execution_tool_wait() {
 
 #[tokio::test]
 async fn priority_dedupe_gc_store_spec() {
-    harness::assert_priority_dedupe_gc(&MemoryDispatchStore::new()).await;
+    harness::assert_priority_dedupe_gc(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn lease_renewal_store_spec() {
-    harness::assert_lease_renewal(&MemoryDispatchStore::new()).await;
+    harness::assert_lease_renewal(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2233,7 +2253,11 @@ async fn supersession_store_spec() {
 
 #[tokio::test]
 async fn settle_fences_stale_epoch_store_spec() {
-    harness::assert_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
+    harness::assert_settle_fences_stale_epoch(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2346,15 +2370,20 @@ async fn a_superseded_owners_commit_is_fenced_while_the_current_owners_lands() {
 
 #[tokio::test]
 async fn concurrent_recovery_yields_one_winner_on_memory() {
-    harness::assert_concurrent_recovery_yields_one_winner(std::sync::Arc::new(
-        MemoryDispatchStore::new(),
-    ))
+    harness::assert_concurrent_recovery_yields_one_winner(
+        std::sync::Arc::new(MemoryDispatchStore::new()),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
     .await;
 }
 
 #[tokio::test]
 async fn awaiting_settle_fences_stale_epoch_store_spec() {
-    harness::assert_awaiting_settle_fences_stale_epoch(&MemoryDispatchStore::new()).await;
+    harness::assert_awaiting_settle_fences_stale_epoch(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2402,12 +2431,20 @@ async fn submit_superseding_abandons_prior_thread_work() {
 
 #[tokio::test]
 async fn dead_letter_ttl_gc_store_spec() {
-    harness::assert_dead_letter_ttl_gc(&MemoryDispatchStore::new()).await;
+    harness::assert_dead_letter_ttl_gc(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
 async fn renew_owned_leases_store_spec() {
-    harness::assert_renew_owned_leases(&MemoryDispatchStore::new()).await;
+    harness::assert_renew_owned_leases(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -2417,7 +2454,11 @@ async fn relinquish_claim_store_spec() {
 
 #[tokio::test]
 async fn renew_skips_far_from_expiry_store_spec() {
-    harness::assert_renew_skips_far_from_expiry(&MemoryDispatchStore::new()).await;
+    harness::assert_renew_skips_far_from_expiry(
+        &MemoryDispatchStore::new(),
+        &awaken_run_ingress_testkit::LogicalCommandClock,
+    )
+    .await;
 }
 
 #[tokio::test]
