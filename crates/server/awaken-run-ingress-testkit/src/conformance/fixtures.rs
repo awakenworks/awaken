@@ -41,15 +41,24 @@ fn credential_dispatch(ns: &str, run: &str, thread: &str, holder: &PlaintextHold
             format!("{ns}-provider@1"),
             format!("{ns}-route@1"),
             ns,
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: format!("{ns}-credential"),
-                    revision: 7,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-            )),
+            Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: format!("{ns}-credential"),
+                        revision: 7,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    format!("{ns}-provider"),
+                )),
+            ),
             InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_chat".into(),

@@ -53,7 +53,23 @@ async fn create_session(app: &Router) -> String {
         "POST",
         "/v1/sessions",
         serde_json::json!({
-            "agent": "assistant",
+            "agent": {
+                "id": "assistant",
+                "type": "agent_with_overrides",
+                "tools": [{
+                    "type": "agent_toolset_20260401",
+                    "default_config": {
+                        "enabled": true,
+                        "permission_policy": { "type": "always_allow" }
+                    },
+                    "configs": [{
+                        "name": "bash",
+                        "type": "bash",
+                        "enabled": true,
+                        "permission_policy": { "type": "always_ask" }
+                    }]
+                }]
+            },
             "environment_id": awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID,
         }),
     )
@@ -246,8 +262,9 @@ fn tool(call_id: &str, tool_id: &str, arguments: serde_json::Value) -> Assistant
 
 #[tokio::test]
 async fn discover_read_author_and_use_authored_skill_end_to_end() {
-    // Causes: C1 a frozen Skill is offered; C2 the model follows its prompt path;
-    // C3 authoring invokes approval-gated bash and the client confirms it; C4 a
+    // Causes: C0 the Session override explicitly freezes `bash=always_ask`; C1 a
+    // frozen Skill is offered; C2 the model follows its prompt path; C3 authoring
+    // invokes approval-gated bash and the client confirms it; C4 a
     // confirmed Run continues to the authored Skill. Effects: E1 `read` returns the
     // frozen body with no semantic tools; E2 approval names the exact public
     // bash Event; E3 `.claude/skills/notes/SKILL.md` is readable through the same

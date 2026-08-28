@@ -648,14 +648,10 @@ impl ManagedState {
             .transpose()
             .map_err(StateError::Run)?;
         let agent_mcp_override = req.agent.mcp_servers_override();
-        let mcp_drafts = self
-            .application
-            .normalize_mcp_drafts(
-                &owner_scope,
+        let (mcp_candidates, mcp_targets) =
+            awaken_session_application::SessionApplication::normalize_mcp_candidate_targets(
                 initial_mcp_candidates(config_view.as_ref(), agent_mcp_override),
-                &req.vault_ids,
-            )
-            .await?;
+            )?;
         // Parse the wire `resources[]` (ADR-0038) into staged mounts, and project each
         // into a DTO entry so the created session echoes its create-time resources —
         // list/get/delete then address these and any later-attached ones uniformly.
@@ -708,16 +704,21 @@ impl ManagedState {
         let agent_environment = config_view
             .as_ref()
             .and_then(|view| view.environment.as_ref());
-        let mcp_targets = mcp_drafts
-            .iter()
-            .map(|draft| draft.target.clone())
-            .collect::<Vec<_>>();
         let (environment_id, environment) = self
             .resolve_session_environment(
                 &req.environment_id,
                 agent_environment,
                 published_backend_ref.as_deref(),
                 &mcp_targets,
+            )
+            .await?;
+        let mcp_drafts = self
+            .application
+            .normalize_mcp_drafts(
+                &owner_scope,
+                mcp_candidates,
+                &req.vault_ids,
+                &environment.credential_realization.mcp_holder,
             )
             .await?;
         let effective_skills = req
@@ -1063,16 +1064,14 @@ impl ManagedState {
         }
     }
 
-    /// A session object reconstructed for a rehydrated (post-restart) session.
-    /// When the durable repo holds the session's config it is restored faithfully;
-    /// otherwise (a session created before the repo existed, or a purely in-memory
-    /// deployment) it falls back to the runtime's advertised surface with
-    /// placeholder agent/title/metadata — the pre-repo behavior.
+    /// A disposable wire object reconstructed from one durable Session root.
+    /// Omitting that root can never manufacture placeholder identity,
+    /// ownership, configuration, or capabilities from Runtime observations.
     pub(crate) fn rehydrated_session(
         &self,
         id: &str,
         owner_scope: &str,
-        persisted: Option<PersistedSession>,
+        persisted: PersistedSession,
     ) -> Result<Session, StateError> {
         self.rehydrated_session_for(id, owner_scope, persisted, RehydrationPurpose::Interactive)
     }
@@ -1081,15 +1080,14 @@ impl ManagedState {
         &self,
         id: &str,
         owner_scope: &str,
-        persisted: Option<PersistedSession>,
+        persisted: PersistedSession,
         purpose: RehydrationPurpose,
     ) -> Result<Session, StateError> {
         let caps = self.application.capabilities_for(id);
         let projected_budget = persisted
-            .as_ref()
-            .and_then(|session| session.budget.max_list_cost_minor())
+            .budget
+            .max_list_cost_minor()
             .map(crate::types::BudgetLimit::from_minor);
-        let default_tools = project::agent_tools(&caps);
         let (
             agent_id,
             agent_revision,
@@ -1106,86 +1104,52 @@ impl ManagedState {
             status,
             preparation,
             archived_at,
-        ) = match persisted {
-            Some(p) => {
-                let baseline = p.frozen_baseline();
-                let (agent_id, agent_revision, model, environment_id) = baseline
-                    .map(|baseline| {
-                        (
-                            baseline.agent_id.clone(),
-                            baseline.agent_revision,
-                            baseline.model.clone(),
-                            baseline.environment.environment_id.clone(),
-                        )
-                    })
-                    .unwrap_or_else(|| {
-                        (
-                            "assistant".into(),
-                            None,
-                            self.application.model(),
-                            p.environment_id().to_string(),
-                        )
-                    });
-                let model_inference = baseline.and_then(|baseline| {
-                    baseline
-                        .model_override
-                        .as_ref()
-                        .map(|model_override| model_override.inference.clone())
-                });
-                let system_prompt = baseline
-                    .map(|baseline| baseline.system_prompt.as_ref().clone())
-                    .unwrap_or_default();
-                let agent_skills = p
-                    .resources
-                    .desired()
-                    .skills()
-                    .iter()
-                    .map(crate::types::agent::AgentSkill::from_resolved_binding)
-                    .collect();
-                let vault_ids = baseline
-                    .map(|baseline| baseline.mcp_authoring.ordered_vault_ids.clone())
-                    .unwrap_or_default();
-                let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
-                let archived_at = p.archived_at().map(str::to_owned);
-                let preparation = Self::wire_session_preparation(&p);
-                (
-                    agent_id,
-                    agent_revision,
-                    model,
-                    environment_id,
-                    p.title,
-                    p.metadata,
-                    project::managed_tools(&p.tools),
-                    mcp_servers,
-                    model_inference,
-                    system_prompt,
-                    agent_skills,
-                    vault_ids,
-                    Self::wire_session_status(p.execution),
-                    preparation,
-                    archived_at,
-                )
-            }
-            None => (
-                "assistant".to_string(),
-                None,
-                self.application.model(),
-                awaken_environment_contract::BUILTIN_LOCAL_ENVIRONMENT_ID.to_string(),
-                None,
-                Default::default(),
-                default_tools,
-                Vec::new(),
-                None,
-                awaken_session_contract::SessionSystemPromptSelection::Inherit,
-                project::agent_skills(&caps),
-                Vec::new(),
-                SessionStatus::Idle,
-                crate::types::SessionPreparation {
-                    status: crate::types::SessionPreparationStatus::Ready,
-                    error: None,
-                },
-                None,
-            ),
+        ) = {
+            let p = persisted;
+            let baseline = p.frozen_baseline().ok_or_else(|| {
+                StateError::Run(RunError::unavailable(
+                    "Session root is not finalized and cannot be rehydrated",
+                ))
+            })?;
+            let (agent_id, agent_revision, model, environment_id) = (
+                baseline.agent_id.clone(),
+                baseline.agent_revision,
+                baseline.model.clone(),
+                baseline.environment.environment_id.clone(),
+            );
+            let model_inference = baseline
+                .model_override
+                .as_ref()
+                .map(|model_override| model_override.inference.clone());
+            let system_prompt = baseline.system_prompt.as_ref().clone();
+            let agent_skills = p
+                .resources
+                .desired()
+                .skills()
+                .iter()
+                .map(crate::types::agent::AgentSkill::from_resolved_binding)
+                .collect();
+            let vault_ids = baseline.mcp_authoring.ordered_vault_ids.clone();
+            let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
+            let archived_at = p.archived_at().map(str::to_owned);
+            let preparation = Self::wire_session_preparation(&p);
+            (
+                agent_id,
+                agent_revision,
+                model,
+                environment_id,
+                p.title,
+                p.metadata,
+                project::managed_tools(&p.tools),
+                mcp_servers,
+                model_inference,
+                system_prompt,
+                agent_skills,
+                vault_ids,
+                Self::wire_session_status(p.execution),
+                preparation,
+                archived_at,
+            )
         };
         let deployment_id = metadata.get("awaken.deployment_id").cloned();
         let profile = agent_revision
@@ -1294,7 +1258,7 @@ impl ManagedState {
             self.rehydrated_session_for(
                 id,
                 &owner_scope,
-                Some(persisted.clone()),
+                persisted.clone(),
                 RehydrationPurpose::TerminalCleanup,
             )?,
             persisted.resources,
@@ -1389,7 +1353,7 @@ impl ManagedState {
             if let Some(record) = cached.get(&session_id) {
                 out.push(record.session_projection());
             } else {
-                out.push(self.rehydrated_session(&session_id, scope, Some(session))?);
+                out.push(self.rehydrated_session(&session_id, scope, session)?);
             }
         }
         out.sort_by(|a, b| a.id.cmp(&b.id));

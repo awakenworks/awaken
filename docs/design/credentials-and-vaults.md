@@ -454,30 +454,38 @@ implemented pairs are Repository transport with HTTP Basic, platform HTTP
 effect with the typed field-placement usage, signature verification with an
 exact field-to-algorithm map, and an Extension target with the existing
 Extension usage. The latter's `consumer_id` is the only consumer identity;
-purpose does not duplicate it. Described Provider and MCP sources are
-rejected until their existing compilers can derive and freeze exact targets.
-Legacy undescribed Provider/MCP rows continue through their existing paths.
-Target-dependent access without a target is rejected before local or external
-material resolution.
+purpose does not duplicate it. Provider, MCP, and remote-Agent consumers derive
+and freeze exact targets: catalog provider identity, canonical MCP URL, and
+verified A2A origin respectively. Target-dependent access without a target is
+rejected before local or external material resolution.
 
 The targetless Secret mount/write-back adapter is legacy-only. A described
 source is rejected before material is opened or changed because that wire does
 not carry its exact target and usage. All material replacement, including
 legacy write-back and Repository authorization updates, and every terminal
 source retirement call an expected-revision Vault CAS; no read-latest rotation
-or revocation wrapper remains. Provider
-and A2A candidate selection also excludes described sources until their
-existing compilers can publish an exact target.
+or revocation wrapper remains. The application-MCP compatibility cutover is the
+only same-id legacy-provider to descriptor migration and uses that same
+expected-revision WAL/CAS.
 
 The pure `compile_exact_credential_access` domain function is the only source
 row-to-access projection. It validates source authority, active status,
 Workspace, positive revision, expiry, target+usage, holder policy and material
-binding. Exact-target consumers supply one selected holder. Legacy Provider and
-A2A publication use typed deferred holder selection because the dispatch claim
-owns that choice; only undescribed, targetless rows with the matching
-Provider/A2A usage may defer, and an empty holder policy fails closed. HTTP and
+binding. Exact-target consumers supply one selected holder. MCP authoring
+normalizes targets before Environment resolution, then compiles credentials
+with the frozen Environment `mcp_holder`; no default or deferred holder can
+compete with it. HTTP and
 Managed protocol adapters retain their existing row reads and envelope/custody
 effects but delegate that decision instead of copying it.
+
+`CredentialSource::validate_access_target` is the sole interpretation of a
+source descriptor or legacy provider scope against a consumer target. Both the
+compiler and the local Materializer call it; the latter repeats the check at
+the plaintext boundary so a forged or stale access cannot bypass source-owned
+authority. Provider materialization also compares an endpoint-scoped source
+with the immutable versioned route, so another endpoint of the same provider
+cannot reuse it. Expiry is intentionally checked at compilation and again at
+materialization because time may advance between those two boundaries.
 
 Repository activation stores the exact secret-free pin, never opened HTTP Basic
 material or a short Gateway capability. Initial clone, hot replacement and

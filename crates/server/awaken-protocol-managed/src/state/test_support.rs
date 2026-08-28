@@ -56,8 +56,9 @@ pub(super) type ChildCommitAfterHistorySnapshot = (
     Vec<awaken_agent_contract::RunLifecycleEvent>,
 );
 
-/// A runtime that reports a non-empty committed transcript, so a session can
-/// rehydrate. Every operational method is unused by these tests.
+/// A runtime that reports committed Thread facts after the durable Session root
+/// has authorized rehydration. The transcript is projection input only and can
+/// never establish Session existence by itself.
 #[derive(Clone, Default)]
 pub(crate) struct RehydrateFake {
     pub(super) restored: Arc<

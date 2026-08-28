@@ -262,6 +262,10 @@ pub(crate) struct McpWiring {
     pub plugins: Vec<Arc<dyn Plugin>>,
     pub tool_ids: Vec<String>,
     pub skill_registries: Vec<Arc<dyn awaken_ext_skills::SkillRegistry>>,
+    /// Exact-generation local call fences. The durable Session generation is
+    /// still authoritative; drain closes these projections before acknowledging
+    /// its receipt so cloned Runtime tools cannot continue using old material.
+    pub call_fences: Vec<awaken_ext_mcp::transport::McpCallFence>,
 }
 
 impl crate::SharedHost {
@@ -498,7 +502,7 @@ impl crate::SharedHost {
         &self,
         generation: &awaken_session_contract::McpGenerationRef,
     ) -> Result<(), HostError> {
-        let result = self.session_slots.modify(&generation.session_id, |slot| {
+        let projected = self.session_slots.modify(&generation.session_id, |slot| {
             let Some(projection) = slot
                 .mcp
                 .iter_mut()
@@ -507,25 +511,104 @@ impl crate::SharedHost {
                 // Cleanup is an idempotent exact-generation command. A fresh
                 // Runtime incarnation legitimately has no process-local copy of
                 // an already fenced durable Draining generation.
-                return Ok(None);
+                return Ok::<_, HostError>(None);
             };
-            projection.state = crate::session_slot::McpProjectionState::Removed;
-            projection.server = None;
-            projection.native_wiring = None;
-            let process = projection.mcp_process.take();
+            if projection.state == crate::session_slot::McpProjectionState::Removed {
+                return Ok::<_, HostError>(None);
+            }
+            // Visibility closes before cancellation. Existing Runtime clones may
+            // still hold the dynamic tools, so their exact transport fences are
+            // cancelled and drained below before Removed is acknowledged.
+            projection.state = crate::session_slot::McpProjectionState::Draining;
+            let call_fences = projection
+                .native_wiring
+                .as_ref()
+                .map(|wiring| wiring.call_fences.clone())
+                .unwrap_or_default();
+            let process = projection.mcp_process.clone();
+            let runtime = slot.runtime.clone();
             slot.runtime = None;
-            Ok(process)
+            Ok(Some((call_fences, process, runtime)))
         });
-        if let Some(Ok(Some(process))) = &result {
-            let _ = process
-                .signal(awaken_provisioning_contract::Signal::Term)
-                .await;
-            let _ = process.wait().await;
-        }
         if let Some(relay) = self.mcp_relay.get() {
             relay.remove_route(generation);
         }
-        result.map(|result| result.map(|_| ())).unwrap_or(Ok(()))
+        let Some((call_fences, process, runtime)) = projected.transpose()?.flatten() else {
+            return Ok(());
+        };
+
+        for fence in call_fences {
+            fence.close_and_wait().await;
+        }
+
+        if let Some(runtime) = runtime {
+            if let Some(token) = runtime
+                .cancel
+                .lock()
+                .expect("cancel mutex poisoned")
+                .as_ref()
+            {
+                token.cancel();
+            }
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                if runtime
+                    .active_run
+                    .lock()
+                    .expect("active run mutex poisoned")
+                    .is_none()
+                {
+                    break;
+                }
+                if tokio::time::Instant::now() >= deadline {
+                    return Err(HostError::unavailable_classified(
+                        "mcp_generation_quiescence_timeout",
+                        "MCP generation drain could not quiesce the active Session Run",
+                    ));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }
+
+        if let Some(process) = process {
+            awaken_run_executor_acp::Supervisor::reap(
+                process.as_ref(),
+                std::time::Duration::from_secs(5),
+            )
+            .await
+            .map_err(|error| {
+                HostError::unavailable_classified(
+                    "mcp_generation_process_reap_failed",
+                    format!("MCP generation process did not terminate: {error}"),
+                )
+            })?;
+        }
+
+        match self.session_slots.modify(&generation.session_id, |slot| {
+            let Some(projection) = slot
+                .mcp
+                .iter_mut()
+                .find(|projection| projection.request.generation == *generation)
+            else {
+                return Ok(());
+            };
+            if projection.state == crate::session_slot::McpProjectionState::Removed {
+                return Ok(());
+            }
+            if projection.state != crate::session_slot::McpProjectionState::Draining {
+                return Err(HostError::internal(
+                    "MCP generation changed while its drain was quiescing",
+                ));
+            }
+            projection.server = None;
+            projection.native_wiring = None;
+            projection.mcp_process = None;
+            projection.state = crate::session_slot::McpProjectionState::Removed;
+            Ok(())
+        }) {
+            Some(result) => result,
+            None => Ok(()),
+        }
     }
 }
 
@@ -536,6 +619,7 @@ impl McpWiring {
             plugins: Vec::new(),
             tool_ids: Vec::new(),
             skill_registries: Vec::new(),
+            call_fences: Vec::new(),
         }
     }
 }
@@ -646,6 +730,7 @@ async fn append_connected(
     transport: Arc<dyn awaken_ext_mcp::transport::McpToolTransport>,
     list_changed: tokio::sync::broadcast::Receiver<awaken_ext_mcp::ListChangedKind>,
 ) -> Result<(), HostError> {
+    let (transport, call_fence) = awaken_ext_mcp::transport::revocable_transport(transport);
     let connected =
         awaken_ext_mcp::McpServer::start(&server.name, Arc::clone(&transport), list_changed)
             .await
@@ -670,6 +755,7 @@ async fn append_connected(
             .map(|tool| tool.executable().id().to_string()),
     );
     wiring.plugins.push(Arc::new(plugin));
+    wiring.call_fences.push(call_fence);
     Ok(())
 }
 

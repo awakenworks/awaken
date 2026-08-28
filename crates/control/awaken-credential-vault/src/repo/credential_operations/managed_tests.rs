@@ -200,6 +200,7 @@ fn managed_command(url: &str) -> ManagedCredentialCreateCommand {
             secret: Some(RedactedString::new("token")),
             oauth_command: None,
         },
+        descriptor: None,
         source_id: Some(CredentialSourceId("source-1".into())),
         protocol_endpoint_id: None,
         primary_material_ref: None,

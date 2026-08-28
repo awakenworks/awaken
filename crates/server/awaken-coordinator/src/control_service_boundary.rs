@@ -77,6 +77,7 @@ struct McpSourceCommand {
 struct SourceCommand {
     source_id: CredentialSourceId,
     workspace_id: String,
+    target: awaken_session_contract::McpTarget,
     selected_holder: awaken_runtime_contract::PlaintextHolder,
     binding: awaken_runtime_contract::CredentialMaterialBinding,
 }
@@ -269,6 +270,7 @@ async fn mcp_access(
         .mcp_access_for_source(
             &command.source_id,
             &command.workspace_id,
+            &command.target,
             &command.selected_holder,
             &command.binding,
         )
@@ -541,6 +543,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        target: &awaken_session_contract::McpTarget,
         selected_holder: &awaken_runtime_contract::PlaintextHolder,
         binding: &awaken_runtime_contract::CredentialMaterialBinding,
     ) -> Result<awaken_runtime_contract::CredentialAccess, String> {
@@ -549,6 +552,7 @@ impl SessionCredentialSource for HttpControlServiceClient {
             &SourceCommand {
                 source_id: source_id.clone(),
                 workspace_id: workspace_id.to_owned(),
+                target: target.clone(),
                 selected_holder: selected_holder.clone(),
                 binding: binding.clone(),
             },

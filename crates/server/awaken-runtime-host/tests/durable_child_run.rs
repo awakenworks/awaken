@@ -85,7 +85,8 @@ impl LlmExecutor for ParentChildModel {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
-    // Cause/effect design: C1 the parent Run awaits delegation; C2 the child Run
+    // Cause/effect design: C0 the child publication explicitly sets
+    // write=always_ask; C1 the parent Run awaits delegation; C2 the child Run
     // awaits permission in its own thread; C3 the caller approves the exact child
     // tool through the parent; C4 the parent claim projection contains no child
     // Thread; C5 the parent Delegation ticket transports the typed child
@@ -95,7 +96,7 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
     // Session commit is the sole local parent+child read authority; K2 each claim
     // keeps its own projection; K3 the shared queue is the sole execution fence;
     // K4 the parent validates the relationship while the child ticket owns answer
-    // kind and call identity. Decision rules: R1=C1+C2=>E1; R2=C1+C2+C3+C5=>
+    // kind and call identity. Decision rules: R1=C0+C1+C2=>E1; R2=C0+C1+C2+C3+C5=>
     // E2+E3+E4; R3=C4=>use K1, never a stale parent projection.
     // The injected shared queue is the typed durable-ingress authority; the
     // builder enables its pool without mutating process-global configuration.
@@ -105,6 +106,27 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
         memory.clone() as Arc<dyn Dispatch>
     ));
 
+    let assistant = test_snapshot("assistant", vec![AgentId("researcher".into())]);
+    let mut researcher = test_snapshot("researcher", Vec::new());
+    researcher.resolved_spec.plugin_config.agent.toolsets = vec![
+        awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+            source: awaken_runtime_contract::agent_bindings::ToolsetSource::Agent,
+            default: awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                enabled: true,
+                permission:
+                    awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAllow,
+            },
+            overrides: vec![
+                awaken_runtime_contract::agent_bindings::ToolPolicyOverride::new(
+                    "write",
+                    awaken_runtime_contract::agent_bindings::ToolExecutionPolicy {
+                        enabled: true,
+                        permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+                    },
+                ),
+            ],
+        },
+    ];
     let host = Arc::new(
         SharedHost::new(
             Arc::new(ParentChildModel {
@@ -116,11 +138,8 @@ async fn child_run_uses_the_durable_scheduler_and_returns_to_its_parent() {
         .with_dispatch_store(dispatch)
         .with_store_dir(storage.path())
         .with_agent_publications(Arc::new(
-            StaticPublishedAgentSnapshots::try_new([
-                test_snapshot("assistant", vec![AgentId("researcher".into())]),
-                test_snapshot("researcher", Vec::new()),
-            ])
-            .expect("valid test Agent publications"),
+            StaticPublishedAgentSnapshots::try_new([assistant, researcher])
+                .expect("valid test Agent publications"),
         )),
     );
     host.ensure_dispatch_pool();

@@ -12,9 +12,9 @@ use awaken_session_contract::McpTarget;
 
 /// Exact credential execution decision already selected by Session.
 ///
-/// Source-row lookup, Workspace admission, compiler time, and deferred holder
-/// selection stay with the credential authority; this request owns only the
-/// exact consumer decision passed through the Session credential port.
+/// Source-row lookup, Workspace admission, compiler time, and exact-holder
+/// admission stay with the credential authority; this request carries only the
+/// already-selected consumer decision through the Session credential port.
 pub struct SessionCredentialAccessRequest {
     pub target: awaken_credential_contract::CredentialTarget,
     pub usage: CredentialUsage,
@@ -39,6 +39,7 @@ pub trait SessionCredentialSource: Send + Sync {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        target: &McpTarget,
         selected_holder: &PlaintextHolder,
         binding: &CredentialMaterialBinding,
     ) -> Result<CredentialAccess, String>;

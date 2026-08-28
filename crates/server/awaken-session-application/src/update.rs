@@ -640,11 +640,17 @@ impl SessionApplication {
                 .frozen_baseline()
                 .ok_or(SessionUpdateError::NotFrozen)?
                 .clone();
+            let selected_mcp_holder = baseline
+                .environment
+                .credential_realization
+                .mcp_holder
+                .clone();
             let drafts = self
                 .normalize_mcp_drafts(
                     &owner_scope,
                     mcp_update.candidates(),
                     &baseline.mcp_authoring.ordered_vault_ids,
+                    &selected_mcp_holder,
                 )
                 .await
                 .map_err(SessionUpdateError::Rejected)?;

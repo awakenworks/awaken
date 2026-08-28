@@ -8,12 +8,18 @@ use std::sync::Arc;
 
 use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::message::Role;
+use awaken_runtime_contract::ExecutableAgentSnapshot;
+use awaken_runtime_contract::agent_bindings::{
+    AgentBindings, ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride,
+    ToolsetPolicy, ToolsetSource,
+};
 use awaken_runtime_contract::llm::{
     AssistantOutput, ChatRequest, ChatResponse, LlmExecutor, ToolCall,
 };
+use awaken_runtime_contract::resolved::ModelBinding;
 use awaken_scenario_host::{
     EchoModel, ReviseModel, build_custom_router, build_delegation_router, build_graded_router,
-    build_router,
+    build_router, build_router_and_host_with_agent_publications,
 };
 use axum::Router;
 use axum::body::Body;
@@ -22,6 +28,32 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use support::wait_for_session_events;
+
+fn build_write_confirmation_router(
+    llm: Arc<dyn LlmExecutor>,
+    model_ref: impl Into<String>,
+) -> Router {
+    let model_ref = model_ref.into();
+    let publication = ExecutableAgentSnapshot::builder("assistant")
+        .model(ModelBinding::new("default", &model_ref, "default"))
+        .tools(awaken_runtime_host::authorable_tools())
+        .agent_bindings(AgentBindings {
+            toolsets: vec![ToolsetPolicy {
+                source: ToolsetSource::Agent,
+                default: ToolExecutionPolicy::default(),
+                overrides: vec![ToolPolicyOverride::new(
+                    "write",
+                    ToolExecutionPolicy {
+                        enabled: true,
+                        permission: ToolPermissionRequirement::AlwaysAsk,
+                    },
+                )],
+            }],
+            ..Default::default()
+        })
+        .build();
+    build_router_and_host_with_agent_publications(llm, model_ref, [publication]).0
+}
 
 async fn json_call(
     app: &Router,
@@ -269,13 +301,14 @@ fn read_result_text(list: &serde_json::Value) -> String {
 
 #[tokio::test]
 async fn hitl_write_awaits_then_confirms_and_reads_rooted() {
-    // Causes: the fixtures below establish `hitl write awaits then confirms and reads rooted` with
-    // the concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Causes: C0 the immutable Agent publication explicitly sets
+    // `write=always_ask`; the fixtures below establish `hitl write awaits then confirms and reads
+    // rooted` with the concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `all output, state, side-effect, error, and terminal
     // assertions below hold together` and every asserted state transition or side effect must hold.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
     // delivery is best-effort and cannot replace committed replay truth.
-    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
 
     // The write is asked -> the Run awaits.
@@ -430,15 +463,16 @@ impl LlmExecutor for OutcomeHitlModel {
 
 #[tokio::test]
 async fn outcome_hitl_awaits_without_failure_then_resumes_the_active_aggregate() {
-    // Causes: the fixtures below establish `outcome hitl awaits without failure then` with the
-    // concrete inputs, state, dependencies, and failure triggers used by this case.
+    // Causes: C0 the immutable Agent publication explicitly sets
+    // `write=always_ask`; the fixtures below establish `outcome hitl awaits without failure then`
+    // with the concrete inputs, state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `resumes the active aggregate` and every asserted state
     // transition or side effect must hold.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
     // delivery is best-effort and cannot replace committed replay truth.
     // Decision rule: evaluate every labeled cause partition in this test; each matching rule
     // selects only its stated effect and preserves the authority constraint.
-    let app = build_router(Arc::new(OutcomeHitlModel), "outcome-hitl");
+    let app = build_write_confirmation_router(Arc::new(OutcomeHitlModel), "outcome-hitl");
     let id = create_session(&app).await;
 
     // Cause/effect decision table for the changed Outcome/HITL boundary:
@@ -830,8 +864,9 @@ async fn post_status(app: &Router, uri: &str, body: serde_json::Value) -> Status
 
 #[tokio::test]
 async fn custom_result_fails_closed_on_mismatch() {
-    // Causes: the fixtures below establish `custom result` with the concrete inputs, state,
-    // dependencies, and failure triggers used by this case.
+    // Causes: C0 the immutable Agent publication explicitly sets
+    // `write=always_ask`; the fixtures below establish `custom result` with the concrete inputs,
+    // state, dependencies, and failure triggers used by this case.
     // Effects: the observable result `fails closed on mismatch` and every asserted state transition
     // or side effect must hold.
     // Constraints/invariants: the Coordinator routes one neutral Session/Run lifecycle; live
@@ -926,7 +961,7 @@ async fn custom_result_cannot_fabricate_a_builtin_tools_output() {
     // alternate causes.
     // A Run awaiting on the *built-in* `write` (HITL) must not be resumable with a
     // `user.custom_tool_result`: that would bypass execution and the approval gate.
-    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
     let id = create_session(&app).await;
     let awaiting = send_message(&app, &id, "HELLO").await;
     let tool_use_id =
@@ -1183,7 +1218,13 @@ async fn max_steps_maps_to_retries_exhausted() {
 
 #[tokio::test]
 async fn sessions_are_isolated() {
-    let app = build_router(Arc::new(WriteReadProbe), "scripted");
+    // Cause/effect design: C0 the immutable Agent publication explicitly sets
+    // `write=always_ask`; C1 two distinct Session roots write different content;
+    // C2 each exact confirmation resumes only its own pending write. Effects:
+    // E1 each rooted read observes its own content; E2 neither read observes the
+    // other Session's content. Decision rule: C0+C1+C2 => E1+E2. The Session
+    // aggregate and sandbox binding remain the sole isolation authorities.
+    let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
     let one = create_session(&app).await;
     let two = create_session(&app).await;
 

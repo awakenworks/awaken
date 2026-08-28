@@ -1082,10 +1082,12 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
     // maps to 500/api_error; R2 caller-invalid preparation maps to
     // 400/invalid_request_error; R3 transient Environment image readiness maps
     // to 503/api_error while retaining a queryable Preparing intent for fenced
-    // retry. Permanent failures are hidden activation_failed records. FMECA:
-    // classifying every outage as permanent loses recovery; exposing a permanent
-    // failure as live admits Runs without a Runtime. The error kind and persisted
-    // budget distinguish those outcomes at the same realization boundary.
+    // retry. Permanent failures remain queryable activation_failed roots but
+    // project as terminated/failed. FMECA: classifying every outage as permanent
+    // loses recovery; projecting a permanent failure as live admits Runs without
+    // a Runtime; hiding it loses the durable cause and makes exact GET disagree
+    // with the Session repository. The error kind and persisted retry budget
+    // distinguish those outcomes at the same realization boundary.
     // Constraint K0: this preparation-only fixture commits no Run, so its one
     // atomic Thread recovery query returns None; unsupported production runtimes
     // remain fail-closed rather than falling back to split transcript reads.
@@ -1121,8 +1123,9 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
         assert_eq!(s, status, "{kind:?}");
         assert_eq!(body["type"], "error");
         assert_eq!(body["error"]["type"], error_type);
-        // Fail closed: the recoverable durable intent is not exposed as a live
-        // Session. The pre-I/O observation owns the generated opaque identity.
+        // Fail closed: no failed durable intent is exposed as a live Session.
+        // Exact GET still projects the repository-owned aggregate and its cause.
+        // The pre-I/O observation owns the generated opaque identity.
         let failed_id = h
             .observed_durable
             .lock()
@@ -1149,10 +1152,18 @@ async fn failing_prepare_session_fails_the_create_with_the_mapped_envelope() {
                 "R3"
             );
         } else {
+            assert_eq!(read_status, StatusCode::OK, "R1/R2 durable failed root");
+            assert_eq!(read["status"], "terminated", "R1/R2: {kind:?}");
+            assert_eq!(read["preparation"]["status"], "failed", "R1/R2: {kind:?}");
             assert_eq!(
-                read_status,
-                StatusCode::NOT_FOUND,
-                "R1/R2 no half-provisioned session"
+                failed.execution,
+                SessionExecutionState::ActivationFailed,
+                "R1/R2: {kind:?}"
+            );
+            assert_eq!(
+                read["preparation"]["error"].as_str(),
+                failed.realization_progress.last_error.as_deref(),
+                "R1/R2 exact GET preserves the durable cause: {kind:?}"
             );
             assert_eq!(
                 failed.mcp.attachments[0].state,

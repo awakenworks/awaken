@@ -632,6 +632,8 @@ pub awaken_agent_contract::mcp_target::McpTargetIdentity::path: alloc::string::S
 pub awaken_agent_contract::mcp_target::McpTargetIdentity::port: core::option::Option<u16>
 pub awaken_agent_contract::mcp_target::McpTargetIdentity::query: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::mcp_target::McpTargetIdentity::scheme: alloc::string::String
+impl awaken_agent_contract::mcp_target::McpTargetIdentity
+pub fn awaken_agent_contract::mcp_target::McpTargetIdentity::canonical_url(&self) -> alloc::string::String
 pub struct awaken_agent_contract::mcp_target::SandboxStdioMcpTarget
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::args: alloc::vec::Vec<alloc::string::String>
 pub awaken_agent_contract::mcp_target::SandboxStdioMcpTarget::command: alloc::string::String
@@ -1151,6 +1153,8 @@ pub awaken_agent_contract::McpTargetIdentity::path: alloc::string::String
 pub awaken_agent_contract::McpTargetIdentity::port: core::option::Option<u16>
 pub awaken_agent_contract::McpTargetIdentity::query: core::option::Option<alloc::string::String>
 pub awaken_agent_contract::McpTargetIdentity::scheme: alloc::string::String
+impl awaken_agent_contract::mcp_target::McpTargetIdentity
+pub fn awaken_agent_contract::mcp_target::McpTargetIdentity::canonical_url(&self) -> alloc::string::String
 pub struct awaken_agent_contract::Message
 pub awaken_agent_contract::Message::content: alloc::vec::Vec<awaken_agent_contract::agent::content::ContentBlock>
 pub awaken_agent_contract::Message::id: awaken_agent_contract::agent::message::Id

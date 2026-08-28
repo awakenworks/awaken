@@ -12,9 +12,7 @@ use awaken_agent_config::{
     AgentConfig, AgentConfigRevision, ConfigRegistry, ConfigWrite, StoredPublication,
 };
 use awaken_config_resolver::AgentInputBindingRepository;
-use awaken_executable_agent_contract::{
-    ExecutableAgentRegistrar, ExecutableAgentRegistrationError,
-};
+use awaken_executable_agent_contract::ExecutableAgentRegistrar;
 use awaken_runtime_contract::resolved::ToolDescriptor;
 use awaken_tenancy::ScopeId;
 
@@ -246,66 +244,7 @@ impl ConfigService {
         id: &str,
         catalog: &[ToolDescriptor],
     ) -> Result<bool, String> {
-        let stored = registry
-            .get_config_revision(id)
-            .await
-            .map_err(|e| e.to_string())?;
-        match stored {
-            // Policy selections refresh their authority-owned pins; an operator's
-            // concrete pinned binding remains authoritative.
-            Some(versioned) if versioned.config.model_binding.requires_reconciliation() => {
-                let preview = self
-                    .preview_publication(workspace, registry, id, catalog)
-                    .await
-                    .map_err(|error| error.to_string())?;
-                if registry
-                    .get_publication(&preview.fingerprint)
-                    .await
-                    .map_err(|error| error.to_string())?
-                    .is_some()
-                {
-                    // Exact policy fact replay: preserve the authored revision
-                    // and reuse the ordinary idempotent registration path. A
-                    // legacy store may already contain two fingerprints at this
-                    // revision; only that semantic registrar conflict falls
-                    // through to the CAS migration below.
-                    match self.publish(workspace, registry, id, catalog).await {
-                        Ok(_) => return Ok(true),
-                        Err(PublishError::Registration(
-                            ExecutableAgentRegistrationError::Conflict(_),
-                        )) => {}
-                        Err(error) => return Err(error.to_string()),
-                    }
-                }
-
-                // A changed dependency produces a different executable fact.
-                // `(Workspace, Agent, source_revision)` is immutable, so advance
-                // the same authoring intent with CAS before publication instead
-                // of persisting a conflicting fingerprint at the old revision.
-                let next_revision = match registry
-                    .put_config_if_revision(&versioned.config, versioned.revision)
-                    .await
-                    .map_err(|error| error.to_string())?
-                {
-                    ConfigWrite::Applied { revision } => revision,
-                    ConfigWrite::Conflict { current_revision } => {
-                        return Err(PublishError::StaleRevision(current_revision).to_string());
-                    }
-                };
-                self.publish_at_revisions(
-                    workspace,
-                    registry,
-                    id,
-                    catalog,
-                    Some(next_revision),
-                    None,
-                )
-                .await
-                .map_err(|error| error.to_string())?;
-                Ok(true)
-            }
-            _ => Ok(false),
-        }
+        crate::reconciliation::reconcile(self, workspace, registry, id, catalog).await
     }
 }
 
@@ -479,15 +418,21 @@ pub(crate) mod resource_prompt_tests {
                     "provider@2",
                     "endpoint@4",
                     workspace.clone(),
-                    Some(awaken_runtime_contract::CredentialAccess::new(
-                        awaken_runtime_contract::CredentialRef {
-                            id: format!("credential-{workspace}"),
-                            revision: 3,
-                        },
-                        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                        awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                        awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                    )),
+                    Some(
+                        awaken_runtime_contract::CredentialAccess::new(
+                            awaken_runtime_contract::CredentialRef {
+                                id: format!("credential-{workspace}"),
+                                revision: 3,
+                            },
+                            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                        )
+                        .with_target(awaken_runtime_contract::CredentialTarget::new(
+                            awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                            "provider",
+                        )),
+                    ),
                     awaken_runtime_contract::InferenceEndpoint {
                         adapter_kind: "openai".into(),
                         api_dialect: "open_ai_chat".into(),

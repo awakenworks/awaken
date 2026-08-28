@@ -1097,6 +1097,9 @@ fn managed_rollout_never_precedes_exact_pair_publication() {
 /// application service and never enters the durable pending fact.
 pub struct ManagedCredentialCreateCommand {
     pub source: CredentialCreateParams,
+    /// Optional canonical descriptor compiled by the target-owning application
+    /// before the aggregate enters its WAL/CAS publication path.
+    pub descriptor: Option<awaken_credential_contract::CredentialDescriptor>,
     /// Stable identity for an idempotent domain command. Ordinary Managed API
     /// creates leave this absent and receive the existing generated identity.
     pub source_id: Option<CredentialSourceId>,

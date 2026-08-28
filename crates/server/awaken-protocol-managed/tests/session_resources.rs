@@ -1953,8 +1953,63 @@ async fn session_inherits_published_agent_integrations_and_echoes_the_effective_
     let repo = std::sync::Arc::new(
         SqliteManagedSessionRepository::open_in_memory().expect("session repository"),
     );
+    let secrets = std::sync::Arc::new(awaken_credential_vault::InMemorySecretStore::new());
+    let credentials =
+        std::sync::Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
+    let target = awaken_session_contract::McpTarget::parse_http("https://mcp.example.test")
+        .expect("published MCP target");
+    let audience = awaken_session_contract::McpTarget::identity(
+        target.http_url().expect("published HTTP MCP target"),
+    )
+    .expect("canonical published MCP target")
+    .canonical_url();
+    let mut source = awaken_credential_vault::repo::enter_credential_idempotent_described(
+        awaken_credential_contract::CredentialSourceId("cred:workspace:docs".into()),
+        awaken_credential_vault::CredentialCreateParams {
+            workspace_id: "default".into(),
+            kind: awaken_credential_vault::CredentialKind::Vault,
+            provider_id: None,
+            env_key: None,
+            secret: Some(awaken_agent_contract::RedactedString::new(
+                "published-mcp-secret",
+            )),
+            oauth_command: None,
+        },
+        None,
+        awaken_credential_contract::CredentialDescriptor::new(
+            audience.clone(),
+            awaken_credential_contract::CredentialMaterialDescriptor::secret(
+                awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
+            ),
+            [awaken_credential_contract::CredentialTargetContract::new(
+                awaken_credential_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                    audience,
+                ),
+                awaken_credential_contract::CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+            )],
+        ),
+        secrets.as_ref(),
+        credentials.as_ref(),
+    )
+    .await
+    .expect("publish canonical MCP credential authority")
+    .source;
+    source.version = 7;
+    credentials
+        .put(source)
+        .await
+        .expect("pin published MCP credential revision");
+    let vaults = std::sync::Arc::new(awaken_protocol_managed::VaultState::new(
+        secrets,
+        credentials,
+    ));
     let state = ManagedState::new_with_mcp(runtime)
         .with_config_source(std::sync::Arc::new(AgentWithIntegrations))
+        .with_vaults(vaults)
         .with_session_repo(repo.clone());
     let app = router(std::sync::Arc::new(state));
     let (status, session) = call(

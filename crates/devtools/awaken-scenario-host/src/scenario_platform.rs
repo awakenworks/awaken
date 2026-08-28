@@ -97,6 +97,15 @@ pub(super) fn mount_with_agent_source_on_lifecycle(
 ) -> Router {
     let (host, resources) = platform.into_parts();
     let host = Arc::new(host);
+    mount_parts_with_agent_source_on_lifecycle(host, resources, agent_source, lifecycle)
+}
+
+pub(super) fn mount_parts_with_agent_source_on_lifecycle(
+    host: Arc<SharedHost>,
+    resources: awaken_resource_application::ResourcesApplication,
+    agent_source: Arc<dyn awaken_executable_agent_contract::ExecutableAgentProfileSource>,
+    lifecycle: awaken_service_lifecycle::ServiceLifecycle,
+) -> Router {
     let catalog = resources.authorities().resource_registry();
     let managed = awaken_coordinator::local_managed_state_with_agent_source(
         host.clone(),

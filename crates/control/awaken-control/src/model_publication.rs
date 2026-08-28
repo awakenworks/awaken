@@ -563,6 +563,21 @@ mod tests {
         catalog
     }
 
+    fn direct_resolver(
+        catalog: ProviderCatalog,
+        credentials: Arc<dyn CredentialRepo>,
+    ) -> CatalogModelPublicationResolver {
+        let policy = CredentialExecutionPolicy::self_hosted_provider();
+        let holder = policy
+            .allowed_plaintext_holders
+            .iter()
+            .next()
+            .expect("self-hosted Provider policy has an exact holder")
+            .clone();
+        CatalogModelPublicationResolver::new(catalog, credentials)
+            .with_direct_provider_credential_execution(policy, holder)
+    }
+
     async fn resolver_for_catalog(catalog: ProviderCatalog) -> CatalogModelPublicationResolver {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         enter_credential(
@@ -579,8 +594,7 @@ mod tests {
         )
         .await
         .unwrap();
-        CatalogModelPublicationResolver::new(catalog, credentials)
-            .with_acp_capabilities(test_acp_capabilities())
+        direct_resolver(catalog, credentials).with_acp_capabilities(test_acp_capabilities())
     }
 
     async fn resolver(models: &[&str]) -> CatalogModelPublicationResolver {
@@ -667,7 +681,7 @@ mod tests {
                 .len(),
             1
         );
-        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+        let resolver = direct_resolver(catalog, credentials);
         let selection = ModelSelection::Target {
             target: ModelTarget {
                 model_id: "shared-model".into(),
@@ -778,8 +792,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let resolver =
-            CatalogModelPublicationResolver::new(catalog, credentials).with_profiles(profiles);
+        let resolver = direct_resolver(catalog, credentials).with_profiles(profiles);
 
         let resolved = resolver
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
@@ -892,8 +905,7 @@ mod tests {
                 },
             )
             .unwrap();
-        let resolver = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
-            .with_profiles(profiles);
+        let resolver = direct_resolver(catalog(&["primary"]), credentials).with_profiles(profiles);
         let selected_id = |models: &ResolvedPublicationModels| match models.primary.provisioning() {
             ModelProvisioning::Provider {
                 credential: Some(access),
@@ -1021,7 +1033,7 @@ mod tests {
             )
             .unwrap();
 
-        let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+        let error = direct_resolver(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
@@ -1093,7 +1105,7 @@ mod tests {
             )
             .unwrap();
 
-        let resolved = CatalogModelPublicationResolver::new(catalog, credentials)
+        let resolved = direct_resolver(catalog, credentials)
             .with_profiles(profiles)
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
@@ -1151,7 +1163,7 @@ mod tests {
             )
             .unwrap();
 
-        let error = CatalogModelPublicationResolver::new(catalog, credentials)
+        let error = direct_resolver(catalog, credentials)
             .with_profiles(profiles)
             .with_brokered_access(false)
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
@@ -1185,7 +1197,7 @@ mod tests {
             )
             .unwrap();
 
-        let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+        let error = direct_resolver(catalog(&["primary"]), credentials)
             .with_profiles(profiles)
             .resolve_models(&ScopeId::from("workspace-a"), &explicit_profile(), &[])
             .await
@@ -1320,18 +1332,17 @@ mod tests {
         .await
         .unwrap();
         let workers = verified_acp_worker(&local.id.0, "acp:codex", "sha256:codex-test").await;
-        let backend_owned =
-            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
-                .with_acp_capabilities(test_acp_capabilities())
-                .with_worker_observations(workers)
-                .resolve_models(
-                    &ScopeId::from("workspace-a"),
-                    &ModelSelection::try_backend_exact("acp:codex", "primary", Default::default())
-                        .expect("exact ACP selection"),
-                    &[],
-                )
-                .await
-                .expect("P2");
+        let backend_owned = direct_resolver(catalog(&["primary"]), credentials)
+            .with_acp_capabilities(test_acp_capabilities())
+            .with_worker_observations(workers)
+            .resolve_models(
+                &ScopeId::from("workspace-a"),
+                &ModelSelection::try_backend_exact("acp:codex", "primary", Default::default())
+                    .expect("exact ACP selection"),
+                &[],
+            )
+            .await
+            .expect("P2");
         assert!(
             matches!(
                 backend_owned.primary.provisioning(),
@@ -1516,7 +1527,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver = CatalogModelPublicationResolver::new(catalog, credentials)
+        let resolver = direct_resolver(catalog, credentials)
             .with_acp_capabilities(test_acp_capabilities())
             .with_worker_observations(
                 verified_acp_worker("provider-managed", "acp:claude", "sha256:claude-provider")
@@ -1637,7 +1648,7 @@ mod tests {
             },
         );
         let credentials = resolver(&["unused"]).await.credentials;
-        let resolver = CatalogModelPublicationResolver::new(catalog, credentials);
+        let resolver = direct_resolver(catalog, credentials);
         let resolved = resolver
             .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
@@ -1670,17 +1681,20 @@ mod tests {
     #[tokio::test]
     async fn provider_publication_uses_the_canonical_source_admission() {
         // Cause/effect graph: C1 legacy Provider source is active and has a
-        // positive revision; C2 revision is zero; C3 source is described even
-        // though Provider target compilation remains unsupported. Effects: E1
-        // publish the exact source-owned Worker reference; E2 the Vault compiler
-        // rejects the publication; E3 selection excludes described material
-        // rather than reinterpreting its target as ProviderAdapter.
+        // positive revision and authorizes the exact Provider target; C2
+        // revision is zero; C3 source is described for a different target; C4
+        // the deployment selected the exact plaintext holder.
+        // Effects: E1 publish the exact source-owned Worker reference and
+        // selected holder; E2 the Vault compiler rejects the publication; E3
+        // selection excludes described material rather than reinterpreting it
+        // as ProviderAdapter.
         //
-        // | Rule | C1 | C2 | C3 | Effect |
-        // |---|---|---|---|---|
-        // | P1 | T | F | F | E1 |
-        // | P2 | - | T | F | E2 |
-        // | P3 | - | F | T | E3 |
+        // | Rule | C1 | C2 | C3 | C4 | Effect |
+        // |---|---|---|---|---|---|
+        // | P0 | T | F | F | F | E2 |
+        // | P1 | T | F | F | T | E1 |
+        // | P2 | - | T | F | T | E2 |
+        // | P3 | - | F | T | T | E3 |
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let source = ensure_worker_local(
             credentials.as_ref(),
@@ -1690,8 +1704,18 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolver =
-            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone());
+        let missing_holder =
+            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone())
+                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+                .await
+                .expect_err("P0/E2");
+        assert!(
+            missing_holder
+                .to_string()
+                .contains("exact deployment-selected"),
+            "P0/E2"
+        );
+        let resolver = direct_resolver(catalog(&["primary"]), credentials.clone());
         let resolved = resolver
             .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
@@ -1713,11 +1737,10 @@ mod tests {
         let mut zero_revision = source.clone();
         zero_revision.version = 0;
         credentials.put(zero_revision).await.unwrap();
-        let error =
-            CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials.clone())
-                .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
-                .await
-                .expect_err("P2/E2");
+        let error = direct_resolver(catalog(&["primary"]), credentials.clone())
+            .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
+            .await
+            .expect_err("P2/E2");
         assert!(
             error.to_string().contains("no active persisted credential"),
             "P2/E2"
@@ -1746,7 +1769,7 @@ mod tests {
             )],
         ));
         credentials.put(described).await.unwrap();
-        let error = CatalogModelPublicationResolver::new(catalog(&["primary"]), credentials)
+        let error = direct_resolver(catalog(&["primary"]), credentials)
             .resolve_models(&ScopeId::from("workspace-a"), &ModelSelection::Auto, &[])
             .await
             .expect_err("P3/E3");
@@ -1781,10 +1804,9 @@ mod tests {
         .await
         .unwrap();
         let workers = verified_acp_worker(&codex.id.0, "acp:codex", "sha256:codex-test").await;
-        let resolver =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_acp_capabilities(test_acp_capabilities())
-                .with_worker_observations(workers);
+        let resolver = direct_resolver(ProviderCatalog::default(), credentials.clone())
+            .with_acp_capabilities(test_acp_capabilities())
+            .with_worker_observations(workers);
 
         let default = resolver
             .resolve_models(
@@ -1881,10 +1903,9 @@ mod tests {
 
         let secondary_workers =
             verified_acp_worker(&secondary.id.0, "acp:codex", "sha256:codex-test").await;
-        let exact_resolver =
-            CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
-                .with_acp_capabilities(test_acp_capabilities())
-                .with_worker_observations(secondary_workers);
+        let exact_resolver = direct_resolver(ProviderCatalog::default(), credentials.clone())
+            .with_acp_capabilities(test_acp_capabilities())
+            .with_worker_observations(secondary_workers);
         let selected = exact_resolver
             .resolve_models(
                 &ScopeId::from("workspace-a"),

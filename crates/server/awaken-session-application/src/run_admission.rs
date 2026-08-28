@@ -615,13 +615,7 @@ impl SessionApplication {
                 })
                 .collect::<Result<Vec<_>, RunError>>()?,
         );
-        let initial_mcp = self
-            .normalize_mcp_drafts(&owner_scope, mcp_candidates, &[])
-            .await?;
-        let mcp_targets = initial_mcp
-            .iter()
-            .map(|attachment| attachment.target.clone())
-            .collect::<Vec<_>>();
+        let (mcp_candidates, mcp_targets) = Self::normalize_mcp_candidate_targets(mcp_candidates)?;
         let mut environment = self
             .resolve_session_environment(
                 requested_environment_id.as_deref(),
@@ -633,6 +627,14 @@ impl SessionApplication {
             )
             .await?
             .snapshot;
+        let initial_mcp = self
+            .normalize_mcp_drafts(
+                &owner_scope,
+                mcp_candidates,
+                &[],
+                &environment.credential_realization.mcp_holder,
+            )
+            .await?;
         if let Some(restriction) = network_restriction {
             environment.network = environment.network.safe_intersection(&restriction);
         }

@@ -21,10 +21,7 @@ pub mod oauth;
 pub mod repo;
 
 pub use availability::{AvailabilityLedger, AvailabilityState};
-pub use credential_access::{
-    CredentialHolderAdmission, DeferredCredentialHolderSelection, ExactCredentialAccessRequest,
-    compile_exact_credential_access,
-};
+pub use credential_access::{ExactCredentialAccessRequest, compile_exact_credential_access};
 #[cfg(feature = "oauth-command")]
 pub use oauth::{CommandTokenSource, TokenSource};
 
@@ -48,7 +45,10 @@ pub struct SecretRef(pub String);
 pub const OAUTH_REFRESH_TOKEN_SLOT: &str = "oauth_refresh_token";
 pub const OAUTH_CLIENT_SECRET_SLOT: &str = "oauth_client_secret";
 
-use awaken_credential_contract::{CredentialDescriptor, CredentialRef, CredentialSourceId};
+use awaken_credential_contract::{
+    CredentialDescriptor, CredentialPurpose, CredentialRef, CredentialSourceId, CredentialTarget,
+    CredentialUsage, validate_credential_target_usage,
+};
 
 /// Non-secret identity of material owned by one Worker-local driver. The
 /// credential source id is derived from this tuple for idempotent registration;
@@ -395,6 +395,51 @@ impl CredentialSource {
                 }
             }
             (None, Some(_)) => CredentialAuthorizationScope::Invalid,
+        }
+    }
+
+    /// Authoritative source-to-consumer authorization check shared by access
+    /// compilation and last-mile materialization. Compatibility fields are
+    /// interpreted only through [`Self::authorization_scope`].
+    pub fn validate_access_target(
+        &self,
+        target: Option<&CredentialTarget>,
+        usage: &CredentialUsage,
+    ) -> Result<(), CredentialError> {
+        validate_credential_target_usage(target, usage)
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+        match (&self.descriptor, target) {
+            (Some(descriptor), Some(target)) => descriptor
+                .admit(target, usage)
+                .map_err(|error| CredentialError::InvalidSource(error.to_string())),
+            (Some(_), None) => Err(CredentialError::InvalidSource(
+                "described credential access requires an exact target".into(),
+            )),
+            (None, Some(target))
+                if matches!(
+                    target.purpose,
+                    CredentialPurpose::ProviderAdapter
+                        | CredentialPurpose::RemoteAgentAuthorization
+                ) && self
+                    .authorization_scope()
+                    .belongs_to_provider(&target.audience.0) =>
+            {
+                Ok(())
+            }
+            (None, Some(_)) => Err(CredentialError::InvalidSource(
+                "undescribed credential source does not authorize the exact target".into(),
+            )),
+            (None, None)
+                if matches!(
+                    self.authorization_scope(),
+                    CredentialAuthorizationScope::Generic
+                ) =>
+            {
+                Ok(())
+            }
+            (None, None) => Err(CredentialError::InvalidSource(
+                "scoped credential access requires an exact target".into(),
+            )),
         }
     }
 

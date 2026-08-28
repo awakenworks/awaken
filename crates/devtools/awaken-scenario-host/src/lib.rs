@@ -402,11 +402,20 @@ pub fn build_unmounted_host(
 pub fn build_router_and_host_with_agent_publications(
     llm: Arc<dyn LlmExecutor>,
     model_ref: impl Into<String>,
-    publications: Arc<dyn awaken_runtime_contract::PublishedAgentSnapshotSource>,
+    publications: impl IntoIterator<Item = awaken_runtime_contract::ExecutableAgentSnapshot>,
 ) -> (Router, Arc<SharedHost>) {
-    build_router_and_host_from(
-        resource_host(llm, model_ref).map_host(|host| host.with_agent_publications(publications)),
-    )
+    let publication = scenario_platform::fixed_agent_publication(publications);
+    let (host, resources) = resource_host(llm, model_ref)
+        .map_host(|host| host.with_agent_publications(publication.clone()))
+        .into_parts();
+    let host = Arc::new(host);
+    let router = scenario_platform::mount_parts_with_agent_source_on_lifecycle(
+        host.clone(),
+        resources,
+        publication,
+        awaken_service_lifecycle::ServiceLifecycle::new(),
+    );
+    (router, host)
 }
 
 /// Build an unmounted Host with one immutable Agent publication authority.

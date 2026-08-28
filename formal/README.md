@@ -669,11 +669,14 @@ cannot prove them.
 `McpCredentialDelivery` proves the local post-adoption boundary: once a
 revocation transition removes the accepting attachment generation, no later MCP
 call can use that revision, and a replacement generation must rebuild the ACP
-process before it is accepted. It does not prove that a provider revocation is
-delivered promptly, or that an already-busy third-party ACP call is interrupted
-and its process terminated. Immediate busy-call revocation propagation is not
-implemented as a repository-guaranteed protocol; it remains an explicit
-external operational boundary rather than an overclaimed formal theorem.
+process before it is accepted. The Runtime implementation additionally closes
+new local transport admission, cancels and waits for every busy generation call,
+quiesces the active Session Run, and reaps the generation-owned process before
+acknowledging `Removed`; executable concurrency tests cover that implementation
+boundary. The model still does not prove prompt provider-side revocation,
+network delivery, or reversal of a third-party side effect already accepted
+before cancellation. Those remain external operational boundaries rather than
+overclaimed formal theorems.
 
 `ObservationReconcile` proves the in-process fence and mutex protocol assuming
 the Worker directory accepts heartbeats in strictly increasing sequence order

@@ -1271,21 +1271,28 @@ mod tests {
             },
             ..Default::default()
         };
-        let candidate = |credential: &str| {
-            awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
+        let candidate =
+            |credential: &str| {
+                awaken_runtime_contract::resolved::ResolvedModelCandidate::try_provider(
                 cfg.model_binding.resolved().unwrap().clone(),
                 "anthropic@1",
                 "primary@1",
                 "workspace-a",
-                Some(awaken_runtime_contract::CredentialAccess::new(
-                    awaken_runtime_contract::CredentialRef {
-                        id: credential.into(),
-                        revision: 1,
-                    },
-                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(
+                    awaken_runtime_contract::CredentialAccess::new(
+                        awaken_runtime_contract::CredentialRef {
+                            id: credential.into(),
+                            revision: 1,
+                        },
+                        awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                        awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                        awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                    )
+                    .with_target(awaken_runtime_contract::CredentialTarget::new(
+                        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                        "anthropic",
+                    )),
+                ),
                 awaken_runtime_contract::InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
                     api_dialect: "anthropic_messages".into(),
@@ -1295,7 +1302,7 @@ mod tests {
                 },
             )
             .expect("coherent fingerprint provider candidate")
-        };
+            };
         let first = compile_published(
             &cfg,
             &[],

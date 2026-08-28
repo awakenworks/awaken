@@ -92,26 +92,13 @@ impl ManagedState {
                     message,
                 ) => StateError::Run(RunError::unavailable(message)),
             })?;
-        let owner_scope = recovered
-            .as_ref()
-            .map(|recovered| recovered.owner_scope.clone())
-            .unwrap_or_else(|| DEFAULT_SCOPE.to_string());
-        let persisted = recovered.map(|recovered| recovered.session);
-        // A repository-less legacy Session may still be identified by its
-        // committed root transcript. This is existence detection only: the one
-        // warm/cold projector below owns message classification, ids and events.
-        // Projecting here as well would race an Awaiting transition's ticket and
-        // permanently classify the same ToolUse through two different paths.
-        if persisted.is_none()
-            && self
-                .application
-                .committed_messages(id)
-                .await
-                .map_err(StateError::Run)?
-                .is_empty()
-        {
-            return Err(StateError::NotFound);
-        }
+        // The repository aggregate is the sole Session-existence and ownership
+        // authority. A committed Thread transcript without that aggregate is an
+        // orphaned projection, not a legacy Session that protocol code may
+        // reconstruct with guessed owner/configuration defaults.
+        let recovered = recovered.ok_or(StateError::NotFound)?;
+        let owner_scope = recovered.owner_scope;
+        let persisted = recovered.session;
         self.application
             .refresh_executable_projections()
             .await
@@ -122,13 +109,9 @@ impl ManagedState {
                 ))
             })?;
         let agent_id = persisted
-            .as_ref()
-            .and_then(PersistedSession::agent_id)
+            .agent_id()
             .map_or_else(|| "assistant".to_string(), str::to_string);
-        let resource_state = persisted
-            .as_ref()
-            .map(|session| session.resources.clone())
-            .unwrap_or_default();
+        let resource_state = persisted.resources.clone();
         let session = self.rehydrated_session(id, &owner_scope, persisted)?;
         let record = SessionRecord::new(agent_id, session, resource_state, Vec::new());
         self.sessions
@@ -145,10 +128,10 @@ impl ManagedState {
     }
 
     /// Recover a session whose in-memory record was lost from durable truth (a
-    /// process restart, ADR-0039). If the store holds a committed transcript for
-    /// `id`, rebuild the record — the projected history plus a reconstructed
-    /// session object — so a resume can continue the awaiting run. A thread with no
-    /// committed truth stays `NotFound` (fail closed): the store is authoritative.
+    /// process restart, ADR-0039). Only a durable Session aggregate authorizes
+    /// rebuilding the disposable wire record. A transcript without that root is
+    /// an orphan and stays `NotFound`; it can never manufacture Session identity,
+    /// ownership, configuration, or mutation authority.
     pub(crate) async fn ensure_session(&self, id: &str) -> Result<(), StateError> {
         self.ensure_session_record(id).await?;
         self.refresh_committed_projection(id).await
@@ -163,6 +146,36 @@ mod tests {
     };
     use crate::state::tests::{sample_inputs, sample_persisted};
     use awaken_session_contract::ManagedSessionRepository;
+
+    #[tokio::test]
+    async fn orphan_transcript_cannot_manufacture_a_session_root() {
+        // Cause/effect graph: C1 the disposable Managed cache is cold; C2 the
+        // Runtime has committed Thread messages; C3 the authoritative Session
+        // repository has no aggregate. Effects: E1 recovery returns NotFound;
+        // E2 no owner, Session DTO, or mutable cache entry is synthesized; E3
+        // transcript projection is not consulted as an existence fallback.
+        // Decision rules: R1=C1+C2+!C3=>E1+E2+E3; the existing durable recovery
+        // tests cover R2=C1+C2+C3=>exact root projection.
+        let runtime = RehydrateFake::default();
+        *runtime.committed.lock().unwrap() =
+            Some(vec![awaken_agent_contract::agent::message::Message::text(
+                awaken_agent_contract::agent::message::Id("orphan-message".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "orphan transcript",
+            )]);
+        let order = runtime.order.clone();
+        let state = ManagedState::new(runtime);
+
+        assert!(
+            matches!(
+                state.ensure_session("orphan-session").await,
+                Err(StateError::NotFound)
+            ),
+            "R1/E1"
+        );
+        assert!(state.list_sessions().is_empty(), "R1/E2");
+        assert!(order.lock().unwrap().is_empty(), "R1/E3");
+    }
 
     #[tokio::test]
     async fn profiled_create_replay_uses_only_the_repository_receipt_and_owner() {

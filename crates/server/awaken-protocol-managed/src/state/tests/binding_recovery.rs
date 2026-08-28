@@ -192,7 +192,7 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     baseline.mcp_authoring.ordered_vault_ids = vec!["vault-a".into(), "vault-b".into()];
 
     let inherited = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted.clone()))
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted.clone())
         .expect("H1 exact cold projection");
     assert_eq!(
         inherited.agent.model.speed,
@@ -228,7 +228,7 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
     });
     *baseline.system_prompt = awaken_session_contract::SessionSystemPromptSelection::Clear;
     let cleared = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted.clone()))
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted.clone())
         .expect("H2 exact cold projection");
     assert_eq!(cleared.agent.model.speed, None, "H2/E2 replace, not merge");
     assert_eq!(
@@ -247,7 +247,7 @@ fn cold_projection_restores_every_frozen_agent_hidden_axis() {
         "session-only system".into(),
     );
     let replaced = state
-        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, Some(persisted))
+        .rehydrated_session("cold-hidden-axes", DEFAULT_SCOPE, persisted)
         .expect("H3 exact cold projection");
     assert_eq!(
         replaced.agent.system.as_deref(),
@@ -417,8 +417,8 @@ fn persisted_with_mcp_source(
     authored_vault_id: &str,
 ) -> PersistedSession {
     let mut session = sample_persisted(session_id);
-    session.mcp.attachments[0].credential =
-        Some(awaken_credential_contract::CredentialAccess::new(
+    session.mcp.attachments[0].credential = Some(
+        awaken_credential_contract::CredentialAccess::new(
             awaken_credential_contract::CredentialRef {
                 id: source_id.into(),
                 revision: 1,
@@ -429,13 +429,80 @@ fn persisted_with_mcp_source(
                 scheme: Some("Bearer".into()),
             },
             awaken_credential_contract::CredentialExecutionPolicy::self_hosted_provider(),
-        ));
+        )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            "https://x",
+        )),
+    );
     let awaken_session_contract::SessionBaselineState::Frozen(baseline) = &mut session.baseline
     else {
         unreachable!("fixture baseline is frozen")
     };
     baseline.mcp_authoring.ordered_vault_ids = vec![authored_vault_id.into()];
     session
+}
+
+struct RolloutCredentialSource;
+
+#[async_trait::async_trait]
+impl awaken_session_application::SessionCredentialSource for RolloutCredentialSource {
+    async fn has_vault(&self, _workspace_id: &str, _id: &str) -> Result<bool, String> {
+        Ok(true)
+    }
+
+    async fn mcp_credential_source_for_url(
+        &self,
+        _workspace_id: &str,
+        _vault_ids: &[String],
+        _url: &str,
+    ) -> Result<Option<awaken_credential_contract::CredentialSourceId>, String> {
+        Ok(None)
+    }
+
+    async fn mcp_access_for_source(
+        &self,
+        source_id: &awaken_credential_contract::CredentialSourceId,
+        _workspace_id: &str,
+        target: &awaken_session_contract::McpTarget,
+        selected_holder: &awaken_credential_contract::PlaintextHolder,
+        _binding: &awaken_credential_contract::CredentialMaterialBinding,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        let revision = if source_id.0 == "source-a" { 2 } else { 1 };
+        let audience = awaken_session_contract::McpTarget::identity(
+            target.http_url().ok_or("MCP target is not HTTP")?,
+        )
+        .map_err(|error| error.to_string())?
+        .canonical_url();
+        Ok(awaken_credential_contract::CredentialAccess::new(
+            awaken_credential_contract::CredentialRef {
+                id: source_id.0.clone(),
+                revision,
+            },
+            awaken_credential_contract::CredentialMaterialSource::ControlPlaneReference,
+            awaken_credential_contract::CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+            awaken_credential_contract::CredentialExecutionPolicy::exact(
+                selected_holder.clone(),
+                awaken_credential_contract::ModelExposurePolicy::Forbidden,
+            ),
+        )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::McpAuthorization,
+            audience,
+        )))
+    }
+
+    async fn credential_access_for_source(
+        &self,
+        _source_id: &awaken_credential_contract::CredentialSourceId,
+        _workspace_id: &str,
+        _request: awaken_session_application::SessionCredentialAccessRequest,
+    ) -> Result<awaken_credential_contract::CredentialAccess, String> {
+        Err("not used by MCP rollout fixture".into())
+    }
 }
 
 #[tokio::test]
@@ -476,8 +543,9 @@ async fn vault_rollout_discovers_exact_actual_source_and_preserves_unrelated_roo
     .await;
     let unrelated_before = repo.get("source-unrelated").await.unwrap();
     let other_workspace_before = repo.get("source-other-workspace").await.unwrap();
-    let state =
-        ManagedState::new_with_mcp(RehydrateFake::default()).with_session_repo(repo.clone());
+    let state = ManagedState::new_with_mcp(RehydrateFake::default())
+        .with_session_repo(repo.clone())
+        .with_credential_source(Arc::new(RolloutCredentialSource));
     let event =
         |id: &str,
          version: u64,
@@ -728,12 +796,13 @@ async fn application_root_cas_decision_table() {
 #[test]
 fn rehydrated_session_restores_persisted_config() {
     // Cause graph: a durable mutable tool set is the exact replacement;
-    // only a genuinely non-durable in-memory Session derives Runtime defaults.
+    // a missing durable root is rejected by the recovery entrypoint instead of
+    // deriving Runtime defaults.
     //
     // | Rule | Persisted tools | Projection |
     // |---|---|---|
     // | T1 | durable row, including empty | exact durable value |
-    // | T2 | no durable row | Runtime default for transient projection |
+    // | T2 | no durable row | NotFound; no projection is constructed |
     let state = ManagedState::new_with_mcp(RehydrateFake::default());
     let mut persisted = sample_persisted("sesn_1");
     persisted.tools =
@@ -746,7 +815,7 @@ fn rehydrated_session_restores_persisted_config() {
             .unwrap(),
         }]);
     let session = state
-        .rehydrated_session("sesn_1", DEFAULT_SCOPE, Some(persisted))
+        .rehydrated_session("sesn_1", DEFAULT_SCOPE, persisted)
         .expect("valid durable projection");
     assert_eq!(session.agent.id, "coder");
     assert_eq!(session.agent.model.id, "kimi-k2");
@@ -768,18 +837,6 @@ fn rehydrated_session_restores_persisted_config() {
         session.resources.is_empty(),
         "the stored Session DTO must not duplicate typed resource state"
     );
-}
-
-#[test]
-fn rehydrated_session_falls_back_without_persisted_config() {
-    let state = ManagedState::new_with_mcp(RehydrateFake::default());
-    let session = state
-        .rehydrated_session("sesn_1", DEFAULT_SCOPE, None)
-        .expect("legacy fallback projection");
-    assert_eq!(session.agent.id, "assistant");
-    assert_eq!(session.agent.model.id, "host-default-model");
-    assert!(session.title.is_none());
-    assert!(session.agent.mcp_servers.is_empty());
 }
 
 #[test]

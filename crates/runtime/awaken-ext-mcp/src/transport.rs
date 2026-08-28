@@ -7,15 +7,129 @@
 //! method set grows additively as they do.
 
 use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use async_trait::async_trait;
 use awaken_mcp_wire::McpTransportError;
 use awaken_mcp_wire::{CallToolResult, McpToolDefinition};
 use serde_json::Value;
+use tokio::sync::Notify;
 use tokio::sync::mpsc;
 
 use crate::progress::McpProgressUpdate;
 use crate::types::{McpPromptDefinition, McpPromptResult, McpResourceDefinition};
+
+struct McpCallFenceState {
+    accepting: AtomicBool,
+    in_flight: AtomicUsize,
+    cancellation: awaken_runtime_contract::CancellationToken,
+    quiesced: Notify,
+}
+
+/// Process-local lifecycle handle for one exact MCP generation transport.
+/// Durable desired state remains in the Session aggregate; this handle only
+/// closes already-materialized I/O and proves local call quiescence before the
+/// generation's drain receipt is acknowledged.
+#[derive(Clone)]
+pub struct McpCallFence(Arc<McpCallFenceState>);
+
+impl McpCallFence {
+    /// Hide the transport from new calls, cancel every in-flight future, and
+    /// wait until all local call guards have left. Replays are idempotent.
+    pub async fn close_and_wait(&self) {
+        self.0.accepting.store(false, Ordering::SeqCst);
+        self.0.cancellation.cancel();
+        loop {
+            let notified = self.0.quiesced.notified();
+            tokio::pin!(notified);
+            // Register before observing the counter so the last guard's
+            // `notify_waiters` cannot fall into the check-to-await gap.
+            notified.as_mut().enable();
+            if self.0.in_flight.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+
+    #[cfg(test)]
+    fn in_flight(&self) -> usize {
+        self.0.in_flight.load(Ordering::SeqCst)
+    }
+}
+
+struct McpCallGuard(Arc<McpCallFenceState>);
+
+impl Drop for McpCallGuard {
+    fn drop(&mut self) {
+        if self.0.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.0.quiesced.notify_waiters();
+        }
+    }
+}
+
+struct RevocableMcpTransport {
+    inner: Arc<dyn McpToolTransport>,
+    fence: McpCallFence,
+}
+
+impl RevocableMcpTransport {
+    fn begin(&self) -> Result<McpCallGuard, McpTransportError> {
+        if !self.fence.0.accepting.load(Ordering::SeqCst) {
+            return Err(McpTransportError::TransportError(
+                "MCP generation is draining".into(),
+            ));
+        }
+        self.fence.0.in_flight.fetch_add(1, Ordering::SeqCst);
+        let guard = McpCallGuard(self.fence.0.clone());
+        if !self.fence.0.accepting.load(Ordering::SeqCst) {
+            drop(guard);
+            return Err(McpTransportError::TransportError(
+                "MCP generation is draining".into(),
+            ));
+        }
+        Ok(guard)
+    }
+
+    async fn run<T, F>(&self, future: F) -> Result<T, McpTransportError>
+    where
+        T: Send,
+        F: Future<Output = Result<T, McpTransportError>> + Send,
+    {
+        let _guard = self.begin()?;
+        tokio::select! {
+            biased;
+            _ = self.fence.0.cancellation.cancelled() => Err(
+                McpTransportError::TransportError("MCP generation was revoked".into())
+            ),
+            result = future => result,
+        }
+    }
+}
+
+/// Wrap one already-connected MCP transport with the exact generation's local
+/// revocation fence. This adds no registry or desired-state owner; the returned
+/// handle is retained by the existing Session projection and closed by its
+/// canonical drain phase.
+pub fn revocable_transport(
+    inner: Arc<dyn McpToolTransport>,
+) -> (Arc<dyn McpToolTransport>, McpCallFence) {
+    let fence = McpCallFence(Arc::new(McpCallFenceState {
+        accepting: AtomicBool::new(true),
+        in_flight: AtomicUsize::new(0),
+        cancellation: awaken_runtime_contract::CancellationToken::new(),
+        quiesced: Notify::new(),
+    }));
+    (
+        Arc::new(RevocableMcpTransport {
+            inner,
+            fence: fence.clone(),
+        }),
+        fence,
+    )
+}
 
 /// Which catalog a `notifications/*/list_changed` referred to. Consumed by the
 /// dynamic-refresh path (a change advances the server's live tool version).
@@ -91,10 +205,125 @@ pub trait McpToolTransport: Send + Sync {
     }
 }
 
+#[async_trait]
+impl McpToolTransport for RevocableMcpTransport {
+    async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+        self.run(self.inner.list_tools()).await
+    }
+
+    async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+    ) -> Result<CallToolResult, McpTransportError> {
+        self.run(self.inner.call_tool(tool_name, arguments)).await
+    }
+
+    async fn call_tool_with_progress(
+        &self,
+        tool_name: &str,
+        arguments: Value,
+        progress_tx: mpsc::Sender<McpProgressUpdate>,
+    ) -> Result<CallToolResult, McpTransportError> {
+        self.run(
+            self.inner
+                .call_tool_with_progress(tool_name, arguments, progress_tx),
+        )
+        .await
+    }
+
+    async fn list_prompts(&self) -> Result<Vec<McpPromptDefinition>, McpTransportError> {
+        self.run(self.inner.list_prompts()).await
+    }
+
+    async fn get_prompt(
+        &self,
+        name: &str,
+        arguments: Option<HashMap<String, String>>,
+    ) -> Result<McpPromptResult, McpTransportError> {
+        self.run(self.inner.get_prompt(name, arguments)).await
+    }
+
+    async fn list_resources(&self) -> Result<Vec<McpResourceDefinition>, McpTransportError> {
+        self.run(self.inner.list_resources()).await
+    }
+
+    async fn read_resource(&self, uri: &str) -> Result<Value, McpTransportError> {
+        self.run(self.inner.read_resource(uri)).await
+    }
+
+    fn is_alive(&self) -> bool {
+        self.fence.0.accepting.load(Ordering::SeqCst) && self.inner.is_alive()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use awaken_mcp_wire::{CallToolResult, ToolContent};
+
+    struct BlockingTransport {
+        entered: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl McpToolTransport for BlockingTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            self.entered.notify_one();
+            self.release.notified().await;
+            Ok(CallToolResult {
+                content: Vec::new(),
+                structured_content: None,
+                is_error: Some(false),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn generation_drain_cancels_busy_calls_and_closes_new_admission() {
+        // Cause/effect graph: C1 the generation accepts calls; C2 one call is
+        // busy inside the transport; C3 drain closes the exact generation.
+        // Effects: E1 the busy future returns a revocation transport error; E2
+        // close waits for the in-flight guard to reach zero; E3 every later
+        // operation is rejected before touching the delegate. Decision rules:
+        // R1=C1+C2+!C3=>in-flight; R2=C1+C2+C3=>E1+E2;
+        // R3=!C1+C3=>E3. The fence is process-local effect state, never Session
+        // desired state or a replacement generation authority.
+        let entered = Arc::new(Notify::new());
+        let delegate = Arc::new(BlockingTransport {
+            entered: entered.clone(),
+            release: Arc::new(Notify::new()),
+        });
+        let (transport, fence) = revocable_transport(delegate);
+        let call = tokio::spawn({
+            let transport = transport.clone();
+            async move { transport.call_tool("busy", Value::Null).await }
+        });
+        entered.notified().await;
+        assert_eq!(fence.in_flight(), 1, "R1");
+
+        tokio::time::timeout(std::time::Duration::from_secs(1), fence.close_and_wait())
+            .await
+            .expect("R2/E2 drain reaches local quiescence");
+        assert!(
+            matches!(call.await.unwrap(), Err(McpTransportError::TransportError(message)) if message.contains("revoked")),
+            "R2/E1"
+        );
+        assert_eq!(fence.in_flight(), 0, "R2/E2");
+        assert!(
+            matches!(transport.list_tools().await, Err(McpTransportError::TransportError(message)) if message.contains("draining")),
+            "R3/E3"
+        );
+    }
 
     /// A tools-only transport: it implements only the two mandatory methods, so the
     /// prompt/resource/progress/liveness surfaces exercise the trait defaults.

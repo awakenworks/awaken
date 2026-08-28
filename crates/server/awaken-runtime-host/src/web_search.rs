@@ -160,14 +160,17 @@ impl WebSearchCredentialResolver for HostWebSearchCredentialResolver {
             CredentialMaterialSource::ControlPlaneReference,
             usage.clone(),
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-        );
+        )
+        .with_target(awaken_runtime_contract::CredentialTarget::new(
+            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
+            provider_id,
+        ));
         self.materializer
-            .resolve_for_workspace_and_provider(
+            .resolve_for_workspace(
                 &access,
                 &holder,
                 CredentialRealizationKind::WorkerProviderAdapter,
                 &self.workspace,
-                provider_id,
                 &(provider_id, usage),
             )
             .await
@@ -253,7 +256,7 @@ mod tests {
     #[tokio::test]
     async fn exact_web_search_credential_is_fenced_before_plaintext() {
         use awaken_credential_vault::repo::{
-            CredentialRepo, InMemoryCredentialRepo, enter_credential,
+            CredentialRepo, InMemoryCredentialRepo, enter_credential_described,
         };
         use awaken_credential_vault::{
             CredentialCreateParams, CredentialKind, InMemorySecretStore, SecretStore,
@@ -266,17 +269,36 @@ mod tests {
         // receive plaintext.
         let repo: Arc<dyn CredentialRepo> = Arc::new(InMemoryCredentialRepo::new());
         let secrets: Arc<dyn SecretStore> = Arc::new(InMemorySecretStore::new());
-        let source = enter_credential(
+        let usage = CredentialUsage::HttpHeader {
+            name: "X-Subscription-Token".into(),
+            scheme: None,
+        };
+        let source = enter_credential_described(
             CredentialCreateParams {
                 workspace_id: "workspace-a".into(),
                 kind: CredentialKind::Vault,
-                provider_id: Some("brave".into()),
+                provider_id: None,
                 env_key: None,
                 secret: Some(awaken_agent_contract::RedactedString::new(
                     "paid-search-key",
                 )),
                 oauth_command: None,
             },
+            awaken_runtime_contract::credential::CredentialDescriptor::new(
+                "brave",
+                awaken_runtime_contract::credential::CredentialMaterialDescriptor::secret(
+                    awaken_runtime_contract::credential::OPAQUE_SECRET_MATERIAL_TYPE,
+                ),
+                [
+                    awaken_runtime_contract::credential::CredentialTargetContract::new(
+                        awaken_runtime_contract::CredentialTarget::new(
+                            awaken_runtime_contract::credential::CredentialPurpose::WebProviderAuthorization,
+                            "brave",
+                        ),
+                        usage.clone(),
+                    ),
+                ],
+            ),
             secrets.as_ref(),
             repo.as_ref(),
         )
@@ -293,14 +315,7 @@ mod tests {
         ));
         assert_eq!(
             resolver
-                .resolve(
-                    &exact,
-                    "brave",
-                    &CredentialUsage::HttpHeader {
-                        name: "X-Subscription-Token".into(),
-                        scheme: None,
-                    },
-                )
+                .resolve(&exact, "brave", &usage,)
                 .await
                 .unwrap()
                 .single_secret()
@@ -335,42 +350,16 @@ mod tests {
             revision: 2,
             ..exact.clone()
         };
-        assert!(
-            resolver
-                .resolve(
-                    &stale,
-                    "brave",
-                    &CredentialUsage::HttpHeader {
-                        name: "X-Key".into(),
-                        scheme: None
-                    },
-                )
-                .await
-                .is_err()
-        );
+        assert!(resolver.resolve(&stale, "brave", &usage,).await.is_err());
         assert!(
             HostWebSearchCredentialResolver::new(materializer.clone(), "workspace-b".into())
-                .resolve(
-                    &exact,
-                    "brave",
-                    &CredentialUsage::HttpHeader {
-                        name: "X-Key".into(),
-                        scheme: None
-                    },
-                )
+                .resolve(&exact, "brave", &usage,)
                 .await
                 .is_err()
         );
         assert!(
             resolver
-                .resolve(
-                    &exact,
-                    "another-provider",
-                    &CredentialUsage::HttpHeader {
-                        name: "X-Key".into(),
-                        scheme: None
-                    },
-                )
+                .resolve(&exact, "another-provider", &usage,)
                 .await
                 .is_err()
         );
