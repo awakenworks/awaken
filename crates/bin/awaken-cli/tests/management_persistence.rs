@@ -215,12 +215,18 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
                     "backend_ref": "default"
                 },
                 "mcp_servers": [{
+                    "type": "url",
                     "name": "calc",
                     "url": "http://127.0.0.1:1/"
                 }],
                 "tools": [{
                     "type": "mcp_toolset",
-                    "mcp_server_name": "calc"
+                    "mcp_server_name": "calc",
+                    "configs": [],
+                    "default_config": {
+                        "enabled": true,
+                        "permission_policy": { "type": "always_allow" }
+                    }
                 }]
             })),
         )
@@ -276,6 +282,11 @@ async fn authored_config_and_sealed_credentials_survive_a_restart() {
     assert_eq!(s, StatusCode::OK);
     assert_eq!(agent["mcp_servers"][0]["name"], json!("calc"));
     assert_eq!(agent["mcp_servers"][0]["url"], json!("http://127.0.0.1:1/"));
+    // Causal persistence row: a restarted process must recover both halves of
+    // the MCP integration authority. Recovering the transport without its
+    // typed tool policy would make the stored Agent invalid at its next write.
+    assert_eq!(agent["tools"][0]["type"], json!("mcp_toolset"));
+    assert_eq!(agent["tools"][0]["mcp_server_name"], json!("calc"));
 
     let (s, resources) = call(&app, "GET", "/v1/config/agents/calc-agent/resources", None).await;
     assert_eq!(s, StatusCode::OK);
