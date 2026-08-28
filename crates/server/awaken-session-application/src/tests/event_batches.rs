@@ -1958,6 +1958,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
                 )],
                 data_subject_id: command.data_subject_id.clone(),
                 traceparent: command.traceparent.clone(),
+                execution_requirements: Default::default(),
             })
             .await
             .expect("C1 reservation"),

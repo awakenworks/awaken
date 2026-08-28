@@ -228,6 +228,7 @@ mod tests {
                     )],
                     data_subject_id: None,
                     traceparent: None,
+                    execution_requirements: Default::default(),
                 },
                 Some(Arc::new(NoopSink)),
             )
