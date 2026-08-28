@@ -183,14 +183,17 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
 }
 
 #[tokio::test]
-async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
+async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
     // Cause/effect graph: C1 no beta selector, C2 valid expiry boundary, C3 ids[]
-    // contains one visible and one missing id, C4 ids[] combines with page/limit.
+    // contains one visible and one missing id, C4 ids[] combines with page/limit,
+    // C5 the post-GA SDK keeps `beta=true` but omits the Files capability header.
     // Effects: E1 GA metadata has expires_at and no beta scope, E2 ids[] returns a
     // single next_page:null page and silently omits missing ids, E3 mixed pagination
     // is rejected without mutation, E4 retrieve/download/delete complete the GA
-    // lifecycle. Decision table: G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3;
-    // G4 C1+created File->E4. The same FileApplication/FileCatalog owns every rule.
+    // lifecycle, E5 C5 selects this same GA contract rather than the retired Beta
+    // projection. Decision table: G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3;
+    // G4 C1+created File->E4; G5 C5->E1+E2. The same FileApplication/FileCatalog
+    // owns every rule.
     let router = router();
     let mut body = multipart_file("ga.txt", b"ga");
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
@@ -202,7 +205,7 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     body.extend_from_slice(&closing);
     let mut request = Request::builder()
         .method("POST")
-        .uri("/v1/files")
+        .uri("/v1/files?beta=true")
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -241,6 +244,26 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     assert!(body["next_page"].is_null(), "G2/E2");
 
     let mut request = Request::builder()
+        .uri(format!(
+            "/v1/files?beta=true&ids%5B%5D={id}&ids%5B%5D=file_missing"
+        ))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G5");
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(body["data"][0]["expires_at"].is_string(), "G5/E1 {body}");
+    assert!(body["next_page"].is_null(), "G5/E2 {body}");
+
+    let mut request = Request::builder()
         .uri(format!("/v1/files?ids%5B%5D={id}&limit=1"))
         .body(Body::empty())
         .unwrap();
@@ -254,7 +277,7 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     );
 
     let mut request = Request::builder()
-        .uri(format!("/v1/files/{id}"))
+        .uri(format!("/v1/files/{id}?beta=true"))
         .body(Body::empty())
         .unwrap();
     request
@@ -267,7 +290,7 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     );
 
     let mut request = Request::builder()
-        .uri(format!("/v1/files/{id}/content"))
+        .uri(format!("/v1/files/{id}/content?beta=true"))
         .body(Body::empty())
         .unwrap();
     request
@@ -280,7 +303,7 @@ async fn ga_files_expiry_and_ids_page_match_sdk_0120() {
     );
     let mut request = Request::builder()
         .method("DELETE")
-        .uri(format!("/v1/files/{id}"))
+        .uri(format!("/v1/files/{id}?beta=true"))
         .body(Body::empty())
         .unwrap();
     request

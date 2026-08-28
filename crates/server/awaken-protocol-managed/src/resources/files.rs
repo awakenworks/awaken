@@ -78,7 +78,7 @@ async fn list_files(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -155,7 +155,7 @@ async fn list_ga_files(
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
-    let query = match FileListParams::from_query(raw.unwrap_or_default()) {
+    let query = match FileListParams::from_query(&without_beta_selector(raw)) {
         Ok(query) => query,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
@@ -215,7 +215,7 @@ async fn upload_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -304,7 +304,7 @@ async fn get_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -334,7 +334,7 @@ async fn delete_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return error(StatusCode::BAD_REQUEST, message);
     }
@@ -367,7 +367,7 @@ async fn download_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return error(StatusCode::BAD_REQUEST, message);
     }

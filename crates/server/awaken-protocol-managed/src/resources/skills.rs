@@ -350,7 +350,7 @@ async fn create_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -407,7 +407,7 @@ async fn list_skills(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -428,8 +428,9 @@ async fn list_skills(
             }
         }
         ManagedResourceApiFlavor::Ga => {
-            match serde_urlencoded::from_str::<SkillListParams>(raw.as_deref().unwrap_or_default())
-            {
+            match serde_urlencoded::from_str::<SkillListParams>(&without_beta_selector(
+                raw.as_deref(),
+            )) {
                 Ok(query) => (
                     PageQuery {
                         page: query.page,
@@ -500,7 +501,7 @@ async fn retrieve_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -535,7 +536,7 @@ async fn delete_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
@@ -590,7 +591,7 @@ async fn create_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -651,7 +652,7 @@ async fn list_versions(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -664,13 +665,13 @@ async fn list_versions(
             page: query.page,
             limit: query.limit.map(usize::from),
         }),
-        ManagedResourceApiFlavor::Ga => {
-            serde_urlencoded::from_str::<SkillVersionListParams>(raw.as_deref().unwrap_or_default())
-                .map(|query| PageQuery {
-                    page: query.page,
-                    limit: query.limit.map(usize::from),
-                })
-        }
+        ManagedResourceApiFlavor::Ga => serde_urlencoded::from_str::<SkillVersionListParams>(
+            &without_beta_selector(raw.as_deref()),
+        )
+        .map(|query| PageQuery {
+            page: query.page,
+            limit: query.limit.map(usize::from),
+        }),
     };
     let page = match page {
         Ok(page) => page,
@@ -725,7 +726,7 @@ async fn retrieve_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -750,7 +751,7 @@ async fn delete_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
@@ -811,7 +812,7 @@ async fn version_content(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {
@@ -853,7 +854,7 @@ async fn version_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {

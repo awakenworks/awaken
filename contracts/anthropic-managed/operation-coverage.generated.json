@@ -1296,7 +1296,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -3895,7 +3895,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -3923,7 +3923,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -3951,7 +3951,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -3979,7 +3979,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -4007,7 +4007,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "case_id": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
         },
         "sdk_surface_compile": [
@@ -4099,7 +4099,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4127,7 +4127,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4155,7 +4155,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4183,7 +4183,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4211,7 +4211,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4239,7 +4239,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4267,7 +4267,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [
@@ -4295,7 +4295,7 @@
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
         "rust_behavior": {
-          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "case_id": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
         },
         "sdk_surface_compile": [

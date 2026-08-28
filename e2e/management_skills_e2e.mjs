@@ -54,17 +54,18 @@ async function main() {
 
       // Causes: Skills collection request has no selector, only an unrelated
       // Managed beta, or `beta=true` without the endpoint-specific Skills beta.
-      // Effects: the first two select GA and succeed; the incomplete explicit
-      // beta selector rejects before mutation. Constraint: unrelated betas do
-      // not replace the Skills selector. Decision rules A7.1 !selector->GA;
-      // A7.2 unrelated header->GA; A7.3 beta=true&&!SkillsHeader->400.
+      // Effects: all three select GA and succeed. The query-only form is the
+      // post-GA SDK change point; the historical SDK still selects its old Beta
+      // projection by adding the Skills capability header. Decision rules:
+      // A7.1 !selector->GA; A7.2 unrelated header->GA;
+      // A7.3 beta=true&&!SkillsHeader->GA.
       for (const beta of [null, 'managed-agents-2026-04-01']) {
         const accepted = await fetch(`${baseUrl}/v1/skills`, {
           headers: beta ? { 'anthropic-beta': beta } : {},
         });
         assert.equal(accepted.status, 200);
       }
-      assert.equal((await fetch(`${baseUrl}/v1/skills?beta=true`)).status, 400);
+      assert.equal((await fetch(`${baseUrl}/v1/skills?beta=true`)).status, 200);
 
       // Create a skill via a multipart SKILL.md upload.
       const skill = await client.beta.skills.create({
