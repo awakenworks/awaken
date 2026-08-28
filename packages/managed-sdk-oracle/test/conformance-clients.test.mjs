@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import {
   installedPackageVersion,
@@ -9,6 +12,8 @@ import {
   validateSdkMatrix,
 } from '../src/conformance/clients.mjs';
 import { exerciseUserProfileChangePoint } from '../src/conformance/user-profile-change-point.mjs';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 test('the Open anchor matrix is the only executable SDK version authority', async () => {
   // Cause/effect graph M1: exact package aliases plus unique semantic roles
@@ -40,6 +45,37 @@ test('the Open anchor matrix is the only executable SDK version authority', asyn
     /missing oldest_supported/u,
     'M1',
   );
+});
+
+test('every multi-version Managed E2E consumes the canonical anchor matrix', () => {
+  // Cause/effect graph M2: a second version alias or a locally curated client
+  // array can silently leave a released SDK unqualified. Therefore the E2E
+  // package owns no versioned Anthropic alias, and every cross-version suite
+  // imports the canonical loader. Adding an anchor changes all these matrices
+  // without another dependency or hand-maintained version list.
+  const e2ePackage = JSON.parse(fs.readFileSync(path.join(repoRoot, 'e2e/package.json'), 'utf8'));
+  const dependencies = {
+    ...e2ePackage.dependencies,
+    ...e2ePackage.devDependencies,
+  };
+  assert.deepEqual(
+    Object.keys(dependencies).filter((name) => /^@anthropic-ai\/sdk-/u.test(name)),
+    [],
+    'M2: versioned SDK aliases belong only to managed-sdk-oracle',
+  );
+
+  const matrixSuites = [
+    'e2e/conformance/managed_sdk_memory_depth_e2e.mjs',
+    'e2e/conformance/managed_sdk_resource_handoff_e2e.mjs',
+    'e2e/conformance/managed_sdk_runtime_matrix_e2e.mjs',
+    'e2e/conformance/managed_sdk_version_matrix_e2e.mjs',
+    'e2e/managed_webhooks_official_sdk_e2e.mjs',
+  ];
+  for (const relativePath of matrixSuites) {
+    const source = fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
+    assert.match(source, /loadQualifiedClients/u, `M2: ${relativePath}`);
+    assert.doesNotMatch(source, /@anthropic-ai\/sdk-\d/u, `M2: ${relativePath}`);
+  }
 });
 
 function profileClient(profile) {

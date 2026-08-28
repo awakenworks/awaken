@@ -2,7 +2,7 @@
 // every mutating subresource's beta rejection, cross-beta cursors, cursor
 // invalidation safety, and literal HTTP/1 header framing.
 //
-// Cause/effect graph: SDK 0.105/0.117/current or header selector -> one Memory aggregate/cursor ->
+// Cause/effect graph: every qualified SDK anchor or header selector -> one Memory aggregate/cursor ->
 // mutation or read. Valid old/current selectors share state; ambiguous/invalid
 // selectors fail before mutation; stale cursors never resurrect removed heads.
 // Decision table coverage is grouped in the assertions below by handoff, CAS,
@@ -10,20 +10,13 @@
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import AnthropicCurrent from '@anthropic-ai/sdk';
-import Anthropic0105 from '@anthropic-ai/sdk-0-105';
-import Anthropic0117 from '@anthropic-ai/sdk-0-117';
+import { loadQualifiedClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, withScenarioServer } from '../harness.mjs';
-import { sdkVersionBinding } from './catalog.mjs';
 
 const LEGACY_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
-const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
-const CLIENTS = [
-  ['0.105.0', Anthropic0105],
-  ['0.117.1', Anthropic0117],
-  [CURRENT_SDK_VERSION, AnthropicCurrent],
-];
+const QUALIFIED_CLIENTS = await loadQualifiedClients();
+const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client }) => [version, Client]);
 
 async function drain(items) {
   const values = [];
@@ -92,8 +85,8 @@ async function exerciseHandoff(baseURL, apiKey, creatorSpec, operatorSpec) {
 }
 
 async function exerciseConcurrentCAS(baseURL, apiKey) {
-  const oldClient = new Anthropic0105({ apiKey, baseURL });
-  const currentClient = new Anthropic0117({ apiKey, baseURL });
+  const oldClient = new QUALIFIED_CLIENTS[0].Client({ apiKey, baseURL });
+  const currentClient = new QUALIFIED_CLIENTS[1].Client({ apiKey, baseURL });
   const store = await oldClient.beta.memoryStores.create({ name: 'mixed-version-cas' });
   const memory = await oldClient.beta.memoryStores.memories.create(store.id, {
     path: '/cas.md', content: 'base', view: 'full',
@@ -125,7 +118,7 @@ async function exerciseConcurrentCAS(baseURL, apiKey) {
 }
 
 async function exerciseMutationAdmissionAndCursors(baseURL, apiKey) {
-  const client = new Anthropic0117({ apiKey, baseURL });
+  const client = new QUALIFIED_CLIENTS[1].Client({ apiKey, baseURL });
   const store = await client.beta.memoryStores.create({ name: 'negative-subresources' });
   const memory = await client.beta.memoryStores.memories.create(store.id, {
     path: '/protected.md', content: 'original', view: 'full',
@@ -299,10 +292,11 @@ async function exerciseRawHeaders(baseURL) {
 
 await withScenarioServer('management', 'mcp', 38189, async (baseURL) => {
   const apiKey = 'e2e-dummy';
-  await exerciseHandoff(baseURL, apiKey, CLIENTS[0], CLIENTS[1]);
-  await exerciseHandoff(baseURL, apiKey, CLIENTS[1], CLIENTS[0]);
-  await exerciseHandoff(baseURL, apiKey, CLIENTS[1], CLIENTS[2]);
-  await exerciseHandoff(baseURL, apiKey, CLIENTS[2], CLIENTS[1]);
+  for (const creator of CLIENTS) {
+    for (const operator of CLIENTS) {
+      if (creator !== operator) await exerciseHandoff(baseURL, apiKey, creator, operator);
+    }
+  }
   await exerciseConcurrentCAS(baseURL, apiKey);
   await exerciseMutationAdmissionAndCursors(baseURL, apiKey);
   await exerciseRawHeaders(baseURL);

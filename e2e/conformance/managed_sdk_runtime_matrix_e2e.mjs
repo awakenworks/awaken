@@ -3,20 +3,16 @@
 // Cause/effect graph: creator SDK -> one durable Session -> operator SDK ->
 // selected runtime -> committed events -> terminal lifecycle. The SDK handoff
 // must not change runtime selection, pagination, event identity, or cleanup.
-// Decision table: {0.105,0.117} creator × {0.117,0.105} operator ×
-// {native,ACP}; every cell must create, retrieve, send, paginate, archive and
-// delete through the generated Managed surface.
+// Decision table: every supported creator SDK × every supported operator SDK
+// × {native,ACP}; every cell must create, retrieve, send, paginate, archive
+// and delete through the generated Managed surface.
 
 import assert from 'node:assert/strict';
-import Anthropic0105 from '@anthropic-ai/sdk-0-105';
-import Anthropic0117 from '@anthropic-ai/sdk-0-117';
+import { loadQualifiedClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, waitForSessionEventReceipt, withScenarioServer } from '../harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CLIENTS = [
-  ['0.105.0', Anthropic0105],
-  ['0.117.1', Anthropic0117],
-];
+const CLIENTS = (await loadQualifiedClients()).map(({ version, Client }) => [version, Client]);
 
 async function drain(items) {
   const values = [];
@@ -90,9 +86,10 @@ async function exerciseCell(baseURL, runtime, creatorSpec, operatorSpec) {
 
 await withScenarioServer('acp', 'echo', 38187, async (baseURL) => {
   for (const runtime of ['native', 'acp']) {
-    await exerciseCell(baseURL, runtime, CLIENTS[0], CLIENTS[1]);
-    await exerciseCell(baseURL, runtime, CLIENTS[1], CLIENTS[0]);
+    for (const creator of CLIENTS) {
+      for (const operator of CLIENTS) await exerciseCell(baseURL, runtime, creator, operator);
+    }
   }
 });
 
-console.log('E2E PASS: SDK 0.105/0.117 handoffs preserve Native and ACP Session behavior.');
+console.log(`E2E PASS: ${CLIENTS.length ** 2} SDK handoffs preserve Native and ACP Session behavior.`);
