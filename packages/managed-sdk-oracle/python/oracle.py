@@ -241,6 +241,149 @@ def runtime_source_evidence(root: Path, relative_paths: Iterable[str]) -> list[d
     return sorted(evidence, key=lambda item: item["path"])
 
 
+def python_module_name(root: Path, filename: Path) -> str:
+    relative = filename.relative_to(root).with_suffix("")
+    parts = list(relative.parts)
+    if parts[-1] == "__init__":
+        parts.pop()
+    return ".".join(parts)
+
+
+def imported_module_name(current: str, node: ast.ImportFrom, *, package: bool = False) -> str:
+    if node.level == 0:
+        return node.module or ""
+    package_parts = current.split(".") if package else current.split(".")[:-1]
+    retained = len(package_parts) - (node.level - 1)
+    if retained < 1:
+        raise AssertionError(f"{current}: relative import escapes the official SDK package")
+    parts = package_parts[:retained]
+    if node.module:
+        parts.extend(node.module.split("."))
+    return ".".join(parts)
+
+
+def python_module_file(root: Path, module: str) -> Path | None:
+    if not module.startswith("anthropic"):
+        return None
+    relative = Path(*module.split("."))
+    source = (root / relative).with_suffix(".py")
+    if source.is_file():
+        return source
+    package = root / relative / "__init__.py"
+    return package if package.is_file() else None
+
+
+def package_symbol_source(
+    root: Path,
+    package_file: Path,
+    symbol: str,
+) -> Path | None:
+    package_module = python_module_name(root, package_file)
+    direct = python_module_file(root, f"{package_module}.{symbol}")
+    if direct is not None:
+        return direct
+    module = ast.parse(package_file.read_text(encoding="utf-8"), filename=str(package_file))
+    matches = []
+    local_names = set()
+    for node in module.body:
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            local_names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            local_names.update(
+                target.id for target in targets if isinstance(target, ast.Name)
+            )
+        elif isinstance(node, ast.Import):
+            local_names.update(alias.asname or alias.name.split(".")[0] for alias in node.names)
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        imported = imported_module_name(package_module, node, package=True)
+        for alias in node.names:
+            if alias.name == "*":
+                raise AssertionError(f"{package_file}: wildcard export cannot resolve {symbol}")
+            if (alias.asname or alias.name) == symbol:
+                target = python_module_file(root, imported)
+                if target is not None:
+                    matches.append(target)
+    if len(matches) > 1:
+        raise AssertionError(f"{package_file}: ambiguous source for imported symbol {symbol}")
+    if matches:
+        return matches[0]
+    if symbol in local_names:
+        return None
+    raise AssertionError(f"{package_file}: no auditable source for imported symbol {symbol}")
+
+
+def managed_type_source_evidence(
+    root: Path,
+    resource_files: Iterable[Path],
+) -> list[dict[str, str]]:
+    """Fingerprint the exact Python response/parameter type dependency graph.
+
+    Resource modules are only roots: their transport source is already owned by
+    ``source_fingerprint``. From each root we enter imports below
+    ``anthropic.types``; once inside that graph, every local dependency is
+    followed. Package imports resolve only the requested re-exported symbols,
+    so an unrelated Messages DTO in a broad ``types.beta`` initializer cannot
+    enlarge or satisfy the Managed compatibility claim.
+    """
+    pending: list[tuple[Path, bool, bool]] = [
+        (path, True, True) for path in resource_files
+    ]
+    evidence: dict[str, dict[str, str]] = {}
+    visited: set[tuple[Path, bool]] = set()
+    while pending:
+        filename, is_resource_root, expand_imports = pending.pop()
+        filename = filename.resolve()
+        visit = (filename, expand_imports)
+        if visit in visited:
+            continue
+        visited.add(visit)
+        module_name = python_module_name(root, filename)
+        module = ast.parse(filename.read_text(encoding="utf-8"), filename=str(filename))
+        if not is_resource_root:
+            relative = filename.relative_to(root).as_posix()
+            evidence[relative] = {
+                "path": relative,
+                "sha256": hashlib.sha256(filename.read_bytes()).hexdigest(),
+            }
+        if not expand_imports:
+            continue
+        for node in ast.walk(module):
+            candidates: list[tuple[str, list[str]]] = []
+            if isinstance(node, ast.ImportFrom):
+                candidates.append((
+                    imported_module_name(
+                        module_name,
+                        node,
+                        package=filename.name == "__init__.py",
+                    ),
+                    [alias.asname or alias.name for alias in node.names],
+                ))
+            elif isinstance(node, ast.Import):
+                candidates.extend((alias.name, []) for alias in node.names)
+            for imported, symbols in candidates:
+                if is_resource_root and not imported.startswith("anthropic.types"):
+                    continue
+                if not imported.startswith("anthropic"):
+                    continue
+                target = python_module_file(root, imported)
+                if target is None:
+                    continue
+                pending.append((target, False, target.name != "__init__.py"))
+                if target.name != "__init__.py":
+                    continue
+                for symbol in symbols:
+                    if symbol == "*":
+                        raise AssertionError(f"{filename}: wildcard type import is not auditable")
+                    source = package_symbol_source(root, target, symbol)
+                    if source is not None:
+                        pending.append((source, False, source.name != "__init__.py"))
+    if not evidence:
+        raise AssertionError("Python Managed resource graph contains no type sources")
+    return [evidence[path] for path in sorted(evidence)]
+
+
 def stream_event_names(filename: Path) -> list[str]:
     """Extract the exact SSE event names dispatched by the official client."""
     module = ast.parse(filename.read_text(encoding="utf-8"), filename=str(filename))
@@ -339,6 +482,10 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         root,
         scope["python_managed_library_modules"],
     )
+    type_sources = managed_type_source_evidence(
+        root,
+        (filename for _, filename, _ in files),
+    )
     runtime_sources = runtime_source_evidence(root, scope["python_managed_runtime_files"])
     dispatched_stream_events = stream_event_names(root / "anthropic/_streaming.py")
     source_hashes.extend(library_source_hashes)
@@ -355,6 +502,8 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         "helpers": sorted(helpers),
         "library_export_fingerprint": digest(library_exports),
         "library_exports": library_exports,
+        "type_source_fingerprint": digest(type_sources),
+        "type_sources": type_sources,
         "runtime_source_fingerprint": digest(runtime_sources),
         "runtime_sources": runtime_sources,
         "stream_event_fingerprint": digest(dispatched_stream_events),
@@ -378,7 +527,8 @@ def generate() -> dict[str, Any]:
             for key in (
                 "version", "role", "reason", "wheel", "operation_fingerprint",
                 "source_fingerprint", "source_file_count", "helper_fingerprint",
-                "library_export_fingerprint", "runtime_source_fingerprint",
+                "library_export_fingerprint", "type_source_fingerprint",
+                "runtime_source_fingerprint",
                 "stream_event_fingerprint",
             )
         } | {
@@ -387,6 +537,7 @@ def generate() -> dict[str, Any]:
             "helpers": anchor["helpers"],
             "library_export_count": len(anchor["library_exports"]),
             "library_exports": anchor["library_exports"],
+            "type_source_count": len(anchor["type_sources"]),
             "runtime_source_count": len(anchor["runtime_sources"]),
             "runtime_sources": anchor["runtime_sources"],
             "stream_event_count": len(anchor["stream_event_names"]),
@@ -479,6 +630,11 @@ def validate(oracle: dict[str, Any]) -> None:
         raise AssertionError("current Python runtime sources must be a list")
     if digest(runtime_sources) != oracle["current"].get("runtime_source_fingerprint"):
         raise AssertionError("current Python runtime source fingerprint is stale")
+    type_sources = oracle["current"].get("type_sources")
+    if not isinstance(type_sources, list) or not type_sources:
+        raise AssertionError("current Python type sources must be a non-empty list")
+    if digest(type_sources) != oracle["current"].get("type_source_fingerprint"):
+        raise AssertionError("current Python type source fingerprint is stale")
     stream_events = oracle["current"].get("stream_event_names")
     if not isinstance(stream_events, list) or stream_events != sorted(set(stream_events)):
         raise AssertionError("current Python stream events must be unique and sorted")
@@ -516,6 +672,12 @@ def validate(oracle: dict[str, Any]) -> None:
             or anchor.get("runtime_source_fingerprint") != digest(runtime_sources)
         ):
             raise AssertionError(f"{anchor['version']}: runtime source summary is stale")
+        if (
+            not isinstance(anchor.get("type_source_count"), int)
+            or anchor["type_source_count"] <= 0
+            or not re.fullmatch(r"[0-9a-f]{64}", anchor.get("type_source_fingerprint", ""))
+        ):
+            raise AssertionError(f"{anchor['version']}: type source summary is stale")
         stream_events = anchor.get("stream_event_names")
         if not isinstance(stream_events, list) or stream_events != sorted(set(stream_events)):
             raise AssertionError(f"{anchor['version']}: stream events must be unique and sorted")

@@ -1,3 +1,4 @@
+import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +15,14 @@ import {
   withScenarioServer,
   withServer,
 } from '../harness.mjs';
+import { extractOperations } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import {
+  extractResponseContractsFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
+import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
+import {
+  canonicalPythonOperationID,
+} from '../../packages/managed-sdk-oracle/src/python-operation-identity.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const LOCK = resolve(REPO, 'packages/managed-sdk-oracle/python/requirements.lock');
@@ -22,9 +31,14 @@ const MATRIX_LOCK = resolve(
   'packages/managed-sdk-oracle/python/runtime-matrix-requirements.lock',
 );
 const ORACLE = resolve(REPO, 'contracts/anthropic-managed/python-upstream-oracle.generated.json');
+const SCOPE = resolve(REPO, 'packages/managed-sdk-oracle/config/scope.json');
 const DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_runtime_e2e.py');
 const HELPER_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_helpers_e2e.py');
 const MATRIX_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_matrix_e2e.py');
+const RESPONSE_CONTRACT_DRIVER = resolve(
+  import.meta.dirname,
+  'managed_python_sdk_response_contract_e2e.py',
+);
 const PORT = Number(process.env.E2E_PORT ?? 38199);
 
 function commandSucceeds(command, args) {
@@ -122,6 +136,47 @@ function runDriver(python, driver, baseURL, { args = [], extraEnv = {} } = {}) {
   });
 }
 
+function writePythonResponseContracts(temporary) {
+  // One authority projection: Python ids differ only by generator spelling;
+  // response structure comes exclusively from the adjacent declaration of the
+  // reviewed TypeScript 0.122 candidate, whose transport change-point delta is
+  // already proven identical to Python 1.2. No handwritten response corpus can
+  // drift.
+  const module = '@anthropic-ai/sdk-candidate';
+  const sdk = resolveSdkPackage(module);
+  const scope = JSON.parse(readFileSync(SCOPE, 'utf8'));
+  const typescriptOperations = extractOperations(module, scope).operations;
+  const typescriptContracts = extractResponseContractsFromPackageRoot(
+    sdk.root,
+    scope,
+    typescriptOperations.map(({ id }) => id),
+  );
+  const python = JSON.parse(readFileSync(ORACLE, 'utf8')).current;
+  const typescriptIDs = new Set(typescriptOperations.map(({ id }) => id));
+  const canonical = python.operations.map(({ id }) => canonicalPythonOperationID(id));
+  assert.equal(new Set(canonical).size, canonical.length, 'Python operation mapping is injective');
+  assert.deepEqual(new Set(canonical), typescriptIDs, 'Python and candidate operation sets');
+
+  const contracts = Object.fromEntries(python.operations.map(({ id }) => {
+    const typescriptID = canonicalPythonOperationID(id);
+    return [id, typescriptContracts[typescriptID]];
+  }));
+  const destination = resolve(temporary, 'python-response-contracts.json');
+  writeFileSync(destination, `${JSON.stringify({
+    python_version: python.version,
+    typescript_version: sdk.version,
+    operations: python.operations,
+    contracts,
+  })}\n`);
+  return destination;
+}
+
+async function exercisePythonResponseContracts(python, contracts) {
+  await runDriver(python, RESPONSE_CONTRACT_DRIVER, 'http://managed-response.invalid', {
+    extraEnv: { AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: contracts },
+  });
+}
+
 async function exerciseRecovery(python, temporary) {
   // Cross-process cause/effect graph: Node owns only topology and shutdown;
   // the exact Python wheel owns all API encoding/decoding in both phases. One
@@ -157,7 +212,13 @@ async function exerciseRecovery(python, temporary) {
   }
 }
 
-async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion) {
+async function exerciseHistoricalMatrix(
+  python,
+  pip,
+  temporary,
+  responseContracts,
+  selectedVersion,
+) {
   // Version-axis graph: all configured historical rows are reviewed change
   // points, never arbitrary patches. Each target installation is constrained
   // by the generated official wheel SHA; one shared exact dependency closure
@@ -177,7 +238,10 @@ async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion)
     for (const anchor of anchors) {
       await runDriver(python, MATRIX_DRIVER, baseURL, {
         args: [anchor.version, baseURL],
-        extraEnv: { PYTHONPATH: roots.get(anchor.version) },
+        extraEnv: {
+          AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: responseContracts,
+          PYTHONPATH: roots.get(anchor.version),
+        },
       });
     }
   });
@@ -196,14 +260,22 @@ async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion)
 const temporary = mkdtempSync(resolve(tmpdir(), 'awaken-python-managed-sdk-'));
 try {
   const { python, pip } = provisionPython(temporary);
+  const responseContracts = writePythonResponseContracts(temporary);
   const selectedVersion = process.argv[2];
   if (selectedVersion) {
     // Explicit CLI selection is a developer diagnostic only. The release npm
     // command supplies no argument and therefore cannot silently narrow the
     // configured matrix.
-    await exerciseHistoricalMatrix(python, pip, temporary, selectedVersion);
+    await exerciseHistoricalMatrix(
+      python,
+      pip,
+      temporary,
+      responseContracts,
+      selectedVersion,
+    );
     process.exitCode = 0;
   } else {
+    await exercisePythonResponseContracts(python, responseContracts);
     await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
       await runDriver(python, DRIVER, baseURL);
     });
@@ -211,7 +283,7 @@ try {
       await runDriver(python, HELPER_DRIVER, baseURL);
     });
     await exerciseRecovery(python, temporary);
-    await exerciseHistoricalMatrix(python, pip, temporary);
+    await exerciseHistoricalMatrix(python, pip, temporary, responseContracts);
     const pinned = readFileSync(LOCK, 'utf8').match(/^anthropic==(\S+)$/mu)?.[1];
     console.log(`E2E PASS: official Python Managed SDK ${pinned} runtime compatibility.`);
   }

@@ -16,13 +16,15 @@ else is derived evidence:
 - `contracts/anthropic-managed/python-upstream-oracle.generated.json` binds
   every selected Python change point to its exact PyPI wheel SHA-256, normalized
   operation inventory, handwritten resource helpers, explicit Managed library
-  exports, and scoped source fingerprint. The current Python oracle must retain
-  the reviewed operation identity relationship to TypeScript;
+  exports, and scoped source fingerprint. It walks the exact symbol-level import
+  closure from every Managed resource into the generated DTO/type graph;
 - `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
   the wire schemas generated from the Rust implementation and is compared to
   that oracle rather than treated as a competing protocol definition;
 - generated coverage/catalog/type gates prove that callers and behavior tests
-  stay on the same path;
+  stay on the same path. The current Python oracle must retain the reviewed
+  operation identity relationship to TypeScript, and wildcard, unresolved, or
+  ambiguous imports fail closed.
 - Cloud qualification executes the same named SDK anchors against a deployed
   product from Cloud's exact pinned Open checkout. It is runtime/deployment
   evidence, never another contract authority; Cloud does not copy SDK versions,
@@ -51,6 +53,14 @@ evidence from drifting from the external expectation:
   to HTTP resource types. A separate pre-import ESM export inventory is checked
   against the executable current modules; adding or removing a helper inside
   an already-owned file therefore cannot reuse that file's behavior evidence.
+  `test/managed-helper-contract.test.mjs` projects that inventory over every
+  TypeScript anchor and the reviewed candidate. Every public export must belong
+  to the closed behavior catalog and execute its developer-visible contract:
+  Zod parsing, error predicates/backoff, helper lifecycle/abort, Session event
+  accumulation, filesystem confinement and tools, persistent Bash state, Skill
+  resolution/admission, and Memory helper invariants. A newly exported symbol
+  therefore fails as unowned even when its entrypoint and file fingerprint were
+  already known.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
   closure rooted at the supported resources, Client, Session accumulator,
   EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client
@@ -134,14 +144,52 @@ evidence from drifting from the external expectation:
   async drift cannot hide behind a duplicate inventory. The existing shared
   behavior owners continue to own service-domain semantics, so this client
   sweep does not copy their resource state machines.
+- `managed_python_sdk_response_contract_e2e.py` closes the response half of
+  that all-operation chain without introducing a second fixture authority. It
+  projects every Python operation onto the reviewed TypeScript 0.122
+  declaration, then automatically generates one-at-a-time MC/DC witnesses for
+  every nested union branch, optional-field omission, closed field, finite
+  literal, array item, map value, nullable response, page, binary body, and SSE
+  wrapper. All 3,827 witnesses traverse both the real synchronous and
+  asynchronous Python 1.2 generated clients, `httpx2` transport, media
+  dispatcher, and response converter. The return annotation's Pydantic JSON
+  Schema is independently normalized and compared property-for-property, so
+  permissive `BaseModel` extra-field retention cannot impersonate a declared
+  DTO. A structural verifier inductively proves that the generated corpus
+  reaches every finite union branch, array item, object field, optional-field
+  omission, and map value in the actual declaration graph. Parsed JSON must
+  equal its input witness exactly; values inside an installed declaration also
+  make every Pydantic serializer warning fatal. The sole reviewed upstream type
+  variance is fail-closed: six Work
+  operations share `BetaSelfHostedWork.data`, whose Python 1.2 annotation omits
+  the official `healthcheck` union branch. The original two-branch wire
+  witnesses still decode in both client modes, while the live Python poller
+  helper separately drains both `healthcheck` and `session`; if Anthropic fixes
+  the annotation or another operation inherits the variance, the exact ledger
+  fails until it is deliberately reviewed.
 - `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
   change point in its own SHA-256-qualified wheel root over one exact dependency
   closure. It re-extracts and compares the installed source/operation/helper/
   export and handwritten transport-source fingerprints, constructs every
   operation through both sync and async clients, projects one shared decision
   table through both clients to prove the canonical Python error subclasses,
-  retry policy, and byte-identical idempotent retries, and runs live Session/SSE
-  and Memory lifecycles.
+  retry policy, and byte-identical idempotent retries, and projects the current
+  declaration-derived response corpus onto every operation still exposed by
+  that historical wheel. Every nested union/optional response witness traverses
+  the wheel's own sync and async media dispatcher and generated converter; this
+  proves old clients consume current service-line responses without duplicating
+  fixtures. Values already covered by the older declaration must remain
+  warning-free; later additive fields and variants may be unknown to the older
+  type graph but must still round-trip every wire value exactly. This avoids
+  incorrectly requiring old declarations to equal newer additive declarations
+  or mistaking permissive but lossy parsing for compatibility. It also runs live
+  Session/SSE and Memory lifecycles. Before
+  either runtime driver sends a request, one
+  shared installed-evidence adapter re-extracts that wheel's complete Managed
+  source graph. The current wheel compares every DTO path and hash; historical
+  wheels compare the same closure's exact count and fingerprint, avoiding
+  thirteen copies of thousands of generated rows while still failing on any
+  changed dependency byte.
   The generated SSE dispatch inventory records that the first 0.92 Managed
   wheel filters canonical Managed event names in its own generic parser; 0.100+
   must decode message and terminal replay. The last Beta-only and first GA
