@@ -72,6 +72,28 @@ pub(super) fn index_lifecycle_orders(
                 order(10),
             );
         }
+        if lifecycle.thread_id.0 == session_id
+            && matches!(
+                lifecycle.kind,
+                RunLifecycleEventKind::Awaiting
+                    | RunLifecycleEventKind::Completed
+                    | RunLifecycleEventKind::Failed
+                    | RunLifecycleEventKind::Cancelled
+            )
+        {
+            retain_earliest_order(
+                orders,
+                managed_multiagent_event_id(
+                    session_id,
+                    session_id,
+                    "aggregate-terminal-status-running",
+                    ManagedMultiagentEventProvenance::LifecyclePrefix {
+                        cursor: lifecycle.cursor.0,
+                    },
+                ),
+                order(10),
+            );
+        }
         for (role, phase) in roles {
             retain_earliest_order(
                 orders,

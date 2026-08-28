@@ -26,8 +26,8 @@ Two generated verification artifacts prevent the implementation and its
 evidence from drifting from the external expectation:
 
 - `contracts/anthropic-managed/operation-coverage.generated.json` maps every
-  current SDK operation and reviewed SDK-absent route to its Rust behavior-test
-  owner and exact SDK compile fixtures.
+  current SDK operation and reviewed SDK-absent route to one exact executable
+  Rust behavior test and the exact SDK compile fixtures.
 - `fixtures/generated/*.ts` compile every discovered operation against every
   pinned SDK anchor. `fixtures/user-profiles-change-point.ts` additionally
   checks the intentional response-type transition at the User Profiles anchor.

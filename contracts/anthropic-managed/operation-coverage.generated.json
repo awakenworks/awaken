@@ -10,7 +10,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -42,7 +45,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -74,7 +80,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -106,7 +115,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -138,7 +150,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -170,7 +185,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs",
+        "rust_behavior": {
+          "case_id": "agent_lifecycle_projects_every_official_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/agents_registry.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -202,7 +220,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -234,7 +255,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -266,7 +290,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -298,7 +325,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -330,7 +360,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -362,7 +395,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -394,7 +430,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -426,7 +465,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -458,7 +500,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -490,7 +535,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/deployments.rs",
+        "rust_behavior": {
+          "case_id": "deployment_lifecycle_and_runs",
+          "owner": "crates/server/awaken-protocol-managed/tests/deployments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -522,7 +570,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+        "rust_behavior": {
+          "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
+          "owner": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -552,7 +603,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+        "rust_behavior": {
+          "case_id": "cancellation_is_immediate_idempotent_and_retains_prepared_output",
+          "owner": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -582,7 +636,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+        "rust_behavior": {
+          "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
+          "owner": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -612,7 +669,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+        "rust_behavior": {
+          "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
+          "owner": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -642,7 +702,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/dreams.rs",
+        "rust_behavior": {
+          "case_id": "official_create_retrieve_list_archive_and_failure_shapes",
+          "owner": "crates/server/awaken-protocol-managed/tests/dreams.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -672,7 +735,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -704,7 +770,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -736,7 +805,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -768,7 +840,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -800,7 +875,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -832,7 +910,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -864,7 +945,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -896,7 +980,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -928,7 +1015,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -960,7 +1050,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -992,7 +1085,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1024,7 +1120,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1056,7 +1155,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1088,7 +1190,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/environments.rs",
+        "rust_behavior": {
+          "case_id": "environment_crud_and_work_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/environments.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1120,7 +1225,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "upload_download_metadata_and_delete_roundtrip",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1152,7 +1260,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "upload_download_metadata_and_delete_roundtrip",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1184,7 +1295,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1216,7 +1330,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "upload_download_metadata_and_delete_roundtrip",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1248,7 +1365,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "upload_download_metadata_and_delete_roundtrip",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1280,7 +1400,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1312,7 +1435,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1344,7 +1470,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1376,7 +1505,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1408,7 +1540,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1440,7 +1575,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1472,7 +1610,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1504,7 +1645,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1536,7 +1680,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1568,7 +1715,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1600,7 +1750,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1632,7 +1785,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1664,7 +1820,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1696,7 +1855,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "store_lifecycle_create_get_list_update_archive_delete",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1726,7 +1888,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "rust_behavior": {
+          "case_id": "models_route_uses_the_canonical_header_flavor_without_splitting_inventory",
+          "owner": "crates/server/awaken-protocol-managed/src/control/models.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1756,7 +1921,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "rust_behavior": {
+          "case_id": "retrieve_accepts_complete_slash_bearing_model_id",
+          "owner": "crates/server/awaken-protocol-managed/src/control/models.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1788,7 +1956,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "archive_session_commits_the_terminated_fact_once",
+          "owner": "crates/server/awaken-protocol-managed/tests/mcp_sessions.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1820,7 +1991,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "session_create_idempotency_replays_one_canonical_session",
+          "owner": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1852,7 +2026,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "delete_session_commits_the_deleted_fact_with_the_owner",
+          "owner": "crates/server/awaken-protocol-managed/tests/mcp_sessions.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1884,7 +2061,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "events_are_paged_by_cursor",
+          "owner": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1916,7 +2096,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "happy_path_projects_message_and_idle",
+          "owner": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1948,7 +2131,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "retrieve_session_and_sse_event_names",
+          "owner": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -1980,7 +2166,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "session_create_idempotency_replays_one_canonical_session",
+          "owner": "crates/server/awaken-protocol-managed/tests/adapter.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2012,7 +2201,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "file_resource_attaches_to_a_live_session",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2044,7 +2236,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "a_file_resource_can_be_detached_from_a_live_session",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2076,7 +2271,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "create_time_resources_are_backfilled_and_addressable",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2108,7 +2306,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "create_time_resources_are_backfilled_and_addressable",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2140,7 +2341,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "repository_authorization_is_sealed_pinned_and_rotated_without_echo",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2172,7 +2376,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "session_get_projects_the_durable_activity_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/session_resources.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2204,7 +2411,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "child_thread_sse_is_isolated_and_archive_projects_durable_terminal",
+          "owner": "crates/server/awaken-protocol-managed/tests/streaming.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2236,7 +2446,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "a_delegation_projects_the_child_thread_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/projection.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2268,7 +2481,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "stream_thread_events_backfills_the_primary_thread",
+          "owner": "crates/server/awaken-protocol-managed/tests/streaming.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2300,7 +2516,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "a_delegation_projects_the_child_thread_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/projection.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2332,7 +2551,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "a_delegation_projects_the_child_thread_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/projection.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2364,7 +2586,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/adapter.rs",
+        "rust_behavior": {
+          "case_id": "updating_a_session_commits_a_session_updated_event",
+          "owner": "crates/server/awaken-protocol-managed/tests/projection.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2396,7 +2621,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2428,7 +2656,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2460,7 +2691,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2492,7 +2726,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2524,7 +2761,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2556,7 +2796,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2588,7 +2831,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2620,7 +2866,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2652,7 +2901,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "sdk_multipart_create_list_retrieve_and_version_lifecycle",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -2684,7 +2936,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2714,7 +2969,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2744,7 +3002,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2774,7 +3035,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2804,7 +3068,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2834,7 +3101,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2864,7 +3134,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2894,7 +3167,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2924,7 +3200,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2954,7 +3233,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
@@ -2984,7 +3266,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "rust_behavior": {
+          "case_id": "user_profile_crud_and_metadata_merge",
+          "owner": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3016,7 +3301,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "rust_behavior": {
+          "case_id": "user_profile_crud_and_metadata_merge",
+          "owner": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3048,7 +3336,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "rust_behavior": {
+          "case_id": "user_profile_crud_and_metadata_merge",
+          "owner": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3080,7 +3371,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "rust_behavior": {
+          "case_id": "user_profile_crud_and_metadata_merge",
+          "owner": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3112,7 +3406,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/user_profiles.rs",
+        "rust_behavior": {
+          "case_id": "user_profile_crud_and_metadata_merge",
+          "owner": "crates/server/awaken-protocol-managed/tests/user_profiles.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3144,7 +3441,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "archive_vault_soft_deletes_and_hides_from_default_list",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3176,7 +3476,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "vault_credential_lifecycle_and_resolution",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3208,7 +3511,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "archive_credential_soft_deletes_and_hides_from_list",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3240,7 +3546,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "vault_credential_lifecycle_and_resolution",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3272,7 +3581,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "delete_credential_removes_one_and_scopes_by_vault",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3304,7 +3616,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "list_credentials_is_scoped_to_the_vault_and_404s_unknown",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3336,7 +3651,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "vault_credential_lifecycle_and_resolution",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3368,7 +3686,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "vault_credential_lifecycle_and_resolution",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3400,7 +3721,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "update_credential_patches_fields_reseals_secret_and_rejects_type_change",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3432,7 +3756,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "delete_vault_fences_children_and_converges_after_rollout_ack",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3464,7 +3791,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "list_vaults_returns_one_full_page_sorted_by_id",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3496,7 +3826,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "replacement_control_instance_reads_the_same_vault_authority",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3528,7 +3861,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/vaults.rs",
+        "rust_behavior": {
+          "case_id": "update_vault_replaces_name_and_patches_metadata",
+          "owner": "crates/server/awaken-protocol-managed/tests/vaults.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3558,7 +3894,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3583,7 +3922,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3608,7 +3950,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3633,7 +3978,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3658,7 +4006,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/files_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/files_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3683,7 +4034,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "rust_behavior": {
+          "case_id": "models_route_uses_the_canonical_header_flavor_without_splitting_inventory",
+          "owner": "crates/server/awaken-protocol-managed/src/control/models.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3712,7 +4066,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/control/models.rs",
+        "rust_behavior": {
+          "case_id": "retrieve_accepts_complete_slash_bearing_model_id",
+          "owner": "crates/server/awaken-protocol-managed/src/control/models.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/oldest.ts",
           "packages/managed-sdk-oracle/fixtures/generated/user_profiles_legacy.ts",
@@ -3741,7 +4098,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3766,7 +4126,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3791,7 +4154,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3816,7 +4182,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3841,7 +4210,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3866,7 +4238,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3891,7 +4266,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3916,7 +4294,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "ga_skill_and_version_projection_match_sdk_0120",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [
           "packages/managed-sdk-oracle/fixtures/generated/current.ts"
         ],
@@ -3943,7 +4324,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
+        "rust_behavior": {
+          "case_id": "multipart_bundle_preserves_binary_support_files",
+          "owner": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -3966,7 +4350,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs",
+        "rust_behavior": {
+          "case_id": "memory_crud_with_precondition_and_version_log",
+          "owner": "crates/server/awaken-protocol-managed/tests/memory_store_api_http.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -3989,7 +4376,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4011,7 +4401,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4033,7 +4426,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4055,7 +4451,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4077,7 +4476,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4099,7 +4501,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4121,7 +4526,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4143,7 +4551,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4165,7 +4576,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4187,7 +4601,10 @@
           "owner": "packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs"
         },
         "route_inventory": "scripts/ci/_managed_protocol_boundary.py",
-        "rust_behavior": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs",
+        "rust_behavior": {
+          "case_id": "tunnel_lifecycle_projects_every_current_sdk_operation",
+          "owner": "crates/server/awaken-protocol-managed/src/routes/tunnels.rs"
+        },
         "sdk_surface_compile": [],
         "sdk_transport": {
           "not_applicable": "sdk_absent_documented_route"
@@ -4200,5 +4617,5 @@
       "sdk_anchors": []
     }
   ],
-  "schema_version": 1
+  "schema_version": 2
 }

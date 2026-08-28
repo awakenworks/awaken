@@ -6,21 +6,18 @@
 // one additive contract without inferring a package version from telemetry.
 
 import assert from 'node:assert/strict';
-import Anthropic0105 from '@anthropic-ai/sdk-0-105';
-import Anthropic0117 from '@anthropic-ai/sdk-0-117';
-import AnthropicCurrent from '@anthropic-ai/sdk';
-import { sdkVersionBinding } from './catalog.mjs';
+import {
+  loadQualifiedClients,
+  qualifiedClient,
+} from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
 
 const PORT = Number(process.env.E2E_PORT ?? 38137);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_BETA = 'agent-memory-2026-07-22';
-const CURRENT_SDK_VERSION = sdkVersionBinding().oracle;
-const CLIENTS = [
-  ['0.105.0', Anthropic0105],
-  ['0.117.1', Anthropic0117],
-  [CURRENT_SDK_VERSION, AnthropicCurrent],
-];
+const QUALIFIED_CLIENTS = await loadQualifiedClients();
+const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client }) => [version, Client]);
+const QUALIFIED_VERSIONS = CLIENTS.map(([version]) => version).join(', ');
 
 async function drain(items) {
   const drained = [];
@@ -42,13 +39,19 @@ function resourceMethods(resource, prefix = '', depth = 0, found = []) {
 }
 
 function assertSdkCapabilityBoundary() {
-  const resources = CLIENTS.map(([version, Client]) => [
-    version,
-    new Client({ apiKey: 'surface-inventory' }).beta, // awaken-allow: secret
-  ]);
-  const keys = resources.map(([, beta]) => Object.keys(beta).filter((key) => key !== '_client').sort());
-  const oldOnly = keys[0].filter((key) => !keys[1].includes(key));
-  const currentOnly = keys[1].filter((key) => !keys[0].includes(key));
+  const surface = (role) => {
+    const anchor = qualifiedClient(QUALIFIED_CLIENTS, role);
+    const beta = new anchor.Client({ apiKey: 'surface-inventory' }).beta; // awaken-allow: secret
+    return {
+      beta,
+      keys: Object.keys(beta).filter((key) => key !== '_client').sort(),
+    };
+  };
+  const oldest = surface('oldest_supported');
+  const changePoint = surface('protocol_change_point');
+  const current = surface('current_oracle');
+  const oldOnly = oldest.keys.filter((key) => !changePoint.keys.includes(key));
+  const currentOnly = changePoint.keys.filter((key) => !oldest.keys.includes(key));
   assert.deepEqual(oldOnly, [], 'the supported old SDK has no removed Beta resource family');
   assert.deepEqual(
     currentOnly,
@@ -56,31 +59,24 @@ function assertSdkCapabilityBoundary() {
     'Dreams and current Tunnels are explicit current-SDK capability boundaries',
   );
   assert.deepEqual(
-    keys[2].filter((key) => !keys[1].includes(key)),
+    current.keys.filter((key) => !changePoint.keys.includes(key)),
     ['organization'],
-    `${CURRENT_SDK_VERSION} adds only the unrelated Beta organization admin root beyond the reviewed Managed scope`,
+    'the current SDK adds only the reviewed non-Managed organization family',
   );
   assert.deepEqual(
-    keys[1].filter((key) => !keys[2].includes(key)),
+    changePoint.keys.filter((key) => !current.keys.includes(key)),
     [],
-    `${CURRENT_SDK_VERSION} removes no reviewed 0.117 Beta resource family`,
+    'the current oracle retains every reviewed Managed Beta resource family',
   );
-  const shared = keys[0].filter((key) => keys[1].includes(key));
+  const shared = oldest.keys.filter((key) => changePoint.keys.includes(key));
   for (const key of shared) {
-    for (const [, beta] of resources.slice(1)) {
+    for (const candidate of [changePoint, current]) {
       assert.deepEqual(
-        resourceMethods(resources[0][1][key]),
-        resourceMethods(beta[key]),
+        resourceMethods(oldest.beta[key]),
+        resourceMethods(candidate.beta[key]),
         `${key}: generated method/nested-resource surface differs across supported SDKs`,
       );
     }
-  }
-  for (const key of keys[1]) {
-    assert.deepEqual(
-      resourceMethods(resources[1][1][key]),
-      resourceMethods(resources[2][1][key]),
-      `${key}: 0.117 and ${CURRENT_SDK_VERSION} generated method/nested-resource surfaces differ`,
-    );
   }
   pass(`${shared.length} shared Beta resource families have identical generated method surfaces`);
   pass('Dreams and Tunnels remain tested as explicit current-SDK-only capabilities');
@@ -304,8 +300,10 @@ async function exerciseVersionSelectionBoundary(baseURL, options) {
     },
     body: JSON.stringify(body),
   });
-  const oldAgent = await request('anthropic-sdk-typescript/0.105.0');
-  const newAgent = await request('anthropic-sdk-typescript/0.117.1');
+  const oldest = qualifiedClient(QUALIFIED_CLIENTS, 'oldest_supported');
+  const changePoint = qualifiedClient(QUALIFIED_CLIENTS, 'protocol_change_point');
+  const oldAgent = await request(`anthropic-sdk-typescript/${oldest.version}`);
+  const newAgent = await request(`anthropic-sdk-typescript/${changePoint.version}`);
   assert.equal(oldAgent.status, newAgent.status, 'User-Agent must not select a schema');
   assert.equal(oldAgent.status, 200, 'the supported beta selects the Managed contract');
   const created = [await oldAgent.json(), await newAgent.json()];
@@ -315,24 +313,27 @@ async function exerciseVersionSelectionBoundary(baseURL, options) {
     'different client versions receive one additive response schema',
   );
 
-  const absentBeta = await request('anthropic-sdk-typescript/0.117.1', null);
+  const absentBeta = await request(`anthropic-sdk-typescript/${changePoint.version}`, null);
   assert.equal(absentBeta.status, 400, 'the Managed family fails closed without its beta');
-  const unknownBeta = await request('anthropic-sdk-typescript/0.117.1', 'future-managed-beta');
+  const unknownBeta = await request(
+    `anthropic-sdk-typescript/${changePoint.version}`,
+    'future-managed-beta',
+  );
   assert.equal(unknownBeta.status, 400, 'an unknown beta alone cannot select the contract');
   const mixedBeta = await request(
-    'anthropic-sdk-typescript/0.117.1',
+    `anthropic-sdk-typescript/${changePoint.version}`,
     `future-managed-beta, ${BETAS[0]}`,
   );
   assert.equal(mixedBeta.status, 200, 'an additive unknown beta does not hide the supported beta');
   created.push(await mixedBeta.json());
   const duplicateBeta = await request(
-    'anthropic-sdk-typescript/0.105.0',
+    `anthropic-sdk-typescript/${oldest.version}`,
     `${BETAS[0]}, ${BETAS[0]}`,
   );
   assert.equal(duplicateBeta.status, 200, 'a duplicated supported beta is idempotent');
   created.push(await duplicateBeta.json());
   const wrongVersion = await request(
-    'anthropic-sdk-typescript/0.117.1',
+    `anthropic-sdk-typescript/${changePoint.version}`,
     BETAS[0],
     '2099-01-01',
   );
@@ -395,11 +396,11 @@ async function main() {
         'legacy and current Memory SDKs receive one additive response schema',
       );
     }
-    pass(`Memory SDK 0.105.0, 0.117.1 and ${CURRENT_SDK_VERSION} share response and cursor contracts`);
+    pass(`Memory SDK ${QUALIFIED_VERSIONS} share response and cursor contracts`);
   };
   if (remoteBaseURL) await run(remoteBaseURL);
   else await withRealServer('echo', PORT, run);
-  console.log(`E2E PASS: Managed Agents supports Anthropic SDK 0.105.0, 0.117.1 and ${CURRENT_SDK_VERSION} across Managed and Memory beta selectors.`);
+  console.log(`E2E PASS: Managed Agents supports Anthropic SDK ${QUALIFIED_VERSIONS} across Managed and Memory beta selectors.`);
 }
 
 main().catch((error) => {

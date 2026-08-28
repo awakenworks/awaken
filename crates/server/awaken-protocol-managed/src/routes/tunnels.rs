@@ -502,36 +502,42 @@ mod tests {
         let application = Arc::new(FakeTunnelApplication::default());
         let app = tunnels_router(application.clone())
             .layer(Extension(WorkspaceScope("workspace-a".into())));
-        let cases = [
-            ("POST", "/v1/tunnels", r#"{"display_name":"test"}"#),
-            ("GET", "/v1/tunnels/tun_1", ""),
-            ("GET", "/v1/tunnels", ""),
-            ("POST", "/v1/tunnels/tun_1/reveal_token", ""),
-            (
-                "POST",
-                "/v1/tunnels/tun_1/rotate_token",
-                r#"{"reason":"test"}"#,
-            ),
-            (
-                "POST",
-                "/v1/tunnels/tun_1/certificates",
-                r#"{"ca_certificate_pem":"pem"}"#,
-            ),
-            ("GET", "/v1/tunnels/tun_1/certificates/tcrt_1", ""),
-            ("GET", "/v1/tunnels/tun_1/certificates", ""),
-            ("POST", "/v1/tunnels/tun_1/certificates/tcrt_1/archive", ""),
-            ("POST", "/v1/tunnels/tun_1/archive", ""),
-        ];
-        for (method, uri, body) in cases {
-            let response = call(&app, method, uri, body).await;
-            assert_eq!(response.status(), StatusCode::OK, "T1/{method} {uri}");
-            if uri.ends_with("reveal_token") || uri.ends_with("rotate_token") {
-                assert_eq!(response.headers()["cache-control"], "no-store", "T1/secret");
+        for prefix in ["/v1/tunnels", "/v1/organizations/tunnels"] {
+            let cases = [
+                ("POST", prefix.to_owned(), r#"{"display_name":"test"}"#),
+                ("GET", format!("{prefix}/tun_1"), ""),
+                ("GET", prefix.to_owned(), ""),
+                ("POST", format!("{prefix}/tun_1/reveal_token"), ""),
+                (
+                    "POST",
+                    format!("{prefix}/tun_1/rotate_token"),
+                    r#"{"reason":"test"}"#,
+                ),
+                (
+                    "POST",
+                    format!("{prefix}/tun_1/certificates"),
+                    r#"{"ca_certificate_pem":"pem"}"#,
+                ),
+                ("GET", format!("{prefix}/tun_1/certificates/tcrt_1"), ""),
+                ("GET", format!("{prefix}/tun_1/certificates"), ""),
+                (
+                    "POST",
+                    format!("{prefix}/tun_1/certificates/tcrt_1/archive"),
+                    "",
+                ),
+                ("POST", format!("{prefix}/tun_1/archive"), ""),
+            ];
+            for (method, uri, body) in cases {
+                let response = call(&app, method, &uri, body).await;
+                assert_eq!(response.status(), StatusCode::OK, "T1/{method} {uri}");
+                if uri.ends_with("reveal_token") || uri.ends_with("rotate_token") {
+                    assert_eq!(response.headers()["cache-control"], "no-store", "T1/secret");
+                }
             }
         }
         assert_eq!(
             application.scopes.lock().unwrap().len(),
-            10,
+            20,
             "T1/one port call"
         );
     }

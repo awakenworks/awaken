@@ -30,25 +30,50 @@ export function operationCoverage({
   repoRoot,
   readText = (target) => fs.readFileSync(target, 'utf8'),
 }) {
-  assert.equal(config.schema_version, 1, 'unsupported coverage config schema');
+  assert.equal(config.schema_version, 2, 'unsupported coverage config schema');
   const knownResources = new Set(Object.keys(config.resources));
   const current = extracted.find(({ role }) => role === 'current_oracle');
   assert.ok(current, 'current oracle is required for operation coverage');
   const operations = [...current.operations, ...documentedRoutes];
   const ids = new Set();
+  const matchedPatterns = new Set();
 
-  return operations.map((operation) => {
+  const matches = (pattern, id) => pattern.endsWith('*')
+    ? id.startsWith(pattern.slice(0, -1))
+    : id === pattern;
+  const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  const behaviorSources = new Map();
+  const behaviorExists = ({ path: owner, test: caseId }) => {
+    const source = behaviorSources.get(owner)
+      ?? readText(path.join(repoRoot, owner));
+    behaviorSources.set(owner, source);
+    const testFunction = new RegExp(
+      String.raw`#\[(?:(?:tokio::)?test)(?:\([^]*?\))?\]\s*`
+        + String.raw`(?:#\[[^\]]+\]\s*)*(?:async\s+)?fn\s+${escapeRegex(caseId)}\s*\(`,
+      'u',
+    );
+    assert.match(source, testFunction, `${owner} contains no behavior test ${caseId}`);
+  };
+
+  const rows = operations.map((operation) => {
     assert.ok(!ids.has(operation.id), `duplicate covered operation ${operation.id}`);
     ids.add(operation.id);
     const resource = resourceOf(operation);
     assert.ok(knownResources.has(resource), `${operation.id} has no resource coverage owner`);
-    const rustBehavior = config.resources[resource].rust_behavior;
-    const source = readText(path.join(repoRoot, rustBehavior));
-    assert.match(
-      source,
-      /#\[(?:(?:tokio::)?test)(?:\([^]*?\))?\]/u,
-      `${rustBehavior} contains no behavior tests`,
+    const cases = config.resources[resource].rust_behavior_cases;
+    assert.ok(Array.isArray(cases) && cases.length > 0, `${resource} has no behavior cases`);
+    const owners = cases.filter((candidate) => candidate.operations.some((pattern) => {
+      const hit = matches(pattern, operation.id);
+      if (hit) matchedPatterns.add(`${resource}\0${candidate.test}\0${pattern}`);
+      return hit;
+    }));
+    assert.equal(
+      owners.length,
+      1,
+      `${operation.id} must have exactly one Rust behavior case; found ${owners.length}`,
     );
+    const rustBehavior = owners[0];
+    behaviorExists(rustBehavior);
     const sdkAnchors = extracted
       .filter(({ operations: anchorOperations }) =>
         anchorOperations.some(({ id }) => id === operation.id))
@@ -73,7 +98,10 @@ export function operationCoverage({
           owner: 'packages/managed-sdk-oracle/src/conformance/deployed-sweep.mjs',
         },
         route_inventory: 'scripts/ci/_managed_protocol_boundary.py',
-        rust_behavior: rustBehavior,
+        rust_behavior: {
+          case_id: rustBehavior.test,
+          owner: rustBehavior.path,
+        },
         sdk_transport: sdkTransport,
         sdk_surface_compile: sdkAnchors.map(
           (id) => `packages/managed-sdk-oracle/fixtures/generated/${id}.ts`,
@@ -81,4 +109,21 @@ export function operationCoverage({
       },
     };
   });
+
+  for (const [resource, { rust_behavior_cases: cases }] of Object.entries(config.resources)) {
+    for (const behaviorCase of cases) {
+      assert.ok(
+        Array.isArray(behaviorCase.operations) && behaviorCase.operations.length > 0,
+        `${resource}.${behaviorCase.test} has no operation patterns`,
+      );
+      behaviorExists(behaviorCase);
+      for (const pattern of behaviorCase.operations) {
+        assert.ok(
+          matchedPatterns.has(`${resource}\0${behaviorCase.test}\0${pattern}`),
+          `${resource}.${behaviorCase.test} has dead operation pattern ${pattern}`,
+        );
+      }
+    }
+  }
+  return rows;
 }
