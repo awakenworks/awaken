@@ -80,6 +80,49 @@ fn retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup() {
     }
 }
 
+const fn session_preparation_status(
+    execution: SessionExecutionState,
+) -> crate::types::SessionPreparationStatus {
+    match execution {
+        SessionExecutionState::Preparing
+        | SessionExecutionState::Activating
+        | SessionExecutionState::Rescheduling => crate::types::SessionPreparationStatus::Preparing,
+        SessionExecutionState::ActivationFailed => crate::types::SessionPreparationStatus::Failed,
+        SessionExecutionState::Running
+        | SessionExecutionState::Idle
+        | SessionExecutionState::Terminated => crate::types::SessionPreparationStatus::Ready,
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn session_preparation_projection_is_total_exact_and_non_strengthening() {
+    let code: u8 = kani::any();
+    let execution = match code % 7 {
+        0 => SessionExecutionState::Preparing,
+        1 => SessionExecutionState::Activating,
+        2 => SessionExecutionState::ActivationFailed,
+        3 => SessionExecutionState::Running,
+        4 => SessionExecutionState::Rescheduling,
+        5 => SessionExecutionState::Idle,
+        _ => SessionExecutionState::Terminated,
+    };
+    let projected = session_preparation_status(execution);
+    assert_eq!(
+        projected == crate::types::SessionPreparationStatus::Failed,
+        execution == SessionExecutionState::ActivationFailed
+    );
+    assert_eq!(
+        projected == crate::types::SessionPreparationStatus::Preparing,
+        matches!(
+            execution,
+            SessionExecutionState::Preparing
+                | SessionExecutionState::Activating
+                | SessionExecutionState::Rescheduling
+        )
+    );
+}
+
 impl ManagedState {
     fn resolved_session_multiagent(
         &self,
@@ -162,6 +205,15 @@ impl ManagedState {
         }
     }
 
+    pub(super) fn wire_session_preparation(
+        persisted: &PersistedSession,
+    ) -> crate::types::SessionPreparation {
+        crate::types::SessionPreparation {
+            status: session_preparation_status(persisted.execution),
+            error: persisted.realization_progress.last_error.clone(),
+        }
+    }
+
     /// Refresh the disposable HTTP projection after the one durable root CAS.
     /// Every mutation crosses this seam, so realization, update, archive, and
     /// recovery cannot each invent a second cache-synchronization path.
@@ -175,6 +227,7 @@ impl ManagedState {
             return Ok(());
         };
         record.session.status = Self::wire_session_status(persisted.execution);
+        record.session.preparation = Self::wire_session_preparation(persisted);
         record.session.title = persisted.title.clone();
         record.session.metadata = persisted.metadata.clone();
         record.session.deployment_id = persisted.metadata.get("awaken.deployment_id").cloned();
@@ -309,13 +362,32 @@ impl ManagedState {
             .await
     }
 
+    pub async fn accept_session(
+        &self,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+    ) -> Result<Session, StateError> {
+        self.accept_session_with_identity(req, workspace_id, None)
+            .await
+    }
+
     pub(super) async fn create_session_with_identity(
         &self,
         req: SessionCreateParams,
         workspace_id: Option<String>,
         explicit_id: Option<String>,
     ) -> Result<Session, StateError> {
-        self.create_session_with_identity_from(req, workspace_id, explicit_id, None)
+        self.create_session_with_identity_from(req, workspace_id, explicit_id, None, false)
+            .await
+    }
+
+    pub(super) async fn accept_session_with_identity(
+        &self,
+        req: SessionCreateParams,
+        workspace_id: Option<String>,
+        explicit_id: Option<String>,
+    ) -> Result<Session, StateError> {
+        self.create_session_with_identity_from(req, workspace_id, explicit_id, None, true)
             .await
     }
 
@@ -328,6 +400,7 @@ impl ManagedState {
         workspace_id: Option<String>,
         explicit_id: Option<String>,
         deployment_initial_events: Option<Vec<InboundEvent>>,
+        accept_durable_root: bool,
     ) -> Result<Session, StateError> {
         req.validate_common()
             .map_err(|message| StateError::Run(RunError::bad_request(message)))?;
@@ -866,22 +939,24 @@ impl ManagedState {
         };
         // The adapter has finished lowering wire policy. The Session application
         // now exclusively orders every durable mutation and external projection.
-        let persisted = self
-            .application
-            .create_session(awaken_session_application::CreateSessionCommand {
-                owner_scope: owner_scope.clone(),
-                session_id: id.clone(),
-                intent: creation_intent,
-                title: req.title.clone(),
-                metadata: req.metadata.clone(),
-                tools: effective_tools.clone(),
-                budget: budget_state,
-                repository_configurations,
-                idempotency: None,
-                initial_events,
-            })
-            .await
-            .map_err(Self::map_creation_error)?;
+        let creation = awaken_session_application::CreateSessionCommand {
+            owner_scope: owner_scope.clone(),
+            session_id: id.clone(),
+            intent: creation_intent,
+            title: req.title.clone(),
+            metadata: req.metadata.clone(),
+            tools: effective_tools.clone(),
+            budget: budget_state,
+            repository_configurations,
+            idempotency: None,
+            initial_events,
+        };
+        let persisted = if accept_durable_root {
+            Box::pin(self.application.accept_session(creation)).await
+        } else {
+            Box::pin(self.application.create_session(creation)).await
+        }
+        .map_err(Self::map_creation_error)?;
         let deployment_id = req.metadata.get("awaken.deployment_id").cloned();
         let session_tools = project::managed_tools(&effective_tools);
         let session_multiagent =
@@ -936,6 +1011,7 @@ impl ManagedState {
             // realization acknowledges the exact frozen projection; hardcoding
             // non-Application creation to idle created a second, unsafe status.
             status: Self::wire_session_status(persisted.execution),
+            preparation: Self::wire_session_preparation(&persisted),
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids: req.vault_ids.clone(),
@@ -1028,6 +1104,7 @@ impl ManagedState {
             agent_skills,
             vault_ids,
             status,
+            preparation,
             archived_at,
         ) = match persisted {
             Some(p) => {
@@ -1070,6 +1147,7 @@ impl ManagedState {
                     .unwrap_or_default();
                 let mcp_servers = typed_mcp_servers(p.visible_mcp_servers());
                 let archived_at = p.archived_at().map(str::to_owned);
+                let preparation = Self::wire_session_preparation(&p);
                 (
                     agent_id,
                     agent_revision,
@@ -1084,6 +1162,7 @@ impl ManagedState {
                     agent_skills,
                     vault_ids,
                     Self::wire_session_status(p.execution),
+                    preparation,
                     archived_at,
                 )
             }
@@ -1101,6 +1180,10 @@ impl ManagedState {
                 project::agent_skills(&caps),
                 Vec::new(),
                 SessionStatus::Idle,
+                crate::types::SessionPreparation {
+                    status: crate::types::SessionPreparationStatus::Ready,
+                    error: None,
+                },
                 None,
             ),
         };
@@ -1177,6 +1260,7 @@ impl ManagedState {
             resources: Vec::new(),
             outcome_evaluations: Vec::new(),
             status,
+            preparation,
             stats: SessionStats::default(),
             usage: Usage::default(),
             vault_ids,

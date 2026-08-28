@@ -8,10 +8,27 @@ import {
   projectSessionRuntime,
   canSendToSession,
   sessionErrorText,
+  sessionStatusPresentation,
   spanDurationMs,
   textOf,
   traceSpans,
 } from "./session-log";
+
+describe("sessionStatusPresentation", () => {
+  it("is total, exact, and fail-closed for every aggregate status", () => {
+    // Cause/effect graph: C1 wire status is running/idle/rescheduling/
+    // terminated/unknown. Effects: E1 the UI says working/sendable/preparing/
+    // terminal respectively; E2 an unknown value never impersonates idle.
+    // Decision rules: P1 running=>running; P2 idle=>idle; P3
+    // rescheduling=>preparing; P4 terminated=>terminated; P5 other=>unknown.
+    expect(sessionStatusPresentation("running")).toBe("running");
+    expect(sessionStatusPresentation("idle")).toBe("idle");
+    expect(sessionStatusPresentation("rescheduling")).toBe("preparing");
+    expect(sessionStatusPresentation("terminated")).toBe("terminated");
+    expect(sessionStatusPresentation("future-status")).toBe("unknown");
+    expect(sessionStatusPresentation()).toBe("unknown");
+  });
+});
 
 const ev = (e: Partial<SessionEvent> & { id: string; type: string }) => e as SessionEvent;
 
@@ -103,6 +120,8 @@ describe("pendingConfirmIds", () => {
     const unknown = projectSessionRuntime([]);
     expect(canSendToSession(unknown, "running")).toBe(false);
     expect(canSendToSession(unknown, "idle")).toBe(true);
+    expect(canSendToSession(unknown, "terminated")).toBe(false);
+    expect(canSendToSession(unknown, "future-status")).toBe(false);
     const pending = projectSessionRuntime([
       ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
     ]);

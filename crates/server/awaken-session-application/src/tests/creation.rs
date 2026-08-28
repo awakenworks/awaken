@@ -749,6 +749,60 @@ async fn self_hosted_work_dispatch_is_durable_but_not_a_fabricated_readiness_ack
 }
 
 #[tokio::test]
+async fn accepted_create_is_recovered_from_the_same_preparing_root() {
+    // Cause/effect graph: C1 completion policy awaits realization/accepts the
+    // durable root; C2 physical realization is not started/then reconciled; C3
+    // the process survives/restarts. Effects: E1 accept returns Preparing before
+    // any Runtime effect; E2 the repository contains the complete same root; E3
+    // the canonical realization reconciler advances it to Idle exactly once;
+    // E4 no Job row or alternate state machine participates. Rules: Q1
+    // accept+not-started=>E1+E2+E4; Q2 accepted root+reconcile=>E3+E4.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("accepted create repository"),
+    );
+    let runtime = Arc::new(RecordingCreateRuntime::default());
+    let application = SessionApplication::new(
+        runtime.clone(),
+        Arc::new(NoopMcpRealizer),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    );
+
+    let accepted = application
+        .accept_session(creation_command("accepted-create"))
+        .await
+        .expect("Q1/E1");
+    assert_eq!(
+        accepted.execution,
+        awaken_session_contract::SessionExecutionState::Preparing,
+        "Q1/E1"
+    );
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 0, "Q1/E1");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 0, "Q1/E1");
+    assert_eq!(
+        repository.get("accepted-create").await.unwrap(),
+        accepted,
+        "Q1/E2"
+    );
+
+    let recovery = application.reconcile_session_realizations().await;
+    assert!(
+        recovery.failures.is_empty(),
+        "Q2/E3: {:?}",
+        recovery.failures
+    );
+    let ready = repository.get("accepted-create").await.unwrap();
+    assert_eq!(
+        ready.execution,
+        awaken_session_contract::SessionExecutionState::Idle,
+        "Q2/E3"
+    );
+    assert_eq!(runtime.baseline_installs.load(Ordering::SeqCst), 1, "Q2/E3");
+    assert_eq!(runtime.preparations.load(Ordering::SeqCst), 1, "Q2/E3");
+}
+
+#[tokio::test]
 async fn exact_create_replay_returns_durable_root_without_repeating_external_effects() {
     // Application create-replay cause/effect table. C1 receipt absent creates a
     // Worker-owned Session; C2 the same receipt is retried after a different

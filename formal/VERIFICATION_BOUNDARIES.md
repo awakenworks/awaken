@@ -24,6 +24,34 @@ type checking are valuable executable evidence, but are not formal proofs.
 
 ## Architecture slices implemented at this checkpoint
 
+- Workspace path projection now has one provider-independent logical root.
+  `WorkspacePathProjection.tla` proves that only path-fidelitous providers may
+  satisfy Repository admission and that read/edit/bash/Git observations cannot
+  contain the provider host path. The real Linux Namespace/Hand conformance test
+  exercises those four consumers against `/workspace`; mount namespace, kernel,
+  Git, and filesystem correctness remain environmental evidence.
+- Session create supports an explicit `Prefer: respond-async` acceptance point.
+  The returned 202 contains the complete durable Session root and stable
+  idempotent identity; the existing lifecycle supervisor resumes realization
+  from `Preparing`, and GET derives preparing/ready/failed plus the last
+  realization error from that same aggregate. `SessionStartProtocol.tla` proves
+  that acceptance cannot precede the complete root, while database durability,
+  scheduling fairness, and HTTP delivery remain outside the theorem.
+- The committed-event Runtime projection has one closed pending-tool reducer.
+  `SessionRuntimeProjection.tla` checks replacement, per-id resolution, terminal
+  clearing, and error evidence; browser tests cover the production TypeScript
+  projection and the list status mapping fails closed for unknown states.
+- Skill export and PatchBundle use one Resources-owned Artifact completion
+  receipt over exact patch, manifest, and `SHA256SUMS` File receipts. Kani proves
+  that all eight evidence axes are mandatory. SHA-256 implementation strength,
+  object-store durability, download delivery, Git apply behavior, tests, scans,
+  and human approval remain explicit effect boundaries.
+- `SessionCleanupKernel.tla` is the one four-phase cleanup algebra instantiated
+  by deletion and publication models. `SessionPublicationProtocol.tla` checks
+  mutually exclusive direct/PatchBundle modes, crash/retry monotonicity, exact
+  mode receipts, and the required SHA/base/conflict/test/scan ordering without
+  introducing another publication lifecycle.
+
 - Dream status writes now consume one closed, exhaustively checked lifecycle
   table. Terminal states are absorbing and completion/failure require Running;
   generated-content quality remains an explicitly semantic boundary.

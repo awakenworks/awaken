@@ -314,32 +314,6 @@ impl PostgresManagedSessionRepository {
     }
 }
 
-#[cfg(test)]
-mod pool_policy_tests {
-    use super::*;
-
-    #[test]
-    fn session_pool_bounds_stale_primary_connections() {
-        // Cause/effect graph: C1 a fresh/healthy connection answers a bounded
-        // ping -> E1 the Session repository reuses it; C2 an established socket
-        // still targets a removed primary -> E2 the 500ms hook hard-discards it;
-        // C3 it remains unused for 5s -> E3 the pool reaps it. Decision rules:
-        // P1=C1=>E1; P2=C2=>E2; P3=C3=>E3. The distributed k3d promotion test is
-        // the live P2 oracle; this structural case prevents an unbounded SQLx
-        // ping from being placed in front of the hook.
-        let options = pool_options();
-        assert_eq!(
-            options.get_idle_timeout(),
-            Some(IDLE_CONNECTION_TIMEOUT),
-            "P3/E3"
-        );
-        assert!(
-            !options.get_test_before_acquire(),
-            "P2/E2 only the bounded health hook may probe idle sockets"
-        );
-    }
-}
-
 #[async_trait]
 impl ManagedSessionRepository for PostgresManagedSessionRepository {
     async fn create(
@@ -892,5 +866,31 @@ impl ManagedSessionRepository for PostgresManagedSessionRepository {
             .map_err(storage)?
             .ok_or(SessionRepositoryError::NotFound)?;
         row.try_get("scope_id").map_err(storage)
+    }
+}
+
+#[cfg(test)]
+mod pool_policy_tests {
+    use super::*;
+
+    #[test]
+    fn session_pool_bounds_stale_primary_connections() {
+        // Cause/effect graph: C1 a fresh/healthy connection answers a bounded
+        // ping -> E1 the Session repository reuses it; C2 an established socket
+        // still targets a removed primary -> E2 the 500ms hook hard-discards it;
+        // C3 it remains unused for 5s -> E3 the pool reaps it. Decision rules:
+        // P1=C1=>E1; P2=C2=>E2; P3=C3=>E3. The distributed k3d promotion test is
+        // the live P2 oracle; this structural case prevents an unbounded SQLx
+        // ping from being placed in front of the hook.
+        let options = pool_options();
+        assert_eq!(
+            options.get_idle_timeout(),
+            Some(IDLE_CONNECTION_TIMEOUT),
+            "P3/E3"
+        );
+        assert!(
+            !options.get_test_before_acquire(),
+            "P2/E2 only the bounded health hook may probe idle sockets"
+        );
     }
 }
