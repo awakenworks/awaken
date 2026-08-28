@@ -444,7 +444,6 @@ graphs with zero invariant violations and zero states left on the queue:
 | WorkspacePathProjection | 300 | 70 | 8 |
 | SessionRuntimeProjection | 337 | 33 | 5 |
 | ToolPermissionPolicy | 4,097 | 256 | 5 |
-| SessionPublicationProtocol | 303 | 132 | 17 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |

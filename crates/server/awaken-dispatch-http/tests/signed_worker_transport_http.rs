@@ -917,9 +917,13 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // registry incarnation requests a future, registry-bounded cold assignment;
     // C2 identity/owner/incarnation is foreign or stale; C3 expiry exceeds the
     // registry or flags request renewal/reassignment; C4 the exact assigned
-    // lease polls/completes one aggregate-owned command. Effects: K1 returns the
+    // lease polls/completes one aggregate-owned command; C5 an already-running
+    // Worker submits the exact removed v2 completion during a rolling upgrade.
+    // Effects: K1 returns the
     // typed projection+lease without a Run/Work claim; K2/C2-C3 reject before
-    // Control; K3/C4 returns the canonical command and records its completion.
+    // Control; K3/C4 returns the canonical command and records its completion;
+    // K5/C5 normalizes at the same type boundary as cold storage and forwards
+    // the one current completion to Control.
     // Dispatch rows have already quiesced before cleanup targets are frozen.
     //
     // | Rule | identity | target authority | Effect |
@@ -927,6 +931,7 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
     // | K2 | stale/foreign | any | reject before Control |
     // | K3 | current | over-expiry or phase flags | reject before Control |
     // | K4 | current | exact assigned lease | poll + exact completion |
+    // | K5 | current | exact lease + exact old v2 | normalize + exact completion |
     let cleanup_target = awaken_session_contract::SessionRealizationTarget {
         owner: registered.snapshot.identity.worker_id.clone(),
         runtime_incarnation: registered.snapshot.identity.lease_owner(),
@@ -1026,9 +1031,52 @@ async fn signed_identity_covers_register_heartbeat_and_dispatch() {
             .lock()
             .unwrap()
             .as_slice(),
-        &[completion],
+        &[completion.clone()],
         "K4"
     );
+    let removed_fingerprint = "removed-worker-bundle";
+    let v2_fingerprint = awaken_session_contract::stable_fingerprint(&(
+        "session-terminal-cleanup-thread-receipt-v2",
+        cleanup_command.session_id.as_str(),
+        cleanup_command.thread_id.as_str(),
+        cleanup_command.effect_id.as_str(),
+        Vec::<(&str, &str)>::new(),
+        vec![removed_fingerprint],
+    ));
+    let mut legacy_completion = serde_json::to_value(&completion).unwrap();
+    legacy_completion["artifact_bundle_receipts"] = serde_json::json!([{
+        "purpose": "patch_bundle",
+        "patch_sha256": "sha256:removed",
+        "patch_artifact_id": "file-patch",
+        "manifest_artifact_id": "file-manifest",
+        "checksum_artifact_id": "file-checksum",
+        "receipt_fingerprint": removed_fingerprint,
+    }]);
+    legacy_completion["receipt_fingerprint"] = serde_json::json!(v2_fingerprint);
+    let path = "/v1/worker/session/cleanup/complete";
+    let response = upstream
+        .authorize(
+            "POST",
+            path,
+            upstream
+                .client()
+                .post(format!("{}{}", upstream.base_url(), path)),
+        )
+        .unwrap()
+        .json(&serde_json::json!({
+            "identity": &registered.snapshot.identity,
+            "lease": &realization_lease,
+            "completion": legacy_completion,
+        }))
+        .send()
+        .await
+        .expect("K5 signed legacy completion transport");
+    assert!(response.status().is_success(), "K5");
+    {
+        let recorded = session_control.cleanup_completions.lock().unwrap();
+        assert_eq!(recorded.len(), 2, "K5");
+        assert!(recorded.iter().all(|value| value == &completion), "K5");
+    }
     let mut foreign_cleanup_lease = realization_lease.clone();
     foreign_cleanup_lease.owner = "foreign-worker".into();
     assert!(
