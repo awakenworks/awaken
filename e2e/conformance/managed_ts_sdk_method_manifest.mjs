@@ -121,7 +121,7 @@ export const MANAGED_TS_METHOD_MANIFEST = [...operations, ...SDK_HELPERS]
 
 export function managedTsMethodManifestForOperations(
   selectedOperations,
-  { allowHistoricalSubset = false } = {},
+  { allowHistoricalSubset = false, responseContracts, wireResponseContracts } = {},
 ) {
   assert.ok(Array.isArray(selectedOperations), 'selected SDK operations must be an array');
   const selected = new Map();
@@ -158,6 +158,10 @@ export function managedTsMethodManifestForOperations(
         method: operation.method,
         betas: operation.betas,
         ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
+        ...(responseContracts ? { responseContract: responseContracts[operation.id] } : {}),
+        ...(wireResponseContracts
+          ? { wireResponseContract: wireResponseContracts[operation.id] }
+          : {}),
       });
     });
 }

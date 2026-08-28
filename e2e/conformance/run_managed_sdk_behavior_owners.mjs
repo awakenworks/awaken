@@ -22,9 +22,14 @@ import {
   cargoScenarioHostBundle,
 } from '../cargo_binary.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import { extractResponseContractsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-response-contracts.mjs';
+import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import { officialBetaResourceProjection } from '../../packages/managed-sdk-oracle/src/conformance/resource-projection.mjs';
 import { managedTsMethodManifestForOperations } from './managed_ts_sdk_method_manifest.mjs';
-import { assertOwnerOperationReceipts } from './managed_sdk_operation_receipts.mjs';
+import {
+  MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
+  assertOwnerOperationReceipts,
+} from './managed_sdk_operation_receipts.mjs';
 import { managedSdkOwnerProcessEnvironment } from './managed_sdk_process_environment.mjs';
 
 const E2E = resolve(import.meta.dirname, '..');
@@ -39,12 +44,25 @@ const RECEIPT_NODE_OPTIONS = [
 ]
   .filter(Boolean)
   .join(' ');
+const candidateModule = process.env.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE;
 const candidateVersion = process.env.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION;
 const configuredPackageRoot = process.env.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
 const expectedVersion = candidateVersion ?? process.env.AWAKEN_MANAGED_SDK_EXPECTED_VERSION;
 const historicalMode = process.env.AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET ?? '0';
 assert.match(historicalMode, /^(?:0|1)$/u, 'historical SDK subset mode must be 0 or 1');
 const historicalSubset = historicalMode === '1';
+if (candidateModule || candidateVersion) {
+  assert.equal(
+    candidateModule,
+    '@anthropic-ai/sdk-candidate',
+    'candidate behavior owners require the reviewed exact package alias',
+  );
+  assert.match(
+    candidateVersion ?? '',
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
+    'candidate behavior owners require one exact reviewed version',
+  );
+}
 if (candidateVersion && !configuredPackageRoot) {
   throw new Error('candidate behavior owners require ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT');
 }
@@ -75,8 +93,63 @@ assert.equal(
   'selected operation source must belong to the selected SDK manifest',
 );
 const selectedOperations = extractedOperations.operations;
+const responseContracts = extractResponseContractsFromPackageRoot(
+  sdkRoot,
+  scope,
+  selectedOperations.map(({ id }) => id),
+);
+
+// Derive operation-local negative capability evidence from every admitted SDK,
+// rather than maintaining a Files/Skills header list in the test harness. This
+// matters at the 0.121 -> 0.122 change point: a caller-supplied legacy header
+// must not make a query-only candidate request look generated-correct. Betas
+// belonging to another operation family remain orthogonal and are allowed.
+const anchorConfig = JSON.parse(readFileSync(resolve(
+  E2E,
+  '../packages/managed-sdk-oracle/config/anchors.json',
+), 'utf8'));
+const operationBetaUniverse = new Map();
+for (const root of [
+  ...anchorConfig.anchors.map(({ module }) => resolveSdkPackage(module).root),
+  sdkRoot,
+]) {
+  for (const operation of extractOperationsFromPackageRoot(root, scope).operations) {
+    const values = operationBetaUniverse.get(operation.id) ?? new Set();
+    for (const beta of operation.betas) values.add(beta);
+    operationBetaUniverse.set(operation.id, values);
+  }
+}
+// Historical SDKs execute their own exact generated request code, but the API
+// deliberately serves one canonical additive wire projection selected by the
+// beta header—not a User-Agent/version-specific response. Validate those bytes
+// strictly against the current oracle while retaining the historical contract
+// above to prove that the operation's JSON/binary/stream media class did not
+// change. This permits only fields and nullability reviewed into the canonical
+// SDK; it does not turn historical validation into an open-object check.
+let wireResponseContracts;
+if (historicalSubset) {
+  const oracle = JSON.parse(readFileSync(resolve(
+    E2E,
+    '../contracts/anthropic-managed/upstream-oracle.generated.json',
+  ), 'utf8'));
+  const canonicalRoot = resolveSdkPackage(oracle.current.module).root;
+  wireResponseContracts = extractResponseContractsFromPackageRoot(
+    canonicalRoot,
+    scope,
+    selectedOperations.map(({ id }) => id),
+  );
+}
 const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations, {
   allowHistoricalSubset: historicalSubset,
+  responseContracts,
+  wireResponseContracts,
+}).map((operation) => {
+  if (!operation.method) return operation;
+  const selectedBetas = new Set(operation.betas);
+  const forbiddenBetas = [...(operationBetaUniverse.get(operation.sdkMethod) ?? [])]
+    .filter((beta) => !selectedBetas.has(beta))
+    .sort();
+  return Object.freeze({ ...operation, forbiddenBetas: Object.freeze(forbiddenBetas) });
 });
 const skillsProjection = officialBetaResourceProjection(selectedOperations, 'skills').projection;
 const selectedOperationIDs = new Set(selectedOperations.map(({ id }) => id));
@@ -121,6 +194,7 @@ async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment
         AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
         AWAKEN_MANAGED_SDK_HAS_DREAMS: selectedOperationIDs.has('beta.dreams.create') ? '1' : '0',
+        AWAKEN_MANAGED_SDK_RESPONSE_FINGERPRINT_KEY: MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
         NODE_OPTIONS: RECEIPT_NODE_OPTIONS,
       },
       stdio: ['inherit', 'pipe', 'pipe'],

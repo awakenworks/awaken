@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import test from 'node:test';
 import {
+  MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
   assertOwnerOperationReceipts,
+  assertResponseContract,
   managedSdkReceipt,
   recordingFetch,
   receiptMatchesOperation,
@@ -18,6 +20,17 @@ const betaOperation = {
   route: '/v1/files/{}',
   transportQuery: 'beta=true',
   betas: ['files-api-2025-04-14'],
+  responseContract: {
+    kind: 'json',
+    schema: {
+      kind: 'object',
+      properties: {
+        id: { required: true, value: { kind: 'string' } },
+        downloadable: { required: false, value: { kind: 'boolean' } },
+      },
+      additional: false,
+    },
+  },
 };
 const gaOperation = {
   sdkMethod: 'files.retrieveMetadata',
@@ -25,6 +38,7 @@ const gaOperation = {
   method: 'GET',
   route: '/v1/files/{}',
   betas: [],
+  responseContract: betaOperation.responseContract,
 };
 const betaReceipt = {
   method: 'GET',
@@ -34,6 +48,7 @@ const betaReceipt = {
   sdk: true,
   sdkVersion: '0.121.0',
   status: 200,
+  responseShape: { kind: 'object', fields: { id: { kind: 'string' } } },
 };
 const sdkVersion = '0.121.0';
 
@@ -59,6 +74,18 @@ test('runtime receipts distinguish Beta and GA calls sharing one route', () => {
     betaOperation,
     sdkVersion,
   ), true, 'orthogonal capabilities compose without changing operation ownership');
+
+  const queryBetaOperation = {
+    ...betaOperation,
+    betas: [],
+    forbiddenBetas: ['files-api-2025-04-14'],
+  };
+  assert.equal(receiptMatchesOperation(
+    { ...betaReceipt, betas: [] }, queryBetaOperation, sdkVersion,
+  ), true, 'post-GA generated request owns the query-only transport');
+  assert.equal(receiptMatchesOperation(
+    betaReceipt, queryBetaOperation, sdkVersion,
+  ), false, 'a caller-injected legacy capability cannot mask generated transport drift');
 });
 
 test('only an official SDK request can satisfy executable ownership', () => {
@@ -126,6 +153,258 @@ test('owner qualification fails closed for every missing runtime edge', () => {
   );
 });
 
+test('official response contract rejects missing, extra, primitive, and nested drift', () => {
+  // Causal graph: C1 the exact SDK declaration owns required/optional fields,
+  // nesting, unions and closed object boundaries; C2 the runtime receipt owns
+  // a structural shape plus non-reversible literal fingerprints. Effects:
+  // matching values pass while a
+  // missing required field, undeclared extension, wrong primitive or nested
+  // mutation fails. This is the executable bridge from generated SDK types to
+  // every real 2xx owner and cannot leak a credential value into evidence.
+  const contract = {
+    kind: 'json',
+    schema: {
+      kind: 'object',
+      properties: {
+        id: { required: true, value: { kind: 'string' } },
+        detail: {
+          required: true,
+          value: {
+            kind: 'object',
+            properties: {
+              enabled: { required: true, value: { kind: 'boolean' } },
+              note: {
+                required: false,
+                value: { kind: 'union', variants: [{ kind: 'string' }, { kind: 'null' }] },
+              },
+            },
+            additional: false,
+          },
+        },
+      },
+      additional: false,
+    },
+  };
+  const valid = {
+    kind: 'object',
+    fields: {
+      detail: { kind: 'object', fields: { enabled: { kind: 'boolean' } } },
+      id: { kind: 'string' },
+    },
+  };
+  assert.doesNotThrow(() => assertResponseContract(valid, contract, 'valid'));
+  for (const [label, mutate, message] of [
+    ['missing', (shape) => { delete shape.fields.id; }, /required field is absent/u],
+    ['extra', (shape) => { shape.fields.extension = { kind: 'string' }; }, /not in the official type/u],
+    ['primitive', (shape) => { shape.fields.id = { kind: 'number' }; }, /expected string/u],
+    ['nested', (shape) => { shape.fields.detail.fields.enabled = { kind: 'string' }; }, /expected boolean/u],
+  ]) {
+    const shape = structuredClone(valid);
+    mutate(shape);
+    assert.throws(() => assertResponseContract(shape, contract, label), message, label);
+  }
+});
+
+test('official literal contracts reject a wrong discriminator without retaining its value', async () => {
+  // Causal graph: C1 the exact SDK declaration supplies a finite literal; C2
+  // the completed JSON response supplies the observed value; C3 the receipt
+  // crosses a child-process boundary. E1 equal values pass, E2 a same-primitive
+  // but different value fails, and E3 neither value appears in serialized
+  // evidence. This closes the gap where `"session"` was formerly only checked
+  // as `string` while preserving credential and user-data non-interference.
+  const request = new Request('https://managed.invalid/v1/fixture', {
+    headers: { 'x-stainless-lang': 'js', 'x-stainless-package-version': sdkVersion },
+  });
+  const receipt = await managedSdkReceipt(request, undefined, new Response(
+    JSON.stringify({ type: 'session' }),
+    { headers: { 'content-type': 'application/json' } },
+  ));
+  const contract = (value) => ({
+    kind: 'json',
+    schema: {
+      kind: 'object',
+      properties: {
+        type: {
+          required: true,
+          value: { kind: 'literal', primitive: 'string', value },
+        },
+      },
+      additional: false,
+    },
+  });
+  assert.doesNotThrow(() => assertResponseContract(receipt.responseShape, contract('session'), 'equal'));
+  assert.throws(
+    () => assertResponseContract(receipt.responseShape, contract('dream'), 'different'),
+    /expected literal "dream"/u,
+  );
+  const serialized = JSON.stringify(receipt);
+  assert.ok(!serialized.includes('session'));
+  assert.ok(!serialized.includes('dream'));
+});
+
+test('page ownership requires at least one observed official item shape', () => {
+  // Causal graph: an empty page proves only the pagination envelope; a non-empty
+  // page additionally proves the SDK element DTO. Evidence is aggregated across
+  // repeated calls so legitimate empty filters remain allowed once one real item
+  // has crossed the same operation. This closes the vacuous-array loophole
+  // without requiring every successful list response to be non-empty.
+  const pageOperation = {
+    ...gaOperation,
+    sdkMethod: 'files.list',
+    route: '/v1/files',
+    responseContract: {
+      kind: 'json',
+      schema: {
+        kind: 'object',
+        properties: {
+          data: {
+            required: true,
+            value: {
+              kind: 'array',
+              item: {
+                kind: 'object',
+                properties: { id: { required: true, value: { kind: 'string' } } },
+                additional: false,
+              },
+            },
+          },
+        },
+        additional: false,
+      },
+      evidence: { nonEmptyArrays: [['data']] },
+    },
+  };
+  const empty = {
+    ...betaReceipt,
+    path: '/v1/files',
+    beta: null,
+    betas: [],
+    responseShape: { kind: 'object', fields: { data: { kind: 'array', items: [] } } },
+  };
+  assert.throws(
+    () => assertOwnerOperationReceipts([pageOperation], 'files.mjs', [empty], sdkVersion),
+    /item shape at \$\.data was never observed/u,
+  );
+  const populated = {
+    ...empty,
+    responseShape: {
+      kind: 'object',
+      fields: {
+        data: {
+          kind: 'array',
+          items: [{ kind: 'object', fields: { id: { kind: 'string' } } }],
+        },
+      },
+    },
+  };
+  assert.equal(
+    assertOwnerOperationReceipts([pageOperation], 'files.mjs', [empty, populated], sdkVersion),
+    1,
+  );
+});
+
+test('historical execution is bounded by the canonical additive wire contract', () => {
+  // Version-axis graph: C1 the old package owns request generation and its media
+  // class; C2 the beta header selects one current wire projection for every
+  // client. E1 a reviewed canonical addition is accepted, E2 an arbitrary
+  // addition is still rejected, and E3 a JSON/binary/stream change fails before
+  // shape validation. This preserves the no-User-Agent-versioning invariant.
+  const operation = {
+    ...gaOperation,
+    responseContract: {
+      kind: 'json',
+      schema: {
+        kind: 'object',
+        properties: { id: { required: true, value: { kind: 'string' } } },
+        additional: false,
+      },
+    },
+    wireResponseContract: {
+      kind: 'json',
+      schema: {
+        kind: 'object',
+        properties: {
+          id: { required: true, value: { kind: 'string' } },
+          reviewed: { required: true, value: { kind: 'boolean' } },
+        },
+        additional: false,
+      },
+    },
+  };
+  const receipt = {
+    ...betaReceipt,
+    beta: null,
+    betas: [],
+    responseShape: {
+      kind: 'object',
+      fields: { id: { kind: 'string' }, reviewed: { kind: 'boolean' } },
+    },
+  };
+  assert.equal(
+    assertOwnerOperationReceipts([operation], 'files.mjs', [receipt], sdkVersion),
+    1,
+    'E1',
+  );
+  assert.throws(
+    () => assertOwnerOperationReceipts(
+      [operation],
+      'files.mjs',
+      [{
+        ...receipt,
+        responseShape: {
+          ...receipt.responseShape,
+          fields: { ...receipt.responseShape.fields, arbitrary: { kind: 'string' } },
+        },
+      }],
+      sdkVersion,
+    ),
+    /field is not in the official type/u,
+    'E2',
+  );
+  assert.throws(
+    () => assertOwnerOperationReceipts(
+      [{ ...operation, wireResponseContract: { kind: 'binary' } }],
+      'files.mjs',
+      [receipt],
+      sdkVersion,
+    ),
+    /media disagree/u,
+    'E3',
+  );
+});
+
+test('response shape partitions JSON arrays, binary, stream, and empty bodies without values', async () => {
+  // Decision table: JSON records recursive unique item shapes; octet streams
+  // remain binary; SSE is never consumed by instrumentation; 204 is empty.
+  // The literal secret below is deliberately absent from every receipt.
+  const request = new Request('https://managed.invalid/v1/fixture', {
+    headers: { 'x-stainless-lang': 'js', 'x-stainless-package-version': sdkVersion },
+  });
+  const cases = [
+    new Response(JSON.stringify([{ token: 'must-not-leak' }, { token: 'another-secret' }]), {
+      headers: { 'content-type': 'application/json; charset=utf-8' },
+    }),
+    new Response('bytes', { headers: { 'content-type': 'application/octet-stream' } }),
+    new Response('data: never-read\n\n', { headers: { 'content-type': 'text/event-stream' } }),
+    new Response(null, { status: 204 }),
+  ];
+  const expectedKinds = ['array', 'binary', 'stream', 'empty'];
+  for (const [index, response] of cases.entries()) {
+    const receipt = await managedSdkReceipt(request, undefined, response);
+    assert.equal(receipt.responseShape.kind, expectedKinds[index]);
+    assert.ok(!JSON.stringify(receipt).includes('must-not-leak'));
+    assert.ok(!JSON.stringify(receipt).includes('another-secret'));
+    assert.ok(!JSON.stringify(receipt).includes('never-read'));
+    if (index === 0) {
+      assert.equal(receipt.responseShape.items.length, 2, 'distinct literal observations are retained');
+      for (const item of receipt.responseShape.items) {
+        assert.equal(item.fields.token.kind, 'string');
+        assert.match(item.fields.token.fingerprint, /^[0-9a-f]{64}$/u);
+      }
+    }
+  }
+});
+
 test('path placeholders match one non-empty segment and no broader route', () => {
   // Boundary partition: one encoded ID is valid; missing, extra and nested
   // path segments are invalid. This prevents a nearby endpoint from producing
@@ -136,6 +415,51 @@ test('path placeholders match one non-empty segment and no broader route', () =>
       { ...betaReceipt, path }, betaOperation, sdkVersion,
     ), false, path);
   }
+});
+
+test('static subresources outrank placeholder identities during receipt attribution', () => {
+  // Causal graph: `/work/stats` satisfies the raw `/work/{work_id}` grammar,
+  // but the SDK call targeted the longer static route. The most-specific route
+  // must own the receipt; otherwise one stats response can falsely satisfy
+  // retrieve and then be validated against the wrong DTO.
+  const responseContract = {
+    kind: 'json',
+    schema: { kind: 'object', properties: {}, additional: { kind: 'any' } },
+  };
+  const retrieve = {
+    sdkMethod: 'beta.environments.work.retrieve',
+    owner: 'work.mjs',
+    method: 'GET',
+    route: '/v1/environments/{}/work/{}',
+    betas: ['managed-agents-2026-04-01'],
+    responseContract,
+  };
+  const stats = {
+    ...retrieve,
+    sdkMethod: 'beta.environments.work.stats',
+    route: '/v1/environments/{}/work/stats',
+  };
+  const receipt = {
+    ...betaReceipt,
+    path: '/v1/environments/env_1/work/stats',
+    beta: null,
+    betas: ['managed-agents-2026-04-01'],
+    responseShape: { kind: 'object', fields: {} },
+  };
+  assert.throws(
+    () => assertOwnerOperationReceipts([retrieve, stats], 'work.mjs', [receipt], sdkVersion),
+    /beta\.environments\.work\.retrieve/u,
+    'the missing retrieve remains visible',
+  );
+  assert.equal(
+    assertOwnerOperationReceipts(
+      [retrieve, stats],
+      'work.mjs',
+      [receipt, { ...receipt, path: '/v1/environments/env_1/work/work_1' }],
+      sdkVersion,
+    ),
+    2,
+  );
 });
 
 test('transport hook records only non-secret completed exchange coordinates', () => {
@@ -154,7 +478,11 @@ test('transport hook records only non-secret completed exchange coordinates', ()
         + " 'x-api-key': 'must-not-leak', 'x-stainless-lang': 'js'," // awaken-allow: secret
         + " 'anthropic-beta': 'one,two' } })",
     ], {
-      env: { ...process.env, AWAKEN_MANAGED_SDK_RECEIPT_FILE: receiptFile },
+      env: {
+        ...process.env,
+        AWAKEN_MANAGED_SDK_RECEIPT_FILE: receiptFile,
+        AWAKEN_MANAGED_SDK_RESPONSE_FINGERPRINT_KEY: MANAGED_SDK_RESPONSE_FINGERPRINT_KEY,
+      },
     });
     const serialized = readFileSync(receiptFile, 'utf8');
     assert.ok(!serialized.includes('must-not-leak'), 'credential non-interference');
@@ -166,6 +494,7 @@ test('transport hook records only non-secret completed exchange coordinates', ()
       sdk: true,
       sdkVersion: null,
       status: 200,
+      responseShape: { kind: 'object', fields: {} },
     });
   } finally {
     rmSync(directory, { recursive: true, force: true });
@@ -178,7 +507,10 @@ test('in-process and child-process receipt collection share one encoder', async 
   // same request/response coordinates or one proof path could accept behavior
   // rejected by the other. The wrapper also must return the original Response
   // object so instrumentation cannot change SDK decoding semantics.
-  const response = new Response('{}', { status: 200 });
+  const response = new Response('{}', {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
   const receipts = [];
   const input = new Request('https://managed.invalid/v1/files/file_1?beta=true', {
     headers: {
@@ -190,16 +522,21 @@ test('in-process and child-process receipt collection share one encoder', async 
   });
   const fetch = recordingFetch(async () => response, (receipt) => receipts.push(receipt));
   assert.equal(await fetch(input), response, 'instrumentation preserves response identity');
-  assert.deepEqual(receipts, [managedSdkReceipt(input, undefined, response)]);
-  assert.deepEqual(receipts[0], { ...betaReceipt, status: 200 });
+  assert.deepEqual(receipts, [await managedSdkReceipt(input, undefined, response)]);
+  assert.deepEqual(receipts[0], {
+    ...betaReceipt,
+    status: 200,
+    responseShape: { kind: 'object', fields: {} },
+  });
   assert.ok(!JSON.stringify(receipts).includes('must-not-leak'), 'credential non-interference');
 });
 
 test('finite receipt model accepts exactly the conjunction of all ownership coordinates', () => {
-  // Finite model check over the seven independent predicates in the ownership
-  // invariant. Exhausting 2^7 combinations proves no single missing coordinate
-  // or interaction of missing coordinates can satisfy the matcher accidentally.
+  // Finite model check over the eight independent predicates in the ownership
+  // invariant. Exhausting 2^8 combinations proves no single missing coordinate,
+  // stale operation-local capability, or interaction can satisfy the matcher.
   const dimensions = [true, false];
+  const operation = { ...betaOperation, forbiddenBetas: ['skills-2025-10-02'] };
   let cases = 0;
   for (const sdk of dimensions) {
     for (const healthy of dimensions) {
@@ -208,22 +545,28 @@ test('finite receipt model accepts exactly the conjunction of all ownership coor
           for (const selector of dimensions) {
             for (const capability of dimensions) {
               for (const version of dimensions) {
-                const receipt = {
-                  ...betaReceipt,
-                  sdk,
-                  sdkVersion: version ? sdkVersion : '0.122.0',
-                  status: healthy ? 200 : 500,
-                  method: method ? 'GET' : 'POST',
-                  path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
-                  beta: selector ? 'true' : null,
-                  betas: capability ? ['files-api-2025-04-14'] : [],
-                };
-                assert.equal(
-                  receiptMatchesOperation(receipt, betaOperation, sdkVersion),
-                  sdk && healthy && method && path && selector && capability && version,
-                  JSON.stringify(receipt),
-                );
-                cases += 1;
+                for (const noForbiddenCapability of dimensions) {
+                  const receipt = {
+                    ...betaReceipt,
+                    sdk,
+                    sdkVersion: version ? sdkVersion : '0.122.0',
+                    status: healthy ? 200 : 500,
+                    method: method ? 'GET' : 'POST',
+                    path: path ? '/v1/files/file_1' : '/v1/files/file_1/extra',
+                    beta: selector ? 'true' : null,
+                    betas: [
+                      ...(capability ? ['files-api-2025-04-14'] : []),
+                      ...(noForbiddenCapability ? [] : ['skills-2025-10-02']),
+                    ],
+                  };
+                  assert.equal(
+                    receiptMatchesOperation(receipt, operation, sdkVersion),
+                    sdk && healthy && method && path && selector && capability
+                      && version && noForbiddenCapability,
+                    JSON.stringify(receipt),
+                  );
+                  cases += 1;
+                }
               }
             }
           }
@@ -231,5 +574,5 @@ test('finite receipt model accepts exactly the conjunction of all ownership coor
       }
     }
   }
-  assert.equal(cases, 128);
+  assert.equal(cases, 256);
 });

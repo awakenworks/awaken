@@ -61,13 +61,24 @@ evidence from drifting from the external expectation:
   real-process owner and records successful 2xx official-SDK HTTP exchanges.
   It projects the same owner graph over all 99/114/127 HTTP operations exposed
   by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
-  four helpers for every admitted candidate. A package-selection hook resolves unchanged
-  canonical imports inside the selected exact package root; each receipt must
-  carry that package's exact `x-stainless-package-version`, method, route,
-  Beta/GA selector, and capabilities. Files/Skills wire coordinates are
+  four helpers for every admitted candidate. A package-selection hook resolves
+  unchanged canonical imports inside the selected exact package root; each
+  receipt must carry that package's exact `x-stainless-package-version`, method,
+  route, Beta/GA selector, and capabilities. Operation-local capabilities
+  removed by a newer SDK are derived from the other admitted anchors and
+  explicitly forbidden, so a caller-supplied legacy header cannot make a new
+  generated request appear compatible. Files/Skills wire coordinates are
   projected from that package's generated operations, so the 0.122 post-GA
   DTOs are exercised without copying the 0.121 tests or accepting a union
-  shape. A method present only in source text cannot satisfy qualification.
+  shape. Every successful JSON response is also checked against a recursive
+  closed contract extracted from that exact package's adjacent `.d.ts`:
+  required fields, optionality, nesting, nullability, arrays, unions, and finite
+  literal discriminators are enforced. Literal observations cross the process
+  boundary only as run-scoped keyed fingerprints, so evidence cannot retain a
+  credential, metadata value, or user payload. Page methods must additionally
+  observe a non-empty item at least once. A method present only in source text,
+  an empty page, or a same-primitive wrong discriminator cannot satisfy
+  qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation

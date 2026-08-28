@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import { extractResponseContractsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-response-contracts.mjs';
 import { managedExportFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
@@ -93,6 +94,11 @@ const hasResolveSkillVersion = managedExports.exports.some(
 );
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
+const responseContracts = extractResponseContractsFromPackageRoot(
+  packageRoot,
+  scope,
+  operations.map(({ id }) => id),
+);
 const candidateResourceOperations = operations
   .filter(({ id }) => id.startsWith('beta.files.') || id.startsWith('beta.skills.'))
   .map((operation) => Object.freeze({
@@ -102,6 +108,7 @@ const candidateResourceOperations = operations
     route: operation.path,
     transportQuery: operation.transport_query,
     betas: operation.betas,
+    responseContract: responseContracts[operation.id],
   }));
 const candidateReceipts = [];
 const candidateRecordingFetch = recordingFetch(
@@ -178,7 +185,7 @@ async function exerciseSdkCoreTransport() {
       assertCandidateFilesTransport(input, init);
       return new Response(JSON.stringify(betaFiles.projection === 'beta'
         ? { data: [], has_more: false, first_id: null, last_id: null }
-        : { data: [], has_more: false, next_page: null }), {
+        : { data: [], next_page: null }), {
         headers: { 'content-type': 'application/json' },
       });
     },
@@ -372,7 +379,7 @@ async function exerciseBetaFiles(client) {
     assert.equal(Object.hasOwn(file, 'expires_at'), false, 'F1/E6');
   } else {
     assert.equal(typeof file.expires_at, 'string', 'F2/E7');
-    assert.equal(Object.hasOwn(file, 'scope'), false, 'F2/E7');
+    assert.equal(file.scope, null, 'F2/E7 Beta namespace retains nullable scope');
   }
   assert.equal((await client.beta.files.retrieveMetadata(file.id)).id, file.id, 'F1/F2 retrieve');
   const listed = await drain(client.beta.files.list({ limit: 1 }));
