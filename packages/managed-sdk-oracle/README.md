@@ -1,8 +1,9 @@
 # Managed SDK oracle
 
 This package turns selected official `@anthropic-ai/sdk` releases into a
-deterministic compatibility oracle. It is development and CI tooling; runtime
-code does not depend on an SDK package.
+deterministic compatibility oracle and the single executable Managed behavior
+qualification runner. It is development and CI tooling; runtime code does not
+depend on an SDK package.
 
 The dependency direction is singular: the selected **current official SDK** is
 the external compatibility expectation; Awaken's closed Rust request/response
@@ -17,7 +18,9 @@ else is derived evidence:
 - generated coverage/catalog/type gates prove that callers and behavior tests
   stay on the same path;
 - Cloud qualification executes the same named SDK anchors against a deployed
-  product. It is runtime/deployment evidence, never another contract authority.
+  product from Cloud's exact pinned Open checkout. It is runtime/deployment
+  evidence, never another contract authority; Cloud does not copy SDK versions,
+  clients, or scenarios.
 
 Two generated verification artifacts prevent the implementation and its
 evidence from drifting from the external expectation:
@@ -28,11 +31,28 @@ evidence from drifting from the external expectation:
 - `fixtures/generated/*.ts` compile every discovered operation against every
   pinned SDK anchor. `fixtures/user-profiles-change-point.ts` additionally
   checks the intentional response-type transition at the User Profiles anchor.
+- `test/sdk-wire-lifecycle.test.ts` invokes every current scoped SDK operation
+  through a recording transport. This includes the Managed Beta namespaces and
+  the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
+  arguments while runtime assertions bind the exact method, normalized path,
+  transport selector, and capability set.
+- `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
+  product supplies only endpoint credentials and fixture identities through
+  environment variables. It executes positive Beta/GA lifecycles, all-operation
+  negative/error probes, pagination, concurrent idempotency, retry identity,
+  SSE full-replay/deduplication, and an optional official-service differential.
+- `src/conformance/recovery.mjs` splits a Session/File/idempotency scenario at a
+  process-replacement boundary. Product orchestration runs `prepare`, replaces
+  every serving process, then runs `verify` and `cleanup`; an in-memory cache
+  cannot satisfy this gate.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
-`config/scope.json` declares the Managed namespaces plus the small, reviewed set
-of documented routes that are intentionally absent from the selected SDK
-anchors. Operation inventories and type fingerprints must never be copied into
+`config/scope.json` declares the Managed Beta namespaces, the GA Files/Models/
+Skills namespaces, and the small reviewed set of documented routes that are
+intentionally absent from the selected SDK anchors. Beta and GA are separate
+SDK transports over selected shared aggregates: the oracle retains the SDK's
+`beta=true` selector so testing one projection cannot accidentally certify the
+other. Operation inventories and type fingerprints must never be copied into
 another hand-maintained manifest.
 
 The generated current wire contract also owns the browser Session event catalog
@@ -54,8 +74,8 @@ feeds the exact Session-response gate. The standalone E2E package's
    as formatting noise.
 5. Run `pnpm --filter @awaken/managed-sdk-oracle test` and
    `pnpm --filter @awaken/managed-sdk-oracle check`.
-6. Update the Cloud qualification alias with the same stable role and exact
-   version, then run its matrix suite against the product.
+6. Run this exact revision's hosted conformance command against every product
+   deployment; products must not maintain their own SDK version aliases.
 
 The `check` command regenerates in memory and compares byte-for-byte. CI and the
 contract generation script both call it, while `test` type-checks all compile

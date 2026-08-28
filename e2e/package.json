@@ -99,7 +99,7 @@
     "@a2a-js/sdk": "^0.3.13",
     "@ag-ui/client": "^0.0.57",
     "@ai-sdk/react": "^4.0.54",
-    "@anthropic-ai/sdk": "0.121.0",
+    "@anthropic-ai/sdk": "0.122.0",
     "@anthropic-ai/sdk-0-105": "npm:@anthropic-ai/sdk@0.105.0",
     "@anthropic-ai/sdk-0-117": "npm:@anthropic-ai/sdk@0.117.1",
     "@modelcontextprotocol/sdk": "^1.29.0",
