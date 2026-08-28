@@ -144,6 +144,24 @@ evidence from drifting from the external expectation:
   async drift cannot hide behind a duplicate inventory. The existing shared
   behavior owners continue to own service-domain semantics, so this client
   sweep does not copy their resource state machines.
+- `managed_python_sdk_response_contract_e2e.py` closes the response half of
+  that all-operation chain without introducing a second fixture authority. It
+  projects every Python operation onto the reviewed TypeScript 0.122
+  declaration, then automatically generates one-at-a-time MC/DC witnesses for
+  every nested union branch, optional-field omission, closed field, finite
+  literal, array item, map value, nullable response, page, binary body, and SSE
+  wrapper. All 3,827 witnesses traverse both the real synchronous and
+  asynchronous Python 1.2 generated clients, `httpx2` transport, media
+  dispatcher, and response converter. The return annotation's Pydantic JSON
+  Schema is independently normalized and compared property-for-property, so
+  permissive `BaseModel` extra-field retention cannot impersonate a declared
+  DTO. The sole reviewed upstream type variance is fail-closed: six Work
+  operations share `BetaSelfHostedWork.data`, whose Python 1.2 annotation omits
+  the official `healthcheck` union branch. The original two-branch wire
+  witnesses still decode in both client modes, while the live Python poller
+  helper separately drains both `healthcheck` and `session`; if Anthropic fixes
+  the annotation or another operation inherits the variance, the exact ledger
+  fails until it is deliberately reviewed.
 - `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
   change point in its own SHA-256-qualified wheel root over one exact dependency
   closure. It re-extracts and compares the installed source/operation/helper/

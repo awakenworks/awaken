@@ -241,4 +241,25 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
     scripts['test:sdk-python-runtime'],
     'node conformance/managed_python_sdk_runtime_e2e.mjs',
   );
+  const pythonRunner = readFileSync(
+    new URL('./managed_python_sdk_runtime_e2e.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(
+    pythonRunner,
+    /await exercisePythonResponseContracts\(python, temporary\);[\s\S]*await withScenarioServer/u,
+    'the all-operation Python response proof precedes selected real-process lifecycles',
+  );
+  const responseDriver = readFileSync(
+    new URL('./managed_python_sdk_response_contract_e2e.py', import.meta.url),
+    'utf8',
+  );
+  for (const edge of [
+    'PYTHON_DECLARATION_VARIANCES',
+    'TypeAdapter(response_type).json_schema()',
+    'exercise_sync(operations, contracts)',
+    'exercise_async(operations, contracts)',
+  ]) {
+    assert.ok(responseDriver.includes(edge), `Python response proof is missing ${edge}`);
+  }
 });
