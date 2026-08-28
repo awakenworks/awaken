@@ -16,6 +16,10 @@ import { officialBetaResourceProjection } from './resource-projection.mjs';
 import { exerciseDeployedOperationSweep } from './deployed-sweep.mjs';
 import { exerciseUserProfileChangePoint } from './user-profile-change-point.mjs';
 import {
+  compareManagedSessionResponseKeyShapes,
+  managedSessionResponseKeyShape,
+} from './positive-shape.mjs';
+import {
   awakenTargetFromEnvironment,
   officialReferenceFromEnvironment,
   parseHostedArguments,
@@ -243,6 +247,50 @@ async function exerciseConcurrencyPaginationAndReconnect(CurrentClient) {
     if (canonical) await client.beta.sessions.delete(canonical.id, { betas: BETAS });
     if (independent) await client.beta.sessions.delete(independent.id, { betas: BETAS });
   }
+}
+
+async function exercisePositiveSessionShapeDifferential(CurrentClient, version) {
+  const observe = async (observedTarget, label) => {
+    const client = new CurrentClient({
+      apiKey: observedTarget.apiKey,
+      baseURL: observedTarget.baseURL,
+    });
+    let created;
+    try {
+      created = await client.beta.sessions.create({
+        agent: observedTarget.agent,
+        environment_id: observedTarget.environmentId,
+        title: `Positive shape ${version}`,
+        metadata: { compatibility_shape: version },
+        betas: BETAS,
+      });
+      const retrieved = await client.beta.sessions.retrieve(created.id, { betas: BETAS });
+      const updated = await client.beta.sessions.update(created.id, {
+        title: `Positive shape ${version} updated`,
+        betas: BETAS,
+      });
+      const evidence = {
+        create: managedSessionResponseKeyShape(created),
+        retrieve: managedSessionResponseKeyShape(retrieved),
+        update: managedSessionResponseKeyShape(updated),
+      };
+      console.log(`  ok: ${label} produced positive Session shape evidence for SDK ${version}`);
+      return evidence;
+    } finally {
+      if (created) await client.beta.sessions.delete(created.id, { betas: BETAS });
+    }
+  };
+
+  // Positive differential graph: the exact admitted SDK invokes the same
+  // create/retrieve/update lifecycle against Awaken and Anthropic-owned
+  // fixtures. Dynamic values are intentionally ignored; every top-level
+  // Session field and stable nested Agent/Stats/Usage field must be identical.
+  // The independent all-operation sweep continues to own negative envelopes.
+  compareManagedSessionResponseKeyShapes(
+    await observe(awaken, 'Awaken'),
+    await observe(reference, 'official reference'),
+    `SDK ${version}`,
+  );
 }
 
 async function exercise(version, Client, toFile) {
@@ -639,6 +687,14 @@ for (const releaseClient of releaseClients) {
   });
 }
 await exerciseIngressHeaderFidelity();
+if (reference && !hostedArguments.referenceLifecycles) {
+  for (const releaseClient of releaseClients) {
+    await exercisePositiveSessionShapeDifferential(
+      releaseClient.Client,
+      releaseClient.version,
+    );
+  }
+}
 for (const client of clients) await exercise(client.version, client.Client, client.toFile);
 for (const releaseClient of releaseClients) {
   await exerciseGaAndBetaProjection(
