@@ -4,13 +4,14 @@
 // snapshot and rejects missing, duplicate, or unevidenced rows.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MANAGED_TS_METHOD_MANIFEST } from './managed_ts_sdk_method_manifest.mjs';
 
 const E2E = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const report = readFileSync(resolve(E2E, 'MANAGED_AGENTS_DOCS_COVERAGE.md'), 'utf8');
+const reportPath = resolve(E2E, 'MANAGED_AGENTS_DOCS_COVERAGE.md');
+let report = readFileSync(reportPath, 'utf8');
 
 const officialPages = [
   'agent-setup',
@@ -78,8 +79,18 @@ const expectedMethodSection = [
     `| \`${entry.sdkMethod}\` | \`${entry.route}\` | ✅ covered | ${methodEvidence(entry)} |`),
   methodSectionEnd,
 ].join('\n');
-const methodStart = report.indexOf(methodSectionStart);
-const methodEnd = report.indexOf(methodSectionEnd);
+let methodStart = report.indexOf(methodSectionStart);
+let methodEnd = report.indexOf(methodSectionEnd);
+
+if (process.env.AWAKEN_UPDATE_MANAGED_DOCS === '1') {
+  assert.ok(methodStart >= 0 && methodEnd > methodStart, 'DOC5: method coverage markers exist once');
+  report = report.slice(0, methodStart)
+    + expectedMethodSection
+    + report.slice(methodEnd + methodSectionEnd.length);
+  writeFileSync(reportPath, report, 'utf8');
+  methodStart = report.indexOf(methodSectionStart);
+  methodEnd = report.indexOf(methodSectionEnd);
+}
 
 // Method-report cause/effect graph: C1=the installed SDK method set maps exactly
 // once to MANAGED_TS_METHOD_MANIFEST (owned by the adjacent manifest test);
