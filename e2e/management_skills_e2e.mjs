@@ -23,6 +23,9 @@ const SKILLS_BETA = 'skills-2025-10-02';
 const SKILLS_PROJECTION = process.env.AWAKEN_MANAGED_SDK_SKILLS_PROJECTION ?? 'beta';
 assert.match(SKILLS_PROJECTION, /^(?:beta|ga)$/u, 'invalid selected SDK Skills projection');
 const legacyBetaSkills = SKILLS_PROJECTION === 'beta';
+const gaSkillsMode = process.env.AWAKEN_MANAGED_SDK_HAS_GA_SKILLS ?? '1';
+assert.match(gaSkillsMode, /^(?:0|1)$/u, 'GA Skills capability mode must be 0 or 1');
+const HAS_GA_SKILLS = gaSkillsMode === '1';
 const SKILL_MD_V1 = '---\nname: greeter\ndescription: says hi\n---\nSay hi to the user.';
 const SKILL_MD_V2 = '---\nname: greeter\ndescription: says hi (v2)\n---\nSay a warm hi.';
 const GA_SKILL_MD_V1 = '---\nname: ga-greeter\ndescription: says hi through GA\n---\nSay hi.';
@@ -260,39 +263,48 @@ async function main() {
       // download method. Decision rules: R4 C4+C5 -> create/retrieve/list;
       // R5 C4+C5+C6 -> version create/retrieve/list/delete + E5;
       // R6 C4+E5 -> Skill delete + E6.
-      const gaSkill = await client.skills.create({
-        display_name: 'GA Greeter',
-        files: [await toFile(Buffer.from(GA_SKILL_MD_V1), 'ga-greeter/SKILL.md')],
-      });
-      assert.equal(gaSkill.type, 'skill', 'R4/E4');
-      assert.equal(gaSkill.display_name, 'GA Greeter');
-      assert.equal(gaSkill.source.type, 'custom');
-      assert.equal((await client.skills.retrieve(gaSkill.id)).id, gaSkill.id, 'R4/E4');
-      assert.ok(
-        (await drain(client.skills.list({ source: 'custom' }))).some((item) => item.id === gaSkill.id),
-        'R4/E4',
-      );
+      if (HAS_GA_SKILLS) {
+        const gaSkill = await client.skills.create({
+          display_name: 'GA Greeter',
+          files: [await toFile(Buffer.from(GA_SKILL_MD_V1), 'ga-greeter/SKILL.md')],
+        });
+        assert.equal(gaSkill.type, 'skill', 'R4/E4');
+        assert.equal(gaSkill.display_name, 'GA Greeter');
+        assert.equal(gaSkill.source.type, 'custom');
+        assert.equal((await client.skills.retrieve(gaSkill.id)).id, gaSkill.id, 'R4/E4');
+        assert.ok(
+          (await drain(client.skills.list({ source: 'custom' })))
+            .some((item) => item.id === gaSkill.id),
+          'R4/E4',
+        );
 
-      const gaV2 = await client.skills.versions.create(gaSkill.id, {
-        files: [await toFile(Buffer.from(GA_SKILL_MD_V2), 'ga-greeter/SKILL.md')],
-      });
-      assert.equal(gaV2.type, 'skill_version', 'R5/E4');
-      assert.equal(gaV2.skill_id, gaSkill.id);
-      assert.equal(
-        (await client.skills.versions.retrieve(gaV2.id, { skill_id: gaSkill.id })).id,
-        gaV2.id,
-        'R5/E4',
-      );
-      const gaVersions = await drain(client.skills.versions.list(gaSkill.id));
-      assert.deepEqual(gaVersions.map((version) => version.id), [gaSkill.latest_version_id, gaV2.id]);
-      assert.equal(
-        (await client.skills.versions.delete(gaSkill.latest_version_id, { skill_id: gaSkill.id })).type,
-        'skill_version_deleted',
-        'R5/E5',
-      );
-      assert.equal((await client.skills.delete(gaSkill.id)).type, 'skill_deleted', 'R6/E6');
-      await expectStatus(() => client.skills.retrieve(gaSkill.id), 404);
-      pass('GA Skills and Versions methods share one durable SkillStore with Beta');
+        const gaV2 = await client.skills.versions.create(gaSkill.id, {
+          files: [await toFile(Buffer.from(GA_SKILL_MD_V2), 'ga-greeter/SKILL.md')],
+        });
+        assert.equal(gaV2.type, 'skill_version', 'R5/E4');
+        assert.equal(gaV2.skill_id, gaSkill.id);
+        assert.equal(
+          (await client.skills.versions.retrieve(gaV2.id, { skill_id: gaSkill.id })).id,
+          gaV2.id,
+          'R5/E4',
+        );
+        const gaVersions = await drain(client.skills.versions.list(gaSkill.id));
+        assert.deepEqual(
+          gaVersions.map((version) => version.id),
+          [gaSkill.latest_version_id, gaV2.id],
+        );
+        assert.equal(
+          (await client.skills.versions.delete(
+            gaSkill.latest_version_id,
+            { skill_id: gaSkill.id },
+          )).type,
+          'skill_version_deleted',
+          'R5/E5',
+        );
+        assert.equal((await client.skills.delete(gaSkill.id)).type, 'skill_deleted', 'R6/E6');
+        await expectStatus(() => client.skills.retrieve(gaSkill.id), 404);
+        pass('GA Skills and Versions methods share one durable SkillStore with Beta');
+      }
     });
 
     console.log('E2E PASS: the skills family round-trips through the official @anthropic-ai/sdk.');

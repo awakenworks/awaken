@@ -231,3 +231,34 @@ test('wire projection rejects missing, extra, and duplicate operation identities
     /is duplicated/u,
   );
 });
+
+test('historical wire projection admits only the exact official operation subset', () => {
+  // Monotonic-version relation: the oldest supported SDK owns 99 identities
+  // from the current 127-operation graph. E1 every historical identity retains
+  // its one owner and exact historical wire coordinates; E2 current-only owner
+  // families disappear; E3 an unknown identity still fails closed. This reuses
+  // the behavior graph without treating a candidate removal as historical.
+  const oldest = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-oldest').root,
+    scope,
+  ).operations;
+  const projected = managedTsMethodManifestForOperations(oldest, {
+    allowHistoricalSubset: true,
+  });
+  assert.equal(projected.filter(({ method }) => method).length, 99, 'E1');
+  assert.deepEqual(
+    projected.filter(({ method }) => method).map(({ sdkMethod }) => sdkMethod).sort(),
+    oldest.map(({ id }) => id).sort(),
+    'E1',
+  );
+  assert.ok(!projected.some(({ owner }) => owner === 'managed_dream_e2e.ts'), 'E2');
+  assert.ok(!projected.some(({ owner }) => owner === 'management_tunnels_contract_e2e.mjs'), 'E2');
+  assert.throws(
+    () => managedTsMethodManifestForOperations([
+      ...oldest,
+      { ...oldest[0], id: 'beta.future.create' },
+    ], { allowHistoricalSubset: true }),
+    /subset of the qualified Managed identities/u,
+    'E3',
+  );
+});

@@ -1,29 +1,77 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import ts from 'typescript';
 
 import { resolveSdkPackage, sdkPackageFromRoot } from './package-source.mjs';
 import { stableJson } from './normalize.mjs';
 
-const declarationPattern = /\bexport\s+(?:async\s+)?(?:class|function|const|let|var)\s+([A-Za-z_$][\w$]*)/gu;
-const clausePattern = /\bexport\s*\{([^}]+)\}(?:\s+from\s+['"][^'"]+['"])?\s*;/gu;
+function hasModifier(node, kind) {
+  return node.modifiers?.some((modifier) => modifier.kind === kind) ?? false;
+}
+
+function collectBindingNames(binding, names) {
+  if (ts.isIdentifier(binding)) {
+    names.add(binding.text);
+    return;
+  }
+  for (const element of binding.elements) {
+    if (!ts.isOmittedExpression(element)) collectBindingNames(element.name, names);
+  }
+}
 
 export function staticEsmExports(source, sourceName = 'module') {
-  if (/\bexport\s*\*\s*from\b/u.test(source)) {
-    throw new Error(`${sourceName}: export * cannot prove an exact Managed helper surface`);
+  const module = ts.createSourceFile(
+    sourceName,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (module.parseDiagnostics.length > 0) {
+    const messages = module.parseDiagnostics
+      .map(({ messageText }) => ts.flattenDiagnosticMessageText(messageText, '\n'))
+      .join('; ');
+    throw new Error(`${sourceName}: cannot parse Managed helper exports: ${messages}`);
   }
-  const names = new Set([...source.matchAll(declarationPattern)].map((match) => match[1]));
-  for (const match of source.matchAll(clausePattern)) {
-    for (const raw of match[1].split(',')) {
-      const member = raw.trim();
-      if (!member) continue;
-      const parts = member.split(/\s+as\s+/u);
-      const exported = parts.at(-1)?.trim();
-      if (!/^[A-Za-z_$][\w$]*$/u.test(exported ?? '')) {
-        throw new Error(`${sourceName}: unsupported export member ${JSON.stringify(member)}`);
+
+  const names = new Set();
+  for (const statement of module.statements) {
+    if (ts.isExportDeclaration(statement)) {
+      if (!statement.exportClause) {
+        throw new Error(`${sourceName}: export * cannot prove an exact Managed helper surface`);
       }
-      names.add(exported);
+      if (ts.isNamespaceExport(statement.exportClause)) {
+        names.add(statement.exportClause.name.text);
+      } else {
+        for (const element of statement.exportClause.elements) names.add(element.name.text);
+      }
+      continue;
     }
+    if (ts.isExportAssignment(statement)) {
+      if (statement.isExportEquals) {
+        throw new Error(`${sourceName}: export = is not an ESM helper surface`);
+      }
+      names.add('default');
+      continue;
+    }
+    if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+    if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+      names.add('default');
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      for (const declaration of statement.declarationList.declarations) {
+        collectBindingNames(declaration.name, names);
+      }
+      continue;
+    }
+    if ((ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement))
+      && statement.name) {
+      names.add(statement.name.text);
+      continue;
+    }
+    throw new Error(`${sourceName}: unsupported exported declaration ${statement.kind}`);
   }
   return [...names].sort();
 }

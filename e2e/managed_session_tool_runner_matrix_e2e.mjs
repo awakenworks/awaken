@@ -6,10 +6,12 @@
 // pending; an SSE cut reconciles through list without duplicate execution.
 
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import Anthropic from '@anthropic-ai/sdk';
 import { betaZodTool } from '@anthropic-ai/sdk/helpers/beta/zod';
 import * as z from 'zod';
 import {
+  availablePort,
   pass,
   spawnServer,
   stopServer,
@@ -68,39 +70,55 @@ function tool(run, close = undefined) {
   });
 }
 
-function cutFirstEventStream() {
-  let cut = false;
-  return async (input, init) => {
-    const response = await fetch(input, init);
-    const url = typeof input === 'string' ? input : input.url;
-    if (cut || !url.includes('/events/stream') || !response.body) return response;
-    cut = true;
-    const reader = response.body.getReader();
-    let delivered = false;
-    const body = new ReadableStream({
-      async pull(controller) {
-        if (!delivered) {
-          const next = await reader.read();
-          if (next.done) {
-            controller.close();
-            return;
-          }
-          delivered = true;
-          controller.enqueue(next.value);
-          return;
-        }
-        await reader.cancel('injected SSE disconnect');
-        controller.error(new Error('injected SSE disconnect'));
-      },
-      cancel(reason) {
-        return reader.cancel(reason);
-      },
+async function startCutOnceProxy(targetBaseURL) {
+  const target = new URL(targetBaseURL);
+  const sockets = new Set();
+  let selectedForCut = false;
+  let cuts = 0;
+  const proxy = http.createServer((incoming, outgoing) => {
+    const url = new URL(incoming.url, target);
+    const headers = { ...incoming.headers, host: url.host };
+    const upstream = http.request(url, { method: incoming.method, headers }, (response) => {
+      outgoing.writeHead(response.statusCode, response.statusMessage, response.headers);
+      if (!selectedForCut && url.pathname.endsWith('/events/stream')) {
+        selectedForCut = true;
+        response.once('data', (chunk) => {
+          // Flush actual SSE bytes over TCP and then sever the socket. The next
+          // SDK request gets a fresh proxy connection and reaches the server.
+          outgoing.write(chunk, () => {
+            cuts += 1;
+            outgoing.socket?.destroy();
+          });
+          response.destroy();
+        });
+        response.once('end', () => {
+          if (!outgoing.destroyed) outgoing.end();
+        });
+      } else {
+        response.pipe(outgoing);
+      }
     });
-    return new Response(body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
+    upstream.on('error', (error) => {
+      if (!outgoing.destroyed) outgoing.destroy(error);
     });
+    incoming.pipe(upstream);
+  });
+  proxy.on('connection', (socket) => {
+    sockets.add(socket);
+    socket.once('close', () => sockets.delete(socket));
+  });
+  const port = await availablePort(PORT + 1);
+  await new Promise((resolve, reject) => {
+    proxy.once('error', reject);
+    proxy.listen(port, '127.0.0.1', resolve);
+  });
+  return {
+    baseURL: `http://127.0.0.1:${port}`,
+    cuts: () => cuts,
+    close: () => new Promise((resolve, reject) => {
+      for (const socket of sockets) socket.destroy();
+      proxy.close((error) => (error ? reject(error) : resolve()));
+    }),
   };
 }
 
@@ -170,28 +188,35 @@ try {
     pass('STR-02 unowned tools stay pending without a fabricated result');
   }
 
-  // STR-03: cut the first SSE response. SessionToolRunner reconnects and
-  // reconciles against events.list; the durable tool use is dispatched once.
+  // STR-03: a real HTTP proxy severs the first SSE TCP connection after bytes
+  // arrive. SessionToolRunner reconnects and reconciles against events.list;
+  // the durable tool use is dispatched once. This is a transport failure, not
+  // an in-process ReadableStream/fetch mock.
   {
     const session = await createSession(client, environment.id, 'tool-reconnect');
     await sendTask(client, session.id);
     let runs = 0;
-    const reconnecting = new Anthropic({
-      apiKey: 'e2e-dummy',
-      baseURL: baseUrl,
-      fetch: cutFirstEventStream(),
-    });
+    const cuttingProxy = await startCutOnceProxy(baseUrl);
     const calls = [];
-    for await (const call of reconnecting.beta.sessions.events.toolRunner(session.id, {
-      tools: [tool(async () => {
-        runs += 1;
-        return '42';
-      })],
-      betas: BETAS,
-      maxIdleMs: 100,
-      signal: AbortSignal.timeout(20_000),
-    })) {
-      calls.push(call);
+    try {
+      const reconnecting = new Anthropic({
+        apiKey: 'e2e-dummy',
+        baseURL: cuttingProxy.baseURL,
+      });
+      for await (const call of reconnecting.beta.sessions.events.toolRunner(session.id, {
+        tools: [tool(async () => {
+          runs += 1;
+          return '42';
+        })],
+        betas: BETAS,
+        maxIdleMs: 100,
+        signal: AbortSignal.timeout(20_000),
+      })) {
+        calls.push(call);
+      }
+      assert.equal(cuttingProxy.cuts(), 1, 'one physical SSE connection was severed');
+    } finally {
+      await cuttingProxy.close();
     }
     const events = await drain(client.beta.sessions.events.list(session.id, { betas: BETAS }));
     const uses = events.filter((event) => event.type === 'agent.custom_tool_use');

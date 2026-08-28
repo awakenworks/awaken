@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import {
   existsSync,
+  linkSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -14,18 +15,23 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path, { resolve } from 'node:path';
+import {
+  AWAKEN_BIN_ENV,
+  SCENARIO_HOST_BIN_ENV,
+  cargoExecutable,
+  cargoScenarioHostBundle,
+} from '../cargo_binary.mjs';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import { officialBetaResourceProjection } from '../../packages/managed-sdk-oracle/src/conformance/resource-projection.mjs';
-import {
-  MANAGED_TS_METHOD_MANIFEST,
-  managedTsMethodManifestForOperations,
-} from './managed_ts_sdk_method_manifest.mjs';
+import { managedTsMethodManifestForOperations } from './managed_ts_sdk_method_manifest.mjs';
 import { assertOwnerOperationReceipts } from './managed_sdk_operation_receipts.mjs';
+import { managedSdkOwnerProcessEnvironment } from './managed_sdk_process_environment.mjs';
 
 const E2E = resolve(import.meta.dirname, '..');
 const TSX_CLI = resolve(E2E, 'node_modules/tsx/dist/cli.mjs');
 const RECEIPT_HOOK = resolve(import.meta.dirname, 'managed_sdk_receipt_hook.mjs');
 const PACKAGE_HOOK = resolve(import.meta.dirname, 'managed_sdk_package_hook.mjs');
+const BASE_OWNER_PROCESS_ENVIRONMENT = managedSdkOwnerProcessEnvironment(process.env, E2E);
 const RECEIPT_NODE_OPTIONS = [
   process.env.NODE_OPTIONS,
   `--import=${PACKAGE_HOOK}`,
@@ -35,16 +41,26 @@ const RECEIPT_NODE_OPTIONS = [
   .join(' ');
 const candidateVersion = process.env.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION;
 const configuredPackageRoot = process.env.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
+const expectedVersion = candidateVersion ?? process.env.AWAKEN_MANAGED_SDK_EXPECTED_VERSION;
+const historicalMode = process.env.AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET ?? '0';
+assert.match(historicalMode, /^(?:0|1)$/u, 'historical SDK subset mode must be 0 or 1');
+const historicalSubset = historicalMode === '1';
 if (candidateVersion && !configuredPackageRoot) {
   throw new Error('candidate behavior owners require ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT');
+}
+if (candidateVersion && historicalSubset) {
+  throw new Error('a candidate SDK cannot use the historical operation-subset rule');
+}
+if (configuredPackageRoot && !expectedVersion) {
+  throw new Error('a configured behavior-owner root requires one exact expected SDK version');
 }
 const sdkRoot = realpathSync(
   configuredPackageRoot ?? resolve(E2E, 'node_modules/@anthropic-ai/sdk'),
 );
 const sdkManifest = JSON.parse(readFileSync(resolve(sdkRoot, 'package.json'), 'utf8'));
-if (candidateVersion && sdkManifest.version !== candidateVersion) {
+if (expectedVersion && sdkManifest.version !== expectedVersion) {
   throw new Error(
-    `candidate behavior-owner root ${sdkManifest.version} does not match ${candidateVersion}`,
+    `behavior-owner root ${sdkManifest.version} does not match ${expectedVersion}`,
   );
 }
 const sdkVersion = sdkManifest.version;
@@ -59,26 +75,51 @@ assert.equal(
   'selected operation source must belong to the selected SDK manifest',
 );
 const selectedOperations = extractedOperations.operations;
-const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations);
+const behaviorManifest = managedTsMethodManifestForOperations(selectedOperations, {
+  allowHistoricalSubset: historicalSubset,
+});
 const skillsProjection = officialBetaResourceProjection(selectedOperations, 'skills').projection;
+const selectedOperationIDs = new Set(selectedOperations.map(({ id }) => id));
 const owners = [...new Set(behaviorManifest.map(({ owner }) => owner))].sort();
 const OWNER_TIMEOUT_MS = Number(process.env.AWAKEN_MANAGED_OWNER_TIMEOUT_MS ?? 180_000);
 if (!Number.isSafeInteger(OWNER_TIMEOUT_MS) || OWNER_TIMEOUT_MS <= 0) {
   throw new Error('AWAKEN_MANAGED_OWNER_TIMEOUT_MS must be a positive safe integer');
 }
 
-async function executeOwner(owner, receiptFile, resolutionFile) {
+// Build once outside every behavior timeout. A clean checkout or a contended
+// shared cache may legitimately spend minutes compiling; neither is a hung SDK
+// call. The resulting executables are hard-linked into an immutable suite
+// snapshot so 20+ child processes never re-enter Cargo or observe replacement
+// artifacts from another worktree. Cargo publishes a rebuilt executable by
+// replacing its directory entry, so the snapshot retains the prebuild inode
+// without duplicating hundreds of megabytes.
+const repositoryRoot = resolve(E2E, '..');
+const { scenarioHost, handCompanion } = cargoScenarioHostBundle({
+  cwd: repositoryRoot,
+  environment: BASE_OWNER_PROCESS_ENVIRONMENT,
+  prebuiltEnvironmentName: SCENARIO_HOST_BIN_ENV,
+});
+const productionAwaken = cargoExecutable({
+  cwd: repositoryRoot,
+  packageName: 'awaken-cli',
+  targetName: 'awaken',
+  environment: BASE_OWNER_PROCESS_ENVIRONMENT,
+  prebuiltEnvironmentName: AWAKEN_BIN_ENV,
+});
+async function executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment) {
   const args = owner.endsWith('.ts') ? [TSX_CLI, owner] : [owner];
   await new Promise((resolveOwner, rejectOwner) => {
     const child = spawn(process.execPath, args, {
       cwd: E2E,
       env: {
-        ...process.env,
+        ...ownerEnvironment,
         AWAKEN_MANAGED_SDK_RECEIPT_FILE: receiptFile,
         AWAKEN_MANAGED_SDK_PACKAGE_ROOT: sdkRoot,
         AWAKEN_MANAGED_SDK_PACKAGE_VERSION: sdkVersion,
         AWAKEN_MANAGED_SDK_RESOLUTION_FILE: resolutionFile,
         AWAKEN_MANAGED_SDK_SKILLS_PROJECTION: skillsProjection,
+        AWAKEN_MANAGED_SDK_HAS_GA_FILES: selectedOperationIDs.has('files.upload') ? '1' : '0',
+        AWAKEN_MANAGED_SDK_HAS_GA_SKILLS: selectedOperationIDs.has('skills.create') ? '1' : '0',
         NODE_OPTIONS: RECEIPT_NODE_OPTIONS,
       },
       stdio: ['inherit', 'pipe', 'pipe'],
@@ -153,28 +194,46 @@ function assertExactSdkResolution(owner, resolutionFile) {
 // failed/skipped/misresolved child => E3. Static source invocation and exact
 // SDK-surface checks run immediately before this gate; the receipts prove those
 // attributed calls execute from the selected SDK rather than merely exist.
-const receiptDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-receipts-'));
 let receiptCount = 0;
+const executableDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-binaries-'));
 try {
-  for (const [index, owner] of owners.entries()) {
-    console.log(`[managed-sdk ${index + 1}/${owners.length}] ${owner}`);
-    const receiptFile = resolve(receiptDirectory, `${index}.jsonl`);
-    const resolutionFile = resolve(receiptDirectory, `${index}.resolution.jsonl`);
-    await executeOwner(owner, receiptFile, resolutionFile);
-    assertExactSdkResolution(owner, resolutionFile);
-    receiptCount += assertOwnerOperationReceipts(
-      behaviorManifest,
-      owner,
-      loadReceipts(receiptFile),
-      sdkVersion,
-    );
+  const snapshotExecutable = (source) => {
+    const destination = resolve(executableDirectory, path.basename(source));
+    linkSync(source, destination);
+    return destination;
+  };
+  const scenarioHostSnapshot = snapshotExecutable(scenarioHost);
+  snapshotExecutable(handCompanion);
+  const productionAwakenSnapshot = snapshotExecutable(productionAwaken);
+  const ownerEnvironment = {
+    ...BASE_OWNER_PROCESS_ENVIRONMENT,
+    [AWAKEN_BIN_ENV]: productionAwakenSnapshot,
+    [SCENARIO_HOST_BIN_ENV]: scenarioHostSnapshot,
+  };
+  const receiptDirectory = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-receipts-'));
+  try {
+    for (const [index, owner] of owners.entries()) {
+      console.log(`[managed-sdk ${index + 1}/${owners.length}] ${owner}`);
+      const receiptFile = resolve(receiptDirectory, `${index}.jsonl`);
+      const resolutionFile = resolve(receiptDirectory, `${index}.resolution.jsonl`);
+      await executeOwner(owner, receiptFile, resolutionFile, ownerEnvironment);
+      assertExactSdkResolution(owner, resolutionFile);
+      receiptCount += assertOwnerOperationReceipts(
+        behaviorManifest,
+        owner,
+        loadReceipts(receiptFile),
+        sdkVersion,
+      );
+    }
+  } finally {
+    rmSync(receiptDirectory, { recursive: true, force: true });
   }
 } finally {
-  rmSync(receiptDirectory, { recursive: true, force: true });
+  rmSync(executableDirectory, { recursive: true, force: true });
 }
 
 console.log(
   `Managed SDK ${sdkVersion} behavior owners PASS: ${receiptCount} HTTP operations + `
-    + `${MANAGED_TS_METHOD_MANIFEST.length - receiptCount} helpers -> `
+    + `${behaviorManifest.filter(({ method }) => !method).length} helpers -> `
     + `${owners.length} real-process scenarios.`,
 );

@@ -9,7 +9,7 @@ import {
   staticEsmExports,
 } from '../src/extract-exports.mjs';
 import { resolveSdkPackage } from '../src/package-source.mjs';
-import { readSdkMatrix } from '../src/conformance/clients.mjs';
+import { loadConformanceClients } from '../src/conformance/clients.mjs';
 
 const packageRoot = path.resolve(import.meta.dirname, '..');
 const scope = JSON.parse(fs.readFileSync(path.join(packageRoot, 'config/scope.json')));
@@ -19,7 +19,7 @@ test('static Managed helper exports equal every exact executable anchor surface'
   // import the already-qualified current package. E1 both inventories are
   // identical for every configured entrypoint. This validates the pre-import
   // parser used to reject a candidate that hides a new helper in an old file.
-  for (const anchor of readSdkMatrix()) {
+  for (const anchor of await loadConformanceClients()) {
     const sdk = resolveSdkPackage(anchor.module);
     const extracted = managedExportFingerprintFromPackageRoot(sdk.root, scope, {
       allowMissing: anchor.role !== 'current_oracle',
@@ -43,15 +43,28 @@ test('static Managed helper exports equal every exact executable anchor surface'
 });
 
 test('Managed helper export extraction fails closed for open or malformed surfaces', () => {
-  // Fault table: named declarations/re-exports are closed and deterministic;
-  // export-star or an unparseable member has no finite local inventory and is
-  // rejected before candidate evaluation.
+  // Grammar partitions: declarations, aliases, default, namespace, and
+  // destructuring have closed AST identities; comments/string literals are not
+  // syntax. An open export-star or malformed module has no finite local
+  // inventory and is rejected before candidate evaluation.
   assert.deepEqual(
     staticEsmExports('export const alpha = 1; export { beta, gamma as delta } from "./x.mjs";'),
     ['alpha', 'beta', 'delta'],
   );
+  assert.deepEqual(
+    staticEsmExports(`
+      const value = 1;
+      const source = { alpha: 1, nested: { beta: 2 } };
+      export default value;
+      export * as helpers from './helpers.mjs';
+      export const { alpha, nested: { beta } } = source;
+      // export * from './comment.mjs';
+      const text = "export * from './string.mjs'";
+    `),
+    ['alpha', 'beta', 'default', 'helpers'],
+  );
   assert.throws(() => staticEsmExports('export * from "./open.mjs";'), /export \*/u);
-  assert.throws(() => staticEsmExports('export { "invalid" };'), /unsupported export/u);
+  assert.throws(() => staticEsmExports('export const = 1;'), /cannot parse/u);
 });
 
 test('0.122 helper removal is one explicit source-compatibility change point', () => {

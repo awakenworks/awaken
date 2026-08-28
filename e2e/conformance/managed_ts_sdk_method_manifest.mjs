@@ -117,7 +117,10 @@ const operations = coverage.operations
 export const MANAGED_TS_METHOD_MANIFEST = [...operations, ...SDK_HELPERS]
   .sort((left, right) => left.sdkMethod.localeCompare(right.sdkMethod));
 
-export function managedTsMethodManifestForOperations(selectedOperations) {
+export function managedTsMethodManifestForOperations(
+  selectedOperations,
+  { allowHistoricalSubset = false } = {},
+) {
   assert.ok(Array.isArray(selectedOperations), 'selected SDK operations must be an array');
   const selected = new Map();
   for (const operation of selectedOperations) {
@@ -126,22 +129,33 @@ export function managedTsMethodManifestForOperations(selectedOperations) {
   }
   const expectedIDs = operations.map(({ sdkMethod }) => sdkMethod).sort();
   const actualIDs = [...selected.keys()].sort();
-  assert.deepEqual(
-    actualIDs,
-    expectedIDs,
-    'selected SDK operations must have the exact qualified Managed operation identities',
-  );
+  if (allowHistoricalSubset) {
+    const expected = new Set(expectedIDs);
+    assert.deepEqual(
+      actualIDs.filter((id) => !expected.has(id)),
+      [],
+      'historical SDK operations must be a subset of the qualified Managed identities',
+    );
+  } else {
+    assert.deepEqual(
+      actualIDs,
+      expectedIDs,
+      'selected SDK operations must have the exact qualified Managed operation identities',
+    );
+  }
 
-  return MANAGED_TS_METHOD_MANIFEST.map((evidence) => {
-    if (!evidence.method) return evidence;
-    const operation = selected.get(evidence.sdkMethod);
-    const { transportQuery: _currentTransportQuery, ...ownership } = evidence;
-    return Object.freeze({
-      ...ownership,
-      route: operation.path,
-      method: operation.method,
-      betas: operation.betas,
-      ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
+  return MANAGED_TS_METHOD_MANIFEST
+    .filter((evidence) => !evidence.method || selected.has(evidence.sdkMethod))
+    .map((evidence) => {
+      if (!evidence.method) return evidence;
+      const operation = selected.get(evidence.sdkMethod);
+      const { transportQuery: _currentTransportQuery, ...ownership } = evidence;
+      return Object.freeze({
+        ...ownership,
+        route: operation.path,
+        method: operation.method,
+        betas: operation.betas,
+        ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
+      });
     });
-  });
 }

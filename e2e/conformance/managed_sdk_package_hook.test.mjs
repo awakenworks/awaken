@@ -5,8 +5,35 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
+import { managedSdkOwnerProcessEnvironment } from './managed_sdk_process_environment.mjs';
 
 const hook = path.resolve(import.meta.dirname, 'managed_sdk_package_hook.mjs');
+const behaviorRunner = path.resolve(import.meta.dirname, 'run_managed_sdk_behavior_owners.mjs');
+
+test('behavior-owner prebuild uses one explicit Cargo authority', () => {
+  // Build-authority graph: an existing CI/user cache remains authoritative and
+  // is consumed before behavior timeouts begin; a suite-specific override wins
+  // when isolation capacity exists. With neither, the worktree target is the
+  // deterministic fallback. Caller state remains immutable in every partition.
+  const inherited = {
+    CARGO_TARGET_DIR: '/global/shared-target',
+    PATH: '/bin',
+  };
+  const isolated = managedSdkOwnerProcessEnvironment(inherited, '/worktree/e2e');
+  assert.equal(isolated.CARGO_TARGET_DIR, '/global/shared-target');
+  assert.equal(isolated.PATH, '/bin');
+  assert.equal(inherited.CARGO_TARGET_DIR, '/global/shared-target');
+
+  const configured = managedSdkOwnerProcessEnvironment({
+    ...inherited,
+    AWAKEN_MANAGED_SDK_CARGO_TARGET_DIR: '/suite/target',
+  }, '/worktree/e2e');
+  assert.equal(configured.CARGO_TARGET_DIR, '/suite/target');
+  assert.equal(
+    managedSdkOwnerProcessEnvironment({ PATH: '/bin' }, '/worktree/e2e').CARGO_TARGET_DIR,
+    '/worktree/target',
+  );
+});
 
 function executeSelection(moduleName, expectedVersion = undefined) {
   const sdk = resolveSdkPackage(moduleName);
@@ -65,5 +92,42 @@ test('package selection rejects an adjacent expected version before application 
     assert.match(execution.result.stderr, /does not match expected/u);
   } finally {
     rmSync(execution.directory, { recursive: true, force: true });
+  }
+});
+
+test('candidate behavior replay cannot opt into the historical subset rule', () => {
+  // Admission partition: exact historical anchors may project a monotonic
+  // operation subset; a reviewed candidate must retain the complete current
+  // identity set. Even a correctly installed candidate root/version therefore
+  // fails before owner execution when historical mode is requested.
+  const sdk = resolveSdkPackage('@anthropic-ai/sdk-candidate');
+  const result = spawnSync(process.execPath, [behaviorRunner], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: sdk.root,
+      ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION: sdk.version,
+      AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET: '1',
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /candidate SDK cannot use the historical operation-subset rule/u);
+});
+
+test('version-projected GA capability inputs form one closed boolean domain', () => {
+  // Configuration fault partition: the owner runner emits only `0` or `1` for
+  // SDK-derived GA availability. A typo or ad-hoc boolean spelling must fail at
+  // module admission before a server starts; otherwise a historical SDK could
+  // silently execute a different owner branch and still appear compatible.
+  for (const [script, variable, pattern] of [
+    ['management_files_models_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_FILES', /GA Files capability/u],
+    ['management_skills_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_SKILLS', /GA Skills capability/u],
+  ]) {
+    const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', script)], {
+      encoding: 'utf8',
+      env: { ...process.env, [variable]: 'false' },
+    });
+    assert.notEqual(result.status, 0, script);
+    assert.match(result.stderr, pattern, script);
   }
 });
