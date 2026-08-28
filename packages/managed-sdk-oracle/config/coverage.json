@@ -70,12 +70,12 @@
         },
         {
           "path": "crates/server/awaken-protocol-managed/tests/files_http.rs",
-          "test": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "test": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "operations": ["beta.files.list"]
         },
         {
           "path": "crates/server/awaken-protocol-managed/tests/files_http.rs",
-          "test": "ga_files_expiry_and_ids_page_match_sdk_0120",
+          "test": "ga_files_projection_and_query_only_selector_match_official_sdk",
           "operations": ["files.*"]
         }
       ]
@@ -214,7 +214,7 @@
         },
         {
           "path": "crates/server/awaken-protocol-managed/tests/skills_api_http.rs",
-          "test": "ga_skill_and_version_projection_match_sdk_0120",
+          "test": "ga_skill_projection_and_query_only_selector_match_official_sdk",
           "operations": ["skills.*"]
         },
         {

@@ -36,6 +36,8 @@ use crate::types::memory::{
 };
 use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate, paginate_by};
 
+use super::managed_resource_error as err;
+
 fn timestamp(nanos: u128) -> String {
     awaken_session_contract::epoch_millis_to_rfc3339(
         (nanos / 1_000_000).min(u64::MAX as u128) as u64
@@ -365,17 +367,6 @@ pub fn memory_stores_router(
             post(redact_version),
         )
         .with_state(state)
-}
-
-fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    let error_type = if status == StatusCode::NOT_FOUND {
-        "not_found_error"
-    } else if status.is_server_error() {
-        "api_error"
-    } else {
-        "invalid_request_error"
-    };
-    (status, Json(ErrorResponse::new(error_type, message))).into_response()
 }
 
 fn not_found(what: &str) -> axum::response::Response {

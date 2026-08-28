@@ -8,4 +8,7 @@ minimumReleaseAgeExclude:
   - '@ai-sdk/gateway@4.0.27'
   - '@ai-sdk/react@4.0.39'
   - ai@7.0.36
-  - '@anthropic-ai/sdk@0.121.0'
+  # Exact current/candidate aliases and reviewed sha512 qualifications provide
+  # the SDK-specific admission boundary. This exemption permits candidate test
+  # execution during observation; it does not promote a registry release.
+  - '@anthropic-ai/sdk'

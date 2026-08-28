@@ -13,13 +13,15 @@ use crate::types::file::{
     BetaFileListParams, BetaFileMetadata, BetaFileScope, DeletedFile, DeletedFileObjectType,
     FileExpirySeconds, FileListParams, FileMetadata, FileObjectType, FileScopeObjectType,
 };
-use crate::types::{ErrorResponse, Page, PageCursor, PageQuery, paginate};
+use crate::types::{Page, PageCursor, PageQuery, paginate};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
 use axum::extract::{Multipart, Path, RawQuery, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+
+use super::managed_resource_error as error;
 
 const DEFAULT_PAGE_SIZE: usize = 20;
 const MAX_PAGE_SIZE: usize = 1_000;
@@ -60,14 +62,6 @@ fn beta_metadata(record: &FileRecord) -> BetaFileMetadata {
     }
 }
 
-fn error(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    (
-        status,
-        Json(ErrorResponse::new("invalid_request_error", message)),
-    )
-        .into_response()
-}
-
 async fn list_files(
     State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
@@ -78,7 +72,7 @@ async fn list_files(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -155,7 +149,7 @@ async fn list_ga_files(
     workspace: &str,
     raw: Option<&str>,
 ) -> axum::response::Response {
-    let query = match FileListParams::from_query(raw.unwrap_or_default()) {
+    let query = match FileListParams::from_query(&without_beta_selector(raw)) {
         Ok(query) => query,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
@@ -215,7 +209,7 @@ async fn upload_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -304,7 +298,7 @@ async fn get_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
@@ -334,7 +328,7 @@ async fn delete_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return error(StatusCode::BAD_REQUEST, message);
     }
@@ -367,7 +361,7 @@ async fn download_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Files,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return error(StatusCode::BAD_REQUEST, message);
     }

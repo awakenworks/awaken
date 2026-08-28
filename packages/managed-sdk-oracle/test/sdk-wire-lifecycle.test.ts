@@ -13,6 +13,7 @@ type Operation = {
   method: string;
   path: string;
   betas: string[];
+  transport_query?: string;
 };
 type Invoke = (client: Client) => Promise<unknown> | unknown;
 type Scenario = {
@@ -329,6 +330,12 @@ test('official SDK constructs every persistent resource lifecycle against canoni
       assert.ok(request, `${id} issued no HTTP request`);
       assert.equal(request.method, expected.method, `${id}: method`);
       assert.equal(requestPath(request), expected.path, `${id}: path`);
+      const requestURL = new URL(request.url);
+      assert.equal(
+        requestURL.searchParams.get('beta'),
+        expected.transport_query === 'beta=true' ? 'true' : null,
+        `${id}: exact Beta/GA transport selector`,
+      );
       const actualBetas = [...new Set((request.headers.get('anthropic-beta') ?? '')
         .split(',')
         .map((value) => value.trim())

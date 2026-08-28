@@ -21,7 +21,7 @@ use crate::types::skill::{
     SkillListParams, SkillObjectType, SkillSource, SkillVersion as SkillVersionDto,
     SkillVersionListParams, SkillVersionObjectType, SkillVersionWire, SkillWire,
 };
-use crate::types::{ErrorResponse, PageCursor, PageQuery, paginate};
+use crate::types::{PageCursor, PageQuery, paginate};
 use awaken_resource_application::{
     CanonicalSkillBundle, MAX_SKILL_ARCHIVE_BYTES, MAX_SKILL_FILES, UploadedSkillBundleFile,
     canonicalize_skill_bundle, normalize_bundle_path,
@@ -35,6 +35,8 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use axum::{Json, Router};
+
+use super::managed_resource_error as err;
 
 fn now_nanos() -> u64 {
     std::time::SystemTime::now()
@@ -200,17 +202,6 @@ pub fn skills_router(
         .with_state(state)
 }
 
-fn err(status: StatusCode, message: impl Into<String>) -> axum::response::Response {
-    let error_type = if status == StatusCode::NOT_FOUND {
-        "not_found_error"
-    } else if status.is_server_error() {
-        "api_error"
-    } else {
-        "invalid_request_error"
-    };
-    (status, Json(ErrorResponse::new(error_type, message))).into_response()
-}
-
 /// Collect a multipart body without decoding file bytes. Non-file text fields are
 /// read for `display_title`; bundle contents remain binary-safe end to end.
 async fn read_multipart(
@@ -350,7 +341,7 @@ async fn create_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -407,7 +398,7 @@ async fn list_skills(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -428,8 +419,9 @@ async fn list_skills(
             }
         }
         ManagedResourceApiFlavor::Ga => {
-            match serde_urlencoded::from_str::<SkillListParams>(raw.as_deref().unwrap_or_default())
-            {
+            match serde_urlencoded::from_str::<SkillListParams>(&without_beta_selector(
+                raw.as_deref(),
+            )) {
                 Ok(query) => (
                     PageQuery {
                         page: query.page,
@@ -500,7 +492,7 @@ async fn retrieve_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -535,7 +527,7 @@ async fn delete_skill(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
@@ -590,7 +582,7 @@ async fn create_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -651,7 +643,7 @@ async fn list_versions(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -664,13 +656,13 @@ async fn list_versions(
             page: query.page,
             limit: query.limit.map(usize::from),
         }),
-        ManagedResourceApiFlavor::Ga => {
-            serde_urlencoded::from_str::<SkillVersionListParams>(raw.as_deref().unwrap_or_default())
-                .map(|query| PageQuery {
-                    page: query.page,
-                    limit: query.limit.map(usize::from),
-                })
-        }
+        ManagedResourceApiFlavor::Ga => serde_urlencoded::from_str::<SkillVersionListParams>(
+            &without_beta_selector(raw.as_deref()),
+        )
+        .map(|query| PageQuery {
+            page: query.page,
+            limit: query.limit.map(usize::from),
+        }),
     };
     let page = match page {
         Ok(page) => page,
@@ -725,7 +717,7 @@ async fn retrieve_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         Ok(flavor) => flavor,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -750,7 +742,7 @@ async fn delete_version(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsGa,
     ) {
         return err(StatusCode::BAD_REQUEST, message);
     }
@@ -811,7 +803,7 @@ async fn version_content(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {
@@ -853,7 +845,7 @@ async fn version_file(
         raw.as_deref(),
         &headers,
         ManagedCapability::Skills,
-        BetaQueryPolicy::RequireHeader,
+        BetaQueryPolicy::QuerySelectsBeta,
     ) {
         Ok(ManagedResourceApiFlavor::Beta) => {}
         Ok(ManagedResourceApiFlavor::Ga) => {

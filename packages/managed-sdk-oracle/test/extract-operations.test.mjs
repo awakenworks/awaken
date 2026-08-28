@@ -4,7 +4,11 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
-import { extractOperations } from '../src/extract-operations.mjs';
+import {
+  extractOperations,
+  extractOperationsFromPackageRoot,
+} from '../src/extract-operations.mjs';
+import { resolveSdkPackage } from '../src/package-source.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const scope = JSON.parse(fs.readFileSync(path.join(packageRoot, 'config/scope.json')));
@@ -38,4 +42,23 @@ test('current oracle discovers ordinary, paginated, and nested managed operation
   assert.ok(!operations.some(({ id }) => id.startsWith('messages.')), 'ordinary GA Messages stays out of scope');
   assert.ok(!operations.some(({ id }) => id.startsWith('beta.organization.users')), 'E2');
   assert.equal(new Set(operations.map(({ id }) => id)).size, operations.length);
+});
+
+test('an explicitly provisioned SDK root has the same authoritative operation inventory', () => {
+  // Cause/effect graph: C1 module resolution and C2 an explicit, already
+  // provisioned package root identify the same official package. Effect: E1
+  // operation/version evidence is identical. Rule R1 C1+C2->E1. Invalid roots
+  // fail before source extraction, so candidate canaries cannot scan an
+  // arbitrary directory or silently fall back to the current dependency.
+  const fromModule = extractOperations('@anthropic-ai/sdk-current', scope);
+  const sdk = resolveSdkPackage('@anthropic-ai/sdk-current');
+  assert.deepEqual(
+    extractOperationsFromPackageRoot(sdk.root, scope, fromModule.module),
+    fromModule,
+    'R1/E1',
+  );
+  assert.throws(
+    () => extractOperationsFromPackageRoot(packageRoot, scope),
+    /is not an @anthropic-ai\/sdk package root/u,
+  );
 });

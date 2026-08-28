@@ -22,7 +22,7 @@ use tokio_stream::Stream;
 
 use crate::common::headers::{
     ANTHROPIC_API_VERSION, DREAMING_BETA, MANAGED_BETA, MEMORY_BETA, ManagedCapability,
-    SKILLS_BETA, USER_PROFILES_BETA_LATEST, has_capability,
+    USER_PROFILES_BETA_LATEST, has_capability,
 };
 use crate::preview::ThreadPreviewProjector;
 use crate::state::{
@@ -337,23 +337,6 @@ pub async fn enforce_managed_beta(
             )
                 .into_response();
         }
-    }
-    let query_requests_beta = req.uri().query().is_some_and(|query| {
-        form_urlencoded::parse(query.as_bytes())
-            .any(|(name, value)| name == "beta" && value == "true")
-    });
-    if is_family("/v1/skills")
-        && query_requests_beta
-        && !has_capability(req.headers(), ManagedCapability::Skills)
-    {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(ErrorResponse::new(
-                "invalid_request_error",
-                format!("`beta=true` requires the `anthropic-beta: {SKILLS_BETA}` header"),
-            )),
-        )
-            .into_response();
     }
     if is_family("/v1/dreams") && !has_capability(req.headers(), ManagedCapability::Dreams) {
         return (

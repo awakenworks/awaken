@@ -184,14 +184,17 @@ async fn read(resp: axum::response::Response) -> (StatusCode, Value) {
 }
 
 #[tokio::test]
-async fn ga_skill_and_version_projection_match_sdk_0120() {
+async fn ga_skill_projection_and_query_only_selector_match_official_sdk() {
     // Cause/effect graph: C1 no beta selector, C2 GA display_name multipart,
-    // C3 source=custom list, C4 complete version lifecycle. Effects: E1 Skill uses
-    // display_name/latest_version_id/source object and no beta fields; E2 list is
-    // PageCursor; E3 SkillVersion omits beta directory/version. Decision table:
-    // G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3. The create/retrieve/list/delete
-    // Skill operations and create/retrieve/list/delete Version operations all
-    // execute here without a Beta selector, over one SkillStore aggregate.
+    // C3 source=custom list, C4 complete version lifecycle, C5 the post-GA SDK
+    // retains `beta=true` while omitting the Skills capability header. Effects:
+    // E1 Skill uses display_name/latest_version_id/source object and no beta fields;
+    // E2 list is PageCursor; E3 SkillVersion omits beta directory/version; E4 the
+    // Beta-namespace-only archive/file endpoints remain reachable through the
+    // query-only selector. Decision table: G1 C1+C2->E1; G2 C1+C3->E2;
+    // G3 C1+C4->E3; G4 C5->E1; G5 C4+C5->E4. The create/retrieve/list/delete Skill
+    // operations and complete Version lifecycle all execute without a Skills
+    // capability header, over one SkillStore aggregate.
     let (router, _store, dir) = router_with_store();
     let body = multipart_files_with_fields(
         &[(
@@ -202,7 +205,7 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     );
     let mut request = Request::builder()
         .method("POST")
-        .uri("/v1/skills")
+        .uri("/v1/skills?beta=true")
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -232,7 +235,21 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     assert_eq!(retrieved["id"], id, "G1/retrieve");
 
     let mut request = Request::builder()
-        .uri("/v1/skills?source=custom")
+        .uri(format!("/v1/skills/{id}?beta=true"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let (status, change_point) = read(router.clone().oneshot(request).await.unwrap()).await;
+    assert_eq!(status, StatusCode::OK, "G4 {change_point}");
+    assert_eq!(change_point["display_name"], "GA Skill", "G4/E1");
+    assert_eq!(change_point["source"]["type"], "custom", "G4/E1");
+    assert!(change_point["latest_version_id"].is_string(), "G4/E1");
+    assert!(change_point.get("display_title").is_none(), "G4/E1");
+
+    let mut request = Request::builder()
+        .uri("/v1/skills?beta=true&source=custom")
         .body(Body::empty())
         .unwrap();
     request
@@ -252,7 +269,7 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
 
     let latest = skill["latest_version_id"].as_str().unwrap().to_owned();
     let mut request = Request::builder()
-        .uri(format!("/v1/skills/{id}/versions/{latest}"))
+        .uri(format!("/v1/skills/{id}/versions/{latest}?beta=true"))
         .body(Body::empty())
         .unwrap();
     request
@@ -265,7 +282,45 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     assert_eq!(version["name"], "ga-skill", "G3/E3");
 
     let mut request = Request::builder()
-        .uri(format!("/v1/skills/{id}/versions"))
+        .uri(format!(
+            "/v1/skills/{id}/versions/{latest}/content?beta=true"
+        ))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G5/archive");
+    assert_eq!(
+        response.headers()["content-type"],
+        "application/x-tar",
+        "G5/E4"
+    );
+
+    let mut request = Request::builder()
+        .uri(format!(
+            "/v1/skills/{id}/versions/{latest}/files/SKILL.md?beta=true"
+        ))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G5/file");
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    assert!(
+        bytes
+            .windows(b"name: ga-skill".len())
+            .any(|window| { window == b"name: ga-skill" }),
+        "G5/E4"
+    );
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/skills/{id}/versions?beta=true"))
         .body(Body::empty())
         .unwrap();
     request
@@ -281,7 +336,7 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
     )]);
     let mut request = Request::builder()
         .method("POST")
-        .uri(format!("/v1/skills/{id}/versions"))
+        .uri(format!("/v1/skills/{id}/versions?beta=true"))
         .header(
             "content-type",
             format!("multipart/form-data; boundary={BOUNDARY}"),
@@ -297,7 +352,9 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
 
     let mut request = Request::builder()
         .method("DELETE")
-        .uri(format!("/v1/skills/{id}/versions/{created_version_id}"))
+        .uri(format!(
+            "/v1/skills/{id}/versions/{created_version_id}?beta=true"
+        ))
         .body(Body::empty())
         .unwrap();
     request
@@ -309,7 +366,7 @@ async fn ga_skill_and_version_projection_match_sdk_0120() {
 
     let mut request = Request::builder()
         .method("DELETE")
-        .uri(format!("/v1/skills/{id}"))
+        .uri(format!("/v1/skills/{id}?beta=true"))
         .body(Body::empty())
         .unwrap();
     request
