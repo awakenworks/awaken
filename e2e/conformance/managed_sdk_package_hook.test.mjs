@@ -10,6 +10,14 @@ import { managedSdkOwnerProcessEnvironment } from './managed_sdk_process_environ
 const hook = path.resolve(import.meta.dirname, 'managed_sdk_package_hook.mjs');
 const behaviorRunner = path.resolve(import.meta.dirname, 'run_managed_sdk_behavior_owners.mjs');
 
+function environmentWithoutCandidateSelection() {
+  const environment = { ...process.env };
+  delete environment.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE;
+  delete environment.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION;
+  delete environment.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
+  return environment;
+}
+
 test('behavior-owner prebuild uses one explicit Cargo authority', () => {
   // Build-authority graph: an existing CI/user cache remains authoritative and
   // is consumed before behavior timeouts begin; a suite-specific override wins
@@ -106,6 +114,7 @@ test('candidate behavior replay cannot opt into the historical subset rule', () 
     env: {
       ...process.env,
       ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: sdk.root,
+      ANTHROPIC_SDK_CONFORMANCE_CANDIDATE: '@anthropic-ai/sdk-candidate',
       ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION: sdk.version,
       AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET: '1',
     },
@@ -114,7 +123,27 @@ test('candidate behavior replay cannot opt into the historical subset rule', () 
   assert.match(result.stderr, /candidate SDK cannot use the historical operation-subset rule/u);
 });
 
-test('version-projected GA capability inputs form one closed boolean domain', () => {
+test('candidate behavior replay requires the exact alias before any owner starts', () => {
+  // Admission causal graph: candidate version + exact root without the reviewed
+  // alias would let generic owners use the selected package hook while helper
+  // owners silently omit the candidate from their official-client matrix.
+  // The runner must reject that split-brain configuration before extraction,
+  // compilation, or server startup; the full 0.122 replay exposed this edge.
+  const sdk = resolveSdkPackage('@anthropic-ai/sdk-candidate');
+  const result = spawnSync(process.execPath, [behaviorRunner], {
+    encoding: 'utf8',
+    env: {
+      ...environmentWithoutCandidateSelection(),
+      ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: sdk.root,
+      ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION: sdk.version,
+    },
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /require the reviewed exact package alias/u);
+  assert.doesNotMatch(result.stdout, /\[managed-sdk 1\//u);
+});
+
+test('version-projected capability inputs form one closed boolean domain', () => {
   // Configuration fault partition: the owner runner emits only `0` or `1` for
   // SDK-derived GA availability. A typo or ad-hoc boolean spelling must fail at
   // module admission before a server starts; otherwise a historical SDK could
@@ -122,6 +151,7 @@ test('version-projected GA capability inputs form one closed boolean domain', ()
   for (const [script, variable, pattern] of [
     ['management_files_models_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_FILES', /GA Files capability/u],
     ['management_skills_e2e.mjs', 'AWAKEN_MANAGED_SDK_HAS_GA_SKILLS', /GA Skills capability/u],
+    ['managed_dream_e2e.ts', 'AWAKEN_MANAGED_SDK_HAS_DREAMS', /Dreams capability/u],
   ]) {
     const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, '..', script)], {
       encoding: 'utf8',

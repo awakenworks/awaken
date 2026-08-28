@@ -5,11 +5,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { extractOperations } from './extract-operations.mjs';
+import { auditRequestTypesFromPackageRoot } from './extract-wire-contracts.mjs';
 import { managedTypeFingerprint, managedWireContract } from './extract-types.mjs';
 import { managedRuntimeFingerprint } from './extract-runtime.mjs';
 import { managedExportFingerprint } from './extract-exports.mjs';
 import { stableJson } from './normalize.mjs';
 import { operationCoverage, surfaceFixture } from './coverage.mjs';
+import { resolveSdkPackage } from './package-source.mjs';
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = path.resolve(packageRoot, '../..');
@@ -33,6 +35,11 @@ function fingerprint(operations) {
 function generated() {
   const extracted = anchors.anchors.map((anchor) => {
     const sdk = extractOperations(anchor.module, scope);
+    auditRequestTypesFromPackageRoot(
+      resolveSdkPackage(anchor.module).root,
+      scope,
+      sdk.operations.map(({ id }) => id),
+    );
     const types = managedTypeFingerprint(anchor.module, scope);
     const runtime = managedRuntimeFingerprint(anchor.module, scope);
     const runtimeExports = managedExportFingerprint(anchor.module, scope, {

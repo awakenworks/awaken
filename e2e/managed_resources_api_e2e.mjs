@@ -13,7 +13,6 @@ import assert from 'node:assert/strict';
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { withRealServer, pass } from './harness.mjs';
 
-const BETAS = ['managed-agents-2026-04-01', 'files-api-2025-04-14'];
 const MEMORY_HEADERS = { 'anthropic-beta': 'agent-memory-2026-07-22' };
 
 async function request(baseUrl, method, route, body) {
@@ -40,18 +39,18 @@ async function main() {
       const body = 'resource-plane-fixture-bytes';
       const up = await client.beta.files.upload({
         file: await toFile(Buffer.from(body), 'fixture.txt'),
-        betas: BETAS,
       });
       assert.ok(up.id, 'upload returns a content id');
       assert.equal(up.size_bytes, body.length, 'upload reports byte size');
       pass(`file uploaded: ${up.id.slice(0, 12)} (${up.size_bytes} bytes)`);
 
       // Metadata projection decision: C1 an uploaded input has no Session
-      // scope; C2 the Beta selector is explicit. E1 the typed Beta response
+      // scope; C2 the selected exact SDK owns its generated Beta selector and
+      // capability. E1 the typed Beta response
       // carries `scope:null` while retaining exact size/type/downloadability.
       // K1 GA intentionally omits the Beta-only scope field and is covered by
       // management_files_models_e2e.mjs. R1 C1&&C2 -> E1.
-      const meta = await client.beta.files.retrieveMetadata(up.id, { betas: BETAS });
+      const meta = await client.beta.files.retrieveMetadata(up.id);
       assert.equal(meta.id, up.id);
       assert.equal(meta.size_bytes, body.length);
       assert.equal(meta.type, 'file');
@@ -69,7 +68,7 @@ async function main() {
       // R2 harvested artifact (downloadable=true) -> exact bytes (covered by the
       // resource/full-chain E2E); R3 unknown/deleted id -> 404 below.
       await assert.rejects(
-        () => client.beta.files.download(up.id, { betas: BETAS }),
+        () => client.beta.files.download(up.id),
         (error) => error?.status === 400 && String(error).includes('not downloadable'),
         'an uploaded input is not a downloadable Agent artifact',
       );
@@ -81,14 +80,13 @@ async function main() {
       // logical record (covered at the FileApplication owner).
       const up2 = await client.beta.files.upload({
         file: await toFile(Buffer.from(body), 'again.txt'),
-        betas: BETAS,
       });
       assert.notEqual(up2.id, up.id, 'equal bytes do not collapse distinct public File identities');
       pass('equal uploads keep distinct public identities over private blob deduplication');
 
       // A missing id is a 404.
       await assert.rejects(
-        () => client.beta.files.retrieveMetadata('blob_does_not_exist', { betas: BETAS }),
+        () => client.beta.files.retrieveMetadata('blob_does_not_exist'),
         (e) => String(e).includes('404'),
         'unknown file id is a 404',
       );
@@ -98,14 +96,14 @@ async function main() {
       // R6 omitted scope -> all active Workspace Files; R7 exact unknown Session
       // scope -> empty. Listing is a pure catalog query and never scans a sandbox.
       const noScope = [];
-      for await (const f of client.beta.files.list({ betas: BETAS })) noScope.push(f);
+      for await (const f of client.beta.files.list()) noScope.push(f);
       assert.deepEqual(
         new Set(noScope.map((file) => file.id)),
         new Set([up.id, up2.id]),
         'no scope_id lists active Workspace input Files',
       );
       const unknownScope = [];
-      for await (const f of client.beta.files.list({ scope_id: 'sesn_absent', betas: BETAS })) {
+      for await (const f of client.beta.files.list({ scope_id: 'sesn_absent' })) {
         unknownScope.push(f);
       }
       assert.equal(unknownScope.length, 0, 'unknown scope ⇒ empty list');
@@ -115,13 +113,13 @@ async function main() {
       assert.equal(deletedFile.status, 200);
       assert.equal(deletedFile.body.type, 'file_deleted');
       await assert.rejects(
-        () => client.beta.files.retrieveMetadata(up.id, { betas: BETAS }),
+        () => client.beta.files.retrieveMetadata(up.id),
         (e) => String(e).includes('404'),
         'logical File deletion denies reads before asynchronous reclamation',
       );
       assert.equal((await request(baseUrl, 'DELETE', `/v1/files/${up.id}`)).status, 404);
       assert.equal(
-        (await client.beta.files.retrieveMetadata(up2.id, { betas: BETAS })).id,
+        (await client.beta.files.retrieveMetadata(up2.id)).id,
         up2.id,
         'deleting one logical File does not delete another identity over the same blob',
       );

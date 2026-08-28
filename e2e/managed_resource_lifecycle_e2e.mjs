@@ -102,6 +102,12 @@ async function main() {
       betas: BETAS,
     });
     assert.equal(retrievedRepo.id, repoRes.id);
+    const retrievedFile = await client.beta.sessions.resources.retrieve(fileRes.id, {
+      session_id: session.id,
+      betas: BETAS,
+    });
+    assert.equal(retrievedFile.type, 'file');
+    assert.equal(retrievedFile.file_id, file.id);
     await assert.rejects(
       () => client.beta.sessions.resources.update(fileRes.id, {
         session_id: session.id,

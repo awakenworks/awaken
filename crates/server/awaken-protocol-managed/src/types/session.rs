@@ -244,7 +244,7 @@ pub struct SessionAgent {
     pub tools: Vec<AgentTool>,
     pub mcp_servers: Vec<AgentMcpServer>,
     pub skills: Vec<AgentSkill>,
-    /// SDK-required nullable coordinator roster; serialized as `null` when absent.
+    /// SDK-required nullable coordinator roster; `null` means no delegation.
     pub multiagent: Option<SessionMultiagentCoordinator>,
 }
 

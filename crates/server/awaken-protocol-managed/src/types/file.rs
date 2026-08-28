@@ -37,31 +37,69 @@ pub struct FileListParams {
     pub ids: Option<Vec<String>>,
 }
 
+#[derive(Debug, Default)]
+struct ParsedCursorFileList {
+    page: Option<String>,
+    limit: Option<u16>,
+    ids: Vec<String>,
+    scope_id: Option<String>,
+}
+
+fn parse_cursor_file_list(raw: &str, allow_scope: bool) -> Result<ParsedCursorFileList, String> {
+    let mut params = ParsedCursorFileList::default();
+    for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
+        match key.as_ref() {
+            "page" => params.page = Some(value.into_owned()),
+            "limit" => {
+                params.limit = Some(
+                    value
+                        .parse()
+                        .map_err(|_| "limit must be an unsigned integer".to_string())?,
+                );
+            }
+            "ids[]" => params.ids.push(value.into_owned()),
+            "scope_id" if allow_scope => params.scope_id = Some(value.into_owned()),
+            unknown => return Err(format!("unknown Files list parameter `{unknown}`")),
+        }
+    }
+    Ok(params)
+}
+
 impl FileListParams {
     /// Decode the SDK's repeated `ids[]` form keys. `serde_urlencoded` treats a
     /// single repeated-form value as a scalar and therefore cannot faithfully
     /// decode the generated SDK request on its own.
     pub fn from_query(raw: &str) -> Result<Self, String> {
-        let mut params = Self::default();
-        let mut ids = Vec::new();
-        for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
-            match key.as_ref() {
-                "page" => params.page = Some(value.into_owned()),
-                "limit" => {
-                    params.limit = Some(
-                        value
-                            .parse()
-                            .map_err(|_| "limit must be an unsigned integer".to_string())?,
-                    );
-                }
-                "ids[]" => ids.push(value.into_owned()),
-                unknown => return Err(format!("unknown Files list parameter `{unknown}`")),
-            }
-        }
-        if !ids.is_empty() {
-            params.ids = Some(ids);
-        }
-        Ok(params)
+        let parsed = parse_cursor_file_list(raw, false)?;
+        Ok(Self {
+            page: parsed.page,
+            limit: parsed.limit,
+            ids: (!parsed.ids.is_empty()).then_some(parsed.ids),
+        })
+    }
+}
+
+/// Post-GA `client.beta.files.list` keeps the Beta namespace's `scope_id` but
+/// adopts the GA cursor and `ids[]` pagination vocabulary. A distinct DTO keeps
+/// both it and top-level GA fail-closed without selecting behavior by SDK
+/// version.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BetaFileCursorListParams {
+    pub page: Option<String>,
+    pub limit: Option<u16>,
+    pub ids: Option<Vec<String>>,
+    pub scope_id: Option<String>,
+}
+
+impl BetaFileCursorListParams {
+    pub fn from_query(raw: &str) -> Result<Self, String> {
+        let parsed = parse_cursor_file_list(raw, true)?;
+        Ok(Self {
+            page: parsed.page,
+            limit: parsed.limit,
+            ids: (!parsed.ids.is_empty()).then_some(parsed.ids),
+            scope_id: parsed.scope_id,
+        })
     }
 }
 
@@ -112,6 +150,25 @@ pub struct BetaFileMetadata {
     pub scope: Option<BetaFileScope>,
 }
 
+/// Post-GA Beta Files response. It deliberately combines the Beta-only scope
+/// with the GA expiry field exactly as the official SDK does; neither the
+/// legacy capability projection nor the top-level GA projection is widened.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct BetaFileCursorMetadata {
+    pub id: String,
+    pub created_at: String,
+    pub filename: String,
+    pub mime_type: String,
+    pub size_bytes: u64,
+    #[serde(rename = "type")]
+    pub kind: FileObjectType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub downloadable: Option<bool>,
+    pub expires_at: Option<String>,
+    pub scope: Option<BetaFileScope>,
+}
+
 /// The beta-only Session scope projection.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
@@ -159,7 +216,7 @@ impl FileExpirySeconds {
 
 #[cfg(test)]
 mod tests {
-    use super::FileListParams;
+    use super::{BetaFileCursorListParams, FileListParams};
 
     #[test]
     fn ga_file_list_query_preserves_repeated_sdk_ids() {
@@ -181,5 +238,21 @@ mod tests {
             "R3/E3"
         );
         assert!(FileListParams::from_query("unknown=x").is_err(), "R4/E4");
+    }
+
+    #[test]
+    fn beta_cursor_file_query_owns_scope_without_widening_ga() {
+        // Change-point decision table: the post-GA Beta namespace owns
+        // scope_id + ids[] + cursor; top-level GA owns ids[] + cursor only.
+        // This syntactic request edge is what distinguishes the two official
+        // SDK surfaces without consulting x-stainless version metadata.
+        let beta = BetaFileCursorListParams::from_query(
+            "scope_id=sesn_1&ids%5B%5D=file_1&ids%5B%5D=file_2",
+        )
+        .unwrap();
+        assert_eq!(beta.scope_id.as_deref(), Some("sesn_1"));
+        assert_eq!(beta.ids.unwrap(), ["file_1", "file_2"]);
+        assert!(FileListParams::from_query("scope_id=sesn_1").is_err());
+        assert!(BetaFileCursorListParams::from_query("before_id=file_1").is_err());
     }
 }

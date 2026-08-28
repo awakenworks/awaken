@@ -134,6 +134,55 @@ pub enum ManagedCredentialNetworking {
     Limited { allowed_hosts: Vec<String> },
 }
 
+/// Effective egress locations for an environment-variable credential. The
+/// public API rejects `header=false, body=false`; representing only the three
+/// usable states keeps that invariant durable and impossible to bypass during
+/// projection, recovery, or partial update.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedCredentialInjectionLocation {
+    HeaderOnly,
+    BodyOnly,
+    #[default]
+    HeaderAndBody,
+}
+
+impl ManagedCredentialInjectionLocation {
+    #[must_use]
+    pub const fn from_flags(header: bool, body: bool) -> Option<Self> {
+        match (header, body) {
+            (true, false) => Some(Self::HeaderOnly),
+            (false, true) => Some(Self::BodyOnly),
+            (true, true) => Some(Self::HeaderAndBody),
+            (false, false) => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn header(self) -> bool {
+        matches!(self, Self::HeaderOnly | Self::HeaderAndBody)
+    }
+
+    #[must_use]
+    pub const fn body(self) -> bool {
+        matches!(self, Self::BodyOnly | Self::HeaderAndBody)
+    }
+
+    #[must_use]
+    pub const fn merge(self, header: Option<bool>, body: Option<bool>) -> Option<Self> {
+        Self::from_flags(
+            match header {
+                Some(value) => value,
+                None => self.header(),
+            },
+            match body {
+                Some(value) => value,
+                None => self.body(),
+            },
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ManagedMcpOauthRefresh {
     pub client_id: String,
@@ -149,6 +198,8 @@ pub enum ManagedCredentialAuth {
     EnvironmentVariable {
         secret_name: String,
         networking: ManagedCredentialNetworking,
+        #[serde(default)]
+        injection_location: ManagedCredentialInjectionLocation,
     },
     StaticBearer {
         mcp_server_url: String,
@@ -788,9 +839,110 @@ impl ManagedVaultRepo for crate::repo::InMemoryCredentialRepo {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{ManagedCredentialAuth, ManagedCredentialInjectionLocation};
+
+    /// Causal graph:
+    /// legacy persisted row (field absent) -> serde recovery -> effective
+    /// header+body injection -> stable reserialization. This is deliberately a
+    /// persistence-boundary test rather than an HTTP test: a fresh router over
+    /// the same typed in-memory repository cannot expose a missing serde
+    /// default after process replacement.
+    #[test]
+    fn legacy_environment_auth_recovers_with_both_injection_locations() {
+        let legacy = serde_json::json!({
+            "type": "environment_variable",
+            "secret_name": "ANTHROPIC_API_KEY",
+            "networking": { "type": "unrestricted" }
+        });
+
+        let recovered: ManagedCredentialAuth =
+            serde_json::from_value(legacy).expect("legacy auth must remain recoverable");
+        let ManagedCredentialAuth::EnvironmentVariable {
+            injection_location, ..
+        } = recovered
+        else {
+            panic!("legacy environment auth changed variant");
+        };
+
+        assert_eq!(
+            injection_location,
+            ManagedCredentialInjectionLocation::HeaderAndBody
+        );
+        assert_eq!(
+            serde_json::to_value(ManagedCredentialAuth::EnvironmentVariable {
+                secret_name: "ANTHROPIC_API_KEY".into(),
+                networking: super::ManagedCredentialNetworking::Unrestricted,
+                injection_location,
+            })
+            .expect("recovered auth must serialize")["injection_location"],
+            "header_and_body"
+        );
+    }
+
+    /// Decision table over the complete durable state space. Each valid state
+    /// must round-trip exactly; any fourth spelling must fail closed. Together
+    /// with the Kani flag proof this covers both serialization and construction
+    /// boundaries without encoding an invalid `header=false, body=false` state.
+    #[test]
+    fn injection_location_persistence_is_a_closed_three_state_enum() {
+        for location in [
+            ManagedCredentialInjectionLocation::HeaderOnly,
+            ManagedCredentialInjectionLocation::BodyOnly,
+            ManagedCredentialInjectionLocation::HeaderAndBody,
+        ] {
+            let encoded = serde_json::to_string(&location).expect("location must serialize");
+            let decoded: ManagedCredentialInjectionLocation =
+                serde_json::from_str(&encoded).expect("location must deserialize");
+            assert_eq!(decoded, location);
+        }
+
+        assert!(
+            serde_json::from_str::<ManagedCredentialInjectionLocation>("\"disabled\"").is_err(),
+            "the durable model must reject an all-disabled escape state"
+        );
+    }
+}
+
 #[cfg(kani)]
 mod verification {
     use super::*;
+
+    #[kani::proof]
+    fn injection_location_represents_exactly_the_three_usable_states() {
+        let header = kani::any::<bool>();
+        let body = kani::any::<bool>();
+        let location = ManagedCredentialInjectionLocation::from_flags(header, body);
+
+        assert_eq!(location.is_some(), header || body);
+        if let Some(location) = location {
+            assert_eq!(location.header(), header);
+            assert_eq!(location.body(), body);
+        }
+    }
+
+    #[kani::proof]
+    fn injection_location_partial_update_is_exact_and_never_allows_both_disabled() {
+        let current = match kani::any::<u8>() % 3 {
+            0 => ManagedCredentialInjectionLocation::HeaderOnly,
+            1 => ManagedCredentialInjectionLocation::BodyOnly,
+            _ => ManagedCredentialInjectionLocation::HeaderAndBody,
+        };
+        let header = kani::any::<bool>();
+        let body = kani::any::<bool>();
+        let patch_header = kani::any::<bool>().then_some(header);
+        let patch_body = kani::any::<bool>().then_some(body);
+        let expected_header = patch_header.unwrap_or_else(|| current.header());
+        let expected_body = patch_body.unwrap_or_else(|| current.body());
+        let merged = current.merge(patch_header, patch_body);
+
+        assert_eq!(merged.is_some(), expected_header || expected_body);
+        if let Some(merged) = merged {
+            assert_eq!(merged.header(), expected_header);
+            assert_eq!(merged.body(), expected_body);
+        }
+    }
 
     #[kani::proof]
     fn managed_vault_workspace_admission_is_exact_and_non_widening() {

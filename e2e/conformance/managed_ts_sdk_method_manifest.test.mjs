@@ -242,6 +242,10 @@ test('historical wire projection admits only the exact official operation subset
     resolveSdkPackage('@anthropic-ai/sdk-oldest').root,
     scope,
   ).operations;
+  const current = extractOperationsFromPackageRoot(
+    resolveSdkPackage('@anthropic-ai/sdk-current').root,
+    scope,
+  ).operations;
   const projected = managedTsMethodManifestForOperations(oldest, {
     allowHistoricalSubset: true,
   });
@@ -251,8 +255,15 @@ test('historical wire projection admits only the exact official operation subset
     oldest.map(({ id }) => id).sort(),
     'E1',
   );
-  assert.ok(!projected.some(({ owner }) => owner === 'managed_dream_e2e.ts'), 'E2');
-  assert.ok(!projected.some(({ owner }) => owner === 'management_tunnels_contract_e2e.mjs'), 'E2');
+  const oldestIDs = new Set(oldest.map(({ id }) => id));
+  const currentOnlyIDs = new Set(current
+    .map(({ id }) => id)
+    .filter((id) => !oldestIDs.has(id)));
+  assert.ok(currentOnlyIDs.size > 0, 'E2 requires a non-empty version delta');
+  assert.ok(
+    !projected.some(({ sdkMethod }) => currentOnlyIDs.has(sdkMethod)),
+    'E2: current-only operations cannot leak through historical owner reuse',
+  );
   assert.throws(
     () => managedTsMethodManifestForOperations([
       ...oldest,
