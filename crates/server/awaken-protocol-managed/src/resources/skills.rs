@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
-    BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
+    ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
 use crate::types::skill::{
     BetaSkill, BetaSkillListParams, BetaSkillVersion, BetaSkillVersionListParams, DeletedSkill,
@@ -52,10 +52,10 @@ fn timestamp(nanos: u64) -> String {
 fn project_definition(
     definition: &SkillDefinition,
     latest: &SkillVersion,
-    flavor: ManagedResourceApiFlavor,
+    surface: ManagedResourceApiSurface,
 ) -> SkillWire {
-    match flavor {
-        ManagedResourceApiFlavor::Beta => SkillWire::Beta(BetaSkill {
+    match surface {
+        ManagedResourceApiSurface::CapabilityBeta => SkillWire::Beta(BetaSkill {
             id: definition.id.to_string(),
             kind: SkillObjectType::Skill,
             created_at: timestamp(definition.timestamps.created_unix_nanos),
@@ -64,24 +64,26 @@ fn project_definition(
             latest_version: Some(definition.latest_version.to_string()),
             source: "custom",
         }),
-        ManagedResourceApiFlavor::Ga => SkillWire::Ga(Skill {
-            id: definition.id.to_string(),
-            kind: SkillObjectType::Skill,
-            created_at: timestamp(definition.timestamps.created_unix_nanos),
-            updated_at: timestamp(definition.timestamps.updated_unix_nanos),
-            display_name: definition
-                .display_title
-                .clone()
-                .unwrap_or_else(|| latest.name.clone()),
-            latest_version_id: latest.id.to_string(),
-            source: SkillSource::Custom,
-        }),
+        ManagedResourceApiSurface::QueryBeta | ManagedResourceApiSurface::Ga => {
+            SkillWire::Ga(Skill {
+                id: definition.id.to_string(),
+                kind: SkillObjectType::Skill,
+                created_at: timestamp(definition.timestamps.created_unix_nanos),
+                updated_at: timestamp(definition.timestamps.updated_unix_nanos),
+                display_name: definition
+                    .display_title
+                    .clone()
+                    .unwrap_or_else(|| latest.name.clone()),
+                latest_version_id: latest.id.to_string(),
+                source: SkillSource::Custom,
+            })
+        }
     }
 }
 
-fn project_version(version: &SkillVersion, flavor: ManagedResourceApiFlavor) -> SkillVersionWire {
-    match flavor {
-        ManagedResourceApiFlavor::Beta => SkillVersionWire::Beta(BetaSkillVersion {
+fn project_version(version: &SkillVersion, surface: ManagedResourceApiSurface) -> SkillVersionWire {
+    match surface {
+        ManagedResourceApiSurface::CapabilityBeta => SkillVersionWire::Beta(BetaSkillVersion {
             id: version.id.to_string(),
             kind: SkillVersionObjectType::SkillVersion,
             created_at: timestamp(version.created_unix_nanos),
@@ -91,14 +93,16 @@ fn project_version(version: &SkillVersion, flavor: ManagedResourceApiFlavor) -> 
             skill_id: version.skill_id.to_string(),
             version: version.version.to_string(),
         }),
-        ManagedResourceApiFlavor::Ga => SkillVersionWire::Ga(SkillVersionDto {
-            id: version.id.to_string(),
-            kind: SkillVersionObjectType::SkillVersion,
-            created_at: timestamp(version.created_unix_nanos),
-            description: version.description.clone(),
-            name: version.name.clone(),
-            skill_id: version.skill_id.to_string(),
-        }),
+        ManagedResourceApiSurface::QueryBeta | ManagedResourceApiSurface::Ga => {
+            SkillVersionWire::Ga(SkillVersionDto {
+                id: version.id.to_string(),
+                kind: SkillVersionObjectType::SkillVersion,
+                created_at: timestamp(version.created_unix_nanos),
+                description: version.description.clone(),
+                name: version.name.clone(),
+                skill_id: version.skill_id.to_string(),
+            })
+        }
     }
 }
 
@@ -337,13 +341,8 @@ async fn create_skill(
     RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     let (display_title, files) = match read_multipart(multipart).await {
@@ -371,7 +370,7 @@ async fn create_skill(
             version.created_unix_nanos,
         ),
     };
-    let projected = project_definition(&definition, &version, flavor);
+    let projected = project_definition(&definition, &version, surface);
     let Some(result) = state.create(definition.clone(), version).await else {
         return err(
             StatusCode::CONFLICT,
@@ -394,17 +393,12 @@ async fn list_skills(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
-    let (page, source) = match flavor {
-        ManagedResourceApiFlavor::Beta => {
+    let (page, source) = match surface {
+        ManagedResourceApiSurface::CapabilityBeta => {
             match serde_urlencoded::from_str::<BetaSkillListParams>(&without_beta_selector(
                 raw.as_deref(),
             )) {
@@ -418,7 +412,7 @@ async fn list_skills(
                 Err(error) => return err(StatusCode::BAD_REQUEST, error.to_string()),
             }
         }
-        ManagedResourceApiFlavor::Ga => {
+        ManagedResourceApiSurface::QueryBeta | ManagedResourceApiSurface::Ga => {
             match serde_urlencoded::from_str::<SkillListParams>(&without_beta_selector(
                 raw.as_deref(),
             )) {
@@ -469,7 +463,7 @@ async fn list_skills(
                 "skill latest version is missing",
             );
         };
-        data.push(project_definition(definition, latest, flavor));
+        data.push(project_definition(definition, latest, surface));
     }
     (
         StatusCode::OK,
@@ -488,20 +482,15 @@ async fn retrieve_skill(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match state.definition(&workspace, &id).await {
         Some(Ok(Some(definition))) => match find_version(&state, &workspace, &id, "latest").await {
             Ok(Some(latest)) => (
                 StatusCode::OK,
-                Json(project_definition(&definition, &latest, flavor)),
+                Json(project_definition(&definition, &latest, surface)),
             )
                 .into_response(),
             Ok(None) => err(
@@ -523,12 +512,8 @@ async fn delete_skill(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    if let Err(message) = resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
+    if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills)
+    {
         return err(StatusCode::BAD_REQUEST, message);
     }
     let definition = match state.definition(&workspace, &id).await {
@@ -578,13 +563,8 @@ async fn create_version(
     RawQuery(raw): RawQuery,
     multipart: Multipart,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     let definition = match state.definition(&workspace, &id).await {
@@ -621,7 +601,7 @@ async fn create_version(
         Err(error) => return err(StatusCode::BAD_REQUEST, error),
     };
     let version = build_version(&id, &content, definition.last_version + 1, bundle);
-    let projected = project_version(&version, flavor);
+    let projected = project_version(&version, surface);
     match state.append_version(&workspace, &id, version).await {
         Some(Ok(())) => (StatusCode::OK, Json(projected)).into_response(),
         Some(Err(error)) => store_error(error),
@@ -639,30 +619,29 @@ async fn list_versions(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
-    let page = match flavor {
-        ManagedResourceApiFlavor::Beta => serde_urlencoded::from_str::<BetaSkillVersionListParams>(
-            &without_beta_selector(raw.as_deref()),
-        )
-        .map(|query| PageQuery {
-            page: query.page,
-            limit: query.limit.map(usize::from),
-        }),
-        ManagedResourceApiFlavor::Ga => serde_urlencoded::from_str::<SkillVersionListParams>(
-            &without_beta_selector(raw.as_deref()),
-        )
-        .map(|query| PageQuery {
-            page: query.page,
-            limit: query.limit.map(usize::from),
-        }),
+    let page = match surface {
+        ManagedResourceApiSurface::CapabilityBeta => {
+            serde_urlencoded::from_str::<BetaSkillVersionListParams>(&without_beta_selector(
+                raw.as_deref(),
+            ))
+            .map(|query| PageQuery {
+                page: query.page,
+                limit: query.limit.map(usize::from),
+            })
+        }
+        ManagedResourceApiSurface::QueryBeta | ManagedResourceApiSurface::Ga => {
+            serde_urlencoded::from_str::<SkillVersionListParams>(&without_beta_selector(
+                raw.as_deref(),
+            ))
+            .map(|query| PageQuery {
+                page: query.page,
+                limit: query.limit.map(usize::from),
+            })
+        }
     };
     let page = match page {
         Ok(page) => page,
@@ -672,7 +651,7 @@ async fn list_versions(
         Some(Ok(versions)) if !versions.is_empty() => {
             let data: Vec<_> = versions
                 .iter()
-                .map(|version| project_version(version, flavor))
+                .map(|version| project_version(version, surface))
                 .collect();
             (
                 StatusCode::OK,
@@ -713,18 +692,13 @@ async fn retrieve_version(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(surface) => surface,
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
     };
     match find_version(&state, &workspace, &id, &version).await {
         Ok(Some(version)) => {
-            (StatusCode::OK, Json(project_version(&version, flavor))).into_response()
+            (StatusCode::OK, Json(project_version(&version, surface))).into_response()
         }
         Ok(None) => err(StatusCode::NOT_FOUND, "skill version not found"),
         Err(error) => store_error(error),
@@ -738,12 +712,8 @@ async fn delete_version(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    if let Err(message) = resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
+    if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills)
+    {
         return err(StatusCode::BAD_REQUEST, message);
     }
     let found = match find_version(&state, &workspace, &id, &version).await {
@@ -799,14 +769,9 @@ async fn version_content(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsBeta,
-    ) {
-        Ok(ManagedResourceApiFlavor::Beta) => {}
-        Ok(ManagedResourceApiFlavor::Ga) => {
+    match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(ManagedResourceApiSurface::CapabilityBeta | ManagedResourceApiSurface::QueryBeta) => {}
+        Ok(ManagedResourceApiSurface::Ga) => {
             return err(StatusCode::NOT_FOUND, "GA Skills has no content endpoint");
         }
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -841,14 +806,9 @@ async fn version_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Skills,
-        BetaQueryPolicy::QuerySelectsBeta,
-    ) {
-        Ok(ManagedResourceApiFlavor::Beta) => {}
-        Ok(ManagedResourceApiFlavor::Ga) => {
+    match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Skills) {
+        Ok(ManagedResourceApiSurface::CapabilityBeta | ManagedResourceApiSurface::QueryBeta) => {}
+        Ok(ManagedResourceApiSurface::Ga) => {
             return err(StatusCode::NOT_FOUND, "GA Skills has no file endpoint");
         }
         Err(message) => return err(StatusCode::BAD_REQUEST, message),
@@ -904,27 +864,38 @@ mod tests {
         let beta_skill = serde_json::to_value(project_definition(
             &definition,
             &version,
-            ManagedResourceApiFlavor::Beta,
+            ManagedResourceApiSurface::CapabilityBeta,
         ))
         .unwrap();
         assert_eq!(beta_skill.as_object().unwrap().len(), 7, "S1 beta");
         let ga_skill = serde_json::to_value(project_definition(
             &definition,
             &version,
-            ManagedResourceApiFlavor::Ga,
+            ManagedResourceApiSurface::Ga,
         ))
         .unwrap();
         assert_eq!(ga_skill.as_object().unwrap().len(), 7, "S1 GA");
         assert!(ga_skill["source"].is_object(), "S1 GA source object");
         assert_eq!(ga_skill["latest_version_id"], "skver_1", "S1 GA");
 
-        let beta_version =
-            serde_json::to_value(project_version(&version, ManagedResourceApiFlavor::Beta))
-                .unwrap();
+        let beta_version = serde_json::to_value(project_version(
+            &version,
+            ManagedResourceApiSurface::CapabilityBeta,
+        ))
+        .unwrap();
         assert_eq!(beta_version.as_object().unwrap().len(), 8, "S2 beta");
         let ga_version =
-            serde_json::to_value(project_version(&version, ManagedResourceApiFlavor::Ga)).unwrap();
+            serde_json::to_value(project_version(&version, ManagedResourceApiSurface::Ga)).unwrap();
         assert_eq!(ga_version.as_object().unwrap().len(), 6, "S2 GA");
+        assert_eq!(
+            serde_json::to_value(project_version(
+                &version,
+                ManagedResourceApiSurface::QueryBeta,
+            ))
+            .unwrap(),
+            ga_version,
+            "S2 post-GA Beta namespace shares the GA Skill DTO"
+        );
         assert!(ga_version.get("directory").is_none(), "S2 no beta fields");
         assert!(ga_version.get("files").is_none(), "S2 no extension fields");
         let deleted = serde_json::to_value(DeletedSkill {

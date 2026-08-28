@@ -58,21 +58,44 @@ evidence from drifting from the external expectation:
   declarations; unrelated Messages/Organization modules remain outside the
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
-  real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
+  real-process owner and records successful 2xx official-SDK HTTP exchanges.
   It projects the same owner graph over all 99/114/127 HTTP operations exposed
   by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
-  four helpers for every admitted candidate. A package-selection hook resolves unchanged
-  canonical imports inside the selected exact package root; each receipt must
-  carry that package's exact `x-stainless-package-version`, method, route,
-  Beta/GA selector, and capabilities. Files/Skills wire coordinates are
+  four helpers for every admitted candidate. A package-selection hook resolves
+  unchanged canonical imports inside the selected exact package root; each
+  receipt must carry that package's exact `x-stainless-package-version`, method,
+  route, Beta/GA selector, and capabilities. Operation-local capabilities
+  removed by a newer SDK are derived from the other admitted anchors and
+  explicitly forbidden, so a caller-supplied legacy header cannot make a new
+  generated request appear compatible. Files/Skills wire coordinates are
   projected from that package's generated operations, so the 0.122 post-GA
   DTOs are exercised without copying the 0.121 tests or accepting a union
-  shape. A method present only in source text cannot satisfy qualification.
+  shape. Every successful JSON response is also checked against a recursive
+  closed contract extracted from that exact package's adjacent `.d.ts`:
+  required fields, optionality, nesting, nullability, arrays, unions, and finite
+  literal discriminators are enforced. Literal observations cross the process
+  boundary only as run-scoped keyed fingerprints, so evidence cannot retain a
+  credential, metadata value, or user payload. Page methods must additionally
+  observe a non-empty item at least once. The only open JSON response positions
+  are named `json-schema` and `tool-input` contracts from the official protocol;
+  an `any`/`unknown` anywhere else, or an unchecked recursive response type,
+  fails extraction before behavior evidence can be admitted. The same
+  TypeChecker walks the complete non-transport request parameter closure for
+  every anchor and candidate. It admits open request JSON only beneath a custom
+  tool's named `input_schema`, treats `Uploadable` as the distinct multipart
+  transport boundary, and rejects arbitrary `any`/`unknown`, unconstrained
+  objects, or payloads disguised as transport `options`. A method present only
+  in source text, an empty page, or a same-primitive wrong discriminator cannot
+  satisfy qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
   negative/error probes, pagination, concurrent idempotency, retry identity,
-  and SSE full-replay/deduplication. The ordinary command permits an optional
+  and SSE full-replay/deduplication. For every release client it also compares
+  successful create/retrieve/update Session, Agent, Stats, and Usage field sets
+  directly with Anthropic-owned reference fixtures, so two independently
+  successful lifecycles cannot hide an extra or missing response field. The
+  ordinary command permits an optional
   official-service differential for developer diagnostics; the release command
   requires all official-reference credentials and fails closed when they are
   absent or partial. It then runs the same positive SDK lifecycles against
@@ -103,17 +126,22 @@ evidence from drifting from the external expectation:
   poller, SessionToolRunner, EnvironmentWorker, accumulator, and Agent Toolset;
   a two-process scenario recovers Session/Event, Memory, File, and Skill facts
   from one durable deployment. Before those real-process slices, a recording
-  transport invokes all 127 Python methods through `with_raw_response` and
-  requires their exact generated verb, normalized route, query selector, and
-  beta-header set; a new required parameter fails closed until its fixture is
-  reviewed. The existing shared behavior owners continue to own service-domain
-  semantics, so this client sweep does not copy their resource state machines.
+  transport invokes all 127 Python methods through both synchronous and
+  asynchronous `with_raw_response` resources and requires their exact generated
+  verb, normalized route, query selector, and beta-header set; a new required
+  parameter fails closed until its fixture is reviewed. Both client modes share
+  the same extracted operation ledger, fixture vocabulary, and assertions, so
+  async drift cannot hide behind a duplicate inventory. The existing shared
+  behavior owners continue to own service-domain semantics, so this client
+  sweep does not copy their resource state machines.
 - `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
   change point in its own SHA-256-qualified wheel root over one exact dependency
   closure. It re-extracts and compares the installed source/operation/helper/
   export and handwritten transport-source fingerprints, constructs every
-  operation, proves the canonical Python error subclasses plus
-  retry/idempotency identity, and runs live Session/SSE and Memory lifecycles.
+  operation through both sync and async clients, projects one shared decision
+  table through both clients to prove the canonical Python error subclasses,
+  retry policy, and byte-identical idempotent retries, and runs live Session/SSE
+  and Memory lifecycles.
   The generated SSE dispatch inventory records that the first 0.92 Managed
   wheel filters canonical Managed event names in its own generic parser; 0.100+
   must decode message and terminal replay. The last Beta-only and first GA
@@ -204,7 +232,7 @@ side effects, cursor traversal, rejected mutations, missing/deleted identities,
 immutable version archives, cross-root identity, and a real process restart over
 one durable store, including Session/Event, Memory, File, and Skill recovery.
 A shared transport receipt encoder requires every discovered
-Beta Files/Skills operation to reach a real non-5xx resource response with its
+Beta Files/Skills operation to reach a successful 2xx resource response with its
 exact method, route, selector, capability, and official-SDK marker; 401/403
 policy failures cannot impersonate resource-owner coverage. The runner also
 executes every webhook parser exposed by that SDK. Changes in the Managed

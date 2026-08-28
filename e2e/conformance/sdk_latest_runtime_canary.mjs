@@ -15,6 +15,10 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
+import {
+  auditRequestTypesFromPackageRoot,
+  extractResponseContractsFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { managedExportFingerprintFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-exports.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
@@ -28,6 +32,7 @@ import {
   waitForSessionEventReceipt,
   waitForPort,
   withRealServer,
+  withServer,
   withScenarioServer,
 } from '../harness.mjs';
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
@@ -68,6 +73,17 @@ const qualification = qualifyOfficialSdkCandidateDelta(
   candidateDelta,
   qualificationCatalog.qualifications,
 );
+const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
+auditRequestTypesFromPackageRoot(
+  packageRoot,
+  scope,
+  operations.map(({ id }) => id),
+);
+const responseContracts = extractResponseContractsFromPackageRoot(
+  packageRoot,
+  scope,
+  operations.map(({ id }) => id),
+);
 const completedBehaviorOwners = new Set();
 const completeBehaviorOwner = (owner) => completedBehaviorOwners.add(owner);
 
@@ -85,7 +101,6 @@ const {
   betaAgentToolset20260401,
   setupSkills,
 } = agentToolset;
-const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 const managedExports = managedExportFingerprintFromPackageRoot(packageRoot, scope);
 const hasResolveSkillVersion = managedExports.exports.some(
   ({ id }) => id === 'tools/agent-toolset/node.mjs#resolveSkillVersion',
@@ -101,6 +116,7 @@ const candidateResourceOperations = operations
     route: operation.path,
     transportQuery: operation.transport_query,
     betas: operation.betas,
+    responseContract: responseContracts[operation.id],
   }));
 const candidateReceipts = [];
 const candidateRecordingFetch = recordingFetch(
@@ -177,7 +193,7 @@ async function exerciseSdkCoreTransport() {
       assertCandidateFilesTransport(input, init);
       return new Response(JSON.stringify(betaFiles.projection === 'beta'
         ? { data: [], has_more: false, first_id: null, last_id: null }
-        : { data: [], has_more: false, next_page: null }), {
+        : { data: [], next_page: null }), {
         headers: { 'content-type': 'application/json' },
       });
     },
@@ -371,7 +387,7 @@ async function exerciseBetaFiles(client) {
     assert.equal(Object.hasOwn(file, 'expires_at'), false, 'F1/E6');
   } else {
     assert.equal(typeof file.expires_at, 'string', 'F2/E7');
-    assert.equal(Object.hasOwn(file, 'scope'), false, 'F2/E7');
+    assert.equal(file.scope, null, 'F2/E7 Beta namespace retains nullable scope');
   }
   assert.equal((await client.beta.files.retrieveMetadata(file.id)).id, file.id, 'F1/F2 retrieve');
   const listed = await drain(client.beta.files.list({ limit: 1 }));
@@ -420,6 +436,75 @@ async function exerciseBetaFiles(client) {
   );
   await client.beta.files.delete(peer.id);
   completeBehaviorOwner('candidate.files-runtime');
+}
+
+async function exerciseGeneratedFileDownload() {
+  // Files.download has two semantically distinct paths: uploaded inputs must
+  // fail closed, while an Agent-produced artifact must return bytes. The Files
+  // canary above owns the former. This isolated Dream topology supplies a legal
+  // generated artifact for the latter without manufacturing a test-only File
+  // record or granting uploads a production-invalid capability. Dream remains
+  // owned by its canonical behavior scenario; it is fixture setup here.
+  await withServer('dream', 38193, async (baseURL) => {
+    const client = new Anthropic({
+      apiKey: 'e2e-dummy',
+      baseURL,
+      fetch: candidateRecordingFetch,
+    });
+    const sourceSession = await client.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+      initial_events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: `downloadable-candidate-${manifest.version}` }],
+      }],
+    });
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const source = await client.beta.sessions.retrieve(sourceSession.id);
+      if (source.status === 'idle') break;
+      assert.notEqual(source.status, 'terminated', 'generated File source Session remains viable');
+      if (attempt === 399) assert.fail('generated File source Session did not become idle');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const sourceStore = await client.beta.memoryStores.create({
+      name: `downloadable-candidate-${manifest.version}`,
+    });
+    const target = await client.beta.dreams.create({
+      inputs: [
+        { type: 'memory_store', memory_store_id: sourceStore.id },
+        { type: 'sessions', session_ids: [sourceSession.id] },
+      ],
+      model: 'claude-sonnet-5',
+      instructions: '[awaken-test:hold-dream-for-cancellation]',
+    });
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      const dream = await client.beta.dreams.retrieve(target.id);
+      if (dream.status === 'running' && dream.session_id && dream.outputs.length === 1) break;
+      assert.ok(
+        !['completed', 'failed', 'canceled'].includes(dream.status),
+        `generated File Dream became ${dream.status} before preparation`,
+      );
+      if (attempt === 399) assert.fail('generated File Dream did not expose preparation');
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const files = await drain(client.beta.files.list());
+    const transcript = files.find(({ filename }) => filename === `${sourceSession.id}.jsonl`);
+    assert.ok(transcript, 'candidate setup publishes one generated transcript File');
+    assert.equal(transcript.downloadable, true, 'candidate transcript carries output capability');
+    const betaBytes = await (await client.beta.files.download(transcript.id)).text();
+    assert.ok(betaBytes.includes(`downloadable-candidate-${manifest.version}`));
+    assert.equal(
+      await (await client.files.download(transcript.id)).text(),
+      betaBytes,
+      'candidate Beta and GA download methods decode the same generated bytes',
+    );
+    assert.equal((await client.beta.dreams.cancel(target.id)).status, 'canceled');
+    await client.beta.dreams.archive(target.id);
+    await client.beta.sessions.delete(sourceSession.id);
+    await client.beta.memoryStores.archive(sourceStore.id);
+    await client.beta.memoryStores.delete(sourceStore.id);
+    pass(`registry SDK ${manifest.version} downloads one generated File through Beta and GA roots`);
+  });
 }
 
 async function exerciseBetaSkills(client) {
@@ -946,12 +1031,13 @@ await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
   pass(`registry SDK ${manifest.version} runs UserProfile default beta`);
 });
 
+await exerciseGeneratedFileDownload();
 await exerciseBetaGaRecovery();
 
 // Causal/FMECA closure for candidate operation drift:
 // C1 the extracted candidate inventory is the sole expected-operation source;
 // C2 the exact candidate SDK emits each request; C3 a real Awaken handler
-// returns a non-5xx application response. Effect E1 every Files/Skills operation
+// returns a successful 2xx application response. Effect E1 every Files/Skills operation
 // has a matching method/path/query/capability/Stainless/exact-version receipt. Authentication
 // and authorization failures are deliberately excluded: 401/403 prove PEP
 // ordering but not entry into the resource owner. Missing calls, a nearby route,

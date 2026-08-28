@@ -40,13 +40,15 @@ const OWNER_PREFIXES = new Map([
 ]);
 
 const OWNER_OVERRIDES = new Map([
-  ['beta.files.download', 'managed_resources_api_e2e.mjs'],
+  ['beta.files.download', 'managed_dream_e2e.ts'],
   ['beta.files.list', 'managed_resources_api_e2e.mjs'],
   ['beta.files.retrieveMetadata', 'managed_full_lifecycle_e2e.mjs'],
   ['beta.sessions.resources.update', 'managed_session_resource_rotation_e2e.mjs'],
   ['beta.vaults.credentials.mcpOAuthValidate', 'management_vaults_e2e.mjs'],
+  ['beta.vaults.credentials.retrieve', 'management_vaults_e2e.mjs'],
   ['beta.vaults.delete', 'management_vaults_e2e.mjs'],
   ['beta.vaults.retrieve', 'management_vaults_e2e.mjs'],
+  ['files.download', 'managed_dream_e2e.ts'],
 ]);
 
 const SDK_HELPERS = [
@@ -119,7 +121,7 @@ export const MANAGED_TS_METHOD_MANIFEST = [...operations, ...SDK_HELPERS]
 
 export function managedTsMethodManifestForOperations(
   selectedOperations,
-  { allowHistoricalSubset = false } = {},
+  { allowHistoricalSubset = false, responseContracts, wireResponseContracts } = {},
 ) {
   assert.ok(Array.isArray(selectedOperations), 'selected SDK operations must be an array');
   const selected = new Map();
@@ -156,6 +158,10 @@ export function managedTsMethodManifestForOperations(
         method: operation.method,
         betas: operation.betas,
         ...(operation.transport_query ? { transportQuery: operation.transport_query } : {}),
+        ...(responseContracts ? { responseContract: responseContracts[operation.id] } : {}),
+        ...(wireResponseContracts
+          ? { wireResponseContract: wireResponseContracts[operation.id] }
+          : {}),
       });
     });
 }

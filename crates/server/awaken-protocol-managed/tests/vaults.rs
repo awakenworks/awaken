@@ -1340,6 +1340,228 @@ async fn update_credential_patches_fields_reseals_secret_and_rejects_type_change
     assert_eq!(s, StatusCode::NOT_FOUND);
 }
 
+/// Test design — causal graph and decision table for the official Managed
+/// Agents injection-location contract:
+///
+/// ```text
+/// create JSON presence -> request DTO -> valid three-state domain value
+///     -> durable credential row -> create/retrieve/update projection
+///                                      ^                 |
+///                                      +--- recovery ----+
+/// ```
+///
+/// The create object has replacement semantics (an omitted object defaults both
+/// locations to true, but an omitted member of a present object defaults false).
+/// The update object has merge semantics (an omitted member preserves its current
+/// value). Explicit null, unknown fields, and an effective `(false, false)` are
+/// rejected before mutation. Pairwise coverage below crosses presence with both
+/// booleans; the domain's Kani harness exhaustively proves the remaining boolean
+/// combinations.
+#[tokio::test]
+async fn environment_credential_injection_location_is_exact_atomic_and_recoverable() {
+    let h = harness();
+    let vault_id = create_vault(&h, "injection-locations").await;
+
+    let create_cases = [
+        ("DEFAULT", None, json!({ "body": true, "header": true })),
+        (
+            "HEADER",
+            Some(json!({ "header": true })),
+            json!({ "body": false, "header": true }),
+        ),
+        (
+            "BODY",
+            Some(json!({ "body": true })),
+            json!({ "body": true, "header": false }),
+        ),
+        (
+            "BOTH",
+            Some(json!({ "body": true, "header": true })),
+            json!({ "body": true, "header": true }),
+        ),
+    ];
+    let mut ids = HashMap::new();
+    for (secret_name, injection_location, expected) in create_cases {
+        let mut auth = json!({
+            "type": "environment_variable",
+            "secret_name": secret_name,
+            "secret_value": "write-only", // awaken-allow: secret
+            "networking": { "type": "unrestricted" }
+        });
+        if let Some(location) = injection_location {
+            auth["injection_location"] = location;
+        }
+        let (status, credential) = call(
+            &h.app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials"),
+            Some(auth),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "create case {secret_name}");
+        assert_eq!(
+            credential["auth"]["injection_location"], expected,
+            "create case {secret_name}"
+        );
+        ids.insert(
+            secret_name,
+            credential["id"].as_str().expect("credential id").to_owned(),
+        );
+    }
+
+    let before_invalid = h
+        .credentials
+        .list_vault_credentials("default", &vault_id)
+        .await
+        .unwrap();
+    for (name, location) in [
+        ("empty object", json!({})),
+        ("both disabled", json!({ "body": false, "header": false })),
+        ("null member", json!({ "body": null, "header": true })),
+        ("unknown member", json!({ "body": true, "other": true })),
+    ] {
+        let (status, _) = call(
+            &h.app,
+            "POST",
+            &format!("/v1/vaults/{vault_id}/credentials"),
+            Some(json!({
+                "type": "environment_variable",
+                "secret_name": format!("INVALID_{name}"),
+                "secret_value": "never-stored", // awaken-allow: secret
+                "networking": { "type": "unrestricted" },
+                "injection_location": location,
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{name}");
+    }
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &format!("/v1/vaults/{vault_id}/credentials"),
+        Some(json!({
+            "type": "environment_variable",
+            "secret_name": "NULL_OBJECT",
+            "secret_value": "never-stored", // awaken-allow: secret
+            "networking": { "type": "unrestricted" },
+            "injection_location": null,
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "null object");
+    assert_eq!(
+        h.credentials
+            .list_vault_credentials("default", &vault_id)
+            .await
+            .unwrap(),
+        before_invalid,
+        "invalid creates are mutation-free"
+    );
+
+    let credential_id = ids["DEFAULT"].clone();
+    let uri = format!("/v1/vaults/{vault_id}/credentials/{credential_id}");
+    let update_cases = [
+        (
+            json!({ "body": false }),
+            json!({ "body": false, "header": true }),
+        ),
+        (
+            json!({ "body": true, "header": false }),
+            json!({ "body": true, "header": false }),
+        ),
+        (
+            json!({ "header": true }),
+            json!({ "body": true, "header": true }),
+        ),
+    ];
+    for (patch, expected) in update_cases {
+        let (status, credential) = call(
+            &h.app,
+            "POST",
+            &uri,
+            Some(json!({
+                "auth": {
+                    "type": "environment_variable",
+                    "injection_location": patch,
+                }
+            })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(credential["auth"]["injection_location"], expected);
+    }
+
+    let before_rejected_update = h
+        .credentials
+        .get_vault_credential("default", &credential_id)
+        .await
+        .unwrap()
+        .expect("credential");
+    for (name, patch) in [
+        (
+            "effective both disabled",
+            json!({ "body": false, "header": false }),
+        ),
+        ("empty update", json!({})),
+        ("null member", json!({ "body": null })),
+        ("unknown member", json!({ "other": true })),
+    ] {
+        let (status, _) = call(
+            &h.app,
+            "POST",
+            &uri,
+            Some(json!({
+                "auth": {
+                    "type": "environment_variable",
+                    "injection_location": patch,
+                }
+            })),
+        )
+        .await;
+        let expected = if name == "empty update" {
+            StatusCode::OK
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        assert_eq!(status, expected, "{name}");
+    }
+    let (status, _) = call(
+        &h.app,
+        "POST",
+        &uri,
+        Some(json!({
+            "auth": {
+                "type": "environment_variable",
+                "injection_location": null,
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "null update object");
+    assert_eq!(
+        h.credentials
+            .get_vault_credential("default", &credential_id)
+            .await
+            .unwrap()
+            .expect("credential"),
+        before_rejected_update,
+        "rejected updates are atomic"
+    );
+
+    // A fresh protocol state has no in-memory projection cache to rely on. It
+    // must reconstruct the exact required response fields from the durable row.
+    let recovered = vault_router(Arc::new(VaultState::new(
+        h.secrets.clone(),
+        h.credentials.clone(),
+    )));
+    let (status, credential) = call(&recovered, "GET", &uri, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        credential["auth"]["injection_location"],
+        json!({ "body": true, "header": true })
+    );
+}
+
 #[tokio::test]
 async fn update_credential_clears_display_name_with_explicit_null() {
     let h = harness();

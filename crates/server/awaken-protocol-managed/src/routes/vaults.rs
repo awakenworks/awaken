@@ -44,10 +44,10 @@ use awaken_credential_contract::{
 };
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
-    ManagedCredentialMutationError, ManagedCredentialNetworking,
-    ManagedMcpOauthRefresh as McpOauthRefreshRecord, ManagedVault as VaultRecord,
-    ManagedVaultCredential as CredentialRecord, ManagedVaultMutationError,
-    request_managed_vault_deletion,
+    ManagedCredentialInjectionLocation, ManagedCredentialMutationError,
+    ManagedCredentialNetworking, ManagedMcpOauthRefresh as McpOauthRefreshRecord,
+    ManagedVault as VaultRecord, ManagedVaultCredential as CredentialRecord,
+    ManagedVaultMutationError, request_managed_vault_deletion,
 };
 use awaken_credential_vault::repo::{
     ApplicationMcpBearerCommand, CredentialMaterialPatch, ManagedCredentialAdoptionProgress,
@@ -70,7 +70,8 @@ use axum::{Json, Router};
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::routes::{ManagedJson, sha256_identity};
 use crate::types::vault::{
-    Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire, CredentialNetworking,
+    Credential, CredentialAuth, CredentialCreateParams, CredentialCreateWire,
+    CredentialInjectionLocation, CredentialInjectionLocationParams, CredentialNetworking,
     CredentialUpdateAuth, CredentialUpdateParams, CredentialValidation, CredentialValidationStatus,
     DeletedCredential, DeletedVault, ListQuery, McpOauthRefreshResponse, McpProbeResult,
     TokenEndpointAuthParams, TokenEndpointAuthResponse, TokenEndpointAuthUpdate, Vault,
@@ -193,6 +194,19 @@ fn auth_mcp_server_url(auth: &AuthRecord) -> Option<&str> {
         | AuthRecord::McpOauth { mcp_server_url, .. } => Some(mcp_server_url),
         AuthRecord::EnvironmentVariable { .. } => None,
     }
+}
+
+fn create_injection_location(
+    requested: Option<CredentialInjectionLocationParams>,
+) -> Result<ManagedCredentialInjectionLocation, WireError> {
+    let (header, body) = requested.map_or((true, true), |requested| {
+        (
+            requested.header.unwrap_or(false),
+            requested.body.unwrap_or(false),
+        )
+    });
+    ManagedCredentialInjectionLocation::from_flags(header, body)
+        .ok_or_else(|| bad_request("injection_location must enable header, body, or both"))
 }
 
 /// The vault surface's state: the neutral credential domain stores plus the
@@ -884,6 +898,7 @@ impl VaultState {
             AuthRecord::EnvironmentVariable {
                 secret_name,
                 networking,
+                injection_location,
             } => CredentialAuth::EnvironmentVariable {
                 secret_name: secret_name.clone(),
                 networking: match networking {
@@ -893,6 +908,10 @@ impl VaultState {
                             allowed_hosts: allowed_hosts.clone(),
                         }
                     }
+                },
+                injection_location: CredentialInjectionLocation {
+                    body: injection_location.body(),
+                    header: injection_location.header(),
                 },
             },
             AuthRecord::StaticBearer { mcp_server_url } => CredentialAuth::StaticBearer {
@@ -1344,9 +1363,11 @@ async fn create_credential(
             secret_name,
             secret_value,
             networking,
+            injection_location,
             metadata,
             display_name,
         } => {
+            let injection_location = create_injection_location(injection_location)?;
             let create = env_var_to_create_params(
                 resource_workspace.clone(),
                 None,
@@ -1357,6 +1378,7 @@ async fn create_credential(
             );
             let auth = AuthRecord::EnvironmentVariable {
                 secret_name,
+                injection_location,
                 networking: match networking {
                     CredentialNetworking::Unrestricted => ManagedCredentialNetworking::Unrestricted,
                     CredentialNetworking::Limited { allowed_hosts } => {
@@ -1674,6 +1696,22 @@ async fn update_credential(
             }
         }
     }
+    let injection_location_update =
+        match (&params.auth, &record.auth) {
+            (
+                Some(CredentialUpdateAuth::EnvironmentVariable {
+                    injection_location: Some(update),
+                    ..
+                }),
+                AuthRecord::EnvironmentVariable {
+                    injection_location: current,
+                    ..
+                },
+            ) => Some(current.merge(update.header, update.body).ok_or_else(|| {
+                bad_request("injection_location must enable header, body, or both")
+            })?),
+            _ => None,
+        };
     let before_record = record.clone();
     let mut material_patch = CredentialMaterialPatch::default();
     let mut advance_source_without_material = false;
@@ -1750,21 +1788,25 @@ async fn update_credential(
     if let Some(auth) = params.auth {
         match auth {
             CredentialUpdateAuth::EnvironmentVariable { networking, .. } => {
-                if let (
-                    Some(nw),
-                    AuthRecord::EnvironmentVariable {
-                        networking: cur, ..
-                    },
-                ) = (networking, &mut record.auth)
+                if let AuthRecord::EnvironmentVariable {
+                    networking: current_networking,
+                    injection_location: current_location,
+                    ..
+                } = &mut record.auth
                 {
-                    *cur = match nw {
-                        CredentialNetworking::Unrestricted => {
-                            ManagedCredentialNetworking::Unrestricted
-                        }
-                        CredentialNetworking::Limited { allowed_hosts } => {
-                            ManagedCredentialNetworking::Limited { allowed_hosts }
-                        }
-                    };
+                    if let Some(nw) = networking {
+                        *current_networking = match nw {
+                            CredentialNetworking::Unrestricted => {
+                                ManagedCredentialNetworking::Unrestricted
+                            }
+                            CredentialNetworking::Limited { allowed_hosts } => {
+                                ManagedCredentialNetworking::Limited { allowed_hosts }
+                            }
+                        };
+                    }
+                    if let Some(location) = injection_location_update {
+                        *current_location = location;
+                    }
                 }
             }
             CredentialUpdateAuth::StaticBearer { .. } => {}

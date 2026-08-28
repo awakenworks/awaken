@@ -41,14 +41,13 @@ async function main() {
       // -- Files: upload → delete → 404 -------------------------------------
       const up = await client.beta.files.upload({
         file: await toFile(Buffer.from('to-be-deleted'), 'gone.txt'),
-        betas: BETAS,
       });
       assert.ok(up.id, 'upload returns a content id');
-      const deleted = await client.beta.files.delete(up.id, { betas: BETAS });
+      const deleted = await client.beta.files.delete(up.id);
       assert.equal(deleted.type, 'file_deleted');
       assert.equal(deleted.id, up.id);
       await assert.rejects(
-        () => client.beta.files.retrieveMetadata(up.id, { betas: BETAS }),
+        () => client.beta.files.retrieveMetadata(up.id),
         (err) => err.status === 404,
       );
       pass('beta.files.delete -> DeletedFile; metadata 404s after');

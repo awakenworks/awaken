@@ -68,6 +68,26 @@ pub enum CredentialNetworking {
     Limited { allowed_hosts: Vec<String> },
 }
 
+/// Resolved `BetaManagedAgentsInjectionLocationResponse`. Both booleans are
+/// always present in responses even when the create request omitted them.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+pub struct CredentialInjectionLocation {
+    pub body: bool,
+    pub header: bool,
+}
+
+/// Create/update spelling of `injection_location`. Presence is tracked on each
+/// field so create can default an explicitly supplied object's missing member
+/// to `false`, while update can merge each omitted member independently.
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct CredentialInjectionLocationParams {
+    #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+    pub body: Option<bool>,
+    #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+    pub header: Option<bool>,
+}
+
 /// The token-endpoint auth scheme as it arrives on the wire
 /// (`BetaManagedAgentsTokenEndpointAuth{None,Basic,Post}Param`). The
 /// `client_secret` is write-only: for a confidential-client scheme it is sealed
@@ -135,6 +155,7 @@ pub enum CredentialAuth {
     EnvironmentVariable {
         secret_name: String,
         networking: CredentialNetworking,
+        injection_location: CredentialInjectionLocation,
     },
     StaticBearer {
         mcp_server_url: String,
@@ -175,6 +196,8 @@ pub enum CredentialCreateParams {
         /// Write-only: sealed into the `SecretStore`, never echoed back.
         secret_value: String,
         networking: CredentialNetworking,
+        #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+        injection_location: Option<CredentialInjectionLocationParams>,
         #[serde(default)]
         metadata: BTreeMap<String, String>,
         #[serde(default)]
@@ -235,12 +258,14 @@ impl CredentialCreateWire {
                     secret_name,
                     secret_value,
                     networking,
+                    injection_location,
                     metadata: auth_metadata,
                     display_name: auth_display_name,
                 } => CredentialCreateParams::EnvironmentVariable {
                     secret_name,
                     secret_value,
                     networking,
+                    injection_location,
                     metadata: if metadata.is_empty() {
                         auth_metadata
                     } else {
@@ -325,6 +350,8 @@ pub enum CredentialUpdateAuth {
     EnvironmentVariable {
         #[serde(default)]
         networking: Option<CredentialNetworking>,
+        #[serde(default, deserialize_with = "super::presence::optional_non_null")]
+        injection_location: Option<CredentialInjectionLocationParams>,
         /// Write-only: re-sealed under the row's `material_ref`, never echoed.
         #[serde(default)]
         secret_value: Option<String>,

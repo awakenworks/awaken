@@ -330,7 +330,7 @@ async function main() {
       assert.ok((gotMem.content ?? '').includes(MEM_MARK), 'the seeded memory content reads back');
       // (a global files.list() is session-output-scoped in this build; the uploaded
       // input file is verified by its metadata + its presence in resources.list.)
-      const gotFile = await client.beta.files.retrieveMetadata(file.id, { betas: BETAS });
+      const gotFile = await client.beta.files.retrieveMetadata(file.id);
       assert.equal(gotFile.id, file.id, 'the uploaded file reads back by id');
       pass('existing resources verified: environment, agent (+mcp), memory (+content), file');
 

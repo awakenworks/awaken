@@ -187,13 +187,13 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
     // Cause/effect graph: C1 no beta selector, C2 valid expiry boundary, C3 ids[]
     // contains one visible and one missing id, C4 ids[] combines with page/limit,
     // C5 the post-GA SDK keeps `beta=true` but omits the Files capability header.
-    // Effects: E1 GA metadata has expires_at and no beta scope, E2 ids[] returns a
-    // single next_page:null page and silently omits missing ids, E3 mixed pagination
-    // is rejected without mutation, E4 retrieve/download/delete complete the GA
-    // lifecycle, E5 C5 selects this same GA contract rather than the retired Beta
-    // projection. Decision table: G1 C1+C2->E1; G2 C1+C3->E2; G3 C1+C4->E3;
-    // G4 C1+created File->E4; G5 C5->E1+E2. The same FileApplication/FileCatalog
-    // owns every rule.
+    // Effects: E1 top-level GA metadata has expires_at and omits beta scope; E2
+    // ids[] returns a single next_page:null page and silently omits missing ids;
+    // E3 mixed pagination is rejected without mutation; E4 retrieve/download/
+    // delete complete the lifecycle; E5 C5 selects the post-GA Beta DTO, which
+    // retains nullable scope while adopting GA expiry and PageCursor fields.
+    // Decision table: G1 C1+C3->E1+E2; G2 C1+C4->E3; G3 C1+created File->E4;
+    // G4 C2+C5->E5. The same FileApplication/FileCatalog owns every rule.
     let router = router();
     let mut body = multipart_file("ga.txt", b"ga");
     let closing = format!("--{BOUNDARY}--\r\n").into_bytes();
@@ -216,13 +216,14 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     let response = router.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "G1");
+    assert_eq!(response.status(), StatusCode::OK, "G4");
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let created: Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(created["expires_at"].is_string(), "G1/E1 {created}");
-    assert!(created.get("scope").is_none(), "G1/E1 {created}");
+    assert!(created["expires_at"].is_string(), "G4/E5 {created}");
+    assert!(created.get("scope").is_some(), "G4/E5 {created}");
+    assert!(created["scope"].is_null(), "G4/E5 {created}");
     let id = created["id"].as_str().unwrap();
 
     let mut request = Request::builder()
@@ -233,15 +234,16 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     let response = router.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "G2");
+    assert_eq!(response.status(), StatusCode::OK, "G1");
     let body: Value = serde_json::from_slice(
         &axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(body["data"].as_array().unwrap().len(), 1, "G2/E2");
-    assert!(body["next_page"].is_null(), "G2/E2");
+    assert_eq!(body["data"].as_array().unwrap().len(), 1, "G1/E2");
+    assert!(body["next_page"].is_null(), "G1/E2");
+    assert!(body["data"][0].get("scope").is_none(), "G1/E1 {body}");
 
     let mut request = Request::builder()
         .uri(format!(
@@ -253,15 +255,17 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
     let response = router.clone().oneshot(request).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK, "G5");
+    assert_eq!(response.status(), StatusCode::OK, "G4");
     let body: Value = serde_json::from_slice(
         &axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap(),
     )
     .unwrap();
-    assert!(body["data"][0]["expires_at"].is_string(), "G5/E1 {body}");
-    assert!(body["next_page"].is_null(), "G5/E2 {body}");
+    assert!(body["data"][0]["expires_at"].is_string(), "G4/E5 {body}");
+    assert!(body["data"][0].get("scope").is_some(), "G4/E5 {body}");
+    assert!(body["data"][0]["scope"].is_null(), "G4/E5 {body}");
+    assert!(body["next_page"].is_null(), "G4/E5 {body}");
 
     let mut request = Request::builder()
         .uri(format!("/v1/files?ids%5B%5D={id}&limit=1"))
@@ -273,8 +277,26 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
     assert_eq!(
         router.clone().oneshot(request).await.unwrap().status(),
         StatusCode::BAD_REQUEST,
-        "G3/E3"
+        "G2/E3"
     );
+
+    let mut request = Request::builder()
+        .uri(format!("/v1/files/{id}"))
+        .body(Body::empty())
+        .unwrap();
+    request
+        .extensions_mut()
+        .insert(WorkspaceScope("test".into()));
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G3/GA retrieve");
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(body["expires_at"].is_string(), "G3/E1 {body}");
+    assert!(body.get("scope").is_none(), "G3/E1 {body}");
 
     let mut request = Request::builder()
         .uri(format!("/v1/files/{id}?beta=true"))
@@ -283,11 +305,16 @@ async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
     request
         .extensions_mut()
         .insert(WorkspaceScope("test".into()));
-    assert_eq!(
-        router.clone().oneshot(request).await.unwrap().status(),
-        StatusCode::OK,
-        "G4/retrieve metadata"
-    );
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "G4/retrieve metadata");
+    let body: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(body.get("scope").is_some(), "G4/E5 {body}");
+    assert!(body["scope"].is_null(), "G4/E5 {body}");
 
     let mut request = Request::builder()
         .uri(format!("/v1/files/{id}/content?beta=true"))

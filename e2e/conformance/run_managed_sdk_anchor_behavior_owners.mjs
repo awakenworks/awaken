@@ -19,30 +19,46 @@ const {
   ...baseEnvironment
 } = process.env;
 
+// Version-matrix causal graph: every anchor selects one exact official SDK,
+// then delegates to the single operation/owner graph. Running all anchors even
+// after one fails makes the gate report the complete compatibility frontier in
+// one invocation; it does not introduce another operation or behavior list.
+const anchorFailures = [];
 for (const [index, anchor] of matrix.entries()) {
   const sdk = installedPackage(anchor.module);
   console.log(
     `[managed-sdk anchor ${index + 1}/${matrix.length}] ${anchor.role} ${sdk.version}`,
   );
-  await new Promise((resolveAnchor, rejectAnchor) => {
-    const child = spawn(process.execPath, [runner], {
-      env: {
-        ...baseEnvironment,
-        ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: sdk.root,
-        AWAKEN_MANAGED_SDK_EXPECTED_VERSION: sdk.version,
-        AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET:
-          anchor.role === 'current_oracle' ? '0' : '1',
-      },
-      stdio: 'inherit',
+  try {
+    await new Promise((resolveAnchor, rejectAnchor) => {
+      const child = spawn(process.execPath, [runner], {
+        env: {
+          ...baseEnvironment,
+          ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT: sdk.root,
+          AWAKEN_MANAGED_SDK_EXPECTED_VERSION: sdk.version,
+          AWAKEN_MANAGED_SDK_HISTORICAL_SUBSET:
+            anchor.role === 'current_oracle' ? '0' : '1',
+        },
+        stdio: 'inherit',
+      });
+      child.once('error', rejectAnchor);
+      child.once('close', (status, signal) => {
+        if (signal) rejectAnchor(new Error(`${anchor.id}: behavior owners terminated by ${signal}`));
+        else if (status !== 0) {
+          rejectAnchor(new Error(`${anchor.id}: behavior owners exited with status ${status}`));
+        } else resolveAnchor();
+      });
     });
-    child.once('error', rejectAnchor);
-    child.once('close', (status, signal) => {
-      if (signal) rejectAnchor(new Error(`${anchor.id}: behavior owners terminated by ${signal}`));
-      else if (status !== 0) {
-        rejectAnchor(new Error(`${anchor.id}: behavior owners exited with status ${status}`));
-      } else resolveAnchor();
-    });
-  });
+  } catch (error) {
+    anchorFailures.push(error);
+  }
+}
+
+if (anchorFailures.length > 0) {
+  throw new AggregateError(
+    anchorFailures,
+    `${anchorFailures.length} Managed SDK anchor behavior matrix entry/entries failed`,
+  );
 }
 
 console.log(`Managed SDK anchor behavior matrix PASS: ${matrix.length} exact versions.`);
