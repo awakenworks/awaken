@@ -102,9 +102,16 @@ The runner reads the candidate's generated operation source. For Beta Files and
 Skills it requires every operation to agree on `beta=true` and its endpoint
 capability, derives the historical-Beta or GA wire projection from that request
 signature, strictly type-checks all changed methods against that exact package,
-and then executes both Beta-namespace and GA lifecycles. The runtime proof covers
-cursor traversal, rejected mutations, missing/deleted identities, immutable
-version archives, cross-root identity, and a real process restart over one
-durable store. It also runs every webhook parser exposed by that SDK. It never
-chooses behavior from a version-number table, uses type escape hatches, or
-silently falls back to the installed current anchor.
+and rejects TypeScript module resolution outside that package root. It then
+executes both Beta-namespace and GA lifecycles. The runtime proof covers the
+candidate's authentication header and retry behavior, exact Managed error
+envelopes, anonymous/read-only/admin policy enforcement without denied-write
+side effects, cursor traversal, rejected mutations, missing/deleted identities,
+immutable version archives, cross-root identity, and a real process restart over
+one durable store. A shared transport receipt encoder requires every discovered
+Beta Files/Skills operation to reach a real non-5xx resource response with its
+exact method, route, selector, capability, and official-SDK marker; 401/403
+policy failures cannot impersonate resource-owner coverage. The runner also
+executes every webhook parser exposed by that SDK. It never chooses behavior
+from a version-number table, uses type escape hatches, or silently falls back to
+the installed current anchor.

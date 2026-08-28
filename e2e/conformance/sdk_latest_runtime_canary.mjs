@@ -12,6 +12,7 @@ import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-ora
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
   availablePort,
+  deploymentEnv,
   pass,
   realServerEnv,
   spawnServer,
@@ -29,6 +30,10 @@ import {
 } from './official_sdk_candidate_delta.mjs';
 import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
 import { exerciseOfficialWebhookContract } from './official_webhook_contract.mjs';
+import {
+  assertOwnerOperationReceipts,
+  recordingFetch,
+} from './managed_sdk_operation_receipts.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '../..');
@@ -53,6 +58,21 @@ assertLatestRuntimeOwnsCandidateDelta(candidateDelta);
 const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
+const candidateResourceOperations = operations
+  .filter(({ id }) => id.startsWith('beta.files.') || id.startsWith('beta.skills.'))
+  .map((operation) => Object.freeze({
+    sdkMethod: operation.id,
+    owner: 'candidate-files-skills',
+    method: operation.method,
+    route: operation.path,
+    transportQuery: operation.transport_query,
+    betas: operation.betas,
+  }));
+const candidateReceipts = [];
+const candidateRecordingFetch = recordingFetch(
+  globalThis.fetch.bind(globalThis),
+  (receipt) => candidateReceipts.push(receipt),
+);
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
 compileOfficialSdkChangePoints(packageRoot, {
@@ -77,6 +97,94 @@ function managedError(status, kind, messagePattern) {
     if (messagePattern) assert.match(error.error.error.message, messagePattern);
     return true;
   };
+}
+
+function assertCandidateFilesTransport(input, init) {
+  const request = input instanceof Request ? input : new Request(input, init);
+  const url = new URL(request.url);
+  assert.equal(url.pathname.startsWith('/v1/files'), true, 'T1 generated Files route');
+  assert.equal(url.searchParams.get('beta'), 'true', 'T1 generated Beta query selector');
+  const selectors = (request.headers.get('anthropic-beta') ?? '')
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
+  if (betaFiles.projection === 'beta') {
+    assert.deepEqual(selectors, [betaFiles.capability], 'T1 historical capability selector');
+  } else {
+    assert.deepEqual(selectors, [], 'T1 post-GA Beta root omits the retired capability');
+  }
+  assert.equal(request.headers.get('x-api-key'), 'transport-only', 'T1 SDK authentication header');
+}
+
+async function exerciseSdkCoreTransport() {
+  // Cause/effect graph: C1 the exact candidate's shared transport constructs a
+  // changed Beta Files request; C2 server returns each canonical Managed error;
+  // C3 two retryable server faults precede success. Effects: E1 exact path,
+  // query, capability and auth headers; E2 one typed APIError with unchanged
+  // status/envelope and no client-fault retry; E3 exactly three attempts, then
+  // the candidate paginator decodes its projection. Decision rules:
+  // T1 C1->E1; T2 C1+C2+maxRetries=0->E1+E2; T3 C1+C3+maxRetries=2->E1+E3.
+  // This closes core SDK implementation drift that operation/declaration hashes
+  // cannot see (authentication, fetch assembly, errors and retry ownership).
+  for (const [status, kind] of [
+    [400, 'invalid_request_error'],
+    [401, 'authentication_error'],
+    [403, 'permission_error'],
+    [404, 'not_found_error'],
+    [409, 'conflict_error'],
+    [429, 'rate_limit_error'],
+    [500, 'api_error'],
+  ]) {
+    let attempts = 0;
+    const client = new Anthropic({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL: 'https://managed.invalid',
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        attempts += 1;
+        assertCandidateFilesTransport(input, init);
+        return new Response(JSON.stringify({
+          type: 'error', error: { type: kind, message: `status ${status}` },
+        }), {
+          status,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+    });
+    await assert.rejects(
+      () => client.beta.files.retrieveMetadata('file_transport'),
+      managedError(status, kind, new RegExp(`status ${status}`, 'u')),
+      `T2 candidate error ${status}`,
+    );
+    assert.equal(attempts, 1, `T2 status ${status} is not retried when disabled`);
+  }
+
+  let attempts = 0;
+  const retrying = new Anthropic({
+    apiKey: 'transport-only', // awaken-allow: secret
+    baseURL: 'https://managed.invalid',
+    maxRetries: 2,
+    fetch: async (input, init) => {
+      attempts += 1;
+      assertCandidateFilesTransport(input, init);
+      if (attempts < 3) {
+        return new Response(JSON.stringify({
+          type: 'error', error: { type: 'api_error', message: 'transient' },
+        }), {
+          status: 500,
+          headers: { 'content-type': 'application/json', 'retry-after-ms': '0' },
+        });
+      }
+      return new Response(JSON.stringify(betaFiles.projection === 'beta'
+        ? { data: [], has_more: false, first_id: null, last_id: null }
+        : { data: [], has_more: false, next_page: null }), {
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  assert.deepEqual(await drain(retrying.beta.files.list({ limit: 1 })), [], 'T3 page decode');
+  assert.equal(attempts, 3, 'T3 candidate retry bound');
+  pass(`registry SDK ${manifest.version} preserves Managed core transport semantics`);
 }
 
 async function exerciseBetaFiles(client) {
@@ -273,32 +381,101 @@ async function exerciseBetaSkills(client) {
 async function exerciseBetaGaRecovery() {
   // Cause/effect graph: C1 the candidate Beta root selects its generated wire
   // projection; C2 GA and Beta roots address one File/Skill identity authority;
-  // C3 process B opens the exact durable directory committed by process A.
-  // Effects: E1 both roots observe the same ids before restart; E2 GA reads the
-  // Beta-created aggregates after restart; E3 the Beta-only archive operation
-  // still reads immutable Version bytes; E4 deletion through GA is immediately
-  // visible through Beta. Decision rule P1 C1+C2+C3->E1+E2+E3+E4. This catches
-  // an accidental projection-specific repository, memory-only success, stale
-  // cache resurrection, or route adapter that changes identity across restart.
+  // C3 process B opens the exact durable directory committed by process A; C4
+  // principal is absent, read-only, or admin. Effects: E1 absent fails 401;
+  // E2 read-only lists but cannot mutate (403 and no write); E3 both roots
+  // observe the same ids before restart; E4 GA reads the Beta-created aggregates
+  // after restart; E5 the Beta-only archive operation still reads immutable
+  // Version bytes; E6 deletion through GA is immediately visible through Beta.
+  // Decision rules: P1 !C4->E1; P2 reader->E2; P3 C1+C2+C3+admin->E3..E6.
+  // This catches an accidental projection-specific repository, PEP bypass,
+  // denied-write side effect, memory-only success, stale cache resurrection,
+  // or route adapter that changes identity across restart.
   const storageDir = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-recovery-'));
   const port = await availablePort(38192);
   const upstream = await startUpstream('mcp');
   const servers = [];
   const environment = {
-    SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
+    ...deploymentEnv(storageDir, {
+      identityMode: 'self-managed',
+      iamWorkspaces: ['default'],
+      controlSealKey: '01'.repeat(32),
+    }),
     ...realServerEnv('mcp', upstream, { mode: 'management' }),
   };
-  const clientFor = (baseURL) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });
+  const clientFor = (baseURL, authToken) => new Anthropic({
+    ...(authToken ? { authToken } : { apiKey: 'unauthorized' }), // awaken-allow: secret
+    baseURL,
+    fetch: candidateRecordingFetch,
+    maxRetries: 0,
+  });
   try {
     const a = spawnServer('management', port, environment);
     servers.push(a.server);
     await waitForPort(port, 900_000, a.server);
-    let client = clientFor(a.baseUrl);
+    const anonymous = clientFor(a.baseUrl);
+    await assert.rejects(
+      () => drain(anonymous.beta.files.list({ limit: 1 })),
+      managedError(401, 'authentication_error'),
+      'P1/E1 authentication precedes candidate Files reads',
+    );
+    await assert.rejects(
+      () => drain(anonymous.beta.skills.list({ limit: 1 })),
+      managedError(401, 'authentication_error'),
+      'P1/E1 authentication precedes candidate Skills reads',
+    );
+
+    const adminToken = readFileSync(resolve(storageDir, 'admin-token'), 'utf8').trim();
+    const minted = await fetch(`${a.baseUrl}/v1/config/iam/tokens`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${adminToken}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ workspace_id: 'default', role: 'workspace_user' }),
+    });
+    const mintedText = await minted.text();
+    assert.equal(minted.status, 201, `P1 mint read-only Resource principal: ${mintedText}`);
+    const readerToken = JSON.parse(mintedText).token;
+    assert.equal(typeof readerToken, 'string', 'P2 read-only principal credential');
+    const reader = clientFor(a.baseUrl, readerToken);
+    assert.deepEqual(await drain(reader.beta.files.list({ limit: 1 })), [], 'P2/E2 File read');
+    assert.deepEqual(await drain(reader.beta.skills.list({ limit: 1 })), [], 'P2/E2 Skill read');
+    const body = '---\nname: candidate-recovery\ndescription: restart proof\n---\nRecovered.';
+    await assert.rejects(
+      async () => reader.beta.files.upload({
+        file: await toFile(Buffer.from('forbidden'), 'forbidden.txt'),
+        ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
+      }),
+      managedError(403, 'permission_error'),
+      'P2/E2 read-only principal cannot mutate Files',
+    );
+    await assert.rejects(
+      async () => reader.beta.skills.create({
+        ...(betaSkills.projection === 'beta'
+          ? { display_title: 'Candidate Recovery' }
+          : { display_name: 'Candidate Recovery' }),
+        files: [await toFile(Buffer.from(body), 'SKILL.md')],
+      }),
+      managedError(403, 'permission_error'),
+      'P2/E2 read-only principal cannot mutate Skills',
+    );
+    assert.deepEqual(
+      await drain(reader.beta.files.list({ limit: 1 })),
+      [],
+      'P2/E2 denied File write has no catalog effect',
+    );
+    assert.deepEqual(
+      await drain(reader.beta.skills.list({ limit: 1 })),
+      [],
+      'P2/E2 denied Skill write has no store effect',
+    );
+
+    let client = clientFor(a.baseUrl, adminToken);
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from(`recovery-${manifest.version}`), 'recovery.txt'),
       ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
     });
-    const body = '---\nname: candidate-recovery\ndescription: restart proof\n---\nRecovered.';
     const skill = await client.beta.skills.create({
       ...(betaSkills.projection === 'beta'
         ? { display_title: 'Candidate Recovery' }
@@ -308,32 +485,32 @@ async function exerciseBetaGaRecovery() {
     const versionReference = betaSkills.projection === 'beta'
       ? skill.latest_version
       : skill.latest_version_id;
-    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P1/E1 File');
-    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P1/E1 Skill');
+    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P3/E3 File');
+    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P3/E3 Skill');
 
     await stopServer(a.server);
     servers.pop();
     const b = spawnServer('management', port, environment);
     servers.push(b.server);
     await waitForPort(port, 900_000, b.server);
-    client = clientFor(b.baseUrl);
-    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P1/E2 File');
-    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P1/E2 Skill');
+    client = clientFor(b.baseUrl, adminToken);
+    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P3/E4 File');
+    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P3/E4 Skill');
     const archive = await client.beta.skills.versions.download(versionReference, {
       skill_id: skill.id,
     });
-    assert.match(await archive.text(), /Recovered\./u, 'P1/E3 immutable Version bytes');
+    assert.match(await archive.text(), /Recovered\./u, 'P3/E5 immutable Version bytes');
     await client.files.delete(file.id);
     await client.skills.delete(skill.id);
     await assert.rejects(
       () => client.beta.files.retrieveMetadata(file.id),
       managedError(404, 'not_found_error'),
-      'P1/E4 File deletion crosses roots',
+      'P3/E6 File deletion crosses roots',
     );
     await assert.rejects(
       () => client.beta.skills.retrieve(skill.id),
       managedError(404, 'not_found_error'),
-      'P1/E4 Skill deletion crosses roots',
+      'P3/E6 Skill deletion crosses roots',
     );
     pass(`registry SDK ${manifest.version} preserves Beta-created Files/Skills across restart`);
   } finally {
@@ -342,6 +519,8 @@ async function exerciseBetaGaRecovery() {
     rmSync(storageDir, { recursive: true, force: true });
   }
 }
+
+await exerciseSdkCoreTransport();
 
 await withRealServer('echo', 38190, async (baseURL) => {
   // Cause/effect graph: C0=Session Event send returns one exact durable
@@ -353,7 +532,11 @@ await withRealServer('echo', 38190, async (baseURL) => {
   // Constraints/invariant: the generated SDK methods and existing echo-owned
   // repositories are the only request/response paths; polling observes C0 and
   // cannot add a route, beta override, or second completion authority.
-  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL });
+  const client = new Anthropic({
+    apiKey: 'e2e-dummy',
+    baseURL,
+    fetch: candidateRecordingFetch,
+  });
   const session = await client.beta.sessions.create({
     agent: 'assistant',
     environment_id: 'env_local',
@@ -494,11 +677,32 @@ await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
 
 await exerciseBetaGaRecovery();
 
+// Causal/FMECA closure for candidate operation drift:
+// C1 the extracted candidate inventory is the sole expected-operation source;
+// C2 the exact candidate SDK emits each request; C3 a real Awaken handler
+// returns a non-5xx application response. Effect E1 every Files/Skills operation
+// has a matching method/path/query/capability/Stainless receipt. Authentication
+// and authorization failures are deliberately excluded: 401/403 prove PEP
+// ordering but not entry into the resource owner. Missing calls, a nearby route,
+// lost selector, direct fetch, server fault, or newly changed operation therefore
+// fails closed instead of producing source-only compatibility evidence.
+const businessReceipts = candidateReceipts.filter(({ status }) => status !== 401 && status !== 403);
+const coveredCandidateOperations = assertOwnerOperationReceipts(
+  candidateResourceOperations,
+  'candidate-files-skills',
+  businessReceipts,
+);
+const coveredIds = new Set(candidateResourceOperations.map(({ sdkMethod }) => sdkMethod));
+for (const { id } of candidateDelta.operations.changed) {
+  assert.ok(coveredIds.has(id), `changed candidate operation lacks runtime owner: ${id}`);
+}
+
 console.log(
   `SDK LATEST RUNTIME CANARY PASS: @anthropic-ai/sdk ${manifest.version}; `
   + `beta.files=${betaFiles.projection}, beta.skills=${betaSkills.projection}, `
   + `parseUnverified=${webhookProfile.parseUnverified}, `
   + 'typescript=pass, '
+  + `resource_operations=${coveredCandidateOperations}, `
   + `operation_changes=${candidateDelta.operations.changed.length}, `
   + `declaration_changes=${candidateDelta.declarations.changed.length}.`,
 );

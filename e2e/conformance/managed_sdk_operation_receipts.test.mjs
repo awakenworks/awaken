@@ -6,6 +6,8 @@ import { resolve } from 'node:path';
 import test from 'node:test';
 import {
   assertOwnerOperationReceipts,
+  managedSdkReceipt,
+  recordingFetch,
   receiptMatchesOperation,
 } from './managed_sdk_operation_receipts.mjs';
 
@@ -112,7 +114,7 @@ test('transport hook records only non-secret completed exchange coordinates', ()
       '--input-type=module',
       '--eval',
       "await fetch('data:application/json,%7B%7D', { headers: {"
-        + " 'x-api-key': 'must-not-leak', 'x-stainless-lang': 'js',"
+        + " 'x-api-key': 'must-not-leak', 'x-stainless-lang': 'js'," // awaken-allow: secret
         + " 'anthropic-beta': 'one,two' } })",
     ], {
       env: { ...process.env, AWAKEN_MANAGED_SDK_RECEIPT_FILE: receiptFile },
@@ -130,6 +132,28 @@ test('transport hook records only non-secret completed exchange coordinates', ()
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test('in-process and child-process receipt collection share one encoder', async () => {
+  // Cause/effect graph: C1 a candidate canary supplies a local fetch adapter;
+  // C2 the behavior-owner gate installs the process hook. Both must project the
+  // same request/response coordinates or one proof path could accept behavior
+  // rejected by the other. The wrapper also must return the original Response
+  // object so instrumentation cannot change SDK decoding semantics.
+  const response = new Response('{}', { status: 409 });
+  const receipts = [];
+  const input = new Request('https://managed.invalid/v1/files/file_1?beta=true', {
+    headers: {
+      'anthropic-beta': 'files-api-2025-04-14',
+      'x-api-key': 'must-not-leak', // awaken-allow: secret
+      'x-stainless-lang': 'js',
+    },
+  });
+  const fetch = recordingFetch(async () => response, (receipt) => receipts.push(receipt));
+  assert.equal(await fetch(input), response, 'instrumentation preserves response identity');
+  assert.deepEqual(receipts, [managedSdkReceipt(input, undefined, response)]);
+  assert.deepEqual(receipts[0], { ...betaReceipt, status: 409 });
+  assert.ok(!JSON.stringify(receipts).includes('must-not-leak'), 'credential non-interference');
 });
 
 test('finite receipt model accepts exactly the conjunction of all ownership coordinates', () => {

@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import ts from 'typescript';
 
 function filesFixture(projection) {
@@ -62,6 +63,14 @@ function skillsFixture(projection) {
   await client.beta.skills.delete(skill.id);`;
   }
   throw new Error(`unsupported Skills projection ${JSON.stringify(projection)}`);
+}
+
+export function pathBelongsToPackage(packageRoot, resolvedModule) {
+  const remainder = relative(resolve(packageRoot), resolve(resolvedModule));
+  return remainder.length > 0
+    && remainder !== '..'
+    && !remainder.startsWith(`..${sep}`)
+    && !isAbsolute(remainder);
 }
 
 export function officialSdkChangePointFixture({
@@ -130,6 +139,18 @@ export function compileOfficialSdkChangePoints(packageRoot, profile) {
       ? ts.createSourceFile(filename, source, languageVersion, true, ts.ScriptKind.TS)
       : defaultGetSourceFile(filename, languageVersion, onError, shouldCreateNewSourceFile)
   );
+  const resolvedSdk = ts.resolveModuleName('@anthropic-ai/sdk', virtualFile, options, host)
+    .resolvedModule;
+  if (!resolvedSdk) {
+    throw new Error(`candidate TypeScript cannot resolve @anthropic-ai/sdk from ${packageRoot}`);
+  }
+  const canonicalRoot = realpathSync(packageRoot);
+  const canonicalModule = realpathSync(resolvedSdk.resolvedFileName);
+  if (!pathBelongsToPackage(canonicalRoot, canonicalModule)) {
+    throw new Error(
+      `candidate TypeScript resolved @anthropic-ai/sdk outside ${canonicalRoot}: ${canonicalModule}`,
+    );
+  }
   const program = ts.createProgram([virtualFile], options, host);
   const diagnostics = ts.getPreEmitDiagnostics(program);
   if (diagnostics.length > 0) {
