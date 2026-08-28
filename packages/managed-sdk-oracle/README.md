@@ -16,13 +16,15 @@ else is derived evidence:
 - `contracts/anthropic-managed/python-upstream-oracle.generated.json` binds
   every selected Python change point to its exact PyPI wheel SHA-256, normalized
   operation inventory, handwritten resource helpers, explicit Managed library
-  exports, and scoped source fingerprint. The current Python oracle must retain
-  the reviewed operation identity relationship to TypeScript;
+  exports, and scoped source fingerprint. It walks the exact symbol-level import
+  closure from every Managed resource into the generated DTO/type graph;
 - `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
   the wire schemas generated from the Rust implementation and is compared to
   that oracle rather than treated as a competing protocol definition;
 - generated coverage/catalog/type gates prove that callers and behavior tests
-  stay on the same path;
+  stay on the same path. The current Python oracle must retain the reviewed
+  operation identity relationship to TypeScript, and wildcard, unresolved, or
+  ambiguous imports fail closed.
 - Cloud qualification executes the same named SDK anchors against a deployed
   product from Cloud's exact pinned Open checkout. It is runtime/deployment
   evidence, never another contract authority; Cloud does not copy SDK versions,
@@ -141,7 +143,12 @@ evidence from drifting from the external expectation:
   operation through both sync and async clients, projects one shared decision
   table through both clients to prove the canonical Python error subclasses,
   retry policy, and byte-identical idempotent retries, and runs live Session/SSE
-  and Memory lifecycles.
+  and Memory lifecycles. Before either runtime driver sends a request, one
+  shared installed-evidence adapter re-extracts that wheel's complete Managed
+  source graph. The current wheel compares every DTO path and hash; historical
+  wheels compare the same closure's exact count and fingerprint, avoiding
+  thirteen copies of thousands of generated rows while still failing on any
+  changed dependency byte.
   The generated SSE dispatch inventory records that the first 0.92 Managed
   wheel filters canonical Managed event names in its own generic parser; 0.100+
   must decode message and terminal replay. The last Beta-only and first GA

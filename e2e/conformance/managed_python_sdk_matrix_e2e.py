@@ -4,9 +4,7 @@ import argparse
 import asyncio
 import importlib
 import inspect
-import json
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -18,39 +16,17 @@ from managed_python_sdk_request_contract import (
     exercise_all_operation_requests,
     exercise_error_and_retry_contract,
 )
+from managed_python_sdk_installed_evidence import assert_installed_evidence
 
 
 REPO = Path(__file__).resolve().parents[2]
 ORACLE_PATH = Path(os.environ["AWAKEN_PYTHON_ORACLE"])
 SCOPE_PATH = REPO / "packages/managed-sdk-oracle/config/scope.json"
-sys.path.insert(0, str(REPO / "packages/managed-sdk-oracle/python"))
-import oracle as oracle_generator  # noqa: E402 - exact repository extractor
 
 
 def extracted_evidence(version: str) -> tuple[dict[str, object], dict[str, object]]:
-    oracle = json.loads(ORACLE_PATH.read_text(encoding="utf-8"))
-    anchor = next(item for item in oracle["anchors"] if item["version"] == version)
     installed_root = Path(anthropic.__file__).resolve().parent.parent
-    scope = json.loads(SCOPE_PATH.read_text(encoding="utf-8"))
-    evidence = oracle_generator.extract(installed_root, version, scope)
-    direct = (
-        "operation_fingerprint",
-        "source_fingerprint",
-        "source_file_count",
-        "helper_fingerprint",
-        "helpers",
-        "library_export_fingerprint",
-        "library_exports",
-        "runtime_source_fingerprint",
-        "runtime_sources",
-        "stream_event_fingerprint",
-        "stream_event_names",
-    )
-    for field in direct:
-        assert evidence[field] == anchor[field], f"{version}: installed {field}"
-    assert len(evidence["operations"]) == anchor["operation_count"]
-    assert len(evidence["library_exports"]) == anchor["library_export_count"]
-    return evidence, anchor
+    return assert_installed_evidence(version, installed_root, ORACLE_PATH, SCOPE_PATH)
 
 
 def exercise_library_exports(exports: list[str]) -> None:
