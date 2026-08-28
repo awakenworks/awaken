@@ -1880,6 +1880,10 @@ pub mod k8s;
 /// here, running requires a cluster.
 #[cfg(feature = "k8s")]
 mod k8s_package_image;
+/// Versioned, typed, read-only package-realization evidence shared by the sole
+/// Kubernetes emitter and pinned composing consumers.
+#[cfg(feature = "k8s")]
+pub mod k8s_package_realization;
 
 /// Rootless Podman backend (daemonless CLI fork-exec). Gated behind the `podman`
 /// feature; compile-verified here, running requires the `podman` binary.

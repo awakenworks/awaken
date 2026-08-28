@@ -106,46 +106,83 @@ OCI Registry. The Kubernetes Job owns no durable lifecycle state, and neither
 Runtime Host nor the Session Pod installs Environment packages after a prepared
 digest has been frozen.
 
-The existing Kubernetes objects also expose one secret-free, read-only release
-proof. A package Build Job and its Pod template carry the exact deterministic
-recipe fingerprint in `awaken.dev/package-recipe-fingerprint` and the mutable
-push target in `awaken.dev/package-image-destination`. The package-destination
-Registry probe reuses the same two annotations on its existing image-check Job
-and Pod, so a retry after Build completion can recover the correlation from the
-kubelet `imageID` even when the short-lived Build Job is gone. Base-image and
-general availability probes do not claim package provenance. The existing
-termination message remains the sole BuildKit result and contains the immutable
-pushed digest. At the one Sandbox Pod creation seam, the Pod carries the original
-`SandboxSpec.scope` in `awaken.dev/sandbox-scope` and the exact resolved
-`ContainerPlan.image` in `awaken.dev/resolved-image`; the adapter-local,
-possibly hashed Kubernetes runtime id is not a Session identity. The scope key
-is deliberately neutral: a warm-pool Pod carries its physical `warmpool-*`
-scope, not the later Session bound to its in-process handle. Cloud may use this
-field as mission join evidence only when warm capacity is disabled and its value
-equals the exact mission Session id. Because neutral `SandboxSpec.scope` is
-intentionally unbounded, the pair is emitted only within a small additive
-annotation budget. An overlong scope still creates the same Sandbox but yields
-no release proof; its hash is never substituted as a Cloud or Session identity.
+The 2026-08-28 package-realization amendment gives these Kubernetes objects one
+versioned typed structural contract. The public
+`awaken_sandbox_container::k8s_package_realization` module is the only owner for
+its annotation keys, deterministic package ConfigMap/Job names, projection
+digests, evidence bounds, and verification cardinality. The package adapter
+calls that same module; a composing consumer pins the exact Open crate revision
+and passes already-decoded Kubernetes objects to its read-only verifier. There
+is no second CLI, JSON parser, hash implementation, ledger, or retained store.
 
-These annotations are correlation evidence, not a build record, Session map,
-admission decision, or cleanup owner. A bounded deployment observer may prove
-that a BuildKit termination digest, or the same destination observed by the
-annotated retry probe, equals the exact mission Session Pod image and that
-kubelet reports the same immutable `imageID`. It must not infer package
-provenance from the neutral resolved-image annotation alone. Recipe bodies,
-proxy values, registry authentication, image-pull Secret names, and any other
-secret material never enter these annotations.
+One immutable deterministic ConfigMap contains the canonical package-build
+input. Its annotations bind the contract version, recipe fingerprint, mutable
+destination, exact ConfigMap projection digest, and the existing generic
+realization digest. Create or `409` reuse compares the generic realization
+digest and recomputes the contract projection digest from the exact API-observed
+object, rejecting a terminating or different object.
+Only then does the adapter read its Kubernetes UID. The Build and package
+image-check Jobs bind that actual ConfigMap UID plus their distinct Job kind on
+both the Job and Pod template. They retain the generic realization digest and a
+contract-owned normalized Job projection digest. A `409` is never success by
+itself: copied annotations cannot repair a different ConfigMap UID correlation
+or executable spec. The API-observed Job UID is subsequently required by its
+one controller Pod, and multiple incarnations in the supplied correlation
+closure fail closed. Successful Jobs and their Pods remain available for their
+configured TTL, while the immutable ConfigMap remains as the recipe anchor; the
+successful path does not eagerly delete either form of evidence.
+Neither object becomes durable build state: Coordinator's existing build row,
+lease, and Registry digest remain the only durable authority.
+
+For every retained Job snapshot, the verifier requires exactly one successful
+controller-owned Pod snapshot with the exact Job name and UID owner reference,
+the exact normalized Pod-template spec, one successful container status, and
+one result. A fresh build admits exactly one optional Build Job/Pod pair and
+reads its immutable termination-message digest; Registry recovery admits no
+Build pair. Both paths require exactly one successful package image-check
+Job/Pod and its kubelet `imageID`. A fresh Build result must equal that mandatory
+image-check digest.
+
+At the existing Sandbox Pod creation seam, the same module stamps the contract
+version, original bounded `SandboxSpec.scope`, and exact resolved
+`ContainerPlan.image` before the existing realization owner hashes the Pod. The
+verifier accepts exactly one canonical cold Sandbox name for the exact mission
+Session scope, the managed-Sandbox label, one Running and Ready `agent`, and an
+agent kubelet `imageID` equal to the package image-check digest. Warm-pool scope
+remains physical `warmpool-*` scope, so mission proof still requires warm
+capacity to be disabled. An over-budget neutral scope still creates the same
+Sandbox but deliberately carries no proof annotations; its adapter-local hash
+is never substituted as a Session identity.
+
+Evidence input is bounded per kind and serialized object, duplicate snapshots
+of one UID are rejected, and every relevant ConfigMap, Job, Pod, digest, and
+Sandbox edge in the caller-supplied complete correlation closure has exact-one
+cardinality. The typed output contains only the contract version,
+recipe/destination/image identities, and observed UIDs. It never returns the
+Dockerfile, package list, proxy, Registry credential, image-pull Secret name,
+status payload, or other secret-bearing material.
+
+This contract proves a structural chain, not product origin. Annotations,
+projection hashes, and owner references are not admission decisions. A Cloud
+composition may call the verifier only after a separate deployment gate proves
+that the pinned Open Worker ServiceAccount is the exclusive ConfigMap/Job and
+Sandbox annotation writer for these objects, Kubernetes' Job controller is the
+only Job-Pod controller writer, observer credentials are read-only, and the
+Worker image/BOM binds the exact Open revision. Missing or ambiguous
+admission/RBAC writer exclusivity means **no product-source proof**, even when
+the structural verifier succeeds.
 
 The existing Ready-image availability port receives the exact durable build
 demand together with its stored immutable image. Its claimed build completion,
 blocking Session readiness, and periodic non-blocking capacity reconciliation
 all use that same port. On Kubernetes the package adapter reuses the canonical
-recipe projection to derive the destination and the same two annotations, then
-runs only the existing destination image-check and accepts it only when the
-kubelet digest exactly equals the stored image. A missing or drifted destination
-invalidates Ready so the existing claimed build worker can converge it; the
-availability path never invokes BuildKit, claims work, or creates another retry
-owner. Docker and Podman retain their existing stored-image probes.
+recipe projection to derive the destination and requires the retained exact
+ConfigMap incarnation before binding the existing destination image-check to
+its UID. It accepts the check only when the exact Job/Pod chain yields the same
+kubelet digest as the stored image. A missing ConfigMap or missing/drifted
+destination invalidates Ready so the existing claimed build worker can converge
+it; the availability path never invokes BuildKit, claims work, or creates
+another retry owner. Docker and Podman retain their existing stored-image probes.
 
 ### D5: Delivery is durable and fail-closed
 
@@ -182,6 +219,8 @@ task, or second Sandbox provisioning seam.
 | self-hosted work and healthcheck | Coordinator | self-hosted Worker |
 | image build state, lease, and Registry digest | Coordinator | Build Worker and Session Worker |
 | live sandbox and stdio MCP process | Worker/Sandbox, ephemeral | Session realization receipts |
+| Kubernetes package structural realization contract | Open Worker/Sandbox `k8s_package_realization` module | exact-revision typed verifier consumer |
+| package-object writer exclusivity and product-source claim | composing deployment admission/RBAC policy | release gate; not inferred by the structural contract |
 
 ## Dynamic Outcomes
 
@@ -194,7 +233,11 @@ task, or second Sandbox provisioning seam.
 | Environment update | a new immutable definition and executable revision | old Agent bindings remain resolvable |
 | archive | Control tombstone plus Coordinator lifecycle projection | no new binding; frozen Sessions continue |
 | image build pending at Session create | frozen Session baseline plus build demand | wait internally or fail without idle success |
-| bounded Kubernetes release observation | Build Job/Pod recipe and destination annotations, BuildKit termination digest, cold-created Sandbox scope/resolved image annotations, and kubelet `imageID` | with warm capacity disabled, accept proof only when the scope equals the exact mission Session id and the immutable image identities agree; absence or mismatch is no proof and changes no runtime state |
+| first package ConfigMap/Job creation | API-observed immutable ConfigMap UID, exact Build and image-check Job projections, controller-owned Pod UIDs, and one immutable digest | accept only exact create results; retain structural evidence for TTL observation |
+| ConfigMap or Job `409` | existing object and its API defaults | reuse only when generic realization plus normalized contract projection are exact; copied annotations cannot repair a wrong ConfigMap correlation UID/spec, terminating objects fail, and the observed object UID becomes the later Pod-owner fence |
+| Registry recovery | exact ConfigMap plus one successful image-check Job/Pod; no Build pair | return a typed proof with absent Build UIDs only when image-check and cold Sandbox digests agree |
+| bounded Kubernetes release observation | one exact ConfigMap, optional fresh Build pair, mandatory image-check pair, one canonical cold Sandbox, and matching kubelet `imageID` | typed secret-free structural proof only; absence, malformed status/owner/spec, mismatch, duplicate, or conflict is no proof and changes no runtime state |
+| structural proof succeeds but writer exclusivity is missing | no admission/RBAC proof for the pinned Open Worker and Job controller | no product-source proof; deployment remains gated |
 
 ## Consequences
 
@@ -211,6 +254,9 @@ task, or second Sandbox provisioning seam.
 - Package image build remains outside the neutral provisioning contract. The
   existing `PackageImageProvisioner` and `SandboxProvider::create` mechanisms
   remain authoritative.
+- Open now owns one typed Kubernetes structural verifier shared with the
+  emitter. Product-source attestation remains unavailable until the composing
+  deployment independently proves exclusive writers and its exact Open revision.
 
 ## First Vertical Slice
 

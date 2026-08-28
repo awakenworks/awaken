@@ -22,7 +22,7 @@ const POD_DELETE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Stamp the exact desired Kubernetes object before its first API write. A retry
 /// may reuse an existing object only when this immutable realization fingerprint
 /// matches; a same-name object with different bytes/spec fails closed.
-pub(super) fn stamp_realization<K>(object: &mut K) -> Result<(), RuntimeError>
+pub(crate) fn stamp_realization<K>(object: &mut K) -> Result<(), RuntimeError>
 where
     K: Resource<DynamicType = ()> + Serialize,
 {
@@ -66,7 +66,7 @@ where
     Ok(create_or_verify_with_status(api, desired).await?.object)
 }
 
-pub(super) struct CreateOutcome<K> {
+pub(crate) struct CreateOutcome<K> {
     pub object: K,
     pub created: bool,
 }
@@ -115,6 +115,24 @@ where
         }
         Err(error) => Err(backend(error)),
     }
+}
+
+/// Create or reuse one realization and then verify its API-observed immutable
+/// projection. The ordinary realization digest remains the first 409 fence;
+/// callers with API-defaulted objects add one canonical projection verifier so
+/// copying that annotation onto a different spec can never authorize reuse.
+pub(crate) async fn create_or_verify_with_status_exact<K, F>(
+    api: &Api<K>,
+    desired: &K,
+    verify: F,
+) -> Result<CreateOutcome<K>, RuntimeError>
+where
+    K: Clone + Debug + DeserializeOwned + Resource<DynamicType = ()> + Serialize,
+    F: FnOnce(&K, &K) -> Result<(), RuntimeError>,
+{
+    let outcome = create_or_verify_with_status(api, desired).await?;
+    verify(desired, &outcome.object)?;
+    Ok(outcome)
 }
 
 /// Reap a terminal Pod left behind by eviction or node loss before realizing a

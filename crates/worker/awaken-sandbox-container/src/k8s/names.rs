@@ -10,7 +10,7 @@ const LOWER_HEX: &[u8; 16] = b"0123456789abcdef";
 /// scope that cannot fit a DNS label uses the complete BLAKE3 digest in unpadded
 /// lowercase base32; Kubernetes has a finite name space, so a cryptographic
 /// content identity is the only bounded representation for arbitrary scopes.
-pub(super) fn k8s_runtime_id(scope: &str) -> Result<String, RuntimeError> {
+pub(crate) fn k8s_runtime_id(scope: &str) -> Result<String, RuntimeError> {
     if scope.is_empty() {
         return Err(backend("sandbox scope cannot be empty"));
     }
@@ -66,7 +66,7 @@ fn base32(bytes: &[u8]) -> String {
 }
 
 /// `id` is the already encoded adapter-local runtime identity.
-pub(super) fn pod_name(id: &str) -> String {
+pub(crate) fn pod_name(id: &str) -> String {
     format!("awaken-{id}")
 }
 
