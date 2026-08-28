@@ -1505,7 +1505,8 @@ mod tests {
     /// continuation language or automatic permission bypass exists.
     #[tokio::test]
     async fn durable_child_permission_recovers_and_duplicate_resume_is_idempotent() {
-        // Causes: C1 a local durable child has a Session-wide committed reader;
+        // Causes: C0 the child publication explicitly sets write=always_ask;
+        // C1 a local durable child has a Session-wide committed reader;
         // C2 its inherited parent reader contains no child state; C3 the child is
         // new, Awaiting, resumed, or terminal on replay. Effects: E1 every child
         // state/ticket comes from C1; E2 duplicate start reconnects without a
@@ -1513,7 +1514,7 @@ mod tests {
         // Constraints: K1 HostCommit is the sole local committed authority; K2 a
         // parent claim projection cannot own a child Thread; K3 the queue/claim
         // remains the sole execution fence; K4 no second read model is introduced.
-        // Decision table: R1=C1+C2+new=>Awaiting; R2=R1+duplicate=>E2;
+        // Decision table: R1=C0+C1+C2+new=>Awaiting; R2=R1+duplicate=>E2;
         // R3=R1+resume=>E3; R4=E3+replay=>E4.
         struct PermissionModel;
 
@@ -1574,6 +1575,10 @@ mod tests {
             "parent-agent",
         );
         let no_delegates = HashSet::new();
+        let permission_toolsets = vec![crate::config::test_agent_toolset_permission(
+            "write",
+            awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+        )];
         let execution = |scheduler: RunScheduler| AgentExecution {
             agent_id: "worker",
             model_ref: "default",
@@ -1581,6 +1586,7 @@ mod tests {
             run_delegation: None,
             context: Some(context()),
             scheduler: Some(scheduler),
+            toolsets: &permission_toolsets,
         };
 
         let first = run_agent_until_boundary(

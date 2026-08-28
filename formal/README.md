@@ -429,7 +429,7 @@ graphs with zero invariant violations and zero states left on the queue:
 | SessionActivity | 436 | 79 | 7 |
 | SessionRoot | 58,273 | 8,073 | 13 |
 | SessionEventProtocol | 257 | 104 | 13 |
-| SessionStartProtocol | 71,212 | 20,379 | 30 |
+| SessionStartProtocol | 81,228 | 23,171 | 29 |
 | SessionStartProtocol reachability | 121 | 109 | 20 |
 | Delegation | 5,835 | 1,097 | 14 |
 | ToolBatch | 1,414 | 979 | 12 |
@@ -441,6 +441,10 @@ graphs with zero invariant violations and zero states left on the queue:
 | AuthzKernel | 180 | 18 | 1 |
 | SessionOwnership | 768 | 169 | 7 |
 | SessionDeletion | 67 | 27 | 8 |
+| WorkspacePathProjection | 300 | 70 | 8 |
+| SessionRuntimeProjection | 337 | 33 | 5 |
+| ToolPermissionPolicy | 4,097 | 256 | 5 |
+| SessionPublicationProtocol | 303 | 132 | 17 |
 | CircuitBreaker | 1,573 | 478 | 10 |
 | AggregateCAS | 1,669 | 417 | 11 |
 | DeploymentCAS | 2,565,587 | 225,992 | 18 |

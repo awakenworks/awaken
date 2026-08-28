@@ -524,13 +524,13 @@ impl PersistedSession {
 
     /// Whether an ordinary protocol read may expose this aggregate.
     ///
-    /// `ActivationFailed` is the durable recovery record for an initial
-    /// realization that never became a live Session. Retaining it lets an
-    /// operator retry or delete the failed intent, but it must not turn a failed
-    /// create into a subsequently visible resource after projection-cache loss.
+    /// `ActivationFailed` is the durable terminal result of an accepted create
+    /// intent. It remains exactly readable so an async caller can distinguish a
+    /// transport timeout from background failure and inspect the aggregate-owned
+    /// error; only the orthogonal hidden disposition removes public visibility.
     #[must_use]
     pub const fn is_publicly_readable(&self) -> bool {
-        !self.is_hidden() && !matches!(self.execution, SessionExecutionState::ActivationFailed)
+        !self.is_hidden()
     }
 
     #[must_use]
@@ -1386,7 +1386,10 @@ mod mutation_tests {
         let mut failed = session("failed", SessionRevision(1));
         failed.execution = SessionExecutionState::ActivationFailed;
         assert!(failed.is_terminal());
-        assert!(!failed.is_publicly_readable());
+        assert!(
+            failed.is_publicly_readable(),
+            "failed async creation remains exactly queryable"
+        );
         assert!(failed.request_delete(), "failed Sessions remain deletable");
         assert_eq!(failed.execution, SessionExecutionState::ActivationFailed);
         assert!(matches!(failed.disposition, SessionDisposition::Deleting));

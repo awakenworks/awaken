@@ -46,17 +46,13 @@ pub(crate) fn latest_assistant_text(messages: &[Message]) -> String {
         .unwrap_or_default()
 }
 
-/// The built-in hand tools auto-allowed without a confirmation prompt (ADR-0030):
-/// read/glob/grep are perception; mutations (bash/write/edit) are asked. Single source
-/// for both the permission policy and a managed session's advertised confirmation
-/// policy, so the gate and the advertisement cannot drift.
-const AUTO_ALLOWED_HAND_TOOLS: [&str; 3] = ["read", "glob", "grep"];
-
-/// The built-in baseline allow rules (ADR-0030): read/glob/grep perception,
-/// delegation and skill discovery, plus a thread's pre-authorized MCP tool ids
-/// (ADR-0043 Phase 3 — configuring the server, with its credential, was the
-/// authorization decision). Factored out so both the default policy and an
-/// authored policy share the exact same baseline.
+/// The built-in baseline allow rules. Managed Agent toolsets default every
+/// registered Agent tool to `always_allow`; the closed Agent-toolset contract is
+/// the sole membership owner and the descriptor registry proves availability,
+/// so execution and advertisement cannot drift behind a second literal list.
+/// Authored toolset rules may still disable
+/// or require confirmation for an exact member, and MCP keeps its separate
+/// default-ask policy.
 fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     let allow = |name: &str| {
         PermissionRule::new(
@@ -64,7 +60,11 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
             ToolPermissionBehavior::Allow,
         )
     };
-    let mut rules: Vec<PermissionRule> = AUTO_ALLOWED_HAND_TOOLS.iter().map(|n| allow(n)).collect();
+    let mut rules: Vec<PermissionRule> = hand_tool_descriptors()
+        .into_iter()
+        .filter(|descriptor| awaken_session_contract::is_agent_toolset_member(&descriptor.id))
+        .map(|descriptor| allow(&descriptor.id))
+        .collect();
     // `agent_run` is allowed: the kernel executes it via the injected delegation
     // resolver (a sub-agent, native or remote), not the tool registry — delegation is
     // a runtime concern. Skill discovery/activation grant perception (they list
@@ -74,8 +74,8 @@ fn base_allow_rules(extra_allowed: &[String]) -> Vec<PermissionRule> {
     rules.push(allow(awaken_runtime_contract::resolved::ADVISOR_TOOL_ID));
     rules.push(allow("list_skills"));
     rules.push(allow("Skill"));
-    // Semantic Memory perception mirrors read/glob. Mutations intentionally
-    // retain the default confirmation behavior, matching write/edit.
+    // Semantic Memory is outside the Agent toolset contract. Perception is
+    // allowed explicitly while mutations retain the unmatched default.
     rules.push(allow("list_memories"));
     rules.push(allow("read_memory"));
     rules.extend(extra_allowed.iter().map(|id| allow(id)));
@@ -103,11 +103,12 @@ pub(crate) fn config_permission_ruleset(
     awaken_ext_permission::parse_ruleset(raw).ok()
 }
 
-/// The ruleset a thread actually enforces: the built-in baseline (auto-allowed
-/// perception tools + pre-authorized MCP ids) with an authored policy's rules
+/// The ruleset a thread actually enforces: the built-in Agent-tool baseline
+/// plus pre-authorized dynamic ids, with an authored policy's rules
 /// layered on top and its `default_behavior`/`mode` governing unmatched calls
 /// (`deny` in any rule still wins, absolutely). With no authored policy this is the
-/// strict built-in default (perception allowed, mutations asked).
+/// managed-Agent-compatible default (registered Agent tools allowed, unmatched
+/// tools asked).
 pub(crate) fn effective_ruleset(
     authored: Option<PermissionRuleset>,
     extra_allowed: &[String],
@@ -183,6 +184,27 @@ pub(crate) fn effective_ruleset_with_toolsets(
     resolved
 }
 
+#[cfg(test)]
+pub(crate) fn test_agent_toolset_permission(
+    name: &str,
+    permission: awaken_runtime_contract::agent_bindings::ToolPermissionRequirement,
+) -> awaken_runtime_contract::agent_bindings::ToolsetPolicy {
+    use awaken_runtime_contract::agent_bindings::{
+        ToolExecutionPolicy, ToolPolicyOverride, ToolsetPolicy, ToolsetSource,
+    };
+    ToolsetPolicy {
+        source: ToolsetSource::Agent,
+        default: ToolExecutionPolicy::default(),
+        overrides: vec![ToolPolicyOverride::new(
+            name,
+            ToolExecutionPolicy {
+                enabled: true,
+                permission,
+            },
+        )],
+    }
+}
+
 /// One compiled authorization value consumed by Native and ACP execution.
 /// Agent publication, Session-local replacement, and legacy plugin policy all
 /// converge here; callers cannot independently rebuild a gate and ACP policy.
@@ -224,16 +246,15 @@ fn hand_tool_descriptors() -> Vec<ToolDescriptor> {
         .collect()
 }
 
-/// The registered built-in hand tools advertised on a managed session: each id and
-/// whether its calls require confirmation (`true` = not in the auto-allow set). Shares
-/// [`AUTO_ALLOWED_HAND_TOOLS`] with [`server_policy`], so the gate and the
-/// advertisement stay in lockstep.
+/// The registered built-in hand tools advertised on a managed session. Agent
+/// toolset members default to `always_allow`; exact authored overrides are
+/// projected separately by the Session tool configuration.
 pub(crate) fn builtin_hand_tools() -> Vec<(String, bool)> {
     hand_tool_descriptors()
         .into_iter()
-        .map(|d| {
-            let ask = !AUTO_ALLOWED_HAND_TOOLS.contains(&d.id.as_str());
-            (d.id, ask)
+        .map(|descriptor| {
+            let ask = !awaken_session_contract::is_agent_toolset_member(&descriptor.id);
+            (descriptor.id, ask)
         })
         .collect()
 }
@@ -762,9 +783,10 @@ mod tests {
         // | Rule | Policy | Tool | Effect |
         // |---|---|---|---|
         // | P1 | baseline | read / AGENT_RUN | allow |
-        // | P2 | baseline | write | require confirmation |
-        // | P3 | authored allow | Bash(ls) | allow |
-        // | P4 | authored allow+deny | Bash(rm) | deny |
+        // | P2 | Managed Agent member | registered official hand tool | allow |
+        // | P3 | Awaken-only hand extension | move/delete | ask |
+        // | P4 | authored allow | Bash(ls) | allow |
+        // | P5 | authored allow+deny | Bash(rm) | deny |
         let base = effective_ruleset(None, &[]);
         assert_eq!(
             base.decide("read", &serde_json::json!({})),
@@ -774,10 +796,16 @@ mod tests {
             base.decide(AGENT_RUN, &serde_json::json!({})),
             ToolPermissionBehavior::Allow
         );
-        assert_eq!(
-            base.decide("write", &serde_json::json!({})),
-            ToolPermissionBehavior::RequireConfirmation
-        );
+        for (tool_id, ask) in builtin_hand_tools() {
+            let official = awaken_session_contract::is_agent_toolset_member(&tool_id);
+            let expected = if official {
+                ToolPermissionBehavior::Allow
+            } else {
+                ToolPermissionBehavior::RequireConfirmation
+            };
+            assert_eq!(base.decide(&tool_id, &serde_json::json!({})), expected);
+            assert_eq!(ask, !official, "P2/P3 advertised policy for {tool_id}");
+        }
 
         // Authored: allow bash but deny rm; default stays ask. Baseline read still allowed.
         let authored = awaken_ext_permission::parse_ruleset(&serde_json::json!({
@@ -812,14 +840,16 @@ mod tests {
         // Effects: disabled tools deny, explicit ask remains ask, and the enabled
         // default remains allow. Constraint/Invariant: the frozen normalized
         // ToolsetPolicy is the only execution-gate input. Decision rule: cover
-        // disabled, explicit ask, inherited ask, and default-allow partitions.
+        // Agent default-allow, disabled, explicit ask, MCP inherited ask, and
+        // an exact MCP allow override partitions.
         //
         // Decision table:
         // | tool                         | enabled | permission   | gate result |
         // | read                         | false   | allow        | deny        |
         // | write                        | true    | ask          | ask         |
-        // | mcp__docs__search            | true    | ask          | ask         |
-        // | mcp__docs__fetch (default)   | true    | allow        | allow       |
+        // | bash (Agent default)         | true    | allow        | allow       |
+        // | mcp__docs__search            | true    | allow        | allow       |
+        // | mcp__docs__fetch (default)   | true    | ask          | ask         |
         use awaken_runtime_contract::agent_bindings::{
             ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
             ToolsetSource,
@@ -847,10 +877,10 @@ mod tests {
                 source: ToolsetSource::Mcp {
                     server_name: "docs".into(),
                 },
-                default: ToolExecutionPolicy::default(),
+                default: policy(true, ToolPermissionRequirement::AlwaysAsk),
                 overrides: vec![ToolPolicyOverride::new(
                     "search",
-                    policy(true, ToolPermissionRequirement::AlwaysAsk),
+                    policy(true, ToolPermissionRequirement::AlwaysAllow),
                 )],
             },
         ];
@@ -864,12 +894,16 @@ mod tests {
             ToolPermissionBehavior::RequireConfirmation
         );
         assert_eq!(
+            rules.decide("bash", &serde_json::json!({})),
+            ToolPermissionBehavior::Allow
+        );
+        assert_eq!(
             rules.decide("mcp__docs__search", &serde_json::json!({})),
-            ToolPermissionBehavior::RequireConfirmation
+            ToolPermissionBehavior::Allow
         );
         assert_eq!(
             rules.decide("mcp__docs__fetch", &serde_json::json!({})),
-            ToolPermissionBehavior::Allow
+            ToolPermissionBehavior::RequireConfirmation
         );
     }
 

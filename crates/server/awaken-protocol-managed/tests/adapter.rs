@@ -330,17 +330,17 @@ async fn async_session_create_returns_the_durable_preparing_aggregate() {
 }
 
 #[tokio::test]
-async fn failed_idempotent_create_is_409_while_exact_get_remains_404() {
+async fn failed_idempotent_create_is_409_while_exact_get_exposes_failure() {
     // HTTP cause/effect decision table. C1 the deterministic create receipt is
     // durable; C2 owner and request fingerprint match; C3 execution is
     // ActivationFailed; C4 the process cache is cold. Effects: E1 replay is 409
     // `invalid_request_error` with the stable machine-readable message; E2 exact
-    // GET remains 404 `not_found_error`; E3 neither request creates, rehydrates,
-    // retries, replaces, or mutates the failed Session.
+    // GET returns the same aggregate as terminated/failed plus its durable error;
+    // E3 neither request creates, retries, replaces, or mutates the failed Session.
     //
     // | Rule | C1 | C2 | C3 | C4 | POST replay | exact GET | Side effect |
     // |---|---|---|---|---|---|---|---|
-    // | F1 | yes | yes | yes | yes | E1 | E2 | E3 |
+    // | F1 | yes | yes | yes | yes | E1 | 200 failed (E2) | E3 |
     //
     // Live and mismatch partitions are owned by the complete idempotency table
     // above. The same router and repository paths are used; this test adds no
@@ -360,6 +360,7 @@ async fn failed_idempotent_create_is_409_while_exact_get_remains_404() {
     let id = created.1["id"].as_str().unwrap().to_string();
     let mut failed = repo.get(&id).await.expect("durable Session");
     failed.execution = SessionExecutionState::ActivationFailed;
+    failed.realization_progress.last_error = Some("repository realization timed out".into());
     let failed = support::replace_session_fixture(
         repo.as_ref(),
         "default",
@@ -384,8 +385,14 @@ async fn failed_idempotent_create_is_409_while_exact_get_remains_404() {
     assert!(restarted.list_sessions().is_empty(), "F1/E3 no rehydration");
 
     let (status, body) = raw_call(&app, "GET", &format!("/v1/sessions/{id}"), Body::empty()).await;
-    assert_eq!(status, StatusCode::NOT_FOUND, "F1/E2: {body}");
-    assert_eq!(body["error"]["type"], "not_found_error", "F1/E2");
+    assert_eq!(status, StatusCode::OK, "F1/E2: {body}");
+    assert_eq!(body["id"], id, "F1/E2 stable identity");
+    assert_eq!(body["status"], "terminated", "F1/E2");
+    assert_eq!(body["preparation"]["status"], "failed", "F1/E2");
+    assert_eq!(
+        body["preparation"]["error"], "repository realization timed out",
+        "F1/E2 durable cause"
+    );
     assert_eq!(repo.get(&id).await.unwrap(), failed, "F1/E3 durable truth");
 }
 
