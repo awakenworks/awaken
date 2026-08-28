@@ -937,59 +937,33 @@ impl SharedHost {
             || !toolsets.is_empty();
         let pre_authorized =
             pre_authorized_tool_ids(&mcp.tool_ids, &admin_ids, has_explicit_tool_policy);
-        // The workspace Skill dir is negotiated by the Agent/Hand definition:
-        // `plugin_config.skills_dir` (ADR-0036) overrides the profile default.
-        // Direct callers may discover authored repository Skills there; Managed
-        // callers use it only as the materialization target for frozen bytes.
-        let skills_subdir = installed
-            .as_ref()
-            .and_then(|c| {
-                c.resolved_spec
-                    .plugin_config
-                    .get("skills_dir")
-                    .and_then(|v| v.as_str())
-                    .map(str::to_string)
-            })
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| {
-                if installed.is_some() {
-                    crate::skills::MANAGED_SKILLS_SUBDIR.to_string()
-                } else {
-                    crate::skills::DEFAULT_SKILLS_SUBDIR.to_string()
-                }
-            });
-        let repository_skill_roots = if !session_dispatch
-            && installed.is_some()
-            && self.session_allows_repository_skill_discovery(thread, installed.as_ref())
-        {
-            let mut roots = vec![skills_subdir.clone()];
-            roots.extend(
-                self.session_slots
-                    .read(thread, |slot| {
-                        slot.resources
-                            .repositories
-                            .iter()
-                            .map(|repository| {
-                                format!(
-                                    "{}/{}",
-                                    repository
-                                        .plan
-                                        .mount_path
-                                        .trim_start_matches('/')
-                                        .trim_end_matches('/'),
-                                    crate::skills::MANAGED_SKILLS_SUBDIR
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })
-                    .unwrap_or_default(),
-            );
-            roots.sort();
-            roots.dedup();
-            roots
+        // `plugin_config.skills_dir` is the direct/non-Managed authored-workspace
+        // compatibility setting. Managed repository discovery always uses the
+        // provider-fixed `.claude/skills` path under each realized mount, while
+        // attached Managed bundles materialize under runtime-owned `.skills`.
+        let authored_skills_subdir = if session_dispatch {
+            crate::skills::MANAGED_SKILLS_SUBDIR.to_string()
         } else {
-            Vec::new()
+            installed
+                .as_ref()
+                .and_then(|c| {
+                    c.resolved_spec
+                        .plugin_config
+                        .get("skills_dir")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                })
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| {
+                    if installed.is_some() {
+                        crate::skills::MANAGED_SKILLS_SUBDIR.to_string()
+                    } else {
+                        crate::skills::DEFAULT_SKILLS_SUBDIR.to_string()
+                    }
+                })
         };
+        let skill_source_roots =
+            self.session_skill_source_roots(thread, installed.as_ref(), &authored_skills_subdir);
         let authorization =
             effective_tool_authorization(&published_configuration, &pre_authorized, &toolsets);
         let permission = authorization.policy.clone();
@@ -1063,18 +1037,18 @@ impl SharedHost {
             runtime = runtime.with_run_delegation(service);
         }
         // One registry owns Skill discovery/body resolution. Managed Sessions
-        // project its frozen bytes only through the filesystem; direct callers
-        // may adapt the same registry to the legacy two-tool contract.
+        // project exact attached bytes plus the realized-repository snapshot
+        // only through the filesystem; direct callers may adapt the same
+        // registry to the legacy two-tool contract.
         let mut skill_descriptors = Vec::new();
         let mut semantic_skill_tools = None;
         let mut skill_registry: Option<Arc<dyn SkillRegistry>> = None;
         let mut session_content_plugins: Vec<Arc<dyn awaken_runtime_contract::plugin::Plugin>> =
             Vec::new();
-        // A managed Session consumes its exact frozen Skill versions. An embedded
-        // direct Session without a manifest reads its configured Skill catalog.
-        // Managed execution may consume only the exact bytes resolved into this
-        // Session's Resource projection. Only a direct Session without a frozen
-        // manifest may fall back to the live compatibility catalog.
+        // A Managed Session consumes exact frozen versions for attached Skills.
+        // Its separate admitted repository source is derived below from the
+        // already-realized Resource projection. Only a direct Session without a
+        // frozen manifest may fall back to the live compatibility catalog.
         let delivered = frozen_skill_versions.or_else(|| {
             (!session_dispatch && self.skills.has_application())
                 .then(|| self.skills.cache_snapshot_in(&workspace))
@@ -1083,9 +1057,10 @@ impl SharedHost {
         // Sessions without a publication use the host-configured catalog.
         let selected_skills = content_delivery::published_skill_ids(installed.as_ref());
         let filtered_specs: Vec<SkillSpec> = if session_dispatch {
-            // Managed Skill truth is the resolved binding plus its exact frozen
-            // version bytes. Host-static specs have neither and therefore remain
-            // a direct-session compatibility source only.
+            // Managed attached-Skill truth is the resolved binding plus its
+            // exact frozen version bytes. Host-static specs have neither and
+            // remain a direct-session compatibility source only; realized
+            // repository files enter through `skill_source_roots` instead.
             Vec::new()
         } else {
             match &selected_skills {
@@ -1141,8 +1116,8 @@ impl SharedHost {
             },
             filtered_delivered,
             env.clone(),
-            &skills_subdir,
-            (!session_dispatch).then_some(repository_skill_roots.as_slice()),
+            &authored_skills_subdir,
+            skill_source_roots.as_deref(),
             content_delivery == crate::session_slot::ManagedContentDelivery::ManagedFilesystem,
         )
         .await

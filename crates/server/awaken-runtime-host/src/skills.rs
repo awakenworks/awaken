@@ -93,10 +93,11 @@ fn snapshot_repository_skill_files(
                     // multiple repositories remain independently visible.
                     id: format!("repository:{root}:{}", file.id),
                     content: file.content,
-                    // Providers may strip their physical workspace prefix while
-                    // scanning. Reconstruct the Agent-visible path from the
-                    // frozen mount root so Workdir/Namespace/Container expose
-                    // one `/workspace/...` coordinate.
+                    // Preserve the frozen logical mount spelling and restore a
+                    // leading slash only when it is already workspace-qualified.
+                    // Legacy relative mounts remain relative until the shared
+                    // cross-provider Agent-visible path authority normalizes
+                    // them; do not duplicate that mapping in the Skill layer.
                     dir: Some(format!("{visible_root}/{}", file.id)),
                 })
         })
@@ -216,12 +217,18 @@ pub(crate) async fn build_skill_registry(
     external_registries: Vec<Arc<dyn SkillRegistry>>,
     delivered: Option<Vec<SkillVersion>>,
     env: Option<Arc<crate::session_environment::SessionEnvironment>>,
-    skills_subdir: &str,
-    workspace_skill_roots: Option<&[String]>,
+    authored_skills_subdir: &str,
+    skill_source_roots: Option<&[String]>,
     filesystem_delivery: bool,
 ) -> Result<Option<Arc<dyn SkillRegistry>>, String> {
-    if let (Some(env), Some(roots)) = (&env, workspace_skill_roots) {
-        env.register_skill_dir(skills_subdir);
+    if let (Some(env), Some(roots)) = (&env, skill_source_roots) {
+        // `Some([])` is the direct live-authored compatibility source. An
+        // explicit root list is instead a closed startup snapshot; Managed
+        // supplies only realized repository roots and must not implicitly add
+        // an unmounted workspace root.
+        if roots.is_empty() {
+            env.register_skill_dir(authored_skills_subdir);
+        }
         for root in roots {
             env.register_skill_dir(root);
         }
@@ -233,7 +240,7 @@ pub(crate) async fn build_skill_registry(
     // later commit or in-sandbox write cannot mutate the announced catalog;
     // the next Session receives a new snapshot from its own checkout.
     let repository_files = env.as_ref().map_or_else(Vec::new, |env| {
-        workspace_skill_roots.map_or_else(Vec::new, |roots| {
+        skill_source_roots.map_or_else(Vec::new, |roots| {
             snapshot_repository_skill_files(env, roots)
         })
     });
@@ -299,8 +306,9 @@ pub(crate) async fn build_skill_registry(
     }
     // Registry precedence follows the admitted sources: configured direct
     // compatibility specs, frozen delivered versions, external direct adapters,
-    // then direct workspace/repository discovery. Managed passes `None` for the
-    // final source and therefore performs no live workspace scan or refresh.
+    // then one frozen Environment-root snapshot. Managed supplies only resolved
+    // attached bytes plus realized repository roots; it never supplies the
+    // direct sources or a live authored root.
     let mut registries: Vec<Arc<dyn SkillRegistry>> = Vec::new();
     if !configured.is_empty() {
         registries.push(Arc::new(FixedSkillRegistry::from_specs(configured)));
@@ -375,13 +383,13 @@ pub(crate) async fn build_skill_registry(
             SkillProvenance::Repository,
         )));
     }
-    if workspace_skill_roots.is_some_and(<[String]>::is_empty)
+    if skill_source_roots.is_some_and(<[String]>::is_empty)
         && let Some(env) = &env
     {
         registries.push(Arc::new(SourceSkillRegistry::new(
             Arc::new(EnvSkillSource {
                 env: env.clone(),
-                subdir: skills_subdir.to_string(),
+                subdir: authored_skills_subdir.to_string(),
             }),
             SkillProvenance::AgentCreated,
         )));
@@ -627,11 +635,15 @@ mod tests {
 
     #[tokio::test]
     async fn managed_registry_excludes_unbound_workspace_skill_files() {
-        // Source-authority decision table. C1 exact frozen version bytes exist;
-        // C2 an unbound `.claude/skills` file also exists; C3 the Managed caller
-        // passes no workspace source. Effect E1 only C1 enters the registry and
-        // filesystem prompt. Rule M1=C1+C2+C3=>E1. Complement M2=!C3+C2=>live
-        // AgentCreated discovery is owned by
+        // Managed repository Skill cause/effect rules R1/R3/R7. C1 exact
+        // attached version bytes exist; C2 an unmounted workspace
+        // `.claude/skills` file also exists; C3 no repository roots were
+        // admitted (no mount or exact `read` denied). E1 only C1 enters the one
+        // registry and filesystem prompt. R1=C1+!repository=>E1;
+        // R3=C1+C2+C3=>E1; R7 adds host-static/live-catalog/MCP registries as
+        // equally unbound inputs, excluded by the Managed caller before this
+        // builder (`managed_session_ignores_unbound_host_skill_sources` owns
+        // their integration row). Direct live authoring remains owned by
         // `agent_authored_skill_is_discovered_live_from_the_workspace`.
         let base = std::env::temp_dir().join(format!(
             "awaken-managed-skill-authority-{}",
@@ -668,14 +680,14 @@ mod tests {
         )
         .await
         .unwrap()
-        .expect("M1 frozen Managed registry");
+        .expect("R1/R3/R7 frozen Managed registry");
         let listed = registry.list();
-        assert_eq!(listed.len(), 1, "M1/E1 no parallel workspace entry");
-        assert_eq!(listed[0].id, "test", "M1/E1 exact frozen id");
-        let prompt = filesystem_skill_prompt(registry.as_ref()).expect("M1 prompt");
+        assert_eq!(listed.len(), 1, "R1/R3/R7 no parallel workspace entry");
+        assert_eq!(listed[0].id, "test", "R1 exact frozen id");
+        let prompt = filesystem_skill_prompt(registry.as_ref()).expect("R1 prompt");
         assert!(
             prompt.contains("Frozen") && !prompt.contains("Unbound"),
-            "M1/E1"
+            "R3/R7"
         );
 
         env.dispose().await.unwrap();
@@ -728,14 +740,17 @@ mod tests {
 
     #[tokio::test]
     async fn repository_skill_snapshot_is_startup_scoped_and_path_qualified() {
-        // Repository discovery cause/effect table:
-        // R0 read-disabled caller supplies no roots -> no repository Skills;
-        // R1 an attached Skill and two mounted repositories contain the same
-        // display name -> all paths remain visible; R2 a repository changes after the snapshot
-        // -> the current Session retains its original catalog; R3 a new Session
-        // snapshot -> updated and newly added Skills become visible.
-        // Invariants: exact `.claude/skills/<dir>/SKILL.md` scanning remains owned
-        // by the Sandbox provider, while this host snapshot owns startup timing.
+        // Managed repository Skill cause/effect rules R2/R4/R5/R6. C1 exact
+        // attached bytes and two admitted realized repository roots exist; C2
+        // each root has exact `<name>/SKILL.md`; C3 malformed root-level,
+        // nested, and wrong-name files coexist; C4 repository files mutate
+        // after construction. Effects: E1 attached and repository entries share
+        // one Composite registry; E2 only C2 is discovered; E3 same display
+        // names retain path-qualified identities; E4 the current registry stays
+        // frozen and the next Session snapshot sees changes. Rules:
+        // R2=C1+C2=>E1; R4=C2+C3=>E2; R5=same-name=>E3;
+        // R6=C4=>current-old+next-new. Repository realization itself is reused;
+        // this builder neither clones nor fetches.
         let base = std::env::temp_dir().join(format!(
             "awaken-repository-skill-snapshot-{}",
             std::process::id()
@@ -757,50 +772,61 @@ mod tests {
                 format!("---\nname: Shared\ndescription: shared\n---\n{body}"),
             )
             .unwrap();
+            std::fs::write(base.join("t").join(root).join("SKILL.md"), "ROOT").unwrap();
+            let nested = base.join("t").join(root).join("nested/too-deep");
+            std::fs::create_dir_all(&nested).unwrap();
+            std::fs::write(nested.join("SKILL.md"), "NESTED").unwrap();
+            let wrong_name = base.join("t").join(root).join("wrong-name");
+            std::fs::create_dir_all(&wrong_name).unwrap();
+            std::fs::write(wrong_name.join("skill.md"), "WRONG").unwrap();
         }
 
-        assert!(
-            snapshot_repository_skill_files(env.as_ref(), &[]).is_empty(),
-            "R0"
-        );
-        let frozen = Arc::new(SourceSkillRegistry::new(
-            Arc::new(SnapshotSkillSource {
-                files: snapshot_repository_skill_files(env.as_ref(), &roots),
-            }),
-            SkillProvenance::Repository,
-        ));
+        let attached = version_with(vec![awaken_skill_store::SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: Shared\ndescription: shared\n---\nATTACHED".to_vec(),
+            executable: false,
+        }]);
+        let frozen = build_skill_registry(
+            &[],
+            Vec::new(),
+            Some(vec![attached.clone()]),
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(&roots),
+            true,
+        )
+        .await
+        .unwrap()
+        .expect("R2 one attached-plus-repository registry");
         let initial = frozen.list();
-        assert_eq!(initial.len(), 2, "R1 same display name keeps both paths");
+        assert_eq!(initial.len(), 3, "R2/R4 only admitted exact entries");
         assert!(initial.iter().all(|skill| skill.name == "Shared"));
-        assert!(
-            initial
-                .iter()
-                .all(|skill| skill.provenance == SkillProvenance::Repository)
+        let repository = initial
+            .iter()
+            .filter(|skill| skill.provenance == SkillProvenance::Repository)
+            .collect::<Vec<_>>();
+        assert_eq!(repository.len(), 2, "R2/R4 two exact repository entries");
+        assert_ne!(
+            repository[0].id, repository[1].id,
+            "R5 path-qualified identity"
         );
-        assert_ne!(initial[0].id, initial[1].id, "R1 path-qualified identity");
-        assert_ne!(initial[0].dir, initial[1].dir, "R1 distinct sandbox paths");
-        let prompt = filesystem_skill_prompt(frozen.as_ref()).expect("R1 prompt metadata");
-        assert_eq!(prompt.matches("- Shared:").count(), 2, "R1 both announced");
+        assert_ne!(
+            repository[0].dir, repository[1].dir,
+            "R5 distinct sandbox paths"
+        );
+        let prompt = filesystem_skill_prompt(frozen.as_ref()).expect("R2 prompt metadata");
+        assert_eq!(
+            prompt.matches("- Shared:").count(),
+            3,
+            "R2/R5 attached and repositories coexist"
+        );
+        assert!(prompt.contains(".skills/test/SKILL.md"));
         assert!(prompt.contains("/workspace/a/.claude/skills/shared/SKILL.md"));
         assert!(prompt.contains("/workspace/b/.claude/skills/shared/SKILL.md"));
         assert!(
-            !prompt.contains("A-v1") && !prompt.contains("B-v1"),
-            "R1 prompt exposes metadata and paths, not instruction bodies"
+            !prompt.contains("ATTACHED") && !prompt.contains("A-v1") && !prompt.contains("B-v1"),
+            "R2 prompt exposes metadata and paths, not instruction bodies"
         );
-        let mut attached = SkillSpec::new("attached-shared", "Shared", "shared", "ATTACHED");
-        attached.dir = Some(".skills/attached-shared".into());
-        let combined = CompositeSkillRegistry::new(vec![
-            Arc::new(FixedSkillRegistry::from_specs([attached])),
-            frozen.clone(),
-        ]);
-        let combined_prompt =
-            filesystem_skill_prompt(&combined).expect("R1 combined prompt metadata");
-        assert_eq!(
-            combined_prompt.matches("- Shared:").count(),
-            3,
-            "R1 attached and both repository paths coexist"
-        );
-        assert!(combined_prompt.contains(".skills/attached-shared/SKILL.md"));
 
         let a = base.join("t/workspace/a/.claude/skills/shared/SKILL.md");
         std::fs::write(&a, "---\nname: Shared\ndescription: shared\n---\nA-v2").unwrap();
@@ -812,7 +838,7 @@ mod tests {
         )
         .unwrap();
         let still_frozen = frozen.list();
-        assert_eq!(still_frozen.len(), 2, "R2 no mid-Session discovery");
+        assert_eq!(still_frozen.len(), 3, "R6 no mid-Session discovery");
         assert!(still_frozen.iter().any(|skill| skill.body.contains("A-v1")));
         assert!(
             still_frozen
@@ -820,16 +846,75 @@ mod tests {
                 .all(|skill| !skill.body.contains("A-v2"))
         );
 
-        let next = SourceSkillRegistry::new(
-            Arc::new(SnapshotSkillSource {
-                files: snapshot_repository_skill_files(env.as_ref(), &roots),
-            }),
-            SkillProvenance::Repository,
+        let next = build_skill_registry(
+            &[],
+            Vec::new(),
+            Some(vec![attached]),
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(&roots),
+            true,
         )
+        .await
+        .unwrap()
+        .expect("R6 next Session registry")
         .list();
-        assert_eq!(next.len(), 3, "R3 new Session snapshot");
+        assert_eq!(next.len(), 4, "R6 new Session snapshot");
         assert!(next.iter().any(|skill| skill.body.contains("A-v2")));
         assert!(next.iter().any(|skill| skill.name == "Late"));
+
+        env.dispose().await.unwrap();
+        std::fs::remove_dir_all(base).ok();
+    }
+
+    #[tokio::test]
+    async fn attached_integrity_failure_cannot_fall_back_to_a_repository_skill() {
+        // Managed repository Skill cause/effect rule R8. C1 an attached binding
+        // supplies tampered version bytes; C2 an admitted repository contains a
+        // valid same-named Skill. E1 construction fails on C1 before any prompt
+        // is published; C2 cannot replace the attached binding/version/hash
+        // authority. R8=C1+C2=>E1.
+        let base = std::env::temp_dir().join(format!(
+            "awaken-managed-skill-integrity-{}",
+            std::process::id()
+        ));
+        std::fs::remove_dir_all(&base).ok();
+        let env = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(&base)
+                .create_sandbox(&crate::provisioning::agent_run_sandbox_spec("t"))
+                .await
+                .unwrap(),
+        ));
+        let root = "workspace/repo/.claude/skills".to_string();
+        let repository_skill = base.join("t").join(&root).join("test");
+        std::fs::create_dir_all(&repository_skill).unwrap();
+        std::fs::write(
+            repository_skill.join("SKILL.md"),
+            "---\nname: test\ndescription: repository\n---\nVALID",
+        )
+        .unwrap();
+        let mut tampered = version_with(vec![awaken_skill_store::SkillBundleFile {
+            path: "SKILL.md".into(),
+            content: b"---\nname: test\ndescription: attached\n---\nTAMPERED".to_vec(),
+            executable: false,
+        }]);
+        tampered.bundle_sha256 = "sha256:wrong".into();
+
+        let error = match build_skill_registry(
+            &[],
+            Vec::new(),
+            Some(vec![tampered]),
+            Some(env.clone()),
+            MANAGED_SKILLS_SUBDIR,
+            Some(&[root]),
+            true,
+        )
+        .await
+        {
+            Ok(_) => panic!("R8 attached corruption must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("bundle hash mismatch"), "R8/E1: {error}");
 
         env.dispose().await.unwrap();
         std::fs::remove_dir_all(base).ok();

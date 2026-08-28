@@ -4937,12 +4937,12 @@ async fn direct_on_tool_use_brain_skill_adapter_keeps_the_environment_absent() {
 
 #[tokio::test]
 async fn managed_session_ignores_unbound_host_skill_sources() {
-    // Authority decision table. C1 the caller is Managed; C2 its frozen Resource
-    // manifest selects no Skill; C3 a filesystem-requiring host-static Skill
+    // Managed repository Skill rule R7. C1 the caller is Managed; C2 its frozen
+    // Resource manifest selects no Skill; C3 a filesystem-requiring host-static Skill
     // exists; C4 a durable catalog cache also contains an unbound Skill; C5 all
     // filesystem tools are disabled. Effect E1 no Skill descriptor/executor or
-    // prompt is projected; E2 Hand stays absent. Rule
-    // A1=C1+C2+C3+C4+C5=>E1+E2.
+    // prompt is projected; E2 Hand stays absent.
+    // R7=C1+C2+C3+C4+C5=>E1+E2.
     // Counter-rule A2=!C1+instruction-only static Skill+C4=>the direct semantic
     // adapter is covered by L2. This distinguishes a compatibility input from the Managed
     // Binding/version/bytes authority instead of synchronizing both catalogs.
@@ -13790,19 +13790,23 @@ async fn session_web_policy_overlay_reaches_the_configured_plugin_before_inferen
 
 #[test]
 fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
-    // Cause/effect graph: C1 an Agent toolset defaults disabled; C2 `bash` is
-    // explicitly enabled; C3 `read` is disabled or enabled. E1 general
-    // filesystem delivery remains possible from C2; E2 repository Skill
-    // discovery is denied for C3=false and admitted for C3=true.
+    // Managed repository Skill cause/effect rules R2/R3. C1 a Managed Agent
+    // toolset defaults disabled; C2 `bash` is explicitly enabled; C3 exact
+    // `read` is disabled or enabled; C4 workspace-qualified and legacy-relative
+    // resolved Repository mount plans exist; C5 a cold Managed recovery has no
+    // publication snapshot but retains the same slot tool policy.
+    // E1 general filesystem delivery remains possible from C2; E2 repository
+    // roots are excluded for C3=false and admitted for C3=true.
     //
-    // Decision table:
-    // | Rule | bash | read | filesystem | repository discovery |
-    // | R1   | on   | off  | yes        | no                   |
-    // | R2   | on   | on   | yes        | yes                  |
-    // Constraint: direct Agent SDK-compatible repository discovery authority is
-    // the exact `read` policy; another filesystem capability cannot widen it.
-    // Managed Sessions never call this source because their frozen binding
-    // bytes are the only Skill authority.
+    // | Rule | Managed | repo | bash | read | admitted roots |
+    // | R3   | yes     | yes  | on   | off  | none           |
+    // | R2   | yes     | yes  | on   | on   | fixed repo path|
+    // | R2c  | yes/cold| yes  | on   | on   | fixed repo path|
+    // Constraint: another filesystem capability cannot widen `read` and
+    // `plugin_config.skills_dir` cannot alter the Managed repository path.
+    // Direct compatibility rows remain unchanged: a published/read-enabled
+    // caller includes its authored root plus repository roots; no publication
+    // retains `Some([])` as the live authored-source marker.
     use awaken_agent_contract::{
         ToolExecutionPolicy, ToolPermissionRequirement, ToolPolicyOverride, ToolsetPolicy,
         ToolsetSource,
@@ -13813,7 +13817,21 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
         enabled: true,
         permission: ToolPermissionRequirement::AlwaysAllow,
     };
+    let repository =
+        |repository_id: &str, mount_path: &str| crate::provisioning::RepositoryActivation {
+            plan: awaken_provisioning_contract::RepositoryRealizationPlan {
+                repository_id: repository_id.into(),
+                mount_path: mount_path.into(),
+                source_remote_url: format!("https://example.invalid/{repository_id}.git"),
+                transport_url: format!("https://example.invalid/{repository_id}.git"),
+                initial_branch: None,
+                initial_commit: None,
+                access: awaken_provisioning_contract::MountAccess::ReadWrite,
+            },
+            credential_pin: None,
+        };
     host.session_slots.update("repository-policy", |slot| {
+        slot.session_dispatch = true;
         slot.tools = Some(awaken_session_contract::SessionToolConfiguration {
             toolsets: vec![ToolsetPolicy {
                 source: ToolsetSource::Agent,
@@ -13825,15 +13843,31 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
             }],
             client_tools: Vec::new(),
         });
+        slot.resources.repositories.extend([
+            repository("repo-a", "/workspace/repo-a"),
+            repository("legacy-repo", "legacy-repo"),
+        ]);
     });
+    let snapshot = awaken_runtime_contract::ExecutableAgentSnapshot::builder("repository-agent")
+        .model(test_model_binding())
+        .build();
 
     assert!(
         host.session_allows_filesystem_tools("repository-policy", None),
-        "R1 filesystem delivery"
+        "R3 filesystem delivery"
     );
     assert!(
-        !host.session_allows_repository_skill_discovery("repository-policy", None),
-        "R1 exact read denial"
+        !host.session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
+        "R3 exact read denial"
+    );
+    assert_eq!(
+        host.session_skill_source_roots(
+            "repository-policy",
+            Some(&snapshot),
+            "custom-authored-skills",
+        ),
+        None,
+        "R3 no Managed repository source"
     );
 
     host.session_slots.update("repository-policy", |slot| {
@@ -13842,8 +13876,49 @@ fn repository_skill_discovery_requires_read_not_merely_a_filesystem_tool() {
             .push(ToolPolicyOverride::new("read", enabled));
     });
     assert!(
-        host.session_allows_repository_skill_discovery("repository-policy", None),
+        host.session_allows_repository_skill_discovery("repository-policy", Some(&snapshot)),
         "R2 exact read admission"
+    );
+    assert_eq!(
+        host.session_skill_source_roots(
+            "repository-policy",
+            Some(&snapshot),
+            "custom-authored-skills",
+        ),
+        Some(vec![
+            "legacy-repo/.claude/skills".to_string(),
+            "workspace/repo-a/.claude/skills".to_string(),
+        ]),
+        "R2 fixed relative path ignores the direct authored setting"
+    );
+    assert_eq!(
+        host.session_skill_source_roots("repository-policy", None, "custom-authored-skills",),
+        Some(vec![
+            "legacy-repo/.claude/skills".to_string(),
+            "workspace/repo-a/.claude/skills".to_string(),
+        ]),
+        "R2c cold Managed recovery uses the durable slot read policy"
+    );
+
+    host.session_slots
+        .update("repository-policy", |slot| slot.session_dispatch = false);
+    assert_eq!(
+        host.session_skill_source_roots(
+            "repository-policy",
+            Some(&snapshot),
+            "custom-authored-skills",
+        ),
+        Some(vec![
+            "custom-authored-skills".to_string(),
+            "legacy-repo/.claude/skills".to_string(),
+            "workspace/repo-a/.claude/skills".to_string(),
+        ]),
+        "direct published compatibility keeps authored and repository roots"
+    );
+    assert_eq!(
+        host.session_skill_source_roots("unpublished-direct", None, "skills"),
+        Some(Vec::new()),
+        "direct unpublished compatibility keeps the live authored marker"
     );
 }
 

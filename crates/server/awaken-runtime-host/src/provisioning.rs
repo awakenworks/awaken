@@ -1160,10 +1160,35 @@ mod provisioning_registry_tests {
 
     #[tokio::test]
     async fn realize_thread_repositories_fails_closed_on_an_unsafe_path() {
-        // A jail-escaping logical path is rejected by `LocalSandbox::provision_repo`
-        // BEFORE any git runs (deterministic, no git binary needed). The fail-closed
-        // contract: that SandboxError surfaces as a HostError so a session never
-        // starts believing a repo mounted when it did not.
+        // Managed repository Skill cause/effect rule R9. C1 the frozen mount is
+        // unsafe (the provider rejects it before Git) or C2 repository
+        // realization returns an error. E1 Session activation fails before
+        // Skill-root selection, snapshot, or prompt publication. This existing
+        // realization boundary is the only clone/fetch owner; Skill discovery
+        // never adds another transport path. Decision rows R9a=C1=>E1 and
+        // R9b=C2=>E1 exercise both causes through that same boundary.
+        struct FailingRepositoryRealizer;
+
+        #[async_trait::async_trait]
+        impl pc::RepositoryRealizer for FailingRepositoryRealizer {
+            async fn realize_repository(
+                &self,
+                _plan: &pc::RepositoryRealizationPlan,
+                _credential: Option<&pc::RepositoryHttpBasicCredential>,
+            ) -> Result<(), pc::SandboxError> {
+                Err(pc::SandboxError::new("clone failed"))
+            }
+
+            async fn publish_repository(
+                &self,
+                _plan: &pc::RepositoryRealizationPlan,
+                _expectation: &pc::RepositoryPublicationExpectation,
+                _credential: Option<&pc::RepositoryHttpBasicCredential>,
+            ) -> Result<pc::RepositoryPublicationReceipt, pc::SandboxError> {
+                unreachable!("R9 tests realization only")
+            }
+        }
+
         let tmp = tempfile::tempdir().unwrap();
         let env = crate::session_environment::SessionEnvironment::workdir(
             LocalProvider::new(tmp.path())
@@ -1193,8 +1218,21 @@ mod provisioning_registry_tests {
         let err = host.realize_thread_repositories("t", &env).await;
         assert!(
             err.is_err(),
-            "an unsafe repo mount must abort session start"
+            "R9a unsafe repo mount must abort Session start"
         );
+
+        host.register_thread_resources(
+            "clone-failure",
+            StagedResources {
+                repositories: vec![repository_activation("repo")],
+                ..Default::default()
+            },
+        );
+        let error = host
+            .realize_thread_repositories("clone-failure", &FailingRepositoryRealizer)
+            .await
+            .expect_err("R9b clone failure must abort Session start");
+        assert!(error.message.contains("clone failed"), "R9b/E1: {error:?}");
     }
 
     #[tokio::test]

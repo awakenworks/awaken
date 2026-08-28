@@ -20,6 +20,8 @@ condition inside that profile.
 | Profile and selection | Filesystem capability | Skill projection | Outcome |
 |---|---|---|---|
 | Managed + frozen selected Skill | enabled | `ManagedFilesystem` | metadata/path prompt; model reads exact materialized `SKILL.md` bytes |
+| Managed + realized repository Skill | exact `read` enabled | `ManagedFilesystem` | scan the frozen checkout once at `.claude/skills/<name>/SKILL.md`; disclose metadata/path |
+| Managed + realized repository Skill | exact `read` disabled | none | repository remains mounted as code input; no repository Skill projection |
 | Managed + frozen selected Skill | disabled | none | fail before inference |
 | Managed + no frozen selected Skill | disabled | none | non-Skill content may still use `SemanticTools`; no Skill tools are built |
 | direct/non-Managed compatibility caller | enabled | filesystem | existing progressive disclosure |
@@ -27,19 +29,29 @@ condition inside that profile.
 
 There is one authority and one projection for each profile:
 
-- A Managed Skill is selected by `AgentSkillBinding`, resolved to an exact
-  `ResolvedSkillBinding`, and loaded as the hash-verified `SkillVersion` bytes.
-  The runtime builds one `SkillRegistry`, materializes those bytes, and derives
-  prompt metadata and paths from that registry. It never constructs
-  `ListSkillsTool`, `SkillTool`, their activation state, or their permission
-  gate for the Managed profile.
-- Host-static `SkillSpec` values, live durable-catalog scans, workspace/repository
-  Skill scans, and lazy MCP prompt registries have no Session-resolved
-  binding/version/bytes identity, so they are not Managed Skill authorities.
-  MCP prompts-as-skills fail Managed admission; Managed capabilities advertise
-  only version-backed catalog ids; the other sources remain direct-session
-  compatibility inputs. A Managed cold reservation with no frozen Skill bytes
-  projects no Skill, even if those live sources contain entries.
+- An attached Managed Skill is selected by `AgentSkillBinding`, resolved to an
+  exact `ResolvedSkillBinding`, and loaded as hash-verified `SkillVersion` bytes.
+  The runtime materializes those bytes under its read-only `.skills` projection.
+- A `github_repository` is already a resolved Session Resource and is realized
+  once into the Session Environment before Skill construction. When the exact
+  `read` capability is enabled, the runtime scans only that frozen checkout's
+  fixed `.claude/skills/<skill-name>/SKILL.md` layout once. It adds the resulting
+  neutral files to the same `CompositeSkillRegistry` as attached versions and
+  path-qualifies identity, so equal display names coexist. It never performs a
+  second clone/fetch, creates a Skill-specific repository/store, watches the
+  remote, or rescans the current Session after repository files change. A new
+  Session receives a new snapshot from its own realized checkout.
+- `plugin_config.skills_dir` remains a direct/non-Managed authored-workspace
+  compatibility setting. It cannot change the Managed repository path. An
+  unmounted workspace `.claude/skills`, host-static `SkillSpec`, live durable
+  catalog/cache, and lazy MCP prompt registry are not Managed authorities. MCP
+  prompts-as-skills fail Managed admission; Managed capabilities advertise only
+  version-backed attached catalog ids. These sources cannot replace missing or
+  corrupt attached binding bytes or enter through repository discovery.
+- The runtime builds one registry from these admitted attached and repository
+  inputs, and derives prompt metadata and paths from that registry. It never
+  constructs `ListSkillsTool`, `SkillTool`, their activation state, or their
+  permission gate for the Managed profile.
 - Direct/non-Managed callers may temporarily use the two-tool adapter. The
   adapter receives the already-built registry; it owns neither a second catalog
   nor a second body/version store. Removing that adapter later therefore does
@@ -52,15 +64,18 @@ There is one authority and one projection for each profile:
 - A physical Session freezes its content-delivery choice. Recovery and auxiliary
   snapshots reuse it; a recovered Managed Skill cannot reopen a semantic path.
 
-Static ownership remains: `SkillStore` owns immutable versions,
-`ResolvedSessionResources` owns the frozen selection, `SkillRegistry` owns
-discovery/body resolution, and `SessionRuntimeSlot` owns only the derived content
-projection. Dynamically, Managed construction verifies the frozen selection and
-filesystem capability, builds/materializes one registry, injects metadata, then
-ordinary `read`/`bash` tools consume it. Direct construction may instead wrap its
-registry in the compatibility adapter. Missing bytes, a hash mismatch, missing
-filesystem capability, unsupported lazy prompt source, or attempted mode change
-fails closed before the model receives a competing surface.
+Static ownership remains: `SkillStore` owns immutable attached versions;
+`ResolvedSessionResources` owns the frozen Skill selection and Repository
+inputs; Repository realization owns the one checkout; `SkillRegistry` owns
+discovery/body resolution; and `SessionRuntimeSlot` owns only the derived content
+projection. Dynamically, repository realization succeeds before root selection;
+Managed construction verifies attached bytes, applies the exact `read` gate,
+snapshots each fixed repository root, builds/materializes one registry, injects
+metadata, then ordinary `read`/`bash` tools consume it. Direct construction may
+instead wrap its registry in the compatibility adapter. Repository realization
+failure, unsafe mount, missing attached bytes, hash mismatch, missing filesystem
+capability, unsupported lazy prompt source, or attempted mode change fails
+closed before the model receives a competing surface.
 
 ADR-0063 D9 remains authoritative for Managed Session version pinning. The
 run-scoped portions of D7/D8 below apply only to direct, agent-created Skills.
@@ -181,9 +196,11 @@ the same (the kernel never reads a filesystem).
 
 ### D7: Managed Skills are pinned; direct run-scoped Skills replay by facts
 
-Managed Sessions pin each selected Skill as a `ResolvedSkillBinding` and verify
+Managed Sessions pin each attached Skill as a `ResolvedSkillBinding` and verify
 its exact `SkillVersion` bundle hash before materialization. Recovery reloads
-those bytes; it never consults the current catalog. For direct run-scoped or
+those bytes; it never consults the current catalog. Repository Skills instead
+derive once from the recovered Session's same realized Repository checkout and
+fixed path, never from the remote or a Skill catalog. For direct run-scoped or
 agent-created Skills, a semantic activation remains a committed tool-result fact
 ([ADR-0006]); replay re-reads that fact instead of re-resolving a changing
 catalog. The direct adapter's executable tool schemas remain skill-set
@@ -208,8 +225,9 @@ path), not a skill-specific tool.
 
 - Managed Sessions have no Skill-specific tool face; direct compatibility has a
   fixed two-tool adapter regardless of Skill count. Both reuse one registry.
-- Managed replay uses the frozen binding/version/hash bytes. Direct run-scoped
-  replay remains fact-based and independent of a changed catalog.
+- Managed replay uses frozen attached binding/version/hash bytes plus a one-time
+  snapshot of the same realized Repository checkout. Direct run-scoped replay
+  remains fact-based and independent of a changed catalog.
 - Provenance falls out of the two-root layout; agent self-authoring is first-class
   yet cannot self-promote or self-authorize.
 - Migration from ADR-0035 D4 retains no per-Skill tool, `SkillMount`, or sandbox
@@ -230,9 +248,10 @@ registry projection; kernel unchanged):
 - **Richer `SKILL.md` frontmatter** (`user-invocable`, `argument-hint`,
   `arguments`, `model`, `context`, `agent`, `paths`, `category`, `tags`,
   `version`).
-- **Live sandbox discovery** — `Environment::scan_skill_dir` (root stays hidden),
-  a `SkillSource` port + `SourceSkillRegistry`/`CompositeSkillRegistry`, delivered
-  plus **agent-authored (run-scoped, provenance by root)** skills. Instruction-only
+- **Sandbox discovery** — `Environment::scan_skill_dir` (root stays hidden), a
+  `SkillSource` port + `SourceSkillRegistry`/`CompositeSkillRegistry`, delivered
+  plus **agent-authored (run-scoped, provenance by root)** direct Skills and
+  scan-once, path-qualified Managed repository Skills. Instruction-only direct
   delivered Skills remain in the host snapshot and are not materialized.
 - **tier-3 references/scripts** via built-in `read`/`bash` over materialized files
   (no dedicated tool).
@@ -269,6 +288,9 @@ would leave an orphan that recovery cannot adopt.
 
 ## References
 
+- [Anthropic Managed Agents: repository Skills](https://platform.claude.com/docs/en/managed-agents/skills#add-skills-from-a-github-repository)
+  (fixed repository-root `.claude/skills` scan at Session start; `read` gate;
+  repository and attached Skills coexist).
 - Reference designs: Claude Code (`Skill` tool + listing attachment); Hermes
   (`skills_list` / `skill_view` / `skill_manage` over a scanned dir).
 - [ADR-0035](0035-environment-provisioning-tools-skills-resources.md) (D1–D3,
