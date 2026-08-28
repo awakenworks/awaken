@@ -164,7 +164,20 @@ async fn claim_exact_transaction_with_mode(
         return Ok(None);
     }
     let status: String = row.try_get("status").map_err(reject)?;
-    let claim_epoch = crate::next_claim_epoch(previous_epoch)?;
+    let current_transition =
+        crate::persisted_dispatch_transition(&status, previous_epoch, cancellation_requested != 0)?;
+    let claimed_transition = if mode == ExactClaimMode::ReservationRecovery {
+        current_transition.recover_reservation()
+    } else {
+        current_transition.claim()
+    }
+    .map_err(crate::transition_error)?
+    .ok_or_else(|| {
+        DispatchError::Rejected(format!(
+            "persisted dispatch state `{status}` is not claimable in {mode:?} mode"
+        ))
+    })?;
+    let claim_epoch = claimed_transition.lease_epoch;
     let credential_bindings = if terminal_resolution || cancellation_requested != 0 {
         Vec::new()
     } else {
@@ -175,11 +188,7 @@ async fn claim_exact_transaction_with_mode(
         )?
     };
     let expires = crate::clock::deadline_millis(now_ms, lease_ms);
-    let claimed_status = if mode == ExactClaimMode::ReservationRecovery {
-        "reservation_running"
-    } else {
-        "running"
-    };
+    let claimed_status = crate::dispatch_state_db(claimed_transition.state);
     sqlx::query(&format!(
         "UPDATE {p}_dispatch SET status = $9, lease_owner = $1, lease_until = $2, \
          attempt_count = attempt_count + $3, lease_epoch = $5, worker_assignment = $6, \

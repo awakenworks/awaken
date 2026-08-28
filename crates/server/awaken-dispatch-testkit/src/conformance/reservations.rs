@@ -6,6 +6,8 @@
 /// C4 repair claim is current/stale; C5 resolution is admit/retry/reject/invalid.
 /// C6 admission surface is reservation/ordinary enqueue/atomic local claim/
 /// atomic compatible claim.
+/// C7 reservation input is a nonzero relative TTL interpreted by the store's
+/// authority clock, never a caller-authored absolute timestamp.
 /// Effects: E1 persist one unclaimable intent; E2 never open or overwrite the
 /// wrong activity; E3 exact replay reports the durable phase; E4 repair never
 /// binds a Sandbox or executes; E5 admitted repair publishes ordinary Pending;
@@ -13,25 +15,27 @@
 /// E8 completion cannot resurrect; E9 cancellation cannot shorten the original
 /// admission window; E10 every claim surface bypasses execution placement only
 /// for reservation repair; E11 an expired repair lease advances the epoch and
-/// fences its crashed owner.
+/// fences its crashed owner; E12 initial and retry TTLs are converted to durable
+/// deadlines by the store authority rather than trusted as absolute caller time.
 ///
 /// | Rule | Identity/state | Epoch/claim | Command | Effect |
 /// |---|---|---|---|---|
 /// | SR0 | absent Session root | no activity receipt | ordinary admission surfaces | E2; no row |
-/// | SR1 | absent | valid | reserve | E1 |
+/// | SR1 | absent | valid TTL | reserve | E1/E12 |
 /// | SR2 | exact/conflict | - | reserve replay | E3 / E2 conflict |
 /// | SR3 | Reserved | exact/invalid | activate | Pending / E2 |
 /// | SR4 | ReservationLeased | current | replay/bind Sandbox | E3 / E4 |
 /// | SR5 | ReservationLeased | stale/current | resolve | fenced / E5-E7 |
 /// | SR6 | activated/completed/missing | exact | replay | E3/E8 |
 /// | SR7 | Reserved(cancelled) | before deadline | claim/activate | E9, then Pending(cancelled) |
-/// | SR8 | ReservationLeased | expired lease | every claim surface | E10/E11 |
+/// | SR8 | ReservationLeased | expired lease/retry TTL | every claim surface | E10-E12 |
 async fn session_run_reservation_is_atomic_and_recoverable(
     store: &dyn DispatchQueue,
     ns: &str,
     capabilities: ConformanceCapabilities,
     clock: &dyn ConformanceClock,
 ) {
+    const RESERVATION_TTL_MS: u64 = 60_000;
     // Worker transports do not own reservation admission. Memory, SQLite, and
     // PostgreSQL all expose the local claim guard and run this complete table.
     if !capabilities.local_commit_guard {
@@ -55,7 +59,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(enqueue_request.clone(), 69_001)
+            .reserve_session_run(enqueue_request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR0 enqueue left no row"),
         SessionRunReservationOutcome::Reserved,
@@ -84,7 +88,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(options_request.clone(), 69_002)
+            .reserve_session_run(options_request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR0 enqueue_with left no row"),
         SessionRunReservationOutcome::Reserved,
@@ -119,7 +123,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(claim_request.clone(), 69_003)
+            .reserve_session_run(claim_request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR0 atomic local claim left no row"),
         SessionRunReservationOutcome::Reserved,
@@ -149,7 +153,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(compatible_request.clone(), 69_004)
+            .reserve_session_run(compatible_request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR0 atomic compatible claim left no row"),
         SessionRunReservationOutcome::Reserved,
@@ -167,7 +171,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         store
             .reserve_session_run(
                 dispatch(ns, "reservation-no-affinity", "reservation-invalid-thread"),
-                70_001,
+                RESERVATION_TTL_MS,
             )
             .await
             .is_err(),
@@ -179,7 +183,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                 dispatch(ns, "reservation-preactivated", "reservation-invalid-thread",)
                     .for_session(invalid_thread.clone())
                     .with_session_activity_epoch(1),
-                70_001,
+                RESERVATION_TTL_MS,
             )
             .await
             .is_err(),
@@ -198,7 +202,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             )
             .await
             .is_err(),
-        "SR1/E2 requires a nonzero deadline"
+        "SR1/E2 requires a nonzero TTL"
     );
 
     let session = thread_id(ns, "reservation-session");
@@ -208,7 +212,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     clock.set(70_000);
     assert_eq!(
         store
-            .reserve_session_run(request.clone(), 71_000)
+            .reserve_session_run(request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR1 reserve"),
         SessionRunReservationOutcome::Reserved,
@@ -229,7 +233,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(request.clone(), 72_000)
+            .reserve_session_run(request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR2 exact replay"),
         SessionRunReservationOutcome::AlreadyReserved,
@@ -239,7 +243,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .for_session(thread_id(ns, "reservation-other"));
     assert_eq!(
         store
-            .reserve_session_run(conflicting, 72_000)
+            .reserve_session_run(conflicting, RESERVATION_TTL_MS)
             .await
             .expect("SR2 conflict classification"),
         SessionRunReservationOutcome::Conflict,
@@ -309,7 +313,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     );
     assert_eq!(
         store
-            .reserve_session_run(request.clone(), 72_000)
+            .reserve_session_run(request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR6 completed replay"),
         SessionRunReservationOutcome::Completed,
@@ -344,7 +348,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     let cancelled_run = cancelled_request.run_id().clone();
     let cancelled_session = cancelled_request.thread_id().clone();
     store
-        .reserve_session_run(cancelled_request, 76_000)
+        .reserve_session_run(cancelled_request, RESERVATION_TTL_MS)
         .await
         .expect("SR7 reserve cancellation window");
     assert_eq!(
@@ -402,16 +406,18 @@ async fn session_run_reservation_is_atomic_and_recoverable(
         .with_placement(repair_placement);
     let repair_run = repair_request.run_id().clone();
     let repair_session = repair_request.thread_id().clone();
+    clock.set(80_000);
     store
-        .reserve_session_run(repair_request.clone(), 80_000)
+        .reserve_session_run(repair_request.clone(), 1)
         .await
         .expect("SR4 reserve repair");
-    clock.set(80_001);
+    clock.set(80_002);
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let first_repair = store
         .claim(
             "reservation-repairer",
             LEASE_MS,
-            80_001,
+            80_002,
             &Default::default(),
         )
         .await
@@ -423,7 +429,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     assert!(first_repair.credential_bindings.is_empty(), "SR4/E4");
     assert_eq!(
         store
-            .reserve_session_run(repair_request.clone(), 81_000)
+            .reserve_session_run(repair_request.clone(), RESERVATION_TTL_MS)
             .await
             .expect("SR4 replay during repair"),
         SessionRunReservationOutcome::RecoveryClaimed,
@@ -449,14 +455,14 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     // The exact expiry boundary remains owned by the first repairer. Its next
     // millisecond is reclaimed through claim_new_run even though this request is
     // deliberately impossible for ordinary local execution.
-    clock.set(81_001);
+    clock.set(81_002);
     assert!(
         store
             .claim_new_run(
                 repair_request.clone(),
                 "reservation-repair-boundary",
                 LEASE_MS,
-                81_001,
+                81_002,
                 &Default::default(),
             )
             .await
@@ -464,13 +470,13 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .is_none(),
         "SR8/E11 exact expiry remains live"
     );
-    clock.set(81_002);
+    clock.set(81_003);
     let mut repair = store
         .claim_new_run(
             repair_request.clone(),
             "reservation-repairer-after-crash",
             LEASE_MS,
-            81_002,
+            81_003,
             &Default::default(),
         )
         .await
@@ -510,7 +516,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             .resolve_claimed_session_run_reservation(
                 &RunClaim::from(&repair.lease),
                 SessionRunReservationResolution::Retry {
-                    reservation_deadline_ms: 0,
+                    reservation_ttl_ms: 0,
                 },
             )
             .await
@@ -543,7 +549,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
                 .resolve_claimed_session_run_reservation(
                     &RunClaim::from(&repair.lease),
                     SessionRunReservationResolution::Retry {
-                        reservation_deadline_ms: deadline,
+                        reservation_ttl_ms: 1,
                     },
                 )
                 .await
@@ -552,6 +558,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
             "SR8/E6 {surface:?}"
         );
         clock.set(deadline + 1);
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         let claimed = match surface {
             RepairClaimSurface::ClaimNewCompatible => {
                 store
@@ -671,14 +678,16 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     let rejected_session = rejected_request.thread_id().clone();
     clock.set(90_000);
     store
-        .reserve_session_run(rejected_request, 90_000)
+        .reserve_session_run(rejected_request, 1)
         .await
         .expect("SR5 reserve rejection");
+    clock.set(90_002);
+    tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     let rejected = store
         .claim(
             "reservation-rejecter",
             LEASE_MS,
-            90_001,
+            90_002,
             &Default::default(),
         )
         .await
@@ -714,7 +723,7 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     let direct_run = direct_request.run_id().clone();
     let direct_session = direct_request.thread_id().clone();
     store
-        .reserve_session_run(direct_request, 91_000)
+        .reserve_session_run(direct_request, RESERVATION_TTL_MS)
         .await
         .expect("SR5 reserve direct rejection");
     assert!(

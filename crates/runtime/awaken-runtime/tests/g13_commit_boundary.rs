@@ -9,6 +9,9 @@
 
 use awaken_agent_contract::agent::awaiting::{AwaitTarget, PauseReason, ResumeTicket};
 use awaken_agent_contract::agent::run::{EndCause, Id as RunId, RunState};
+use awaken_agent_contract::agent::state::{
+    Command as StateCommand, Key as StateKey, MergePolicy, Scope, Store,
+};
 use awaken_agent_contract::agent::thread::Id as ThreadId;
 use awaken_agent_contract::thread::commit::RunDisposition;
 use awaken_agent_contract::thread::commit::coordinator::Coordinator;
@@ -95,6 +98,84 @@ async fn g13_failed_commit_leaves_no_partial_state() {
         0,
         "fence unchanged after rejected commit"
     );
+}
+
+#[tokio::test]
+async fn g13_invalid_state_batch_is_atomic_at_the_real_commit_boundary() {
+    // Cause/effect table:
+    // R1 exact repeated Exclusive Set in one ThreadCommit -> reject, no Run,
+    // state, or sequence mutation. R2 admitted Run/Shared commands -> bind only
+    // Run scope, commit once, and rebuild the same materialized Store. Kani and
+    // state unit tests cover complementary policy/action combinations.
+    let store = MemoryCommitCoordinator::new();
+    let thread = ThreadId("state-thread".into());
+    let run = RunId("state-run".into());
+    let invalid = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::running(run.clone()),
+        true,
+        Vec::new(),
+        vec![
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "lock",
+                serde_json::json!(1),
+            ),
+            StateCommand::set(
+                Scope::Thread,
+                MergePolicy::Exclusive,
+                "lock",
+                serde_json::json!(2),
+            ),
+        ],
+        Vec::new(),
+    );
+    assert!(store.commit(invalid).await.is_err(), "R1 rejects");
+    assert_eq!(store.commit_count(), 0, "R1 preserves the sequence fence");
+    assert!(store.run(&run).is_none(), "R1 publishes no Run fact");
+    assert!(
+        store.committed_state(&thread).is_empty(),
+        "R1 publishes no state prefix"
+    );
+
+    let admitted = ThreadCommit::assemble(
+        thread.clone(),
+        RunDisposition::running(run.clone()),
+        true,
+        Vec::new(),
+        vec![
+            StateCommand::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "run.value",
+                serde_json::json!(1),
+            ),
+            StateCommand::set(
+                Scope::Shared,
+                MergePolicy::Commutative,
+                "shared.value",
+                serde_json::json!({"a": 1}),
+            ),
+        ],
+        Vec::new(),
+    );
+    store.commit(admitted).await.expect("R2 commits");
+    let commands = store.committed_state(&thread);
+    assert_eq!(commands[0].run_id.as_ref(), Some(&run), "R2 Run binding");
+    assert_eq!(commands[1].run_id, None, "R2 Shared remains unbound");
+    let rebuilt = Store::rebuild(&commands);
+    assert_eq!(
+        rebuilt.get(Scope::Run, &StateKey("run.value".into())),
+        Some(&serde_json::json!(1)),
+        "R2 committed replay retains Run state"
+    );
+    assert_eq!(
+        rebuilt.get(Scope::Shared, &StateKey("shared.value".into())),
+        Some(&serde_json::json!({"a": 1})),
+        "R2 committed replay retains Shared state"
+    );
+    assert_eq!(store.commit_count(), 1, "R2 advances exactly once");
 }
 
 // G1: `ThreadCommit::validate` rejects an empty `thread_id` before any store

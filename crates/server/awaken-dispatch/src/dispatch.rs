@@ -87,26 +87,26 @@ pub(crate) fn classify_completed_session_run_reservation(
 }
 
 /// Validate the one canonical shape accepted by Session Run reservation and
-/// normalize its exclusive admission deadline before any backend transaction.
+/// normalize its exclusive admission TTL before any backend transaction.
 /// A reservation is always self-affine and cannot already carry the activity
 /// coordinate that the later activation/repair transition owns.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn validate_session_run_reservation_request(
     request: &RunDispatch,
-    reservation_deadline_ms: u64,
+    reservation_ttl_ms: u64,
 ) -> Result<u64, DispatchError> {
     if request.admission_shape() != DispatchAdmissionShape::SessionRootAwaitingActivity {
         return Err(DispatchError::Rejected(
             "Session Run reservation requires self-affinity and no activity epoch".to_string(),
         ));
     }
-    let reservation_deadline_ms = crate::clock::normalize_millis(reservation_deadline_ms);
-    if reservation_deadline_ms == 0 {
+    let reservation_ttl_ms = crate::clock::normalize_millis(reservation_ttl_ms);
+    if reservation_ttl_ms == 0 {
         return Err(DispatchError::Rejected(
-            "Session Run reservation deadline must be nonzero".to_string(),
+            "Session Run reservation TTL must be nonzero".to_string(),
         ));
     }
-    Ok(reservation_deadline_ms)
+    Ok(reservation_ttl_ms)
 }
 
 /// Reject the one Session-root intent shape that must cross the durable
@@ -181,7 +181,7 @@ pub(crate) fn classify_session_run_reservation_activation(
 
 /// Validate and normalize one claim-fenced reservation repair decision before
 /// any backend mutates its row. The returned value is the only representation
-/// storage adapters may persist, so far-future retry deadlines have identical
+/// storage adapters may interpret, so far-future retry TTLs have identical
 /// memory/SQLite/PostgreSQL behavior.
 #[cfg(any(feature = "durable", test, feature = "test-support"))]
 pub(crate) fn validate_session_run_reservation_resolution(
@@ -193,18 +193,14 @@ pub(crate) fn validate_session_run_reservation_resolution(
         } => Err(DispatchError::Rejected(
             "Session activity epoch must be nonzero".to_string(),
         )),
-        SessionRunReservationResolution::Retry {
-            reservation_deadline_ms,
-        } => {
-            let reservation_deadline_ms = crate::clock::normalize_millis(reservation_deadline_ms);
-            if reservation_deadline_ms == 0 {
+        SessionRunReservationResolution::Retry { reservation_ttl_ms } => {
+            let reservation_ttl_ms = crate::clock::normalize_millis(reservation_ttl_ms);
+            if reservation_ttl_ms == 0 {
                 return Err(DispatchError::Rejected(
-                    "Session Run reservation retry deadline must be nonzero".to_string(),
+                    "Session Run reservation retry TTL must be nonzero".to_string(),
                 ));
             }
-            Ok(SessionRunReservationResolution::Retry {
-                reservation_deadline_ms,
-            })
+            Ok(SessionRunReservationResolution::Retry { reservation_ttl_ms })
         }
         resolution => Ok(resolution),
     }

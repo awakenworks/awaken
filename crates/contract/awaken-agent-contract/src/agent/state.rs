@@ -86,10 +86,18 @@ impl Command {
 
     /// Bind abstract Run scope to the Run whose commit carries this command.
     pub fn bind_run(&mut self, run_id: &crate::agent::run::Id) {
-        if self.scope == Scope::Run {
+        if scope_binds_run(self.scope) {
             self.run_id = Some(run_id.clone());
         }
     }
+}
+
+/// Run ownership is stamped only on Run-scoped cells. Keeping this selector
+/// closed and shared by production and Kani prevents a new scope from silently
+/// inheriting another Run's identity.
+#[must_use]
+const fn scope_binds_run(scope: Scope) -> bool {
+    matches!(scope, Scope::Run)
 }
 
 /// An `Exclusive` key written more than once in one commit batch.
@@ -112,23 +120,62 @@ impl std::fmt::Display for Conflict {
 /// Reject a batch where an `Exclusive` `(scope, key)` is set more than once.
 /// Other policies may legitimately repeat; this is the only fail-closed rule.
 pub fn validate_batch(commands: &[Command]) -> Result<(), Conflict> {
-    let mut exclusive_sets: BTreeMap<(Scope, Key), usize> = BTreeMap::new();
+    let mut exclusive_sets: BTreeMap<(Scope, Key), bool> = BTreeMap::new();
     for command in commands {
-        if command.merge == MergePolicy::Exclusive && matches!(command.action, Action::Set(_)) {
-            let counter = exclusive_sets
-                .entry((command.scope, command.key.clone()))
-                .or_insert(0);
-            *counter += 1;
-            if *counter > 1 {
-                return Conflict {
-                    scope: command.scope,
-                    key: command.key.clone(),
-                }
-                .into();
+        let slot_seen = exclusive_sets
+            .entry((command.scope, command.key.clone()))
+            .or_insert(false);
+        let is_set = matches!(command.action, Action::Set(_));
+        if exclusive_set_conflicts(*slot_seen, command.merge, is_set) {
+            return Conflict {
+                scope: command.scope,
+                key: command.key.clone(),
             }
+            .into();
+        }
+        if command.merge == MergePolicy::Exclusive && is_set {
+            *slot_seen = true;
         }
     }
     Ok(())
+}
+
+/// Exact one-slot batch admission kernel. A prior exclusive Set conflicts only
+/// with another exclusive Set; Remove and every non-exclusive policy preserve
+/// the existing wire semantics.
+#[must_use]
+const fn exclusive_set_conflicts(
+    prior_exclusive_set: bool,
+    merge: MergePolicy,
+    is_set: bool,
+) -> bool {
+    prior_exclusive_set && matches!(merge, MergePolicy::Exclusive) && is_set
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaterializationEffect {
+    Remove,
+    Replace,
+    MergeObjects,
+}
+
+/// Closed selector for materializing one committed command. JSON field copying
+/// stays in the adapter below; this kernel owns the complete control decision.
+#[must_use]
+const fn materialization_effect(
+    merge: MergePolicy,
+    is_remove: bool,
+    existing_is_object: bool,
+    incoming_is_object: bool,
+) -> MaterializationEffect {
+    if is_remove {
+        MaterializationEffect::Remove
+    } else if matches!(merge, MergePolicy::Commutative) && existing_is_object && incoming_is_object
+    {
+        MaterializationEffect::MergeObjects
+    } else {
+        MaterializationEffect::Replace
+    }
 }
 
 impl From<Conflict> for Result<(), Conflict> {
@@ -194,21 +241,41 @@ impl Store {
     /// every other case replaces. `Remove` clears the entry.
     pub fn apply(&mut self, command: &Command) {
         let slot = (command.scope, command.key.clone());
-        match &command.action {
-            Action::Remove => {
+        let (is_remove, incoming_is_object) = match &command.action {
+            Action::Remove => (true, false),
+            Action::Set(value) => (false, value.is_object()),
+        };
+        match materialization_effect(
+            command.merge,
+            is_remove,
+            self.entries
+                .get(&slot)
+                .is_some_and(serde_json::Value::is_object),
+            incoming_is_object,
+        ) {
+            MaterializationEffect::Remove => {
                 self.entries.remove(&slot);
             }
-            Action::Set(value) => {
-                if command.merge == MergePolicy::Commutative
-                    && let Some(existing) = self.entries.get_mut(&slot)
-                    && let Some(existing_obj) = existing.as_object_mut()
-                    && let Some(incoming) = value.as_object()
-                {
-                    for (k, v) in incoming {
-                        existing_obj.insert(k.clone(), v.clone());
-                    }
-                    return;
+            MaterializationEffect::MergeObjects => {
+                let Action::Set(value) = &command.action else {
+                    unreachable!("the materialization kernel selected an object merge for Remove")
+                };
+                let existing = self
+                    .entries
+                    .get_mut(&slot)
+                    .and_then(serde_json::Value::as_object_mut)
+                    .expect("the materialization kernel observed an existing object");
+                let incoming = value
+                    .as_object()
+                    .expect("the materialization kernel observed an incoming object");
+                for (key, value) in incoming {
+                    existing.insert(key.clone(), value.clone());
                 }
+            }
+            MaterializationEffect::Replace => {
+                let Action::Set(value) = &command.action else {
+                    unreachable!("the materialization kernel selected replacement for Remove")
+                };
                 self.entries.insert(slot, value.clone());
             }
         }
@@ -222,6 +289,69 @@ impl Store {
             store.apply(command);
         }
         store
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    fn any_scope(tag: u8) -> Scope {
+        match tag % 4 {
+            0 => Scope::Run,
+            1 => Scope::Thread,
+            2 => Scope::Shared,
+            _ => Scope::Profile,
+        }
+    }
+
+    fn any_merge(tag: u8) -> MergePolicy {
+        match tag % 3 {
+            0 => MergePolicy::Disjoint,
+            1 => MergePolicy::Commutative,
+            _ => MergePolicy::Exclusive,
+        }
+    }
+
+    /// Cause/effect table: C1 scope is Run; E1 bind the carrying Run identity.
+    /// Every other closed scope is E2/no binding. The four symbolic rows prove
+    /// the selector total and prevent scope widening.
+    #[kani::proof]
+    fn run_identity_binding_is_exactly_run_scoped() {
+        let scope = any_scope(kani::any());
+        assert_eq!(scope_binds_run(scope), matches!(scope, Scope::Run));
+    }
+
+    /// Cause/effect table: C1 prior exclusive Set, C2 current policy Exclusive,
+    /// C3 current action Set. Only C1+C2+C3 yields E1/conflict; all other eight
+    /// Boolean/policy partitions yield E2/admit.
+    #[kani::proof]
+    fn exclusive_state_conflict_requires_every_exact_precondition() {
+        let prior = kani::any();
+        let merge = any_merge(kani::any());
+        let set = kani::any();
+        assert_eq!(
+            exclusive_set_conflicts(prior, merge, set),
+            prior && merge == MergePolicy::Exclusive && set
+        );
+    }
+
+    /// Decision table covers Remove, commutative object/object merge, and the
+    /// replacement complement across all policies and object-shape booleans.
+    #[kani::proof]
+    fn state_materialization_effect_is_total_and_exact() {
+        let merge = any_merge(kani::any());
+        let remove = kani::any();
+        let existing_object = kani::any();
+        let incoming_object = kani::any();
+        let effect = materialization_effect(merge, remove, existing_object, incoming_object);
+        if remove {
+            assert_eq!(effect, MaterializationEffect::Remove);
+        } else if merge == MergePolicy::Commutative && existing_object && incoming_object {
+            assert_eq!(effect, MaterializationEffect::MergeObjects);
+        } else {
+            assert_eq!(effect, MaterializationEffect::Replace);
+        }
     }
 }
 

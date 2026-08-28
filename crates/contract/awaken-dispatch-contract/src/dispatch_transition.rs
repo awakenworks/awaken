@@ -116,6 +116,17 @@ impl DispatchTransition {
         })
     }
 
+    /// Remove only an unleased reservation after its Session authority made a
+    /// definitive rejection. Recovery-leased or executable rows are fenced.
+    #[must_use]
+    pub fn reject_reservation(self) -> GuardedTransition {
+        if self.state == crate::DispatchState::Reserved {
+            GuardedTransition::Removed
+        } else {
+            GuardedTransition::Fenced
+        }
+    }
+
     /// Lease an expired reservation exclusively for admission recovery. This is
     /// deliberately separate from [`Self::claim`], so a newly persisted intent
     /// cannot execute before its Session activity CAS has committed.
@@ -213,6 +224,49 @@ impl DispatchTransition {
             }),
             crate::DispatchState::Superseded => Ok(CancelTransition::NotCancellable),
         }
+    }
+
+    /// Move an exact expired current attempt to dead-letter without minting a
+    /// new claim authority. Retry eligibility remains a separate evidence
+    /// predicate because it includes attempt count and expiry time.
+    #[must_use]
+    pub fn exhaust_retries(self, claim_epoch: u64, owner_matches: bool) -> GuardedTransition {
+        if self.state != crate::DispatchState::Leased
+            || self.lease_epoch != claim_epoch
+            || !owner_matches
+        {
+            return GuardedTransition::Fenced;
+        }
+        GuardedTransition::Applied(Self {
+            state: crate::DispatchState::DeadLetter,
+            ..self
+        })
+    }
+
+    /// Requeue only a non-cancelled dead letter. Cancellation is terminal
+    /// intent for this dispatch row and cannot be bypassed by maintenance.
+    #[must_use]
+    pub fn requeue_dead_letter(self) -> Option<Self> {
+        (self.state == crate::DispatchState::DeadLetter && !self.cancellation_requested).then_some(
+            Self {
+                state: crate::DispatchState::Pending,
+                ..self
+            },
+        )
+    }
+
+    /// Supersession is limited to unclaimed, non-cancelled executable rows.
+    /// It never revokes a live lease or rewrites reservation admission.
+    #[must_use]
+    pub fn supersede(self) -> Option<Self> {
+        (matches!(
+            self.state,
+            crate::DispatchState::Pending | crate::DispatchState::Awaiting
+        ) && !self.cancellation_requested)
+            .then_some(Self {
+                state: crate::DispatchState::Superseded,
+                ..self
+            })
     }
 }
 
@@ -437,6 +491,10 @@ mod proofs {
             state.relinquish(stale_epoch, kani::any()),
             GuardedTransition::Fenced
         );
+        assert_eq!(
+            state.exhaust_retries(stale_epoch, kani::any()),
+            GuardedTransition::Fenced
+        );
     }
 
     #[kani::proof]
@@ -554,5 +612,28 @@ mod proofs {
                 }))
             );
         }
+    }
+
+    #[kani::proof]
+    fn dispatch_maintenance_transitions_are_closed_and_exact() {
+        // Cause/effect table: Reserved alone may be rejected; non-cancelled
+        // DeadLetter alone may requeue; non-cancelled Pending/Awaiting alone may
+        // supersede. Every complementary state/flag partition is a no-op/fence.
+        let state = arbitrary_transition();
+        assert_eq!(
+            matches!(state.reject_reservation(), GuardedTransition::Removed),
+            state.state == crate::DispatchState::Reserved
+        );
+        assert_eq!(
+            state.requeue_dead_letter().is_some(),
+            state.state == crate::DispatchState::DeadLetter && !state.cancellation_requested
+        );
+        assert_eq!(
+            state.supersede().is_some(),
+            matches!(
+                state.state,
+                crate::DispatchState::Pending | crate::DispatchState::Awaiting
+            ) && !state.cancellation_requested
+        );
     }
 }
