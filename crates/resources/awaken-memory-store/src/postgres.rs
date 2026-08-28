@@ -742,6 +742,18 @@ impl MemoryRepository for PostgresMemoryRepository {
         base_id: &str,
         base_sha: &str,
     ) -> Result<bool, MemErr> {
+        self.delete_if_match_as(store, path, base_id, base_sha, None)
+            .await
+    }
+
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
         let mut tx = self.pool.begin().await.map_err(mem_err)?;
         let row = sqlx::query(&format!(
             "SELECT id, content, sha, version, created, updated FROM {NS}_memories \
@@ -787,7 +799,7 @@ impl MemoryRepository for PostgresMemoryRepository {
                 path,
                 content: None,
                 created: now_nanos() as i64,
-                actor: None,
+                actor,
             },
         )
         .await?;

@@ -210,6 +210,18 @@ struct MemoryStoreListParams {
     include_archived: Option<bool>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MemoryDeleteParams {
+    #[serde(default, rename = "beta")]
+    _beta_selector: Option<bool>,
+    #[serde(
+        default,
+        deserialize_with = "crate::types::page::deserialize_optional_query_value"
+    )]
+    expected_content_sha256: Option<String>,
+}
+
 impl MemoryStoreListParams {
     fn page_query(&self) -> PageQuery {
         PageQuery {
@@ -909,6 +921,7 @@ async fn delete_memory(
     State(state): State<Arc<MemoryStoreApi>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     Path((id, mid)): Path<(String, String)>,
+    Query(query): Query<MemoryDeleteParams>,
     actor: Option<Extension<AuthenticatedMemoryActor>>,
 ) -> axum::response::Response {
     match active_store_exists(&state, &workspace, &id).await {
@@ -919,13 +932,28 @@ async fn delete_memory(
     let Some(path) = path_of(&state, &id, &mid).await else {
         return not_found("memory");
     };
-    if state
-        .memories
-        .delete_by_path_as(&id, &path, actor.as_ref().map(|actor| &actor.0.0))
-        .await
-        .is_err()
-    {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, "delete failed");
+    let actor = actor.as_ref().map(|actor| &actor.0.0);
+    if let Some(expected_sha) = query.expected_content_sha256.as_deref() {
+        match state
+            .memories
+            .delete_if_match_as(&id, &path, &mid, expected_sha, actor)
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) | Err(MemErr::NotFound(_)) => return not_found("memory"),
+            Err(MemErr::Conflict { .. }) => return memory_conflict(),
+            Err(error) => {
+                return err(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("delete failed: {error}"),
+                );
+            }
+        }
+    } else if let Err(error) = state.memories.delete_by_path_as(&id, &path, actor).await {
+        return err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("delete failed: {error}"),
+        );
     }
     (
         StatusCode::OK,

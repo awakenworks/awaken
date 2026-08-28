@@ -610,11 +610,51 @@ async fn memory_crud_with_precondition_and_version_log() {
     assert_eq!(redacted["created_by"]["api_key_id"], "api_test", "A4");
     assert_eq!(redacted["redacted_by"]["api_key_id"], "api_test", "A4");
 
-    // Delete the memory → receipt + a `deleted` version row.
+    // Conditional-delete causal graph: a stale expected SHA must leave both the
+    // head and immutable history untouched; the live SHA atomically removes the
+    // exact id/head and appends one actor-attributed deleted version. The id is
+    // part of the repository CAS, closing delete/recreate ABA even when content
+    // hashes happen to match.
+    let (status, stale_delete) = call(
+        &router,
+        "DELETE",
+        &format!(
+            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
+            "0".repeat(64)
+        ),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{stale_delete}");
+    assert_eq!(
+        stale_delete["error"]["type"],
+        "memory_precondition_failed_error"
+    );
+    let (_, after_stale) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        None,
+    )
+    .await;
+    assert_eq!(after_stale["content"], "world");
+    let (_, versions_after_stale) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions"),
+        None,
+    )
+    .await;
+    assert_eq!(versions_after_stale["data"].as_array().unwrap().len(), 2);
+
+    // Matching delete → receipt + exactly one `deleted` version row.
     let (status, receipt) = call(
         &router,
         "DELETE",
-        &format!("/v1/memory_stores/{store}/memories/{mid}"),
+        &format!(
+            "/v1/memory_stores/{store}/memories/{mid}?expected_content_sha256={}",
+            updated["content_sha256"].as_str().unwrap()
+        ),
         None,
     )
     .await;
@@ -636,6 +676,20 @@ async fn memory_crud_with_precondition_and_version_log() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND, "deleted memory: {after}");
+    let (_, versions_after_delete) = call(
+        &router,
+        "GET",
+        &format!("/v1/memory_stores/{store}/memory_versions"),
+        None,
+    )
+    .await;
+    let deleted = versions_after_delete["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|version| version["operation"] == "deleted")
+        .expect("matching delete appends a version");
+    assert_eq!(deleted["created_by"]["api_key_id"], "api_test");
 }
 
 #[tokio::test]

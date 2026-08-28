@@ -10,7 +10,9 @@
 
 use std::sync::Arc;
 
-use awaken_resource_contract::{MemErr, Memory, MemoryEntry, MemoryRepository, MemoryVersion};
+use awaken_resource_contract::{
+    MemErr, Memory, MemoryActor, MemoryEntry, MemoryRepository, MemoryVersion,
+};
 use tokio::sync::broadcast;
 
 /// A `(store_id, path)` invalidation — "this path changed; drop it".
@@ -134,9 +136,21 @@ impl MemoryRepository for InvalidatingMemoryRepository {
         base_id: &str,
         base_sha: &str,
     ) -> Result<bool, MemErr> {
+        self.delete_if_match_as(store, path, base_id, base_sha, None)
+            .await
+    }
+
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
         let deleted = self
             .inner
-            .delete_if_match(store, path, base_id, base_sha)
+            .delete_if_match_as(store, path, base_id, base_sha, actor)
             .await?;
         if deleted {
             self.invalidator.publish(store, path);

@@ -14,7 +14,7 @@
 // | target | precondition | operation | observable behavior |
 // | store | n/a | update/archive | metadata patch or terminal archive |
 // | memory | matching hash | update/delete | new version or absence |
-// | memory | stale hash | update | reject without mutation |
+// | memory | stale hash | update/delete | reject without mutation |
 // | version | existing | redact | content becomes unavailable, history remains |
 // | version list | exact lineage/operation/time | filter before paging |
 // | version list | actor id absent from stored attribution | empty, never accept-and-drop |
@@ -250,6 +250,46 @@ async function main() {
       pass('beta.memoryStores.memoryVersions.retrieve / redact');
 
       // -- Delete memory + archive + delete store ----------------------------
+      // Official-SDK conditional-delete decision table: stale hash -> the exact
+      // Managed error and no state change; live hash -> deletion; omitted hash
+      // remains the SDK-compatible unconditional path (covered by `mem` below).
+      const conditionalMem = await client.beta.memoryStores.memories.create(store.id, {
+        path: '/conditional-delete.md',
+        content: 'guarded',
+      });
+      await assert.rejects(
+        () => client.beta.memoryStores.memories.delete(conditionalMem.id, {
+          memory_store_id: store.id,
+          expected_content_sha256: '0'.repeat(64),
+        }),
+        (error) => {
+          assert.equal(error.status, 409);
+          assert.equal(error.error?.error?.type, 'memory_precondition_failed_error');
+          return true;
+        },
+      );
+      assert.equal(
+        (await client.beta.memoryStores.memories.retrieve(conditionalMem.id, {
+          memory_store_id: store.id,
+        })).content,
+        'guarded',
+        'stale conditional delete cannot mutate the head',
+      );
+      const conditionalReceipt = await client.beta.memoryStores.memories.delete(
+        conditionalMem.id,
+        {
+          memory_store_id: store.id,
+          expected_content_sha256: conditionalMem.content_sha256,
+        },
+      );
+      assert.equal(conditionalReceipt.type, 'memory_deleted');
+      await assert.rejects(
+        () => client.beta.memoryStores.memories.retrieve(conditionalMem.id, {
+          memory_store_id: store.id,
+        }),
+        (error) => error.status === 404,
+      );
+
       const delMem = await client.beta.memoryStores.memories.delete(mem.id, {
         memory_store_id: store.id,
       });

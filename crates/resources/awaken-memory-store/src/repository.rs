@@ -458,6 +458,18 @@ impl MemoryRepository for VolatileMemoryRepository {
         base_id: &str,
         base_sha: &str,
     ) -> Result<bool, MemErr> {
+        self.delete_if_match_as(store, path, base_id, base_sha, None)
+            .await
+    }
+
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
         let mut guard = self.inner.lock().unwrap();
         let Some(current) = guard
             .records
@@ -483,7 +495,7 @@ impl MemoryRepository for VolatileMemoryRepository {
             &current,
             MemoryVersionOperation::Deleted,
             None,
-            None,
+            actor,
         );
         Ok(true)
     }
