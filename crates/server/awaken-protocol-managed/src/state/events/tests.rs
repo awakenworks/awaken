@@ -1969,6 +1969,68 @@ async fn pending_child_reply_fixture(
 }
 
 #[tokio::test]
+async fn retained_unprocessed_tool_reply_queues_a_followup_user_message() {
+    // Cause/effect graph: C1 Runtime still exposes one exact permission ticket;
+    // C2 the Session root already retains the exact matching ToolReply; C3 that
+    // receipt is unprocessed because delivery/recovery has not completed; C4 a
+    // standalone UserMessage arrives. Effects: E1 C2 is classified as resolving,
+    // not unresolved; E2 C4 is durably admissible behind C2; E3 a pending ticket
+    // with no retained reply still blocks follow-up; E4 no second pending ledger
+    // is introduced (the root entry's `processed` bit remains authoritative).
+    //
+    // | Rule | Runtime ticket | retained exact reply | processed | follow-up |
+    // |---|---|---|---|---|
+    // | AR1 | yes | no  | n/a   | reject (E3) |
+    // | AR2 | yes | yes | false | queue (E1+E2+E4) |
+    // | AR3 | yes | yes | true  | Runtime replay/projection owns closure |
+    let (_runtime, state, session_id, _child_id, public_event_id) =
+        pending_child_reply_fixture("retained-followup", false, false).await;
+    assert!(
+        state
+            .validate_event_batch(
+                &session_id,
+                &[InboundEvent::UserMessage {
+                    content: vec![ContentBlock::text("must not bypass approval")],
+                }],
+            )
+            .await
+            .is_err(),
+        "AR1/E3"
+    );
+    let confirmation = InboundEvent::UserToolConfirmation {
+        tool_use_id: public_event_id,
+        result: ConfirmResult::Allow,
+        deny_message: None,
+    };
+    let accepted_reply = state
+        .validate_event_batch(&session_id, &[confirmation])
+        .await
+        .expect("AR2 exact confirmation");
+    state
+        .application
+        .append_session_event_batch(&session_id, accepted_reply.inputs, None, None)
+        .await
+        .expect("AR2 retain reply without driving it");
+
+    let followup = state
+        .validate_event_batch(
+            &session_id,
+            &[InboundEvent::UserMessage {
+                content: vec![ContentBlock::text("continue after approval")],
+            }],
+        )
+        .await
+        .expect("AR2 retained reply admits a queued follow-up");
+    assert!(
+        matches!(
+            followup.inputs.as_slice(),
+            [SessionEventInput::UserMessage { .. }]
+        ),
+        "AR2/E2"
+    );
+}
+
+#[tokio::test]
 async fn qualified_event_id_routes_every_child_tool_reply_variant() {
     // Causes: the fixtures below establish `qualified event id routes every child tool reply
     // variant` with the concrete inputs, state, dependencies, and failure triggers used by this

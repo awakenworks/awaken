@@ -38,27 +38,26 @@ async fn create_session(app: &Router) -> serde_json::Value {
 }
 
 /// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
-/// registered tools stay (read/glob/grep auto-allowed → toolset default;
-/// bash/write/edit gated → `always_ask`), while configurable `web_fetch` and
+/// registered official tools inherit the Managed Agent `always_allow` default,
+/// while configurable `web_fetch` and
 /// `web_search` are disabled when no routed Web plugin is selected. Offered
 /// skills appear on `agent.skills`.
 ///
 /// Cause/effect graph and decision table:
-/// C1=the host registers a static tool, C2=the effective policy requires approval,
-/// C3=a configurable Web plugin is absent, C4=an override names a closed Agent
-/// toolset member; E1=the tool remains enabled, E2=its wire policy is
-/// `always_ask`, E3=the tool is disabled, E4=the config's `type` repeats the
+/// C1=the host registers an official static tool, C2=a configurable Web plugin
+/// is absent, C3=an override names a closed Agent toolset member; E1=the static
+/// tool inherits the enabled/always-allow default, E2=the Web tool is disabled,
+/// E3=the config's `type` repeats the
 /// closed member discriminator.
-/// R1(C1,C2,!C3,C4)->E1+E2+E4 covers bash/write/edit;
-/// R2(!C1,!C2,C3,C4)->E3+E4 covers WebFetch and WebSearch;
-/// R3(C1,!C2,!C3)->the default config covers read/glob/grep;
-/// R4(C4)->E4 covers every emitted override.
+/// R1(C1,!C2)->E1 covers bash/read/write/edit/glob/grep;
+/// R2(!C1,C2,C3)->E2+E3 covers WebFetch and WebSearch.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
 /// the Managed projector is the only wire owner, Web providers use the unified
 /// configured-provider registry, and there is no legacy static WebFetch path.
 /// FMECA: advertising an absent Web route would create an inexecutable tool (fail
 /// closed through E3); losing an enabled tool's approval policy could perform an
-/// effect without consent (caught by E2).
+/// effect without a configured executor (caught by E2). Exact permission
+/// overrides are covered by the neutral-policy and runtime-gate decision tables.
 #[tokio::test]
 async fn managed_session_folds_builtins_into_the_agent_toolset() {
     let skill = SkillSpec::new(
@@ -77,12 +76,10 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
             "type": "agent_toolset_20260401",
             // Every config carries all of {name, type, enabled, permission_policy}
             // as the `BetaManagedAgentsAgentToolConfig` SDK type requires; only
-            // deviations from `default_config` (enabled + auto-allowed) are listed —
-            // gated tools flip the policy, unregistered tools flip `enabled`.
+            // deviations from `default_config` are listed. Registered official
+            // Hand members inherit always_allow; unavailable Web members flip
+            // only `enabled`.
             "configs": [
-                { "name": "bash", "type": "bash", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "write", "type": "write", "enabled": true, "permission_policy": { "type": "always_ask" } },
-                { "name": "edit", "type": "edit", "enabled": true, "permission_policy": { "type": "always_ask" } },
                 { "name": "web_fetch", "type": "web_fetch", "enabled": false, "permission_policy": { "type": "always_allow" } },
                 { "name": "web_search", "type": "web_search", "enabled": false, "permission_policy": { "type": "always_allow" } }
             ],

@@ -323,7 +323,7 @@ impl SessionApplication {
                 )));
             }
         };
-        if !session.is_publicly_readable() || session.is_hidden() {
+        if !session.is_publicly_readable() {
             return Err(SessionProjectionRecoveryError::NotFound);
         }
         let owner = self.owner(thread_id).await.map_err(|error| match error {

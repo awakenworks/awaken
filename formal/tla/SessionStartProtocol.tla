@@ -200,6 +200,12 @@ CompleteRealization(worker, epoch) ==
     /\ UNCHANGED <<eventVars, workRowPresent, workVars,
                    realizationWorkEpoch>>
 
+FailRealization(worker, epoch) ==
+    /\ CurrentRealizationWork(worker)
+    /\ Root!PermanentRealizationFailure(worker, epoch)
+    /\ UNCHANGED <<eventVars, workRowPresent, workVars,
+                   realizationWorkEpoch>>
+
 \* A replacement Work epoch invalidates every remaining physical effect of the
 \* predecessor. Recovery may classify the old durable realization as retryable
 \* without granting the recovery actor the predecessor's external authority.
@@ -298,6 +304,8 @@ OtherNext ==
          ActivateRealization(worker, epoch)
     \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
          CompleteRealization(worker, epoch)
+    \/ \E worker \in Workers, epoch \in 0..MaxEpoch:
+         FailRealization(worker, epoch)
     \/ FenceStaleRealization
     \/ \E worker \in Workers: ReserveRun(worker)
     \/ \E worker \in Workers: RegisterRunActivity(worker)
@@ -376,6 +384,10 @@ TypeOK ==
 AcceptedResponseIsDurableRoot ==
     acceptedResponse => existence = "Live" /\ baseline = "Frozen" /\ createReceipt
 
+AcceptedFailureRemainsQueryable ==
+    acceptedResponse /\ execution = "ActivationFailed" =>
+        existence = "Live" /\ createReceipt /\ everTerminal
+
 CompleteRootPrecedesEveryProjection ==
     (workRowPresent \/ dispatchExists) =>
         /\ existence = "Live"
@@ -399,5 +411,6 @@ Safety ==
     /\ WorkProjectionHasOneAuthority
     /\ IdleReleaseRequiresFullSettlement
     /\ AcceptedResponseIsDurableRoot
+    /\ AcceptedFailureRemainsQueryable
 
 =============================================================================

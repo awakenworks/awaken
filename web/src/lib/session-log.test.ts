@@ -96,6 +96,31 @@ describe("pendingConfirmIds", () => {
     expect(state.phase).toBe("idle");
     expect([...state.pendingConfirmIds]).toEqual([]);
   });
+  it("distinguishes an accepted reply from a processed reply", () => {
+    // Cause/effect graph: C1 requires_action exposes u1; C2 an exact reply is
+    // committed; C3 its processed_at is absent/present. Effects: E1 C2 closes
+    // the approval card; E2 C2+C3(absent) remains visible as resolving; E3 only
+    // C3(present) closes resolving. The committed event is the only source.
+    //
+    // | Rule | reply committed | processed_at | pending | resolving |
+    // |---|---|---|---|---|
+    // | RP1 | no  | n/a     | u1 | empty |
+    // | RP2 | yes | absent  | empty | u1 |
+    // | RP3 | yes | present | empty | empty |
+    const resolving = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
+      ev({ id: "a1", type: "user.tool_confirmation", tool_use_id: "u1", result: "allow" }),
+    ]);
+    expect([...resolving.pendingConfirmIds]).toEqual([]);
+    expect([...resolving.resolvingConfirmIds]).toEqual(["u1"]);
+    expect(canSendToSession(resolving, "idle")).toBe(true);
+
+    const processed = projectSessionRuntime([
+      ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),
+      ev({ id: "a1", type: "user.tool_confirmation", tool_use_id: "u1", result: "allow", processed_at: "2026-08-28T00:00:00Z" }),
+    ]);
+    expect([...processed.resolvingConfirmIds]).toEqual([]);
+  });
   it("a later terminal frame clears stale requires_action state", () => {
     const ended = projectSessionRuntime([
       ev({ id: "s1", type: "session.status_idle", stop_reason: { type: "requires_action", event_ids: ["u1"] } }),

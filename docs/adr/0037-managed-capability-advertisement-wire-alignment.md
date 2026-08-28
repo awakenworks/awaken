@@ -45,10 +45,15 @@ versioned toolset bundles. So the adapter advertises them as a **single**
 
 - a toolset tool the selected Agent disables → `{name, enabled:false}`
   (`web_fetch` in the baseline scenario);
-- a registered tool whose calls are **confirmation-gated** →
-  `{name, permission_policy:{type:"always_ask"}}` (`bash/write/edit`);
-- a registered, auto-allowed tool → **omitted** from `configs` (it takes the
-  toolset default; `read/glob/grep`).
+- a registered official member without an override → **omitted** from `configs`
+  and inherits the official `always_allow` default
+  (`bash/read/write/edit/glob/grep`);
+- an exact authored confirmation policy →
+  `{name, permission_policy:{type:"always_ask"}}`;
+- Awaken-only Hand extensions such as `move/delete` are not members of this
+  versioned wire toolset, are not projected into it, and keep the runtime's
+  unmatched default-ask behavior unless explicitly configured by an
+  Awaken-native policy.
 
 `web_search` is a member of the closed `agent_toolset_20260401` vocabulary, but
 execution still has exactly one owner: the separately configured
@@ -62,11 +67,13 @@ a second unconfigured static search path.
 ### D2: The permission gate and the advertisement are single-sourced
 
 The `always_ask`/omit split in D1 must equal what the permission gate actually
-does at call time, or the agent object lies. `awaken-coordinator-local` derives both
-from one list, `AUTO_ALLOWED_HAND_TOOLS = [read, glob, grep]`: `server_policy()`
-builds the auto-allow rules from it, and `builtin_hand_tools()` sets each tool's
-`ask = !AUTO_ALLOWED_HAND_TOOLS.contains(id)` from the same list. Gate and
-advertisement cannot drift.
+does at call time, or the agent object lies. The versioned
+`AGENT_TOOLSET_TOOL_IDS`/`is_agent_toolset_member` contract is the sole
+membership owner. `server_policy()` allows registered members by default, while
+`builtin_hand_tools()` derives the advertised ask bit from the same predicate.
+Neutral `ToolExecutionPolicy` exact overrides remain authoritative for
+disabled/always-ask/always-allow configuration; MCP toolsets independently
+default to always-ask. There is no second auto-allow literal.
 
 ### D3: Client tools are `custom`; skills and delegates get first-class fields
 

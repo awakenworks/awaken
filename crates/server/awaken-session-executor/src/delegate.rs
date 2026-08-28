@@ -1386,11 +1386,12 @@ mod durable_cancel_tests {
         );
     }
 
-    /// Cause/effect design: C1 a native child dispatch reaches Awaiting; C2 a
+    /// Cause/effect design: C0 the child publication explicitly sets
+    /// write=always_ask; C1 its native dispatch reaches Awaiting; C2 a
     /// replacement process submits its durable cancellation; C3 that cancellation
     /// is retried without an in-memory delivery receipt. Effects: E1 C2 commits
     /// Cancelled and removes the dispatch; E2 C3 is an idempotent no-op preserving
-    /// the same terminal truth. Decision table: D1=C1+C2=>E1; D2=E1+C3=>E2.
+    /// the same terminal truth. Decision table: D1=C0+C1+C2=>E1; D2=E1+C3=>E2.
     /// Constraint/Invariant: the durable child dispatch and committed Run are the
     /// only cancellation authorities. Decision rule: execute D1 then replay D2.
     #[tokio::test]
@@ -1411,7 +1412,7 @@ mod durable_cancel_tests {
             session_resources: None,
             publication_source: None,
         };
-        let child_snapshot = crate::config::server_config(
+        let mut child_snapshot = crate::config::server_config(
             "researcher",
             "stub",
             &HashSet::new(),
@@ -1421,6 +1422,11 @@ mod durable_cancel_tests {
             &[],
             awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
         );
+        child_snapshot.resolved_spec.plugin_config.agent.toolsets =
+            vec![crate::config::test_agent_toolset_permission(
+                "write",
+                awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+            )];
         let parent_snapshot = crate::config::server_config(
             "assistant",
             "stub",

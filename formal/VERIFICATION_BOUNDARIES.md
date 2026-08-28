@@ -38,9 +38,19 @@ type checking are valuable executable evidence, but are not formal proofs.
   that acceptance cannot precede the complete root, while database durability,
   scheduling fairness, and HTTP delivery remain outside the theorem.
 - The committed-event Runtime projection has one closed pending-tool reducer.
-  `SessionRuntimeProjection.tla` checks replacement, per-id resolution, terminal
-  clearing, and error evidence; browser tests cover the production TypeScript
-  projection and the list status mapping fails closed for unknown states.
+  `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
+  reply classification, per-id processing, terminal clearing, and error
+  evidence; browser tests cover the production TypeScript projection and the
+  list status mapping fails closed for unknown states. The model proves that a
+  retained reply no longer needs user action while remaining recoverable; it
+  does not prove browser delivery or lifecycle-supervisor fairness.
+- Tool permission defaults and exact overrides share the neutral
+  `ToolExecutionPolicy`. `ToolPermissionPolicy.tla` exhaustively checks Agent
+  default-allow, MCP default-ask, exact allow/ask/disabled configuration, and
+  disabled fail-closed behavior. The existing Kani selector proves that an
+  unregistered, mismatched, disabled, or widened execution request is rejected;
+  provider documentation compatibility and the correctness of external tool
+  effects remain evidence boundaries.
 - Skill export and PatchBundle use one Resources-owned Artifact completion
   receipt over exact patch, manifest, and `SHA256SUMS` File receipts. Kani proves
   that all eight evidence axes are mandatory. SHA-256 implementation strength,

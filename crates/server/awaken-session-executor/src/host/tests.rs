@@ -14,6 +14,22 @@ fn test_model_binding() -> awaken_runtime_contract::resolved::ModelBinding {
     awaken_runtime_contract::resolved::ModelBinding::new("test", "model", "native")
 }
 
+/// Approval-state tests name their precondition explicitly. Managed Agent
+/// members default to always-allow; this exact test override asks only for
+/// `write` while leaving unrelated follow-up effects unchanged.
+fn host_requiring_write_confirmation(model: Arc<dyn LlmExecutor>) -> SharedHost {
+    let toolsets = [crate::config::test_agent_toolset_permission(
+        "write",
+        awaken_runtime_contract::agent_bindings::ToolPermissionRequirement::AlwaysAsk,
+    )];
+    let policy = awaken_ext_permission::RuleBasedToolPermissionPolicy::new(
+        crate::config::effective_ruleset_with_toolsets(None, &[], &toolsets),
+    );
+    SharedHost::new(model, "stub").with_gate_override(Arc::new(
+        awaken_runtime::PermissionGate::new(Arc::new(policy)),
+    ))
+}
+
 fn completed_outcome(progress: HostOutcomeDrive) -> HostOutcomeReport {
     match progress {
         HostOutcomeDrive::Completed(report) => report,
@@ -3162,7 +3178,7 @@ async fn resume_ended_run_triggers_memory_extraction() {
     // extraction over the new committed slice. Constraint/Invariant: extraction
     // follows committed terminal truth, not the caller's resume return. Decision
     // rule: resume to Ended, drain background work, and require one extraction.
-    let host = SharedHost::new(Arc::new(ResumeMemModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(ResumeMemModel));
     let store = test_memory_store_id();
     bind_test_memory(&host, "t-res", &store, true);
 
@@ -10280,7 +10296,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
     // Constraint/Invariant: a new foreground Run cannot bypass the existing
     // resume ticket or create a second active writer. Decision rule: submit under
     // C1 and require the documented fail-closed effect with no new Run.
-    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
     let r1 = host
         .run(None, "t-awaiting", user("hi"))
         .await
@@ -10318,7 +10334,7 @@ async fn run_on_an_awaiting_thread_fails_closed() {
 /// is no run to answer, so it fails closed with BadRequest.
 #[tokio::test]
 async fn resume_with_no_awaiting_run_fails_closed() {
-    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
     let err = host
         .resume(
             "t-idle",
@@ -10345,7 +10361,7 @@ async fn resume_with_a_wrong_tool_use_id_fails_closed() {
     // supplies foreign id B. Effects: E1 C2 is rejected and the Run remains
     // Awaiting. Constraint/Invariant: exact tool-use identity fences replies.
     // Decision rule: exercise B != A and require E1 with no tool result commit.
-    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
     let r1 = host
         .run(None, "t-wrongid", user("hi"))
         .await
@@ -10390,7 +10406,7 @@ async fn client_result_cannot_answer_a_builtin_tool() {
     // reply is committed and the exact ticket remains resumable. Constraint:
     // client results answer only client-owned targets. Decision rule: exercise
     // the mismatch, then resume the same ticket correctly to prove E1+E2.
-    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
     let r1 = host.run(None, "t-bind1", user("hi")).await.expect("Run 1");
     let pending = r1.pending.expect("awaiting on the built-in write");
     assert!(!pending.client_executed, "write is a built-in tool");
@@ -11894,7 +11910,7 @@ async fn supersede_run_without_durable_ingress_fails_closed() {
     // or starting any Run. Constraint/Invariant: supersession is a durable queue
     // mutation and has no in-memory fallback. Decision rule: execute C1 and
     // require fail-closed zero side effects.
-    let host = SharedHost::new(Arc::new(AwaitOnWriteModel), "stub");
+    let host = host_requiring_write_confirmation(Arc::new(AwaitOnWriteModel));
     // Await first so the supersede path is not short-circuited by the awaiting guard
     // (supersede is allowed on an awaiting thread; the durable check is what must fire).
     let r1 = host.run(None, "t-sup", user("hi")).await.expect("Run 1");

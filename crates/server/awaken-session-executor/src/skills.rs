@@ -183,6 +183,8 @@ impl RawTool for ForkAgentTool {
                 ),
                 #[cfg(test)]
                 scheduler: None,
+                #[cfg(test)]
+                toolsets: &[],
             },
             sandbox,
             &name,
