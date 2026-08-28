@@ -6420,6 +6420,15 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
     use awaken_session_contract::{SessionInit, SessionRuntime};
 
     let temp = tempfile::tempdir().expect("publication fixture");
+    let sandbox_root = temp.path().join("sandboxes");
+    let namespace_probe = awaken_sandbox_local::NamespaceProvider::new(&sandbox_root);
+    if awaken_provisioning_contract::SandboxProvider::probe_ready(&namespace_probe)
+        .await
+        .is_err()
+    {
+        eprintln!("skipping Namespace execution assertion: OS sandbox/user namespaces unavailable");
+        return;
+    }
     let remote = temp.path().join("remote.git");
     let seed = temp.path().join("seed");
     let git = |cwd: &std::path::Path, args: &[&str]| {
@@ -6447,7 +6456,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         SharedHost::new(Arc::new(OkModel), "stub").with_session_control(control.clone());
     raw_host.session_provider =
         crate::session_environment::SessionEnvironmentProvider::namespace_with_agent_stderr(
-            temp.path().join("sandboxes"),
+            sandbox_root,
             false,
             Arc::new(crate::session_environment::UnusedHandExecutorFactory),
             "/bin/sh",
