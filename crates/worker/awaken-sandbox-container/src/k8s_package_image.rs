@@ -11,10 +11,19 @@ use k8s_openapi::api::core::v1::{
     Volume, VolumeMount,
 };
 use k8s_openapi::apimachinery::pkg::apis::meta::v1::ObjectMeta;
-use kube::api::{DeleteParams, ListParams, PostParams};
+use kube::api::{DeleteParams, ListParams};
 use kube::{Api, Client};
 
-use crate::k8s::{api_conflict, backend, install_rustls_crypto_provider, sandbox_network_labels};
+use crate::k8s::{
+    backend, create_or_verify_with_status_exact, install_rustls_crypto_provider,
+    sandbox_network_labels, stamp_realization,
+};
+use crate::k8s_package_realization::{
+    PACKAGE_BUILD_JOB_KIND, PACKAGE_IMAGE_CHECK_JOB_KIND, bind_package_job_to_config,
+    package_build_name, package_config_annotations, package_image_check_name,
+    stamp_package_config_map, verified_package_build_result, verified_package_image_check_result,
+    verify_exact_package_config_map, verify_exact_package_job,
+};
 use crate::{ForwardProxy, PackageImageProvisioner, RuntimeError};
 
 pub const DEFAULT_K8S_BUILDKIT_IMAGE: &str = "moby/buildkit:v0.30.0-rootless";
@@ -32,22 +41,6 @@ const PACKAGE_BUILD_TIMEOUT_SECS: i64 = 30 * 60;
 // build's installation window.
 const IMAGE_CHECK_TIMEOUT_SECS: i64 = 10 * 60;
 const IMAGE_CHECK_CLIENT_GRACE_SECS: u64 = 10;
-
-const PACKAGE_RECIPE_FINGERPRINT_ANNOTATION: &str = "awaken.dev/package-recipe-fingerprint";
-const PACKAGE_IMAGE_DESTINATION_ANNOTATION: &str = "awaken.dev/package-image-destination";
-
-fn package_release_annotations(fingerprint: &str, destination: &str) -> BTreeMap<String, String> {
-    BTreeMap::from([
-        (
-            PACKAGE_RECIPE_FINGERPRINT_ANNOTATION.into(),
-            fingerprint.into(),
-        ),
-        (
-            PACKAGE_IMAGE_DESTINATION_ANNOTATION.into(),
-            destination.into(),
-        ),
-    ])
-}
 
 fn image_check_client_timeout() -> std::time::Duration {
     std::time::Duration::from_secs(IMAGE_CHECK_TIMEOUT_SECS as u64 + IMAGE_CHECK_CLIENT_GRACE_SECS)
@@ -240,7 +233,7 @@ impl K8sPackageImageProvisioner {
     ) -> Result<(ConfigMap, Job, String), RuntimeError> {
         let (containerfile, fingerprint) =
             crate::packages::package_image_recipe(base_image, "", packages)?;
-        let name = format!("awaken-package-{}", &fingerprint[..24]);
+        let name = package_build_name(&fingerprint)?;
         let destination = format!("{}/awaken-packages:{fingerprint}", self.registry);
         let registry_host = self
             .registry
@@ -255,15 +248,18 @@ impl K8sPackageImageProvisioner {
         if let Some(buildkitd) = &buildkitd {
             data.insert("buildkitd.toml".into(), buildkitd.clone());
         }
-        let config = ConfigMap {
+        let mut config = ConfigMap {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
+                annotations: Some(package_config_annotations(&fingerprint, &destination)?),
                 ..Default::default()
             },
             data: Some(data),
             ..Default::default()
         };
+        stamp_package_config_map(&mut config)?;
+        stamp_realization(&mut config)?;
         let script = r#"
 set -eu
 mkdir -p /tmp/workspace
@@ -414,17 +410,11 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             "app.kubernetes.io/managed-by".into(),
             "awaken-environment-builder".into(),
         );
-        // These values are already the deterministic, non-secret inputs of the
-        // one BuildKit realization. They let a bounded cluster observer join the
-        // Job/Pod to its termination digest without copying the Coordinator's
-        // durable build state or exposing proxy/auth material.
-        let annotations = package_release_annotations(&fingerprint, &destination);
         let job = Job {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: Some(labels.clone()),
-                annotations: Some(annotations.clone()),
                 ..Default::default()
             },
             spec: Some(JobSpec {
@@ -434,7 +424,6 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 template: PodTemplateSpec {
                     metadata: Some(ObjectMeta {
                         labels: Some(labels),
-                        annotations: Some(annotations),
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -459,83 +448,76 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
         Ok((config, job, destination))
     }
 
-    async fn run_job(&self, config: ConfigMap, job: Job) -> Result<String, RuntimeError> {
+    async fn ensure_package_config(&self, desired: &ConfigMap) -> Result<ConfigMap, RuntimeError> {
+        let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
+        Ok(
+            create_or_verify_with_status_exact(&configs, desired, verify_exact_package_config_map)
+                .await?
+                .object,
+        )
+    }
+
+    fn bind_package_job(
+        &self,
+        config: &ConfigMap,
+        mut job: Job,
+        kind: &str,
+    ) -> Result<Job, RuntimeError> {
+        bind_package_job_to_config(&mut job, config, kind)?;
+        stamp_realization(&mut job)?;
+        Ok(job)
+    }
+
+    async fn run_job(&self, job: Job) -> Result<String, RuntimeError> {
         let name = job
             .metadata
             .name
             .clone()
             .ok_or_else(|| backend("package build Job has no name"))?;
-        let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        if let Err(error) = configs.create(&PostParams::default(), &config).await
-            && !api_conflict(&error)
-        {
-            return Err(backend(error));
-        }
-        if let Err(error) = jobs.create(&PostParams::default(), &job).await
-            && !api_conflict(&error)
-        {
-            return Err(backend(error));
-        }
+        create_or_verify_with_status_exact(&jobs, &job, verify_exact_package_job).await?;
         let deadline = tokio::time::Instant::now()
             + std::time::Duration::from_secs(PACKAGE_BUILD_TIMEOUT_SECS as u64 + 30);
         loop {
-            let status = jobs
-                .get(&name)
-                .await
-                .map_err(backend)?
-                .status
-                .unwrap_or_default();
+            let observed = jobs.get(&name).await.map_err(backend)?;
+            let status = observed.status.as_ref().cloned().unwrap_or_default();
             if status.succeeded.unwrap_or_default() > 0 {
                 let listed = pods
                     .list(&ListParams::default().labels(&format!("job-name={name}")))
                     .await
                     .map_err(backend)?;
-                let image = listed.items.into_iter().find_map(|pod| {
-                    pod.status?
-                        .container_statuses?
-                        .into_iter()
-                        .find(|status| status.name == "buildkit")?
-                        .state?
-                        .terminated?
-                        .message
-                });
-                let _ = jobs.delete(&name, &DeleteParams::background()).await;
-                let _ = configs.delete(&name, &DeleteParams::background()).await;
-                return image.ok_or_else(|| backend("BuildKit Job returned no immutable digest"));
+                // The Job TTL retains the API-observed UID and controller-owned
+                // Pod long enough for the composing release observer. Deleting
+                // either object here would make a successful build unverifiable.
+                return verified_package_build_result(&observed, &listed.items, &self.namespace);
             }
             if status.failed.unwrap_or_default() > 0 {
                 let _ = jobs.delete(&name, &DeleteParams::background()).await;
-                let _ = configs.delete(&name, &DeleteParams::background()).await;
                 return Err(backend(format!("BuildKit Job `{name}` failed")));
             }
             if tokio::time::Instant::now() >= deadline {
                 let _ = jobs.delete(&name, &DeleteParams::background()).await;
-                let _ = configs.delete(&name, &DeleteParams::background()).await;
                 return Err(backend(format!("BuildKit Job `{name}` timed out")));
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     }
 
-    fn image_check_job(
+    pub(crate) fn image_check_job(
         &self,
         image: &str,
-        release_annotations: Option<&BTreeMap<String, String>>,
-    ) -> (String, Job) {
+        package_config: Option<&ConfigMap>,
+    ) -> Result<(String, Job), RuntimeError> {
         // A kubelet pull is the shared Registry truth for base identity and
         // persisted Ready verification; builder-local cache is never trusted.
-        let fingerprint = blake3::hash(image.as_bytes()).to_hex().to_string();
-        let name = format!("awaken-image-check-{}", &fingerprint[..20]);
-        let release_annotations = release_annotations.cloned();
+        let name = package_image_check_name(image)?;
         let labels = sandbox_network_labels(None);
-        let job = Job {
+        let mut job = Job {
             metadata: ObjectMeta {
                 name: Some(name.clone()),
                 namespace: Some(self.namespace.clone()),
                 labels: Some(labels.clone()),
-                annotations: release_annotations.clone(),
                 ..Default::default()
             },
             spec: Some(JobSpec {
@@ -545,7 +527,6 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 template: PodTemplateSpec {
                     metadata: Some(ObjectMeta {
                         labels: Some(labels),
-                        annotations: release_annotations,
                         ..Default::default()
                     }),
                     spec: Some(PodSpec {
@@ -572,26 +553,34 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
             }),
             ..Default::default()
         };
-        (name, job)
+        if let Some(config) = package_config {
+            bind_package_job_to_config(&mut job, config, PACKAGE_IMAGE_CHECK_JOB_KIND)?;
+        }
+        stamp_realization(&mut job)?;
+        Ok((name, job))
     }
 
     async fn resolve_image_identity(
         &self,
         image: &str,
-        release_annotations: Option<&BTreeMap<String, String>>,
+        package_config: Option<&ConfigMap>,
     ) -> Result<Option<String>, RuntimeError> {
-        let (name, job) = self.image_check_job(image, release_annotations);
+        let (name, job) = self.image_check_job(image, package_config)?;
+        let package = package_config.is_some();
         let jobs: Api<Job> = Api::namespaced(self.client.clone(), &self.namespace);
         let pods: Api<Pod> = Api::namespaced(self.client.clone(), &self.namespace);
-        if let Err(error) = jobs.create(&PostParams::default(), &job).await
-            && !api_conflict(&error)
-        {
-            return Err(backend(error));
-        }
+        create_or_verify_with_status_exact(&jobs, &job, |desired, observed| {
+            if package {
+                verify_exact_package_job(desired, observed)
+            } else {
+                Ok(())
+            }
+        })
+        .await?;
         let deadline = tokio::time::Instant::now() + image_check_client_timeout();
         loop {
-            let status = match image_check_observation(jobs.get_opt(&name).await.map_err(backend)?)
-            {
+            let observed = jobs.get_opt(&name).await.map_err(backend)?;
+            let status = match image_check_observation(observed.clone()) {
                 ImageCheckObservation::Present(status) => status,
                 ImageCheckObservation::Missing => {
                     // Image checks deliberately use a deterministic name so concurrent
@@ -599,11 +588,14 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                     // Job and delete it between this caller's polls. Recreate that
                     // disposable observation instead of surfacing a false 404 to the
                     // Environment realization retry path.
-                    if let Err(error) = jobs.create(&PostParams::default(), &job).await
-                        && !api_conflict(&error)
-                    {
-                        return Err(backend(error));
-                    }
+                    create_or_verify_with_status_exact(&jobs, &job, |desired, observed| {
+                        if package {
+                            verify_exact_package_job(desired, observed)
+                        } else {
+                            Ok(())
+                        }
+                    })
+                    .await?;
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
                     continue;
                 }
@@ -636,7 +628,15 @@ printf '%s@%s' "${DESTINATION%:*}" "$digest" > /dev/termination-log
                 tokio::time::Instant::now() >= deadline,
             ) {
                 ImageCheckDisposition::Available => {
-                    let identity = image_check_identity(listed.items);
+                    let identity = if package {
+                        Some(verified_package_image_check_result(
+                            observed.as_ref().expect("present image-check observation"),
+                            &listed.items,
+                            &self.namespace,
+                        )?)
+                    } else {
+                        image_check_identity(listed.items)
+                    };
                     // The Job's TTL is the cleanup owner. Retaining a successful
                     // deterministic observation lets concurrent readiness,
                     // warmup, and registration callers share one kubelet result
@@ -683,19 +683,30 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
             return Ok(base_image.to_owned());
         }
         require_unrestricted_package_build(network)?;
-        let (config, job, destination) = self.build_objects(base_image, packages)?;
+        let (desired_config, job, destination) = self.build_objects(base_image, packages)?;
+        let config = self.ensure_package_config(&desired_config).await?;
+        let job = self.bind_package_job(&config, job, PACKAGE_BUILD_JOB_KIND)?;
         // The destination tag is a content fingerprint.  Coordinator build
         // records can be rebuilt after restart, but the shared Registry is the
         // cross-process source of truth.  Reuse its immutable digest instead of
         // downloading and reinstalling the same package set on every restart.
-        let release_annotations = job.metadata.annotations.clone();
         if let Some(image) = immutable_registry_identity(
-            self.resolve_image_identity(&destination, release_annotations.as_ref())
+            self.resolve_image_identity(&destination, Some(&config))
                 .await?,
         ) {
             return Ok(image);
         }
-        self.run_job(config, job).await
+        let built = self.run_job(job).await?;
+        let checked = self
+            .resolve_image_identity(&destination, Some(&config))
+            .await?
+            .ok_or_else(|| backend("built package image is absent from the shared Registry"))?;
+        if checked != built {
+            return Err(backend(
+                "BuildKit result differs from the mandatory kubelet image check",
+            ));
+        }
+        Ok(checked)
     }
 
     async fn package_image_available(
@@ -709,10 +720,19 @@ impl PackageImageProvisioner for K8sPackageImageProvisioner {
             return Ok(self.resolve_image_identity(image, None).await?.is_some());
         }
         require_unrestricted_package_build(network)?;
-        let (_, job, destination) = self.build_objects(base_image, packages)?;
-        let release_annotations = job.metadata.annotations;
+        let (desired_config, _, destination) = self.build_objects(base_image, packages)?;
+        let name = desired_config
+            .metadata
+            .name
+            .as_deref()
+            .ok_or_else(|| backend("package ConfigMap has no name"))?;
+        let configs: Api<ConfigMap> = Api::namespaced(self.client.clone(), &self.namespace);
+        let Some(config) = configs.get_opt(name).await.map_err(backend)? else {
+            return Ok(false);
+        };
+        verify_exact_package_config_map(&desired_config, &config)?;
         let observed = self
-            .resolve_image_identity(&destination, release_annotations.as_ref())
+            .resolve_image_identity(&destination, Some(&config))
             .await?;
         Ok(package_image_matches_stored_identity(observed, image))
     }
@@ -724,10 +744,15 @@ mod tests {
 
     use super::{
         IMAGE_CHECK_TIMEOUT_SECS, ImageCheckDisposition, ImageCheckObservation,
-        K8sPackageImageProvisioner, PACKAGE_IMAGE_DESTINATION_ANNOTATION,
-        PACKAGE_RECIPE_FINGERPRINT_ANNOTATION, image_check_client_timeout, image_check_disposition,
+        K8sPackageImageProvisioner, image_check_client_timeout, image_check_disposition,
         image_check_identity, image_check_observation, immutable_registry_identity,
         package_image_matches_stored_identity, terminal_image_pull_reason,
+    };
+    use crate::k8s_package_realization::{
+        K8S_PACKAGE_REALIZATION_CONTRACT_VERSION, PACKAGE_BUILD_JOB_KIND,
+        PACKAGE_CONFIG_MAP_UID_ANNOTATION, PACKAGE_IMAGE_CHECK_JOB_KIND,
+        PACKAGE_IMAGE_DESTINATION_ANNOTATION, PACKAGE_JOB_KIND_ANNOTATION,
+        PACKAGE_REALIZATION_CONTRACT_ANNOTATION, PACKAGE_RECIPE_FINGERPRINT_ANNOTATION,
     };
 
     fn test_builder() -> K8sPackageImageProvisioner {
@@ -773,8 +798,12 @@ mod tests {
          */
         let builder = test_builder();
         let packages = package_requirements();
-        let (_, job, destination) = builder
+        let (mut config, job, destination) = builder
             .build_objects("registry.local/base@sha256:exact", &packages)
+            .unwrap();
+        config.metadata.uid = Some("config-uid".into());
+        let job = builder
+            .bind_package_job(&config, job, PACKAGE_BUILD_JOB_KIND)
             .unwrap();
         let fingerprint = destination
             .rsplit_once(':')
@@ -822,7 +851,27 @@ mod tests {
                 Some(destination.as_str()),
                 "R1/E1 exact BuildKit push target"
             );
-            assert_eq!(annotations.len(), 2, "R1/E2 no parallel metadata payload");
+            assert_eq!(
+                annotations
+                    .get(PACKAGE_CONFIG_MAP_UID_ANNOTATION)
+                    .map(String::as_str),
+                Some("config-uid"),
+                "R1/E1 API-observed ConfigMap incarnation"
+            );
+            assert_eq!(
+                annotations
+                    .get(PACKAGE_JOB_KIND_ANNOTATION)
+                    .map(String::as_str),
+                Some(PACKAGE_BUILD_JOB_KIND),
+                "R1/E1 exact Job role"
+            );
+            assert_eq!(
+                annotations
+                    .get(PACKAGE_REALIZATION_CONTRACT_ANNOTATION)
+                    .map(String::as_str),
+                Some(K8S_PACKAGE_REALIZATION_CONTRACT_VERSION),
+                "R1/E1 versioned contract"
+            );
             assert!(
                 annotations.values().all(|value| {
                     !value.contains("@playwright/mcp")
@@ -852,11 +901,17 @@ mod tests {
          */
         let builder = test_builder();
         let packages = package_requirements();
-        let (_, build_job, destination) = builder
+        let (mut config, build_job, destination) = builder
             .build_objects("registry.local/base@sha256:exact", &packages)
             .unwrap();
+        config.metadata.uid = Some("config-uid".into());
+        let build_job = builder
+            .bind_package_job(&config, build_job, PACKAGE_BUILD_JOB_KIND)
+            .unwrap();
         let build_annotations = build_job.metadata.annotations.as_ref().unwrap();
-        let (_, retry_check) = builder.image_check_job(&destination, Some(build_annotations));
+        let (_, retry_check) = builder
+            .image_check_job(&destination, Some(&config))
+            .unwrap();
         let retry_annotations = retry_check.metadata.annotations.as_ref().unwrap();
         let retry_pod_annotations = retry_check
             .spec
@@ -871,8 +926,30 @@ mod tests {
             .and_then(|spec| spec.containers.first())
             .and_then(|container| container.image.as_deref());
 
-        assert_eq!(retry_annotations, build_annotations, "R3/E2 Job join");
-        assert_eq!(retry_pod_annotations, build_annotations, "R3/E2 Pod join");
+        for key in [
+            PACKAGE_REALIZATION_CONTRACT_ANNOTATION,
+            PACKAGE_RECIPE_FINGERPRINT_ANNOTATION,
+            PACKAGE_IMAGE_DESTINATION_ANNOTATION,
+            PACKAGE_CONFIG_MAP_UID_ANNOTATION,
+        ] {
+            assert_eq!(
+                retry_annotations.get(key),
+                build_annotations.get(key),
+                "R3/E2 Job join key `{key}`"
+            );
+            assert_eq!(
+                retry_pod_annotations.get(key),
+                build_annotations.get(key),
+                "R3/E2 Pod join key `{key}`"
+            );
+        }
+        assert_eq!(
+            retry_annotations
+                .get(PACKAGE_JOB_KIND_ANNOTATION)
+                .map(String::as_str),
+            Some(PACKAGE_IMAGE_CHECK_JOB_KIND),
+            "R3/E2 exact check role"
+        );
         assert_eq!(retry_image, Some(destination.as_str()), "R3/E2 target");
         let deny_labels = BTreeMap::from([("app".to_owned(), "awaken-sandbox".to_owned())]);
         assert_eq!(
@@ -912,8 +989,19 @@ mod tests {
             "R3/E2 exact kubelet digest"
         );
 
-        let (_, generic_check) = builder.image_check_job("registry.local/base:mutable", None);
-        assert!(generic_check.metadata.annotations.is_none(), "R4/E3 Job");
+        let (_, generic_check) = builder
+            .image_check_job("registry.local/base:mutable", None)
+            .unwrap();
+        assert!(
+            !generic_check
+                .metadata
+                .annotations
+                .as_ref()
+                .is_some_and(|annotations| {
+                    annotations.contains_key(PACKAGE_REALIZATION_CONTRACT_ANNOTATION)
+                }),
+            "R4/E3 Job"
+        );
         assert_eq!(
             generic_check.metadata.labels.as_ref(),
             Some(&deny_labels),

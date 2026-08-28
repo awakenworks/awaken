@@ -1,5 +1,29 @@
 # Wiki Update Log
 
+## 2026-08-28 — Bind package realization to one Open structural verifier
+
+- Kept the existing package recipe, Kubernetes emitter, generic realization
+  digest, Sandbox name owner, Coordinator build row/lease, and Registry digest
+  as their sole authorities; no CLI, JSON parser, hash path, ledger, or retained
+  proof store was added.
+- Made the immutable package ConfigMap yield its API UID before Build and
+  image-check Jobs are stamped. ConfigMap and Job `409` reuse now requires the
+  exact realization and normalized projection rather than treating conflict as
+  success.
+- Added one versioned typed verifier for exact ConfigMap, optional fresh Build
+  Job/Pod, mandatory image-check Job/Pod, immutable digest, and canonical cold
+  Sandbox cardinality. Wrong UID/owner/spec/status/digest, copied annotations,
+  duplicates, and competing incarnations fail closed; Registry recovery alone
+  may omit both Build UIDs.
+- Kept the proof secret-free and bounded. Successful Build and image-check Jobs
+  remain observable for their TTL, while Coordinator and the Registry retain
+  all durable execution authority.
+- Classified the result as structural evidence only. A composing Cloud release
+  still needs a separate admission/RBAC gate proving exclusive writes by its
+  exact pinned Open Worker identity and the Kubernetes Job controller; without
+  that gate there is no product-source proof. This record does not claim a live
+  cluster deployment.
+
 ## 2026-08-28 — Close the Sandbox signature/attestation retry boundary
 
 - Kept the release workflow, provenance module, registry resolver, and static
