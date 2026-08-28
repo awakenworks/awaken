@@ -2,7 +2,7 @@
 //! built over typed `data_dir` SQLite stores is dropped and rebuilt over
 //! the same directory + key. Catalog storage is seeded through its domain port;
 //! credential (sealed secret), pool, inference profile, MCP server def, agent
-//! MCP binding — reads back and still *resolves* (the credential materializes
+//! MCP server/toolset binding — reads back and still *resolves* (the credential materializes
 //! from the sealed blob store). A rebuild under the WRONG key fails closed at
 //! materialization (`Seal` → 422) while the secret-free config rows stay
 //! readable. Uses `build_durable_all_in_one_router` (explicit dir + key), not
