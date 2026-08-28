@@ -1,5 +1,5 @@
 --------------------------- MODULE WorkQueueProof ---------------------------
-EXTENDS WorkQueue, TLAPS
+EXTENDS WorkQueueKernel, TLAPS
 
 LEMMA InitSafety == KernelAssumptions /\ Init => Safety
 BY Z3T(30) DEF Init, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
@@ -35,8 +35,8 @@ BY Z3T(30) DEF Heartbeat, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    TerminalStates, KernelAssumptions
 
 LEMMA StopSafety ==
-    \A worker \in Workers, item \in WorkItems:
-      KernelAssumptions /\ Safety /\ Stop(worker, item) => Safety'
+    \A worker \in Workers, item \in WorkItems, expectedEpoch \in 0..MaxEpoch:
+      KernelAssumptions /\ Safety /\ Stop(worker, item, expectedEpoch) => Safety'
 BY Z3T(30) DEF Stop, Safety, TypeOK, SingleActive, ActiveHasOneOwner,
    ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, WorkStates,
    TerminalStates, KernelAssumptions
@@ -57,9 +57,9 @@ LEMMA NextSafety == KernelAssumptions /\ Safety /\ Next => Safety'
 BY ClaimSafety, ReclaimSafety, AckSafety, HeartbeatSafety, StopSafety,
    RemoveEnvironmentSafety, AdvanceTimeSafety DEF Next
 
-LEMMA SafetyStutter == Safety /\ UNCHANGED vars => Safety'
+LEMMA SafetyStutter == Safety /\ UNCHANGED kVars => Safety'
 BY Z3T(30) DEF Safety, TypeOK, SingleActive, ActiveHasOneOwner,
-   ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, vars
+   ActiveEpochIsPositive, TerminalHasNoLeaseAuthority, kVars
 
 InductiveSafety == KernelAssumptions /\ Safety
 
@@ -67,9 +67,9 @@ LEMMA InitInductiveSafety == KernelAssumptions /\ Init => InductiveSafety
 BY InitSafety DEF InductiveSafety
 
 LEMMA StepInductiveSafety ==
-    InductiveSafety /\ [Next]_vars => InductiveSafety'
+    InductiveSafety /\ [Next]_kVars => InductiveSafety'
 BY NextSafety, SafetyStutter
-   DEF InductiveSafety, KernelAssumptions, vars
+   DEF InductiveSafety, KernelAssumptions, kVars
 
 THEOREM WorkQueueSafety ==
     KernelAssumptions /\ Spec => []Safety

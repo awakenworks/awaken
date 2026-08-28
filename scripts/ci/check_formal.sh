@@ -354,6 +354,8 @@ if [ -n "$tlapm_bin" ] && [ -x "$tlapm_bin" ]; then
   "$tlapm_bin" -I formal/tla formal/tla/RuntimeImplementationProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/RustCommitSystemProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/WorkQueueProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/SessionActivityProof.tla
+  "$tlapm_bin" -I formal/tla formal/tla/SessionRootProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/LiveInboxProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ServiceLifecycleProof.tla
   "$tlapm_bin" -I formal/tla formal/tla/ObservationReconcileProof.tla
@@ -382,6 +384,16 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/work-queue" \
     -config formal/tla/WorkQueue.cfg formal/tla/WorkQueue.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-activity" \
+    -config formal/tla/SessionActivity.cfg formal/tla/SessionActivity.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-root" \
+    -config formal/tla/SessionRoot.cfg formal/tla/SessionRoot.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-event-protocol" \
+    -config formal/tla/SessionEventProtocol.cfg \
+    formal/tla/SessionEventProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/delegation" \
     -config formal/tla/Delegation.cfg formal/tla/Delegation.tla
@@ -566,6 +578,16 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
     -workers auto \
     -metadir "$tlc_state_root/session-run-protocol" \
     -config formal/tla/SessionRunProtocol.cfg formal/tla/SessionRunProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
+    -metadir "$tlc_state_root/session-start-protocol" \
+    -config formal/tla/SessionStartProtocol.cfg \
+    formal/tla/SessionStartProtocol.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -workers auto \
+    -metadir "$tlc_state_root/session-start-protocol-reachability" \
+    -config formal/tla/SessionStartProtocolReachability.cfg \
+    formal/tla/SessionStartProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -workers auto \
     -metadir "$tlc_state_root/remote-worker-protocol" \
