@@ -58,6 +58,7 @@ export default function SessionDetailSurface() {
     || runtime.pendingConfirmIds.size > 0
     || session.data?.status === "running"
     || session.data?.status === "rescheduling";
+  const needsRecovery = runtime.pendingConfirmIds.size > 0;
   const canSend = canSendToSession(runtime, session.data?.status);
 
   const control = useMutation({
@@ -107,9 +108,15 @@ export default function SessionDetailSurface() {
   };
   const interruptSession = async () => {
     const approved = await confirm({
-      title: app.t("Stop the current run?", "停止当前运行？"),
-      body: app.t("The current model turn is interrupted. The conversation and completed work remain available, and you can send a new message afterwards.", "当前模型回合会被中断；对话与已完成工作仍会保留，之后可以继续发送新消息。"),
-      confirmLabel: app.t("Stop run", "停止运行"),
+      title: needsRecovery
+        ? app.t("Recover this stuck run?", "恢复这个卡住的运行？")
+        : app.t("Stop the current run?", "停止当前运行？"),
+      body: needsRecovery
+        ? app.t("The committed pending tool requests are interrupted through the Session event stream. Conversation, repository changes, and history remain available, and a new message can be sent after the terminal event is projected.", "将通过 Session 事件流中断已提交的待处理工具请求；对话、仓库修改和历史都会保留，终止事件投影后即可发送新消息。")
+        : app.t("The current model turn is interrupted. The conversation and completed work remain available, and you can send a new message afterwards.", "当前模型回合会被中断；对话与已完成工作仍会保留，之后可以继续发送新消息。"),
+      confirmLabel: needsRecovery
+        ? app.t("Recover run", "恢复运行")
+        : app.t("Stop run", "停止运行"),
       danger: true,
     });
     if (approved) control.mutate([{ type: "user.interrupt" }]);
@@ -144,7 +151,7 @@ export default function SessionDetailSurface() {
             </Button>
           )}
           <Button variant="danger" disabled={!canInterrupt || control.isPending} onClick={() => void interruptSession()}>
-            ⏹ {app.t("Stop run", "停止运行")}
+            ⏹ {needsRecovery ? app.t("Recover run", "恢复运行") : app.t("Stop run", "停止运行")}
           </Button>
         </span>
       </div>

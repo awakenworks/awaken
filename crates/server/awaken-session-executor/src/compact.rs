@@ -26,12 +26,6 @@ use crate::background::{BackgroundRuns, BackgroundWorkClass};
 use crate::judge::AuxAgentTool;
 use crate::store::HostCommit;
 
-/// A host's enabled compaction policy. Session construction binds its execution
-/// backend to that Session's commit/history boundary.
-pub(crate) struct Compaction {
-    pub(crate) config: awaken_ext_compact::CompactConfig,
-}
-
 /// An ordinary tool whose catalog holds the `compactor` Agent.
 /// (ADR-0047 D5). The compaction plugin builds the seed (older slice + summarize
 /// prompt); this runs the named agent to completion, the read-side counterpart of

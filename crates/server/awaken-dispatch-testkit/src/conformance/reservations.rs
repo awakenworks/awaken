@@ -1,9 +1,11 @@
 // Session reservation, claim guard, sandbox recovery, and completion rules.
 // Included at crate root to retain all existing conformance function paths.
 /// Session Run reservation cause/effect graph. Causes: C1 canonical dispatch is
-/// absent/exact/conflicting; C2 phase is Reserved/ReservationLeased/activated/
+/// absent/exact/conflicting; C2 state is Reserved/ReservationLeased/activated/
 /// completed/missing; C3 activity epoch and Session Thread are exact/invalid;
 /// C4 repair claim is current/stale; C5 resolution is admit/retry/reject/invalid.
+/// C6 admission surface is reservation/ordinary enqueue/atomic local claim/
+/// atomic compatible claim.
 /// Effects: E1 persist one unclaimable intent; E2 never open or overwrite the
 /// wrong activity; E3 exact replay reports the durable phase; E4 repair never
 /// binds a Sandbox or executes; E5 admitted repair publishes ordinary Pending;
@@ -13,8 +15,9 @@
 /// for reservation repair; E11 an expired repair lease advances the epoch and
 /// fences its crashed owner.
 ///
-/// | Rule | Identity/phase | Epoch/claim | Command | Effect |
+/// | Rule | Identity/state | Epoch/claim | Command | Effect |
 /// |---|---|---|---|---|
+/// | SR0 | absent Session root | no activity receipt | ordinary admission surfaces | E2; no row |
 /// | SR1 | absent | valid | reserve | E1 |
 /// | SR2 | exact/conflict | - | reserve replay | E3 / E2 conflict |
 /// | SR3 | Reserved | exact/invalid | activate | Pending / E2 |
@@ -34,6 +37,130 @@ async fn session_run_reservation_is_atomic_and_recoverable(
     if !capabilities.local_commit_guard {
         return;
     }
+
+    // SR0 proves both rejection and absence of a partial write. Each rejected
+    // Run id must remain immediately reservable through the one authoritative
+    // Session admission command; this distinguishes validation from a backend
+    // that returns an error after inserting a hidden or claimable row.
+    let enqueue_session = thread_id(ns, "reservation-ordinary-enqueue-session");
+    let enqueue_request = dispatch(
+        ns,
+        "reservation-ordinary-enqueue",
+        "reservation-ordinary-enqueue-session",
+    )
+    .for_session(enqueue_session);
+    assert!(
+        store.enqueue(enqueue_request.clone()).await.is_err(),
+        "SR0/E2 ordinary enqueue rejects an unreceipted Session root"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(enqueue_request.clone(), 69_001)
+            .await
+            .expect("SR0 enqueue left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR0/no-row enqueue"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(enqueue_request.run_id())
+            .await
+            .expect("SR0 remove enqueue probe reservation")
+    );
+
+    let options_session = thread_id(ns, "reservation-ordinary-options-session");
+    let options_request = dispatch(
+        ns,
+        "reservation-ordinary-options",
+        "reservation-ordinary-options-session",
+    )
+    .for_session(options_session);
+    assert!(
+        store
+            .enqueue_with(options_request.clone(), SubmitOptions::default())
+            .await
+            .is_err(),
+        "SR0/E2 enqueue_with rejects an unreceipted Session root"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(options_request.clone(), 69_002)
+            .await
+            .expect("SR0 enqueue_with left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR0/no-row enqueue_with"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(options_request.run_id())
+            .await
+            .expect("SR0 remove enqueue_with probe reservation")
+    );
+
+    let claim_session = thread_id(ns, "reservation-ordinary-claim-session");
+    let claim_request = dispatch(
+        ns,
+        "reservation-ordinary-claim",
+        "reservation-ordinary-claim-session",
+    )
+    .for_session(claim_session);
+    assert!(
+        store
+            .claim_new_run(
+                claim_request.clone(),
+                "reservation-ordinary-claim-owner",
+                LEASE_MS,
+                69_000,
+                &Default::default(),
+            )
+            .await
+            .is_err(),
+        "SR0/E2 atomic local claim rejects an unreceipted Session root"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(claim_request.clone(), 69_003)
+            .await
+            .expect("SR0 atomic local claim left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR0/no-row claim_new_run"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(claim_request.run_id())
+            .await
+            .expect("SR0 remove claim probe reservation")
+    );
+
+    let compatible_session = thread_id(ns, "reservation-ordinary-compatible-session");
+    let compatible_request = dispatch(
+        ns,
+        "reservation-ordinary-compatible",
+        "reservation-ordinary-compatible-session",
+    )
+    .for_session(compatible_session);
+    let worker = ready_dispatch_worker(ns, "reservation-ordinary-compatible");
+    assert!(
+        store
+            .claim_new_run_compatible(compatible_request.clone(), &worker, LEASE_MS, 69_000)
+            .await
+            .is_err(),
+        "SR0/E2 atomic compatible claim rejects an unreceipted Session root"
+    );
+    assert_eq!(
+        store
+            .reserve_session_run(compatible_request.clone(), 69_004)
+            .await
+            .expect("SR0 atomic compatible claim left no row"),
+        SessionRunReservationOutcome::Reserved,
+        "SR0/no-row claim_new_run_compatible"
+    );
+    assert!(
+        store
+            .reject_session_run_reservation(compatible_request.run_id())
+            .await
+            .expect("SR0 remove compatible probe reservation")
+    );
 
     let invalid_thread = thread_id(ns, "reservation-invalid-thread");
     assert!(

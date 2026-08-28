@@ -1,4 +1,25 @@
 use super::*;
+use sqlx::Connection;
+
+const IDLE_CONNECTION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const HEALTH_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn pool_options() -> sqlx::postgres::PgPoolOptions {
+    sqlx::postgres::PgPoolOptions::new()
+        .idle_timeout(IDLE_CONNECTION_TIMEOUT)
+        // SQLx's built-in ping is intentionally replaced because it has no
+        // independent deadline. A Kubernetes Service cannot retarget an
+        // established TCP socket after primary promotion.
+        .test_before_acquire(false)
+        .before_acquire(|connection, _metadata| {
+            Box::pin(async move {
+                match tokio::time::timeout(HEALTH_CHECK_TIMEOUT, connection.ping()).await {
+                    Ok(result) => result.map(|()| true),
+                    Err(_) => Err(sqlx::Error::PoolTimedOut),
+                }
+            })
+        })
+}
 
 /// A Postgres-backed [`ManagedSessionRepository`] — the network-DB sibling over
 /// the same `managed` migration scope. The Session port is async; the retained
@@ -11,7 +32,10 @@ pub struct PostgresManagedSessionRepository {
 impl PostgresManagedSessionRepository {
     /// Connect and apply the session migrations under the `managed` namespace.
     pub async fn connect(url: &str) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let pool = pool_options()
+            .connect(url)
+            .await
+            .map_err(|e| e.to_string())?;
         Self::with_pool(pool).await
     }
 
@@ -34,7 +58,10 @@ impl PostgresManagedSessionRepository {
 
     /// Connect to a schema migrated by an operational command without DDL.
     pub async fn connect_existing(url: &str) -> Result<Self, String> {
-        let pool = PgPool::connect(url).await.map_err(|e| e.to_string())?;
+        let pool = pool_options()
+            .connect(url)
+            .await
+            .map_err(|e| e.to_string())?;
         let bundle = session_bundle().map_err(|e| e.to_string())?;
         awaken_scoped_migration::postgres::PostgresMigrationRunner::with_prefix(pool.clone(), NS)
             .map_err(|e| e.to_string())?
@@ -284,6 +311,32 @@ impl PostgresManagedSessionRepository {
             identity,
             missing_receipt,
         )
+    }
+}
+
+#[cfg(test)]
+mod pool_policy_tests {
+    use super::*;
+
+    #[test]
+    fn session_pool_bounds_stale_primary_connections() {
+        // Cause/effect graph: C1 a fresh/healthy connection answers a bounded
+        // ping -> E1 the Session repository reuses it; C2 an established socket
+        // still targets a removed primary -> E2 the 500ms hook hard-discards it;
+        // C3 it remains unused for 5s -> E3 the pool reaps it. Decision rules:
+        // P1=C1=>E1; P2=C2=>E2; P3=C3=>E3. The distributed k3d promotion test is
+        // the live P2 oracle; this structural case prevents an unbounded SQLx
+        // ping from being placed in front of the hook.
+        let options = pool_options();
+        assert_eq!(
+            options.get_idle_timeout(),
+            Some(IDLE_CONNECTION_TIMEOUT),
+            "P3/E3"
+        );
+        assert!(
+            !options.get_test_before_acquire(),
+            "P2/E2 only the bounded health hook may probe idle sockets"
+        );
     }
 }
 

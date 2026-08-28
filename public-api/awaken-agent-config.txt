@@ -155,6 +155,8 @@ pub awaken_agent_config::AgentConfig::tool_patterns: alloc::vec::Vec<alloc::stri
 pub awaken_agent_config::AgentConfig::toolsets: alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 impl awaken_agent_config::AgentConfig
 pub fn awaken_agent_config::AgentConfig::kind(&self) -> awaken_agent_config::AgentKind
+pub fn awaken_agent_config::AgentConfig::validate_managed_tool_bindings(&self) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_agent_config::AgentConfig::validate_tool_bindings(&self) -> core::result::Result<(), alloc::string::String>
 impl awaken_agent_config::AgentConfig
 pub fn awaken_agent_config::AgentConfig::lifecycle(&self) -> awaken_agent_config::AgentLifecycle
 pub struct awaken_agent_config::AgentConfigRevision

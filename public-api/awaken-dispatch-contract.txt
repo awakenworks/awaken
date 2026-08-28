@@ -78,8 +78,6 @@ pub awaken_dispatch_contract::dispatch::DispatchState::Reserved
 pub awaken_dispatch_contract::dispatch::DispatchState::Superseded
 impl awaken_dispatch_contract::dispatch::DispatchState
 pub fn awaken_dispatch_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
-impl awaken_dispatch_contract::dispatch::DispatchState
-pub fn awaken_dispatch_contract::dispatch::DispatchState::transition_phase(self) -> awaken_dispatch_contract::DispatchPhase
 pub enum awaken_dispatch_contract::dispatch::SessionRunReservationActivation
 pub awaken_dispatch_contract::dispatch::SessionRunReservationActivation::Activated
 pub awaken_dispatch_contract::dispatch::SessionRunReservationActivation::AlreadyActivated
@@ -278,6 +276,12 @@ pub fn awaken_dispatch_contract::operational::DispatchOperationalFeed::events_af
 pub mod awaken_dispatch_contract::run_dispatch
 pub use awaken_dispatch_contract::run_dispatch::ExecutionScopeRef
 pub use awaken_dispatch_contract::run_dispatch::PlacementRequirements
+pub enum awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape
+pub awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape::InvalidZeroActivityEpoch
+pub awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape::OrdinaryRoot
+pub awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape::SessionChild
+pub awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape::SessionRootAwaitingActivity
+pub awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape::SessionRootWithActivity
 pub enum awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
 pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Reject
 pub awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision::Replace
@@ -299,6 +303,7 @@ pub awaken_dispatch_contract::run_dispatch::RunDispatch::session_runtime: core::
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_dispatch_contract::run_dispatch::RunDispatch::traceparent: core::option::Option<alloc::string::String>
 impl awaken_dispatch_contract::run_dispatch::RunDispatch
+pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::admission_shape(&self) -> awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::canonical_fingerprint(&self) -> alloc::string::String
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
@@ -343,6 +348,12 @@ pub awaken_dispatch_contract::CasOutcome::RevisionMismatch
 pub enum awaken_dispatch_contract::ContinuationAdmission
 pub awaken_dispatch_contract::ContinuationAdmission::Root
 pub awaken_dispatch_contract::ContinuationAdmission::SessionChild(awaken_dispatch_contract::dispatch::SessionChildAdmission)
+pub enum awaken_dispatch_contract::DispatchAdmissionShape
+pub awaken_dispatch_contract::DispatchAdmissionShape::InvalidZeroActivityEpoch
+pub awaken_dispatch_contract::DispatchAdmissionShape::OrdinaryRoot
+pub awaken_dispatch_contract::DispatchAdmissionShape::SessionChild
+pub awaken_dispatch_contract::DispatchAdmissionShape::SessionRootAwaitingActivity
+pub awaken_dispatch_contract::DispatchAdmissionShape::SessionRootWithActivity
 pub enum awaken_dispatch_contract::DispatchCredentialAdmissionError
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::Attempt(awaken_runtime_contract::credential::AttemptCredentialBindingError)
 pub awaken_dispatch_contract::DispatchCredentialAdmissionError::InvalidSessionCredentialProjection(alloc::string::String)
@@ -372,14 +383,6 @@ pub fn awaken_dispatch_contract::operational::DispatchOperation::run_id(&self) -
 pub enum awaken_dispatch_contract::DispatchOutcome
 pub awaken_dispatch_contract::DispatchOutcome::Awaiting
 pub awaken_dispatch_contract::DispatchOutcome::Done
-pub enum awaken_dispatch_contract::DispatchPhase
-pub awaken_dispatch_contract::DispatchPhase::Awaiting
-pub awaken_dispatch_contract::DispatchPhase::DeadLetter
-pub awaken_dispatch_contract::DispatchPhase::Leased
-pub awaken_dispatch_contract::DispatchPhase::Pending
-pub awaken_dispatch_contract::DispatchPhase::ReservationLeased
-pub awaken_dispatch_contract::DispatchPhase::Reserved
-pub awaken_dispatch_contract::DispatchPhase::Superseded
 pub enum awaken_dispatch_contract::DispatchState
 pub awaken_dispatch_contract::DispatchState::Awaiting
 pub awaken_dispatch_contract::DispatchState::DeadLetter
@@ -390,8 +393,6 @@ pub awaken_dispatch_contract::DispatchState::Reserved
 pub awaken_dispatch_contract::DispatchState::Superseded
 impl awaken_dispatch_contract::dispatch::DispatchState
 pub fn awaken_dispatch_contract::dispatch::DispatchState::from_db(&str) -> core::option::Option<Self>
-impl awaken_dispatch_contract::dispatch::DispatchState
-pub fn awaken_dispatch_contract::dispatch::DispatchState::transition_phase(self) -> awaken_dispatch_contract::DispatchPhase
 pub enum awaken_dispatch_contract::DispatchTransitionError
 pub awaken_dispatch_contract::DispatchTransitionError::LeaseEpochExhausted
 pub enum awaken_dispatch_contract::GuardedTransition
@@ -518,7 +519,7 @@ pub awaken_dispatch_contract::DispatchSummary::thread_id: awaken_agent_contract:
 pub struct awaken_dispatch_contract::DispatchTransition
 pub awaken_dispatch_contract::DispatchTransition::cancellation_requested: bool
 pub awaken_dispatch_contract::DispatchTransition::lease_epoch: u64
-pub awaken_dispatch_contract::DispatchTransition::phase: awaken_dispatch_contract::DispatchPhase
+pub awaken_dispatch_contract::DispatchTransition::state: awaken_dispatch_contract::dispatch::DispatchState
 impl awaken_dispatch_contract::DispatchTransition
 pub fn awaken_dispatch_contract::DispatchTransition::activate_reservation(self) -> core::option::Option<Self>
 pub fn awaken_dispatch_contract::DispatchTransition::cancel(self) -> core::result::Result<awaken_dispatch_contract::CancelTransition, awaken_dispatch_contract::DispatchTransitionError>
@@ -581,6 +582,7 @@ pub awaken_dispatch_contract::RunDispatch::session_runtime: core::option::Option
 pub awaken_dispatch_contract::RunDispatch::session_thread_id: core::option::Option<awaken_agent_contract::agent::thread::Id>
 pub awaken_dispatch_contract::RunDispatch::traceparent: core::option::Option<alloc::string::String>
 impl awaken_dispatch_contract::run_dispatch::RunDispatch
+pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::admission_shape(&self) -> awaken_dispatch_contract::run_dispatch::DispatchAdmissionShape
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::canonical_fingerprint(&self) -> alloc::string::String
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::for_session(self, awaken_agent_contract::agent::thread::Id) -> Self
 pub fn awaken_dispatch_contract::run_dispatch::RunDispatch::new(awaken_runtime_contract::activation::RunActivation) -> Self
@@ -719,6 +721,6 @@ pub fn awaken_dispatch_contract::Outbox::relay_and_enqueue<'life0, 'async_trait>
 pub fn awaken_dispatch_contract::Outbox::stage<'life0, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait
 pub fn awaken_dispatch_contract::Outbox::stage_session_resume<'life0, 'life1, 'async_trait>(&'life0 self, awaken_dispatch_contract::dispatch::PendingInput, &'life1 awaken_agent_contract::agent::thread::Id, core::option::Option<u64>, u64) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = core::result::Result<bool, awaken_dispatch_contract::dispatch::DispatchError>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn awaken_dispatch_contract::compile_attempt_credential_bindings(&awaken_dispatch_contract::run_dispatch::RunDispatch, &awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, u64, u64) -> core::result::Result<alloc::vec::Vec<awaken_runtime_contract::credential::AttemptCredentialBinding>, awaken_dispatch_contract::DispatchCredentialAdmissionError>
-pub fn awaken_dispatch_contract::retry_exhaustion_eligible(awaken_dispatch_contract::DispatchPhase, core::option::Option<u64>, u64, u64, u64) -> bool
+pub fn awaken_dispatch_contract::retry_exhaustion_eligible(awaken_dispatch_contract::dispatch::DispatchState, core::option::Option<u64>, u64, u64, u64) -> bool
 pub const fn awaken_dispatch_contract::session_resource_install_decision(bool, bool, bool, u64, u64) -> awaken_dispatch_contract::run_dispatch::SessionResourceInstallDecision
 pub fn awaken_dispatch_contract::worker_credential_realization_capabilities(&awaken_worker_contract::WorkerSnapshot) -> core::result::Result<awaken_credential_contract::realization_capabilities::CredentialRealizationCapabilities, awaken_runtime_contract::credential::AttemptCredentialBindingError>

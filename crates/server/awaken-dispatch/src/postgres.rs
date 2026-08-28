@@ -31,10 +31,10 @@ use crate::dispatch::{
     compile_attempt_credential_bindings, ensure_session_child_capacity,
     installed_worker_credential_capabilities, normalize_pending_millis,
     retry_exhaustion_evidence_is_eligible, session_child_parent, session_child_thread,
-    validate_outbox_continuation, validate_session_resume_activity_transition,
-    validate_session_resume_evidence, validate_session_resume_target,
-    validate_session_run_reservation_request, validate_session_run_reservation_resolution,
-    verify_credential_realization_receipt,
+    validate_executable_dispatch_admission, validate_outbox_continuation,
+    validate_session_resume_activity_transition, validate_session_resume_evidence,
+    validate_session_resume_target, validate_session_run_reservation_request,
+    validate_session_run_reservation_resolution, verify_credential_realization_receipt,
 };
 use crate::dispatch_schema::dispatch_bundle;
 use crate::postgres_helpers::{

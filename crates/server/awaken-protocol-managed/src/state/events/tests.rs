@@ -1,4 +1,6 @@
-use super::committed_projection::budget_reach_close_cursor;
+use super::committed_projection::{
+    budget_reach_close_cursor, budget_reach_projection_close_cursor,
+};
 use super::*;
 use crate::state::test_support::{RehydrateFake, ephemeral_session_repo};
 use async_trait::async_trait;
@@ -54,6 +56,133 @@ async fn persist_batch_projection_anchors(
 }
 
 #[test]
+fn committed_thread_state_decides_interruptibility_for_every_child_kind() {
+    // Cause/effect graph: C1 the committed disposition is Active or Archived;
+    // C2 the relationship is an ordinary Agent or one-shot Advisor; C3 the
+    // latest committed Run is absent, active, reusable terminal, or failed.
+    // Effects: E1 Archived is never targetable; E2 a pending/active child is
+    // targetable before any Managed projection; E3 ordinary Completed and
+    // Cancelled Threads remain reusable; E4 ordinary Failed and every terminal
+    // Advisor are absorbing. The canonical lifecycle classifier remains the
+    // sole ordinary-failure owner; this helper stores no parallel status.
+    //
+    // | Rule | Disposition | Kind | Latest state | Effect |
+    // |---|---|---|---|---|
+    // | IT1 | Archived | any | any | E1 false |
+    // | IT2 | Active | any | absent/Running/Awaiting | E2 true |
+    // | IT3 | Active | Agent | NaturalEnd/Cancelled | E3 true |
+    // | IT4 | Active | Agent | Failed class | E4 false |
+    // | IT5 | Active | Advisor | any Ended | E4 false |
+    let agent = CoordinatedThreadTarget::Agent {
+        agent_id: "researcher".into(),
+    };
+    let advisor = CoordinatedThreadTarget::Advisor {
+        model: "advisor-model".into(),
+    };
+    let active = awaken_agent_contract::ThreadDisposition::Active;
+    let archived = awaken_agent_contract::ThreadDisposition::Archived;
+    for target in [&agent, &advisor] {
+        assert!(
+            ManagedState::coordinated_thread_is_interruptible(target, active, None),
+            "IT2 absent: {target:?}"
+        );
+        for state in [RunState::Running, RunState::Awaiting] {
+            assert!(
+                ManagedState::coordinated_thread_is_interruptible(target, active, Some(&state),),
+                "IT2 active: {target:?} {state:?}"
+            );
+            assert!(
+                !ManagedState::coordinated_thread_is_interruptible(target, archived, Some(&state),),
+                "IT1: {target:?} {state:?}"
+            );
+        }
+    }
+    for cause in [EndCause::NaturalEnd, EndCause::Cancelled] {
+        let state = RunState::Ended(cause);
+        assert!(
+            ManagedState::coordinated_thread_is_interruptible(&agent, active, Some(&state),),
+            "IT3: {state:?}"
+        );
+        assert!(
+            !ManagedState::coordinated_thread_is_interruptible(&advisor, active, Some(&state),),
+            "IT5: {state:?}"
+        );
+    }
+    for cause in [
+        EndCause::MaxSteps,
+        EndCause::Stopped("policy".into()),
+        EndCause::Error(awaken_agent_contract::agent::run::Failure::StateConflict),
+        EndCause::Indeterminate,
+    ] {
+        let state = RunState::Ended(cause);
+        assert!(
+            !ManagedState::coordinated_thread_is_interruptible(&agent, active, Some(&state),),
+            "IT4: {state:?}"
+        );
+        assert!(
+            !ManagedState::coordinated_thread_is_interruptible(&advisor, active, Some(&state),),
+            "IT5: {state:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn interrupt_freezes_a_committed_child_before_the_managed_projection_catches_up() {
+    // Cause/effect graph: C1 the disposable Managed cache still contains only
+    // the primary Thread; C2 committed Runtime truth already contains the child
+    // relationship and Running Run; C3 a selector-free interrupt is admitted.
+    // Effects: E1 C1 cannot hide C2; E2 the frozen command contains primary plus
+    // that exact child once; E3 no projection refresh or second target ledger is
+    // required. Decision table: IC1=C1+C2+C3=>E1+E2+E3. The real Advisor E2E
+    // covers the same window while the provider request is in flight.
+    let runtime = crate::test_support::CoordinatedRuntimeFake::default();
+    runtime.defer_child_completion();
+    let state = ManagedState::new(runtime.clone());
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .expect("IC1 Session");
+    SessionRuntime::run(
+        &runtime,
+        "coder",
+        &session.id,
+        vec![ContentBlock::text("coordinate")],
+    )
+    .await
+    .expect("IC1 committed child relationship");
+    assert_eq!(
+        state
+            .list_threads(&session.id)
+            .expect("IC1 stale list")
+            .len(),
+        1,
+        "IC1/C1 only the primary projection is visible"
+    );
+    let (links, snapshots) = state
+        .coordinated_projection_prefix(&session.id)
+        .await
+        .expect("IC1 committed coordinated prefix");
+    let targets = ManagedState::interrupt_targets(&session.id, None, &links, &snapshots)
+        .expect("IC1 frozen targets");
+    assert_eq!(
+        targets,
+        vec![
+            SessionThreadTarget::Primary,
+            SessionThreadTarget::Child(ThreadId(
+                crate::test_support::CoordinatedRuntimeFake::CHILD_THREAD_ID.into(),
+            )),
+        ],
+        "IC1/E1-E3"
+    );
+}
+
+#[test]
 fn durable_inbound_projection_uses_only_session_root_provenance() {
     // Constraints/invariants: committed Session, Run, and transcript facts are the only durable
     // truth; live, warm, and cold projections may not diverge or mint a second lifecycle.
@@ -64,7 +193,7 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
      * is repeated after a cold rebuild. Effects: E1 every accepted DTO is
      * reconstructed in batch ordinal order; E2 `processed_at` follows only
      * the root marker; E3 ids are stable across C3. Decision table: R1
-     * C1+queued=>E1+null; R2 mark exact entries=>E1+timestamp; R3 replay
+     * C1+queued=>pending-suffix+null; R2 mark exact entries=>E1+timestamp; R3 replay
      * unchanged root=>E3. Thread transcript roles/ids deliberately do not
      * reconstruct the original public DTO. */
     let session_id = "session-durable-input";
@@ -88,7 +217,19 @@ fn durable_inbound_projection_uses_only_session_root_provenance() {
     let queued = durable_inbound_projections(session_id, std::slice::from_ref(&batch));
     assert!(
         queued.is_empty(),
-        "R1/E1 an unanchored accepted receipt is not listable committed history"
+        "R1 unanchored receipts are not falsely classified as anchored history"
+    );
+    let pending = unanchored_inbound_projections(session_id, std::slice::from_ref(&batch));
+    assert_eq!(
+        pending.len(),
+        3,
+        "R1 pending suffix retains every accepted DTO"
+    );
+    assert!(
+        pending
+            .iter()
+            .all(|projection| projection.event.processed_at.is_none()),
+        "R1 pending suffix preserves the unprocessed marker"
     );
     let operation_ids = batch
         .events
@@ -268,9 +409,11 @@ async fn legacy_inbound_cursor_precedes_later_anchored_batches_warm_and_cold() {
 fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it() {
     // Cause/effect graph: C1 interval one closes below a transition cursor; C2
     // interval two closes at/above it; C3 the matching interval is still open
-    // or absent. E1 the budget event is anchored to interval two's close; E2 C3
-    // yields None so no event can be inserted before an issued cursor.
-    // Decision rules B1=C1+C2=>E1; B2=C1+C3=>E2. Interval index and `last()`
+    // or absent; C4 tool approval owns C2 and an equal-or-later interval closes
+    // on committed BudgetReached. E1 the accounting crossing is interval two;
+    // E2 C3 yields None; E3 C4 moves the one public budget pair to the later
+    // pause, while absence of C4 retains E1. Decision rules B1=C1+C2=>E1;
+    // B2=C1+C3=>E2; B3=B1+C4=>E3; B4=B1+!C4=>E1. Interval index and `last()`
     // are deliberately not causal evidence because reach generations and
     // Running intervals are not one-to-one.
     let usage = |tokens| awaken_session_contract::ManagedBudgetUsageCursor {
@@ -318,6 +461,25 @@ fn budget_reach_uses_the_first_closed_interval_whose_cumulative_usage_crossed_it
         budget_reach_close_cursor(&persisted, &transition),
         Some(20),
         "B1/E1"
+    );
+    assert_eq!(
+        budget_reach_projection_close_cursor(&persisted, &transition, &[]),
+        Some(20),
+        "B4/E1 crossing fallback without a committed budget pause"
+    );
+    let mut budget_pause = lifecycle(
+        30,
+        "budget-root",
+        &RunId("budget-run-30".into()),
+        RunLifecycleEventKind::Awaiting,
+        RunState::Awaiting,
+    );
+    budget_pause.await_reason =
+        Some(awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached);
+    assert_eq!(
+        budget_reach_projection_close_cursor(&persisted, &transition, &[budget_pause]),
+        Some(30),
+        "B3/E3 the public pause, not the earlier approval interval, owns the pair"
     );
     persisted.closed_runtime_intervals.truncate(1);
     assert_eq!(
@@ -983,6 +1145,69 @@ fn lifecycle(
     }
 }
 
+#[test]
+fn tool_reply_freezes_the_latest_awaiting_commit_inside_its_recovery_fence() {
+    // Cause/effect graph: C1 lifecycle contains older/current/future Awaiting
+    // commits for one Run; C2 another Thread or Run has an Awaiting commit; C3
+    // a legacy event has no source cursor; C4 the fenced prefix has no matching
+    // Awaiting. Effects: E1 select the latest same-Thread/same-Run commit no
+    // later than the snapshot fence; E2 ignore C2/C3; E3 C4 remains retryable
+    // and cannot mint an ordering anchor. Decision table: R1=C1+C2+C3=>E1+E2;
+    // R2=C4=>E3. The lifecycle feed remains the sole commit-coordinate owner.
+    let thread = ThreadId("thread-reply-order".into());
+    let run = RunId("run-reply-order".into());
+    let events = vec![
+        lifecycle(
+            10,
+            &thread.0,
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+        lifecycle(
+            30,
+            &thread.0,
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+        lifecycle(
+            40,
+            &thread.0,
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+        lifecycle(
+            25,
+            "other-thread",
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+    ];
+    assert_eq!(
+        ManagedState::answered_pending_commit_cursor(&thread, &run, 35, &events).unwrap(),
+        30,
+        "R1/E1-E2"
+    );
+    assert_eq!(
+        ManagedState::answered_pending_commit_cursor(&thread, &run, 20, &events).unwrap(),
+        10,
+        "R1/E1 older fence"
+    );
+    assert!(
+        ManagedState::answered_pending_commit_cursor(
+            &thread,
+            &RunId("missing-run".into()),
+            35,
+            &events,
+        )
+        .is_err(),
+        "R2/E3"
+    );
+}
+
 #[tokio::test]
 async fn recovery_pending_projection_enforces_one_current_run_ticket() {
     // Causes: the fixtures below establish `recovery pending projection enforces one current run
@@ -1364,6 +1589,7 @@ fn tool_reply_target_resolution_decision_table() {
             runtime_call_id: call_id.into(),
             client_executed,
         },
+        answered_pending_commit_cursor: 41,
         projected_event_id: Some(managed_tool_event_id(public_thread_id, source_id, call_id)),
         projected_family: Some(if client_executed {
             ProjectedToolUseFamily::Custom
@@ -3620,12 +3846,13 @@ async fn unanchored_accepted_command_holds_a_late_runtime_suffix_until_root_cas(
     // C2 a second User command is accepted in the Session root without its
     // processed+anchor CAS; C3 the second Runtime terminal prefix becomes
     // readable; C4 the effect owner then commits the exact root anchor. E1 the
-    // C1 prefix is unchanged while C2+C3 race; E2 after C4 the User and Runtime
-    // facts appear only in the old-cursor suffix; E3 a cold peer agrees.
+    // C1 prefix gains only the pending User receipt while C2+C3 race; E2 after
+    // C4 the same User id is marked processed and Runtime facts appear only in
+    // the old-cursor suffix; E3 a cold peer agrees.
     //
     // | Rule | unanchored root | Runtime suffix | Effect |
     // | U1 | no | first prefix | issue cursor |
-    // | U2 | yes | visible | E1, publish nothing new |
+    // | U2 | yes | visible | E1, publish pending receipt only |
     // | U3 | anchored | visible | E2+E3 |
     //
     // This is the read-skew gate: the final revision reread detects mutation
@@ -3750,12 +3977,35 @@ async fn unanchored_accepted_command_holds_a_late_runtime_suffix_until_root_cas(
         .await
         .unwrap();
     warm.refresh_committed_events(&session.id).await.unwrap();
+    let pending_prefix = warm
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(&pending_prefix[..prefix.len()], prefix.as_slice(), "U2/E1");
+    assert_eq!(pending_prefix.len(), prefix.len() + 1, "U2/E1");
     assert_eq!(
-        warm.list_events(&session.id, None, None, false)
-            .unwrap()
-            .data,
-        prefix,
+        pending_prefix.last().unwrap().type_str(),
+        "user.message",
         "U2/E1"
+    );
+    assert!(
+        pending_prefix.last().unwrap().processed_at.is_none(),
+        "U2/E1"
+    );
+    let pending_cold = ManagedState::new(runtime.clone()).with_session_repo(repository.clone());
+    pending_cold
+        .refresh_committed_events(&session.id)
+        .await
+        .unwrap();
+    let cold_pending_events = pending_cold
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(cold_pending_events.len(), 1, "U2/E1 cold anchor barrier");
+    assert_eq!(
+        cold_pending_events[0],
+        *pending_prefix.last().unwrap(),
+        "U2/E1 cold replica retains the root-owned pending receipt"
     );
 
     persist_batch_projection_anchors(&warm, &session.id, &batch.batch_id, &[19]).await;
@@ -3765,6 +4015,12 @@ async fn unanchored_accepted_command_holds_a_late_runtime_suffix_until_root_cas(
         .unwrap()
         .data;
     assert_eq!(&final_warm[..prefix.len()], prefix.as_slice(), "U3/E2");
+    assert_eq!(
+        final_warm[prefix.len()].id,
+        pending_prefix[prefix.len()].id,
+        "U3/E2 pending receipt upgrades in place"
+    );
+    assert!(final_warm[prefix.len()].processed_at.is_some(), "U3/E2");
     let warm_suffix = warm
         .list_events(&session.id, Some(&cursor), None, false)
         .unwrap();
@@ -7975,6 +8231,109 @@ async fn cold_historical_awaiting_never_fabricates_empty_requires_action() {
         })
         .collect::<Vec<_>>();
     assert_eq!(reasons, vec![&StopReason::EndTurn], "H1/E2-E3");
+}
+
+#[tokio::test]
+async fn synthetic_pending_tool_uses_the_awaiting_commit_as_its_projection_anchor() {
+    // Cause/effect graph: C1 a committed remote Awaiting lifecycle owns one
+    // exact pending ticket; C2 its ToolUse transcript message has not committed;
+    // C3 the projection is read warm and then rebuilt cold. Effects: E1 publish
+    // one source-qualified answerable tool event; E2 order it at the Awaiting
+    // commit before both requires_action idle edges; E3 warm/cold reads retain
+    // the same public id without a missing-anchor failure or duplicate. The
+    // lifecycle feed remains the sole commit-coordinate owner; no synthetic
+    // cursor or parallel pending ledger is introduced.
+    //
+    // | Rule | Awaiting | ticket | transcript | cache | Effects |
+    // |---|---|---|---|---|---|
+    // | S1 | exact | exact | absent | warm | E1+E2 |
+    // | S2 | exact | exact | absent | cold | E1+E2+E3 |
+    // | S3 | exact | absent | absent | any | withhold (neighboring fence test) |
+    let runtime = LifecycleRuntime::default();
+    let state = ManagedState::new(runtime.clone()).with_config_source(Arc::new(
+        FrozenToolFamilyProfiles::uniform(
+            "coder",
+            &[],
+            FrozenTestToolFamily::Custom,
+            "agent_input",
+        ),
+    ));
+    let session = state
+        .create_session(
+            serde_json::from_value(serde_json::json!({
+                "agent":"coder", "environment_id":"env_local"
+            }))
+            .unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+    let run = RunId("run-synthetic-pending".into());
+    let call_id = "remote-input-task";
+    *runtime.pending.lock().unwrap() = Some(Pending {
+        tool_use_id: call_id.into(),
+        name: "agent_input".into(),
+        input: serde_json::json!({"prompt":"which file?"}),
+        client_executed: true,
+    });
+    runtime.lifecycle.lock().unwrap().extend([
+        lifecycle(
+            10,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Running,
+            RunState::Running,
+        ),
+        lifecycle(
+            20,
+            &session.id,
+            &run,
+            RunLifecycleEventKind::Awaiting,
+            RunState::Awaiting,
+        ),
+    ]);
+
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let warm = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    let tool_index = warm
+        .iter()
+        .position(|event| matches!(event.kind, OutboundKind::AgentCustomToolUse { .. }))
+        .expect("S1/E1 synthetic answerable tool");
+    let tool_id = warm[tool_index].id.clone();
+    let identity = decode_managed_tool_event_id(&tool_id).expect("S1/E1 qualified identity");
+    assert_eq!(identity.source_id, run.0, "S1/E1 durable Run source");
+    let idle_indices = warm
+        .iter()
+        .enumerate()
+        .filter_map(|(index, event)| {
+            matches!(
+                event.kind,
+                OutboundKind::SessionStatusIdle { .. }
+                    | OutboundKind::SessionThreadStatusIdle { .. }
+            )
+            .then_some(index)
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(idle_indices.len(), 2, "S1/E2 exact idle pair");
+    assert!(
+        idle_indices.iter().all(|index| tool_index < *index),
+        "S1/E2"
+    );
+
+    state.sessions.lock().unwrap().remove(&session.id);
+    state.refresh_committed_events(&session.id).await.unwrap();
+    let cold = state
+        .list_events(&session.id, None, None, false)
+        .unwrap()
+        .data;
+    assert_eq!(
+        cold.iter().filter(|event| event.id == tool_id).count(),
+        1,
+        "S2/E3 stable cold identity"
+    );
 }
 
 #[tokio::test]

@@ -179,8 +179,10 @@ production logic.
 
 ## TLA+ specifications
 
-- `RunIngress.tla` covers claim, lease-epoch fencing, crash reclaim,
-  await/wake, cancellation, dead-letter, requeue, and supersession.
+- `RunIngress.tla` covers the post-activation executable queue: claim,
+  lease-epoch fencing, crash reclaim, await/wake, cancellation, dead-letter,
+  requeue, and supersession. `SessionRunWorkflow.tla` owns the preceding
+  durable Session Run reservation and activity-opening boundary.
 - `WorkQueue.tla` covers the distinct Managed environment queue: transactional
   single-active claim, durable owner/epoch/expiry, exact-boundary reclaim,
   heartbeat, acknowledgement, stop, and environment removal.
@@ -258,10 +260,14 @@ production logic.
   the chosen bound.
 - `CredentialRotationWorkflow.tla`, `DeploymentExecutionWorkflow.tla`,
   `ResourceLifecycleWorkflow.tla`, and `SessionRunWorkflow.tla` compose the
-  corresponding already-modeled kernels into product workflows. Their normal
-  configurations check safety; the dedicated reachability configurations
-  witness the credential completion, deployment settlement, and resource
-  reclamation goals without promoting environmental fairness into a theorem.
+  corresponding already-modeled kernels into product workflows. The Session
+  workflow additionally checks that reservation precedes activity, Reserved
+  never executes, recovery claims grant admission work only, and execution
+  requires one Worker to own the exact Dispatch, WorkQueue, and realization
+  authorities. Their normal configurations check safety; the dedicated
+  reachability configurations witness the credential completion, deployment
+  settlement, and resource reclamation goals without promoting environmental
+  fairness into a theorem.
 - `InferenceAccessPublication.tla` covers immutable access publication and
   dispatch-time pinning across route change, revocation, and fallback.
 - `McpServer.tla` covers request/notification response cardinality,

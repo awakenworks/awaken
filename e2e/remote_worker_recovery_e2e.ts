@@ -314,12 +314,18 @@ function spawnCredentialIsolatedWorker(
   workerId: string,
   upstream: string,
 ): ReturnType<typeof spawnServer>['server'] {
+  const inheritedEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => {
+      const normalized = name.toUpperCase();
+      return normalized !== 'API_KEY' && !normalized.endsWith('_API_KEY');
+    }),
+  );
   return spawnServer('echo', 0, {
     SESSION_DEPLOYMENT_INGRESS: 'durable',
     AWAKEN_UPSTREAM_URL: upstream,
     AWAKEN_SCENARIO_ROLE: 'worker',
     AWAKEN_WORKER_ID: workerId,
-  }).server;
+  }, inheritedEnvironment).server;
 }
 
 async function api(method: string, route: string, body?: unknown): Promise<{ status: number; body: any }> {
@@ -362,6 +368,26 @@ async function createSession(): Promise<string> {
     betas: ['managed-agents-2026-04-01'],
   });
   return created.id;
+}
+
+async function submitSessionUserRun(sessionId: string): Promise<string> {
+  const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: CONTROL });
+  const receipt = await client.beta.sessions.events.send(sessionId, {
+    betas: ['managed-agents-2026-04-01'],
+    events: [{
+      type: 'user.message',
+      content: [{ type: 'text', text: THREAD_TEXT }],
+    }],
+  });
+  assert.equal(typeof receipt.data?.[0]?.id, 'string', 'Managed ingress accepted one User Event');
+  const deadline = Date.now() + 30_000;
+  while (Date.now() <= deadline) {
+    const response = await api('GET', `/v1/durable/threads/${sessionId}/dispatches`);
+    const rows = response.body.dispatches ?? [];
+    if (rows.length === 1 && typeof rows[0].run_id === 'string') return rows[0].run_id;
+    await sleep(25);
+  }
+  throw new Error(`Managed User Event did not activate one dispatch for ${sessionId}`);
 }
 
 function dispatchDatabases(root: string): string[] {
@@ -430,18 +456,19 @@ function reservationRequest(base: any, sessionId: string, label: string): any {
 
 async function stageReservationCrashBoundary(
   storage: string,
-  workerId: string,
-  identity: any,
   request: any,
   deadlineMs: number,
 ): Promise<string> {
-  const enqueued = await workerApi(
-    workerId,
-    identity,
-    '/v1/worker/dispatch/enqueue',
-    { request },
+  const reserved = await api('POST', '/v1/scenario/session-run/reserve', {
+    request,
+    reservation_deadline_ms: deadlineMs,
+  });
+  assert.equal(
+    reserved.status,
+    200,
+    `canonical Session reservation command: ${JSON.stringify(reserved.body)}`,
   );
-  assert.equal(enqueued.status, 200, `canonical reservation fixture enqueue: ${JSON.stringify(enqueued.body)}`);
+  assert.equal(reserved.body.outcome, 'Reserved', 'fixture stops after the real reservation commit');
   const runId = String(request.activation.run_id);
   const matches = dispatchDatabases(storage).filter(
     (database) => sqliteValue(
@@ -451,14 +478,21 @@ async function stageReservationCrashBoundary(
     ) !== undefined,
   );
   assert.equal(matches.length, 1, `reservation fixture has one DispatchQueue authority for ${runId}`);
-  const changes = withSqlite(matches[0], (db) => (
-    db.prepare(
-      `UPDATE runtime_dispatch SET status = 'reserved', lease_owner = NULL, ` +
-        `lease_until = ?, worker_assignment = NULL, credential_bindings = NULL, ` +
-        `credential_receipts = NULL WHERE run_id = ? AND status = 'pending'`,
-    ).run(deadlineMs, runId).changes
-  ));
-  assert.equal(changes, 1, `reservation fixture freezes one persisted pre-activity row for ${runId}`);
+  const persisted = withSqlite(matches[0], (db) => db.prepare(
+    `SELECT status, lease_owner, lease_until, ` +
+      `json_extract(request, '$.session_activity_epoch') AS activity_epoch ` +
+      `FROM runtime_dispatch WHERE run_id = ?`,
+  ).get(runId) as Record<string, unknown>);
+  assert.deepEqual(
+    { ...persisted },
+    {
+      status: 'reserved',
+      lease_owner: null,
+      lease_until: deadlineMs,
+      activity_epoch: null,
+    },
+    `reservation fixture observes exactly one persisted pre-activity intent for ${runId}`,
+  );
   return runId;
 }
 
@@ -727,12 +761,7 @@ async function main(): Promise<void> {
     await waitForPort(CONTROL_PORT, 180_000, control);
     await publishRemote(peer.endpoint);
     const thread = await createSession();
-    const submitted = await api('POST', `/v1/durable/threads/${thread}/submit_background`, {
-      agent: AGENT,
-      text: THREAD_TEXT,
-    });
-    assert.equal(submitted.status, 200, JSON.stringify(submitted.body));
-    const runId = submitted.body.run_id as string;
+    const runId = await submitSessionUserRun(thread);
     // Managed Session creation intentionally pins an explicit empty resource
     // envelope. This Worker-recovery scenario has no resource plane, so strip
     // that unrelated fixture dimension directly from the disposable dispatch.
@@ -1015,7 +1044,7 @@ async function main(): Promise<void> {
     // E2 the Worker calls RecoverOrAdmit through the claimed Session port; E3
     // the same row is resolved to Pending with that exact epoch; E4 only its
     // later ordinary claim enters A2A execution and settles once. Constraints:
-    // the fixture modifies only status/deadline after canonical HTTP enqueue;
+    // the fixture invokes the real reservation command and then reads its row;
     // every claim, activity decision, resolution, execution, and settlement is
     // owned by the real Worker/Coordinator/Session/Dispatch paths.
     //
@@ -1034,8 +1063,6 @@ async function main(): Promise<void> {
       const admissionStart = proxy.runActivityAdmissions().length;
       const reservationRunId = await stageReservationCrashBoundary(
         storage,
-        'recovery-worker-b',
-        identityB,
         request,
         1,
       );
@@ -1071,8 +1098,6 @@ async function main(): Promise<void> {
       proxy.failNextRunActivityAdmission();
       const retryRunId = await stageReservationCrashBoundary(
         storage,
-        'recovery-worker-b',
-        identityB,
         retryRequest,
         1,
       );
