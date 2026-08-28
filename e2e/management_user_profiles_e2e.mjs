@@ -28,8 +28,6 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { USER_PROFILES_BETA, withScenarioServer, pass } from './harness.mjs';
 
-const BETAS = [USER_PROFILES_BETA];
-
 async function drain(pagePromise) {
   const items = [];
   for await (const item of pagePromise) items.push(item);
@@ -61,7 +59,6 @@ async function main() {
         name: 'Acme Corp',
         relationship: 'resold',
         metadata: { tier: 'gold' },
-        betas: BETAS,
       });
       assert.equal(profile.type, 'user_profile');
       assert.ok(profile.id.startsWith('uprof_'), `id: ${profile.id}`);
@@ -77,23 +74,22 @@ async function main() {
       const accessProfile = await client.beta.userProfiles.create({
         access_type: 'passthrough',
         name: 'Resold Company',
-        betas: BETAS,
       });
       assert.equal(accessProfile.access_type, 'passthrough');
       assert.equal(accessProfile.relationship, 'resold');
       const applicationProfile = await client.beta.userProfiles.update(accessProfile.id, {
-        access_type: 'application', betas: BETAS,
+        access_type: 'application',
       });
       assert.equal(applicationProfile.access_type, 'application');
       assert.equal(applicationProfile.relationship, 'external');
       const legacyProfile = await client.beta.userProfiles.update(accessProfile.id, {
-        relationship: 'resold', betas: BETAS,
+        relationship: 'resold',
       });
       assert.equal(legacyProfile.access_type, undefined);
       assert.equal(legacyProfile.relationship, 'resold');
       const conflictingAccess = await fetch(`${baseUrl}/v1/user_profiles/${accessProfile.id}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
         body: JSON.stringify({ access_type: 'application', relationship: 'resold' }),
       });
       assert.equal(conflictingAccess.status, 400);
@@ -101,34 +97,31 @@ async function main() {
         `${baseUrl}/v1/user_profiles/${accessProfile.id}`,
         {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+          headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
           body: JSON.stringify({ access_type: 'passthrough', relationship: null }),
         },
       );
       assert.equal(conflictingNullRelationship.status, 400);
-      const afterConflictingAccess = await client.beta.userProfiles.retrieve(accessProfile.id, {
-        betas: BETAS,
-      });
+      const afterConflictingAccess = await client.beta.userProfiles.retrieve(accessProfile.id);
       assert.equal(afterConflictingAccess.access_type, undefined);
       assert.equal(afterConflictingAccess.relationship, 'resold');
       for (const body of [{ access_type: null }, { relationship: null }]) {
         const rejectedCreateNull = await fetch(`${baseUrl}/v1/user_profiles`, {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+          headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
           body: JSON.stringify(body),
         });
         assert.equal(rejectedCreateNull.status, 400, JSON.stringify(body));
       }
       pass('beta.userProfiles access_type/relationship decision table');
 
-      const got = await client.beta.userProfiles.retrieve(profile.id, { betas: BETAS });
+      const got = await client.beta.userProfiles.retrieve(profile.id);
       assert.equal(got.id, profile.id);
       pass('beta.userProfiles.retrieve -> BetaUserProfile');
 
       const updated = await client.beta.userProfiles.update(profile.id, {
         name: 'Acme Inc',
         metadata: { tier: '', region: 'us' }, // empty string removes `tier`
-        betas: BETAS,
       });
       assert.equal(updated.name, 'Acme Inc');
       assert.equal(updated.metadata.region, 'us');
@@ -137,18 +130,17 @@ async function main() {
 
       const rejectedUpdate = await fetch(`${baseUrl}/v1/user_profiles/${profile.id}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json', 'anthropic-beta': BETAS[0] },
+        headers: { 'content-type': 'application/json', 'anthropic-beta': USER_PROFILES_BETA },
         body: JSON.stringify({ parallel_profile_config: true }),
       });
       assert.equal(rejectedUpdate.status, 400);
-      const afterRejectedUpdate = await client.beta.userProfiles.retrieve(profile.id, { betas: BETAS });
+      const afterRejectedUpdate = await client.beta.userProfiles.retrieve(profile.id);
       assert.equal(afterRejectedUpdate.name, 'Acme Inc', 'rejected patch has no state effect');
 
       const cleared = await client.beta.userProfiles.update(profile.id, {
         external_id: null,
         name: null,
         relationship: null,
-        betas: BETAS,
       });
       assert.equal(cleared.external_id, undefined);
       assert.equal(cleared.name, undefined);
@@ -156,11 +148,11 @@ async function main() {
       assert.deepEqual(cleared.trust_grants, {});
       pass('beta.userProfiles.update -> explicit null is distinct from omission');
 
-      const ids = (await drain(client.beta.userProfiles.list({ betas: BETAS }))).map((p) => p.id);
+      const ids = (await drain(client.beta.userProfiles.list())).map((p) => p.id);
       assert.ok(ids.includes(profile.id), 'list returns the profile');
       pass(`beta.userProfiles.list -> PageCursor<BetaUserProfile> (${ids.length})`);
 
-      const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id, { betas: BETAS });
+      const enroll = await client.beta.userProfiles.createEnrollmentURL(profile.id);
       assert.equal(enroll.type, 'enrollment_url');
       assert.ok(enroll.url.startsWith('/enroll/'), 'enrollment URL uses the public handoff route');
       assert.ok(

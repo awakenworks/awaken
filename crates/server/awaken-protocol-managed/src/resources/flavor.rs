@@ -1,33 +1,26 @@
-//! Endpoint-local beta/GA discrimination. The selector changes only the wire
-//! projection; both variants call the same application service and repository.
+//! Endpoint-local transport-surface discrimination. The selector changes only
+//! the wire projection; every surface calls the same application service and
+//! repository.
 
 use axum::http::HeaderMap;
 
 use crate::common::headers::{ManagedCapability, has_capability};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ManagedResourceApiFlavor {
-    Beta,
+pub(crate) enum ManagedResourceApiSurface {
+    /// A pre-GA SDK's explicit endpoint capability selects its legacy Beta DTO.
+    CapabilityBeta,
+    /// A post-GA SDK still called through `client.beta.*` and `beta=true`.
+    QueryBeta,
+    /// The top-level GA namespace, with no Beta selector or capability.
     Ga,
 }
 
-/// Contract selected by a generated SDK's transport-only `beta=true` query when
-/// its endpoint capability header is absent. Models keep their Beta projection;
-/// Files/Skills SDKs at and after their GA change point retain the Beta namespace
-/// and query while consuming the GA wire contract. Older Files/Skills SDKs still
-/// send the capability header and therefore retain their historical projection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum BetaQueryPolicy {
-    QuerySelectsBeta,
-    QuerySelectsGa,
-}
-
-pub(crate) fn resource_api_flavor(
+pub(crate) fn resource_api_surface(
     raw_query: Option<&str>,
     headers: &HeaderMap,
     capability: ManagedCapability,
-    query_policy: BetaQueryPolicy,
-) -> Result<ManagedResourceApiFlavor, String> {
+) -> Result<ManagedResourceApiSurface, String> {
     let query_beta = raw_query
         .map(|query| form_urlencoded::parse(query.as_bytes()))
         .into_iter()
@@ -40,12 +33,9 @@ pub(crate) fn resource_api_flavor(
     }
     let header_beta = has_capability(headers, capability);
     match (!query_beta.is_empty(), header_beta) {
-        (true, true) | (false, true) => Ok(ManagedResourceApiFlavor::Beta),
-        (true, false) => Ok(match query_policy {
-            BetaQueryPolicy::QuerySelectsBeta => ManagedResourceApiFlavor::Beta,
-            BetaQueryPolicy::QuerySelectsGa => ManagedResourceApiFlavor::Ga,
-        }),
-        (false, false) => Ok(ManagedResourceApiFlavor::Ga),
+        (true, true) | (false, true) => Ok(ManagedResourceApiSurface::CapabilityBeta),
+        (true, false) => Ok(ManagedResourceApiSurface::QueryBeta),
+        (false, false) => Ok(ManagedResourceApiSurface::Ga),
     }
 }
 
@@ -70,26 +60,20 @@ mod tests {
     use axum::http::HeaderValue;
 
     #[test]
-    fn selector_has_one_unambiguous_beta_and_ga_path() {
+    fn selector_preserves_the_three_generated_sdk_surfaces() {
         // Cause/effect graph: C1 beta query, C2 matching beta header, C3
-        // malformed/duplicate selector, C4 endpoint query policy. Effects: E1
-        // GA when neither selector is present; E2 beta for the historical
-        // header-bearing form or the Models query-only form; E3 GA for the
-        // Files/Skills change-point query-only form.
-        // Decision table: R1 !C1&&!C2->E1; R2 C1&&C2->E2; R3 !C1&&C2->E2;
-        // R4 C1&&!C2&&GA-policy->E3; R5 C1&&!C2&&Beta-policy->E2; R6 C3 rejects.
-        // The selected flavor changes only projection and never chooses storage
-        // or authorization.
+        // malformed/duplicate selector. Effects: E1 GA when neither selector
+        // is present; E2 CapabilityBeta for the historical header-bearing
+        // form; E3 QueryBeta for the post-GA Beta namespace. Family adapters
+        // decide whether QueryBeta shares the GA DTO or owns a hybrid DTO; the
+        // selector never chooses storage, authorization, or behavior by SDK
+        // version.
+        // Decision table: R1 !C1&&!C2->E1; R2 C2->E2; R3 C1&&!C2->E3;
+        // R4 C3 rejects.
         let mut headers = HeaderMap::new();
         assert_eq!(
-            resource_api_flavor(
-                None,
-                &headers,
-                ManagedCapability::Skills,
-                BetaQueryPolicy::QuerySelectsGa,
-            )
-            .unwrap(),
-            ManagedResourceApiFlavor::Ga,
+            resource_api_surface(None, &headers, ManagedCapability::Skills).unwrap(),
+            ManagedResourceApiSurface::Ga,
             "R1"
         );
         headers.insert(
@@ -97,63 +81,33 @@ mod tests {
             HeaderValue::from_static(ManagedCapability::Skills.beta()),
         );
         assert_eq!(
-            resource_api_flavor(
-                Some("beta=true"),
-                &headers,
-                ManagedCapability::Skills,
-                BetaQueryPolicy::QuerySelectsGa,
-            )
-            .unwrap(),
-            ManagedResourceApiFlavor::Beta,
+            resource_api_surface(Some("beta=true"), &headers, ManagedCapability::Skills).unwrap(),
+            ManagedResourceApiSurface::CapabilityBeta,
             "R2"
         );
         assert_eq!(
-            resource_api_flavor(
-                None,
-                &headers,
-                ManagedCapability::Skills,
-                BetaQueryPolicy::QuerySelectsGa,
-            )
-            .unwrap(),
-            ManagedResourceApiFlavor::Beta,
-            "R3"
+            resource_api_surface(None, &headers, ManagedCapability::Skills).unwrap(),
+            ManagedResourceApiSurface::CapabilityBeta,
+            "R2 header-only"
         );
         assert_eq!(
-            resource_api_flavor(
+            resource_api_surface(
                 Some("beta=true"),
                 &HeaderMap::new(),
                 ManagedCapability::Skills,
-                BetaQueryPolicy::QuerySelectsGa,
             )
             .unwrap(),
-            ManagedResourceApiFlavor::Ga,
-            "R6"
+            ManagedResourceApiSurface::QueryBeta,
+            "R3"
         );
         assert!(
-            resource_api_flavor(
-                Some("beta=false"),
-                &headers,
-                ManagedCapability::Skills,
-                BetaQueryPolicy::QuerySelectsGa,
-            )
-            .is_err(),
+            resource_api_surface(Some("beta=false"), &headers, ManagedCapability::Skills,).is_err(),
             "R4"
         );
         assert_eq!(
             without_beta_selector(Some("page=p1&beta=true&limit=5")),
             "page=p1&limit=5",
             "transport selector is not part of the public DTO"
-        );
-        assert_eq!(
-            resource_api_flavor(
-                Some("beta=true"),
-                &HeaderMap::new(),
-                ManagedCapability::ManagedAgents,
-                BetaQueryPolicy::QuerySelectsBeta,
-            )
-            .unwrap(),
-            ManagedResourceApiFlavor::Beta,
-            "R5 historical official Models SDK query selects Beta"
         );
     }
 }

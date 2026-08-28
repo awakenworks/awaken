@@ -7,11 +7,12 @@ use std::sync::Arc;
 use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
 use crate::resources::flavor::{
-    BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor, without_beta_selector,
+    ManagedResourceApiSurface, resource_api_surface, without_beta_selector,
 };
 use crate::types::file::{
-    BetaFileListParams, BetaFileMetadata, BetaFileScope, DeletedFile, DeletedFileObjectType,
-    FileExpirySeconds, FileListParams, FileMetadata, FileObjectType, FileScopeObjectType,
+    BetaFileCursorListParams, BetaFileCursorMetadata, BetaFileListParams, BetaFileMetadata,
+    BetaFileScope, DeletedFile, DeletedFileObjectType, FileExpirySeconds, FileListParams,
+    FileMetadata, FileObjectType, FileScopeObjectType,
 };
 use crate::types::{Page, PageCursor, PageQuery, paginate};
 use awaken_resource_contract::{FileApplicationService, FileRecord, ResourcePurgeError};
@@ -62,24 +63,41 @@ fn beta_metadata(record: &FileRecord) -> BetaFileMetadata {
     }
 }
 
+fn beta_cursor_metadata(record: &FileRecord) -> BetaFileCursorMetadata {
+    BetaFileCursorMetadata {
+        id: record.id.clone(),
+        created_at: record.created_at.clone(),
+        filename: record.filename.clone(),
+        mime_type: record.mime_type.clone(),
+        size_bytes: record.size_bytes,
+        kind: FileObjectType::File,
+        downloadable: Some(record.downloadable),
+        expires_at: record.expires_at.clone(),
+        scope: record.scope_id.as_ref().map(|id| BetaFileScope {
+            id: id.clone(),
+            kind: FileScopeObjectType::Session,
+        }),
+    }
+}
+
 async fn list_files(
     State(files): State<Arc<dyn FileApplicationService>>,
     RequiredWorkspaceScope(workspace): RequiredWorkspaceScope,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Files,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
+        Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
-    match flavor {
-        ManagedResourceApiFlavor::Beta => list_beta_files(files, &workspace, raw.as_deref()).await,
-        ManagedResourceApiFlavor::Ga => list_ga_files(files, &workspace, raw.as_deref()).await,
+    match surface {
+        ManagedResourceApiSurface::CapabilityBeta => {
+            list_beta_files(files, &workspace, raw.as_deref()).await
+        }
+        ManagedResourceApiSurface::QueryBeta => {
+            list_beta_cursor_files(files, &workspace, raw.as_deref()).await
+        }
+        ManagedResourceApiSurface::Ga => list_ga_files(files, &workspace, raw.as_deref()).await,
     }
 }
 
@@ -153,41 +171,94 @@ async fn list_ga_files(
         Ok(query) => query,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
-    let records = match files.list(workspace, None).await {
+    let page =
+        match cursor_file_page(files, workspace, None, query.page, query.limit, query.ids).await {
+            Ok(page) => page,
+            Err(response) => return response,
+        };
+    Json(PageCursor {
+        data: page.data.iter().map(ga_metadata).collect(),
+        next_page: page.next_page,
+    })
+    .into_response()
+}
+
+async fn list_beta_cursor_files(
+    files: Arc<dyn FileApplicationService>,
+    workspace: &str,
+    raw: Option<&str>,
+) -> axum::response::Response {
+    let query = match BetaFileCursorListParams::from_query(&without_beta_selector(raw)) {
+        Ok(query) => query,
+        Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value),
+    };
+    let page = match cursor_file_page(
+        files,
+        workspace,
+        query.scope_id.as_deref(),
+        query.page,
+        query.limit,
+        query.ids,
+    )
+    .await
+    {
+        Ok(page) => page,
+        Err(response) => return response,
+    };
+    Json(PageCursor {
+        data: page.data.iter().map(beta_cursor_metadata).collect(),
+        next_page: page.next_page,
+    })
+    .into_response()
+}
+
+async fn cursor_file_page(
+    files: Arc<dyn FileApplicationService>,
+    workspace: &str,
+    scope_id: Option<&str>,
+    page: Option<String>,
+    limit: Option<u16>,
+    ids: Option<Vec<String>>,
+) -> Result<PageCursor<FileRecord>, axum::response::Response> {
+    let records = match files.list(workspace, scope_id).await {
         Ok(records) => records,
         Err(error_value) => {
-            return error(StatusCode::INTERNAL_SERVER_ERROR, error_value.to_string());
+            return Err(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                error_value.to_string(),
+            ));
         }
     };
-    if let Some(ids) = query.ids {
-        if query.page.is_some() || query.limit.is_some() {
-            return error(
+    if let Some(ids) = ids {
+        if page.is_some() || limit.is_some() {
+            return Err(error(
                 StatusCode::BAD_REQUEST,
                 "ids[] is mutually exclusive with page and limit",
-            );
+            ));
         }
         let mut ids = ids;
         ids.sort();
         ids.dedup();
         if ids.len() > 100 {
-            return error(
+            return Err(error(
                 StatusCode::BAD_REQUEST,
                 "ids[] accepts at most 100 unique entries",
-            );
+            ));
         }
         let selected = records
-            .iter()
+            .into_iter()
             .filter(|record| ids.binary_search(&record.id).is_ok())
-            .map(ga_metadata)
             .collect();
-        return Json(PageCursor::single(selected)).into_response();
+        return Ok(PageCursor::single(selected));
     }
-    let page = PageQuery {
-        page: query.page,
-        limit: query.limit.map(usize::from),
-    };
-    let data = records.iter().map(ga_metadata).collect::<Vec<_>>();
-    Json(paginate(data, &page, |file| file.id.as_str())).into_response()
+    Ok(paginate(
+        records,
+        &PageQuery {
+            page,
+            limit: limit.map(usize::from),
+        },
+        |file| file.id.as_str(),
+    ))
 }
 
 fn valid_filename(filename: &str) -> bool {
@@ -205,20 +276,15 @@ async fn upload_file(
     RawQuery(raw): RawQuery,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Files,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
+        Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
     let mut upload: Option<(String, String, Vec<u8>)> = None;
     let mut expiry_seconds = None;
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() == Some("expires_in_seconds") {
-            if flavor == ManagedResourceApiFlavor::Beta {
+            if surface == ManagedResourceApiSurface::CapabilityBeta {
                 return error(
                     StatusCode::BAD_REQUEST,
                     "expires_in_seconds is only available in GA Files",
@@ -274,11 +340,14 @@ async fn upload_file(
         .create_uploaded_file_with_expiry(&workspace, filename, mime_type, &bytes, expires_at)
         .await
     {
-        Ok(record) => match flavor {
-            ManagedResourceApiFlavor::Beta => {
+        Ok(record) => match surface {
+            ManagedResourceApiSurface::CapabilityBeta => {
                 (StatusCode::OK, Json(beta_metadata(&record))).into_response()
             }
-            ManagedResourceApiFlavor::Ga => {
+            ManagedResourceApiSurface::QueryBeta => {
+                (StatusCode::OK, Json(beta_cursor_metadata(&record))).into_response()
+            }
+            ManagedResourceApiSurface::Ga => {
                 (StatusCode::OK, Json(ga_metadata(&record))).into_response()
             }
         },
@@ -294,21 +363,19 @@ async fn get_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Files,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
-        Ok(flavor) => flavor,
+    let surface = match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
+        Ok(surface) => surface,
         Err(message) => return error(StatusCode::BAD_REQUEST, message),
     };
     match files.get(&workspace, &id).await {
-        Ok(Some(record)) => match flavor {
-            ManagedResourceApiFlavor::Beta => {
+        Ok(Some(record)) => match surface {
+            ManagedResourceApiSurface::CapabilityBeta => {
                 (StatusCode::OK, Json(beta_metadata(&record))).into_response()
             }
-            ManagedResourceApiFlavor::Ga => {
+            ManagedResourceApiSurface::QueryBeta => {
+                (StatusCode::OK, Json(beta_cursor_metadata(&record))).into_response()
+            }
+            ManagedResourceApiSurface::Ga => {
                 (StatusCode::OK, Json(ga_metadata(&record))).into_response()
             }
         },
@@ -324,12 +391,7 @@ async fn delete_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    if let Err(message) = resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Files,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
+    if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         return error(StatusCode::BAD_REQUEST, message);
     }
     let now = std::time::SystemTime::now()
@@ -357,12 +419,7 @@ async fn download_file(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    if let Err(message) = resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::Files,
-        BetaQueryPolicy::QuerySelectsGa,
-    ) {
+    if let Err(message) = resource_api_surface(raw.as_deref(), &headers, ManagedCapability::Files) {
         return error(StatusCode::BAD_REQUEST, message);
     }
     match files.bytes(&workspace, &id).await {
@@ -397,8 +454,10 @@ mod tests {
     fn fixed_file_responses_are_owned_by_typed_dtos() {
         // Cause/effect decision table: F1 unscoped metadata -> `scope:null`;
         // F2 session-scoped metadata -> exact `{id,type}` scope; F3 deletion ->
-        // exact delete receipt. In every rule the DTO owns the fixed field set,
-        // so a manually assembled alternate envelope cannot drift into the API.
+        // exact delete receipt; F4 top-level GA -> expiry without scope; F5
+        // post-GA Beta -> both expiry and scope. In every rule the DTO owns the
+        // fixed field set, so a manually assembled alternate envelope cannot
+        // drift into the API.
         let plain = BetaFileMetadata {
             id: "file_1".into(),
             kind: FileObjectType::File,
@@ -452,5 +511,24 @@ mod tests {
         .unwrap();
         assert!(ga.get("scope").is_none(), "F4 GA omits beta scope");
         assert_eq!(ga["expires_at"], "2026-02-01T00:00:00Z", "F4");
+
+        let query_beta = serde_json::to_value(BetaFileCursorMetadata {
+            id: "file_4".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            filename: "notes.txt".into(),
+            mime_type: "text/plain".into(),
+            size_bytes: 5,
+            kind: FileObjectType::File,
+            downloadable: Some(true),
+            expires_at: Some("2026-02-01T00:00:00Z".into()),
+            scope: Some(BetaFileScope {
+                id: "session_1".into(),
+                kind: FileScopeObjectType::Session,
+            }),
+        })
+        .unwrap();
+        assert_eq!(query_beta.as_object().unwrap().len(), 9, "F5 exact fields");
+        assert_eq!(query_beta["scope"]["type"], "session", "F5");
+        assert_eq!(query_beta["expires_at"], "2026-02-01T00:00:00Z", "F5");
     }
 }

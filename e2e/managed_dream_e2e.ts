@@ -183,10 +183,10 @@ async function main() {
         }),
       });
       await waitForRawPreparedDream(baseURL, target.id);
-      const files = await drain(client.beta.files.list({ betas: MANAGED_BETAS }));
+      const files = await drain(client.beta.files.list());
       const transcript = files.find((file) => file.filename === `${sourceSession.id}.jsonl`);
       assert.ok(transcript, 'historical SDK setup publishes one generated transcript');
-      const download = await client.beta.files.download(transcript.id, { betas: MANAGED_BETAS });
+      const download = await client.beta.files.download(transcript.id);
       assert.ok(
         (await download.text()).includes('Remember that Project Atlas uses Rust.'),
         'historical official SDK decodes generated transcript bytes',
@@ -232,15 +232,13 @@ async function main() {
       instructions: '[awaken-test:hold-dream-for-cancellation]',
     });
     const preparedCancellationTarget = await waitForPreparedDream(client, cancellationTarget.id);
-    const transcriptFiles = await drain(client.beta.files.list({ betas: MANAGED_BETAS }));
+    const transcriptFiles = await drain(client.beta.files.list());
     const generatedTranscript = transcriptFiles.find(
       (file) => file.filename === `${sourceSession.id}.jsonl`,
     );
     assert.ok(generatedTranscript, 'P5 prepared Dream publishes its generated transcript File');
     assert.equal(generatedTranscript.downloadable, true, 'P5 generated transcript is downloadable');
-    const transcriptDownload = await client.beta.files.download(generatedTranscript.id, {
-      betas: MANAGED_BETAS,
-    });
+    const transcriptDownload = await client.beta.files.download(generatedTranscript.id);
     const transcriptBytes = await transcriptDownload.text();
     assert.ok(
       transcriptBytes.includes('Remember that Project Atlas uses Rust.'),
@@ -314,7 +312,7 @@ async function main() {
     assert.equal(auxiliary.metadata['awaken.session.origin'], 'dream', 'P4 origin is explicit');
     pass('P4 Dream work remains observable as an ordinary terminal Managed Session');
 
-    const files = await drain(client.beta.files.list({ betas: MANAGED_BETAS }));
+    const files = await drain(client.beta.files.list());
     const transcript = files.find((file) => file.filename === `${sourceSession.id}.jsonl`);
     assert.equal(transcript, undefined, 'P2 transient JSONL is purged after terminal cleanup');
     pass('P2 transcript Files follow the bounded Dream input lifecycle');

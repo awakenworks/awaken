@@ -31,13 +31,13 @@ const server = http.createServer(async (request, response) => {
   response.setHeader('content-type', 'application/json');
   if (request.url.includes('/certificates')) {
     response.end(JSON.stringify(request.method === 'GET' && !request.url.includes(certificate.id)
-      ? { data: [certificate], has_more: false, next_page: null }
+      ? { data: [certificate], next_page: null }
       : certificate));
   } else if (request.url.includes('reveal_token') || request.url.includes('rotate_token')) {
     response.setHeader('cache-control', 'no-store');
     response.end(JSON.stringify({ id: 'ttok_contract', type: 'tunnel_token', tunnel_token: 'secret' })); // awaken-allow: secret
   } else if (request.method === 'GET' && request.url.startsWith('/v1/tunnels?')) {
-    response.end(JSON.stringify({ data: [tunnel], has_more: false, next_page: null }));
+    response.end(JSON.stringify({ data: [tunnel], next_page: null }));
   } else {
     response.end(JSON.stringify(tunnel));
   }

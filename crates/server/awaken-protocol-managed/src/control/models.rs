@@ -19,7 +19,7 @@ use serde::Serialize;
 
 use crate::common::headers::ManagedCapability;
 use crate::common::scope::RequiredWorkspaceScope;
-use crate::resources::flavor::{BetaQueryPolicy, ManagedResourceApiFlavor, resource_api_flavor};
+use crate::resources::flavor::{ManagedResourceApiSurface, resource_api_surface};
 use crate::types::{ErrorResponse, Page};
 
 /// Deterministic release timestamp stamped on every model (the wire needs a valid
@@ -63,13 +63,13 @@ impl ModelEntry {
     /// model's published context window / output ceiling (or `null` when unknown);
     /// Beta alone includes an empty `allowed_fallback_models` list because
     /// fallbacks remain a gateway concern.
-    fn project(&self, flavor: ManagedResourceApiFlavor) -> ModelInfo<'_> {
+    fn project(&self, surface: ManagedResourceApiSurface) -> ModelInfo<'_> {
         ModelInfo {
             id: &self.id,
             kind: "model",
             display_name: &self.display_name,
             created_at: CREATED_AT,
-            allowed_fallback_models: (flavor == ManagedResourceApiFlavor::Beta).then(Vec::new),
+            allowed_fallback_models: (surface != ManagedResourceApiSurface::Ga).then(Vec::new),
             capabilities: None,
             max_input_tokens: self.context_window,
             max_tokens: self.max_output_tokens,
@@ -169,17 +169,13 @@ async fn list_models(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> axum::response::Response {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::ManagedAgents,
-        BetaQueryPolicy::QuerySelectsBeta,
-    ) {
-        Ok(flavor) => flavor,
-        Err(message) => {
-            return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
-        }
-    };
+    let surface =
+        match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::ManagedAgents) {
+            Ok(surface) => surface,
+            Err(message) => {
+                return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
+            }
+        };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -187,7 +183,7 @@ async fn list_models(
             "model directory unavailable",
         );
     };
-    let data: Vec<_> = models.iter().map(|model| model.project(flavor)).collect();
+    let data: Vec<_> = models.iter().map(|model| model.project(surface)).collect();
     let first_id = models.first().map(|m| m.id.clone());
     let last_id = models.last().map(|m| m.id.clone());
     (
@@ -206,17 +202,13 @@ async fn get_model(
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> impl IntoResponse {
-    let flavor = match resource_api_flavor(
-        raw.as_deref(),
-        &headers,
-        ManagedCapability::ManagedAgents,
-        BetaQueryPolicy::QuerySelectsBeta,
-    ) {
-        Ok(flavor) => flavor,
-        Err(message) => {
-            return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
-        }
-    };
+    let surface =
+        match resource_api_surface(raw.as_deref(), &headers, ManagedCapability::ManagedAgents) {
+            Ok(surface) => surface,
+            Err(message) => {
+                return model_error(StatusCode::BAD_REQUEST, "invalid_request_error", message);
+            }
+        };
     let Ok(models) = available.in_workspace(&workspace).await else {
         return model_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -225,7 +217,7 @@ async fn get_model(
         );
     };
     match models.iter().find(|m| m.id == id) {
-        Some(entry) => (StatusCode::OK, axum::Json(entry.project(flavor))).into_response(),
+        Some(entry) => (StatusCode::OK, axum::Json(entry.project(surface))).into_response(),
         None => model_error(
             StatusCode::NOT_FOUND,
             "not_found_error",
@@ -269,11 +261,12 @@ mod tests {
         let models = default_models();
         assert!(models.iter().any(|m| m.id == "claude-opus-4-8"));
         for m in &models {
-            for (rule, flavor, fields, fallback) in [
-                ("R1", ManagedResourceApiFlavor::Ga, 7, false),
-                ("R2", ManagedResourceApiFlavor::Beta, 8, true),
+            for (rule, surface, fields, fallback) in [
+                ("R1", ManagedResourceApiSurface::Ga, 7, false),
+                ("R2", ManagedResourceApiSurface::CapabilityBeta, 8, true),
+                ("R3", ManagedResourceApiSurface::QueryBeta, 8, true),
             ] {
-                let v = serde_json::to_value(m.project(flavor)).unwrap();
+                let v = serde_json::to_value(m.project(surface)).unwrap();
                 assert_eq!(v.as_object().unwrap().len(), fields, "{rule}");
                 assert_eq!(v["type"], "model", "{rule}");
                 assert_eq!(v["id"], m.id, "{rule}");
@@ -293,18 +286,24 @@ mod tests {
 
     #[tokio::test]
     async fn models_route_uses_the_canonical_header_flavor_without_splitting_inventory() {
-        // Causes: C1 no Managed beta header; C2 the canonical Managed beta
-        // header; C3 both requests address the same fixed inventory. Effects:
+        // Causes: C1 no Managed beta selector; C2 the canonical Managed beta
+        // header; C3 `beta=true` without a capability; C4 every request
+        // addresses the same fixed inventory. Effects:
         // E1 C1 returns GA ModelInfo without allowed_fallback_models; E2 C2
-        // returns BetaModelInfo with it; E3 both retain the same model id.
-        // Constraint: header selection changes projection only. Decision table:
-        // R1 C1+C3->E1+E3; R2 C2+C3->E2+E3.
+        // and C3 return BetaModelInfo with it; E3 all retain the same model id.
+        // Constraint: transport selection changes projection only. Decision
+        // table: R1 C1+C4->E1+E3; R2 C2+C4->E2+E3;
+        // R3 C3+C4->E2+E3.
         let app = models_router(Arc::new(vec![ModelEntry::new("model-a", "Model A")])).layer(
             axum::Extension(awaken_tenancy::WorkspaceScope("default".into())),
         );
-        for (rule, beta, fallback) in [("R1", false, false), ("R2", true, true)] {
-            let mut request = axum::http::Request::builder().uri("/v1/models");
-            if beta {
+        for (rule, uri, capability, fallback) in [
+            ("R1", "/v1/models", false, false),
+            ("R2", "/v1/models", true, true),
+            ("R3", "/v1/models?beta=true", false, true),
+        ] {
+            let mut request = axum::http::Request::builder().uri(uri);
+            if capability {
                 request = request.header("anthropic-beta", ManagedCapability::ManagedAgents.beta());
             }
             let response = app
