@@ -170,7 +170,7 @@ async fn run(rt: Runtime, input: RunAgentInput, agent_id: Option<String>) -> Res
 
     if processed.messages.is_empty() {
         // RunResume answers an awaiting tool decision — one committed step, framed whole.
-        match resume_step(&rt, &thread, &processed.tool_results).await {
+        match resume_step(&rt, &run_id, &thread, &processed.tool_results).await {
             Ok(outcome) => sse_response(encode_step(&outcome, &thread, &run_id)),
             Err(err) => sse_error(&thread, &run_id, err),
         }
@@ -207,8 +207,11 @@ fn stream_turn(
         let close_thread = thread.clone();
         // A handle kept out of the turn task so a client disconnect can cancel it.
         let rt_cancel = rt.clone();
-        let turn =
-            tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
+        let operation_id = run_id.clone();
+        let turn = tokio::spawn(async move {
+            rt.run_streaming(&operation_id, &thread, agent, messages, sink)
+                .await
+        });
         while let Some(event) = live_rx.recv().await {
             let wires = match &event {
                 AgentEvent::Delta(delta) => transcoder.delta(delta),
@@ -242,6 +245,7 @@ fn stream_turn(
 /// is no awaiting tool or no matching result.
 async fn resume_step(
     rt: &Runtime,
+    operation_id: &str,
     thread: &str,
     tool_results: &[ToolResultInput],
 ) -> Result<StepOutcome, RunApplicationError> {
@@ -259,7 +263,8 @@ async fn resume_step(
             ))
         })?;
     let resume = to_resume(&result.content, result.error.as_deref(), &pending);
-    rt.resume(thread, &pending.tool_use_id, resume).await
+    rt.resume(operation_id, thread, &pending.tool_use_id, resume)
+        .await
 }
 
 /// Map an AG-UI tool result to a neutral resume, matching the pending tool's

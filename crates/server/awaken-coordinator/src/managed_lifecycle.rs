@@ -87,13 +87,14 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use awaken_agent_contract::agent::content::ContentBlock;
+    use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
     use awaken_agent_contract::stream::event::Event as StreamEvent;
     use awaken_agent_contract::stream::sink::{Error as SinkError, Sink};
     use awaken_protocol_managed::test_support::CoordinatedRuntimeFake;
     use awaken_protocol_managed::{ManagedState, StateError, router};
     use awaken_session_contract::{
-        LifecycleFactDelivery, ManagedLifecycleFact, SessionExecutionState,
+        AdmitSessionRun, LifecycleFactDelivery, ManagedLifecycleFact, SessionExecutionState,
+        session_run_id,
     };
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -210,18 +211,56 @@ mod tests {
         // Bypass the Managed command handler as a background dispatch/report
         // completion does. The application commits the Session/outbox facts;
         // only delivery may wake the disposable wire projection.
-        let outcome = state
+        let operation_id = "lifecycle-test-background-run";
+        state
             .session_application()
-            .run_session_message(
-                "coder",
-                &session.id,
-                vec![ContentBlock::text("research in the background")],
-                None,
-                Arc::new(NoopSink),
+            .run_admitted_session_for_owner(
+                "default",
+                AdmitSessionRun {
+                    session_id: session.id.clone(),
+                    agent_id: "coder".into(),
+                    operation_id: operation_id.into(),
+                    run_id: session_run_id(&session.id, operation_id),
+                    messages: vec![Message::text(
+                        MessageId::session_event_input(&session.id, operation_id),
+                        Role::User,
+                        "research in the background",
+                    )],
+                    data_subject_id: None,
+                    traceparent: None,
+                },
+                Some(Arc::new(NoopSink)),
             )
             .await
             .expect("L1 background application completion");
-        assert_eq!(outcome.session.execution, SessionExecutionState::Idle);
+        // The integration fake commits Runtime truth but has no Dispatch Worker.
+        // Apply the same exact-epoch settlement that the production
+        // DispatchSettlementObserver performs before queue settlement; this is
+        // test transport plumbing, not a second application completion path.
+        let active_epochs = state
+            .session_application()
+            .session(&session.id)
+            .await
+            .expect("L1 committed active Session")
+            .active_activity_epochs;
+        assert_eq!(active_epochs.len(), 1, "L1 has one admitted Run activity");
+        state
+            .session_application()
+            .settle_activity(
+                &session.id,
+                *active_epochs.iter().next().expect("L1 activity epoch"),
+            )
+            .await
+            .expect("L1 production-equivalent settlement observation");
+        assert_eq!(
+            state
+                .session_application()
+                .session(&session.id)
+                .await
+                .expect("L1 settled Session")
+                .execution,
+            SessionExecutionState::Idle
+        );
 
         let bytes = tokio::time::timeout(Duration::from_secs(5), response.into_body().collect())
             .await

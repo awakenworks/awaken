@@ -177,22 +177,31 @@ struct RecordingSessionWork {
 impl awaken_session_contract::work_queue::SessionWorkLeaseAuthority for RecordingSessionWork {
     async fn acquire_session_work(
         &self,
-        _session_id: &str,
-        _worker_owner: &str,
-        _now_ms: u64,
+        session_id: &str,
+        worker_owner: &str,
+        now_ms: u64,
         _acquisition: awaken_session_contract::work_queue::SessionWorkAcquisition,
     ) -> Result<
         awaken_session_contract::work_queue::SessionWorkOwnership,
         awaken_session_contract::work_queue::WorkQueueError,
     > {
-        Ok(awaken_session_contract::work_queue::SessionWorkOwnership::Unowned)
+        Ok(
+            awaken_session_contract::work_queue::SessionWorkOwnership::Leased(
+                awaken_session_contract::work_queue::SessionWorkLease {
+                    work_id: format!("work-{session_id}"),
+                    environment_id: "env".into(),
+                    session_id: session_id.into(),
+                    owner: worker_owner.into(),
+                    epoch: 1,
+                    expires_at_unix_ms: now_ms + 60_000,
+                },
+            ),
+        )
     }
 
     async fn release_session_work(
         &self,
-        _session_id: &str,
-        _worker_owner: &str,
-        _now_ms: u64,
+        _lease: &awaken_session_contract::work_queue::SessionWorkLease,
     ) -> Result<bool, awaken_session_contract::work_queue::WorkQueueError> {
         self.releases.fetch_add(1, Ordering::SeqCst);
         Ok(true)

@@ -45,6 +45,7 @@ pub mod awaken_protocol_a2a::request
 pub struct awaken_protocol_a2a::request::Processed
 pub awaken_protocol_a2a::request::Processed::agent_id: core::option::Option<alloc::string::String>
 pub awaken_protocol_a2a::request::Processed::message: awaken_agent_contract::agent::message::Message
+pub awaken_protocol_a2a::request::Processed::operation_id: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::task_id: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::text: alloc::string::String
 pub awaken_protocol_a2a::request::Processed::thread_id: alloc::string::String

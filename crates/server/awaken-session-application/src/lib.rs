@@ -64,7 +64,7 @@ include!("application.rs");
 mod activity;
 mod budget;
 mod live_inbox;
-pub use activity::{SessionActivityError, SessionMessageOutcome};
+pub use activity::SessionActivityError;
 pub use budget::BudgetSettlementOutcome;
 mod continuation;
 mod coordination;
@@ -91,8 +91,8 @@ pub use resource_reconciliation::{
     SessionResourcePurgeGuard,
 };
 pub use run_admission::{
-    AdmittedRunApplication, CreateProfiledSessionCommand, ProfiledSessionRepositoryInput,
-    RecoveredSessionProjection, SessionProjectionRecoveryError, SessionRunAdmission,
+    CreateProfiledSessionCommand, ProfiledSessionRepositoryInput, RecoveredSessionProjection,
+    SessionProjectionRecoveryError, SessionRunApplication,
 };
 pub use runtime_commands::{
     ConfiguredSessionRepository, SessionRepositoryOwner, SessionRepositoryResourceInput,

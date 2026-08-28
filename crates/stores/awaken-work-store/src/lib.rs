@@ -25,33 +25,6 @@ fn storage(error: impl std::fmt::Display) -> WorkQueueError {
     WorkQueueError::Storage(error.to_string())
 }
 
-fn apply_metadata_patch(
-    metadata: &mut BTreeMap<String, String>,
-    patch: BTreeMap<String, Option<String>>,
-) {
-    for (key, value) in patch {
-        match value {
-            Some(value) => {
-                metadata.insert(key, value);
-            }
-            None => {
-                metadata.remove(&key);
-            }
-        }
-    }
-}
-
-fn lease_epoch(current: i64, advance: bool) -> Result<(i64, u64), WorkQueueError> {
-    let current = u64::try_from(current).map_err(storage)?;
-    let next = if advance {
-        current
-            .checked_add(1)
-            .ok_or_else(|| storage("work lease epoch exhausted"))?
-    } else {
-        current
-    };
-    Ok((i64::try_from(next).map_err(storage)?, next))
-}
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use sqlx::Row;
 use sqlx::postgres::{PgPool, PgRow};
@@ -61,6 +34,8 @@ use sqlx::postgres::{PgPool, PgRow};
 // product build.
 mod lease_book;
 pub use lease_book::{LEASE_TTL_MS, LeaseBook, POLLER_WINDOW_MS};
+mod mutation;
+use mutation::{apply_metadata_patch, lease_epoch};
 #[cfg(any(test, feature = "test-support"))]
 mod inmem;
 #[cfg(any(test, feature = "test-support"))]
@@ -463,6 +438,40 @@ impl WorkQueue for SqliteWorkQueue {
         let item = Self::owned(&tx, env_id, &work_id)?;
         tx.commit().map_err(storage)?;
         Ok(item)
+    }
+
+    async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+        let epoch = i64::try_from(lease.epoch).map_err(storage)?;
+        let guard = self.conn.lock().map_err(storage)?;
+        let changed = guard
+            .execute(
+                "UPDATE work_queue_item SET stop_requested_at = ?1, stopped_at = ?1, \
+                 state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+                 lease_refreshed_ms = NULL, session_token_sha256 = NULL \
+                 WHERE work_id = ?2 AND environment_id = ?3 AND data_type = 'session' \
+                 AND data_id = ?4 AND state = 'active' AND lease_owner = ?5 AND lease_epoch = ?6",
+                params![
+                    OBJECT_AT,
+                    lease.work_id,
+                    lease.environment_id,
+                    lease.session_id,
+                    lease.owner,
+                    epoch,
+                ],
+            )
+            .map_err(storage)?;
+        if changed == 1 {
+            return Ok(true);
+        }
+        guard
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM work_queue_item WHERE work_id = ?1 \
+                 AND environment_id = ?2 AND data_type = 'session' AND data_id = ?3 \
+                 AND state = 'stopped' AND lease_epoch = ?4)",
+                params![lease.work_id, lease.environment_id, lease.session_id, epoch,],
+                |row| row.get(0),
+            )
+            .map_err(storage)
     }
 
     async fn acquire_session(
@@ -1037,6 +1046,42 @@ impl WorkQueue for PostgresWorkQueue {
         .await
         .map_err(storage)?;
         self.fetch_owned(env_id, &work_id).await
+    }
+
+    async fn release_session(&self, lease: &SessionWorkLease) -> Result<bool, WorkQueueError> {
+        let epoch = i64::try_from(lease.epoch).map_err(storage)?;
+        let changed = sqlx::query(
+            "UPDATE work_queue_item SET stop_requested_at = $1, stopped_at = $1, \
+             state = 'stopped', lease_owner = NULL, lease_expires_ms = NULL, \
+             lease_refreshed_ms = NULL, session_token_sha256 = NULL \
+             WHERE work_id = $2 AND environment_id = $3 AND data_type = 'session' \
+             AND data_id = $4 AND state = 'active' AND lease_owner = $5 AND lease_epoch = $6",
+        )
+        .bind(OBJECT_AT)
+        .bind(&lease.work_id)
+        .bind(&lease.environment_id)
+        .bind(&lease.session_id)
+        .bind(&lease.owner)
+        .bind(epoch)
+        .execute(&self.pool)
+        .await
+        .map_err(storage)?
+        .rows_affected();
+        if changed == 1 {
+            return Ok(true);
+        }
+        sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM work_queue_item WHERE work_id = $1 \
+             AND environment_id = $2 AND data_type = 'session' AND data_id = $3 \
+             AND state = 'stopped' AND lease_epoch = $4)",
+        )
+        .bind(&lease.work_id)
+        .bind(&lease.environment_id)
+        .bind(&lease.session_id)
+        .bind(epoch)
+        .fetch_one(&self.pool)
+        .await
+        .map_err(storage)
     }
 
     async fn acquire_session(

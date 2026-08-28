@@ -32,6 +32,7 @@ struct AwaitingRuntime {
 impl RunApplication for AwaitingRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -42,6 +43,7 @@ impl RunApplication for AwaitingRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         resume: RunResume,
@@ -237,6 +239,7 @@ struct ClientToolRuntime {
 impl RunApplication for ClientToolRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -246,6 +249,7 @@ impl RunApplication for ClientToolRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         resume: RunResume,

@@ -5,12 +5,14 @@ use super::types::VerifiedStepProjection;
 use super::*;
 
 mod projection;
+mod step_verification;
 
 pub(super) use projection::session_thread_reply_result;
 use projection::{
     StepCommitExpectation, client_result_for_ticket, delegation_registry_from_snapshot,
     project_delegated_runs, recovery_ticket,
 };
+use step_verification::{message_prefix_before_exact_inputs, verify_committed_step};
 
 impl SharedHost {
     pub(crate) async fn session_budget_resume_tickets(
@@ -1313,7 +1315,7 @@ impl SharedHost {
     /// Reuse the canonical claim-recovery snapshot as the exact thread read for
     /// foreground projection. PostgreSQL implements this from one repeatable-read
     /// transaction; local stores expose the same facts without a parallel model.
-    async fn authoritative_step_snapshot(
+    pub(super) async fn authoritative_step_snapshot(
         &self,
         ctx: &SessionCtx,
         run_id: &RunId,
@@ -1322,6 +1324,59 @@ impl SharedHost {
             .recovery_snapshot(&ctx.thread_id, run_id)
             .await
             .map_err(|error| HostError::internal(error.to_string()))
+    }
+
+    /// Project an admitted Session Run from its exact committed input identities.
+    /// This supports first delivery and response-loss replay without trusting a
+    /// request-local transcript length or creating another committed reader.
+    pub(super) async fn project_settled_session_run(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        run_id: RunId,
+        state: RunState,
+        input_message_ids: &[String],
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let committed = self.authoritative_step_snapshot(ctx, &run_id).await?;
+        let messages_before = message_prefix_before_exact_inputs(&committed, input_message_ids)?;
+        let mut local = ctx.state.lock().await;
+        self.finish_step(
+            ctx,
+            &mut local,
+            run_id,
+            state,
+            StepCommitExpectation {
+                messages_before,
+                input_ids: input_message_ids,
+            },
+            &ctx.thread_id.0,
+        )
+        .await
+    }
+
+    /// Project the committed suffix after one exact Session-owned resume. The
+    /// caller reads `messages_before` before publishing the durable Inbox item;
+    /// the resulting proof is otherwise identical to the canonical Host resume
+    /// projection.
+    pub(super) async fn project_settled_session_resume(
+        &self,
+        ctx: &Arc<SessionCtx>,
+        run_id: RunId,
+        state: RunState,
+        messages_before: usize,
+    ) -> Result<CommittedStepReceipt, HostError> {
+        let mut local = ctx.state.lock().await;
+        self.finish_step(
+            ctx,
+            &mut local,
+            run_id,
+            state,
+            StepCommitExpectation {
+                messages_before,
+                input_ids: &[],
+            },
+            &ctx.thread_id.0,
+        )
+        .await
     }
 
     /// Join the parent-thread delegation relationship with the child thread's
@@ -1444,108 +1499,6 @@ impl SharedHost {
             &committed,
         ))
     }
-
-    /// Fail closed before resuming: the asserted `tool_use_id` must name the
-    /// run's pending tool, and that tool's binding must match the inbound resume
-    /// — a client result may only answer a client-executed tool, a confirmation
-    /// only a built-in one.
-    pub(super) fn check_pending(
-        &self,
-        ticket: &ResumeTicket,
-        tool_use_id: &str,
-        want_client: bool,
-    ) -> Result<(), HostError> {
-        let pending = Pending::from_resume_ticket(ticket)
-            .ok_or_else(|| HostError::internal("awaiting run has no pending tool"))?;
-        if pending.tool_use_id != tool_use_id {
-            return Err(HostError::bad_request(format!(
-                "tool_use_id {tool_use_id:?} does not match the pending tool"
-            )));
-        }
-        if pending.client_executed != want_client {
-            let (got, expected) = if want_client {
-                ("built-in", "a confirmation")
-            } else {
-                ("client-executed", "a client tool result")
-            };
-            return Err(HostError::bad_request(format!(
-                "pending tool is {got}; answer it with {expected}"
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// Convert one consistent committed prefix into the only step result allowed to
-/// cross the Host boundary. Executor completion is merely a claim until this
-/// proof binds the exact Thread, Run, input identities, and lifecycle state.
-fn verify_committed_step(
-    committed: &RunRecoverySnapshot,
-    thread_id: &ThreadId,
-    run_id: &RunId,
-    returned_state: &RunState,
-    before: usize,
-    expected_input_ids: &[String],
-) -> Result<Vec<Message>, HostError> {
-    if &committed.thread_id != thread_id || &committed.claimed_run_id != run_id {
-        return Err(HostError::internal(
-            "committed step proof names another Thread or Run",
-        ));
-    }
-    if committed.latest_run_id.as_ref() != Some(run_id) {
-        return Err(HostError::internal(
-            "committed step proof is not the latest Run on its Thread",
-        ));
-    }
-    let committed_state = committed
-        .runs
-        .iter()
-        .find(|run| &run.id == run_id && &run.thread_id == thread_id)
-        .map(|run| &run.state)
-        .ok_or_else(|| HostError::internal("committed step proof has no Run record"))?;
-    if committed_state != returned_state {
-        return Err(HostError::internal(
-            "executor result does not match the committed Run state",
-        ));
-    }
-    if matches!(returned_state, RunState::Running) {
-        return Err(HostError::internal("committed step proof is not settled"));
-    }
-    if committed.messages.len() < before {
-        return Err(HostError::internal(
-            "committed Thread message prefix moved backwards",
-        ));
-    }
-    if committed.thread_version == 0 || committed.next_commit_ordinal == 0 {
-        return Err(HostError::internal(
-            "committed step proof has no durable commit identity",
-        ));
-    }
-    for expected in expected_input_ids {
-        if !committed
-            .messages
-            .iter()
-            .any(|message| message.id.0 == *expected)
-        {
-            return Err(HostError::internal(format!(
-                "committed step proof is missing input message `{expected}`"
-            )));
-        }
-    }
-    let suffix = committed.messages[before..].to_vec();
-    // Natural completion must be evidenced by committed assistant output. An
-    // error completion already carries its typed explanation in the sole
-    // committed RunState and is projected from that authority; requiring a
-    // duplicate assistant transcript entry would hide the real provider/runtime
-    // failure behind a proof error.
-    if matches!(returned_state, RunState::Ended(EndCause::NaturalEnd))
-        && !suffix.iter().any(|message| message.role == Role::Assistant)
-    {
-        return Err(HostError::internal(
-            "committed natural terminal step has no assistant output",
-        ));
-    }
-    Ok(suffix)
 }
 
 #[cfg(test)]
@@ -1706,6 +1659,44 @@ mod committed_step_proof_tests {
             verify_committed_step(&committed_error, &thread, &run, &error_state, 0, &expected,)
                 .is_ok(),
             "P11/E1 committed typed error is its own explanation"
+        );
+    }
+
+    #[test]
+    fn session_run_input_prefix_follows_the_replay_decision_table() {
+        // Cause/effect graph: C1 expected input ids are non-empty; C2 every id
+        // occurs exactly once; C3 positions are contiguous and ordered. Effects:
+        // E1 return the exact preceding prefix for first delivery/replay; E2 fail
+        // closed before projecting a Step. Decision rules: R1=C1+C2+C3=>E1;
+        // R2=!C1|!C2|!C3=>E2. This prevents a response retry from using the
+        // caller's current history length as a second truth.
+        let committed = snapshot();
+        assert_eq!(
+            message_prefix_before_exact_inputs(&committed, &["input-proof".into()]).expect("R1/E1"),
+            0,
+            "R1/E1"
+        );
+        assert!(
+            message_prefix_before_exact_inputs(&committed, &[]).is_err(),
+            "R2/E2 empty"
+        );
+        assert!(
+            message_prefix_before_exact_inputs(&committed, &["missing".into()]).is_err(),
+            "R2/E2 missing"
+        );
+
+        let mut non_contiguous = committed.clone();
+        non_contiguous.messages.insert(
+            1,
+            Message::text(MessageId("gap".into()), Role::System, "gap"),
+        );
+        assert!(
+            message_prefix_before_exact_inputs(
+                &non_contiguous,
+                &["input-proof".into(), "output-proof".into()]
+            )
+            .is_err(),
+            "R2/E2 non-contiguous"
         );
     }
 }

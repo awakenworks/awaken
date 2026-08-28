@@ -28,6 +28,7 @@ struct PersistedRuntime {
 impl RunApplication for PersistedRuntime {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -37,6 +38,7 @@ impl RunApplication for PersistedRuntime {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

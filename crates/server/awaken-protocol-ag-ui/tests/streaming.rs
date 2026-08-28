@@ -27,6 +27,7 @@ struct StreamingMock;
 impl RunApplication for StreamingMock {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -36,6 +37,7 @@ impl RunApplication for StreamingMock {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -76,6 +78,7 @@ impl RunApplication for StreamingMock {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -179,6 +182,7 @@ struct PrefixMock {
 impl RunApplication for PrefixMock {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -188,6 +192,7 @@ impl RunApplication for PrefixMock {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -206,6 +211,7 @@ impl RunApplication for PrefixMock {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,
@@ -347,6 +353,7 @@ struct HangupProbe {
 impl RunApplication for HangupProbe {
     async fn run(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -356,6 +363,7 @@ impl RunApplication for HangupProbe {
 
     async fn run_streaming(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _agent: Option<String>,
         _messages: Vec<Message>,
@@ -384,6 +392,7 @@ impl RunApplication for HangupProbe {
 
     async fn resume(
         &self,
+        _operation_id: &str,
         _thread: &str,
         _tool_use_id: &str,
         _resume: RunResume,

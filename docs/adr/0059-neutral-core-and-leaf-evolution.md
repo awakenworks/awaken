@@ -157,7 +157,7 @@ Verified state after the 2026-08-04 cut:
   Its collaborators are private and reached through explicit application operations/ports;
   `awaken-protocol-managed::ManagedState` has no `Deref` compatibility path and owns only
   wire validation/lowering, projections, event ids, and SSE channels. AI SDK, AG-UI, and A2A
-  share one `AdmittedRunApplication`: it invokes `SessionApplication` admission and the
+  share one `SessionRunApplication`: it invokes durable `SessionApplication` admission and the
   existing durable activity fence around each effect-capable neutral `RunApplication`
   operation, while control/read operations address committed Thread truth directly.
   Coordinator only assembles these ports; Runtime Host executes the admitted Run and never

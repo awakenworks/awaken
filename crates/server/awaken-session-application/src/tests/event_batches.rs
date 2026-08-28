@@ -8,24 +8,24 @@ use awaken_agent_contract::agent::{
     thread::Id as ThreadId,
 };
 use awaken_session_contract::{
-    CoordinatedThreadLink, CoordinatedThreadTarget, OutcomeDrive, OutcomeReport,
-    SessionEventCommand, SessionEventInput, SessionEventInterrupt, SessionEventToolReply,
-    SessionEventToolReplyKind, SessionInitialEventPlan, SessionOutcomeRubric, SessionRuntime,
-    SessionThreadTarget, SessionThreadToolReplyCommand, SessionThreadToolReplyDelivery,
-    SessionThreadToolReplyFence, SessionUserRunActivation, SessionUserRunAdmission,
-    SessionUserRunCommand, SessionUserRunDelivery, SessionUserRunReservation,
-    SessionUserRunSystemInput, StepOutcome, ToolPermissionDecision,
+    AdmitSessionRun, AdmittedSessionRun, CoordinatedThreadLink, CoordinatedThreadTarget,
+    OutcomeDrive, OutcomeReport, SessionEventCommand, SessionEventInput, SessionEventInterrupt,
+    SessionEventToolReply, SessionEventToolReplyKind, SessionInitialEventPlan,
+    SessionOutcomeRubric, SessionRunActivation, SessionRunDelivery, SessionRunReservation,
+    SessionRuntime, SessionThreadTarget, SessionThreadToolReplyCommand,
+    SessionThreadToolReplyDelivery, SessionThreadToolReplyFence, SessionUserRunCommand,
+    StepOutcome, ToolPermissionDecision,
 };
 
 use super::*;
 
 #[derive(Default)]
 struct EventBatchRuntime {
-    reserved: Mutex<BTreeMap<String, SessionUserRunCommand>>,
+    reserved: Mutex<BTreeMap<String, AdmitSessionRun>>,
     projected_resources: Mutex<Option<(u64, awaken_session_contract::ResolvedSessionResources)>>,
     reserved_resource_generations:
         Mutex<BTreeMap<String, (u64, awaken_session_contract::ResolvedSessionResources)>>,
-    reservation_outcomes: Mutex<VecDeque<SessionUserRunReservation>>,
+    reservation_outcomes: Mutex<VecDeque<SessionRunReservation>>,
     fail_reservation: AtomicBool,
     fail_activation_once: AtomicBool,
     activated: Mutex<BTreeMap<String, u64>>,
@@ -120,10 +120,10 @@ impl SessionRuntime for EventBatchRuntime {
         Ok(())
     }
 
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: SessionUserRunCommand,
-    ) -> Result<SessionUserRunReservation, RunError> {
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
         self.trace
             .lock()
             .unwrap()
@@ -141,15 +141,13 @@ impl SessionRuntime for EventBatchRuntime {
             .get(&command.run_id.0)
             .copied()
         {
-            return Ok(SessionUserRunReservation::AlreadyActivated {
+            return Ok(SessionRunReservation::AlreadyActivated {
                 session_activity_epoch: epoch,
             });
         }
         let mut reserved = self.reserved.lock().unwrap();
         match reserved.get(&command.run_id.0) {
-            Some(existing) if existing == &command => {
-                Ok(SessionUserRunReservation::AlreadyReserved)
-            }
+            Some(existing) if existing == &command => Ok(SessionRunReservation::AlreadyReserved),
             Some(_) => Err(RunError::bad_request(
                 "scripted Run id was reused with different input",
             )),
@@ -161,15 +159,15 @@ impl SessionRuntime for EventBatchRuntime {
                         .insert(command.run_id.0.clone(), generation);
                 }
                 reserved.insert(command.run_id.0.clone(), command);
-                Ok(SessionUserRunReservation::Reserved)
+                Ok(SessionRunReservation::Reserved)
             }
         }
     }
 
-    async fn activate_session_user_run(
+    async fn activate_session_run(
         &self,
-        delivery: SessionUserRunDelivery,
-    ) -> Result<SessionUserRunActivation, RunError> {
+        delivery: SessionRunDelivery,
+    ) -> Result<SessionRunActivation, RunError> {
         self.trace
             .lock()
             .unwrap()
@@ -183,7 +181,7 @@ impl SessionRuntime for EventBatchRuntime {
             .unwrap()
             .insert(delivery.run_id.0.clone(), delivery.session_activity_epoch);
         if let Some(session_activity_epoch) = prior {
-            return Ok(SessionUserRunActivation::AlreadyActivated {
+            return Ok(SessionRunActivation::AlreadyActivated {
                 session_activity_epoch,
             });
         }
@@ -199,29 +197,17 @@ impl SessionRuntime for EventBatchRuntime {
             .get(&delivery.run_id.0)
             .cloned()
             .ok_or_else(|| RunError::internal("activated Run has no reservation"))?;
-        let mut input = Vec::new();
-        if let Some(system) = command.accompanying_system {
-            input.push(Message::new(
-                MessageId::session_system(&delivery.session_id, &system.operation_id),
-                Role::System,
-                system.content,
-            ));
-        }
-        input.push(Message::new(
-            MessageId::session_event_input(&delivery.session_id, &command.operation_id),
-            Role::User,
-            command.content,
-        ));
+        let input = command.messages;
         let mut committed = self.committed.lock().unwrap();
         for message in input {
             if !committed.iter().any(|existing| existing.id == message.id) {
                 committed.push(message);
             }
         }
-        Ok(SessionUserRunActivation::Activated)
+        Ok(SessionRunActivation::Activated)
     }
 
-    async fn session_user_run_state(
+    async fn session_run_state(
         &self,
         _session_id: &str,
         run_id: &RunId,
@@ -1755,13 +1741,15 @@ async fn user_system_batch_case() {
         .get(&run_ids[1].0)
         .cloned()
         .expect("R2/E2 target reservation");
+    let expected_system = Message::new(
+        MessageId::session_system("initial-user-system", &system_operation),
+        Role::System,
+        system_content,
+    );
     assert_eq!(
-        target_command.accompanying_system,
-        Some(SessionUserRunSystemInput {
-            operation_id: system_operation.clone(),
-            content: system_content,
-        }),
-        "R2/E2 one complete reservation"
+        target_command.messages.first(),
+        Some(&expected_system),
+        "R2/E2 one complete neutral reservation"
     );
     let trace = runtime.trace.lock().unwrap().clone();
     let target_reservation = trace
@@ -1889,7 +1877,7 @@ async fn fresh_user_reservation_snapshots_the_recovered_resource_generation() {
         .expect("G1 fresh admission");
 
     assert!(
-        matches!(admission, SessionUserRunAdmission::Reserved(_)),
+        matches!(admission, AdmittedSessionRun::Reserved(_)),
         "G1/E2"
     );
     assert_eq!(
@@ -1958,10 +1946,22 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         .expect("C1 canonical projection");
     assert_eq!(
         runtime
-            .reserve_session_user_run(command.clone())
+            .reserve_session_run(AdmitSessionRun {
+                session_id: command.session_id.clone(),
+                agent_id: command.agent_id.clone(),
+                operation_id: command.operation_id.clone(),
+                run_id: command.run_id.clone(),
+                messages: vec![Message::new(
+                    MessageId::session_event_input(&command.session_id, &command.operation_id),
+                    Role::User,
+                    command.content.clone(),
+                )],
+                data_subject_id: command.data_subject_id.clone(),
+                traceparent: command.traceparent.clone(),
+            })
             .await
             .expect("C1 reservation"),
-        SessionUserRunReservation::Reserved,
+        SessionRunReservation::Reserved,
         "C1/E1"
     );
     let operation = awaken_session_contract::session_run_activity_operation_id(
@@ -1986,7 +1986,7 @@ async fn reserved_run_without_activity_recovers_through_the_same_operation_recei
         .expect("C2/E2 delivery")
         .session_activity_epoch;
     assert!(
-        matches!(repaired, SessionUserRunAdmission::AlreadyReserved(_)),
+        matches!(repaired, AdmittedSessionRun::AlreadyReserved(_)),
         "C2/E2"
     );
     assert_eq!(runtime.reserved.lock().unwrap().len(), 1, "C2/E3");
@@ -2098,7 +2098,7 @@ async fn exact_activity_receipt_precedes_fresh_budget_policy() {
         .await
         .expect("P2 exact response-loss replay");
     assert!(
-        matches!(replay, SessionUserRunAdmission::AlreadyReserved(_)),
+        matches!(replay, AdmittedSessionRun::AlreadyReserved(_)),
         "P2/E2"
     );
     assert_eq!(
@@ -2189,14 +2189,14 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         .delivery()
         .expect("A1/E1 delivery")
         .session_activity_epoch;
-    assert!(matches!(first, SessionUserRunAdmission::Reserved(_)), "A1");
+    assert!(matches!(first, AdmittedSessionRun::Reserved(_)), "A1");
 
     let replay = app
         .admit_session_user_run(command("op-a", "run-a"))
         .await
         .expect("A2");
     assert!(
-        matches!(replay, SessionUserRunAdmission::AlreadyReserved(_)),
+        matches!(replay, AdmittedSessionRun::AlreadyReserved(_)),
         "A2"
     );
     assert_eq!(
@@ -2209,11 +2209,11 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     );
 
     runtime.reservation_outcomes.lock().unwrap().extend([
-        SessionUserRunReservation::AlreadyActivated {
+        SessionRunReservation::AlreadyActivated {
             session_activity_epoch: 71,
         },
-        SessionUserRunReservation::RecoveryClaimed,
-        SessionUserRunReservation::Completed,
+        SessionRunReservation::RecoveryClaimed,
+        SessionRunReservation::Completed,
     ]);
     let before = repository.get("user-run-admission").await.unwrap().revision;
     let activated = app
@@ -2221,7 +2221,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
         .await
         .expect("A3");
     assert!(
-        matches!(activated, SessionUserRunAdmission::AlreadyActivated(_)),
+        matches!(activated, AdmittedSessionRun::AlreadyActivated(_)),
         "A3"
     );
     assert_eq!(
@@ -2246,7 +2246,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     assert!(
         matches!(
             recovery,
-            SessionUserRunAdmission::RecoveryClaimed { ref session_id, ref run_id }
+            AdmittedSessionRun::RecoveryClaimed { ref session_id, ref run_id }
                 if session_id == "user-run-admission" && run_id.0 == "run-b"
         ),
         "A4/E3"
@@ -2266,7 +2266,7 @@ async fn user_run_admission_preserves_typed_recovery_and_one_activity_receipt() 
     assert!(
         matches!(
             completed,
-            SessionUserRunAdmission::Completed { ref session_id, ref run_id }
+            AdmittedSessionRun::Completed { ref session_id, ref run_id }
                 if session_id == "user-run-admission" && run_id.0 == "run-c"
         ),
         "A5/E3"
@@ -2438,12 +2438,11 @@ async fn activity_repair_replays_the_same_complete_system_user_reservation_case(
     {
         let reserved = runtime.reserved.lock().unwrap();
         let command = reserved.get(&run_id.0).expect("C1/E1 reservation");
+        let expected_system_id =
+            MessageId::session_system("system-reservation-repair", &system_operation);
         assert_eq!(
-            command
-                .accompanying_system
-                .as_ref()
-                .map(|system| system.operation_id.as_str()),
-            Some(system_operation.as_str()),
+            command.messages.first().map(|message| &message.id),
+            Some(&expected_system_id),
             "C1/E1"
         );
     }

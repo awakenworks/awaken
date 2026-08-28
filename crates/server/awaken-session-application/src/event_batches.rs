@@ -6,11 +6,10 @@
 use awaken_agent_contract::agent::message::{Id as MessageId, Role};
 use awaken_agent_contract::agent::run::{EndCause, RunState};
 use awaken_session_contract::{
-    OUTCOME_BUSY_CODE, PersistedSession, RunError, SessionAgentCoordination, SessionEventBatch,
-    SessionEventCommand, SessionEventInput, SessionEventProjectionAnchor, SessionRevision,
-    SessionThreadTarget, SessionUserRunActivation, SessionUserRunAdmission, SessionUserRunCommand,
-    SessionUserRunDelivery, SessionUserRunReservation, SessionUserRunSystemInput,
-    session_event_batch_id, session_run_activity_operation_id,
+    AdmitSessionRun, AdmittedSessionRun, OUTCOME_BUSY_CODE, PersistedSession, RunError,
+    SessionAgentCoordination, SessionEventBatch, SessionEventCommand, SessionEventInput,
+    SessionEventProjectionAnchor, SessionRevision, SessionRunActivation, SessionThreadTarget,
+    SessionUserRunCommand, SessionUserRunSystemInput, session_event_batch_id,
 };
 
 use super::{SessionApplication, SessionMutationError, mutation::repository_failure};
@@ -194,98 +193,40 @@ impl SessionApplication {
         &self,
         command: SessionUserRunCommand,
     ) -> std::pin::Pin<
-        Box<
-            dyn std::future::Future<Output = Result<SessionUserRunAdmission, RunError>> + Send + '_,
-        >,
+        Box<dyn std::future::Future<Output = Result<AdmittedSessionRun, RunError>> + Send + '_>,
     > {
         Box::pin(async move {
             let session_id = command.session_id.clone();
-            let agent_id = command.agent_id.clone();
-            let run_id = command.run_id.clone();
-            let operation = session_run_activity_operation_id(&session_id, &run_id);
-            // An exact activity receipt is response-loss truth and must outrank
-            // fresh terminal/budget policy. Without one, however, recover the
-            // aggregate-derived projection before Runtime freezes its immutable
-            // dispatch. Otherwise an unattempted Resource amendment can leave
-            // the Host and aggregate naming different manifests at the same
-            // revision, which the claimed Worker must reject.
-            let existing_activity_epoch = self
-                .recover_activity_for_operation(&session_id, &operation)
-                .await
-                .map_err(crate::SessionActivityError::run_error)?
-                .map(|(_, epoch)| epoch);
-            if existing_activity_epoch.is_none() {
-                let owner_scope = self.owner(&session_id).await.map_err(mutation_run_error)?;
-                self.admit_run_session(&owner_scope, &session_id, &agent_id)
-                    .await?;
+            let mut messages =
+                Vec::with_capacity(1 + usize::from(command.accompanying_system.is_some()));
+            if let Some(system) = command.accompanying_system {
+                if system.operation_id.trim().is_empty() || system.content.is_empty() {
+                    return Err(RunError::bad_request("Session System input is incomplete"));
+                }
+                messages.push(awaken_agent_contract::agent::message::Message::new(
+                    MessageId::session_system(&session_id, &system.operation_id),
+                    Role::System,
+                    system.content,
+                ));
             }
-            let reservation = self.runtime().reserve_session_user_run(command).await?;
-            let delivery = |session_activity_epoch| SessionUserRunDelivery {
-                session_id: session_id.clone(),
-                run_id: run_id.clone(),
-                session_activity_epoch,
-            };
-
-            match reservation {
-                SessionUserRunReservation::Reserved
-                | SessionUserRunReservation::AlreadyReserved => {
-                    let session_activity_epoch = match existing_activity_epoch {
-                        Some(epoch) => epoch,
-                        None => {
-                            self.begin_activity_for_operation(&session_id, &operation)
-                                .await
-                                .map_err(crate::SessionActivityError::run_error)?
-                                .1
-                        }
-                    };
-                    Ok(match reservation {
-                        SessionUserRunReservation::Reserved => {
-                            SessionUserRunAdmission::Reserved(delivery(session_activity_epoch))
-                        }
-                        SessionUserRunReservation::AlreadyReserved => {
-                            SessionUserRunAdmission::AlreadyReserved(delivery(
-                                session_activity_epoch,
-                            ))
-                        }
-                        _ => unreachable!("matched reserved outcomes"),
-                    })
-                }
-                SessionUserRunReservation::AlreadyActivated {
-                    session_activity_epoch,
-                } => {
-                    if session_activity_epoch == 0 {
-                        return Err(RunError::internal(
-                            "activated Session User Run has no activity epoch",
-                        ));
-                    }
-                    Ok(SessionUserRunAdmission::AlreadyActivated(delivery(
-                        session_activity_epoch,
-                    )))
-                }
-                SessionUserRunReservation::RecoveryClaimed => {
-                    Ok(SessionUserRunAdmission::RecoveryClaimed { session_id, run_id })
-                }
-                SessionUserRunReservation::Completed => {
-                    Ok(SessionUserRunAdmission::Completed { session_id, run_id })
-                }
+            if command.operation_id.trim().is_empty() || command.content.is_empty() {
+                return Err(RunError::bad_request("Session User input is incomplete"));
             }
-        })
-    }
-
-    /// Observe one admitted User Run through the Runtime Host's existing
-    /// completion registry. Delivery-bearing plans are activated only after the
-    /// observer is installed; recovery-only plans wait on committed Thread truth.
-    /// Public queued Event acceptance does not use this foreground boundary.
-    pub fn activate_and_observe_session_user_run(
-        &self,
-        admission: SessionUserRunAdmission,
-        sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<RunState, RunError>> + Send + '_>>
-    {
-        Box::pin(async move {
-            self.runtime()
-                .activate_and_observe_session_user_run(admission, sink)
-                .await
+            messages.push(awaken_agent_contract::agent::message::Message::new(
+                MessageId::session_event_input(&session_id, &command.operation_id),
+                Role::User,
+                command.content,
+            ));
+            self.admit_session_run(AdmitSessionRun {
+                session_id,
+                agent_id: command.agent_id,
+                operation_id: command.operation_id,
+                run_id: command.run_id,
+                messages,
+                data_subject_id: command.data_subject_id,
+                traceparent: command.traceparent,
+            })
+            .await
         })
     }
 
@@ -580,7 +521,7 @@ impl SessionApplication {
                 } => {
                     match self
                         .runtime()
-                        .session_user_run_state(&session.session_id, &run_id)
+                        .session_run_state(&session.session_id, &run_id)
                         .await?
                     {
                         Some(RunState::Awaiting) | Some(RunState::Ended(_)) => {
@@ -637,16 +578,16 @@ impl SessionApplication {
                     self.settle_event_batch_wake(session, &batch_id).await?;
 
                     let delivery = match admission {
-                        SessionUserRunAdmission::Reserved(delivery)
-                        | SessionUserRunAdmission::AlreadyReserved(delivery)
-                        | SessionUserRunAdmission::AlreadyActivated(delivery) => delivery,
-                        SessionUserRunAdmission::RecoveryClaimed { .. } => {
+                        AdmittedSessionRun::Reserved(delivery)
+                        | AdmittedSessionRun::AlreadyReserved(delivery)
+                        | AdmittedSessionRun::AlreadyActivated(delivery) => delivery,
+                        AdmittedSessionRun::RecoveryClaimed { .. } => {
                             return Ok(EventBatchProgress::Pending);
                         }
-                        SessionUserRunAdmission::Completed { .. } => {
+                        AdmittedSessionRun::Completed { .. } => {
                             if matches!(
                                 self.runtime()
-                                    .session_user_run_state(&session.session_id, &run_id)
+                                    .session_run_state(&session.session_id, &run_id)
                                     .await?,
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {
@@ -672,18 +613,16 @@ impl SessionApplication {
                             return Ok(EventBatchProgress::Pending);
                         }
                     };
-                    match self.runtime().activate_session_user_run(delivery).await? {
-                        SessionUserRunActivation::Activated
-                        | SessionUserRunActivation::AlreadyActivated {
+                    match self.runtime().activate_session_run(delivery).await? {
+                        SessionRunActivation::Activated
+                        | SessionRunActivation::AlreadyActivated {
                             session_activity_epoch: _,
                         }
-                        | SessionUserRunActivation::RecoveryClaimed => {
-                            Ok(EventBatchProgress::Pending)
-                        }
-                        SessionUserRunActivation::Completed => {
+                        | SessionRunActivation::RecoveryClaimed => Ok(EventBatchProgress::Pending),
+                        SessionRunActivation::Completed => {
                             if matches!(
                                 self.runtime()
-                                    .session_user_run_state(&session.session_id, &run_id)
+                                    .session_run_state(&session.session_id, &run_id)
                                     .await?,
                                 Some(RunState::Awaiting) | Some(RunState::Ended(_))
                             ) {

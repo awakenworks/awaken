@@ -1257,7 +1257,7 @@ fn mount_with_managed_over_and_models(
     let workspace_host = host.clone();
     let agent_host = host.clone();
     let admitted_runs: Arc<dyn RunApplication> =
-        Arc::new(awaken_session_application::AdmittedRunApplication::new(
+        Arc::new(awaken_session_application::SessionRunApplication::new(
             host_runs,
             session_application.clone(),
             move |thread| workspace_host.thread_workspace(thread),

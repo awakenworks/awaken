@@ -127,11 +127,12 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
 
     let processed = process_request(payload, &known_ids);
     let thread = processed.thread_id.clone();
+    let operation_id = processed.operation_id.clone();
 
     if processed.messages.is_empty() {
         // RunResume answers an awaiting tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
-        match resume_step(&rt, &thread, &processed.decisions).await {
+        match resume_step(&rt, &operation_id, &thread, &processed.decisions).await {
             Ok(outcome) => {
                 let mut events = encode_step(&outcome);
                 let usage = match rt.usage(&thread).await {
@@ -146,7 +147,13 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
     } else {
         // A fresh turn: stream the engine's live progress as it runs, then append
         // the committed authoritative tail.
-        stream_turn(rt, thread, processed.agent_id, processed.messages)
+        stream_turn(
+            rt,
+            operation_id,
+            thread,
+            processed.agent_id,
+            processed.messages,
+        )
     }
 }
 
@@ -157,15 +164,24 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
 /// (durable/ACP/non-streaming) falls back to the full committed projection.
 fn stream_turn(
     rt: Runtime,
+    operation_id: String,
     thread: String,
     agent: Option<String>,
     messages: Vec<Message>,
 ) -> Response {
-    stream_turn_with_keep_alive(rt, thread, agent, messages, STREAM_KEEP_ALIVE_INTERVAL)
+    stream_turn_with_keep_alive(
+        rt,
+        operation_id,
+        thread,
+        agent,
+        messages,
+        STREAM_KEEP_ALIVE_INTERVAL,
+    )
 }
 
 fn stream_turn_with_keep_alive(
     rt: Runtime,
+    operation_id: String,
     thread: String,
     agent: Option<String>,
     messages: Vec<Message>,
@@ -190,8 +206,10 @@ fn stream_turn_with_keep_alive(
         // Drive the turn on its own task so live events drain concurrently. The
         // sink lives inside that future; when the turn ends it drops, closing
         // `live_rx` and ending the drain loop.
-        let mut turn =
-            tokio::spawn(async move { rt.run_streaming(&thread, agent, messages, sink).await });
+        let mut turn = tokio::spawn(async move {
+            rt.run_streaming(&operation_id, &thread, agent, messages, sink)
+                .await
+        });
         let mut keep_alive = tokio::time::interval(keep_alive_interval);
         keep_alive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut disconnected = false;
@@ -284,6 +302,7 @@ fn forward_live_event(
 /// run it. Fails closed when there is no awaiting tool or no matching decision.
 async fn resume_step(
     rt: &Runtime,
+    operation_id: &str,
     thread: &str,
     decisions: &[crate::request::Decision],
 ) -> Result<StepOutcome, Response> {
@@ -302,7 +321,7 @@ async fn resume_step(
             ))
         })?;
     let resume = to_resume(&decision.kind, &pending);
-    rt.resume(thread, &pending.tool_use_id, resume)
+    rt.resume(operation_id, thread, &pending.tool_use_id, resume)
         .await
         .map_err(sse_error)
 }
@@ -469,6 +488,7 @@ mod tests {
         impl RunApplication for DelayedSilent {
             async fn run(
                 &self,
+                _operation_id: &str,
                 _thread: &str,
                 _agent: Option<String>,
                 _messages: Vec<Message>,
@@ -478,6 +498,7 @@ mod tests {
 
             async fn run_streaming(
                 &self,
+                _operation_id: &str,
                 _thread: &str,
                 _agent: Option<String>,
                 _messages: Vec<Message>,
@@ -496,6 +517,7 @@ mod tests {
 
             async fn resume(
                 &self,
+                _operation_id: &str,
                 _thread: &str,
                 _tool_use_id: &str,
                 _resume: RunResume,
@@ -518,6 +540,7 @@ mod tests {
 
         let response = stream_turn_with_keep_alive(
             Arc::new(DelayedSilent),
+            "operation-1".into(),
             "thread-1".into(),
             None,
             vec![Message::text(

@@ -52,13 +52,16 @@ pub struct CoordinatedRuntimeFake {
     runs: std::sync::Arc<std::sync::atomic::AtomicU64>,
     reserved_user_runs: std::sync::Arc<
         std::sync::Mutex<
-            std::collections::HashMap<String, awaken_session_contract::SessionUserRunCommand>,
+            std::collections::HashMap<String, awaken_session_contract::AdmitSessionRun>,
         >,
     >,
     user_run_states: std::sync::Arc<
         std::sync::Mutex<
             std::collections::HashMap<String, awaken_agent_contract::agent::run::RunState>,
         >,
+    >,
+    user_run_outcomes: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<String, awaken_session_contract::StepOutcome>>,
     >,
     root_messages:
         std::sync::Arc<std::sync::Mutex<Vec<awaken_agent_contract::agent::message::Message>>>,
@@ -117,6 +120,7 @@ impl Default for CoordinatedRuntimeFake {
             runs: Default::default(),
             reserved_user_runs: Default::default(),
             user_run_states: Default::default(),
+            user_run_outcomes: Default::default(),
             root_messages: Default::default(),
             root_message_cursors: Default::default(),
             child_messages: Default::default(),
@@ -337,10 +341,10 @@ impl CoordinatedRuntimeFake {
 
 #[async_trait::async_trait]
 impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
-    async fn reserve_session_user_run(
+    async fn reserve_session_run(
         &self,
-        command: awaken_session_contract::SessionUserRunCommand,
-    ) -> Result<awaken_session_contract::SessionUserRunReservation, awaken_session_contract::RunError>
+        command: awaken_session_contract::AdmitSessionRun,
+    ) -> Result<awaken_session_contract::SessionRunReservation, awaken_session_contract::RunError>
     {
         if self
             .user_run_states
@@ -348,7 +352,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .unwrap()
             .contains_key(&command.run_id.0)
         {
-            return Ok(awaken_session_contract::SessionUserRunReservation::Completed);
+            return Ok(awaken_session_contract::SessionRunReservation::Completed);
         }
         let mut reservations = self.reserved_user_runs.lock().unwrap();
         if let Some(existing) = reservations.get(&command.run_id.0) {
@@ -357,16 +361,16 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
                     "test reservation replay changed its canonical User Run",
                 ));
             }
-            return Ok(awaken_session_contract::SessionUserRunReservation::AlreadyReserved);
+            return Ok(awaken_session_contract::SessionRunReservation::AlreadyReserved);
         }
         reservations.insert(command.run_id.0.clone(), command);
-        Ok(awaken_session_contract::SessionUserRunReservation::Reserved)
+        Ok(awaken_session_contract::SessionRunReservation::Reserved)
     }
 
-    async fn activate_session_user_run(
+    async fn activate_session_run(
         &self,
-        delivery: awaken_session_contract::SessionUserRunDelivery,
-    ) -> Result<awaken_session_contract::SessionUserRunActivation, awaken_session_contract::RunError>
+        delivery: awaken_session_contract::SessionRunDelivery,
+    ) -> Result<awaken_session_contract::SessionRunActivation, awaken_session_contract::RunError>
     {
         if self
             .user_run_states
@@ -374,7 +378,7 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             .unwrap()
             .contains_key(&delivery.run_id.0)
         {
-            return Ok(awaken_session_contract::SessionUserRunActivation::Completed);
+            return Ok(awaken_session_contract::SessionRunActivation::Completed);
         }
         let command = self
             .reserved_user_runs
@@ -400,26 +404,13 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             self.user_run_activation_release.notified().await;
         }
 
-        use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
         let ordinal = self.runs.load(std::sync::atomic::Ordering::SeqCst) + 1;
         let base = (ordinal - 1) * 4;
         {
             let mut messages = self.root_messages.lock().unwrap();
             let mut cursors = self.root_message_cursors.lock().unwrap();
-            if let Some(system) = &command.accompanying_system {
-                messages.push(Message::new(
-                    MessageId::session_system(&command.session_id, &system.operation_id),
-                    Role::System,
-                    system.content.clone(),
-                ));
-                cursors.push(base + 1);
-            }
-            messages.push(Message::new(
-                MessageId::session_event_input(&command.session_id, &command.operation_id),
-                Role::User,
-                command.content.clone(),
-            ));
-            cursors.push(base + 1);
+            messages.extend(command.messages.clone());
+            cursors.extend(std::iter::repeat_n(base + 1, command.messages.len()));
         }
 
         self.lifecycle
@@ -444,7 +435,11 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
             self,
             &command.agent_id,
             &command.session_id,
-            command.content,
+            command
+                .messages
+                .last()
+                .map(|message| message.content.clone())
+                .unwrap_or_default(),
         ))
         .await?;
         let root_terminal_cursor = if deferred { base + 3 } else { base + 4 };
@@ -463,11 +458,47 @@ impl awaken_session_contract::SessionRuntime for CoordinatedRuntimeFake {
         self.user_run_states
             .lock()
             .unwrap()
-            .insert(command.run_id.0, outcome.state().clone());
-        Ok(awaken_session_contract::SessionUserRunActivation::Activated)
+            .insert(command.run_id.0.clone(), outcome.state().clone());
+        self.user_run_outcomes
+            .lock()
+            .unwrap()
+            .insert(command.run_id.0, outcome);
+        Ok(awaken_session_contract::SessionRunActivation::Activated)
     }
 
-    async fn session_user_run_state(
+    async fn activate_and_observe_session_run(
+        &self,
+        admission: awaken_session_contract::AdmittedSessionRun,
+        _input_message_ids: Vec<String>,
+        _sink: Option<std::sync::Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+    ) -> Result<awaken_session_contract::StepOutcome, awaken_session_contract::RunError> {
+        let run_id = admission.run_id().clone();
+        match admission {
+            awaken_session_contract::AdmittedSessionRun::Reserved(delivery)
+            | awaken_session_contract::AdmittedSessionRun::AlreadyReserved(delivery) => {
+                let _ = self.activate_session_run(delivery).await?;
+            }
+            awaken_session_contract::AdmittedSessionRun::AlreadyActivated(_)
+            | awaken_session_contract::AdmittedSessionRun::Completed { .. } => {}
+            awaken_session_contract::AdmittedSessionRun::RecoveryClaimed { .. } => {
+                return Err(awaken_session_contract::RunError::unavailable(
+                    "test reservation recovery has not completed",
+                ));
+            }
+        }
+        self.user_run_outcomes
+            .lock()
+            .unwrap()
+            .get(&run_id.0)
+            .cloned()
+            .ok_or_else(|| {
+                awaken_session_contract::RunError::unavailable(
+                    "test committed Session Run outcome is unavailable",
+                )
+            })
+    }
+
+    async fn session_run_state(
         &self,
         _session_id: &str,
         run_id: &awaken_agent_contract::agent::run::Id,
