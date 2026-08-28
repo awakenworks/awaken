@@ -85,27 +85,64 @@ pub(crate) async fn interrupt_awaiting_tools(
             ));
         }
     }
-    let ticket = reader.resume_ticket(&run_id).ok_or_else(|| {
-        Error::Execution("awaiting coordinated Run has no resume ticket".to_string())
-    })?;
-    if ticket.thread_id != thread_id
-        || !matches!(
-            ticket.reason(),
-            AwaitReason::ToolPermission | AwaitReason::ExternalEvent
-        )
-    {
-        return Err(Error::Execution(
-            "coordinated interruption is limited to an Awaiting tool Run".to_string(),
-        ));
-    }
-
     let store = store_from_commands(reader.committed_state(&thread_id), &run_id);
-    let mut batch = ActiveToolBatch::load(&store)
-        .map_err(|error| Error::Execution(error.to_string()))?
-        .filter(|batch| batch.run_id() == &run_id && batch.phase() == ToolBatchPhase::Open)
-        .ok_or_else(|| {
-            Error::Execution("awaiting coordinated Run has no open ToolBatch".to_string())
-        })?;
+    let ticket_is_coherent = reader.resume_ticket(&run_id).is_none_or(|ticket| {
+        ticket.run_id == run_id
+            && ticket.thread_id == thread_id
+            && matches!(
+                ticket.reason(),
+                AwaitReason::ToolPermission | AwaitReason::ExternalEvent
+            )
+    });
+    let batch = ActiveToolBatch::load(&store);
+    let batch_is_coherent = batch.as_ref().is_ok_and(|batch| {
+        batch.as_ref().is_some_and(|batch| {
+            batch.run_id() == &run_id
+                && batch.phase() == ToolBatchPhase::Open
+                && batch.calls().iter().any(|entry| {
+                    matches!(
+                        entry.phase,
+                        ToolCallPhase::Awaiting { ref wait }
+                            if matches!(
+                                wait.kind,
+                                ToolWaitKind::ToolPermission | ToolWaitKind::ExternalResult
+                            )
+                    )
+                })
+        })
+    });
+    if !ticket_is_coherent || !batch_is_coherent {
+        let detail = match &batch {
+            Err(error) => format!("unreadable ActiveToolBatch: {error}"),
+            Ok(None) => "missing ActiveToolBatch".to_string(),
+            Ok(Some(_)) if !ticket_is_coherent => "incoherent ResumeTicket".to_string(),
+            Ok(Some(_)) => "ActiveToolBatch does not contain the current external wait".to_string(),
+        };
+        tracing::error!(
+            awaken.run.id = %run_id.0,
+            awaken.thread.id = %thread_id.0,
+            %detail,
+            "quarantining an Awaiting tool Run whose durable interruption facts are corrupt"
+        );
+        // Removing the typed active-cell projection before `finish` lets the
+        // canonical terminal boundary run even when that cell cannot deserialize.
+        // The corrupt command remains in the append-only state log for audit; the
+        // terminal ThreadCommit atomically consumes the waiting row and emits the
+        // existing RunStateChanged(StateConflict) fact.
+        let step = RunStepResult {
+            new_messages: Vec::new(),
+            staged_state: vec![ActiveToolBatch::remove()],
+            audit: Vec::new(),
+            disposition: RunDisposition::ended(
+                run_id.clone(),
+                EndCause::Error(Failure::StateConflict),
+            ),
+        };
+        return finish(runtime, &context, &thread_id, run_id, step).await;
+    }
+    let mut batch = batch
+        .expect("batch coherence checked typed load")
+        .expect("batch coherence checked presence");
     let calls = batch
         .calls()
         .iter()

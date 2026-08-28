@@ -27,6 +27,7 @@ use awaken_agent_contract::thread::commit::operation::{
 };
 use awaken_agent_contract::thread::commit::staged::ThreadCommit;
 use awaken_agent_contract::thread::read::committed_thread_view::CommittedThreadView;
+use awaken_agent_contract::thread::read::recovery::RunRecoverySource;
 use awaken_agent_contract::{RunLifecycleCursor, RunLifecycleEventKind, RunLifecycleFeed};
 use awaken_store_postgres::PostgresCommitCoordinator;
 use sqlx::Executor;
@@ -371,6 +372,98 @@ async fn reconnect_hydrates_a_valid_persisted_optional_resume_ticket() {
                 arguments: serde_json::json!({"cmd": "true"}),
             },
         }
+    );
+}
+
+#[tokio::test]
+async fn corrupt_waiting_ticket_is_isolated_from_postgres_restart_and_recovery() {
+    // Cause/effect graph: C1=Awaiting ThreadCommit stores complete Run facts;
+    // C2=only its JSONB waiting ticket becomes semantically invalid; C3=a cold
+    // coordinator hydrates, reads authoritative open-wait, and takes a recovery
+    // snapshot. Effects: E1=hydrate succeeds; E2=Run/transcript/state/audit and
+    // fences survive; E3=no reply authority is exposed; E4=the corrupt row is
+    // retained for canonical Runtime interruption to consume atomically.
+    // Decision table: PG1 valid facts+valid ticket=>ordinary recovery; PG2 valid
+    // facts+corrupt ticket+C3=>E1-E4; PG3 corrupt non-ticket fact=>existing
+    // fail-closed hydration. Constraint: this adapter never deletes waiting rows.
+    let Some(pool) = schema_pool("t_corrupt_waiting_recovery").await else {
+        return;
+    };
+    let thread = ThreadId("corrupt-waiting-thread".into());
+    let run = RunId("corrupt-waiting-run".into());
+    let store = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("coordinator");
+    store
+        .commit(ThreadCommit::assemble(
+            thread.clone(),
+            RunDisposition::awaiting(ResumeTicket::new(
+                "corrupt-waiting-correlation",
+                run.clone(),
+                thread.clone(),
+                "corrupt-waiting-snapshot",
+                "corrupt-waiting-catalog",
+                AwaitTarget::Pause(PauseReason::Manual),
+            )),
+            true,
+            vec![message("corrupt-waiting-message", "retained")],
+            vec![StateCommand::set(
+                Scope::Run,
+                MergePolicy::Disjoint,
+                "test.corrupt-waiting.fact",
+                serde_json::json!({"retained": true}),
+            )],
+            Vec::new(),
+        ))
+        .await
+        .expect("PG2 complete Awaiting prefix");
+    sqlx::query("UPDATE runtime_waiting SET ticket = $1 WHERE run_id = $2")
+        .bind(Json(serde_json::json!({"not": "a ResumeTicket"})))
+        .bind(&run.0)
+        .execute(&pool)
+        .await
+        .expect("PG2 isolate waiting-ticket corruption");
+    drop(store);
+
+    let reopened = PostgresCommitCoordinator::with_pool(pool.clone())
+        .await
+        .expect("PG2/E1 cold hydrate");
+    assert!(
+        CommittedThreadView::resume_ticket(&reopened, &run).is_none(),
+        "PG2/E3 compatibility projection"
+    );
+    assert!(
+        reopened
+            .authoritative_open_wait_for_thread(&thread)
+            .await
+            .expect("PG2 authoritative read stays available")
+            .is_none(),
+        "PG2/E3 authoritative projection"
+    );
+    let snapshot = reopened
+        .recovery_snapshot(&thread, &run)
+        .await
+        .expect("PG2/E2 recovery prefix");
+    assert_eq!(snapshot.runs[0].state, RunState::Awaiting, "PG2/E2");
+    assert_eq!(snapshot.messages.len(), 1, "PG2/E2 transcript");
+    assert_eq!(snapshot.state.len(), 1, "PG2/E2 state");
+    assert!(
+        snapshot
+            .events
+            .iter()
+            .any(|event| event.kind == EventKind::RunStateChanged),
+        "PG2/E2 audit"
+    );
+    assert!(snapshot.resume_tickets.is_empty(), "PG2/E3");
+    assert_eq!(snapshot.thread_version, 1, "PG2/E2 fence");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM runtime_waiting WHERE run_id = $1")
+            .bind(&run.0)
+            .fetch_one(&pool)
+            .await
+            .expect("PG2/E4 retained row"),
+        1,
+        "PG2/E4"
     );
 }
 
