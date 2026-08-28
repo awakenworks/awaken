@@ -21,6 +21,7 @@ use awaken_run_ingress_contract::RunDispatch;
 use awaken_run_ingress_contract::dispatch::{
     DispatchOutcome, DispatchQueue, RunClaim, SettleOutcome,
 };
+use awaken_run_ingress_testkit::{AuthoritativeWallClock, ConformanceClock, LogicalCommandClock};
 use awaken_runtime_contract::activation::RunActivation;
 
 mod harness;
@@ -75,7 +76,10 @@ fn req(run: &str, thread: &str) -> RunDispatch {
 
 /// enqueue → claim (unbound) → bind_sandbox → the lease expires and a recovery
 /// re-claim returns the SAME sandbox binding.
-async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
+async fn binding_survives_a_recovery_claim(
+    store: &dyn DispatchQueue,
+    clock: &dyn ConformanceClock,
+) {
     let run = RunId("run-1".into());
     store.enqueue(req("run-1", "thread-1")).await.unwrap();
 
@@ -99,8 +103,14 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
 
     // The lease expires (worker-a crashed); a recovery claim re-adopts the SAME
     // sandbox — the binding is durable, so no sandbox is leaked.
+    clock.advance_past(first.lease.expires_ms).await;
     let recovered = store
-        .claim("worker-b", 1_000, 5_000, &Default::default())
+        .claim(
+            "worker-b",
+            1_000,
+            first.lease.expires_ms.saturating_add(1),
+            &Default::default(),
+        )
         .await
         .unwrap()
         .unwrap();
@@ -127,13 +137,13 @@ async fn binding_survives_a_recovery_claim(store: &dyn DispatchQueue) {
 
 #[tokio::test]
 async fn memory_backend_binds_and_recovers() {
-    binding_survives_a_recovery_claim(&MemoryDispatchStore::new()).await;
+    binding_survives_a_recovery_claim(&MemoryDispatchStore::new(), &LogicalCommandClock).await;
 }
 
 #[tokio::test]
 async fn runtime_selected_store_delegates_the_sandbox_binding() {
     let store = AnyDispatchStore::open_sqlite_in_memory().expect("sqlite adapter");
-    binding_survives_a_recovery_claim(&store).await;
+    binding_survives_a_recovery_claim(&store, &LogicalCommandClock).await;
 }
 
 #[tokio::test]
@@ -148,5 +158,5 @@ async fn postgres_backend_binds_and_recovers() {
     let store = awaken_run_ingress::PostgresDispatchStore::with_pool(pool)
         .await
         .expect("migrate isolated schema (incl. V0011 sandbox column)");
-    binding_survives_a_recovery_claim(&store).await;
+    binding_survives_a_recovery_claim(&store, &AuthoritativeWallClock).await;
 }
