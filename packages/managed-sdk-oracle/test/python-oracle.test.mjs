@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import test from 'node:test';
 
+import { canonicalPythonOperationID } from '../src/python-operation-identity.mjs';
+
 const REPO = resolve(import.meta.dirname, '../../..');
 const python = JSON.parse(readFileSync(resolve(
   REPO,
@@ -21,19 +23,6 @@ const pythonRuntime = [
   readFileSync(resolve(REPO, 'e2e/conformance/managed_python_sdk_helpers_e2e.py'), 'utf8'),
 ].join('\n');
 
-function camelCase(segment) {
-  return segment.replace(/_([a-z])/gu, (_, letter) => letter.toUpperCase());
-}
-
-function canonicalPythonID(id) {
-  return id
-    .split('.')
-    .map(camelCase)
-    .join('.')
-    .replace(/createEnrollmentUrl$/u, 'createEnrollmentURL')
-    .replace(/mcpOauthValidate$/u, 'mcpOAuthValidate');
-}
-
 function withoutID(operation) {
   const { id: _, ...coordinate } = operation;
   return coordinate;
@@ -48,7 +37,7 @@ test('Python current SDK has the exact TypeScript Managed operation identity set
   // operation fails closed. Decision table: C1+C2+(C3 when applicable)=>E1;
   // any missing/duplicate mapping=>E2. This test deliberately reuses the
   // canonical TS ledger rather than introducing a second behavior-owner table.
-  const pythonIDs = python.current.operations.map(({ id }) => canonicalPythonID(id));
+  const pythonIDs = python.current.operations.map(({ id }) => canonicalPythonOperationID(id));
   const typescriptIDs = typescript.current.operations.map(({ id }) => id);
   assert.equal(new Set(pythonIDs).size, pythonIDs.length, 'Python ids canonicalize injectively');
   assert.deepEqual(pythonIDs.sort(), typescriptIDs.sort());
@@ -64,7 +53,7 @@ test('Python 1.2 beta-to-GA drift is exactly the reviewed TypeScript 0.122 delta
   // cross-language drift fails. Decision table: C1+C2+C3=>E1; a changed route,
   // verb, query, extra selector, or absent qualification=>E2.
   const pythonByID = new Map(python.current.operations.map(
-    (operation) => [canonicalPythonID(operation.id), operation],
+    (operation) => [canonicalPythonOperationID(operation.id), operation],
   ));
   const differences = [];
   for (const operation of typescript.current.operations) {

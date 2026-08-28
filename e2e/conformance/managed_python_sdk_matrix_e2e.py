@@ -6,7 +6,6 @@ import importlib
 import inspect
 import json
 import os
-import sys
 import time
 from pathlib import Path
 
@@ -18,39 +17,21 @@ from managed_python_sdk_request_contract import (
     exercise_all_operation_requests,
     exercise_error_and_retry_contract,
 )
+from managed_python_sdk_installed_evidence import assert_installed_evidence
+from managed_python_sdk_response_contract_e2e import exercise_async, exercise_sync
 
 
 REPO = Path(__file__).resolve().parents[2]
 ORACLE_PATH = Path(os.environ["AWAKEN_PYTHON_ORACLE"])
+RESPONSE_CONTRACTS_PATH = Path(
+    os.environ["AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS"]
+)
 SCOPE_PATH = REPO / "packages/managed-sdk-oracle/config/scope.json"
-sys.path.insert(0, str(REPO / "packages/managed-sdk-oracle/python"))
-import oracle as oracle_generator  # noqa: E402 - exact repository extractor
 
 
 def extracted_evidence(version: str) -> tuple[dict[str, object], dict[str, object]]:
-    oracle = json.loads(ORACLE_PATH.read_text(encoding="utf-8"))
-    anchor = next(item for item in oracle["anchors"] if item["version"] == version)
     installed_root = Path(anthropic.__file__).resolve().parent.parent
-    scope = json.loads(SCOPE_PATH.read_text(encoding="utf-8"))
-    evidence = oracle_generator.extract(installed_root, version, scope)
-    direct = (
-        "operation_fingerprint",
-        "source_fingerprint",
-        "source_file_count",
-        "helper_fingerprint",
-        "helpers",
-        "library_export_fingerprint",
-        "library_exports",
-        "runtime_source_fingerprint",
-        "runtime_sources",
-        "stream_event_fingerprint",
-        "stream_event_names",
-    )
-    for field in direct:
-        assert evidence[field] == anchor[field], f"{version}: installed {field}"
-    assert len(evidence["operations"]) == anchor["operation_count"]
-    assert len(evidence["library_exports"]) == anchor["library_export_count"]
-    return evidence, anchor
+    return assert_installed_evidence(version, installed_root, ORACLE_PATH, SCOPE_PATH)
 
 
 def exercise_library_exports(exports: list[str]) -> None:
@@ -75,6 +56,59 @@ async def exercise_resource_helper_surface(helpers: list[str]) -> None:
             for segment in identity.split("."):
                 value = getattr(value, segment)
             assert callable(value), identity
+
+
+def exercise_current_response_compatibility(
+    transport: object,
+    operations: list[dict[str, object]],
+) -> int:
+    # Historical-forward-compatibility causal graph:
+    # C1 the installed wheel and its generated operation inventory are pinned by
+    # source and wheel hashes; C2 the response corpus is generated once from the
+    # reviewed current TypeScript declaration, rather than copied into a second
+    # historical fixture; C3 every response branch is injected through that
+    # wheel's own sync/async transport, media dispatch, generated converter, and
+    # return annotation. Effects: E1 every historical operation still consumes
+    # the current service-line wire shape; E2 JSON/binary/SSE selection and the
+    # outbound operation identity agree in both client modes. Missing operation,
+    # changed media kind, rejected union branch, lost required field, converter
+    # asymmetry, or request drift fails closed.
+    #
+    # Historical declarations are intentionally not required to equal the newest
+    # declarations: additive fields are the compatibility condition being tested.
+    # Their exact source/type surfaces are independently hash-bound by
+    # `assert_installed_evidence`; this test proves executable consumption, while
+    # the current-oracle test owns strict cross-language declaration equality.
+    bundle = json.loads(RESPONSE_CONTRACTS_PATH.read_text(encoding="utf-8"))
+    contracts = bundle["contracts"]
+    operation_ids = {operation["id"] for operation in operations}
+    missing = operation_ids - set(contracts)
+    assert not missing, (
+        f"current response corpus lacks historical operations: {sorted(missing)}"
+    )
+    selected = {
+        operation_id: contracts[operation_id]
+        for operation_id in operation_ids
+    }
+    sync_count = exercise_sync(
+        anthropic,
+        transport,
+        operations,
+        selected,
+        verify_declarations=False,
+    )
+    async_count = asyncio.run(
+        exercise_async(
+            anthropic,
+            transport,
+            operations,
+            selected,
+            verify_declarations=False,
+        )
+    )
+    assert sync_count == async_count
+    assert sync_count >= len(operations)
+    return sync_count
 
 
 def wait_for_idle(client: object, session_id: str, receipt_id: str) -> list[object]:
@@ -220,13 +254,19 @@ def main() -> None:
     asyncio.run(exercise_async_error_and_retry_contract(anthropic, transport))
     exercise_library_exports(evidence["library_exports"])
     asyncio.run(exercise_resource_helper_surface(evidence["helpers"]))
+    response_witnesses = exercise_current_response_compatibility(
+        transport,
+        evidence["operations"],
+    )
     operation_ids = {operation["id"] for operation in evidence["operations"]}
     exercise_session(args.base_url, anchor["stream_event_names"])
     exercise_memory(args.base_url, operation_ids)
     exercise_beta_ga_change_point(args.base_url, operation_ids)
     print(
         f"PYTHON SDK MATRIX PASS {args.version}: {len(operation_ids)} sync/async operations, "
-        f"{len(evidence['helpers'])} resource helpers, {len(evidence['library_exports'])} library exports"
+        f"{response_witnesses} current-response witnesses per client mode, "
+        f"{len(evidence['helpers'])} resource helpers, "
+        f"{len(evidence['library_exports'])} library exports"
     )
 
 

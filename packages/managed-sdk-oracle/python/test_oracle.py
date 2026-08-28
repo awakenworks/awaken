@@ -172,6 +172,88 @@ def decode(sse):
                     ["anthropic/_streaming.py", "anthropic/_missing.py"],
                 )
 
+    def test_managed_type_closure_follows_exact_reexported_symbols(self) -> None:
+        # Symbol-closure graph: C1=a Managed resource imports one DTO through a
+        # broad package initializer; C2=that DTO imports a nested DTO and the
+        # common model base; C3=the initializer also re-exports an unrelated
+        # Messages DTO. Effects: E1=the exact package/DTO/nested/base files are
+        # fingerprinted; E2=C3 is excluded. Mutating any E1 source must change
+        # the oracle, while unrelated SDK surfaces cannot inflate the claim.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            resource = root / "anthropic/resources/beta/widgets.py"
+            types = root / "anthropic/types/beta"
+            resource.parent.mkdir(parents=True)
+            types.mkdir(parents=True)
+            resource.write_text(
+                "from ...types.beta import ManagedThing\n",
+                encoding="utf-8",
+            )
+            (types / "__init__.py").write_text(
+                "from .managed_thing import ManagedThing\n"
+                "from .message_thing import MessageThing\n",
+                encoding="utf-8",
+            )
+            (types / "managed_thing.py").write_text(
+                "from .nested import Nested\nfrom ..._models import BaseModel\n",
+                encoding="utf-8",
+            )
+            (types / "nested.py").write_text("class Nested: pass\n", encoding="utf-8")
+            (types / "message_thing.py").write_text(
+                "class MessageThing: pass\n",
+                encoding="utf-8",
+            )
+            models = root / "anthropic/_models.py"
+            models.write_text("class BaseModel: pass\n", encoding="utf-8")
+
+            evidence = oracle.managed_type_source_evidence(root, [resource])
+            first_fingerprint = oracle.digest(evidence)
+            (types / "nested.py").write_text(
+                "class Nested: changed = True\n",
+                encoding="utf-8",
+            )
+            changed_fingerprint = oracle.digest(
+                oracle.managed_type_source_evidence(root, [resource])
+            )
+
+        self.assertEqual(
+            [item["path"] for item in evidence],
+            [
+                "anthropic/_models.py",
+                "anthropic/types/beta/__init__.py",
+                "anthropic/types/beta/managed_thing.py",
+                "anthropic/types/beta/nested.py",
+            ],
+        )
+        self.assertNotIn("anthropic/types/beta/message_thing.py", {
+            item["path"] for item in evidence
+        })
+        self.assertNotEqual(first_fingerprint, changed_fingerprint)
+
+    def test_managed_type_closure_rejects_unresolved_or_wildcard_reexports(self) -> None:
+        # Fail-closed partitions: a resource-level imported DTO must resolve to
+        # one local definition or exact re-export. A wildcard or missing symbol
+        # cannot produce a reviewable dependency edge and therefore cannot be
+        # represented by a stable compatibility fingerprint.
+        for initializer, failure in (
+            ("from .anything import *\n", "wildcard export"),
+            ("KNOWN = 1\n", "no auditable source"),
+        ):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                resource = root / "anthropic/resources/beta/widgets.py"
+                types = root / "anthropic/types/beta"
+                resource.parent.mkdir(parents=True)
+                types.mkdir(parents=True)
+                resource.write_text(
+                    "from ...types.beta import MissingThing\n",
+                    encoding="utf-8",
+                )
+                (types / "__init__.py").write_text(initializer, encoding="utf-8")
+                (types / "anything.py").write_text("pass\n", encoding="utf-8")
+                with self.assertRaisesRegex(AssertionError, failure):
+                    oracle.managed_type_source_evidence(root, [resource])
+
     def test_route_expression_rejects_unresolved_dynamic_values(self) -> None:
         # Negative partition: a route assembled outside a literal/path_template
         # cannot be fingerprinted from source and is rejected. Accepting it

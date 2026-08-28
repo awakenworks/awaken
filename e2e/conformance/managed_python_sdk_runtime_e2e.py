@@ -28,6 +28,7 @@ from managed_python_sdk_request_contract import (
     exercise_all_operation_requests as exercise_requests,
     exercise_error_and_retry_contract,
 )
+from managed_python_sdk_installed_evidence import assert_installed_evidence
 
 
 BASE_URL = os.environ["AWAKEN_MANAGED_BASE_URL"]
@@ -35,6 +36,7 @@ LOCK = Path(os.environ["AWAKEN_PYTHON_REQUIREMENTS_LOCK"])
 PYTHON_ORACLE = Path(__file__).resolve().parents[2] / (
     "contracts/anthropic-managed/python-upstream-oracle.generated.json"
 )
+SCOPE = Path(__file__).resolve().parents[2] / "packages/managed-sdk-oracle/config/scope.json"
 SKILL_V1 = b"---\nname: python-greeter\ndescription: Python SDK v1\n---\nSay hi."
 SKILL_V2 = b"---\nname: python-greeter\ndescription: Python SDK v2\n---\nSay hi warmly."
 
@@ -50,6 +52,12 @@ def assert_locked_environment() -> None:
         name, expected = row.split("==", 1)
         actual = importlib.metadata.version(name)
         assert actual == expected, f"{name}: installed={actual}, expected={expected}"
+    assert_installed_evidence(
+        anthropic.__version__,
+        Path(anthropic.__file__).resolve().parent.parent,
+        PYTHON_ORACLE,
+        SCOPE,
+    )
 
 
 def exercise_all_operation_requests() -> None:
