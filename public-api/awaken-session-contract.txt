@@ -1875,5 +1875,6 @@ pub fn awaken_session_contract::session_outcome_convenience_id(&str, &str, &str,
 pub fn awaken_session_contract::session_run_activity_operation_id(&str, &awaken_agent_contract::agent::run::Id) -> alloc::string::String
 pub fn awaken_session_contract::toolset_policies(&[awaken_session_contract::AgentTool]) -> alloc::vec::Vec<awaken_agent_contract::toolset::ToolsetPolicy>
 pub fn awaken_session_contract::validate_agent_tools(&[awaken_session_contract::AgentTool]) -> core::result::Result<(), alloc::string::String>
+pub fn awaken_session_contract::validate_mcp_toolset_pairing(&[alloc::string::String], &[alloc::string::String]) -> core::result::Result<(), alloc::string::String>
 pub fn awaken_session_contract::validate_skill_bundle(&str, &str, &awaken_session_contract::ResolvedSkillBinding, awaken_resource_contract::SkillVersion) -> core::result::Result<awaken_resource_contract::SkillVersion, awaken_session_contract::SkillBundleSourceError>
 pub type awaken_session_contract::RunApplicationError = awaken_session_contract::RunError
