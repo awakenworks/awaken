@@ -185,18 +185,33 @@ production logic.
   claim/lease-epoch fencing, crash reclaim, pending-input delivery,
   cancellation, settlement, dead-letter, requeue, and supersession. It never
   mutates Run disposition or tickets. `SessionRunProtocol.tla` directly
-  instances that same kernel for a root Run and two child Runs, and adds only
+  instances that same kernel for a root Run and two child Runs. It also
+  instances `SessionActivityKernel.tla` and `WorkQueueKernel.tla`, adding only
   cross-authority ordering for overlapping Session activities, one physical
   Work owner, per-Thread execution exclusion, realization, committed Thread
-  observation, and settlement.
+  observation, and settlement. A Work handoff may leave a physically running
+  stale attempt, but that attempt cannot produce an authoritative observation.
 - `ThreadState.tla` covers atomic typed-state batch admission, exact Run-scope
   binding, crash/rejection stuttering, version advancement, deterministic
   materialization, and replay equality. The Rust state selectors are the same
   functions consumed by `ThreadCommit::validate`, `ThreadCommit::assemble`, and
   `Store::rebuild`; Kani and a real in-memory commit test link those boundaries.
-- `WorkQueue.tla` covers the distinct Managed environment queue: transactional
-  single-active claim, durable owner/epoch/expiry, exact-boundary reclaim,
-  heartbeat, acknowledgement, stop, and environment removal.
+- `WorkQueueKernel.tla` is the single Managed environment queue transition
+  authority: transactional single-active claim, durable owner/epoch/expiry,
+  exact-boundary reclaim, heartbeat, acknowledgement, exact-epoch stop, and
+  environment removal. `WorkQueue.tla` is its standalone bounded instance.
+- `SessionActivityKernel.tla` owns stable operation-to-activity receipts and
+  exact settlement. `SessionRootKernel.tla` owns atomic complete-root creation,
+  exact create replay classification, realization fencing, terminal absorption,
+  and disposable Work projection. Their standalone instances have independent
+  TLC and TLAPS gates.
+- `SessionEventProtocol.tla` composes the activity and Dispatch kernels for one
+  initial Event without collapsing the initial wake activity into the distinct
+  Run activity. `SessionStartProtocol.tla` composes Session root, WorkQueue,
+  realization, Event, Run admission, observed ThreadCommit, Session settlement,
+  Dispatch settlement, and exact Work release. Its ordinary configuration
+  explores faults and replays; its reachability configuration proves the
+  fault-free full path can reach Idle under weak fairness.
 - `Delegation.tla` covers stable child identity, local/remote lifecycle
   equivalence, atomic child admission and input-delivery claims, independent
   owner/epoch recovery, depth/cycle/parallel/total
@@ -392,6 +407,8 @@ At the current source revision TLAPS discharges all obligations:
 - Implementation refinement: 108/108.
 - Rust commit projection safety: 49/49.
 - Managed WorkQueue safety: 35/35.
+- Session activity receipt safety: 26/26.
+- Session root creation and realization safety: 41/41.
 - LiveInbox reorder atomicity: 3/3.
 - Service lifecycle shutdown barriers: 4/4.
 - Shared mount reference safety: 29/29.
@@ -407,8 +424,13 @@ graphs with zero invariant violations and zero states left on the queue:
 | --- | ---: | ---: | ---: |
 | RunIngress | 3,124 | 115 | 9 |
 | ThreadState | 15,001 | 3,031 | 5 |
-| SessionRunProtocol | 10,430,739 | 1,023,397 | 32 |
+| SessionRunProtocol | 20,224,559 | 5,103,191 | 32 |
 | WorkQueue | 26,521 | 4,206 | 15 |
+| SessionActivity | 436 | 79 | 7 |
+| SessionRoot | 58,273 | 8,073 | 13 |
+| SessionEventProtocol | 257 | 104 | 13 |
+| SessionStartProtocol | 71,212 | 20,379 | 30 |
+| SessionStartProtocol reachability | 121 | 109 | 20 |
 | Delegation | 5,835 | 1,097 | 14 |
 | ToolBatch | 1,414 | 979 | 12 |
 | RuntimeSystem | 110,923 | 12,896 | 13 |
@@ -542,10 +564,10 @@ TLAPS, Java, or `tla2tools.jar` fails instead of producing a false green.
 `formal/coverage.json` is the versioned, claim-oriented obligation ledger. The
 CI gate verifies that every evidence path exists and that at least 70% of
 formalizable safety obligations have checked formal evidence. At this review
-checkpoint the ledger is 347/347 formalizable obligations model-linked or
+checkpoint the ledger is 357/357 formalizable obligations model-linked or
 kernel-proved, plus 11 explicitly external obligations, for 100% formal
-evidence coverage. The evidence dimensions are reported independently: 209
-model-checked, 23 model-proved, 173 Kani-kernel-proved, and 6 linked to the
+evidence coverage. The evidence dimensions are reported independently: 219
+model-checked, 30 model-proved, 173 Kani-kernel-proved, and 6 linked to the
 executable Runtime trace refinement bridge. These dimensions overlap and must
 not be summed. No formalizable row remains executable-only.
 Environmental properties are listed separately and never
@@ -557,7 +579,7 @@ that Rust file refines the model. Direct implementation evidence is counted only
 when a named Kani harness invokes the production kernel or the real Runtime
 emits a trace checked by `RustCommitSystem!TraceIsRefinement`.
 
-The current denominator of 347 formalizable obligations
+The current denominator of 357 formalizable obligations
 is not derived from all source code: it is the number of manually enumerated
 rows marked `formalizable` in that ledger. To prevent that
 curated denominator from hiding an unenumerated module,
@@ -775,7 +797,9 @@ The Managed WorkQueue proof covers queue state, transactional single-active
 claim, lease epoch/expiry, heartbeat compare-and-set, exact-boundary reclaim,
 and terminal authority clearing. The official worker header is persisted as
 the claim owner, including before the first heartbeat; only that worker may
-advance the `first`/`matching last_heartbeat` condition. The in-memory, SQLite,
+advance the `first`/`matching last_heartbeat` condition. Stop consumes the exact
+owner-and-epoch lease receipt, so a paused same-incarnation predecessor cannot
+retire a higher-epoch successor. The in-memory, SQLite,
 and PostgreSQL conformance paths exercise the same ownership rule. Stop remains
 a control-plane operation rather than worker authority, and exactly-once
 external work effects remain outside the queue proof.
