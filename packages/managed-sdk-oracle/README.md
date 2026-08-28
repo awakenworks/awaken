@@ -160,12 +160,15 @@ delta must match one reviewed version-pair fingerprint in
 `official_sdk_candidate_qualifications.json`; every delta coordinate must belong
 to exactly one named executable behavior owner. Reusing an allowlisted filename
 with different bytes therefore fails closed before candidate code can run. It
-then executes both Beta-namespace and GA lifecycles. The runtime proof covers the
+then executes both Beta-namespace and GA lifecycles and injects only that exact
+alias into the same Session/Native/ACP, resource-handoff, Memory/CAS, and Webhook
+matrices used by the stable anchors. The runtime proof covers the
 candidate's authentication header and retry behavior, exact Managed error
 envelopes, anonymous/read-only/admin policy enforcement without denied-write
 side effects, cursor traversal, rejected mutations, missing/deleted identities,
 immutable version archives, cross-root identity, and a real process restart over
-one durable store. A shared transport receipt encoder requires every discovered
+one durable store, including Session/Event, Memory, File, and Skill recovery.
+A shared transport receipt encoder requires every discovered
 Beta Files/Skills operation to reach a real non-5xx resource response with its
 exact method, route, selector, capability, and official-SDK marker; 401/403
 policy failures cannot impersonate resource-owner coverage. The runner also

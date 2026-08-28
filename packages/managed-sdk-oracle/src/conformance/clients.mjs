@@ -15,13 +15,15 @@ export function readSdkMatrix() {
   return matrix.anchors;
 }
 
-export function installedPackageVersion(moduleName) {
+export function installedPackage(moduleName) {
   let current = path.dirname(require.resolve(moduleName));
   for (;;) {
     const manifestPath = path.join(current, 'package.json');
     if (fs.existsSync(manifestPath)) {
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      if (manifest.name === '@anthropic-ai/sdk') return manifest.version;
+      if (manifest.name === '@anthropic-ai/sdk') {
+        return { root: current, version: manifest.version };
+      }
     }
     const parent = path.dirname(current);
     if (parent === current) {
@@ -29,6 +31,10 @@ export function installedPackageVersion(moduleName) {
     }
     current = parent;
   }
+}
+
+export function installedPackageVersion(moduleName) {
+  return installedPackage(moduleName).version;
 }
 
 export function validateSdkMatrix(entries) {
@@ -55,13 +61,52 @@ export async function loadQualifiedClients(entries = readSdkMatrix()) {
   validateSdkMatrix(entries);
   return Promise.all(entries.map(async (entry) => {
     const sdk = await import(entry.module);
+    const installed = installedPackage(entry.module);
     return {
       ...entry,
-      version: installedPackageVersion(entry.module),
+      ...installed,
       Client: sdk.default,
       toFile: sdk.toFile,
     };
   }));
+}
+
+export async function loadConformanceClients(
+  entries = readSdkMatrix(),
+  candidateModule = process.env.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE,
+  candidateVersion = process.env.ANTHROPIC_SDK_CONFORMANCE_CANDIDATE_VERSION,
+) {
+  const clients = await loadQualifiedClients(entries);
+  if (!candidateModule && !candidateVersion) return clients;
+  assert.equal(
+    candidateModule,
+    '@anthropic-ai/sdk-candidate',
+    'the conformance candidate must use the reviewed exact package alias',
+  );
+  assert.ok(
+    !entries.some(({ module }) => module === candidateModule),
+    'the candidate cannot duplicate a supported SDK anchor',
+  );
+  assert.match(
+    candidateVersion ?? '',
+    /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u,
+    'the conformance candidate requires one exact reviewed version',
+  );
+  const sdk = await import(candidateModule);
+  const installed = installedPackage(candidateModule);
+  assert.equal(
+    installed.version,
+    candidateVersion,
+    'the installed conformance candidate must match its reviewed version',
+  );
+  return [...clients, {
+    id: 'candidate',
+    module: candidateModule,
+    role: 'candidate',
+    ...installed,
+    Client: sdk.default,
+    toFile: sdk.toFile,
+  }];
 }
 
 export function qualifiedClient(clients, role) {

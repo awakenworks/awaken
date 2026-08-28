@@ -2,7 +2,7 @@
 // every mutating subresource's beta rejection, cross-beta cursors, cursor
 // invalidation safety, and literal HTTP/1 header framing.
 //
-// Cause/effect graph: every qualified SDK anchor or header selector -> one Memory aggregate/cursor ->
+// Cause/effect graph: every qualified SDK anchor, reviewed candidate, or header selector -> one Memory aggregate/cursor ->
 // mutation or read. Valid old/current selectors share state; ambiguous/invalid
 // selectors fail before mutation; stale cursors never resurrect removed heads.
 // Decision table coverage is grouped in the assertions below by handoff, CAS,
@@ -10,12 +10,12 @@
 
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { loadQualifiedClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
+import { loadConformanceClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, withScenarioServer } from '../harness.mjs';
 
 const LEGACY_BETA = 'managed-agents-2026-04-01';
 const MEMORY_BETA = 'agent-memory-2026-07-22';
-const QUALIFIED_CLIENTS = await loadQualifiedClients();
+const QUALIFIED_CLIENTS = await loadConformanceClients();
 const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client }) => [version, Client]);
 
 async function drain(items) {

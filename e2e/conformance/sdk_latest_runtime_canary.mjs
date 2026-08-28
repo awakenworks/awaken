@@ -592,11 +592,13 @@ async function exerciseBetaGaRecovery() {
   // Cause/effect graph: C1 the candidate Beta root selects its generated wire
   // projection; C2 GA and Beta roots address one File/Skill identity authority;
   // C3 process B opens the exact durable directory committed by process A; C4
-  // principal is absent, read-only, or admin. Effects: E1 absent fails 401;
+  // principal is absent, read-only, or admin; C5 Session/Event and
+  // MemoryStore/Memory are committed beside File/Skill. Effects: E1 absent fails 401;
   // E2 read-only lists but cannot mutate (403 and no write); E3 both roots
-  // observe the same ids before restart; E4 GA reads the Beta-created aggregates
-  // after restart; E5 the Beta-only archive operation still reads immutable
-  // Version bytes; E6 deletion through GA is immediately visible through Beta.
+  // observe the same ids before restart; E4 GA and the candidate Session/Memory
+  // clients read every aggregate after restart; E5 the Beta-only archive
+  // operation still reads immutable Version bytes; E6 deletion through GA is
+  // immediately visible through Beta.
   // Decision rules: P1 !C4->E1; P2 reader->E2; P3 C1+C2+C3+admin->E3..E6.
   // This catches an accidental projection-specific repository, PEP bypass,
   // denied-write side effect, memory-only success, stale cache resurrection,
@@ -682,6 +684,36 @@ async function exerciseBetaGaRecovery() {
     );
 
     let client = clientFor(a.baseUrl, adminToken);
+    const session = await client.beta.sessions.create({
+      agent: 'assistant',
+      environment_id: 'env_local',
+    });
+    const receipt = await client.beta.sessions.events.send(session.id, {
+      events: [{
+        type: 'user.message',
+        content: [{ type: 'text', text: `candidate-recovery-${manifest.version}` }],
+      }],
+    });
+    const acceptedId = receipt.data[0]?.id;
+    assert.equal(typeof acceptedId, 'string', 'P3/E3 durable Session receipt');
+    await waitForSessionEventReceipt(
+      client,
+      session.id,
+      acceptedId,
+      undefined,
+      ({ delta }) => delta.some((event) => event.type === 'agent.message')
+        && delta.some((event) => event.type === 'session.status_idle'),
+      'P3/E3 candidate Session settles before restart',
+      { pollMs: 10 },
+    );
+    const memoryStore = await client.beta.memoryStores.create({
+      name: `candidate-recovery-${manifest.version}`,
+    });
+    const memory = await client.beta.memoryStores.memories.create(memoryStore.id, {
+      path: '/candidate-recovery.md',
+      content: manifest.version,
+      view: 'full',
+    });
     const file = await client.beta.files.upload({
       file: await toFile(Buffer.from(`recovery-${manifest.version}`), 'recovery.txt'),
       ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
@@ -704,6 +736,24 @@ async function exerciseBetaGaRecovery() {
     servers.push(b.server);
     await waitForPort(port, 900_000, b.server);
     client = clientFor(b.baseUrl, adminToken);
+    assert.equal((await client.beta.sessions.retrieve(session.id)).id, session.id, 'P3/E4 Session');
+    const recoveredEvents = await drain(client.beta.sessions.events.list(session.id, { limit: 1 }));
+    assert.ok(
+      recoveredEvents.some((event) => event.id === acceptedId),
+      'P3/E4 exact accepted Session Event survives restart',
+    );
+    assert.ok(
+      recoveredEvents.some((event) => event.type === 'agent.message')
+        && recoveredEvents.some((event) => event.type === 'session.status_idle'),
+      'P3/E4 candidate decodes the recovered terminal Session history',
+    );
+    assert.equal(
+      (await client.beta.memoryStores.memories.retrieve(memory.id, {
+        memory_store_id: memoryStore.id,
+      })).content,
+      manifest.version,
+      'P3/E4 Memory',
+    );
     assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P3/E4 File');
     assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P3/E4 Skill');
     const archive = await client.beta.skills.versions.download(versionReference, {
@@ -732,6 +782,10 @@ async function exerciseBetaGaRecovery() {
     }
     await client.files.delete(file.id);
     await client.skills.delete(skill.id);
+    await client.beta.sessions.delete(session.id);
+    await client.beta.memoryStores.memories.delete(memory.id, { memory_store_id: memoryStore.id });
+    await client.beta.memoryStores.archive(memoryStore.id);
+    await client.beta.memoryStores.delete(memoryStore.id);
     await assert.rejects(
       () => client.beta.files.retrieveMetadata(file.id),
       managedError(404, 'not_found_error'),

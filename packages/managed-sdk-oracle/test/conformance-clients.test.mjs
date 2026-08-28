@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   installedPackageVersion,
+  loadConformanceClients,
   loadQualifiedClients,
   qualifiedClient,
   readSdkMatrix,
@@ -73,8 +74,52 @@ test('every multi-version Managed E2E consumes the canonical anchor matrix', () 
   ];
   for (const relativePath of matrixSuites) {
     const source = fs.readFileSync(path.join(repoRoot, relativePath), 'utf8');
-    assert.match(source, /loadQualifiedClients/u, `M2: ${relativePath}`);
+    assert.match(source, /loadConformanceClients/u, `M2: ${relativePath}`);
     assert.doesNotMatch(source, /@anthropic-ai\/sdk-\d/u, `M2: ${relativePath}`);
+  }
+});
+
+test('a reviewed candidate joins every shared conformance suite without becoming an anchor', async () => {
+  // Candidate admission graph: C1=the stable three-role matrix is valid;
+  // C2=the caller supplies the sole reviewed package alias. Effects: E1=the
+  // exact candidate is appended once with an explicit non-anchor role; E2=the
+  // stable matrix remains unchanged; E3=an arbitrary import specifier fails
+  // before module evaluation. This lets one implementation drive current and
+  // candidate tests without silently promoting registry-latest code.
+  const matrix = readSdkMatrix();
+  const candidateVersion = installedPackageVersion('@anthropic-ai/sdk-candidate');
+  const clients = await loadConformanceClients(
+    matrix,
+    '@anthropic-ai/sdk-candidate',
+    candidateVersion,
+  );
+  assert.equal(clients.length, matrix.length + 1, 'E1');
+  assert.equal(clients.at(-1).role, 'candidate', 'E1');
+  assert.equal(clients.at(-1).version, candidateVersion, 'E1');
+  assert.deepEqual(readSdkMatrix(), matrix, 'E2');
+  await assert.rejects(
+    loadConformanceClients(matrix, '@anthropic-ai/sdk', candidateVersion),
+    /reviewed exact package alias/u,
+    'E3',
+  );
+  await assert.rejects(
+    loadConformanceClients(matrix, '@anthropic-ai/sdk-candidate', '9.9.9'),
+    /must match its reviewed version/u,
+    'E3',
+  );
+
+  const scripts = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, 'e2e/package.json'), 'utf8'),
+  ).scripts;
+  const candidateMatrix = scripts['test:managed-sdk-candidate-matrix'];
+  for (const owner of [
+    'managed_sdk_version_matrix_e2e.mjs',
+    'managed_sdk_runtime_matrix_e2e.mjs',
+    'managed_sdk_resource_handoff_e2e.mjs',
+    'managed_sdk_memory_depth_e2e.mjs',
+    'managed_webhooks_official_sdk_e2e.mjs',
+  ]) {
+    assert.equal(candidateMatrix.split(owner).length, 2, `${owner} executes exactly once`);
   }
 });
 

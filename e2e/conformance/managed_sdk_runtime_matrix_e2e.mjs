@@ -1,18 +1,19 @@
-// Old/current SDK × Native/ACP runtime compatibility matrix.
+// Supported/current/reviewed-candidate SDK × Native/ACP runtime compatibility matrix.
 //
 // Cause/effect graph: creator SDK -> one durable Session -> operator SDK ->
 // selected runtime -> committed events -> terminal lifecycle. The SDK handoff
 // must not change runtime selection, pagination, event identity, or cleanup.
-// Decision table: every supported creator SDK × every supported operator SDK
+// Decision table: every admitted creator SDK × every admitted operator SDK
 // × {native,ACP}; every cell must create, retrieve, send, paginate, archive
-// and delete through the generated Managed surface.
+// and delete through the generated Managed surface. Candidate admission is
+// external to this shared suite and can only inject the exact reviewed alias.
 
 import assert from 'node:assert/strict';
-import { loadQualifiedClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
+import { loadConformanceClients } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, waitForSessionEventReceipt, withScenarioServer } from '../harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
-const CLIENTS = (await loadQualifiedClients()).map(({ version, Client }) => [version, Client]);
+const CLIENTS = (await loadConformanceClients()).map(({ version, Client }) => [version, Client]);
 
 async function drain(items) {
   const values = [];

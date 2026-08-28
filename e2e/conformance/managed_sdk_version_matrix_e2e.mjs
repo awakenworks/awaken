@@ -1,5 +1,5 @@
-// Compatibility gate for the oldest supported, prior reviewed, and current
-// Anthropic SDKs.
+// Compatibility gate for the oldest supported, prior reviewed, current, and
+// optionally prequalified candidate Anthropic SDKs.
 // Session calls intentionally send the same official Managed beta. Memory
 // calls intentionally omit `betas`: SDK 0.105 injects the legacy Managed beta
 // while SDK 0.117 injects the replacement Memory beta. The server must expose
@@ -7,7 +7,7 @@
 
 import assert from 'node:assert/strict';
 import {
-  loadQualifiedClients,
+  loadConformanceClients,
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
 import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs';
@@ -15,7 +15,7 @@ import { pass, waitForSessionEventReceipt, withRealServer } from '../harness.mjs
 const PORT = Number(process.env.E2E_PORT ?? 38137);
 const BETAS = ['managed-agents-2026-04-01'];
 const MEMORY_BETA = 'agent-memory-2026-07-22';
-const QUALIFIED_CLIENTS = await loadQualifiedClients();
+const QUALIFIED_CLIENTS = await loadConformanceClients();
 const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client }) => [version, Client]);
 const QUALIFIED_VERSIONS = CLIENTS.map(([version]) => version).join(', ');
 
