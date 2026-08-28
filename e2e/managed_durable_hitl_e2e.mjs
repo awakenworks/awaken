@@ -32,20 +32,39 @@ async function main() {
   fs.rmSync(STORE, { recursive: true, force: true });
   const upstream = await startUpstream('probe');
   const serverEnv = { SESSION_DEPLOYMENT_INGRESS: 'durable', SESSION_DEPLOYMENT_STORAGE_DIR: STORE, ...realServerEnv('probe', upstream) };
-  let srv = spawnServer('real', PORT, serverEnv);
-  await waitForPort(PORT);
-  let client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+  let srv = null;
+  let client;
   try {
-    const s = await client.beta.sessions.create({ agent: 'assistant', environment_id: 'env_local', betas: BETAS });
+    srv = spawnServer('real', PORT, serverEnv);
+    await waitForPort(PORT);
+    client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
+    const s = await client.beta.sessions.create({
+      agent: {
+        id: 'assistant',
+        type: 'agent_with_overrides',
+        tools: [{
+          type: 'agent_toolset_20260401',
+          configs: [{
+            name: 'write',
+            type: 'write',
+            enabled: true,
+            permission_policy: { type: 'always_ask' },
+          }],
+        }],
+      },
+      environment_id: 'env_local',
+      betas: BETAS,
+    });
     const initialReceipt = await client.beta.sessions.events.send(s.id, {
       events: [{ type: 'user.message', content: [{ type: 'text', text: 'write then read probe.txt' }] }],
       betas: BETAS,
     });
 
-    // Cause/effect graph: C1 durable first turn; C2 committed approval ticket;
-    // C3 exact approval input+Idempotency-Key; C4 resumed Run ends; C5 process
-    // restarts over the same deployment database after the response could have
-    // been lost. Effects: E1 one Awaiting
+    // Cause/effect graph: C0 the Session explicitly makes write always_ask while
+    // the official Agent-tool default remains allow; C1 durable first turn; C2
+    // committed approval ticket; C3 exact approval input+Idempotency-Key; C4
+    // resumed Run ends; C5 process restarts over the same deployment database
+    // after the response could have been lost. Effects: E1 one Awaiting
     // dispatch exists before approval; E2 the dispatch Worker resumes; E3 Done
     // removes the row; E4 the Managed projection reaches end_turn; E5 an exact
     // retry returns the original receipt; E6 key reuse with another decision is
@@ -107,6 +126,7 @@ async function main() {
     // Treat the first HTTP response as lost: retain only the caller's stable key
     // and body, restart the complete server, and ask the public API again.
     await stopServer(srv.server);
+    srv = null;
     srv = spawnServer('real', PORT, serverEnv);
     await waitForPort(PORT);
     client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: `http://127.0.0.1:${PORT}` });
@@ -151,7 +171,7 @@ async function main() {
     console.error('E2E FAIL:', err);
     process.exitCode = 1;
   } finally {
-    await stopServer(srv.server);
+    if (srv) await stopServer(srv.server);
     upstream.close();
     fs.rmSync(STORE, { recursive: true, force: true });
   }
