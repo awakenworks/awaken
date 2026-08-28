@@ -330,6 +330,19 @@ async fn serve_prepared_process(
         awaken_protocol_managed::enforce_managed_beta,
     ));
     let private_app = process.private_router;
+    let (public_app, private_app) = match deployment.workspace_data_lease_guard.clone() {
+        Some(guard) => (
+            public_app.layer(axum::middleware::from_fn_with_state(
+                guard.clone(),
+                crate::config::enforce_workspace_data_lease,
+            )),
+            private_app.layer(axum::middleware::from_fn_with_state(
+                guard,
+                crate::config::enforce_workspace_data_lease,
+            )),
+        ),
+        None => (public_app, private_app),
+    };
     let _active_streams_gauge = crate::register_active_streams_gauge(controller.clone());
     let public_app = match &deployment.admin_listen {
         Some(_) => crate::with_connection_metric(public_app, controller.clone()),

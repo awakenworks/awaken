@@ -8,6 +8,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use awaken_resource_persistence::{ObjectBackingConfig, ObjectBackingProvider};
+use axum::extract::{Request, State};
+use axum::http::StatusCode;
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 const CONTRACT_VERSION: u32 = 1;
@@ -45,6 +49,36 @@ pub(super) struct Config {
     runtime_cell_id: Coordinate,
     runtime_cell_incarnation: Coordinate,
     runtime_placement_epoch: u64,
+}
+
+/// Request-time authority for a Cloud-hosted Awaken Workspace.
+///
+/// The guard retains only file coordinates and the expected runtime identity.
+/// It rereads the deployment-owned lease for every admitted request, so a
+/// revoke, expiry, epoch rotation, or atomic file replacement takes effect
+/// without trusting a process-start snapshot.
+#[derive(Debug, Clone)]
+pub(crate) struct WorkspaceDataLeaseGuard(Config);
+
+impl WorkspaceDataLeaseGuard {
+    pub(crate) fn validate_now(&self) -> Result<(), String> {
+        load(&self.0).map(drop)
+    }
+}
+
+pub(crate) async fn enforce_workspace_data_lease(
+    State(guard): State<WorkspaceDataLeaseGuard>,
+    request: Request,
+    next: Next,
+) -> Response {
+    if guard.validate_now().is_err() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    next.run(request).await
+}
+
+pub(super) fn lease_guard(config: Option<&Config>) -> Option<WorkspaceDataLeaseGuard> {
+    config.cloned().map(WorkspaceDataLeaseGuard)
 }
 
 impl Config {
@@ -321,6 +355,11 @@ pub(super) fn resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::Request as HttpRequest;
+    use axum::routing::get;
+    use tower::ServiceExt as _;
 
     fn write(value: serde_json::Value) -> tempfile::NamedTempFile {
         let file = tempfile::NamedTempFile::new().unwrap();
@@ -459,5 +498,51 @@ mod tests {
             matches!(backend, super::super::ResourceStoreBackend::PostgresObject { ref url, .. } if url == "postgres://resources/db")
         );
         assert!(resolve(None, Some(&data), "/data".into()).is_err(), "R2");
+    }
+
+    #[tokio::test]
+    async fn request_guard_observes_lease_replacement_without_process_restart() {
+        // Cause/effect design: C1=the mounted lease is exact and current;
+        // C2=the deployment atomically replaces it with Revoked while the
+        // process remains alive. R1(C1)->admit; R2(C2)->503 before invoking
+        // the business handler. A startup-only snapshot would incorrectly
+        // admit R2 after a Cell move.
+        let manifest_file = write(manifest());
+        let lease_file = write(lease());
+        let guard = WorkspaceDataLeaseGuard(Config {
+            manifest_file: manifest_file.path().into(),
+            access_lease_file: lease_file.path().into(),
+            workspace_id: "workspace-a".to_owned().try_into().unwrap(),
+            runtime_region_id: "region-a".to_owned().try_into().unwrap(),
+            runtime_cell_id: "cell-a".to_owned().try_into().unwrap(),
+            runtime_cell_incarnation: "incarnation-a".to_owned().try_into().unwrap(),
+            runtime_placement_epoch: 5,
+        });
+        let app = Router::new()
+            .route("/effect", get(|| async { StatusCode::NO_CONTENT }))
+            .layer(axum::middleware::from_fn_with_state(
+                guard,
+                enforce_workspace_data_lease,
+            ));
+        let request = || {
+            HttpRequest::builder()
+                .uri("/effect")
+                .body(Body::empty())
+                .unwrap()
+        };
+        assert_eq!(
+            app.clone().oneshot(request()).await.unwrap().status(),
+            StatusCode::NO_CONTENT,
+            "R1"
+        );
+
+        let mut revoked = lease();
+        revoked["state"] = serde_json::json!("revoked");
+        std::fs::write(lease_file.path(), serde_json::to_vec(&revoked).unwrap()).unwrap();
+        assert_eq!(
+            app.oneshot(request()).await.unwrap().status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "R2"
+        );
     }
 }
