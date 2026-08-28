@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { latestCanaryPlan } from './sdk_latest_canary_lib.mjs';
 
@@ -72,5 +73,27 @@ test('registry drift without one valid release-age policy fails closed', () => {
       latestPublishedAt: 'invalid', minimumReleaseAgeMinutes: 1_440, now: Date.now(),
     }),
     /valid minimum-release-age policy/u,
+  );
+});
+
+test('the release canary reaches both official TypeScript and Python SDK oracles', () => {
+  // Orchestration cause/effect graph: C1=the release entry executes the local
+  // multi-language oracle check; C2=it executes the online Python wheel canary;
+  // C3=it executes the TypeScript runtime canary. Effect E1=no language can be
+  // silently dropped while the outer `test:sdk-latest-canary` command remains
+  // green. Decision table: C1+C2+C3=>E1; removal of any exact edge=>reject.
+  const source = readFileSync(new URL('./sdk_latest_canary.mjs', import.meta.url), 'utf8');
+  for (const edge of [
+    "'check'",
+    "'check:python:online'",
+    "'sdk_latest_runtime_canary.mjs'",
+  ]) {
+    assert.ok(source.includes(edge), `release canary is missing ${edge}`);
+  }
+  const scripts = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts;
+  assert.match(scripts['test:sdk-latest-canary'], /npm run test:sdk-python-runtime/u);
+  assert.equal(
+    scripts['test:sdk-python-runtime'],
+    'node conformance/managed_python_sdk_runtime_e2e.mjs',
   );
 });

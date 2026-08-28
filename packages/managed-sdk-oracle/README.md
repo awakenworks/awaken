@@ -1,9 +1,9 @@
 # Managed SDK oracle
 
-This package turns selected official `@anthropic-ai/sdk` releases into a
-deterministic compatibility oracle and the single executable Managed behavior
-qualification runner. It is development and CI tooling; runtime code does not
-depend on an SDK package.
+This package turns selected official TypeScript `@anthropic-ai/sdk` and Python
+`anthropic` releases into deterministic compatibility oracles and one Managed
+behavior qualification graph. It is development and CI tooling; runtime code
+does not depend on either SDK package.
 
 The dependency direction is singular: the selected **current official SDK** is
 the external compatibility expectation; Awaken's closed Rust request/response
@@ -11,7 +11,12 @@ types and routes are the internal implementation of that contract. Everything
 else is derived evidence:
 
 - `contracts/anthropic-managed/upstream-oracle.generated.json` records the
-  normalized official SDK routes and scoped declaration fingerprints;
+  normalized official TypeScript SDK routes and scoped declaration/runtime
+  fingerprints;
+- `contracts/anthropic-managed/python-upstream-oracle.generated.json` binds
+  every selected Python change point to its exact PyPI wheel SHA-256, normalized
+  operation inventory, and scoped source fingerprint. The current Python oracle
+  must retain the reviewed operation identity relationship to TypeScript;
 - `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
   the wire schemas generated from the Rust implementation and is compared to
   that oracle rather than treated as a competing protocol definition;
@@ -56,8 +61,17 @@ evidence from drifting from the external expectation:
   process-replacement boundary. Product orchestration runs `prepare`, replaces
   every serving process, then runs `verify` and `cleanup`; an in-memory cache
   cannot satisfy this gate.
+- `e2e/conformance/managed_python_sdk_runtime_e2e.{mjs,py}` provisions the exact
+  locked Python client closure in an isolated virtual environment and drives a
+  real Awaken process. It owns Python-specific sync/async calls, cursor and SSE
+  decoding, typed errors, multipart encoding, beta/GA resource handoff, and the
+  standard-webhooks adapter; the existing shared behavior owners continue to
+  own service-domain semantics.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
+`config/python-anchors.json` selects behavior-changing Python releases from the
+first Managed Agents SDK through the current oracle; patch releases without a
+Managed protocol, GA, helper, or transport change are intentionally not sampled.
 `config/scope.json` declares the Managed Beta namespaces, the GA Files/Models/
 Skills namespaces, and the small reviewed set of documented routes that are
 intentionally absent from the selected SDK anchors. Beta and GA are separate
@@ -87,6 +101,13 @@ feeds the exact Session-response gate. The standalone E2E package's
    `pnpm --filter @awaken/managed-sdk-oracle check`.
 6. Run this exact revision's hosted conformance command against every product
    deployment; products must not maintain their own SDK version aliases.
+
+For a Python anchor, update `config/python-anchors.json`, run
+`pnpm --filter @awaken/managed-sdk-oracle generate:python`, review every
+operation/source/wheel delta, then run the same `test` and `check` commands.
+`check:python:online` re-downloads only the exact current wheel, verifies its
+PyPI digest and extracted evidence, and applies the repository's common
+minimum-release-age policy to newer registry releases.
 
 The `check` command regenerates in memory and compares byte-for-byte. CI and the
 contract generation script both call it, while `test` type-checks all compile

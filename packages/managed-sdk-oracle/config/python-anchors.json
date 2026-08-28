@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "package": "anthropic",
+  "anchors": [
+    { "version": "0.92.0", "role": "oldest_supported", "reason": "first official Managed Agents release" },
+    { "version": "0.100.0", "role": "protocol_change_point", "reason": "multi-agent, outcome, webhook, and vault-validation surface" },
+    { "version": "0.109.0", "role": "protocol_change_point", "reason": "deployment and environment-credential surface" },
+    { "version": "0.115.0", "role": "protocol_change_point", "reason": "event-delta, override, reverse-pagination, and webhook surface" },
+    { "version": "0.116.0", "role": "protocol_change_point", "reason": "agent-memory beta selector" },
+    { "version": "0.117.1", "role": "protocol_change_point", "reason": "Dream and MCP Tunnel surface" },
+    { "version": "0.118.0", "role": "protocol_change_point", "reason": "initial events, model effort, and Thread delta streaming" },
+    { "version": "0.121.0", "role": "protocol_change_point", "reason": "budgets, advisor, inference location, and GitHub Skill loading" },
+    { "version": "0.124.0", "role": "ga_change_point", "reason": "Files and Skills GA cutover" },
+    { "version": "0.125.0", "role": "protocol_change_point", "reason": "web-search configuration and self-hosted sandbox memory" },
+    { "version": "1.0.0", "role": "transport_change_point", "reason": "httpx2 transport boundary" },
+    { "version": "1.1.0", "role": "protocol_change_point", "reason": "missing beta selectors restored" },
+    { "version": "1.2.0", "role": "current_oracle", "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins" }
+  ]
+}

@@ -13,8 +13,10 @@
     "conformance:recovery:verify": "node src/conformance/recovery.mjs verify",
     "conformance:recovery:cleanup": "node src/conformance/recovery.mjs cleanup",
     "generate": "node src/cli.mjs generate",
-    "check": "node src/cli.mjs check",
-    "test": "node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json && pnpm run test:behavior",
+    "generate:python": "python3 python/oracle.py generate",
+    "check": "node src/cli.mjs check && python3 python/oracle.py check",
+    "check:python:online": "python3 python/oracle.py canary",
+    "test": "python3 -m unittest discover -s python -p 'test_*.py' && node --test test/*.test.mjs && node --experimental-strip-types --test test/*.test.ts && tsc -p tsconfig.json && pnpm run test:behavior",
     "test:behavior": "cargo test --manifest-path ../../Cargo.toml -p awaken-protocol-managed --all-features --locked"
   },
   "dependencies": {

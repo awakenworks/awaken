@@ -33,6 +33,10 @@ execFileSync('pnpm', ['--filter', '@awaken/managed-sdk-oracle', 'check'], {
   cwd: REPO,
   stdio: 'inherit',
 });
+execFileSync('pnpm', ['--filter', '@awaken/managed-sdk-oracle', 'check:python:online'], {
+  cwd: REPO,
+  stdio: 'inherit',
+});
 execFileSync(process.execPath, [resolve(HERE, 'sdk_surface_coverage_e2e.mjs')], {
   cwd: E2E,
   stdio: 'inherit',

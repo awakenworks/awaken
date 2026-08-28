@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "End-to-end tests that drive awaken-server-local's protocol adapters with their official TypeScript/JS SDKs: managed (@anthropic-ai/sdk), ai-sdk (ai), ag-ui (@ag-ui/client), a2a (@a2a-js/sdk). Covers multi-Run continuity, multimodal, and HITL.",
+  "description": "End-to-end tests that drive awaken-server-local's protocol adapters with official clients: managed (@anthropic-ai/sdk and anthropic for Python), ai-sdk (ai), ag-ui (@ag-ui/client), a2a (@a2a-js/sdk). Covers multi-Run continuity, multimodal, and HITL.",
   "awakenTest": {
     "deterministicSuites": [
       "test",
@@ -71,7 +71,8 @@
     "test:conformance": "node conformance/gate_event_catalog_e2e.mjs && node conformance/gate_beta_sentinel_e2e.mjs && node conformance/gate_event_golden_e2e.mjs && node conformance/when_online_smoke_e2e.mjs",
     "test:sdk-surface": "node conformance/sdk_surface_coverage_e2e.mjs && node conformance/managed_docs_coverage_e2e.mjs && node --test conformance/managed_ts_sdk_method_manifest.test.mjs conformance/managed_event_behavior_manifest.test.mjs",
     "test:sdk-behavior-owners": "node --test conformance/managed_sdk_operation_receipts.test.mjs conformance/managed_pending_receipt_oracle.test.mjs && node conformance/run_managed_sdk_behavior_owners.mjs",
-    "test:sdk-latest-canary": "node --test conformance/sdk_latest_canary.test.mjs conformance/official_sdk_candidate_delta.test.mjs conformance/official_sdk_candidate_preflight.test.mjs conformance/official_sdk_change_point_compile.test.mjs conformance/official_sdk_resource_projection.test.mjs && node conformance/sdk_latest_canary.mjs",
+    "test:sdk-latest-canary": "node --test conformance/sdk_latest_canary.test.mjs conformance/official_sdk_candidate_delta.test.mjs conformance/official_sdk_candidate_preflight.test.mjs conformance/official_sdk_change_point_compile.test.mjs conformance/official_sdk_resource_projection.test.mjs && node conformance/sdk_latest_canary.mjs && npm run test:sdk-python-runtime",
+    "test:sdk-python-runtime": "node conformance/managed_python_sdk_runtime_e2e.mjs",
     "test:managed-native-acp-matrix": "node managed_native_acp_runtime_matrix_e2e.mjs",
     "test:managed-sdk-matrix": "node conformance/managed_sdk_version_matrix_e2e.mjs && node conformance/managed_sdk_runtime_matrix_e2e.mjs && npm run test:managed-native-acp-matrix && node conformance/managed_sdk_resource_handoff_e2e.mjs && node conformance/managed_sdk_memory_depth_e2e.mjs && node managed_webhooks_official_sdk_e2e.mjs",
     "test:tunnels-contract": "node management_tunnels_contract_e2e.mjs",
