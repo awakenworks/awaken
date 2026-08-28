@@ -30,12 +30,13 @@ type checking are valuable executable evidence, but are not formal proofs.
   contain the provider host path. The real Linux Namespace/Hand conformance test
   exercises those four consumers against `/workspace`; mount namespace, kernel,
   Git, and filesystem correctness remain environmental evidence.
-- Session create supports an explicit `Prefer: respond-async` acceptance point.
-  The returned 202 contains the complete durable Session root and stable
-  idempotent identity; the existing lifecycle supervisor resumes realization
-  from `Preparing`, and GET derives preparing/ready/failed plus the last
-  realization error from that same aggregate. `SessionStartProtocol.tla` proves
-  that acceptance cannot precede the complete root, while database durability,
+- The Session application has one internal acceptance point that returns only
+  after the complete root and idempotency receipt are durable; the existing
+  lifecycle supervisor then resumes realization from that root without a Job
+  aggregate. `SessionStartProtocol.tla` proves that internal acceptance cannot
+  precede the complete root. The standard Managed `/v1/sessions` adapter waits
+  for creation and returns the official synchronous 200 shape; no public async
+  status projection is claimed at this checkpoint. Database durability,
   scheduling fairness, and HTTP delivery remain outside the theorem.
 - The committed-event Runtime projection has one closed pending-tool reducer.
   `SessionRuntimeProjection.tla` checks replacement, accepted-but-unprocessed
@@ -51,16 +52,17 @@ type checking are valuable executable evidence, but are not formal proofs.
   unregistered, mismatched, disabled, or widened execution request is rejected;
   provider documentation compatibility and the correctness of external tool
   effects remain evidence boundaries.
-- Skill export and PatchBundle use one Resources-owned Artifact completion
-  receipt over exact patch, manifest, and `SHA256SUMS` File receipts. Kani proves
-  that all eight evidence axes are mandatory. SHA-256 implementation strength,
-  object-store durability, download delivery, Git apply behavior, tests, scans,
-  and human approval remain explicit effect boundaries.
-- `SessionCleanupKernel.tla` is the one four-phase cleanup algebra instantiated
-  by deletion and publication models. `SessionPublicationProtocol.tla` checks
-  mutually exclusive direct/PatchBundle modes, crash/retry monotonicity, exact
-  mode receipts, and the required SHA/base/conflict/test/scan ordering without
-  introducing another publication lifecycle.
+- Runtime output harvest publishes ordinary Files through the single
+  Resources-owned `ArtifactPublication`/receipt path. Kani proves every receipt
+  identity axis is mandatory. The generic harvester deliberately does not claim
+  that an arbitrary output set is a complete patch handoff: the typed manifest,
+  patch digest/base binding, external Git apply, tests, scans, and human approval
+  are workflow/E2E evidence owned by the exporting command, not a hidden Bundle
+  aggregate, checksum sidecar, or Resources completion state. SHA-256 strength,
+  object-store durability, and download delivery remain effect boundaries.
+- `SessionCleanupKernel.tla` remains the one four-phase cleanup algebra used by
+  deletion. Repository publication reuses the same terminal cleanup operation;
+  there is no parallel PatchBundle publication lifecycle or formal state model.
 
 - Dream status writes now consume one closed, exhaustively checked lifecycle
   table. Terminal states are absorbing and completion/failure require Running;

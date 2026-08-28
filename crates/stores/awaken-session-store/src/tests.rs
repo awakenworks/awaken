@@ -882,6 +882,57 @@ fn make_deletable(session: &mut PersistedSession) {
         .unwrap();
 }
 
+fn requested_cleanup_with_completion(session_id: &str) -> PersistedSession {
+    let mut session = sample(session_id);
+    assert!(session.terminal_cleanup.request(session_id));
+    session
+        .terminal_cleanup
+        .freeze_targets(session_id, std::iter::empty::<String>(), 0, 0)
+        .expect("freeze cleanup compatibility fixture");
+    let command = session
+        .terminal_cleanup
+        .command_for(session_id, session_id)
+        .expect("cleanup compatibility command");
+    session
+        .terminal_cleanup
+        .record_completion(
+            session_id,
+            awaken_session_contract::SessionCleanupCompletion::new(&command, Vec::new()),
+        )
+        .expect("record cleanup compatibility completion");
+    session
+}
+
+fn removed_bundle_v2_aggregate(session: &PersistedSession) -> serde_json::Value {
+    let session_id = session.session_id.as_str();
+    let command = session
+        .terminal_cleanup
+        .command_for(session_id, session_id)
+        .expect("cleanup compatibility command");
+    let removed_fingerprint = "removed-bundle-receipt";
+    let v2_fingerprint = awaken_session_contract::stable_fingerprint(&(
+        "session-terminal-cleanup-thread-receipt-v2",
+        command.session_id.as_str(),
+        command.thread_id.as_str(),
+        command.effect_id.as_str(),
+        Vec::<(&str, &str)>::new(),
+        vec![removed_fingerprint],
+    ));
+    let mut encoded: serde_json::Value =
+        serde_json::from_str(&aggregate_str(session).unwrap()).unwrap();
+    let completion = &mut encoded["aggregate"]["terminal_cleanup"]["completions"][session_id];
+    completion["artifact_bundle_receipts"] = serde_json::json!([{
+        "purpose": "patch_bundle",
+        "patch_sha256": "sha256:removed",
+        "patch_artifact_id": "file-patch",
+        "manifest_artifact_id": "file-manifest",
+        "checksum_artifact_id": "file-checksum",
+        "receipt_fingerprint": removed_fingerprint,
+    }]);
+    completion["receipt_fingerprint"] = serde_json::json!(v2_fingerprint);
+    encoded
+}
+
 /// Root-mutation cause graph shared by every durable backend:
 /// C1=idempotency key exists, C2=payload hash matches, C3=root revision
 /// matches, C4=aggregate was tombstoned. Key/hash resolution precedes CAS,
@@ -1309,6 +1360,113 @@ async fn terminal_cleanup_intent_and_receipt_survive_sqlite_reopen() {
 }
 
 #[tokio::test]
+async fn removed_cleanup_v2_converges_through_sqlite_reopen_and_cas() {
+    // Causes: C1 a cold row contains an exact removed v2 completion or a forged
+    // v2 fingerprint; C2 the process restarts before reading it; C3 the exact
+    // frozen cleanup command still owns the completion. Effects: E1 forged v2
+    // fails closed without rewriting the row; E2 exact v2 rehydrates as current
+    // ordinary-File evidence; E3 an unrelated aggregate CAS retains Requested
+    // cleanup but rewrites its completion only as current v1; E4 the same
+    // operation then completes; E5 another restart observes the terminal state.
+    // Decision rules: S1=C1(forged)+C2=>E1; S2=C1(exact)+C2+C3=>E2+E3;
+    // S3=S2+complete=>E4; S4=S3+restart=>E5. PostgreSQL uses the same decoder
+    // and is exercised in its live parity test.
+    let session_id = "sesn_cleanup_removed_v2";
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("sessions-cleanup-v2.db");
+    let path = path.to_string_lossy().to_string();
+    let legacy = {
+        let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+        let requested = create_fixture(
+            &repo,
+            "ws_a",
+            requested_cleanup_with_completion(session_id),
+            Vec::new(),
+        )
+        .await;
+        removed_bundle_v2_aggregate(&requested)
+    };
+
+    let mut forged = legacy.clone();
+    forged["aggregate"]["terminal_cleanup"]["completions"][session_id]["receipt_fingerprint"] =
+        serde_json::json!("forged");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+        params![forged.to_string(), session_id],
+    )
+    .unwrap();
+    drop(conn);
+    let Err(error) = SqliteManagedSessionRepository::open(&path) else {
+        panic!("S1/E1 corrupt cold row must fail startup");
+    };
+    assert!(error.contains("not canonical"), "S1/E1: {error}");
+
+    let conn = Connection::open(&path).unwrap();
+    conn.execute(
+        "UPDATE managed_session SET aggregate_json = ?1 WHERE session_id = ?2",
+        params![legacy.to_string(), session_id],
+    )
+    .unwrap();
+    drop(conn);
+    let repo = SqliteManagedSessionRepository::open(&path).unwrap();
+    let mut recovered = repo.get(session_id).await.expect("S2/E2 rehydrate");
+    recovered.title = Some("compatibility rewrite".into());
+    let mut recovered = replace_fixture(
+        &repo,
+        "ws_a",
+        recovered,
+        "test:cleanup:removed-v2:rewrite",
+        Vec::new(),
+    )
+    .await;
+    let persisted: String = repo
+        .conn
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT aggregate_json FROM managed_session WHERE session_id = ?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(!persisted.contains("artifact_bundle_receipts"), "S2/E3");
+    assert!(persisted.contains("\"completions\""), "S2/E3 Requested");
+
+    let receipts = recovered
+        .terminal_cleanup
+        .recorded_receipts(session_id)
+        .expect("S2/E2 current receipt");
+    assert!(
+        recovered
+            .terminal_cleanup
+            .complete(session_id, &receipts)
+            .expect("S3/E4 complete"),
+        "S3/E4",
+    );
+    replace_fixture(
+        &repo,
+        "ws_a",
+        recovered,
+        "test:cleanup:removed-v2:complete",
+        Vec::new(),
+    )
+    .await;
+    drop(repo);
+
+    let reopened = SqliteManagedSessionRepository::open(&path).unwrap();
+    assert!(
+        reopened
+            .get(session_id)
+            .await
+            .expect("S4/E5 reopen")
+            .terminal_cleanup
+            .is_completed(),
+        "S4/E5",
+    );
+}
+
+#[tokio::test]
 async fn terminal_state_and_its_fact_share_one_repository_commit() {
     let repo = SqliteManagedSessionRepository::open_in_memory().unwrap();
     create_fixture(
@@ -1642,6 +1800,66 @@ async fn postgres_round_trips_and_upserts() {
     put_snapshot_cursor_fixture(&repo, "postgres-snapshot").await;
     assert_snapshot_cursor_fixture(&repo).await;
 
+    /* Removed-completion rolling-upgrade parity. Causes/effects/rules are S2-S4
+     * in the SQLite cold-reopen test: an exact v2 row must pass through this
+     * backend's constructor and the same type decoder, be rewritten as Requested
+     * v1 through the existing CAS, and then complete without a second path. */
+    let legacy_id = "sesn_pg_cleanup_removed_v2";
+    let requested = create_fixture(
+        &repo,
+        "ws_a",
+        requested_cleanup_with_completion(legacy_id),
+        Vec::new(),
+    )
+    .await;
+    sqlx::query("UPDATE managed_session SET aggregate_json = $1 WHERE session_id = $2")
+        .bind(removed_bundle_v2_aggregate(&requested).to_string())
+        .bind(legacy_id)
+        .execute(&repo.pool)
+        .await
+        .unwrap();
+    let restarted = PostgresManagedSessionRepository::with_pool(repo.pool.clone())
+        .await
+        .expect("S2 PostgreSQL restart");
+    let mut recovered = restarted.get(legacy_id).await.expect("S2/E2 PostgreSQL");
+    recovered.title = Some("compatibility rewrite".into());
+    let mut recovered = replace_fixture(
+        &restarted,
+        "ws_a",
+        recovered,
+        "test:pg:cleanup:removed-v2:rewrite",
+        Vec::new(),
+    )
+    .await;
+    let persisted: String =
+        sqlx::query_scalar("SELECT aggregate_json FROM managed_session WHERE session_id = $1")
+            .bind(legacy_id)
+            .fetch_one(&repo.pool)
+            .await
+            .unwrap();
+    assert!(
+        !persisted.contains("artifact_bundle_receipts") && persisted.contains("\"completions\""),
+        "S2/E3 PostgreSQL Requested v1 rewrite",
+    );
+    let receipts = recovered
+        .terminal_cleanup
+        .recorded_receipts(legacy_id)
+        .expect("S2/E2 PostgreSQL receipt");
+    assert!(
+        recovered
+            .terminal_cleanup
+            .complete(legacy_id, &receipts)
+            .expect("S3/E4 PostgreSQL complete"),
+        "S3/E4 PostgreSQL",
+    );
+    replace_fixture(
+        &restarted,
+        "ws_a",
+        recovered,
+        "test:pg:cleanup:removed-v2:complete",
+        Vec::new(),
+    )
+    .await;
     /* Postgres parity for the recovery isolation decision table above.
      * Causes: P1 one decodable pending Session; P2 one corrupt aggregate.
      * Effects: Q1 P1 remains returned; Q2 P2 is excluded and durably

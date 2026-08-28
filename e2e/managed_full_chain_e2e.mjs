@@ -330,13 +330,13 @@ async function main() {
     assert.equal(manifest.schema, 'awaken.repository_patch.v1', 'manifest has one typed contract');
     assert.equal(manifest.base_commit, remoteHeadBefore, 'manifest records the mounted baseline');
     assert.notEqual(manifest.sandbox_commit, remoteHeadBefore, 'manifest records the sandbox commit');
-    assert.equal(manifest.patch_sha256, sha256(patchBytes), 'manifest authenticates the patch');
+    assert.equal(manifest.patch_sha256, sha256(patchBytes), 'manifest binds the exact patch bytes');
     assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'archive does not publish the sandbox commit');
 
     // Negative partitions are checked before the successful application so
     // none can borrow success from the happy-path worktree.
     const tamperedPatch = Buffer.concat([patchBytes, Buffer.from('\n# tampered')]);
-    assert.notEqual(sha256(tamperedPatch), manifest.patch_sha256, 'changed patch bytes fail authentication');
+    assert.notEqual(sha256(tamperedPatch), manifest.patch_sha256, 'changed patch bytes fail the integrity check');
     const drifted = `${TMP}/drifted`;
     git(['clone', '-q', bare, drifted]);
     git(['config', 'user.email', 'operator@t'], drifted);
@@ -370,7 +370,7 @@ async function main() {
     git(['add', 'CHAIN.txt'], acceptance);
     git(['commit', '-q', '-m', 'operator: accept full-chain patch'], acceptance);
     const acceptedCommit = git(['rev-parse', 'HEAD'], acceptance).trim();
-    assert.equal(git(['rev-parse', 'HEAD^'], acceptance).trim(), manifest.base_commit, 'operator commit is based on the authenticated baseline');
+    assert.equal(git(['rev-parse', 'HEAD^'], acceptance).trim(), manifest.base_commit, 'operator commit is based on the manifest-bound baseline');
     git(['push', '-q', 'origin', 'HEAD:refs/heads/review/session-full-chain'], acceptance);
     assert.equal(git(['rev-parse', 'main'], bare).trim(), remoteHeadBefore, 'operator push never mutates main');
     assert.equal(git(['rev-parse', 'review/session-full-chain'], bare).trim(), acceptedCommit, 'only the selected review ref receives the operator commit');
