@@ -51,15 +51,21 @@ fn candidate(
         provider,
         route,
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess::new(
-            awaken_runtime_contract::CredentialRef {
-                id: credential.into(),
-                revision: 0,
-            },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-        )),
+        Some(
+            awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: credential.into(),
+                    revision: 0,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                provider.split_once('@').map_or(provider, |(id, _)| id),
+            )),
+        ),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai".into(),
             api_dialect: "open_ai_chat".into(),
@@ -451,6 +457,14 @@ async fn any_delegates_enqueue_claim_and_owner_scoped_lease() {
 
 #[tokio::test]
 async fn reclaim_preserves_the_dispatch_pinned_model_candidate_set() {
+    // Cause/effect decision table: C1 dispatch freezes a primary and fallback
+    // candidate, each with an exact provider target; C2 worker A owns a live
+    // claim; C3 its lease expires; C4 worker B has the selected holder and
+    // realization capability. R1 C1+C2 => first claim retains the primary;
+    // R2 C1+C3+C4 => recovery retains the same fallback order and Run identity.
+    // Missing or mismatched targets are rejected by credential-attempt admission
+    // and are covered at that authority boundary; this test exercises only the
+    // successful reclaim effect, not a legacy target-less compatibility path.
     let store = any_in_memory();
     let worker_holder = awaken_runtime_contract::PlaintextHolder::new(
         awaken_runtime_contract::PlaintextBoundary::Worker,

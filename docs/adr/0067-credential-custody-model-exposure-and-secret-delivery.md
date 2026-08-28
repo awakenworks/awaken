@@ -944,36 +944,43 @@ port. Repository paths on one origin can reuse a credential; another origin,
 userinfo, or a non-HTTPS transport fails closed. Newly entered Repository
 credentials are always described. An undescribed legacy source cannot be
 rebound to a caller-selected Repository or HTTP-effect target; it requires an
-explicit migration and remains executable only through the already targetless
-Provider/MCP compatibility paths. No issuer, live-probe contract, GitHub App
+explicit migration. Provider, A2A, and MCP publication now compile exact
+targets and no longer admit targetless network/provider execution. No issuer,
+live-probe contract, GitHub App
 adapter, credential catalog, or second store is introduced by this amendment.
 Provider-managed acquisition and per-issuance expiry remain deferred until a
 production caller and adapter can close that port; a short-lived issued expiry
 must not be frozen into static source metadata.
 
-The descriptor support matrix is closed. `RepositoryTransport` admits only
-`HttpBasicAuth`, `HttpEffect` admits only the existing typed HTTP-effect usage,
+The descriptor support matrix is closed. `ProviderAdapter` admits the provider
+adapter and its explicit process injection forms, `McpAuthorization` admits one
+HTTP-header authorization for the canonical MCP URL, and
+`RemoteAgentAuthorization` admits one HTTP-header authorization for the
+verified A2A origin. `RepositoryTransport` admits only `HttpBasicAuth`,
+`HttpEffect` admits only the existing typed HTTP-effect usage,
 `SignatureVerification` admits only an exact material-field to
 provider-neutral-algorithm map, and `Extension` admits only the existing
 extension usage (whose `consumer_id` remains the sole extension-consumer
-identity). Described `ProviderAdapter` and
-`McpAuthorization` sources are rejected until their existing publication
-compilers carry an exact target; legacy undescribed Provider and MCP sources
-remain unchanged. Repository, HTTP-effect, signature-verification, and extension
-access therefore requires a target. The same target/usage rule runs at
+identity). Provider uses the catalog provider identity, A2A uses the
+same-origin Agent Card origin, and MCP uses
+`McpTargetIdentity::canonical_url`; cosmetic URL spelling cannot fork
+authorization. Every network/provider access therefore requires a target. The
+same target/usage rule runs at
 descriptor validation, access admission, and before either local or external
 material resolution.
 
 The Credential Vault owns one pure source-to-access compiler for active status,
 Workspace, positive revision, expiry, holder policy, binding, descriptor
 admission, and target attachment. Exact-target consumers supply the already
-selected holder. The retained undescribed, targetless Provider and A2A
-publication paths instead supply one typed deferred-selection owner because the
-dispatch claim selects their exact Worker or Workload holder; deferral is
-rejected for every described/target-bearing source, empty holder policy, or
-usage owned by another consumer. Protocol and hosted adapters may add custody
+selected holder. Session creation first normalizes MCP targets for Environment
+resolution, then the frozen Environment's sole `mcp_holder` compiles the
+access; there is no second self-hosted or deferred holder decision. Protocol
+and hosted adapters may add custody
 delivery only after that compiler succeeds; they do not reimplement source-row
-admission. Runtime
+admission. The compiler and local Materializer share
+`CredentialSource::validate_access_target` as the only descriptor/legacy-scope
+interpretation, while expiry is rechecked at materialization to close the
+time-of-check/time-of-use interval. Runtime
 Repository activation retains only the secret-free exact pin. Direct clone,
 hot replacement, and terminal publish each reopen that same pinned revision at
 the Git effect edge and drop HTTP Basic material when the operation returns.
@@ -988,5 +995,6 @@ conflicts before material is written or erased. Generic Secret mounts have no
 target/usage wire, so they reject every
 described source for both read and write-back; they remain an explicitly
 targetless legacy compatibility surface rather than a bypass around the exact
-access compiler. Likewise, Provider and A2A selection excludes described
-sources until those existing consumers own canonical target compilers.
+access compiler. The narrow application-MCP migration converts its exact legacy
+provider row to one descriptor in the same expected-revision WAL/CAS while
+rotating material; ordinary rotations still reject dual provider authority.

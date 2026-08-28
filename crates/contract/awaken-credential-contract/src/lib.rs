@@ -1289,6 +1289,10 @@ mod tests {
                 model_exposure: ModelExposurePolicy::Forbidden,
             },
         )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::ProviderAdapter,
+            "provider-a",
+        ))
     }
 
     fn capabilities(selected: &PlaintextHolder) -> CredentialRealizationCapabilities {
@@ -1304,7 +1308,7 @@ mod tests {
 
     /// Cause-effect graph:
     ///
-    /// C0 new secret-free publication
+    /// C0 new secret-free publication with an exact Provider target
     ///  -> C1 policy nonempty -> C2 exact holder allowed
     ///  -> C3 installed holder/kind -> C4 material source supported
     ///  -> C5 envelope recipient exact -> C6 envelope live

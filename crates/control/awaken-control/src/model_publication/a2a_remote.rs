@@ -4,13 +4,13 @@ use awaken_config_resolver::{
     CredentialCandidateSet, CredentialSelectionContext, credential_candidates, derive_vendor_pool,
 };
 use awaken_config_service::PublicationResolutionError;
+use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialHolderAdmission, CredentialKind, CredentialSource,
-    CredentialStatus, DeferredCredentialHolderSelection, ExactCredentialAccessRequest,
-    compile_exact_credential_access,
+    CredentialBinding, CredentialKind, CredentialSource, CredentialStatus,
+    ExactCredentialAccessRequest, compile_exact_credential_access,
 };
+use awaken_runtime_contract::CredentialMaterialBinding;
 use awaken_runtime_contract::resolved::{Backend, ModelBinding, ResolvedModelCandidate};
-use awaken_runtime_contract::{CredentialExecutionPolicy, CredentialMaterialBinding};
 use awaken_tenancy::ScopeId;
 
 use super::{CatalogModelPublicationResolver, PublicationCredentialLookup};
@@ -134,17 +134,24 @@ impl CatalogModelPublicationResolver {
                 &(&binding.backend_ref, &security.fingerprint),
                 &usage,
             );
+            let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
+                unavailable(
+                    "authenticated A2A publication requires an exact deployment-selected plaintext holder"
+                        .into(),
+                )
+            })?;
             Some(
                 compile_exact_credential_access(
                     source,
                     ExactCredentialAccessRequest {
                         workspace_id: Some(workspace.as_str()),
-                        target: None,
+                        target: Some(CredentialTarget::new(
+                            CredentialPurpose::RemoteAgentAuthorization,
+                            origin.clone(),
+                        )),
                         usage,
-                        policy: CredentialExecutionPolicy::self_hosted_provider(),
-                        holder_admission: CredentialHolderAdmission::Deferred(
-                            DeferredCredentialHolderSelection::A2aPublication,
-                        ),
+                        policy: self.direct_credential_policy.clone(),
+                        selected_holder,
                         binding: &material_binding,
                         now_unix_ms: super::wall_clock_ms(),
                     },
@@ -175,8 +182,8 @@ mod tests {
     use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, InMemorySecretStore};
     use awaken_model_catalog::ProviderCatalog;
-    use awaken_runtime_contract::CredentialUsage;
     use awaken_runtime_contract::resolved::ModelProvisioning;
+    use awaken_runtime_contract::{CredentialExecutionPolicy, CredentialUsage};
     use std::sync::Arc;
 
     struct FixedA2aCard(awaken_protocol_a2a::AgentCard);
@@ -204,8 +211,8 @@ mod tests {
         // Cause graph: C1 the Agent Card permits anonymous access; C2 it
         // instead requires one supported HTTP header; C3 the Workspace has an
         // active origin-tagged legacy credential; C4 that source has a zero
-        // revision; C5 the matching source is described while A2A target
-        // compilation remains unsupported. Effects: E1 publish Remote without
+        // revision; C5 the matching source is described for a different target.
+        // Effects: E1 publish Remote without
         // material; E2 publish Remote with an exact revision/usage; E3 required
         // auth fails closed without a valid admitted legacy source.
         //
@@ -269,9 +276,20 @@ mod tests {
         )
         .await
         .unwrap();
+        let direct_policy = CredentialExecutionPolicy::self_hosted_provider();
+        let direct_holder = direct_policy
+            .allowed_plaintext_holders
+            .iter()
+            .next()
+            .expect("self-hosted provider holder")
+            .clone();
         let authenticated =
             CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
                 .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+                .with_direct_provider_credential_execution(
+                    direct_policy.clone(),
+                    direct_holder.clone(),
+                )
                 .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
                 .await
                 .expect("A2");
@@ -299,6 +317,10 @@ mod tests {
         let error =
             CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials.clone())
                 .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card.clone())))
+                .with_direct_provider_credential_execution(
+                    direct_policy.clone(),
+                    direct_holder.clone(),
+                )
                 .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
                 .await
                 .expect_err("A4");
@@ -327,6 +349,7 @@ mod tests {
         credentials.put(described).await.unwrap();
         let error = CatalogModelPublicationResolver::new(ProviderCatalog::default(), credentials)
             .with_a2a_card_discovery(Arc::new(FixedA2aCard(required_card)))
+            .with_direct_provider_credential_execution(direct_policy, direct_holder)
             .resolve_models(&ScopeId::from("workspace-a"), &remote_selection(), &[])
             .await
             .expect_err("A5");

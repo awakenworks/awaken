@@ -28,7 +28,9 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex;
 
+mod admission;
 mod ambient_environment;
+use admission::{ExpectedProviderTarget, admit_exact_adapter, unix_time_ms};
 pub use ambient_environment::{AmbientApiKeyEnvironmentError, reject_ambient_api_key_environment};
 #[cfg(feature = "authority")]
 mod material_error;
@@ -44,10 +46,10 @@ use awaken_credential_vault::repo::CredentialRepo;
 use awaken_credential_vault::{CredentialSource, CredentialStatus, SecretRef, SecretStore};
 use awaken_runtime_contract::resolved::{ModelProvisioning, ResolvedModelCandidate};
 use awaken_runtime_contract::{
-    AttemptCredentialBinding, CredentialAccess, CredentialAdmissionError,
-    CredentialMaterialBinding, CredentialMaterialError, CredentialMaterialRequest,
-    CredentialMaterialResolver, CredentialMaterialSource, CredentialRealizationCapabilities,
-    CredentialRealizationKind, CredentialUsage, PlaintextHolder, ResolvedCredentialMaterial,
+    AttemptCredentialBinding, CredentialAccess, CredentialMaterialBinding, CredentialMaterialError,
+    CredentialMaterialRequest, CredentialMaterialResolver, CredentialMaterialSource,
+    CredentialRealizationCapabilities, CredentialRealizationKind, CredentialUsage, PlaintextHolder,
+    ResolvedCredentialMaterial,
 };
 
 #[derive(Clone)]
@@ -487,6 +489,7 @@ impl PinnedCredentialMaterializer {
     ) -> Result<awaken_runtime_contract::CredentialMaterial, String> {
         let ModelProvisioning::Provider {
             provider_ref,
+            route_ref,
             scope_id,
             credential,
             endpoint,
@@ -499,6 +502,10 @@ impl PinnedCredentialMaterializer {
             .split_once('@')
             .map(|(provider, _)| provider)
             .ok_or_else(|| "published model candidate has no versioned provider pin".to_string())?;
+        let protocol_endpoint = route_ref
+            .split_once('@')
+            .map(|(endpoint, _)| endpoint)
+            .ok_or_else(|| "published model candidate has no versioned route pin".to_string())?;
         let credential = credential
             .as_ref()
             .ok_or_else(|| "published model candidate has no credential pin".to_string())?;
@@ -526,7 +533,10 @@ impl PinnedCredentialMaterializer {
                     &(provider_ref, endpoint),
                     &credential.usage,
                 ),
-                Some(provider),
+                Some(ExpectedProviderTarget {
+                    provider_id: provider,
+                    protocol_endpoint_id: Some(protocol_endpoint),
+                }),
             )
             .await
             .map_err(|error| error.to_string())?;
@@ -583,7 +593,7 @@ impl PinnedCredentialMaterializer {
         access: &CredentialAccess,
         selected_holder: &PlaintextHolder,
         binding: CredentialMaterialBinding,
-        expected_provider: Option<&str>,
+        expected_provider: Option<ExpectedProviderTarget<'_>>,
     ) -> Result<ResolvedCredentialMaterial, CredentialMaterialError> {
         #[cfg(not(feature = "authority"))]
         let _ = expected_provider;
@@ -658,18 +668,16 @@ impl PinnedCredentialMaterializer {
             if source.workspace_id != binding.workspace_id {
                 return Err(CredentialMaterialError::RecipientMismatch);
             }
-            if expected_provider.is_some_and(|provider| match &source.descriptor {
-                Some(_) => !source.authorization_scope().belongs_to_provider(provider),
-                // Preserve the accepted legacy compatibility boundary: an
-                // undescribed generic row did not claim a provider, while an
-                // explicit legacy provider must still match exactly.
-                None => source
-                    .provider_id
-                    .as_deref()
-                    .is_some_and(|configured| configured != provider),
+            if expected_provider.is_some_and(|expected| {
+                !source
+                    .authorization_scope()
+                    .authorizes(expected.provider_id, expected.protocol_endpoint_id)
             }) {
                 return Err(CredentialMaterialError::RecipientMismatch);
             }
+            source
+                .validate_access_target(access.target.as_ref(), &access.usage)
+                .map_err(|_| CredentialMaterialError::BindingMismatch)?;
             if let Some(descriptor) = &source.descriptor {
                 descriptor
                     .validate_expiry(unix_time_ms())
@@ -679,15 +687,6 @@ impl PinnedCredentialMaterializer {
                         }
                         _ => CredentialMaterialError::Invalid,
                     })?;
-                descriptor
-                    .admit(
-                        access
-                            .target
-                            .as_ref()
-                            .ok_or(CredentialMaterialError::BindingMismatch)?,
-                        &access.usage,
-                    )
-                    .map_err(|_| CredentialMaterialError::BindingMismatch)?;
             }
             let access_token = self.materialize_source(&source).await?;
             let material = if access.usage == CredentialUsage::ProviderAdapter
@@ -792,7 +791,10 @@ impl PinnedCredentialMaterializer {
             access,
             selected_holder,
             CredentialMaterialBinding::for_target(workspace, target, &access.usage),
-            Some(provider),
+            Some(ExpectedProviderTarget {
+                provider_id: provider,
+                protocol_endpoint_id: None,
+            }),
         )
         .await
     }
@@ -844,39 +846,6 @@ pub enum CredentialExtensionRegistryError {
     InvalidDescriptor,
     #[error("credential extension consumer `{0}` is already registered")]
     DuplicateConsumer(String),
-}
-
-fn unix_time_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-/// Validate one explicit adapter mechanism without introducing a capability
-/// search. The caller is the installed adapter; this function only prevents its
-/// Native, ACP, MCP, and Resource entry points from drifting in admission rules.
-fn admit_exact_adapter(
-    access: &CredentialAccess,
-    selected_holder: &PlaintextHolder,
-    realization: CredentialRealizationKind,
-    material_sources: std::collections::BTreeSet<CredentialMaterialSource>,
-    recipient_bound_envelopes: bool,
-) -> Result<(), CredentialAdmissionError> {
-    access.admit(
-        selected_holder,
-        realization,
-        &CredentialRealizationCapabilities {
-            holders: [selected_holder.clone()].into_iter().collect(),
-            material_sources,
-            realization_kinds: [realization].into_iter().collect(),
-            recipient_bound_envelopes,
-            extension_consumers: Default::default(),
-            alternatives: Vec::new(),
-        },
-        unix_time_ms(),
-    )?;
-    Ok(())
 }
 
 #[async_trait::async_trait]
@@ -994,6 +963,8 @@ mod tests {
 
     /// Cause-effect graph:
     ///
+    /// P0 the access carries the exact Provider target/usage; its negative
+    /// combinations are owned by the credential-contract decision table.
     /// C0 control-plane material source -> C1 no sealed envelope
     ///  -> C2 selected holder authorized -> C3 source exists -> C4 source active
     ///  -> C5 exact revision -> C6 exact Workspace -> C7 exact provider
@@ -1143,7 +1114,11 @@ mod tests {
                 },
                 CredentialUsage::ProviderAdapter,
                 CredentialExecutionPolicy::exact(policy_holder, ModelExposurePolicy::Forbidden),
-            );
+            )
+            .with_target(awaken_credential_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+                "anthropic",
+            ));
             if !rule.no_envelope {
                 access = access.with_envelope(CredentialEnvelope::SealedForWorker {
                     envelope_ref: SealedCredentialEnvelopeRef {
@@ -1164,7 +1139,10 @@ mod tests {
                         &"anthropic",
                         &access.usage,
                     ),
-                    Some("anthropic"),
+                    Some(ExpectedProviderTarget {
+                        provider_id: "anthropic",
+                        protocol_endpoint_id: None,
+                    }),
                 )
                 .await;
             assert!(
@@ -1231,6 +1209,10 @@ mod tests {
             CredentialUsage::ProviderAdapter,
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            "openai",
+        ))
         .with_refresh(
             CredentialRefreshAccess::new(
                 u64::try_from(source.version).expect("positive revision"),
@@ -1255,7 +1237,10 @@ mod tests {
                 &access,
                 &holder,
                 CredentialMaterialBinding::for_target("workspace-a", &"openai", &access.usage),
-                Some("openai"),
+                Some(ExpectedProviderTarget {
+                    provider_id: "openai",
+                    protocol_endpoint_id: None,
+                }),
             )
             .await
             .expect("exact OAuth bundle");
@@ -1268,6 +1253,105 @@ mod tests {
         assert_eq!(bundle.account_id.as_deref(), Some("account-1"));
         assert_eq!(bundle.account_plan.as_deref(), Some("pro"));
         assert_eq!(bundle.expires_at_unix_ms, Some(u64::MAX));
+    }
+
+    /// Last-mile source-authority cause/effect graph: C1 persisted source owns
+    /// provider A at endpoint 1; C2 the published access targets A; C3 the
+    /// realized route is endpoint 1. Effects: E1 all exact causes open the
+    /// pinned material; E2 !C2 rejects even without a separate route hint; E3
+    /// !C3 rejects an endpoint-confused candidate before material use.
+    ///
+    /// | Rule | Source scope | Access target | Route | Effect |
+    /// |---|---|---|---|---|
+    /// | T1 | A/1 | A | A/1 | E1 material |
+    /// | T2 | A/1 | B | none | E2 binding mismatch |
+    /// | T3 | A/1 | A | A/2 | E3 recipient mismatch |
+    #[tokio::test]
+    async fn materialization_revalidates_the_source_owned_exact_target() {
+        let credentials = Arc::new(InMemoryCredentialRepo::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let mut source = enter_credential(
+            CredentialCreateParams {
+                workspace_id: "workspace-a".into(),
+                kind: CredentialKind::Vault,
+                provider_id: Some("provider-a".into()),
+                env_key: None,
+                secret: Some(RedactedString::new("target-bound-secret")),
+                oauth_command: None,
+            },
+            secrets.as_ref(),
+            credentials.as_ref(),
+        )
+        .await
+        .unwrap();
+        source.protocol_endpoint_id = Some("endpoint-1".into());
+        credentials.put(source.clone()).await.unwrap();
+        let holder = selected_holder();
+        let access_for = |audience: &str| {
+            CredentialAccess::new(
+                CredentialRef {
+                    id: source.id.0.clone(),
+                    revision: u64::try_from(source.version).unwrap(),
+                },
+                CredentialMaterialSource::ControlPlaneReference,
+                CredentialUsage::ProviderAdapter,
+                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
+            )
+            .with_target(awaken_credential_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+                audience,
+            ))
+        };
+        let materializer = PinnedCredentialMaterializer::new(credentials, secrets);
+        let binding = CredentialMaterialBinding::for_target(
+            "workspace-a",
+            &"provider-a",
+            &CredentialUsage::ProviderAdapter,
+        );
+
+        assert!(
+            materializer
+                .resolve_validated(
+                    &access_for("provider-a"),
+                    &holder,
+                    binding.clone(),
+                    Some(ExpectedProviderTarget {
+                        provider_id: "provider-a",
+                        protocol_endpoint_id: Some("endpoint-1"),
+                    }),
+                )
+                .await
+                .is_ok(),
+            "T1/E1"
+        );
+        assert_eq!(
+            materializer
+                .resolve_validated(&access_for("provider-b"), &holder, binding, None)
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::BindingMismatch,
+            "T2/E2"
+        );
+        assert_eq!(
+            materializer
+                .resolve_validated(
+                    &access_for("provider-a"),
+                    &holder,
+                    CredentialMaterialBinding::for_target(
+                        "workspace-a",
+                        &"provider-a/endpoint-2",
+                        &CredentialUsage::ProviderAdapter,
+                    ),
+                    Some(ExpectedProviderTarget {
+                        provider_id: "provider-a",
+                        protocol_endpoint_id: Some("endpoint-2"),
+                    }),
+                )
+                .await
+                .unwrap_err(),
+            CredentialMaterialError::RecipientMismatch,
+            "T3/E3"
+        );
     }
 
     /// Cause-effect graph for the one external material-source path:
@@ -1330,6 +1414,10 @@ mod tests {
                 },
                 CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
             )
+            .with_target(awaken_credential_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                "https://service.example/mcp",
+            ))
             .with_envelope(CredentialEnvelope::SealedForWorker {
                 envelope_ref: SealedCredentialEnvelopeRef {
                     id: "sealed-1".into(),
@@ -1430,7 +1518,8 @@ mod tests {
             CredentialMaterialSource::WorkerReference,
             exact_access.usage.clone(),
             exact_access.policy.clone(),
-        );
+        )
+        .with_target(exact_access.target.clone().expect("S8 exact target"));
         let worker_resolved = exact
             .resolve_validated(&worker_access, &holder, binding.clone(), None)
             .await
@@ -1468,6 +1557,10 @@ mod tests {
             CredentialUsage::ProviderAdapter,
             exact_access.policy.clone(),
         )
+        .with_target(awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+            "anthropic",
+        ))
         .with_envelope(CredentialEnvelope::SealedForWorker {
             envelope_ref: SealedCredentialEnvelopeRef {
                 id: "sealed-provider".into(),
@@ -1514,8 +1607,8 @@ mod tests {
         );
     }
 
-    /// Adapter-admission cause graph: published source -> installed source
-    /// capability -> material lookup. The decision table distinguishes a
+    /// Adapter-admission cause graph: exact Provider target -> published source
+    /// -> installed source capability -> material lookup. The decision table distinguishes a
     /// supported-but-missing Control reference from a Worker reference this
     /// adapter must reject before any lookup.
     ///
@@ -1542,15 +1635,23 @@ mod tests {
                 "anthropic@1",
                 "endpoint@1",
                 "workspace-a",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: "missing".into(),
-                        revision: 1,
-                    },
-                    source,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(
+                    CredentialAccess::new(
+                        CredentialRef {
+                            id: "missing".into(),
+                            revision: 1,
+                        },
+                        source,
+                        CredentialUsage::ProviderAdapter,
+                        CredentialExecutionPolicy::self_hosted_provider(),
+                    )
+                    .with_target(
+                        awaken_credential_contract::CredentialTarget::new(
+                            awaken_credential_contract::CredentialPurpose::ProviderAdapter,
+                            "anthropic",
+                        ),
+                    ),
+                ),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
                     api_dialect: "anthropic_messages".into(),
@@ -1598,8 +1699,9 @@ mod tests {
 
     #[tokio::test]
     async fn claimed_remote_materialization_uses_the_exact_worker_relay_binding() {
-        // Cause graph: C1 Remote publication pins an active revision; C2 the
-        // claim compiler selects WorkerRelay; C3 attempt ownership is current.
+        // Cause graph: C1 Remote publication pins an active revision and exact
+        // Agent origin target; C2 the claim compiler selects WorkerRelay; C3
+        // attempt ownership is current.
         // Effects: E1 materialize that exact bearer and record its realization;
         // changing the revision/mechanism/ownership fails in the shared gates.
         //
@@ -1626,18 +1728,24 @@ mod tests {
         let candidate = ResolvedModelCandidate::try_remote(
             ModelBinding::new("", "", "a2a:https://agent.example"),
             "workspace-a",
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: source.id.0,
-                    revision: 1,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::HttpHeader {
-                    name: "authorization".into(),
-                    scheme: Some("Bearer".into()),
-                },
-                CredentialExecutionPolicy::self_hosted_provider(),
-            )),
+            Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: source.id.0,
+                        revision: 1,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    CredentialExecutionPolicy::self_hosted_provider(),
+                )
+                .with_target(awaken_credential_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::RemoteAgentAuthorization,
+                    "https://agent.example",
+                )),
+            ),
             "sha256:card",
         )
         .expect("coherent remote credential candidate");
@@ -1735,7 +1843,16 @@ mod tests {
             )]),
         };
         let material = awaken_credential_vault::encode_structured_material(material).unwrap();
-        let source = enter_credential(
+        let usage = CredentialUsage::Extension {
+            consumer_id: "example.ssh-agent".into(),
+            material_type: "example.ssh-private-key/v1".into(),
+            public_config: serde_json::json!({"socket": "agent.sock"}),
+        };
+        let target = awaken_credential_contract::CredentialTarget::new(
+            awaken_credential_contract::CredentialPurpose::Extension,
+            "extension://example.ssh-agent",
+        );
+        let mut source = enter_credential(
             CredentialCreateParams {
                 workspace_id: "workspace-a".into(),
                 kind: CredentialKind::Vault,
@@ -1749,6 +1866,19 @@ mod tests {
         )
         .await
         .unwrap();
+        source.provider_id = None;
+        source.descriptor = Some(awaken_credential_contract::CredentialDescriptor::new(
+            "example.ssh-agent",
+            awaken_credential_contract::CredentialMaterialDescriptor::structured(
+                "example.ssh-private-key/v1",
+                ["private_key"],
+            ),
+            [awaken_credential_contract::CredentialTargetContract::new(
+                target.clone(),
+                usage.clone(),
+            )],
+        ));
+        credentials.put(source.clone()).await.unwrap();
         let holder = PlaintextHolder::new(
             PlaintextBoundary::Worker,
             awaken_runtime_contract::credential::SELF_HOSTED_WORKER_TRUST_DOMAIN,
@@ -1759,17 +1889,10 @@ mod tests {
                 revision: u64::try_from(source.version).unwrap(),
             },
             CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::Extension {
-                consumer_id: "example.ssh-agent".into(),
-                material_type: "example.ssh-private-key/v1".into(),
-                public_config: serde_json::json!({"socket": "agent.sock"}),
-            },
+            usage,
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::Extension,
-            "extension://example.ssh-agent",
-        ));
+        .with_target(target);
         let materializer = PinnedCredentialMaterializer::new(credentials, secrets)
             .with_extension_consumer(Arc::new(SshExtensionConsumer { corrupt_receipt }))
             .unwrap();

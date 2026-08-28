@@ -429,11 +429,14 @@ async fn hosted_application_bearer_is_stable_rotatable_and_session_selectable() 
         &"https://flow.example.test/mcp",
         &usage,
     );
+    let target =
+        awaken_session_contract::McpTarget::parse_http("https://flow.example.test/mcp").unwrap();
     assert_eq!(
         SessionCredentialSource::mcp_access_for_source(
             h.state.as_ref(),
             &source,
             "workspace-a",
+            &target,
             &holder,
             &binding,
         )
@@ -1936,6 +1939,8 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         &"https://mcp.example.com/sse",
         &usage,
     );
+    let target =
+        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Cause/effect decision table for the only plaintext-to-envelope boundary:
     //
@@ -1946,7 +1951,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
     // | R3 | no | yes | yes | reject before the issuer and attach nothing |
     // | R4 | yes | source-only | no | reject a cross-Workspace material binding before opening |
     // | R5 | yes | yes | no | reject a holder outside the exact policy before opening |
-    // | R6 | legacy undescribed | yes | caller-selected target | reject before opening or issuing an envelope |
+    // | R6 | described MCP | yes | undeclared HTTP-effect target | reject before opening or issuing an envelope |
     //
     // Holder/target integrity is cryptographically represented by the payload
     // fingerprint returned by the issuer; the contract admission decision table
@@ -1955,6 +1960,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
         &state,
         &source_id,
         &source_workspace,
+        &target,
         &holder,
         &binding,
     )
@@ -1975,6 +1981,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             &state,
             &source_id,
             "workspace-b",
+            &target,
             &holder,
             &binding,
         )
@@ -2022,11 +2029,11 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             },
         )
         .await
-        .expect_err("R6 legacy source cannot be rebound to an HTTP-effect target");
+        .expect_err("R6 MCP source cannot be rebound to an HTTP-effect target");
     assert!(
         platform_error
             .to_string()
-            .contains("legacy undescribed credentials cannot be rebound"),
+            .contains("credential target is not declared"),
         "R6"
     );
     assert_eq!(issuer.issued.lock().unwrap().len(), 1, "R6");
@@ -2041,6 +2048,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             &state,
             &source_id,
             &source_workspace,
+            &target,
             &holder,
             &cross_workspace_binding,
         )
@@ -2059,6 +2067,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             &state,
             &source_id,
             &source_workspace,
+            &target,
             &unauthorized_holder,
             &binding,
         )
@@ -2076,6 +2085,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
             &state,
             &source_id,
             &source_workspace,
+            &target,
             &holder,
             &binding,
         )
@@ -2106,6 +2116,7 @@ async fn exact_vault_admission_is_the_only_envelope_issuance_boundary() {
                 &adversarial,
                 &source_id,
                 &source_workspace,
+                &target,
                 &holder,
                 &binding,
             )
@@ -2153,12 +2164,14 @@ async fn exact_vault_admission_publishes_one_revision_to_external_custody() {
         &"https://mcp.example.com/sse",
         &usage,
     );
+    let target =
+        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Cause/effect: only an active, Workspace-bound, holder-authorized exact
     // revision opens once and reaches custody. The returned execution fact is
     // still secret-free and carries no Worker envelope.
     let access = SessionCredentialSource::mcp_access_for_source(
-        &state, &source_id, &workspace, &holder, &binding,
+        &state, &source_id, &workspace, &target, &holder, &binding,
     )
     .await
     .unwrap();
@@ -2216,6 +2229,8 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         &"https://mcp.example.com/sse",
         &usage,
     );
+    let target =
+        awaken_session_contract::McpTarget::parse_http("https://mcp.example.com/sse").unwrap();
 
     // Partition testing: a Platform/Provider-only custodian and an MCP/Worker
     // request are disjoint classes. The request must retain the ordinary MCP
@@ -2224,6 +2239,7 @@ async fn external_custody_never_observes_an_unowned_plaintext_path() {
         &state,
         &source_id,
         &workspace,
+        &target,
         &profile.mcp_holder,
         &binding,
     )
@@ -2796,14 +2812,7 @@ async fn exact_mcp_access_compiles_public_and_confidential_refresh() {
         .credential_source_id(&vault_id, &env_id)
         .await
         .unwrap();
-    assert!(
-        h.state
-            .mcp_access_for_source(&env_source)
-            .await
-            .unwrap()
-            .refresh
-            .is_none()
-    );
+    assert!(h.state.mcp_access_for_source(&env_source).await.is_err());
     let (s, bearer) = call(
         &h.app,
         "POST",

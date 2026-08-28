@@ -3,10 +3,14 @@
 use std::collections::BTreeMap;
 
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::CredentialSourceId;
+use awaken_credential_contract::{
+    CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId,
+    CredentialTarget, CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
+};
 
 use super::{
-    CredentialMaterialPatch, CredentialRepo, enter_prepared_credential_idempotent,
+    CredentialMaterialPatch, CredentialRepo, LegacyProviderDescriptorMigration,
+    enter_prepared_credential_idempotent, migrate_legacy_provider_to_descriptor_exact,
     rotate_credential_materials_exact_with_primary_ref,
 };
 use crate::{CredentialError, CredentialKind, CredentialSource, CredentialStatus, SecretStore};
@@ -19,6 +23,8 @@ pub struct ApplicationMcpBearerCommand {
     pub source_id: CredentialSourceId,
     pub workspace_id: String,
     pub target_fingerprint: String,
+    /// Canonical MCP HTTP URL selected by the target-owning application.
+    pub target_audience: String,
     pub command_key_fingerprint: String,
     /// Caller-owned positive monotonic order; never an Awaken-side counter.
     pub credential_generation: u64,
@@ -89,6 +95,7 @@ fn validate_command(command: &ApplicationMcpBearerCommand) -> Result<(), Credent
     if command.source_id.0.trim().is_empty()
         || command.workspace_id.trim().is_empty()
         || command.target_fingerprint.trim().is_empty()
+        || command.target_audience.trim().is_empty()
         || command.command_key_fingerprint.trim().is_empty()
         || command.credential_generation == 0
         || command.bearer.is_empty()
@@ -105,13 +112,27 @@ fn expected_source(
     command: &ApplicationMcpBearerCommand,
     material_ref: crate::SecretRef,
 ) -> CredentialSource {
+    let descriptor = CredentialDescriptor::new(
+        command.target_audience.clone(),
+        CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+        [CredentialTargetContract::new(
+            CredentialTarget::new(
+                CredentialPurpose::McpAuthorization,
+                command.target_audience.clone(),
+            ),
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+        )],
+    );
     CredentialSource {
         id: command.source_id.clone(),
         replacement_of: None,
         workspace_id: command.workspace_id.clone(),
         kind: CredentialKind::Vault,
-        descriptor: None,
-        provider_id: Some(APPLICATION_MCP_PROVIDER_ID.to_owned()),
+        descriptor: Some(descriptor),
+        provider_id: None,
         protocol_endpoint_id: Some(command.target_fingerprint.clone()),
         env_key: None,
         material_ref: Some(material_ref),
@@ -145,15 +166,15 @@ pub async fn prepare_application_mcp_bearer_rotation(
         ..
     } = command;
     validate_source(current, &expected)?;
-    if current_command_is_replay(
+    let exact_replay = current_command_is_replay(
         current,
         &command_key_fingerprint,
         credential_generation,
         &bearer,
         store,
     )
-    .await?
-    {
+    .await?;
+    if exact_replay && current.descriptor.is_some() {
         return Ok(None);
     }
     let mut after_source = current.clone();
@@ -162,6 +183,8 @@ pub async fn prepare_application_mcp_bearer_rotation(
         .checked_add(1)
         .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
     after_source.material_ref = Some(material_ref.clone());
+    after_source.descriptor = expected.descriptor;
+    after_source.provider_id = None;
     Ok(Some(PreparedApplicationMcpBearerRotation {
         after_source,
         material_ref,
@@ -217,6 +240,31 @@ pub async fn enter_or_rotate_application_mcp_bearer(
     };
 
     validate_source(&current, &expected)?;
+    if current.descriptor.is_none() {
+        current_command_is_replay(
+            &current,
+            &command_key_fingerprint,
+            credential_generation,
+            &bearer,
+            store,
+        )
+        .await?;
+        return migrate_legacy_provider_to_descriptor_exact(
+            LegacyProviderDescriptorMigration::new(
+                &source_id,
+                current.version,
+                APPLICATION_MCP_PROVIDER_ID,
+                expected
+                    .descriptor
+                    .expect("application MCP expected source is described"),
+                material_ref,
+                bearer,
+            ),
+            store,
+            repo,
+        )
+        .await;
+    }
     if current_command_is_replay(
         &current,
         &command_key_fingerprint,
@@ -229,13 +277,14 @@ pub async fn enter_or_rotate_application_mcp_bearer(
         return Ok(current);
     }
 
+    let descriptor = expected.descriptor;
     rotate_credential_materials_exact_with_primary_ref(
         &source_id,
         current.version,
         CredentialMaterialPatch {
             primary: Some(bearer),
             auxiliary: BTreeMap::new(),
-            descriptor: None,
+            descriptor,
         },
         Some(material_ref),
         store,
@@ -248,12 +297,15 @@ fn validate_source(
     actual: &CredentialSource,
     expected: &CredentialSource,
 ) -> Result<(), CredentialError> {
+    let authority_matches = (actual.descriptor == expected.descriptor
+        && actual.provider_id.is_none())
+        || (actual.descriptor.is_none()
+            && actual.provider_id.as_deref() == Some(APPLICATION_MCP_PROVIDER_ID));
     if actual.id != expected.id
         || actual.replacement_of != expected.replacement_of
         || actual.workspace_id != expected.workspace_id
         || actual.kind != CredentialKind::Vault
-        || actual.descriptor != expected.descriptor
-        || actual.provider_id.as_deref() != Some(APPLICATION_MCP_PROVIDER_ID)
+        || !authority_matches
         || actual.protocol_endpoint_id != expected.protocol_endpoint_id
         || actual.env_key.is_some()
         || actual.material_ref.is_none()
@@ -385,4 +437,53 @@ async fn verify_material(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::InMemorySecretStore;
+    use crate::repo::InMemoryCredentialRepo;
+
+    #[tokio::test]
+    async fn exact_legacy_replay_prepares_the_one_way_descriptor_cutover() {
+        // Cause/effect graph: C1 the exact generation/material is a replay; C2
+        // its persisted source still uses the legacy MCP provider marker.
+        // Effects: E1 C1+!C2 is a no-op; E2 C1+C2 prepares one higher revision
+        // with the canonical descriptor and removes the parallel provider_id.
+        // The ordinary create/rotate tests own the non-replay rules.
+        let command = ApplicationMcpBearerCommand {
+            source_id: CredentialSourceId("cred:application-mcp:test".into()),
+            workspace_id: "workspace-a".into(),
+            target_fingerprint: "target-fingerprint".into(),
+            target_audience: "https://mcp.example.test/mcp".into(),
+            command_key_fingerprint: "command-fingerprint".into(),
+            credential_generation: 1,
+            bearer: RedactedString::new("bearer"),
+        };
+        let material_ref = application_mcp_material_ref(
+            &command.source_id,
+            &command.command_key_fingerprint,
+            command.credential_generation,
+        )
+        .unwrap();
+        let mut legacy = expected_source(&command, material_ref.clone());
+        legacy.descriptor = None;
+        legacy.provider_id = Some(APPLICATION_MCP_PROVIDER_ID.into());
+        let store = InMemorySecretStore::new();
+        store
+            .put(&material_ref, command.bearer.clone())
+            .await
+            .unwrap();
+        let repo = InMemoryCredentialRepo::new();
+        repo.put(legacy.clone()).await.unwrap();
+
+        let prepared = prepare_application_mcp_bearer_rotation(command, &legacy, &store)
+            .await
+            .unwrap()
+            .expect("C1+C2/E2 descriptor cutover");
+        assert_eq!(prepared.after_source.version, 2, "E2");
+        assert!(prepared.after_source.descriptor.is_some(), "E2");
+        assert!(prepared.after_source.provider_id.is_none(), "E2");
+    }
 }

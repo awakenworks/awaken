@@ -142,15 +142,21 @@ fn provider_model_candidate_provisioning_is_pinned() {
         "provider-a@2",
         "route-a@3",
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess::new(
-            awaken_runtime_contract::CredentialRef {
-                id: "credential-a".into(),
-                revision: 4,
-            },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-        )),
+        Some(
+            awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: "credential-a".into(),
+                    revision: 4,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                "provider-a",
+            )),
+        ),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai_chat_completions".into(),
             api_dialect: "open_ai_chat".into(),
@@ -174,6 +180,10 @@ fn provider_model_candidate_provisioning_is_pinned() {
                 "credential": { "id": "credential-a", "revision": 4 },
                 "material_source": "control_plane_reference",
                 "usage": { "type": "provider_adapter" },
+                "target": {
+                    "purpose": { "type": "provider_adapter" },
+                    "audience": "provider-a"
+                },
                 "policy": {
                     "allowed_plaintext_holders": [
                         { "boundary": "workload", "trust_domain": "awaken.workload.acp" },

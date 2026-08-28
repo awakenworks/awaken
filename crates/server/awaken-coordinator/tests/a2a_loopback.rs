@@ -8,6 +8,7 @@ use awaken_agent_contract::agent::content::ContentBlock;
 use awaken_agent_contract::agent::delegation::DelegationStatus;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_coordinator::SharedHost;
+use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
 use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
 use awaken_protocol_a2a::{Response, Transport};
@@ -371,8 +372,8 @@ async fn require_remote_bearer(
 #[test]
 fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
     // Causes:
-    // C1 the published remote child pins a card fingerprint and one exact
-    // origin-tagged credential revision; C2 the card requires Bearer auth; C3
+    // C1 the published remote child pins a card fingerprint, verified origin
+    // target, and one exact origin-tagged credential revision; C2 the card requires Bearer auth; C3
     // only the ordinary A2A attempt installation is configured; C4 the native
     // fixture receives no/one ToolResult.
     // Effects: E1 child admission freezes one claim binding; E2 the production resolver
@@ -453,7 +454,11 @@ fn origin_credential_authenticates_the_unified_delegated_a2a_attempt() {
                 scheme: Some("Bearer".into()),
             },
             CredentialExecutionPolicy::self_hosted_provider(),
-        );
+        )
+        .with_target(CredentialTarget::new(
+            CredentialPurpose::RemoteAgentAuthorization,
+            endpoint.clone(),
+        ));
         let host = published_delegating_host(
             &endpoint,
             access,

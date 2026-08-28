@@ -498,15 +498,21 @@ fn provider_candidate(
         "provider@1",
         "route@1",
         "workspace-a",
-        Some(awaken_runtime_contract::CredentialAccess::new(
-            awaken_runtime_contract::CredentialRef {
-                id: reference.into(),
-                revision: 1,
-            },
-            awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-            awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-            awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-        )),
+        Some(
+            awaken_runtime_contract::CredentialAccess::new(
+                awaken_runtime_contract::CredentialRef {
+                    id: reference.into(),
+                    revision: 1,
+                },
+                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                "provider",
+            )),
+        ),
         awaken_runtime_contract::InferenceEndpoint {
             adapter_kind: "openai".into(),
             api_dialect: "open_ai_chat".into(),

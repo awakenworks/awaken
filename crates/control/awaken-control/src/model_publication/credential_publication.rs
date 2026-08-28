@@ -5,10 +5,10 @@ use awaken_config_resolver::{
     credential_is_executable_supply,
 };
 use awaken_config_service::PublicationResolutionError;
+use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
 use awaken_credential_vault::{
-    CredentialBinding, CredentialHolderAdmission, CredentialPool, CredentialSource,
-    DeferredCredentialHolderSelection, ExactCredentialAccessRequest, SelectionPolicy,
-    compile_exact_credential_access,
+    CredentialBinding, CredentialPool, CredentialSource, ExactCredentialAccessRequest,
+    SelectionPolicy, compile_exact_credential_access,
 };
 use awaken_model_catalog::{ApiDialect, Offering, ProviderCatalog};
 use awaken_runtime_contract::resolved::AcpExecutionProfile;
@@ -228,20 +228,23 @@ impl CatalogModelPublicationResolver {
                         &(&provider_ref, &endpoint),
                         &usage,
                     );
-                    let holder_admission = match &self.direct_holder {
-                        Some(holder) => CredentialHolderAdmission::Selected(holder),
-                        None => CredentialHolderAdmission::Deferred(
-                            DeferredCredentialHolderSelection::ProviderPublication,
-                        ),
-                    };
+                    let selected_holder = self.direct_holder.as_ref().ok_or_else(|| {
+                        unavailable(
+                            "direct provider credential publication requires an exact deployment-selected plaintext holder"
+                                .into(),
+                        )
+                    })?;
                     compile_exact_credential_access(
                         credential,
                         ExactCredentialAccessRequest {
                             workspace_id: Some(workspace.as_str()),
-                            target: None,
+                            target: Some(CredentialTarget::new(
+                                CredentialPurpose::ProviderAdapter,
+                                offering.provider_id.as_str(),
+                            )),
                             usage,
                             policy: self.direct_credential_policy.clone(),
-                            holder_admission,
+                            selected_holder,
                             binding: &material_binding,
                             now_unix_ms: super::wall_clock_ms(),
                         },

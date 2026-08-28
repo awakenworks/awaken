@@ -9,6 +9,7 @@ mod tests {
     use awaken_agent_contract::agent::run::Id as RunId;
     use awaken_agent_contract::agent::thread::Id as ThreadId;
     use awaken_config_service::{ModelPublicationResolver, ResolvedPublicationModels};
+    use awaken_credential_contract::{CredentialPurpose, CredentialTarget};
     use awaken_credential_materializer::CredentialInferenceMaterializer;
     use awaken_credential_vault::SecretStore;
     use awaken_credential_vault::repo::CredentialRepo;
@@ -109,6 +110,21 @@ mod tests {
             .with_credential_realization(attempt_realization(&[candidate]))
     }
 
+    fn direct_resolver(
+        catalog: Arc<InMemoryCatalogRepo>,
+        credentials: Arc<InMemoryCredentialRepo>,
+    ) -> CatalogModelPublicationResolver {
+        let policy = awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider();
+        let holder = policy
+            .allowed_plaintext_holders
+            .iter()
+            .next()
+            .expect("self-hosted Provider policy has an exact holder")
+            .clone();
+        CatalogModelPublicationResolver::from_repo(catalog, credentials)
+            .with_direct_provider_credential_execution(policy, holder)
+    }
+
     async fn provider(model: &str, credential: Option<(&str, bool)>) -> TestServices {
         let catalog = Arc::new(InMemoryCatalogRepo::new());
         catalog
@@ -170,7 +186,7 @@ mod tests {
             }
         }
         TestServices {
-            resolver: CatalogModelPublicationResolver::from_repo(catalog.clone(), creds.clone()),
+            resolver: direct_resolver(catalog.clone(), creds.clone()),
             materializer: CredentialInferenceMaterializer::new(creds.clone(), secrets.clone()),
             catalog,
             credentials: creds,
@@ -278,15 +294,21 @@ mod tests {
             "anthropic@1",
             "endpoint@1",
             "ws",
-            Some(awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
-                    id: source.id.0,
-                    revision: 1,
-                },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            )),
+            Some(
+                awaken_runtime_contract::CredentialAccess::new(
+                    awaken_runtime_contract::CredentialRef {
+                        id: source.id.0,
+                        revision: 1,
+                    },
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                )
+                .with_target(CredentialTarget::new(
+                    CredentialPurpose::ProviderAdapter,
+                    "anthropic",
+                )),
+            ),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "anthropic".into(),
                 api_dialect: "anthropic_messages".into(),
@@ -308,6 +330,9 @@ mod tests {
         // Cause graph:
         // binding ─> ownership ─> secret open ─> receipt commit ─> executor
         // each failed cause ───────────────────────────────────> fail closed
+        // Constraint: the fixture publication already carries the exact
+        // provider target and deployment-selected holder; this table varies
+        // only attempt-time causes after publication admission.
         struct Rule {
             id: &'static str,
             binding: bool,

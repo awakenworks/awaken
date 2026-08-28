@@ -1,5 +1,15 @@
 # Wiki Update Log
 
+## 2026-08-28 — Close targetless credential and MCP drain authority
+
+- Made Provider, A2A, and MCP publication carry exact catalog/origin/canonical-
+  URL targets through the existing Credential Source and Access path.
+- Made the frozen Environment `mcp_holder` the only holder decision and retained
+  one expected-revision migration for legacy application-MCP rows.
+- Closed new Runtime calls before cancelling busy calls and acknowledged
+  `Removed` only after local Run/process quiescence; external side effects that
+  were already accepted remain an explicit operational boundary.
+
 ## 2026-08-28 — Bind package realization to one Open structural verifier
 
 - Kept the existing package recipe, Kubernetes emitter, generic realization
@@ -23,7 +33,6 @@
   exact pinned Open Worker identity and the Kubernetes Job controller; without
   that gate there is no product-source proof. This record does not claim a live
   cluster deployment.
-
 ## 2026-08-28 — Close the Sandbox signature/attestation retry boundary
 
 - Kept the release workflow, provenance module, registry resolver, and static

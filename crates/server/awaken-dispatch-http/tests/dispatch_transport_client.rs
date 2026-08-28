@@ -79,15 +79,24 @@ fn credential_dispatch(
             "provider@1",
             "route@1",
             "workspace",
-            Some(CredentialAccess::new(
-                CredentialRef {
-                    id: "credential".into(),
-                    revision: 7,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::ProviderAdapter,
-                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
-            )),
+            Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: "credential".into(),
+                        revision: 7,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::ProviderAdapter,
+                    CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        ModelExposurePolicy::Forbidden,
+                    ),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    "provider",
+                )),
+            ),
             InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_chat".into(),

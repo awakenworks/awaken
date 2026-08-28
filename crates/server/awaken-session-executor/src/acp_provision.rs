@@ -435,6 +435,22 @@ mod tests {
         }
     }
 
+    fn provider_access(id: impl Into<String>, revision: u64) -> CredentialAccess {
+        CredentialAccess::new(
+            CredentialRef {
+                id: id.into(),
+                revision,
+            },
+            CredentialMaterialSource::ControlPlaneReference,
+            CredentialUsage::ProviderAdapter,
+            CredentialExecutionPolicy::self_hosted_provider(),
+        )
+        .with_target(awaken_runtime_contract::CredentialTarget::new(
+            awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+            "anthropic",
+        ))
+    }
+
     fn attempt_context_with(
         candidate: &awaken_runtime_contract::resolved::ResolvedModelCandidate,
         include_binding: bool,
@@ -653,15 +669,7 @@ mod tests {
                 "anthropic@1",
                 "anthropic-messages@1",
                 "ws",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: "provider-credential".into(),
-                        revision: 7,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(provider_access("provider-credential", 7)),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
                     api_dialect: "anthropic_messages".into(),
@@ -750,15 +758,7 @@ mod tests {
                 "anthropic@1",
                 "anthropic-messages@1",
                 "ws",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: source.id.0,
-                        revision: 1,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(provider_access(source.id.0, 1)),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
                     api_dialect: "anthropic_messages".into(),
@@ -946,15 +946,7 @@ mod tests {
                     "anthropic@1",
                     "anthropic-messages@1",
                     "ws",
-                    Some(CredentialAccess::new(
-                        CredentialRef {
-                            id: source.id.0,
-                            revision: 1,
-                        },
-                        CredentialMaterialSource::ControlPlaneReference,
-                        CredentialUsage::ProviderAdapter,
-                        CredentialExecutionPolicy::self_hosted_provider(),
-                    )),
+                    Some(provider_access(source.id.0, 1)),
                     InferenceEndpoint {
                         adapter_kind: "anthropic".into(),
                         api_dialect: "anthropic_messages".into(),
@@ -1148,15 +1140,7 @@ mod tests {
                 "anthropic@1",
                 "anthropic-messages@1",
                 "ws",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: source.id.0,
-                        revision: 1,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(provider_access(source.id.0, 1)),
                 InferenceEndpoint {
                     adapter_kind: "anthropic".into(),
                     api_dialect: "anthropic_messages".into(),

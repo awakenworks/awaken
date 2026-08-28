@@ -50,6 +50,25 @@ pub struct McpTargetIdentity {
     pub query: Option<String>,
 }
 
+impl McpTargetIdentity {
+    /// Render the sole canonical HTTP audience shared by credential authoring
+    /// and Session execution. Cosmetic spelling can never fork authorization.
+    #[must_use]
+    pub fn canonical_url(&self) -> String {
+        let port = self
+            .port
+            .map_or_else(String::new, |port| format!(":{port}"));
+        let query = self
+            .query
+            .as_ref()
+            .map_or_else(String::new, |query| format!("?{query}"));
+        format!(
+            "{}://{}{}{}{}",
+            self.scheme, self.host, port, self.path, query
+        )
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum McpTargetError {
     #[error("MCP target must be an absolute HTTP(S) URL without userinfo or fragment")]
@@ -178,6 +197,23 @@ mod tests {
         assert_eq!(json["url"], "https://mcp.example.test/mcp");
         assert!(json.get("type").is_none());
         assert_eq!(serde_json::from_value::<McpTarget>(json).unwrap(), target);
+    }
+
+    #[test]
+    fn canonical_http_audience_collapses_cosmetic_url_spellings() {
+        // Cause/effect: C1 scheme/host case, default port, and trailing slash
+        // differ while the parsed identity is equal; C2 a material port/path
+        // differs. E1 C1 renders one audience; E2 C2 stays distinct.
+        let canonical = McpTarget::identity("https://mcp.example.test/mcp").unwrap();
+        let cosmetic = McpTarget::identity("HTTPS://MCP.EXAMPLE.TEST:443/mcp/").unwrap();
+        assert_eq!(canonical.canonical_url(), cosmetic.canonical_url(), "C1/E1");
+        assert_ne!(
+            canonical.canonical_url(),
+            McpTarget::identity("https://mcp.example.test:8443/mcp")
+                .unwrap()
+                .canonical_url(),
+            "C2/E2"
+        );
     }
 
     #[test]

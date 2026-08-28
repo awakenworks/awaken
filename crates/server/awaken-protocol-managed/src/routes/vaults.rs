@@ -37,8 +37,11 @@ use crate::control::vault_acl::{
     mcp_oauth_to_create_params, static_bearer_to_create_params,
 };
 use awaken_agent_contract::RedactedString;
-use awaken_credential_contract::CredentialSourceId;
-use awaken_credential_contract::{CredentialCustodyPublication, CredentialEnvelopeIssuance};
+use awaken_credential_contract::{
+    CredentialCustodyPublication, CredentialDescriptor, CredentialEnvelopeIssuance,
+    CredentialMaterialDescriptor, CredentialPurpose, CredentialSourceId, CredentialTarget,
+    CredentialTargetContract, CredentialUsage, OPAQUE_SECRET_MATERIAL_TYPE,
+};
 use awaken_credential_vault::catalog::{
     ManagedCredentialAdmissionError, ManagedCredentialAuth as AuthRecord,
     ManagedCredentialMutationError, ManagedCredentialNetworking,
@@ -47,13 +50,12 @@ use awaken_credential_vault::catalog::{
     request_managed_vault_deletion,
 };
 use awaken_credential_vault::repo::{
-    APPLICATION_MCP_PROVIDER_ID, ApplicationMcpBearerCommand, CredentialMaterialPatch,
-    ManagedCredentialAdoptionProgress, ManagedCredentialCreateCommand,
-    ManagedCredentialCreationError, ManagedCredentialOperation, ManagedCredentialRepository,
-    application_mcp_material_ref, application_mcp_operation_id, create_managed_credential,
-    prepare_application_mcp_bearer_rotation, reconcile_managed_credential_rollout,
-    reconcile_managed_vault_deletion, retire_managed_credential, update_managed_credential,
-    update_managed_credential_prepared,
+    ApplicationMcpBearerCommand, CredentialMaterialPatch, ManagedCredentialAdoptionProgress,
+    ManagedCredentialCreateCommand, ManagedCredentialCreationError, ManagedCredentialOperation,
+    ManagedCredentialRepository, application_mcp_material_ref, application_mcp_operation_id,
+    create_managed_credential, prepare_application_mcp_bearer_rotation,
+    reconcile_managed_credential_rollout, reconcile_managed_vault_deletion,
+    retire_managed_credential, update_managed_credential, update_managed_credential_prepared,
 };
 use awaken_credential_vault::{
     CredentialCreateParams as DomainCredentialCreateParams, CredentialKind,
@@ -116,6 +118,31 @@ fn application_mcp_target_fingerprint(
             },
             identity.query.as_deref().unwrap_or(""),
         ],
+    ))
+}
+
+fn mcp_credential_descriptor(
+    url: &str,
+) -> Result<(CredentialDescriptor, String), awaken_credential_vault::CredentialError> {
+    let identity = awaken_session_contract::McpTarget::identity(url).map_err(|_| {
+        awaken_credential_vault::CredentialError::InvalidSource(
+            "MCP credential target must be an absolute HTTP(S) URL".into(),
+        )
+    })?;
+    let audience = identity.canonical_url();
+    Ok((
+        CredentialDescriptor::new(
+            audience.clone(),
+            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+            [CredentialTargetContract::new(
+                CredentialTarget::new(CredentialPurpose::McpAuthorization, audience.clone()),
+                CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+            )],
+        ),
+        audience,
     ))
 }
 
@@ -310,6 +337,7 @@ impl VaultState {
             &command_key_fingerprint,
             credential_generation,
         )?;
+        let (descriptor, target_audience) = mcp_credential_descriptor(mcp_server_url)?;
         self.repository
             .ensure_vault(
                 workspace_id,
@@ -335,11 +363,12 @@ impl VaultState {
                         source: DomainCredentialCreateParams {
                             workspace_id: workspace_id.to_owned(),
                             kind: CredentialKind::Vault,
-                            provider_id: Some(APPLICATION_MCP_PROVIDER_ID.to_owned()),
+                            provider_id: None,
                             env_key: None,
                             secret: Some(bearer.clone()),
                             oauth_command: None,
                         },
+                        descriptor: Some(descriptor),
                         source_id: Some(source_id.clone()),
                         protocol_endpoint_id: Some(target_fingerprint.clone()),
                         primary_material_ref: Some(material_ref),
@@ -399,6 +428,7 @@ impl VaultState {
                     source_id: source_id.clone(),
                     workspace_id: workspace_id.to_owned(),
                     target_fingerprint,
+                    target_audience,
                     command_key_fingerprint,
                     credential_generation,
                     bearer,
@@ -584,14 +614,7 @@ impl VaultState {
         awaken_credential_vault::CredentialError,
     > {
         let source = self.repository.get(source_id).await?;
-        let selected_holder = match request.holder_admission {
-            awaken_credential_vault::CredentialHolderAdmission::Selected(holder) => holder,
-            awaken_credential_vault::CredentialHolderAdmission::Deferred(_) => {
-                return Err(awaken_credential_vault::CredentialError::InvalidSource(
-                    "material delivery requires an exact plaintext holder".into(),
-                ));
-            }
-        };
+        let selected_holder = request.selected_holder;
         let binding = request.binding;
         let mut access =
             awaken_credential_vault::compile_exact_credential_access(&source, request)?;
@@ -673,9 +696,7 @@ impl VaultState {
                 target: Some(target),
                 usage,
                 policy,
-                holder_admission: awaken_credential_vault::CredentialHolderAdmission::Selected(
-                    &selected_holder,
-                ),
+                selected_holder: &selected_holder,
                 binding: &binding,
                 now_unix_ms,
             },
@@ -705,7 +726,31 @@ impl VaultState {
             &source_id.0,
             &usage,
         );
-        self.compile_mcp_access_for_source(source_id, None, &holder, &binding)
+        let source = self.repository.get(source_id).await?;
+        let record = self
+            .repository
+            .get_vault_credential_by_source(&source.workspace_id, source_id)
+            .await?
+            .ok_or_else(|| {
+                awaken_credential_vault::CredentialError::InvalidSource(
+                    "MCP credential source has no authoritative Managed child".into(),
+                )
+            })?;
+        let url = match record.auth {
+            AuthRecord::StaticBearer { mcp_server_url }
+            | AuthRecord::McpOauth { mcp_server_url, .. } => mcp_server_url,
+            AuthRecord::EnvironmentVariable { .. } => {
+                return Err(awaken_credential_vault::CredentialError::InvalidSource(
+                    "credential source is not owned by an MCP authorization".into(),
+                ));
+            }
+        };
+        let target = awaken_session_contract::McpTarget::parse_http(&url).map_err(|_| {
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "MCP credential target is invalid".into(),
+            )
+        })?;
+        self.compile_mcp_access_for_source(source_id, None, &target, &holder, &binding)
             .await
     }
 
@@ -716,6 +761,7 @@ impl VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: Option<&str>,
+        target: &awaken_session_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<
@@ -723,23 +769,38 @@ impl VaultState {
         awaken_credential_vault::CredentialError,
     > {
         use awaken_credential_contract::{
-            CredentialExecutionPolicy, CredentialRefreshAccess, CredentialUsage,
+            CredentialExecutionPolicy, CredentialPurpose, CredentialRefreshAccess,
+            CredentialTarget, CredentialUsage,
         };
+
+        let target_url = target.http_url().ok_or_else(|| {
+            awaken_credential_vault::CredentialError::InvalidSource(
+                "MCP credentials require an HTTP target".into(),
+            )
+        })?;
+        let target_audience = awaken_session_contract::McpTarget::identity(target_url)
+            .map_err(|_| {
+                awaken_credential_vault::CredentialError::InvalidSource(
+                    "MCP credential target is invalid".into(),
+                )
+            })?
+            .canonical_url();
 
         let (source, mut access) = self
             .exact_access_for_source(
                 source_id,
                 awaken_credential_vault::ExactCredentialAccessRequest {
                     workspace_id,
-                    target: None,
+                    target: Some(CredentialTarget::new(
+                        CredentialPurpose::McpAuthorization,
+                        target_audience,
+                    )),
                     usage: CredentialUsage::HttpHeader {
                         name: "authorization".into(),
                         scheme: Some("Bearer".into()),
                     },
                     policy: CredentialExecutionPolicy::self_hosted_mcp(),
-                    holder_admission: awaken_credential_vault::CredentialHolderAdmission::Selected(
-                        selected_holder,
-                    ),
+                    selected_holder,
                     binding,
                     now_unix_ms: credential_clock_unix_ms()?,
                 },
@@ -900,12 +961,19 @@ impl SessionCredentialSource for VaultState {
         &self,
         source_id: &CredentialSourceId,
         workspace_id: &str,
+        target: &awaken_session_contract::McpTarget,
         selected_holder: &awaken_credential_contract::PlaintextHolder,
         binding: &awaken_credential_contract::CredentialMaterialBinding,
     ) -> Result<awaken_credential_contract::CredentialAccess, String> {
-        self.compile_mcp_access_for_source(source_id, Some(workspace_id), selected_holder, binding)
-            .await
-            .map_err(|error| error.to_string())
+        self.compile_mcp_access_for_source(
+            source_id,
+            Some(workspace_id),
+            target,
+            selected_holder,
+            binding,
+        )
+        .await
+        .map_err(|error| error.to_string())
     }
 
     async fn credential_access_for_source(
@@ -1271,7 +1339,7 @@ async fn create_credential(
     // Secret-in through the ACL: every raw secret crosses into one domain
     // command here. Source and Managed child remain invisible until the
     // Credential repository atomically publishes both.
-    let (source, auxiliary_materials, auth, metadata, display_name) = match params {
+    let (source, descriptor, auxiliary_materials, auth, metadata, display_name) = match params {
         CredentialCreateParams::EnvironmentVariable {
             secret_name,
             secret_value,
@@ -1296,7 +1364,7 @@ async fn create_credential(
                     }
                 },
             };
-            (create, BTreeMap::new(), auth, metadata, display_name)
+            (create, None, BTreeMap::new(), auth, metadata, display_name)
         }
         CredentialCreateParams::StaticBearer {
             mcp_server_url,
@@ -1304,12 +1372,15 @@ async fn create_credential(
             metadata,
             display_name,
         } => {
+            let (descriptor, _) = mcp_credential_descriptor(&mcp_server_url)
+                .map_err(|error| bad_request(error.to_string()))?;
             let create = static_bearer_to_create_params(
                 resource_workspace.clone(),
                 WireStaticBearerCreate { token },
             );
             (
                 create,
+                Some(descriptor),
                 BTreeMap::new(),
                 AuthRecord::StaticBearer { mcp_server_url },
                 metadata,
@@ -1324,6 +1395,8 @@ async fn create_credential(
             metadata,
             display_name,
         } => {
+            let (descriptor, _) = mcp_credential_descriptor(&mcp_server_url)
+                .map_err(|error| bad_request(error.to_string()))?;
             // Split the wire refresh object into write-only material and the
             // secret-free projection. All material is then entered as one
             // revisioned credential aggregate.
@@ -1394,6 +1467,7 @@ async fn create_credential(
             };
             (
                 bridged.params,
+                Some(descriptor),
                 auxiliary,
                 AuthRecord::McpOauth {
                     mcp_server_url,
@@ -1410,6 +1484,7 @@ async fn create_credential(
     let (_, record) = create_managed_credential(
         ManagedCredentialCreateCommand {
             source,
+            descriptor,
             source_id: None,
             protocol_endpoint_id: None,
             primary_material_ref: None,
