@@ -73,16 +73,83 @@ impl SharedHost {
             .any(|tool| self.session_allows_agent_tool(thread, published_snapshot, tool))
     }
 
-    /// Direct Agent SDK-compatible repository Skill discovery follows the
-    /// `read` capability rule, intentionally narrower than general filesystem
-    /// capability. Managed Sessions consume only frozen binding bytes and do
-    /// not call this discovery path.
+    /// Repository Skill discovery follows the exact `read` capability rule,
+    /// intentionally narrower than general filesystem capability. The caller
+    /// still chooses which already-realized repository roots are admitted for
+    /// its execution profile.
     pub(crate) fn session_allows_repository_skill_discovery(
         &self,
         thread: &str,
         published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
     ) -> bool {
         self.session_allows_agent_tool(thread, published_snapshot, "read")
+    }
+
+    /// Select the only Environment-backed Skill roots for this Session.
+    ///
+    /// `None` excludes Environment discovery, `Some([])` retains the direct
+    /// live-authored compatibility source, and `Some(roots)` freezes exactly
+    /// those roots into the Session registry. Managed repository Skills come
+    /// only from an already-realized Repository mount at Anthropic's fixed
+    /// `.claude/skills` path; `plugin_config.skills_dir` remains a direct
+    /// authored-workspace setting and cannot alter that contract.
+    pub(crate) fn session_skill_source_roots(
+        &self,
+        thread: &str,
+        published_snapshot: Option<&awaken_runtime_contract::ExecutableAgentSnapshot>,
+        authored_skills_subdir: &str,
+    ) -> Option<Vec<String>> {
+        let managed_session = self
+            .session_slots
+            .read(thread, |slot| slot.session_dispatch)
+            .unwrap_or(false);
+        let read_enabled =
+            self.session_allows_repository_skill_discovery(thread, published_snapshot);
+        // A Managed cold recovery may carry its complete Session tool policy in
+        // the durable slot without a catalog-backed publication snapshot. The
+        // slot policy remains sufficient authority. Direct callers retain the
+        // legacy rule that only a published Agent admits repository roots.
+        let repository_discovery =
+            read_enabled && (managed_session || published_snapshot.is_some());
+
+        if managed_session && !repository_discovery {
+            return None;
+        }
+        if !managed_session && !repository_discovery {
+            return Some(Vec::new());
+        }
+
+        let mut roots = self
+            .session_slots
+            .read(thread, |slot| {
+                slot.resources
+                    .repositories
+                    .iter()
+                    .map(|repository| {
+                        format!(
+                            "{}/{}",
+                            repository
+                                .plan
+                                .mount_path
+                                .trim_start_matches('/')
+                                .trim_end_matches('/'),
+                            crate::skills::MANAGED_SKILLS_SUBDIR
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !managed_session {
+            roots.push(authored_skills_subdir.to_string());
+        }
+        roots.sort();
+        roots.dedup();
+
+        if managed_session && roots.is_empty() {
+            None
+        } else {
+            Some(roots)
+        }
     }
 
     pub(crate) fn select_content_delivery(
