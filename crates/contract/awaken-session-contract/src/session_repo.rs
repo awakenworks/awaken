@@ -656,6 +656,24 @@ impl PersistedSession {
             })
             .collect()
     }
+
+    /// Secret-free MCP configuration accepted for this Session's current Agent
+    /// snapshot. The Managed API must echo desired configuration even while its
+    /// Runtime attachment is still Requested/Realizing or has failed closed;
+    /// [`Self::visible_mcp_servers`] remains the separate execution-visibility
+    /// projection and may legitimately be empty during those states.
+    #[must_use]
+    pub fn configured_mcp_servers(&self) -> Vec<VisibleMcpServer> {
+        self.mcp
+            .desired_attachments()
+            .into_iter()
+            .map(|attachment| VisibleMcpServer {
+                name: attachment.name.clone(),
+                target: attachment.target.clone(),
+                prompts_as_skills: attachment.prompts_as_skills,
+            })
+            .collect()
+    }
 }
 
 /// Closed admission kernel for physically deleting the authoritative Session

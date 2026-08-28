@@ -797,14 +797,20 @@ async fn application_root_cas_decision_table() {
 fn rehydrated_session_restores_persisted_config() {
     // Cause graph: a durable mutable tool set is the exact replacement;
     // a missing durable root is rejected by the recovery entrypoint instead of
-    // deriving Runtime defaults.
+    // deriving Runtime defaults. MCP authoring and execution visibility are
+    // independent: the Agent snapshot retains accepted config before activation.
     //
     // | Rule | Persisted tools | Projection |
     // |---|---|---|
-    // | T1 | durable row, including empty | exact durable value |
+    // | T1 | durable tools + Requested MCP | exact tools + accepted MCP config |
     // | T2 | no durable row | NotFound; no projection is constructed |
     let state = ManagedState::new_with_mcp(RehydrateFake::default());
     let mut persisted = sample_persisted("sesn_1");
+    persisted.mcp.attachments[0].state = awaken_session_contract::McpAttachmentState::Requested;
+    assert!(
+        persisted.visible_mcp_servers().is_empty(),
+        "T1 execution visibility has not been acknowledged"
+    );
     persisted.tools =
         crate::project::session_tool_configuration(&[awaken_session_contract::AgentTool::Custom {
             name: "durable-tool".into(),

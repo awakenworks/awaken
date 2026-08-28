@@ -1,4 +1,4 @@
-//! Managed wire projection helpers for visible Session MCP servers.
+//! Managed wire projection helpers for the Session Agent's accepted MCP config.
 
 pub(super) fn typed_mcp_servers(
     values: Vec<awaken_session_contract::VisibleMcpServer>,
