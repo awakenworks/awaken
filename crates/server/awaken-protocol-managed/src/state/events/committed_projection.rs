@@ -12,17 +12,30 @@ use canonical_order::*;
 pub(super) use canonical_order::{budget_reach_close_cursor, budget_reach_projection_close_cursor};
 use historical_pending::historical_pending_by_lifecycle;
 
+struct CanonicalizationEvidence<'a> {
+    persisted: &'a awaken_session_contract::PersistedSession,
+    lifecycle_events: &'a [RunLifecycleEvent],
+    root_snapshot: Option<&'a awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
+    outcome_projections: &'a [AnchoredOutcomeProjection],
+    delegation: DelegationProjectionEvidence<'a>,
+    root_pending: Option<&'a Pending>,
+    child_pending: &'a std::collections::HashMap<String, Pending>,
+}
+
 impl ManagedState {
     fn canonicalize_committed_events(
         record: &mut SessionRecord,
-        persisted: &awaken_session_contract::PersistedSession,
-        lifecycle_events: &[RunLifecycleEvent],
-        root_snapshot: Option<&awaken_agent_contract::thread::read::recovery::RunRecoverySnapshot>,
-        outcome_projections: &[AnchoredOutcomeProjection],
-        delegation_evidence: DelegationProjectionEvidence<'_>,
-        root_pending: Option<&Pending>,
-        child_pending: &std::collections::HashMap<String, Pending>,
+        evidence: CanonicalizationEvidence<'_>,
     ) -> Result<(), StateError> {
+        let CanonicalizationEvidence {
+            persisted,
+            lifecycle_events,
+            root_snapshot,
+            outcome_projections,
+            delegation: delegation_evidence,
+            root_pending,
+            child_pending,
+        } = evidence;
         let DelegationProjectionEvidence {
             links,
             snapshots: child_snapshots,
@@ -1788,13 +1801,15 @@ impl ManagedState {
         )?;
         Self::canonicalize_committed_events(
             record,
-            &persisted,
-            &all_accepted_lifecycle,
-            root_snapshot.as_ref(),
-            &durable_outcome_projections,
-            delegation_evidence,
-            root_pending,
-            &child_pending,
+            CanonicalizationEvidence {
+                persisted: &persisted,
+                lifecycle_events: &all_accepted_lifecycle,
+                root_snapshot: root_snapshot.as_ref(),
+                outcome_projections: &durable_outcome_projections,
+                delegation: delegation_evidence,
+                root_pending,
+                child_pending: &child_pending,
+            },
         )?;
         self.broadcast_new_event_ids(session_id, record, &previous_event_ids);
         Ok(true)

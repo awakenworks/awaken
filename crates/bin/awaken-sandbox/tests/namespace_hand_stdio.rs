@@ -49,14 +49,17 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
      * Path-contract cause/effect graph and decision table.
      * Causes: C1=bwrap is available; C2=a required File is mounted read-only at
      * /mnt/session/uploads/file-1; C3=the real Hand is launched by the Namespace
-     * provider; C4=read/glob/bash address the sandbox-absolute path; C5=write
+     * provider; C4=read/glob/bash/edit/git address sandbox-absolute paths; C5=write
      * attempts to mutate the same mount; C6=the provider adopts the durable
      * handle and reconciles the frozen mount. Effects: E1=all read-capable tools
      * see the exact same token/path; E2=no host projection path leaks; E3=the OS
      * rejects mutation and the original bytes remain authoritative; E4=the
-     * adopted Hand sees the same sandbox path.
+     * adopted Hand sees the same sandbox path; E5=every cooperating tool and
+     * the opaque Git subprocess observe `/workspace`, never the provider's
+     * physical realization directory.
      * Rules: P1 !C1=>gated skip; P2 C1+C2+C3+C4=>E1+E2;
-     * P3 C1+C2+C3+C5=>E3; P4 C1+C2+C6=>E4.
+     * P3 C1+C2+C3+C5=>E3; P4 C1+C2+C6=>E4;
+     * P5 C1+C3+C4 on writable workspace=>E1+E2+E5.
      */
     let base = tempfile::tempdir().expect("sandbox root");
     let provider = NamespaceProvider::new(base.path());
@@ -69,6 +72,82 @@ async fn namespace_hand_uses_managed_absolute_paths_for_every_native_tool() {
     command.cwd = "/workspace".into();
     let (process, channel) = sandbox.spawn_agent(command).await.expect("spawn Hand");
     let executor = RemoteToolExecutor::new(channel);
+
+    let initialize_repository = rendered(
+        executor
+            .call_hand(&ToolCall {
+                call_id: "workspace-bash-init".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({
+                    "command": "mkdir -p /workspace/repository && printf 'before\\n' > /workspace/repository/note.txt && git -C /workspace/repository init -q"
+                }),
+            })
+            .await,
+    );
+    assert!(
+        !initialize_repository.contains(base.path().to_string_lossy().as_ref()),
+        "P5/E2: {initialize_repository}"
+    );
+
+    let workspace_read = rendered(
+        executor
+            .call_hand(&ToolCall {
+                call_id: "workspace-read".into(),
+                tool_id: "read".into(),
+                arguments: serde_json::json!({
+                    "path": "/workspace/repository/note.txt"
+                }),
+            })
+            .await,
+    );
+    assert!(workspace_read.contains("before"), "P5/E1: {workspace_read}");
+    assert!(
+        !workspace_read.contains(base.path().to_string_lossy().as_ref()),
+        "P5/E2: {workspace_read}"
+    );
+
+    let workspace_edit = rendered(
+        executor
+            .call_hand(&ToolCall {
+                call_id: "workspace-edit".into(),
+                tool_id: "edit".into(),
+                arguments: serde_json::json!({
+                    "path": "/workspace/repository/note.txt",
+                    "old": "before",
+                    "new": "after"
+                }),
+            })
+            .await,
+    );
+    assert!(
+        workspace_edit.contains("/workspace/repository/note.txt"),
+        "P5/E1+E5: {workspace_edit}"
+    );
+    assert!(
+        !workspace_edit.contains(base.path().to_string_lossy().as_ref()),
+        "P5/E2: {workspace_edit}"
+    );
+
+    let git_status = rendered(
+        executor
+            .call_hand(&ToolCall {
+                call_id: "workspace-git".into(),
+                tool_id: "bash".into(),
+                arguments: serde_json::json!({
+                    "command": "git -C /workspace/repository status --short && git -C /workspace/repository rev-parse --show-toplevel"
+                }),
+            })
+            .await,
+    );
+    assert!(git_status.contains("?? note.txt"), "P5/E1: {git_status}");
+    assert!(
+        git_status.contains("/workspace/repository"),
+        "P5/E5: {git_status}"
+    );
+    assert!(
+        !git_status.contains(base.path().to_string_lossy().as_ref()),
+        "P5/E2: {git_status}"
+    );
 
     let read = rendered(
         executor

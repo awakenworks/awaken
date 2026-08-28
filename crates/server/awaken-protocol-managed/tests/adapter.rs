@@ -267,6 +267,69 @@ async fn session_create_idempotency_replays_one_canonical_session() {
 }
 
 #[tokio::test]
+async fn async_session_create_returns_the_durable_preparing_aggregate() {
+    // Cause/effect graph: C1 Prefer respond-async is absent/present; C2 the
+    // owner-scoped idempotency key is new/replayed; C3 physical realization has
+    // not run. Effects: E1 ordinary create retains its synchronous compatibility
+    // response; E2 async create returns 202 with the stable Session id and a
+    // truthful preparing projection; E3 exact replay returns the same aggregate;
+    // E4 GET observes the same root, so no Job database is involved.
+    // Decision rules: A1 !C1=>E1 (covered by I1/I2 above); A2 C1+C2(new)+C3
+    // =>E2+E4; A3 C1+C2(replay)+C3=>E3+E4.
+    let app = router(Arc::new(ManagedState::new(EchoFake::default())));
+    let post = || async {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/sessions")
+                    .header("content-type", "application/json")
+                    .header("prefer", "respond-async")
+                    .header("idempotency-key", "async-create")
+                    .body(Body::from(
+                        serde_json::to_vec(&session_request(serde_json::json!({
+                            "agent": "coder",
+                            "title": "recoverable"
+                        })))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (
+            status,
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+        )
+    };
+
+    let first = post().await;
+    let replay = post().await;
+    assert_eq!(first.0, StatusCode::ACCEPTED, "A2/E2");
+    assert_eq!(
+        first.1["status"], "rescheduling",
+        "A2/E2 truthful preparing"
+    );
+    assert_eq!(first.1["preparation"]["status"], "preparing", "A2/E2");
+    assert_eq!(replay.0, StatusCode::ACCEPTED, "A3/E3");
+    assert_eq!(first.1["id"], replay.1["id"], "A3/E3 stable identity");
+
+    let retrieved = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{}", first.1["id"].as_str().unwrap()),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(retrieved["id"], first.1["id"], "A2+A3/E4");
+    assert_eq!(retrieved["status"], "rescheduling", "A2+A3/E4");
+    assert_eq!(retrieved["preparation"]["status"], "preparing", "A2+A3/E4");
+}
+
+#[tokio::test]
 async fn failed_idempotent_create_is_409_while_exact_get_remains_404() {
     // HTTP cause/effect decision table. C1 the deterministic create receipt is
     // durable; C2 owner and request fingerprint match; C3 execution is

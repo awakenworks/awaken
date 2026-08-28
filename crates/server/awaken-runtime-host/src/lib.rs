@@ -1224,7 +1224,7 @@ impl SessionRuntime for ManagedHost {
             .map_err(|error| RunError::internal(error.to_string()))?;
         // Failure is terminal-release blocking: keep the Sandbox available for
         // the durable cleanup retry instead of disposing unharvested outputs.
-        let artifact_receipts = self
+        let artifacts = self
             .host
             .harvest_thread_artifacts(&command.thread_id)
             .await
@@ -1236,7 +1236,11 @@ impl SessionRuntime for ManagedHost {
             .await
             .map_err(to_run_error)?;
         let completion =
-            awaken_session_contract::SessionCleanupCompletion::new(&command, artifact_receipts);
+            awaken_session_contract::SessionCleanupCompletion::new_with_artifact_bundles(
+                &command,
+                artifacts.receipts,
+                artifacts.bundle_receipts,
+            );
         completion
             .verify(&command)
             .map_err(|error| RunError::internal(error.to_string()))?;

@@ -503,6 +503,23 @@ impl SessionStatus {
     }
 }
 
+/// Recoverable creation/realization projection derived from the Session root.
+/// It is deliberately not a separately persisted Job status.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPreparationStatus {
+    Preparing,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct SessionPreparation {
+    pub status: SessionPreparationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Session {
     pub id: String,
@@ -519,6 +536,7 @@ pub struct Session {
     pub resources: Vec<SessionResource>,
     pub outcome_evaluations: Vec<OutcomeEvaluation>,
     pub status: SessionStatus,
+    pub preparation: SessionPreparation,
     pub stats: SessionStats,
     pub usage: Usage,
     /// The vaults the session is bound to (`vault_ids`).

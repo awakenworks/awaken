@@ -20,6 +20,7 @@ import type {
 } from "../lib/api/types";
 import { useApp } from "../lib/app-state";
 import { visibleAgents } from "../lib/visible-agents";
+import { sessionStatusPresentation } from "../lib/session-log";
 import EnvironmentsSurface from "./environments";
 import AgentsSurface from "./agents";
 
@@ -28,7 +29,8 @@ export function StatusPill({ session }: { session: Session }) {
   if (session.archived_at) {
     return <Pill tone="neutral">{app.t("archived", "已归档")}</Pill>;
   }
-  if (session.status === "running") {
+  const status = sessionStatusPresentation(session.status);
+  if (status === "running") {
     return (
       <span className="pill agent">
         <span className="dot pulse" style={{ background: "var(--agent)" }} />
@@ -36,7 +38,16 @@ export function StatusPill({ session }: { session: Session }) {
       </span>
     );
   }
-  return <Pill tone="ok">{app.t("idle", "空闲")}</Pill>;
+  if (status === "idle") {
+    return <Pill tone="ok">{app.t("idle", "空闲")}</Pill>;
+  }
+  if (status === "preparing") {
+    return <Pill tone="info">{app.t("preparing", "准备中")}</Pill>;
+  }
+  if (status === "terminated") {
+    return <Pill tone="neutral">{app.t("terminated", "已终止")}</Pill>;
+  }
+  return <Pill tone="warn">{app.t("unknown", "状态未知")}</Pill>;
 }
 
 function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void }) {
@@ -64,7 +75,10 @@ function NewSessionModal({ wsId, onClose }: { wsId: string; onClose: () => void 
   });
   const create = useMutation({
     mutationFn: (body: CreateSessionRequest) =>
-      api.post<Session>(ws("/v1/sessions"), body, createIdentity.current.headersFor(body)),
+      api.post<Session>(ws("/v1/sessions"), body, {
+        ...createIdentity.current.headersFor(body),
+        Prefer: "respond-async",
+      }),
     onSuccess: (session) => {
       createIdentity.current.complete();
       nav(`/w/${wsId}/sessions/${session.id}`);

@@ -214,6 +214,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness organization_bucket_consumption_is_exact_and_non_over_admitting \
     --harness deployment_run_failure_projection_is_total_exact_and_non_strengthening \
     --harness retired_agent_publication_bypass_is_exclusive_to_terminal_cleanup \
+    --harness session_preparation_projection_is_total_exact_and_non_strengthening \
     --harness rollout_update_revision_is_monotonic_and_covers_event \
     --harness idempotency_key_scan_transition_is_exact_and_invalid_absorbing \
     --harness idempotency_key_length_and_summary_policy_is_exact \
@@ -316,6 +317,7 @@ if command -v cargo-kani >/dev/null 2>&1; then
     --harness startup_wiring_requires_every_role_owned_component \
     --harness startup_wiring_fails_closed_for_unknown_missing_or_extra_authority
   run_kani awaken-resource-contract \
+    --harness artifact_bundle_completion_requires_every_evidence_axis \
     --harness resource_config_publication_is_exact_and_never_wraps \
     --harness exhausted_resource_config_versions_fail_closed \
     --harness portable_aggregate_revision_is_strictly_monotonic_and_never_wraps \
@@ -424,6 +426,18 @@ if command -v java >/dev/null 2>&1 && [ -n "$tla_jar" ] && [ -f "$tla_jar" ]; th
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/session-deletion" \
     -config formal/tla/SessionDeletion.cfg formal/tla/SessionDeletion.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/workspace-path-projection" \
+    -config formal/tla/WorkspacePathProjection.cfg \
+    formal/tla/WorkspacePathProjection.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-runtime-projection" \
+    -config formal/tla/SessionRuntimeProjection.cfg \
+    formal/tla/SessionRuntimeProjection.tla
+  java -XX:+UseParallelGC -jar "$tla_jar" \
+    -metadir "$tlc_state_root/session-publication-protocol" \
+    -config formal/tla/SessionPublicationProtocol.cfg \
+    formal/tla/SessionPublicationProtocol.tla
   java -XX:+UseParallelGC -jar "$tla_jar" \
     -metadir "$tlc_state_root/circuit-breaker" \
     -config formal/tla/CircuitBreaker.cfg formal/tla/CircuitBreaker.tla

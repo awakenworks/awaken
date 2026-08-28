@@ -22,17 +22,23 @@ vars == <<disposition, executionState, cleanupPhase, visible,
 NoEffect == "none"
 DeleteEffect == "session-cleanup:session-1"
 
+Cleanup == INSTANCE SessionCleanupKernel WITH
+    NoEffect <- NoEffect,
+    CleanupEffect <- DeleteEffect,
+    MaxCleanupFailures <- MaxCleanupFailures,
+    kCleanupPhase <- cleanupPhase,
+    kCleanupEffectId <- cleanupEffectId,
+    kLastAttemptEffectId <- lastAttemptEffectId,
+    kCleanupAttempts <- cleanupAttempts,
+    kCleanupFailures <- cleanupFailures,
+    kResourceReleaseRequested <- resourceReleaseRequested
+
 Init ==
     /\ disposition = "active"
     /\ executionState = "running"
-    /\ cleanupPhase = "not_requested"
+    /\ Cleanup!Init
     /\ visible = TRUE
-    /\ cleanupEffectId = NoEffect
-    /\ lastAttemptEffectId = NoEffect
-    /\ cleanupAttempts = 0
-    /\ cleanupFailures = 0
     /\ workRetired = FALSE
-    /\ resourceReleaseRequested = FALSE
     /\ deletedFactCount = 0
     /\ revision = 0
     /\ processUp = TRUE
@@ -45,13 +51,11 @@ CommitDeleteIntent ==
     /\ revision < MaxRevision
     /\ disposition' = "deleting"
     /\ executionState' = "terminated"
-    /\ cleanupPhase' = "fenced"
+    /\ Cleanup!Fence
     /\ visible' = FALSE
-    /\ cleanupEffectId' = DeleteEffect
     /\ deletedFactCount' = deletedFactCount + 1
     /\ revision' = revision + 1
-    /\ UNCHANGED <<lastAttemptEffectId, cleanupAttempts,
-                    cleanupFailures, workRetired, resourceReleaseRequested, processUp>>
+    /\ UNCHANGED <<workRetired, processUp>>
 
 \* Reissuing DELETE after the fence is a semantic replay: it cannot publish
 \* another fact, replace the effect identity, or reopen the Session.
@@ -65,11 +69,9 @@ FreezeCleanupTargets ==
     /\ disposition = "deleting"
     /\ cleanupPhase = "fenced"
     /\ revision < MaxRevision
-    /\ cleanupPhase' = "requested"
-    /\ resourceReleaseRequested' = TRUE
+    /\ Cleanup!Freeze
     /\ revision' = revision + 1
-    /\ UNCHANGED <<disposition, executionState, visible, cleanupEffectId,
-                    lastAttemptEffectId, cleanupAttempts, cleanupFailures,
+    /\ UNCHANGED <<disposition, executionState, visible,
                     workRetired, deletedFactCount, processUp>>
 
 \* Queue retirement is an idempotent recovery effect. It may run immediately
@@ -92,12 +94,9 @@ CleanupFails ==
     /\ processUp
     /\ disposition = "deleting"
     /\ cleanupPhase = "requested"
-    /\ cleanupFailures < MaxCleanupFailures
-    /\ cleanupFailures' = cleanupFailures + 1
-    /\ cleanupAttempts' = cleanupAttempts + 1
-    /\ lastAttemptEffectId' = cleanupEffectId
-    /\ UNCHANGED <<disposition, executionState, cleanupPhase, visible,
-                    cleanupEffectId, workRetired, resourceReleaseRequested,
+    /\ Cleanup!Fail
+    /\ UNCHANGED <<disposition, executionState, visible,
+                    workRetired,
                     deletedFactCount, revision, processUp>>
 
 \* Only an exact successful cleanup attempt advances durable completion.
@@ -108,12 +107,10 @@ CleanupSucceeds ==
     /\ workRetired
     /\ resourceReleaseRequested
     /\ revision < MaxRevision
-    /\ cleanupPhase' = "completed"
-    /\ cleanupAttempts' = cleanupAttempts + 1
-    /\ lastAttemptEffectId' = cleanupEffectId
+    /\ Cleanup!Succeed(workRetired /\ resourceReleaseRequested)
     /\ revision' = revision + 1
-    /\ UNCHANGED <<disposition, executionState, visible, cleanupEffectId,
-                    cleanupFailures, workRetired, resourceReleaseRequested,
+    /\ UNCHANGED <<disposition, executionState, visible,
+                    workRetired,
                     deletedFactCount, processUp>>
 
 \* Physical deletion is a separate durable CAS and is forbidden until the
@@ -173,14 +170,9 @@ FairSpec ==
 TypeOK ==
     /\ disposition \in {"active", "deleting", "tombstoned"}
     /\ executionState \in {"running", "terminated"}
-    /\ cleanupPhase \in {"not_requested", "fenced", "requested", "completed"}
+    /\ Cleanup!TypeOK
     /\ visible \in BOOLEAN
-    /\ cleanupEffectId \in {NoEffect, DeleteEffect}
-    /\ lastAttemptEffectId \in {NoEffect, DeleteEffect}
-    /\ cleanupAttempts \in 0..(MaxCleanupFailures + 1)
-    /\ cleanupFailures \in 0..MaxCleanupFailures
     /\ workRetired \in BOOLEAN
-    /\ resourceReleaseRequested \in BOOLEAN
     /\ deletedFactCount \in 0..1
     /\ revision \in 0..MaxRevision
     /\ processUp \in BOOLEAN
@@ -211,6 +203,7 @@ DeletedFactIsCommittedAtMostOnce ==
 
 DeleteSafety ==
     /\ TypeOK
+    /\ Cleanup!Safety
     /\ HiddenDeleteStateIsTerminal
     /\ VisibilityMatchesDurableDisposition
     /\ TombstoneRequiresCompletedCleanup

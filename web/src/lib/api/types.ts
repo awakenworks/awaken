@@ -83,7 +83,11 @@ export interface Session {
   metadata: Record<string, string>;
   resources: unknown[];
   outcome_evaluations: unknown[];
-  status: string;
+  status: "running" | "idle" | "rescheduling" | "terminated";
+  preparation?: {
+    status: "preparing" | "ready" | "failed";
+    error?: string;
+  };
 }
 
 export interface ContentBlockText {

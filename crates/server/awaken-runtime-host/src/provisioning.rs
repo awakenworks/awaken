@@ -730,7 +730,7 @@ impl SharedHost {
     pub async fn harvest_thread_artifacts(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         self.artifact_harvester().harvest(thread).await
     }
 }
@@ -750,6 +750,12 @@ pub(crate) struct ArtifactHarvester {
     >,
 }
 
+#[derive(Debug)]
+pub struct HarvestedArtifacts {
+    pub receipts: Vec<awaken_resource_contract::ArtifactPublicationReceipt>,
+    pub bundle_receipts: Vec<awaken_resource_contract::ArtifactBundleCompletionReceipt>,
+}
+
 impl ArtifactHarvester {
     pub(crate) fn current_claim(&self, thread: &str) -> Option<awaken_run_ingress::RunClaim> {
         self.session_slots
@@ -760,7 +766,7 @@ impl ArtifactHarvester {
     pub(crate) async fn harvest(
         &self,
         thread: &str,
-    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         let claim = self.current_claim(thread);
         self.harvest_with_claim(thread, claim).await
     }
@@ -769,13 +775,16 @@ impl ArtifactHarvester {
         &self,
         thread: &str,
         claim: Option<awaken_run_ingress::RunClaim>,
-    ) -> Result<Vec<awaken_resource_contract::ArtifactPublicationReceipt>, ResourcePurgeError> {
+    ) -> Result<HarvestedArtifacts, ResourcePurgeError> {
         let env = self
             .session_slots
             .read(thread, |slot| slot.environment.clone())
             .flatten();
         let Some(env) = env else {
-            return Ok(Vec::new());
+            return Ok(HarvestedArtifacts {
+                receipts: Vec::new(),
+                bundle_receipts: Vec::new(),
+            });
         };
         let artifacts = env
             .artifacts()
@@ -786,7 +795,8 @@ impl ArtifactHarvester {
             .read(thread, |slot| slot.workspace.clone())
             .flatten()
             .unwrap_or_else(|| self.local_workspace.clone());
-        let mut out = Vec::new();
+        let mut publications = Vec::new();
+        let mut receipts = Vec::new();
         for artifact in artifacts {
             let bytes = env
                 .read_artifact(&artifact.id)
@@ -832,9 +842,74 @@ impl ArtifactHarvester {
             receipt
                 .verify(&publication)
                 .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
-            out.push(receipt);
+            publications.push(publication);
+            receipts.push(receipt);
         }
-        Ok(out)
+        let mut bundle_directories = std::collections::BTreeMap::<
+            String,
+            awaken_resource_contract::ArtifactBundlePurpose,
+        >::new();
+        for publication in &publications {
+            let Some((directory, _)) = publication.logical_path.rsplit_once('/') else {
+                continue;
+            };
+            let purpose = if directory == "skill-export" || directory.ends_with("/skill-export") {
+                Some(awaken_resource_contract::ArtifactBundlePurpose::SkillExport)
+            } else if directory == "patch-bundle" || directory.ends_with("/patch-bundle") {
+                Some(awaken_resource_contract::ArtifactBundlePurpose::PatchBundle)
+            } else {
+                None
+            };
+            if let Some(purpose) = purpose {
+                bundle_directories.insert(directory.to_string(), purpose);
+            }
+        }
+        let mut bundle_receipts = Vec::new();
+        for (directory, purpose) in bundle_directories {
+            let members = publications
+                .iter()
+                .zip(receipts.iter())
+                .filter(|(publication, _)| {
+                    publication
+                        .logical_path
+                        .rsplit_once('/')
+                        .is_some_and(|(parent, _)| parent == directory)
+                })
+                .collect::<Vec<_>>();
+            let patch = members.iter().filter(|(publication, _)| {
+                publication
+                    .logical_path
+                    .rsplit_once('/')
+                    .is_some_and(|(_, name)| name.ends_with(".patch"))
+            });
+            let mut patches = patch.collect::<Vec<_>>();
+            let manifests = members
+                .iter()
+                .filter(|(publication, _)| publication.logical_path.ends_with("/manifest.json"))
+                .collect::<Vec<_>>();
+            let checksums = members
+                .iter()
+                .filter(|(publication, _)| publication.logical_path.ends_with("/SHA256SUMS"))
+                .collect::<Vec<_>>();
+            if patches.len() != 1 || manifests.len() != 1 || checksums.len() != 1 {
+                return Err(ResourcePurgeError::Storage(format!(
+                    "artifact bundle `{directory}` requires exactly one patch, manifest.json, and SHA256SUMS"
+                )));
+            }
+            let patch = patches.pop().expect("one patch");
+            let completion = awaken_resource_contract::complete_artifact_bundle(
+                purpose,
+                (patch.0, patch.1),
+                (manifests[0].0, manifests[0].1),
+                (checksums[0].0, checksums[0].1),
+            )
+            .map_err(|error| ResourcePurgeError::Storage(error.to_string()))?;
+            bundle_receipts.push(completion);
+        }
+        Ok(HarvestedArtifacts {
+            receipts,
+            bundle_receipts,
+        })
     }
 }
 
@@ -1278,11 +1353,18 @@ mod provisioning_registry_tests {
             },
         );
         host.harvest_thread_skills("t").await.unwrap(); // no env / no store → no persist
-        assert!(host.harvest_thread_artifacts("t").await.unwrap().is_empty());
+        assert!(
+            host.harvest_thread_artifacts("t")
+                .await
+                .unwrap()
+                .receipts
+                .is_empty()
+        );
         assert!(
             host.harvest_thread_artifacts("never-seen")
                 .await
                 .unwrap()
+                .receipts
                 .is_empty()
         );
     }
@@ -1327,10 +1409,10 @@ mod provisioning_registry_tests {
             .harvest_thread_artifacts("session-artifacts")
             .await
             .unwrap();
-        assert_eq!(first.len(), 1);
-        assert_eq!(retry[0].record.id, first[0].record.id);
-        assert!(first[0].record.id.starts_with("file_"));
-        assert!(first[0].record.downloadable);
+        assert_eq!(first.receipts.len(), 1);
+        assert_eq!(retry.receipts[0].record.id, first.receipts[0].record.id);
+        assert!(first.receipts[0].record.id.starts_with("file_"));
+        assert!(first.receipts[0].record.downloadable);
 
         crate::ManagedHost::new(host.clone())
             .execute_terminal_cleanup(root_terminal_cleanup_command("session-artifacts"))
@@ -1357,6 +1439,64 @@ mod provisioning_registry_tests {
                 .unwrap()
                 .1,
             b"durable report"
+        );
+    }
+
+    #[tokio::test]
+    async fn artifact_bundle_harvest_returns_complete_receipt_or_fails_explicitly() {
+        // Cause/effect graph: C1 an intentional skill-export directory contains
+        // one patch/manifest/SHA256SUMS; C2 checksum matches exact patch bytes;
+        // C3 one member is missing. Effects: E1 ordinary Artifact publication
+        // remains authoritative; E2 completion returns SHA and all Artifact ids;
+        // E3 incomplete or substituted bundles block terminal disposal loudly.
+        // Rules: B1 C1+C2=>E1+E2; B2 C1+!C2=>E3; B3 C3=>E3.
+        use sha2::{Digest as _, Sha256};
+
+        let storage = tempfile::tempdir().unwrap();
+        let host = Arc::new(SharedHost::new(Arc::new(NoLlm), "test"));
+        host.register_thread_workspace("bundle-session", "workspace-a");
+        let spec = agent_run_sandbox_spec("bundle-session");
+        let environment = Arc::new(crate::session_environment::SessionEnvironment::workdir(
+            LocalProvider::new(storage.path())
+                .create_sandbox(&spec)
+                .await
+                .unwrap(),
+        ));
+        host.session_slots.update("bundle-session", |slot| {
+            slot.environment = Some(environment)
+        });
+        let directory = storage
+            .path()
+            .join("bundle-session")
+            .join(spec.outputs_path.trim_start_matches('/'))
+            .join("skill-export");
+        std::fs::create_dir_all(&directory).unwrap();
+        let patch = b"diff --git a/a b/a\n";
+        std::fs::write(directory.join("change.patch"), patch).unwrap();
+        std::fs::write(directory.join("manifest.json"), b"{\"base\":\"abc\"}\n").unwrap();
+        let digest = format!("sha256:{:x}", Sha256::digest(patch));
+        std::fs::write(
+            directory.join("SHA256SUMS"),
+            format!("{digest}  change.patch\n"),
+        )
+        .unwrap();
+
+        let completed = host
+            .harvest_thread_artifacts("bundle-session")
+            .await
+            .expect("B1/E1+E2");
+        assert_eq!(completed.receipts.len(), 3, "B1/E1");
+        assert_eq!(completed.bundle_receipts.len(), 1, "B1/E2");
+        assert_eq!(completed.bundle_receipts[0].patch_sha256, digest, "B1/E2");
+
+        std::fs::remove_file(directory.join("SHA256SUMS")).unwrap();
+        let error = host
+            .harvest_thread_artifacts("bundle-session")
+            .await
+            .expect_err("B3/E3");
+        assert!(
+            error.to_string().contains("requires exactly one patch"),
+            "B3/E3"
         );
     }
 

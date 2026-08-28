@@ -58,6 +58,7 @@ impl ManagedState {
                 Some(workspace_id.clone()),
                 Some(session_id.clone()),
                 Some(initial_events),
+                false,
             )
             .await;
         match created {
