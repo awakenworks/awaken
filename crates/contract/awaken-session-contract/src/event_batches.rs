@@ -182,6 +182,10 @@ pub struct SessionEventToolReply {
     /// Exact Thread commit version that exposed the selected ticket.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_thread_version: Option<u64>,
+    /// Backend commit that exposed the exact Awaiting boundary answered by this
+    /// reply. New admissions retain it; `None` is reserved for legacy rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_pending_commit_cursor: Option<u64>,
     /// Runtime call id carried by the committed ResumeTicket.
     pub runtime_tool_use_id: String,
     pub reply: SessionEventToolReplyKind,
@@ -808,6 +812,7 @@ mod tests {
             expected_run_id: RunId("run-awaiting".into()),
             expected_correlation_id: "correlation-awaiting".into(),
             expected_thread_version: None,
+            answered_pending_commit_cursor: None,
             runtime_tool_use_id: "tool-awaiting".into(),
             reply: SessionEventToolReplyKind::CustomToolResult {
                 content: None,

@@ -203,6 +203,9 @@ pub(super) fn interval_lifecycle_open_event<'a>(
                 Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
                     .filter(|event| event.source_commit_cursor <= anchor)
                     .max_by(lifecycle_opening_order),
+                Some(IntervalOwnerAnchor::ReplyAfterAwaitingAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor > anchor)
+                    .min_by(lifecycle_opening_order),
                 None => matching.min_by(lifecycle_opening_order),
             }
         })
@@ -243,6 +246,9 @@ enum IntervalOwnerAnchor {
     /// A ToolReply projection anchor observes the resumed Run's complete reply
     /// prefix, so its opening is the latest one no later than that fence.
     ReplyTerminalAt(u64),
+    /// Current ToolReply rows freeze the Awaiting commit before delivery; the
+    /// resumed interval opens at the first later Running lifecycle commit.
+    ReplyAfterAwaitingAt(u64),
 }
 
 fn lifecycle_opening_order(
@@ -288,9 +294,14 @@ fn interval_owner_openings(
                         IntervalOwnerTarget::Child(thread_id)
                     }
                 },
-                anchor: entry.projection_anchor.map(|anchor| {
-                    IntervalOwnerAnchor::ReplyTerminalAt(anchor.source_commit_cursor)
-                }),
+                anchor: reply
+                    .answered_pending_commit_cursor
+                    .map(IntervalOwnerAnchor::ReplyAfterAwaitingAt)
+                    .or_else(|| {
+                        entry.projection_anchor.map(|anchor| {
+                            IntervalOwnerAnchor::ReplyTerminalAt(anchor.source_commit_cursor)
+                        })
+                    }),
             }),
             _ => None,
         })
@@ -355,6 +366,9 @@ pub(super) fn running_interval_lifecycle_open_event<'a>(
                 Some(IntervalOwnerAnchor::ReplyTerminalAt(anchor)) => matching
                     .filter(|event| event.source_commit_cursor <= anchor)
                     .max_by(lifecycle_opening_order),
+                Some(IntervalOwnerAnchor::ReplyAfterAwaitingAt(anchor)) => matching
+                    .filter(|event| event.source_commit_cursor > anchor)
+                    .min_by(lifecycle_opening_order),
                 None => matching.min_by(lifecycle_opening_order),
             }
         })
@@ -377,6 +391,42 @@ pub(in crate::state::events) fn budget_reach_close_cursor(
         .iter()
         .find(|interval| interval.usage.is_at_least(&transition.usage_cursor))
         .and_then(interval_close_cursor)
+}
+
+/// Anchor a durable budget transition to the public pause which actually
+/// exposes it. Tool approval has priority over an already-reached budget, so
+/// the crossing interval can close at `requires_action` and a later interval
+/// closes at `budget_reached` without consuming more tokens. In that case the
+/// latter boundary owns the one public Usage/Idle pair. Runs which terminate
+/// without an explicit budget Awaiting fact retain the crossing fallback.
+pub(in crate::state::events) fn budget_reach_projection_close_cursor(
+    persisted: &awaken_session_contract::PersistedSession,
+    transition: &awaken_session_contract::BudgetReachTransition,
+    lifecycle_events: &[RunLifecycleEvent],
+) -> Option<u64> {
+    let crossing = budget_reach_close_cursor(persisted, transition)?;
+    persisted
+        .closed_runtime_intervals
+        .iter()
+        .filter(|interval| {
+            interval_close_cursor(interval).is_some_and(|close| close >= crossing)
+                && interval.usage.is_at_least(&transition.usage_cursor)
+        })
+        .find(|interval| {
+            interval.observations.iter().rev().any(|observation| {
+                lifecycle_events.iter().any(|event| {
+                    event.cursor == observation.lifecycle_cursor
+                        && event.thread_id == observation.thread_id
+                        && event.run_id == observation.run_id
+                        && event.await_reason.as_ref()
+                            == Some(
+                                &awaken_agent_contract::agent::awaiting::AwaitReason::BudgetReached,
+                            )
+                })
+            })
+        })
+        .and_then(interval_close_cursor)
+        .or(Some(crossing))
 }
 
 /// Exact commit boundary of the classifier-owned report messages for one Run.

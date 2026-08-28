@@ -517,7 +517,9 @@ pub async fn assert_atomic_report_continuation_conformance(store: &dyn Dispatch,
     let message_id = format!("{ns}-terminal-report");
     // A Session primary has the established canonical self-affinity written by
     // SharedHost::resolved_dispatch; Root admission must preserve that shape.
-    let mut root = dispatch(ns, "report-root", "report-primary").for_session(primary.clone());
+    let mut root = dispatch(ns, "report-root", "report-primary")
+        .for_session(primary.clone())
+        .with_session_activity_epoch(1);
     root.activation.input.clear();
     let report = continuation_input(message_id.clone(), &root, "child completed");
     store

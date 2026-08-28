@@ -167,7 +167,24 @@ impl SharedHost {
                 .collect::<std::collections::BTreeSet<_>>()
         });
         let workspace = self.thread_workspace(thread);
+        let filesystem_skill_projection = filesystem_delivery
+            && (self
+                .skills
+                .has_selected_in(&workspace, selected_skills.as_ref())
+                || self
+                    .session_slots
+                    .read(thread, |slot| {
+                        slot.skills.as_ref().is_some_and(|versions| {
+                            versions.iter().any(|version| {
+                                selected_skills.as_ref().is_none_or(|selected| {
+                                    selected.contains(version.skill_id.as_str())
+                                })
+                            })
+                        })
+                    })
+                    .unwrap_or(false));
         slot_requires
+            || filesystem_skill_projection
             || self
                 .skills
                 .requires_environment_in(&workspace, selected_skills.as_ref())

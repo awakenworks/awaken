@@ -268,6 +268,7 @@ impl DispatchQueue for PostgresDispatchStore {
             return Ok(());
         }
 
+        validate_executable_dispatch_admission(&request)?;
         insert_new_dispatch(&mut tx, p, &request, &options).await?;
         tx.commit().await.map_err(reject)?;
         Ok(())
@@ -317,6 +318,7 @@ impl DispatchQueue for PostgresDispatchStore {
             tx.commit().await.map_err(reject)?;
             return Ok(claimed);
         }
+        validate_executable_dispatch_admission(&request)?;
         if !can_claim_locally(&request.placement) {
             tx.commit().await.map_err(reject)?;
             return Ok(None);
@@ -363,6 +365,7 @@ impl DispatchQueue for PostgresDispatchStore {
             tx.commit().await.map_err(reject)?;
             return Ok(claimed);
         }
+        validate_executable_dispatch_admission(&request)?;
         if can_assign(worker, &request.placement, None, false, now_ms).is_err() {
             tx.commit().await.map_err(reject)?;
             return Ok(None);

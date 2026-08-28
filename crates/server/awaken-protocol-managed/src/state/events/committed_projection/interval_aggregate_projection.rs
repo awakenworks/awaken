@@ -1,7 +1,8 @@
 //! Canonical aggregate projections for one persisted Session runtime interval.
 
 use super::canonical_order::{
-    interval_close_cursor, interval_lifecycle_open_event, running_interval_lifecycle_open_event,
+    budget_reach_projection_close_cursor, interval_close_cursor, interval_lifecycle_open_event,
+    running_interval_lifecycle_open_event,
 };
 use super::*;
 
@@ -238,13 +239,19 @@ impl ManagedState {
             if let Some(running_id) = running_id {
                 append_running_once(record, running_id);
             }
-            // A BudgetReachTransition owns the aggregate usage + idle pair for
-            // a cap crossing. The interval still owns its Running edge, but
-            // projecting its terminal pair as well would publish the same
-            // budget pause twice. If the transition commit is momentarily
-            // behind the lifecycle/interval prefix, leave the aggregate pause
-            // absent until that durable authority becomes visible.
-            if matches!(stop_reason, StopReason::BudgetReached) {
+            let budget_transition_owns_pause = matches!(stop_reason, StopReason::BudgetReached)
+                && persisted
+                    .budget
+                    .reach_transitions()
+                    .iter()
+                    .any(|transition| {
+                        budget_reach_projection_close_cursor(
+                            persisted,
+                            transition,
+                            lifecycle_events,
+                        ) == Some(close)
+                    });
+            if budget_transition_owns_pause {
                 prior_close = close;
                 continue;
             }

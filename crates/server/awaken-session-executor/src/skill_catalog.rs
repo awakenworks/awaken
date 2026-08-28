@@ -345,6 +345,20 @@ impl SkillCatalog {
         })
     }
 
+    /// Whether the exact Session selection contains any Skill. Filesystem
+    /// delivery uses this independently from a Skill's execution substrate:
+    /// even an instruction-only Skill needs an Environment when its public
+    /// contract is an on-demand `SKILL.md` path.
+    pub(crate) fn has_selected_in(
+        &self,
+        workspace: &str,
+        selected: Option<&std::collections::BTreeSet<String>>,
+    ) -> bool {
+        self.ids_in(workspace)
+            .iter()
+            .any(|id| selected.is_none_or(|ids| ids.contains(id)))
+    }
+
     /// The skill ids offered on every thread (advertised as the agent's `skills`):
     /// the static configured set plus any durable `/v1/skills` catalog, de-duplicated
     /// with the static set winning, so the advertisement matches what `list_skills`

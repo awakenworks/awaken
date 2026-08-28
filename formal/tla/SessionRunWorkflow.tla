@@ -1,9 +1,10 @@
 ------------------------- MODULE SessionRunWorkflow -------------------------
 EXTENDS Naturals
 
-\* Cross-component product workflow: immutable Session admission, durable Run
-\* creation, Worker claim, exact credential materialization, terminal commit,
-\* and settlement. Component-internal detail remains in the existing models.
+\* One composed model of the product boundary: Session desired truth, Work and
+\* realization leases, durable Run reservation, activity receipt, Worker claim,
+\* ToolReply consumption, terminal commit, and settlement. Work/realization
+\* leases authorize physical effects only; Dispatch owns Run admission/attempts.
 CONSTANTS AgentRevisions, EnvironmentRevisions, CredentialRevisions,
           Workers, NoRevision, NoWorker, MaxEpoch
 
@@ -17,22 +18,43 @@ ASSUME
     /\ MaxEpoch \in Nat \ {0}
 
 VARIABLES sessionState, agentRevision, environmentRevision,
-          runState, owner, epoch, credentialRevision, materializedRevision,
+          workState, workOwner, workEpoch,
+          realizationState, realizationOwner, realizationEpoch,
+          dispatchState, dispatchOwner, dispatchEpoch,
+          reservationPersisted, activityEpoch,
+          runtimeState, credentialRevision, materializedRevision,
+          pendingTool, toolReplyCommitted,
           outputCommitted, terminalOwner, terminalEpoch
 
 vars == <<sessionState, agentRevision, environmentRevision,
-          runState, owner, epoch, credentialRevision, materializedRevision,
+          workState, workOwner, workEpoch,
+          realizationState, realizationOwner, realizationEpoch,
+          dispatchState, dispatchOwner, dispatchEpoch,
+          reservationPersisted, activityEpoch,
+          runtimeState, credentialRevision, materializedRevision,
+          pendingTool, toolReplyCommitted,
           outputCommitted, terminalOwner, terminalEpoch>>
 
 Init ==
     /\ sessionState = "Absent"
     /\ agentRevision = NoRevision
     /\ environmentRevision = NoRevision
-    /\ runState = "Absent"
-    /\ owner = NoWorker
-    /\ epoch = 0
+    /\ workState = "Absent"
+    /\ workOwner = NoWorker
+    /\ workEpoch = 0
+    /\ realizationState = "Absent"
+    /\ realizationOwner = NoWorker
+    /\ realizationEpoch = 0
+    /\ dispatchState = "Absent"
+    /\ dispatchOwner = NoWorker
+    /\ dispatchEpoch = 0
+    /\ reservationPersisted = FALSE
+    /\ activityEpoch = 0
+    /\ runtimeState = "Absent"
     /\ credentialRevision \in CredentialRevisions
     /\ materializedRevision = NoRevision
+    /\ pendingTool = FALSE
+    /\ toolReplyCommitted = FALSE
     /\ outputCommitted = FALSE
     /\ terminalOwner = NoWorker
     /\ terminalEpoch = 0
@@ -44,134 +66,382 @@ CreateSession(a, e) ==
     /\ sessionState' = "Ready"
     /\ agentRevision' = a
     /\ environmentRevision' = e
-    /\ UNCHANGED <<runState, owner, epoch, credentialRevision,
-                   materializedRevision, outputCommitted, terminalOwner,
-                   terminalEpoch>>
+    /\ workState' = "Queued"
+    /\ UNCHANGED <<workOwner, workEpoch, realizationState, realizationOwner,
+                   realizationEpoch, dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
 
-CreateRun ==
-    /\ sessionState = "Ready"
-    /\ runState = "Absent"
-    /\ runState' = "Pending"
+ClaimWork(w) ==
+    /\ w \in Workers
+    /\ workState = "Queued"
+    /\ workEpoch < MaxEpoch
+    /\ workState' = "Leased"
+    /\ workOwner' = w
+    /\ workEpoch' = workEpoch + 1
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   owner, epoch, credentialRevision, materializedRevision,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+ExpireWork ==
+    /\ workState = "Leased"
+    /\ runtimeState # "Running"
+    /\ workState' = "Queued"
+    /\ workOwner' = NoWorker
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+ClaimRealization(w) ==
+    /\ w \in Workers
+    /\ workState = "Leased"
+    /\ workOwner = w
+    /\ realizationState \in {"Absent", "Ready"}
+    /\ runtimeState # "Running"
+    /\ realizationEpoch < MaxEpoch
+    /\ realizationState' = "Leased"
+    /\ realizationOwner' = w
+    /\ realizationEpoch' = realizationEpoch + 1
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+CompleteRealization(w, claimEpoch) ==
+    /\ realizationState = "Leased"
+    /\ realizationOwner = w
+    /\ realizationEpoch = claimEpoch
+    /\ realizationState' = "Ready"
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+\* The crash-boundary fact is committed before any Session activity is opened.
+ReserveRun ==
+    /\ sessionState = "Ready"
+    /\ dispatchState = "Absent"
+    /\ dispatchState' = "Reserved"
+    /\ reservationPersisted' = TRUE
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchOwner, dispatchEpoch, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+OpenActivity ==
+    /\ dispatchState = "Reserved"
+    /\ reservationPersisted
+    /\ activityEpoch' = 1
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, runtimeState, credentialRevision,
+                   materializedRevision, pendingTool, toolReplyCommitted,
                    outputCommitted, terminalOwner, terminalEpoch>>
 
-Claim(w) ==
-    /\ runState = "Pending"
+ActivateReservation ==
+    /\ dispatchState = "Reserved"
+    /\ activityEpoch > 0
+    /\ dispatchState' = "Pending"
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchOwner, dispatchEpoch, reservationPersisted,
+                   activityEpoch, runtimeState, credentialRevision,
+                   materializedRevision, pendingTool, toolReplyCommitted,
+                   outputCommitted, terminalOwner, terminalEpoch>>
+
+RecoverReservation(w) ==
     /\ w \in Workers
-    /\ epoch < MaxEpoch
-    /\ runState' = "Leased"
-    /\ owner' = w
-    /\ epoch' = epoch + 1
+    /\ dispatchState = "Reserved"
+    /\ dispatchEpoch < MaxEpoch
+    /\ dispatchState' = "ReservationLeased"
+    /\ dispatchOwner' = w
+    /\ dispatchEpoch' = dispatchEpoch + 1
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+RecoverAdmission(w, claimEpoch) ==
+    /\ dispatchState = "ReservationLeased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ activityEpoch = 0
+    /\ activityEpoch' = 1
+    /\ dispatchState' = "Pending"
+    /\ dispatchOwner' = NoWorker
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchEpoch, reservationPersisted, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+RetryAdmission(w, claimEpoch) ==
+    /\ dispatchState = "ReservationLeased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ dispatchState' = "Reserved"
+    /\ dispatchOwner' = NoWorker
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchEpoch, reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, materializedRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
+
+ClaimRun(w) ==
+    /\ w \in Workers
+    /\ dispatchState = "Pending"
+    /\ activityEpoch > 0
+    /\ dispatchEpoch < MaxEpoch
+    /\ dispatchState' = "Leased"
+    /\ dispatchOwner' = w
+    /\ dispatchEpoch' = dispatchEpoch + 1
     /\ materializedRevision' = NoRevision
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   credentialRevision, outputCommitted, terminalOwner,
-                   terminalEpoch>>
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, pendingTool, toolReplyCommitted,
+                   outputCommitted, terminalOwner, terminalEpoch>>
 
-Materialize ==
-    /\ runState = "Leased"
-    /\ owner \in Workers
-    /\ materializedRevision = NoRevision
+Materialize(w, claimEpoch) ==
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ workState = "Leased"
+    /\ workOwner = w
+    /\ realizationState = "Ready"
+    /\ realizationOwner = w
     /\ materializedRevision' = credentialRevision
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   runState, owner, epoch, credentialRevision, outputCommitted,
-                   terminalOwner, terminalEpoch>>
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, runtimeState,
+                   credentialRevision, pendingTool, toolReplyCommitted,
+                   outputCommitted, terminalOwner, terminalEpoch>>
 
-Execute ==
-    /\ runState = "Leased"
-    /\ owner \in Workers
+Execute(w, claimEpoch) ==
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ workState = "Leased"
+    /\ workOwner = w
+    /\ realizationState = "Ready"
+    /\ realizationOwner = w
     /\ materializedRevision = credentialRevision
-    /\ runState' = "Running"
+    /\ runtimeState \in {"Absent", "Running", "Awaiting"}
+    /\ runtimeState' = "Running"
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   owner, epoch, credentialRevision, materializedRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, credentialRevision,
+                   materializedRevision, pendingTool, toolReplyCommitted,
+                   outputCommitted, terminalOwner, terminalEpoch>>
+
+AwaitTool(w, claimEpoch) ==
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ runtimeState = "Running"
+    /\ ~pendingTool
+    /\ ~toolReplyCommitted
+    /\ dispatchState' = "Awaiting"
+    /\ dispatchOwner' = NoWorker
+    /\ runtimeState' = "Awaiting"
+    /\ pendingTool' = TRUE
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchEpoch, reservationPersisted, activityEpoch,
+                   credentialRevision, materializedRevision, toolReplyCommitted,
+                   outputCommitted, terminalOwner, terminalEpoch>>
+
+DeliverToolReply(w) ==
+    /\ w \in Workers
+    /\ dispatchState = "Awaiting"
+    /\ runtimeState = "Awaiting"
+    /\ pendingTool
+    /\ ~toolReplyCommitted
+    /\ dispatchEpoch < MaxEpoch
+    /\ dispatchState' = "Leased"
+    /\ dispatchOwner' = w
+    /\ dispatchEpoch' = dispatchEpoch + 1
+    /\ runtimeState' = "Awaiting"
+    /\ pendingTool' = FALSE
+    /\ toolReplyCommitted' = TRUE
+    /\ materializedRevision' = NoRevision
+    /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   reservationPersisted, activityEpoch, credentialRevision,
                    outputCommitted, terminalOwner, terminalEpoch>>
 
 CommitTerminal(w, claimEpoch) ==
-    /\ runState = "Running"
-    /\ w = owner
-    /\ claimEpoch = epoch
-    /\ runState' = "Ended"
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ runtimeState = "Running"
+    /\ runtimeState' = "Ended"
     /\ outputCommitted' = TRUE
     /\ terminalOwner' = w
     /\ terminalEpoch' = claimEpoch
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   owner, epoch, credentialRevision, materializedRevision>>
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchState, dispatchOwner, dispatchEpoch,
+                   reservationPersisted, activityEpoch, credentialRevision,
+                   materializedRevision, pendingTool, toolReplyCommitted>>
 
-Settle ==
-    /\ runState = "Ended"
+Settle(w, claimEpoch) ==
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = w
+    /\ dispatchEpoch = claimEpoch
+    /\ runtimeState = "Ended"
     /\ outputCommitted
-    /\ runState' = "Settled"
-    /\ owner' = NoWorker
+    /\ dispatchState' = "Removed"
+    /\ dispatchOwner' = NoWorker
+    /\ runtimeState' = "Settled"
     /\ materializedRevision' = NoRevision
     /\ UNCHANGED <<sessionState, agentRevision, environmentRevision,
-                   epoch, credentialRevision, outputCommitted, terminalOwner,
-                   terminalEpoch>>
+                   workState, workOwner, workEpoch,
+                   realizationState, realizationOwner, realizationEpoch,
+                   dispatchEpoch, reservationPersisted, activityEpoch,
+                   credentialRevision, pendingTool,
+                   toolReplyCommitted, outputCommitted, terminalOwner, terminalEpoch>>
 
 CreateSessionAny == \E a \in AgentRevisions, e \in EnvironmentRevisions: CreateSession(a, e)
-ClaimAny == \E w \in Workers: Claim(w)
-CommitTerminalAny == \E w \in Workers, claimEpoch \in 0..MaxEpoch:
-    CommitTerminal(w, claimEpoch)
+ClaimWorkAny == \E w \in Workers: ClaimWork(w)
+ClaimRealizationAny == \E w \in Workers: ClaimRealization(w)
+CompleteRealizationAny == \E w \in Workers, e \in 0..MaxEpoch: CompleteRealization(w, e)
+RecoverReservationAny == \E w \in Workers: RecoverReservation(w)
+RecoverAdmissionAny == \E w \in Workers, e \in 0..MaxEpoch: RecoverAdmission(w, e)
+RetryAdmissionAny == \E w \in Workers, e \in 0..MaxEpoch: RetryAdmission(w, e)
+ClaimRunAny == \E w \in Workers: ClaimRun(w)
+MaterializeAny == \E w \in Workers, e \in 0..MaxEpoch: Materialize(w, e)
+ExecuteAny == \E w \in Workers, e \in 0..MaxEpoch: Execute(w, e)
+AwaitToolAny == \E w \in Workers, e \in 0..MaxEpoch: AwaitTool(w, e)
+DeliverToolReplyAny == \E w \in Workers: DeliverToolReply(w)
+CommitTerminalAny == \E w \in Workers, e \in 0..MaxEpoch: CommitTerminal(w, e)
+SettleAny == \E w \in Workers, e \in 0..MaxEpoch: Settle(w, e)
 
 Next ==
     \/ CreateSessionAny
-    \/ CreateRun
-    \/ ClaimAny
-    \/ Materialize
-    \/ Execute
+    \/ ClaimWorkAny
+    \/ ExpireWork
+    \/ ClaimRealizationAny
+    \/ CompleteRealizationAny
+    \/ ReserveRun
+    \/ OpenActivity
+    \/ ActivateReservation
+    \/ RecoverReservationAny
+    \/ RecoverAdmissionAny
+    \/ RetryAdmissionAny
+    \/ ClaimRunAny
+    \/ MaterializeAny
+    \/ ExecuteAny
+    \/ AwaitToolAny
+    \/ DeliverToolReplyAny
     \/ CommitTerminalAny
-    \/ Settle
+    \/ SettleAny
 
-Spec ==
-    /\ Init
-    /\ [][Next]_vars
-    /\ WF_vars(CreateSessionAny)
-    /\ WF_vars(CreateRun)
-    /\ WF_vars(ClaimAny)
-    /\ WF_vars(Materialize)
-    /\ WF_vars(Execute)
-    /\ WF_vars(CommitTerminalAny)
-    /\ WF_vars(Settle)
+Spec == Init /\ [][Next]_vars
 
 TypeOK ==
     /\ sessionState \in {"Absent", "Ready"}
     /\ agentRevision \in AgentRevisions \cup {NoRevision}
     /\ environmentRevision \in EnvironmentRevisions \cup {NoRevision}
-    /\ runState \in {"Absent", "Pending", "Leased", "Running", "Ended", "Settled"}
-    /\ owner \in Workers \cup {NoWorker}
-    /\ epoch \in 0..MaxEpoch
+    /\ workState \in {"Absent", "Queued", "Leased"}
+    /\ workOwner \in Workers \cup {NoWorker}
+    /\ workEpoch \in 0..MaxEpoch
+    /\ realizationState \in {"Absent", "Leased", "Ready"}
+    /\ realizationOwner \in Workers \cup {NoWorker}
+    /\ realizationEpoch \in 0..MaxEpoch
+    /\ dispatchState \in {"Absent", "Reserved", "ReservationLeased", "Pending", "Leased", "Awaiting", "Removed"}
+    /\ dispatchOwner \in Workers \cup {NoWorker}
+    /\ dispatchEpoch \in 0..MaxEpoch
+    /\ reservationPersisted \in BOOLEAN
+    /\ activityEpoch \in 0..1
+    /\ runtimeState \in {"Absent", "Running", "Awaiting", "Ended", "Settled"}
     /\ credentialRevision \in CredentialRevisions
     /\ materializedRevision \in CredentialRevisions \cup {NoRevision}
+    /\ pendingTool \in BOOLEAN
+    /\ toolReplyCommitted \in BOOLEAN
     /\ outputCommitted \in BOOLEAN
     /\ terminalOwner \in Workers \cup {NoWorker}
     /\ terminalEpoch \in 0..MaxEpoch
 
-SessionPinsAreImmutable ==
-    sessionState = "Ready" =>
-        agentRevision \in AgentRevisions /\ environmentRevision \in EnvironmentRevisions
+SessionPinsAreImmutable == sessionState = "Ready" =>
+    agentRevision \in AgentRevisions /\ environmentRevision \in EnvironmentRevisions
 
-RunRequiresFrozenSession ==
-    runState # "Absent" => sessionState = "Ready"
+ReservationPrecedesActivity == activityEpoch > 0 => reservationPersisted
 
-ExecutionRequiresExactClaimAndCredential ==
-    runState = "Running" =>
-        owner \in Workers /\ epoch > 0 /\ materializedRevision = credentialRevision
+ReservationCannotExecute == dispatchState \in {"Reserved", "ReservationLeased"} =>
+    runtimeState = "Absent" /\ ~pendingTool /\ ~outputCommitted
 
-OutputRequiresTerminalCommit == outputCommitted => runState \in {"Ended", "Settled"}
+ExecutableRunHasActivity == dispatchState \in {"Pending", "Leased", "Awaiting", "Removed"} =>
+    activityEpoch > 0
 
-TerminalCommitUsesExactClaim ==
-    runState = "Ended" => terminalOwner = owner /\ terminalEpoch = epoch
+DispatchLeaseHasExactlyOneOwner ==
+    (dispatchState \in {"ReservationLeased", "Leased"}) \equiv (dispatchOwner \in Workers)
 
-SettledClearsAuthority ==
-    runState = "Settled" => owner = NoWorker /\ materializedRevision = NoRevision
+WorkLeaseHasExactlyOneOwner == (workState = "Leased") \equiv (workOwner \in Workers)
+
+RealizationLeaseHasOwner == realizationState \in {"Leased", "Ready"} =>
+    realizationOwner \in Workers
+
+ExecutionUsesExactPhysicalAuthority == runtimeState = "Running" =>
+    /\ dispatchState = "Leased"
+    /\ dispatchOwner = workOwner
+    /\ dispatchOwner = realizationOwner
+    /\ realizationState = "Ready"
+
+ToolReplyConsumesOnePending == toolReplyCommitted => ~pendingTool
+
+PendingToolIsCommittedAwaiting == pendingTool =>
+    dispatchState = "Awaiting" /\ runtimeState = "Awaiting"
+
+OutputRequiresTerminalCommit == outputCommitted => runtimeState \in {"Ended", "Settled"}
+
+TerminalCommitUsesExactClaim == runtimeState = "Ended" =>
+    terminalOwner = dispatchOwner /\ terminalEpoch = dispatchEpoch
+
+SettledClearsDispatchAuthority == dispatchState = "Removed" =>
+    dispatchOwner = NoWorker /\ materializedRevision = NoRevision /\ outputCommitted
 
 Safety ==
     /\ TypeOK
     /\ SessionPinsAreImmutable
-    /\ RunRequiresFrozenSession
-    /\ ExecutionRequiresExactClaimAndCredential
+    /\ ReservationPrecedesActivity
+    /\ ReservationCannotExecute
+    /\ ExecutableRunHasActivity
+    /\ DispatchLeaseHasExactlyOneOwner
+    /\ WorkLeaseHasExactlyOneOwner
+    /\ RealizationLeaseHasOwner
+    /\ ExecutionUsesExactPhysicalAuthority
+    /\ ToolReplyConsumesOnePending
+    /\ PendingToolIsCommittedAwaiting
     /\ OutputRequiresTerminalCommit
     /\ TerminalCommitUsesExactClaim
-    /\ SettledClearsAuthority
-
-EventuallySettled == <> (runState = "Settled")
+    /\ SettledClearsDispatchAuthority
 =============================================================================

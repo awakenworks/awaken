@@ -560,6 +560,7 @@ fn tool_reply_input(tool_use_id: &str) -> SessionEventInput {
         expected_run_id: RunId("awaiting-run".into()),
         expected_correlation_id: "awaiting-correlation".into(),
         expected_thread_version: None,
+        answered_pending_commit_cursor: Some(777),
         runtime_tool_use_id: tool_use_id.into(),
         reply: SessionEventToolReplyKind::ToolResult {
             content: Some(vec![ContentBlock::text("tool result")]),
@@ -731,6 +732,107 @@ async fn event_batch_idempotency_replays_the_root_receipt_across_restart() {
         .await
         .expect("I4/E4");
     assert_ne!(later.batch_id, first.batch_id, "I4/E4");
+}
+
+#[tokio::test]
+async fn concurrent_event_batch_idempotency_converges_under_root_cas() {
+    // Cause/effect graph: C1 two application replicas share one Session root;
+    // C2 requests race with one key and equal or different fingerprints.
+    // Effects: E1 equal requests return one canonical batch to both callers;
+    // E2 different requests select exactly one winner and one conflict; E3 the
+    // root retains one batch in either case. Constraint: no process-local lock
+    // or secondary receipt store participates; repository CAS is the arbiter.
+    // | Rule | Replicas | Key | Fingerprints | Effects |
+    // | C1 | two | same | equal | E1+E3 |
+    // | C2 | two | same | different | E2+E3 |
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("concurrent idempotency repository"),
+    );
+    for session_id in ["event-race-equal", "event-race-conflict"] {
+        create(repository.as_ref(), persisted(session_id, false, "idle")).await;
+    }
+    let replica_a = Arc::new(application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let replica_b = Arc::new(application_with_runtime(
+        Arc::new(EventBatchRuntime::default()),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let input = vec![SessionEventInput::UserMessage {
+        content: vec![ContentBlock::text("concurrent intent")],
+    }];
+
+    let (equal_a, equal_b) = tokio::join!(
+        replica_a.append_session_event_batch_idempotent(
+            "event-race-equal",
+            input.clone(),
+            None,
+            None,
+            Some(("shared-key".into(), "same-fingerprint".into())),
+        ),
+        replica_b.append_session_event_batch_idempotent(
+            "event-race-equal",
+            input.clone(),
+            None,
+            None,
+            Some(("shared-key".into(), "same-fingerprint".into())),
+        ),
+    );
+    let equal_a = equal_a.expect("C1/E1 replica A");
+    let equal_b = equal_b.expect("C1/E1 replica B");
+    assert_eq!(equal_a, equal_b, "C1/E1 one canonical receipt");
+    assert_eq!(
+        repository
+            .get("event-race-equal")
+            .await
+            .unwrap()
+            .event_batches
+            .len(),
+        1,
+        "C1/E3 one root batch",
+    );
+
+    let (different_a, different_b) = tokio::join!(
+        replica_a.append_session_event_batch_idempotent(
+            "event-race-conflict",
+            input.clone(),
+            None,
+            None,
+            Some(("shared-key".into(), "fingerprint-a".into())),
+        ),
+        replica_b.append_session_event_batch_idempotent(
+            "event-race-conflict",
+            input,
+            None,
+            None,
+            Some(("shared-key".into(), "fingerprint-b".into())),
+        ),
+    );
+    let outcomes = [different_a, different_b];
+    assert_eq!(
+        outcomes.iter().filter(|result| result.is_ok()).count(),
+        1,
+        "C2/E2 winner"
+    );
+    let conflict = outcomes
+        .iter()
+        .find_map(|result| result.as_ref().err())
+        .expect("C2/E2 loser conflicts");
+    assert_eq!(conflict.code, "idempotency_conflict", "C2/E2");
+    assert_eq!(
+        repository
+            .get("event-race-conflict")
+            .await
+            .unwrap()
+            .event_batches
+            .len(),
+        1,
+        "C2/E3 one root batch",
+    );
 }
 
 #[tokio::test]
@@ -1230,11 +1332,12 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
     // Cause/effect graph: C1 exact ToolReply is unprocessed; C2 Runtime durably
     // stages it but its response is lost before root processed CAS; C3 a cold
     // application retries the same retained command; C4 a later scan sees the
-    // processed marker. Effects: E1 first drive reports retryable failure and
+    // processed marker; C5 admission froze Awaiting cursor 777. Effects: E1 first
+    // drive reports retryable failure and
     // leaves root unprocessed; E2 the one coordination/activity identity is
     // replayed; E3 Runtime owns one staged payload despite two delivery calls;
     // E4 cold retry classifies the durable receipt before the consumed-ticket
-    // path, marks processed, and later scans perform no delivery.
+    // path, marks processed at C5, and later scans perform no delivery.
     //
     // | Rule | Stage | Root marker | Drive | Effect |
     // | R1 | new success/response lost | false | warm | E1+E3 |
@@ -1301,6 +1404,13 @@ async fn reply_stage_response_loss_replays_one_durable_effect_after_restart() {
     assert!(
         repository.get("reply-replay").await.unwrap().event_batches[0].events[0].processed,
         "R2/E4"
+    );
+    assert_eq!(
+        repository.get("reply-replay").await.unwrap().event_batches[0].events[0]
+            .projection_anchor
+            .map(|anchor| anchor.source_commit_cursor),
+        Some(777),
+        "R2/C5 freezes the answered Awaiting boundary across response loss"
     );
     cold.drive_session_event_batches("reply-replay", None)
         .await

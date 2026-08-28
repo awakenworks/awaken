@@ -2152,8 +2152,9 @@ async fn hitl_await_confirm_resume() {
     // This narrow adapter fixture intentionally has no Host settlement observer,
     // so H6 asserts Thread terminal truth only; the official SDK E2E and Host
     // decision table own aggregate Session activity/usage settlement.
-    // Transport-retry extension of H6: C1 a key is new while the exact tool
-    // ticket is pending => E1 append once and return one receipt; C2 the same
+    // Transport-retry extension of H6: C1 two HTTP callers race with one new
+    // key/body while the exact tool ticket is pending => E1 append once and
+    // return the same receipt to both; C2 the same
     // key/body arrives after the ticket was consumed => E2 replay that byte-wise
     // JSON receipt without re-admission or another reply; C3 same key/different
     // decision => E3 409 without mutation. These three rules cover response loss
@@ -2161,14 +2162,28 @@ async fn hitl_await_confirm_resume() {
     let confirmation_body = serde_json::json!({ "events": [
         { "type": "user.tool_confirmation", "tool_use_id": public_tool_id, "result": "allow" }
     ] });
-    let (confirmation_status, confirmation) = post_events_with_idempotency(
-        &app,
-        &format!("/v1/sessions/{id}/events"),
-        "hitl-confirmation-1",
-        &confirmation_body,
-    )
-    .await;
+    let events_path = format!("/v1/sessions/{id}/events");
+    let (confirmation_a, confirmation_b) = tokio::join!(
+        post_events_with_idempotency(
+            &app,
+            &events_path,
+            "hitl-confirmation-1",
+            &confirmation_body,
+        ),
+        post_events_with_idempotency(
+            &app,
+            &events_path,
+            "hitl-confirmation-1",
+            &confirmation_body,
+        ),
+    );
+    let (confirmation_status, confirmation) = confirmation_a;
     assert_eq!(confirmation_status, StatusCode::OK, "H6/E1");
+    assert_eq!(confirmation_b.0, StatusCode::OK, "H6/E1 concurrent retry");
+    assert_eq!(
+        confirmation_b.1, confirmation,
+        "H6/E1 one canonical receipt"
+    );
     assert_eq!(confirmation["data"][0]["type"], "user.tool_confirmation");
     assert_eq!(confirmation["data"][0]["tool_use_id"], public_tool_id);
     assert_eq!(confirmation["data"][0]["result"], "allow");

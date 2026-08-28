@@ -1074,6 +1074,23 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     let id = create(&app).await;
     send_user(&app, &id, "go").await;
     reconcile_published_run(&state, &id).await;
+    // Direct-read cause/effect rule M0: C0 the Runtime committed a child
+    // lifecycle after the disposable HTTP cache was last touched; C1 the first
+    // observer is GET /threads rather than GET /events. Effect E0 is the same
+    // completed primary+child projection. Decision M0=C0+C1=>E0; a stale cache
+    // that needs an Event read first would return only the primary Thread.
+    let first_threads = json_call(
+        &app,
+        "GET",
+        &format!("/v1/sessions/{id}/threads"),
+        serde_json::Value::Null,
+    )
+    .await;
+    assert_eq!(
+        first_threads["data"].as_array().unwrap().len(),
+        2,
+        "M0/E0 direct Thread list refreshes committed child lifecycle"
+    );
     let list = list_events(&app, &id).await;
     assert_eq!(
         types(&list),
@@ -1128,13 +1145,7 @@ async fn a_delegation_projects_the_child_thread_lifecycle() {
     );
 
     // GET /threads enumerates the primary plus the child, parented to the primary.
-    let threads = json_call(
-        &app,
-        "GET",
-        &format!("/v1/sessions/{id}/threads"),
-        serde_json::Value::Null,
-    )
-    .await;
+    let threads = first_threads;
     let arr = threads["data"].as_array().unwrap();
     assert_eq!(arr.len(), 2, "M1/E1 primary + one real child Thread");
     let primary_thread_id = arr

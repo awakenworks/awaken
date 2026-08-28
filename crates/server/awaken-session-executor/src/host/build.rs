@@ -445,7 +445,6 @@ impl SharedHost {
             worker_credential_resolver: None,
             deployment,
             memory,
-            compaction: None,
             agent_publications: None,
             mcp_relay: tokio::sync::OnceCell::new(),
             dispatch_session_runtime: std::sync::RwLock::new(None),
@@ -848,8 +847,21 @@ impl SharedHost {
     }
 
     /// Install a resolved `CompactConfig` and wire the `compactor` sub-agent.
+    /// The generic plugin id/config pair is the single configuration authority:
+    /// it both activates local execution and crosses a durable dispatch snapshot.
     fn enable_compaction(mut self, config: CompactConfig) -> Self {
-        self.compaction = Some(crate::compact::Compaction { config });
+        if !self
+            .plugin_ids
+            .iter()
+            .any(|id| id == awaken_ext_compact::COMPACT_PLUGIN_ID)
+        {
+            self.plugin_ids
+                .push(awaken_ext_compact::COMPACT_PLUGIN_ID.to_string());
+        }
+        self.plugin_config.insert(
+            awaken_ext_compact::COMPACT_PLUGIN_ID.to_string(),
+            serde_json::to_value(config).expect("CompactConfig is serializable"),
+        );
         self
     }
 
