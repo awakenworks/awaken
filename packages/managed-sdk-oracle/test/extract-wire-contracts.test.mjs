@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { extractOperations } from '../src/extract-operations.mjs';
 import {
   auditRequestTypesFromPackageRoot,
+  extractRequestContractsFromPackageRoot,
   extractResponseContractsFromPackageRoot,
 } from '../src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../src/package-source.mjs';
@@ -37,6 +38,18 @@ function requestBoundariesFor(module) {
   );
 }
 
+function requestContractsFor(module) {
+  const operations = extractOperations(module, scope).operations;
+  return {
+    operations,
+    contracts: extractRequestContractsFromPackageRoot(
+      resolveSdkPackage(module).root,
+      scope,
+      operations.map(({ id }) => id),
+    ),
+  };
+}
+
 test('every supported and candidate request type has only intent-named open JSON', () => {
   // Cause/effect graph: C1 every generated HTTP operation contributes all of
   // its non-transport TypeScript parameters; C2 the TypeChecker follows their
@@ -61,6 +74,70 @@ test('every supported and candidate request type has only intent-named open JSON
       assert.ok(boundary.path.includes('input_schema'), `${module}: ${boundary.path.join('.')}`);
     }
   }
+});
+
+test('every supported and candidate SDK operation owns one finite request contract', () => {
+  // Causal graph: C1 generated JS contributes the exact HTTP-operation set;
+  // C2 the adjacent official declaration contributes every non-transport
+  // parameter and its complete finite type closure; C3 Uploadable and the
+  // intent-named JSON-Schema index remain explicit boundary kinds. Effects:
+  // E1 every operation owns exactly one request contract; E2 optionality,
+  // nullability, literals, arrays and nested fields cannot disappear; E3 a
+  // future unsafe/open request type fails before any witness can be generated.
+  for (const { module, version } of anchors.anchors) {
+    const { operations, contracts } = requestContractsFor(module);
+    assert.equal(Object.keys(contracts).length, operations.length, version);
+    assert.deepEqual(Object.keys(contracts), operations.map(({ id }) => id), version);
+  }
+  const candidate = requestContractsFor('@anthropic-ai/sdk-candidate');
+  assert.equal(Object.keys(candidate.contracts).length, candidate.operations.length);
+  assert.deepEqual(Object.keys(candidate.contracts), candidate.operations.map(({ id }) => id));
+});
+
+test('request extraction preserves method parameters, optionality, unions, and upload boundaries', () => {
+  // Orthogonal representatives pin the extractor grammar while the inventory
+  // test above proves breadth. Mutating any of these nodes changes the generated
+  // witness graph instead of being hidden by a required-only call sweep.
+  const { contracts } = requestContractsFor('@anthropic-ai/sdk-candidate');
+  const create = contracts['beta.sessions.create'];
+  assert.deepEqual(create.parameters.map(({ name, required }) => [name, required]), [
+    ['params', true],
+  ]);
+  const agent = create.parameters[0].value.properties.agent;
+  assert.equal(agent.required, true);
+  assert.equal(agent.value.kind, 'union');
+  assert.ok(agent.value.variants.some(({ kind }) => kind === 'string'));
+  assert.ok(agent.value.variants.some(({ kind }) => kind === 'object'));
+  assert.equal(
+    create.parameters[0].value.properties.title.required,
+    false,
+    'optional body field remains optional',
+  );
+
+  const retrieve = contracts['beta.sessions.retrieve'];
+  assert.deepEqual(retrieve.parameters.map(({ name, required }) => [name, required]), [
+    ['sessionID', true],
+    ['params', false],
+  ]);
+  assert.equal(retrieve.parameters[1].value.kind, 'union');
+  assert.ok(retrieve.parameters[1].value.variants.some(({ kind }) => kind === 'null'));
+
+  assert.equal(
+    contracts['beta.files.upload'].parameters[0].value.properties.file.value.kind,
+    'upload',
+  );
+  assert.deepEqual(
+    contracts['beta.skills.create'].parameters[0].value.properties.files.value,
+    { kind: 'array', item: { kind: 'upload' } },
+    'Array<Uploadable> retains cardinality instead of collapsing to one file',
+  );
+  assert.equal(
+    contracts['beta.agents.create'].parameters[0].value.properties.tools.value.item.variants
+      .find((variant) => variant.kind === 'object'
+        && variant.properties.type.value.value === 'custom')
+      .properties.input_schema.value.additional.kind,
+    'open-json',
+  );
 });
 
 test('every supported and candidate SDK operation owns one declaration-derived response contract', () => {

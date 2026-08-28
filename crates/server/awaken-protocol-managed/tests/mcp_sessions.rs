@@ -2504,6 +2504,9 @@ async fn create_session_commits_the_owned_fact_then_notifies_once() {
 }
 
 /// Archive is idempotent at the aggregate/outbox transaction boundary.
+// Test design: archive_session_commits_the_terminated_fact_once
+// Cause/effect graph: archive commits one terminal fact and retires only owned runtime resources.
+// Decision table: eligible=archive once; archived=replay; running=conflict; deleted/missing=404.
 #[tokio::test]
 async fn archive_session_commits_the_terminated_fact_once() {
     // Decision rules: L2 C1 first archive -> E1 one terminated fact and one
@@ -2558,6 +2561,9 @@ async fn archive_session_commits_the_terminated_fact_once() {
 }
 
 /// Delete commits the terminal visibility fact before the aggregate disappears.
+// Test design: delete_session_commits_the_deleted_fact_with_the_owner
+// Cause/effect graph: owner fencing commits deletion before removal and prevents later resurrection.
+// Decision table: correct owner+eligible=delete; wrong/stale=conflict; repeated/missing=404.
 #[tokio::test]
 async fn delete_session_commits_the_deleted_fact_with_the_owner() {
     // Decision rule L4: C1 an owned active Session is deleted -> E1 its stable

@@ -10,8 +10,7 @@ use std::sync::Arc;
 use std::collections::HashSet;
 
 use awaken_tenancy::WorkspaceScope;
-use axum::extract::rejection::JsonRejection;
-use axum::extract::{FromRequest, Path, Query, RawQuery, Request, State};
+use axum::extract::{Path, RawQuery, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
@@ -25,6 +24,7 @@ use crate::common::headers::{
     USER_PROFILES_BETA_LATEST, has_capability,
 };
 use crate::preview::ThreadPreviewProjector;
+use crate::routes::{ManagedJson, ManagedQuery};
 use crate::state::{
     ManagedState, PROCESSED_AT, RunError, RunErrorKind, StateError, internal_thread_id,
     lifecycle_event, lifecycle_fact,
@@ -60,47 +60,6 @@ impl SessionListOrder {
         match self {
             Self::Asc => "asc",
             Self::Desc => "desc",
-        }
-    }
-}
-
-/// A JSON body extractor scoped to the Managed Agents routes. On a decode failure
-/// (malformed JSON, missing/mistyped field, wrong content-type, or an unknown
-/// tagged-union variant) it returns the Anthropic error envelope
-/// (`invalid_request_error`, HTTP 400) instead of axum's default plain-text/422
-/// rejection, so the SDK parses the failure like any other API error. Shared with
-/// the vault routes so the whole managed surface answers bad bodies identically.
-pub(crate) struct ManagedJson<T>(pub(crate) T);
-
-fn managed_json_message(detail: String) -> String {
-    // Cause graph / decision table: a decode error under `resources[i]` is a
-    // resource-union admission failure, so prefix the stable public category and
-    // retain serde's exact path/detail; every other Managed body keeps its
-    // existing diagnostic. This avoids coupling SDK users to Rust type wording.
-    if detail.contains("resources[") {
-        format!("invalid resource: {detail}")
-    } else {
-        detail
-    }
-}
-
-impl<S, T> FromRequest<S> for ManagedJson<T>
-where
-    Json<T>: FromRequest<S, Rejection = JsonRejection>,
-    S: Send + Sync,
-{
-    type Rejection = (StatusCode, Json<ErrorResponse>);
-
-    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
-        match Json::<T>::from_request(req, state).await {
-            Ok(Json(value)) => Ok(Self(value)),
-            Err(rejection) => Err((
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse::new(
-                    "invalid_request_error",
-                    managed_json_message(rejection.body_text()),
-                )),
-            )),
         }
     }
 }
@@ -700,7 +659,7 @@ async fn archive_thread(
 async fn list_thread_events(
     State(state): State<Arc<ManagedState>>,
     Path((id, tid)): Path<(String, String)>,
-    Query(query): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, WireErr> {
     state
         .refresh_committed_events(&id)
@@ -784,6 +743,101 @@ fn parse_event_list_order(raw: Option<&str>) -> Result<SessionListOrder, WireErr
         }
     }
     Ok(order.unwrap_or(SessionListOrder::Asc))
+}
+
+#[derive(Debug, Default)]
+struct EventListFilter {
+    created_at_gt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_gte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_lt: Option<chrono::DateTime<chrono::FixedOffset>>,
+    created_at_lte: Option<chrono::DateTime<chrono::FixedOffset>>,
+    types: HashSet<String>,
+}
+
+impl EventListFilter {
+    fn includes(&self, event: &Event) -> bool {
+        if !self.types.is_empty() && !self.types.contains(event.type_str()) {
+            return false;
+        }
+        if self.created_at_gt.is_none()
+            && self.created_at_gte.is_none()
+            && self.created_at_lt.is_none()
+            && self.created_at_lte.is_none()
+        {
+            return true;
+        }
+        let Some(processed_at) = event
+            .processed_at
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        else {
+            return false;
+        };
+        self.created_at_gt
+            .as_ref()
+            .is_none_or(|bound| processed_at > *bound)
+            && self
+                .created_at_gte
+                .as_ref()
+                .is_none_or(|bound| processed_at >= *bound)
+            && self
+                .created_at_lt
+                .as_ref()
+                .is_none_or(|bound| processed_at < *bound)
+            && self
+                .created_at_lte
+                .as_ref()
+                .is_none_or(|bound| processed_at <= *bound)
+    }
+}
+
+fn parse_event_list_filter(raw: Option<&str>) -> Result<EventListFilter, WireErr> {
+    let mut filter = EventListFilter::default();
+    let mut seen_bounds = HashSet::new();
+    let mut type_count = 0usize;
+    for (key, value) in raw
+        .into_iter()
+        .flat_map(|query| form_urlencoded::parse(query.as_bytes()))
+    {
+        match key.as_ref() {
+            "created_at[gt]" | "created_at[gte]" | "created_at[lt]" | "created_at[lte]" => {
+                if !seen_bounds.insert(key.to_string()) {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        format!("{key} may be specified once"),
+                    ))));
+                }
+                let Some(value) = crate::types::page::non_empty_query_value(&value) else {
+                    continue;
+                };
+                let parsed = chrono::DateTime::parse_from_rfc3339(value).map_err(|_| {
+                    error_response(StateError::Run(RunError::bad_request(format!(
+                        "{key} must be an RFC 3339 timestamp"
+                    ))))
+                })?;
+                match key.as_ref() {
+                    "created_at[gt]" => filter.created_at_gt = Some(parsed),
+                    "created_at[gte]" => filter.created_at_gte = Some(parsed),
+                    "created_at[lt]" => filter.created_at_lt = Some(parsed),
+                    "created_at[lte]" => filter.created_at_lte = Some(parsed),
+                    _ => unreachable!("matched timestamp key"),
+                }
+            }
+            "types" | "types[]" => {
+                let Some(value) = crate::types::page::non_empty_query_value(&value) else {
+                    continue;
+                };
+                type_count += 1;
+                if type_count > 100 {
+                    return Err(error_response(StateError::Run(RunError::bad_request(
+                        "types allows at most 100 values",
+                    ))));
+                }
+                filter.types.insert(value.to_owned());
+            }
+            _ => {}
+        }
+    }
+    Ok(filter)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1420,19 +1474,21 @@ async fn list_events(
     State(state): State<Arc<ManagedState>>,
     Path(id): Path<String>,
     RawQuery(raw): RawQuery,
-    Query(query): Query<PageQuery>,
+    ManagedQuery(query): ManagedQuery<PageQuery>,
 ) -> Result<Json<ListEventsResponse>, (StatusCode, Json<ErrorResponse>)> {
     let order = parse_event_list_order(raw.as_deref())?;
+    let filter = parse_event_list_filter(raw.as_deref())?;
     state
         .refresh_committed_events(&id)
         .await
         .map_err(error_response)?;
     state
-        .list_events(
+        .list_events_filtered(
             &id,
             query.page.as_deref(),
             query.limit,
             order == SessionListOrder::Desc,
+            |event| filter.includes(event),
         )
         .map(Json)
         .map_err(error_response)
@@ -1494,9 +1550,10 @@ mod managed_json_tests {
     use tower::ServiceExt as _;
 
     use super::{
-        SseTerminalScope, enforce_managed_beta, error_response, managed_json_message,
-        parse_event_deltas, replay_is_terminal_after,
+        SseTerminalScope, enforce_managed_beta, error_response, parse_event_deltas,
+        replay_is_terminal_after,
     };
+    use crate::routes::extractors::managed_json_message;
     use crate::state::{RunError, StateError};
 
     #[test]

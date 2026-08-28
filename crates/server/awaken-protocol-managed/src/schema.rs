@@ -208,5 +208,15 @@ mod tests {
                 "C3/E3 {name}.type must be a one-value Rust enum"
             );
         }
+        assert!(
+            schemas["BetaSelfHostedWorkStopRequest"]
+                .get("required")
+                .is_none_or(|fields| fields.as_array().is_some_and(Vec::is_empty)),
+            "C1/E1 optional force is not required"
+        );
+        assert_eq!(
+            schemas["BetaSelfHostedWorkStopRequest"]["properties"]["force"]["type"], "boolean",
+            "C1/E1 optional force rejects JSON null when present"
+        );
     }
 }

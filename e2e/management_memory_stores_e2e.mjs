@@ -14,7 +14,7 @@
 // | target | precondition | operation | observable behavior |
 // | store | n/a | update/archive | metadata patch or terminal archive |
 // | memory | matching hash | update/delete | new version or absence |
-// | memory | stale hash | update | reject without mutation |
+// | memory | stale hash | update/delete | reject without mutation |
 // | version | existing | redact | content becomes unavailable, history remains |
 // | version list | exact lineage/operation/time | filter before paging |
 // | version list | actor id absent from stored attribution | empty, never accept-and-drop |
@@ -84,6 +84,29 @@ async function main() {
 
       const storeIds = (await drain(client.beta.memoryStores.list())).map((s) => s.id);
       assert.ok(storeIds.includes(store.id));
+      // Store-list causal graph: lifecycle/time predicates narrow the durable
+      // registry before PageCursor pagination. Inclusive bounds use the exact
+      // second-precision timestamp returned to callers; TS null/empty query
+      // spellings equal omission; malformed time fails before reading a page.
+      const exactCreated = await drain(client.beta.memoryStores.list({
+        'created_at[gte]': store.created_at,
+        'created_at[lte]': store.created_at,
+      }));
+      assert.ok(exactCreated.some((candidate) => candidate.id === store.id));
+      assert.deepEqual(
+        await drain(client.beta.memoryStores.list({
+          'created_at[gte]': '9999-12-31T23:59:59Z',
+        })),
+        [],
+      );
+      const nullFilters = await drain(client.beta.memoryStores.list({
+        'created_at[gte]': null,
+        'created_at[lte]': null,
+        include_archived: null,
+        limit: null,
+        page: null,
+      }));
+      assert.ok(nullFilters.some((candidate) => candidate.id === store.id));
       pass('beta.memoryStores.list -> PageCursor<BetaManagedAgentsMemoryStore>');
 
       // Cause/effect boundary rule: C1 an Awaken-only MemoryStore behavior
@@ -227,6 +250,46 @@ async function main() {
       pass('beta.memoryStores.memoryVersions.retrieve / redact');
 
       // -- Delete memory + archive + delete store ----------------------------
+      // Official-SDK conditional-delete decision table: stale hash -> the exact
+      // Managed error and no state change; live hash -> deletion; omitted hash
+      // remains the SDK-compatible unconditional path (covered by `mem` below).
+      const conditionalMem = await client.beta.memoryStores.memories.create(store.id, {
+        path: '/conditional-delete.md',
+        content: 'guarded',
+      });
+      await assert.rejects(
+        () => client.beta.memoryStores.memories.delete(conditionalMem.id, {
+          memory_store_id: store.id,
+          expected_content_sha256: '0'.repeat(64),
+        }),
+        (error) => {
+          assert.equal(error.status, 409);
+          assert.equal(error.error?.error?.type, 'memory_precondition_failed_error');
+          return true;
+        },
+      );
+      assert.equal(
+        (await client.beta.memoryStores.memories.retrieve(conditionalMem.id, {
+          memory_store_id: store.id,
+        })).content,
+        'guarded',
+        'stale conditional delete cannot mutate the head',
+      );
+      const conditionalReceipt = await client.beta.memoryStores.memories.delete(
+        conditionalMem.id,
+        {
+          memory_store_id: store.id,
+          expected_content_sha256: conditionalMem.content_sha256,
+        },
+      );
+      assert.equal(conditionalReceipt.type, 'memory_deleted');
+      await assert.rejects(
+        () => client.beta.memoryStores.memories.retrieve(conditionalMem.id, {
+          memory_store_id: store.id,
+        }),
+        (error) => error.status === 404,
+      );
+
       const delMem = await client.beta.memoryStores.memories.delete(mem.id, {
         memory_store_id: store.id,
       });
@@ -234,9 +297,29 @@ async function main() {
 
       const archived = await client.beta.memoryStores.archive(store.id);
       assert.ok(archived.archived_at);
+      assert.ok(
+        !(await drain(client.beta.memoryStores.list())).some((candidate) => candidate.id === store.id),
+        'archived stores are excluded by default',
+      );
+      assert.ok(
+        (await drain(client.beta.memoryStores.list({ include_archived: true })))
+          .some((candidate) => candidate.id === store.id),
+        'include_archived restores archived stores',
+      );
+      const malformedStoreTime = await json(
+        baseUrl,
+        'GET',
+        '/v1/memory_stores?beta=true&created_at%5Bgte%5D=not-a-time',
+      );
+      assert.equal(malformedStoreTime.status, 400, 'malformed store time fails closed');
 
       const delStore = await client.beta.memoryStores.delete(store.id);
       assert.equal(delStore.type, 'memory_store_deleted');
+      assert.ok(
+        !(await drain(client.beta.memoryStores.list({ include_archived: true })))
+          .some((candidate) => candidate.id === store.id),
+        'deleted stores never reappear as archived',
+      );
       assert.equal(
         (
           await json(baseUrl, 'POST', configRoute, {

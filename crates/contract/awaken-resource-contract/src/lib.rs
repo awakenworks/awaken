@@ -819,6 +819,20 @@ pub trait MemoryRepository: Send + Sync {
         base_id: &str,
         base_sha: &str,
     ) -> Result<bool, MemErr>;
+    /// The canonical conditional delete with optional authenticated attribution.
+    /// Implementations that persist version authorship override this method while
+    /// audit-neutral adapters may use the default delegation.
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        let _ = actor;
+        self.delete_if_match(store, path, base_id, base_sha).await
+    }
     /// Ordered version history for this store.
     async fn list_versions(&self, store: &str) -> Result<Vec<MemoryVersion>, MemErr>;
     /// Redact one historical version's content. Returns `None` when the version

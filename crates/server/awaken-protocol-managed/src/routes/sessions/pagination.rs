@@ -159,9 +159,10 @@ pub(super) fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams,
                     .limit
                     .min(awaken_agent_contract::page::MAX_PAGE_LIMIT);
             }
+            "page" if value.is_empty() => encoded_page = None,
             "page" => encoded_page = Some(value.into_owned()),
             "order" => params.order = SessionListOrder::parse(&value)?,
-            "agent_id" => params.agent_id = Some(value.into_owned()),
+            "agent_id" if !value.is_empty() => params.agent_id = Some(value.into_owned()),
             "agent_version" => {
                 params.agent_version = Some(value.parse::<u64>().map_err(|_| {
                     error_response(StateError::Run(RunError::bad_request(
@@ -169,11 +170,21 @@ pub(super) fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams,
                     )))
                 })?);
             }
-            "created_at[gt]" => params.created_gt = Some(parse_list_time(&value)?),
-            "created_at[gte]" => params.created_gte = Some(parse_list_time(&value)?),
-            "created_at[lt]" => params.created_lt = Some(parse_list_time(&value)?),
-            "created_at[lte]" => params.created_lte = Some(parse_list_time(&value)?),
-            "deployment_id" => params.deployment_id = Some(value.into_owned()),
+            "created_at[gt]" if !value.is_empty() => {
+                params.created_gt = Some(parse_list_time(&value)?);
+            }
+            "created_at[gte]" if !value.is_empty() => {
+                params.created_gte = Some(parse_list_time(&value)?);
+            }
+            "created_at[lt]" if !value.is_empty() => {
+                params.created_lt = Some(parse_list_time(&value)?);
+            }
+            "created_at[lte]" if !value.is_empty() => {
+                params.created_lte = Some(parse_list_time(&value)?);
+            }
+            "deployment_id" if !value.is_empty() => {
+                params.deployment_id = Some(value.into_owned());
+            }
             "include_archived" => {
                 params.include_archived = value.parse::<bool>().map_err(|_| {
                     error_response(StateError::Run(RunError::bad_request(
@@ -181,7 +192,9 @@ pub(super) fn parse_session_list(raw: Option<&str>) -> Result<SessionListParams,
                     )))
                 })?;
             }
-            "memory_store_id" => params.memory_store_id = Some(value.into_owned()),
+            "memory_store_id" if !value.is_empty() => {
+                params.memory_store_id = Some(value.into_owned());
+            }
             "statuses" | "statuses[]" => match value.as_ref() {
                 "rescheduling" | "running" | "idle" | "terminated" => {
                     params.statuses.insert(value.into_owned());
@@ -352,4 +365,34 @@ fn session_matches(session: &Session, params: &SessionListParams) -> bool {
             .created_lte
             .as_ref()
             .is_none_or(|bound| created <= *bound)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_session_list;
+
+    #[test]
+    fn empty_session_filters_match_python_omission() {
+        // Causal matrix: TypeScript emits one empty pair for every optional
+        // string/time filter while Python omits it. All independent branches
+        // converge to the same unfiltered state; malformed non-empty cursors
+        // still fail closed. This prevents a false 400 or empty-result split.
+        let omitted = parse_session_list(None).unwrap();
+        let typescript_empty = parse_session_list(Some(concat!(
+            "page=&agent_id=&deployment_id=&memory_store_id=",
+            "&created_at%5Bgt%5D=&created_at%5Bgte%5D=",
+            "&created_at%5Blt%5D=&created_at%5Blte%5D="
+        )))
+        .unwrap();
+        assert!(omitted.page.is_none());
+        assert!(typescript_empty.page.is_none());
+        assert!(typescript_empty.agent_id.is_none());
+        assert!(typescript_empty.deployment_id.is_none());
+        assert!(typescript_empty.memory_store_id.is_none());
+        assert!(typescript_empty.created_gt.is_none());
+        assert!(typescript_empty.created_gte.is_none());
+        assert!(typescript_empty.created_lt.is_none());
+        assert!(typescript_empty.created_lte.is_none());
+        assert!(parse_session_list(Some("page=not-a-cursor")).is_err());
+    }
 }

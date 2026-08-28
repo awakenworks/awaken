@@ -754,11 +754,24 @@ impl MemoryRepository for SqliteMemoryRepository {
         base_id: &str,
         base_sha: &str,
     ) -> Result<bool, MemErr> {
-        let (store, path, base_id, base_sha) = (
+        self.delete_if_match_as(store, path, base_id, base_sha, None)
+            .await
+    }
+
+    async fn delete_if_match_as(
+        &self,
+        store: &str,
+        path: &str,
+        base_id: &str,
+        base_sha: &str,
+        actor: Option<&MemoryActor>,
+    ) -> Result<bool, MemErr> {
+        let (store, path, base_id, base_sha, actor) = (
             store.to_string(),
             path.to_string(),
             base_id.to_string(),
             base_sha.to_string(),
+            actor.cloned(),
         );
         with_conn_mem(&self.conn, move |conn| {
             let tx = conn.unchecked_transaction().map_err(mem_err)?;
@@ -806,7 +819,7 @@ impl MemoryRepository for SqliteMemoryRepository {
                     path: &path,
                     content: None,
                     created: now_nanos() as i64,
-                    actor: None,
+                    actor: actor.as_ref(),
                 },
             )?;
             tx.commit().map_err(mem_err)?;

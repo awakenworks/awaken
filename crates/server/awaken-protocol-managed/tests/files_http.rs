@@ -104,12 +104,14 @@ async fn delete(router: &Router, uri: &str) -> (StatusCode, Value) {
     )
 }
 
+// Test design: upload_download_metadata_and_delete_roundtrip
+// Cause/effect graph: C1 valid upload, C2 catalog/lifecycle available, C3 uploaded File
+// (not Agent output). Effects: E1 tagged opaque identity + real metadata,
+// E2 metadata/list visible, E3 content download denied, E4 delete makes all
+// subsequent logical reads 404.
+// Decision table: R1=C1+C2+C3=>E1..E4; missing/invalid input=>canonical 4xx without a write.
 #[tokio::test]
 async fn upload_download_metadata_and_delete_roundtrip() {
-    // Causes: C1 valid upload, C2 catalog/lifecycle available, C3 uploaded File
-    // (not Agent output). Effects: E1 tagged opaque identity + real metadata,
-    // E2 metadata/list visible, E3 content download denied, E4 delete makes all
-    // subsequent logical reads 404. Rule R1 = C1∧C2∧C3 → E1..E4.
     let router = router();
 
     let (status, meta) = upload(&router, "hello.txt", b"hello world").await;
@@ -143,6 +145,59 @@ async fn upload_download_metadata_and_delete_roundtrip() {
     assert_eq!(receipt["type"], "file_deleted");
     let (status, _) = delete(&router, &format!("/v1/files/{id}")).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+// Test design: multipart_stream_failure_is_atomic_and_sdk_decodable
+// Cause/effect graph: one complete file part followed by a malformed part ->
+// streaming decoder error -> Anthropic invalid_request_error -> no FileCatalog
+// or blob-store write. This distinguishes a mid-stream failure from an absent
+// file and prevents a valid prefix from becoming a successful upload.
+// Decision table:
+// | first part | suffix          | status | catalog effect |
+// | complete   | closing boundary| 200    | one File       |
+// | complete   | malformed part  | 400    | none           |
+#[tokio::test]
+async fn multipart_stream_failure_is_atomic_and_sdk_decodable() {
+    let router = router();
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(
+        b"Content-Disposition: form-data; name=\"file\"; filename=\"prefix.txt\"\r\n",
+    );
+    body.extend_from_slice(b"Content-Type: text/plain\r\n\r\nvalid prefix");
+    body.extend_from_slice(format!("\r\n--{BOUNDARY}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"broken\"");
+
+    let response = router
+        .clone()
+        .oneshot(in_test_workspace(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/files")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={BOUNDARY}"),
+                )
+                .body(Body::from(body))
+                .unwrap(),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: Value = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(error["type"], "error");
+    assert_eq!(error["error"]["type"], "invalid_request_error");
+    assert!(error["error"]["message"].is_string());
+
+    let (status, bytes) = get(&router, "/v1/files").await;
+    assert_eq!(status, StatusCode::OK);
+    let page: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(page["data"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -182,14 +237,16 @@ async fn equal_upload_bytes_deduplicate_privately_but_keep_distinct_public_files
     );
 }
 
+// Test design: ga_files_projection_and_query_only_selector_match_official_sdk
+// Cause/effect graph: C1 no beta selector, C2 valid expiry boundary, C3 ids[]
+// contains one visible and one missing id, C4 ids[] combines with page/limit,
+// C5 the post-GA SDK keeps `beta=true` but omits the Files capability header.
+// Effects: E1 top-level GA metadata has expires_at and omits beta scope; E2
+// ids[] returns a single next_page:null page and silently omits missing ids;
+// E3 mixed pagination is rejected without mutation; E4 retrieve/download/
+// Decision table: C1/C5 select GA; legacy capability selects Beta; C3 accepts; C4 rejects.
 #[tokio::test]
 async fn ga_files_projection_and_query_only_selector_match_official_sdk() {
-    // Cause/effect graph: C1 no beta selector, C2 valid expiry boundary, C3 ids[]
-    // contains one visible and one missing id, C4 ids[] combines with page/limit,
-    // C5 the post-GA SDK keeps `beta=true` but omits the Files capability header.
-    // Effects: E1 top-level GA metadata has expires_at and omits beta scope; E2
-    // ids[] returns a single next_page:null page and silently omits missing ids;
-    // E3 mixed pagination is rejected without mutation; E4 retrieve/download/
     // delete complete the lifecycle; E5 C5 selects the post-GA Beta DTO, which
     // retains nullable scope while adopting GA expiry and PageCursor fields.
     // Decision table: G1 C1+C3->E1+E2; G2 C1+C4->E3; G3 C1+created File->E4;

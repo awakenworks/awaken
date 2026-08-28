@@ -49,6 +49,7 @@ fn parse_cursor_file_list(raw: &str, allow_scope: bool) -> Result<ParsedCursorFi
     let mut params = ParsedCursorFileList::default();
     for (key, value) in form_urlencoded::parse(raw.as_bytes()) {
         match key.as_ref() {
+            "page" if value.is_empty() => params.page = None,
             "page" => params.page = Some(value.into_owned()),
             "limit" => {
                 params.limit = Some(
@@ -57,8 +58,18 @@ fn parse_cursor_file_list(raw: &str, allow_scope: bool) -> Result<ParsedCursorFi
                         .map_err(|_| "limit must be an unsigned integer".to_string())?,
                 );
             }
-            "ids[]" => params.ids.push(value.into_owned()),
-            "scope_id" if allow_scope => params.scope_id = Some(value.into_owned()),
+            "ids[]" => {
+                if !value.is_empty() {
+                    params.ids.push(value.into_owned());
+                }
+            }
+            // A nullable array is `ids=` in the TypeScript SDK and omitted by
+            // Python. A non-empty scalar remains invalid: only `ids[]` carries
+            // array members.
+            "ids" if value.is_empty() => {}
+            "scope_id" if allow_scope => {
+                params.scope_id = (!value.is_empty()).then(|| value.into_owned());
+            }
             unknown => return Err(format!("unknown Files list parameter `{unknown}`")),
         }
     }
@@ -220,11 +231,15 @@ mod tests {
 
     #[test]
     fn ga_file_list_query_preserves_repeated_sdk_ids() {
-        // Cause/effect graph: C1=no ids; C2=one encoded ids[]; C3=repeated
-        // ids[]; C4=unknown key. Effects: E1=None; E2/E3=all ordered IDs;
-        // E4=fail closed. Decision rules R1=C1->E1, R2=C2->E2,
-        // R3=C3->E3, R4=C4->E4. This targets the generated SDK's form encoding.
+        // Cause/effect graph: C1=no ids/page (Python null); C2=empty scalar
+        // ids + page (TS null); C3=one/repeated encoded ids[]; C4=non-empty
+        // scalar or unknown key. Effects: E1/E2=the same None state; E3=all
+        // ordered IDs; E4=fail closed. The empty scalar exception is exact and
+        // cannot widen the declared array into an arbitrary scalar parameter.
         assert_eq!(FileListParams::from_query("").unwrap().ids, None, "R1/E1");
+        let typescript_null = FileListParams::from_query("ids=&page=").unwrap();
+        assert_eq!(typescript_null.ids, None, "R2 nullable array");
+        assert_eq!(typescript_null.page, None, "R2 nullable cursor");
         assert_eq!(
             FileListParams::from_query("ids%5B%5D=file_1").unwrap().ids,
             Some(vec!["file_1".into()]),
@@ -236,6 +251,10 @@ mod tests {
                 .ids,
             Some(vec!["file_1".into(), "file_2".into()]),
             "R3/E3"
+        );
+        assert!(
+            FileListParams::from_query("ids=file_1").is_err(),
+            "R4 scalar"
         );
         assert!(FileListParams::from_query("unknown=x").is_err(), "R4/E4");
     }
@@ -252,7 +271,14 @@ mod tests {
         .unwrap();
         assert_eq!(beta.scope_id.as_deref(), Some("sesn_1"));
         assert_eq!(beta.ids.unwrap(), ["file_1", "file_2"]);
+        let beta_null = BetaFileCursorListParams::from_query("ids=&page=").unwrap();
+        assert_eq!(beta_null.ids, None);
+        assert_eq!(beta_null.page, None);
         assert!(FileListParams::from_query("scope_id=sesn_1").is_err());
         assert!(BetaFileCursorListParams::from_query("before_id=file_1").is_err());
+
+        let typescript_empty =
+            BetaFileCursorListParams::from_query("scope_id=&ids%5B%5D=&page=").unwrap();
+        assert_eq!(typescript_empty, BetaFileCursorListParams::default());
     }
 }
