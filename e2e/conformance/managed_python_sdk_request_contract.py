@@ -111,3 +111,89 @@ def exercise_all_operation_requests(
             actual_betas = sorted(filter(None, request.headers.get("anthropic-beta", "").split(",")))
             assert actual_betas == operation["betas"], operation["id"]
     assert len(requests) == len(operations)
+
+
+def canonical_error(status: int, error_type: str) -> dict[str, object]:
+    return {
+        "type": "error",
+        "error": {"type": error_type, "message": f"fixture {status}"},
+        "request_id": f"req_body_{status}",
+    }
+
+
+def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:
+    # Transport decision table shared across the exact Python version matrix:
+    # C1=one canonical Managed error envelope and request-id header; C2=status
+    # is 400/401/403/404/409/422/429/500; C3=max_retries=0. Effects: E1=the
+    # exact SDK exception subclass/status/type/request-id is observable; E2=one
+    # request only. Retry graph: C4=500 then success, C5=max_retries=1,
+    # C6=explicit idempotency key and request body. Effects: E3=two attempts;
+    # E4=method/URL/body/idempotency identity is byte-stable. This owns Python
+    # transport behavior only; Awaken's production error mapping is owned by
+    # deployed/Rust operation cases.
+    cases = (
+        (400, "invalid_request_error", "BadRequestError"),
+        (401, "authentication_error", "AuthenticationError"),
+        (403, "permission_error", "PermissionDeniedError"),
+        (404, "not_found_error", "NotFoundError"),
+        (409, "conflict_error", "ConflictError"),
+        (422, "invalid_request_error", "UnprocessableEntityError"),
+        (429, "rate_limit_error", "RateLimitError"),
+        (500, "api_error", "InternalServerError"),
+    )
+    for status, error_type, class_name in cases:
+        requests = []
+
+        def reject(request: object) -> object:
+            requests.append(request)
+            return transport_module.Response(
+                status,
+                request=request,
+                json=canonical_error(status, error_type),
+                headers={"request-id": f"req_header_{status}"},
+            )
+
+        with anthropic_module.Anthropic(
+            api_key="error-contract",  # awaken-allow: secret
+            http_client=transport_module.Client(transport=transport_module.MockTransport(reject)),
+            max_retries=0,
+        ) as client:
+            try:
+                client.beta.sessions.create(agent="fixture", environment_id="fixture")
+            except getattr(anthropic_module, class_name) as error:
+                assert error.status_code == status
+                assert error.body["error"]["type"] == error_type
+                assert error.request_id == f"req_header_{status}"
+            else:
+                raise AssertionError(f"{status}: Python SDK accepted a Managed error")
+        assert len(requests) == 1, f"{status}: client fault retried"
+
+    attempts = []
+
+    def transient(request: object) -> object:
+        attempts.append(request)
+        if len(attempts) == 1:
+            return transport_module.Response(
+                500,
+                request=request,
+                json=canonical_error(500, "api_error"),
+                headers={"request-id": "req_retry_1", "retry-after-ms": "0"},
+            )
+        return transport_module.Response(200, request=request, json={})
+
+    key = "python-managed-retry-identity"
+    with anthropic_module.Anthropic(
+        api_key="retry-contract",  # awaken-allow: secret
+        http_client=transport_module.Client(transport=transport_module.MockTransport(transient)),
+        max_retries=1,
+    ) as client:
+        response = client.beta.sessions.with_raw_response.create(
+            agent="fixture",
+            environment_id="fixture",
+            extra_headers={"idempotency-key": key},
+        )
+        assert response.status_code == 200
+    assert len(attempts) == 2
+    first, second = attempts
+    assert (first.method, first.url, first.content) == (second.method, second.url, second.content)
+    assert first.headers["idempotency-key"] == second.headers["idempotency-key"] == key

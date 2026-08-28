@@ -12,7 +12,10 @@ from pathlib import Path
 
 import anthropic
 
-from managed_python_sdk_request_contract import exercise_all_operation_requests
+from managed_python_sdk_request_contract import (
+    exercise_all_operation_requests,
+    exercise_error_and_retry_contract,
+)
 
 
 REPO = Path(__file__).resolve().parents[2]
@@ -36,6 +39,10 @@ def extracted_evidence(version: str) -> tuple[dict[str, object], dict[str, objec
         "helpers",
         "library_export_fingerprint",
         "library_exports",
+        "runtime_source_fingerprint",
+        "runtime_sources",
+        "stream_event_fingerprint",
+        "stream_event_names",
     )
     for field in direct:
         assert evidence[field] == anchor[field], f"{version}: installed {field}"
@@ -83,7 +90,7 @@ def wait_for_idle(client: object, session_id: str, receipt_id: str) -> list[obje
     raise AssertionError(f"{anthropic.__version__}: Session did not reach idle")
 
 
-def exercise_session(base_url: str) -> None:
+def exercise_session(base_url: str, stream_event_names: list[str]) -> None:
     # Historical lifecycle graph: exact version defaults -> create -> exact
     # receipt -> limit=1 auto-pagination -> typed message+idle -> delete. Every
     # selected row is a reviewed source/protocol/transport change point; running
@@ -106,6 +113,25 @@ def exercise_session(base_url: str) -> None:
             history = list(client.beta.sessions.events.list(session.id, limit=1))
             assert len(history) > 1
             assert len({event.id for event in history}) == len(history)
+            with client.beta.sessions.events.stream(session.id) as stream:
+                streamed = list(stream)
+            streamed_types = [event.type for event in streamed]
+            managed_streaming = {"agent.message", "session.status_idle"}.issubset(
+                stream_event_names
+            )
+            # Capability decision table: C1=the exact wheel's reviewed parser
+            # dispatches both Managed event names; C2=Awaken replays canonical
+            # named frames. C1+C2 => typed message+idle. !C1+C2 => the first
+            # official Managed release intentionally filters those frames and
+            # yields none. This records the upstream 0.92 boundary instead of
+            # misdiagnosing it as a server replay failure or hanging forever.
+            if managed_streaming:
+                assert "agent.message" in streamed_types
+                assert "session.status_idle" in streamed_types
+            else:
+                assert streamed_types == [], (
+                    f"{anthropic.__version__}: legacy parser behavior changed: {streamed_types}"
+                )
         finally:
             client.beta.sessions.delete(session.id)
 
@@ -182,13 +208,14 @@ def main() -> None:
     parser.add_argument("base_url")
     args = parser.parse_args()
     assert anthropic.__version__ == args.version
-    evidence, _ = extracted_evidence(args.version)
+    evidence, anchor = extracted_evidence(args.version)
     transport = importlib.import_module("httpx2" if args.version.startswith("1.") else "httpx")
     exercise_all_operation_requests(anthropic, transport, evidence["operations"])
+    exercise_error_and_retry_contract(anthropic, transport)
     exercise_library_exports(evidence["library_exports"])
     asyncio.run(exercise_resource_helper_surface(evidence["helpers"]))
     operation_ids = {operation["id"] for operation in evidence["operations"]}
-    exercise_session(args.base_url)
+    exercise_session(args.base_url, anchor["stream_event_names"])
     exercise_memory(args.base_url, operation_ids)
     exercise_beta_ga_change_point(args.base_url, operation_ids)
     print(

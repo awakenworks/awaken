@@ -22,7 +22,10 @@ from anthropic.types.beta import (
 from anthropic.types.beta.sessions import BetaManagedAgentsTextBlock
 from standardwebhooks import WebhookVerificationError
 
-from managed_python_sdk_request_contract import exercise_all_operation_requests as exercise_requests
+from managed_python_sdk_request_contract import (
+    exercise_all_operation_requests as exercise_requests,
+    exercise_error_and_retry_contract,
+)
 
 
 BASE_URL = os.environ["AWAKEN_MANAGED_BASE_URL"]
@@ -98,9 +101,20 @@ def exercise_sync_session() -> None:
         assert next(event for event in suffix if event.type == "agent.message").content[0].text == (
             "Echo: python-sync"
         )
+        # Disconnect after one decoded frame, then create a fresh official SDK
+        # stream. Managed SSE is full replay: the second stream must contain the
+        # first id exactly once and reach the same terminal facts. This catches
+        # parser cleanup, accidental resume-only behavior, duplicate frames, or
+        # a server cache that cannot replay committed history.
         with client.beta.sessions.events.stream(session.id) as stream:
-            streamed = [event.type for event in stream]
-        assert "agent.message" in streamed and "session.status_idle" in streamed
+            disconnected = next(iter(stream))
+        with client.beta.sessions.events.stream(session.id) as stream:
+            replayed = list(stream)
+        replayed_ids = [event.id for event in replayed]
+        assert disconnected.id in replayed_ids
+        assert len(replayed_ids) == len(set(replayed_ids))
+        replayed_types = [event.type for event in replayed]
+        assert "agent.message" in replayed_types and "session.status_idle" in replayed_types
         try:
             client.beta.sessions.retrieve("sesn_python_missing")
         except anthropic.NotFoundError as error:
@@ -399,6 +413,7 @@ def main() -> None:
         print(f"PYTHON SDK RECOVERY {args.mode} PASS")
         return
     exercise_all_operation_requests()
+    exercise_error_and_retry_contract(anthropic, httpx2)
     exercise_accumulator_contract()
     exercise_sync_session()
     asyncio.run(exercise_async_session())

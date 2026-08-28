@@ -227,6 +227,39 @@ def managed_library_exports(root: Path, module_names: Iterable[str]) -> tuple[li
     return sorted(exports), source_hashes
 
 
+def runtime_source_evidence(root: Path, relative_paths: Iterable[str]) -> list[dict[str, str]]:
+    """Fingerprint the handwritten transport closure used by Managed resources."""
+    evidence = []
+    for relative in relative_paths:
+        filename = root / relative
+        if not filename.is_file():
+            raise AssertionError(f"missing Python Managed runtime source {relative}")
+        evidence.append({
+            "path": relative,
+            "sha256": hashlib.sha256(filename.read_bytes()).hexdigest(),
+        })
+    return sorted(evidence, key=lambda item: item["path"])
+
+
+def stream_event_names(filename: Path) -> list[str]:
+    """Extract the exact SSE event names dispatched by the official client."""
+    module = ast.parse(filename.read_text(encoding="utf-8"), filename=str(filename))
+    names = {
+        comparator.value
+        for node in ast.walk(module)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Attribute)
+        and isinstance(node.left.value, ast.Name)
+        and node.left.value.id == "sse"
+        and node.left.attr == "event"
+        for comparator in node.comparators
+        if isinstance(comparator, ast.Constant) and isinstance(comparator.value, str)
+    }
+    if not names:
+        raise AssertionError(f"{filename}: no SSE event dispatch names")
+    return sorted(names)
+
+
 def beta_tokens(node: ast.AST) -> list[str]:
     return sorted({
         child.value
@@ -306,6 +339,8 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         root,
         scope["python_managed_library_modules"],
     )
+    runtime_sources = runtime_source_evidence(root, scope["python_managed_runtime_files"])
+    dispatched_stream_events = stream_event_names(root / "anthropic/_streaming.py")
     source_hashes.extend(library_source_hashes)
     source_hashes.sort(key=lambda item: item["path"])
     operations = sorted(by_id.values(), key=lambda operation: operation["id"])
@@ -320,6 +355,10 @@ def extract(root: Path, version: str, scope: dict[str, Any]) -> dict[str, Any]:
         "helpers": sorted(helpers),
         "library_export_fingerprint": digest(library_exports),
         "library_exports": library_exports,
+        "runtime_source_fingerprint": digest(runtime_sources),
+        "runtime_sources": runtime_sources,
+        "stream_event_fingerprint": digest(dispatched_stream_events),
+        "stream_event_names": dispatched_stream_events,
         "operations": operations,
     }
 
@@ -339,7 +378,8 @@ def generate() -> dict[str, Any]:
             for key in (
                 "version", "role", "reason", "wheel", "operation_fingerprint",
                 "source_fingerprint", "source_file_count", "helper_fingerprint",
-                "library_export_fingerprint",
+                "library_export_fingerprint", "runtime_source_fingerprint",
+                "stream_event_fingerprint",
             )
         } | {
             "operation_count": len(anchor["operations"]),
@@ -347,6 +387,10 @@ def generate() -> dict[str, Any]:
             "helpers": anchor["helpers"],
             "library_export_count": len(anchor["library_exports"]),
             "library_exports": anchor["library_exports"],
+            "runtime_source_count": len(anchor["runtime_sources"]),
+            "runtime_sources": anchor["runtime_sources"],
+            "stream_event_count": len(anchor["stream_event_names"]),
+            "stream_event_names": anchor["stream_event_names"],
             "only_in_anchor": sorted(ids - current_ids),
             "only_in_current": sorted(current_ids - ids),
         })
@@ -430,6 +474,16 @@ def validate(oracle: dict[str, Any]) -> None:
         raise AssertionError("current Python library exports must be unique and sorted")
     if digest(library_exports) != oracle["current"].get("library_export_fingerprint"):
         raise AssertionError("current Python library export fingerprint is stale")
+    runtime_sources = oracle["current"].get("runtime_sources")
+    if not isinstance(runtime_sources, list):
+        raise AssertionError("current Python runtime sources must be a list")
+    if digest(runtime_sources) != oracle["current"].get("runtime_source_fingerprint"):
+        raise AssertionError("current Python runtime source fingerprint is stale")
+    stream_events = oracle["current"].get("stream_event_names")
+    if not isinstance(stream_events, list) or stream_events != sorted(set(stream_events)):
+        raise AssertionError("current Python stream events must be unique and sorted")
+    if digest(stream_events) != oracle["current"].get("stream_event_fingerprint"):
+        raise AssertionError("current Python stream event fingerprint is stale")
     ids = [operation["id"] for operation in operations]
     if ids != sorted(set(ids)):
         raise AssertionError("current Python operations must be unique and sorted")
@@ -454,6 +508,22 @@ def validate(oracle: dict[str, Any]) -> None:
             or anchor.get("library_export_fingerprint") != digest(exports)
         ):
             raise AssertionError(f"{anchor['version']}: library export summary is stale")
+        runtime_sources = anchor.get("runtime_sources")
+        if not isinstance(runtime_sources, list):
+            raise AssertionError(f"{anchor['version']}: runtime sources must be a list")
+        if (
+            anchor.get("runtime_source_count") != len(runtime_sources)
+            or anchor.get("runtime_source_fingerprint") != digest(runtime_sources)
+        ):
+            raise AssertionError(f"{anchor['version']}: runtime source summary is stale")
+        stream_events = anchor.get("stream_event_names")
+        if not isinstance(stream_events, list) or stream_events != sorted(set(stream_events)):
+            raise AssertionError(f"{anchor['version']}: stream events must be unique and sorted")
+        if (
+            anchor.get("stream_event_count") != len(stream_events)
+            or anchor.get("stream_event_fingerprint") != digest(stream_events)
+        ):
+            raise AssertionError(f"{anchor['version']}: stream event summary is stale")
 
 
 def main() -> None:

@@ -86,8 +86,50 @@
       "operation_fingerprint": "bb2389b6b3af9193d1d42312271f5ddbb703b010e7c309207cc44a3223c7fc35",
       "reason": "first official Managed Agents release",
       "role": "oldest_supported",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "96be1b1cf55aca2be9f40fb191313d769a8ce601b85d1e147286bc8771fdda06",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "dcb62f99433f54d962106ab3af58bfdaf3074beedc7c25c7486f9e0977aa4a5c"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "1ab85cfe26f4215487a2bd6edd5b8ae4f1a44f63e0f974499ee521a1277ab9d7"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "9a72f7067ff3509dd61be7514f3134815984c389359ea0a08ad73aaa9fb56a57"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "fd4c7abfa9c0b312b87bfe1e7ddb750e220e6748469a547664a29c55f2487c65"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "e29abd862ffcd7bb13b683cec86af7be6526209d73f19dbe4f0ab96843774aa8"
+        }
+      ],
       "source_file_count": 17,
       "source_fingerprint": "ce5b2fc2a46fca74be29bb351868f1c0dd52451218e0cc1dea63cdf1946b995d",
+      "stream_event_count": 10,
+      "stream_event_fingerprint": "400fb8d79f3b80898882b8423cda11086728ade04d43e1eb02158d03a3ba1e98",
+      "stream_event_names": [
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping"
+      ],
       "version": "0.92.0",
       "wheel": {
         "filename": "anthropic-0.92.0-py3-none-any.whl",
@@ -157,8 +199,84 @@
       "operation_fingerprint": "5643547c0abf4ec4af896a4c3ce50b6193fc052ba878037cb0c6da9078214c27",
       "reason": "multi-agent, outcome, webhook, and vault-validation surface",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "fe5d690570e25c8eba3119ecca3ea0ef46e29d75cab77ba9691d268f1d41bf7f",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "a6a53bd97f9cfe4ec55231791dd77961dc3a65da8b37799bb36e54c7e7e19d7e"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "e0ec108e41d68a71aa08978ba57e9f44d95e19feab98fc814a8a8e6052825af3"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "1e49a2df7aceeeacbf00a3f0db40199db410131bc9c2ce16401848a9a796ca64"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "54965b00d69ecea522fad29b8f3b83adffdc60dce80788a693d4b8b53bcf288c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "1fe860559a8c52dbe48e00b4d145fe6147359a3e4357f1759412ff3a6fdd7c5a"
+        }
+      ],
       "source_file_count": 26,
       "source_fingerprint": "07ec41f4995c2e4e8a842d86c0a2c9e694cce75af72619ad374fd3d3697ddb7c",
+      "stream_event_count": 44,
+      "stream_event_fingerprint": "e25266f83f4811fc889b047cae577c47689b131a594ffc311e8e4296cac79ede",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation"
+      ],
       "version": "0.100.0",
       "wheel": {
         "filename": "anthropic-0.100.0-py3-none-any.whl",
@@ -237,8 +355,86 @@
       "operation_fingerprint": "05b9772ca29dc398a0b30682f2c13ce44392e873e7c6be145e97a1e901de8761",
       "reason": "deployment and environment-credential surface",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "60d6f23f669560a6207ef8a339227fbdbdac252f115ef1c76e1d541f5560f287",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "c46de99cdbc038e1eabe58b2315a0190146154aea199bbffb9731ee540a5a7a4"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "3a2e4a729af28de93cc31f8f5c5ef36eed7c3b952ca3aa3efaaa29ca129bee90"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "6ddf46e7a4ca65502d8eec9f65504d676d7dbf5615411f604615c87b6edae77c"
+        }
+      ],
       "source_file_count": 32,
       "source_fingerprint": "5a37408db8893872a36b9582de2e78ccffb8dca2320cd97ef5670dfc433420f2",
+      "stream_event_count": 46,
+      "stream_event_fingerprint": "0197382164d73a6d4ce23183fb702564afc9d07ac850488938ae2cc6c652266e",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.109.0",
       "wheel": {
         "filename": "anthropic-0.109.0-py3-none-any.whl",
@@ -319,8 +515,89 @@
       "operation_fingerprint": "05b9772ca29dc398a0b30682f2c13ce44392e873e7c6be145e97a1e901de8761",
       "reason": "event-delta, override, reverse-pagination, and webhook surface",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "1546c6677d323ef3b1254c1fd4bf516b32a19d0e3f4abaf46a9d7bfdf93a2faf",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "19f44698fbd96dfb93e320b54643339dcc2788907a58dc94c86884bc41048e74"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "240329ad19a78f1b990b1856a78c8e42691c54244cf60f8f55da96074e53c944"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 33,
       "source_fingerprint": "9dd1e6d4055ae79a12861aea392e70d9f3c325b620df7ff8921da4acb0bf33c0",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.115.0",
       "wheel": {
         "filename": "anthropic-0.115.0-py3-none-any.whl",
@@ -401,8 +678,89 @@
       "operation_fingerprint": "e676ec0cd3113ed3a0e6f8695635d3e2bc65e1c3c18a2ad686ed3e7a4cd20fc9",
       "reason": "agent-memory beta selector",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "1546c6677d323ef3b1254c1fd4bf516b32a19d0e3f4abaf46a9d7bfdf93a2faf",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "19f44698fbd96dfb93e320b54643339dcc2788907a58dc94c86884bc41048e74"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "240329ad19a78f1b990b1856a78c8e42691c54244cf60f8f55da96074e53c944"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 33,
       "source_fingerprint": "0394dd60921ef7b081b34751ddd90719d7f29c537780b44f11b7bb8a6fb7ac8b",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.116.0",
       "wheel": {
         "filename": "anthropic-0.116.0-py3-none-any.whl",
@@ -468,8 +826,89 @@
       "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
       "reason": "Dream and MCP Tunnel surface",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "66cf0b7320f294e8d42d4a8c00016330d9ce24cbdd8589bed9eef4a25416db26",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "19f44698fbd96dfb93e320b54643339dcc2788907a58dc94c86884bc41048e74"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "77076512690af784a6f3a666143ac7726ac1f85ff80791b86eda3578a8c2f426"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 37,
       "source_fingerprint": "e69a1ad5d6a2128575777416a75f1bf35fe13e7c26cda13297336f6c4b82cc48",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.117.1",
       "wheel": {
         "filename": "anthropic-0.117.1-py3-none-any.whl",
@@ -535,8 +974,89 @@
       "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
       "reason": "initial events, model effort, and Thread delta streaming",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "66cf0b7320f294e8d42d4a8c00016330d9ce24cbdd8589bed9eef4a25416db26",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "19f44698fbd96dfb93e320b54643339dcc2788907a58dc94c86884bc41048e74"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "77076512690af784a6f3a666143ac7726ac1f85ff80791b86eda3578a8c2f426"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 37,
       "source_fingerprint": "e89e29c01fd7d18214a8e7f5c21715bfbbf4100ffbb179d9300a1a1e114b3310",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.118.0",
       "wheel": {
         "filename": "anthropic-0.118.0-py3-none-any.whl",
@@ -602,8 +1122,89 @@
       "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
       "reason": "budgets, advisor, inference location, and GitHub Skill loading",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "66cf0b7320f294e8d42d4a8c00016330d9ce24cbdd8589bed9eef4a25416db26",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "19f44698fbd96dfb93e320b54643339dcc2788907a58dc94c86884bc41048e74"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "77076512690af784a6f3a666143ac7726ac1f85ff80791b86eda3578a8c2f426"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "4a9d4f4b3d3d19e14aebc2a9981f5b715537c11fbd67046d03c4405715fe3cf9"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "7c1417846d13d25a2910f34bdac7733349efc6b728dc19b044d95aee94c3ceb3"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "c8eb5a4b3d488160315fa984ca851786e6917c1fc11a281c718d7a1ce1d9757e"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 37,
       "source_fingerprint": "d9fcff65cdc31c5f9122f971a74a4f6e61af94f2fe4d3e1158000b5ccc5c3286",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.121.0",
       "wheel": {
         "filename": "anthropic-0.121.0-py3-none-any.whl",
@@ -655,8 +1256,89 @@
       "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
       "reason": "Files and Skills GA cutover",
       "role": "ga_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "8923ce036ddde5481affd92d317b47b49c44aa2c25b47d091e05e922c232eb88",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "978a8c5f342a05f14e9cfecd5a49f291f57f11b9320a9431dd568f230fa22711"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "2a650913f060195b5a53905002246a900d632c0411fe3343ed6f74e7412a0b01"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "575f57a855654c9df8e4cc952549d04f321ada5d7b9809c154d283fa32930d92"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "2a1566f49cd80338512616e2be18cce1dccbcf5b027f4aa04da74256528e345f"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 41,
       "source_fingerprint": "d5ed07645191ab5c07e4855384673e9b3c20aa1b0681a62f6e81333897cd1e1c",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.124.0",
       "wheel": {
         "filename": "anthropic-0.124.0-py3-none-any.whl",
@@ -711,8 +1393,89 @@
       "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
       "reason": "web-search configuration and self-hosted sandbox memory",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "8923ce036ddde5481affd92d317b47b49c44aa2c25b47d091e05e922c232eb88",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "978a8c5f342a05f14e9cfecd5a49f291f57f11b9320a9431dd568f230fa22711"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "2a650913f060195b5a53905002246a900d632c0411fe3343ed6f74e7412a0b01"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "575f57a855654c9df8e4cc952549d04f321ada5d7b9809c154d283fa32930d92"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "2a1566f49cd80338512616e2be18cce1dccbcf5b027f4aa04da74256528e345f"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "19a270814e53ba70181c5687e0011e376df09b8521e1e4d97505e6233e0d3cb0"
+        }
+      ],
       "source_file_count": 41,
       "source_fingerprint": "3879cb8c4c70103f9d059f826a18fd8a4483d074168e17958427e37c5ecd9dfb",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "0.125.0",
       "wheel": {
         "filename": "anthropic-0.125.0-py3-none-any.whl",
@@ -767,8 +1530,89 @@
       "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
       "reason": "httpx2 transport boundary",
       "role": "transport_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "420a322c4f347f52559755138d8a546bb3b92a1f73d946ed0e40eb24f55541ee",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "21b4dd53dcb885ae97a28a1d1fe4b589ab27e374edae3b49aa34c8785c52e9fc"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "722b8d940cc779b39cb9b9f153abc33ffc89ae59573b9f9b9362f6b6d1a2fc75"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "95f6e7c55785bfc035a64f20e04ffa64ae5bbb6d1981e178556a1717d8950b56"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "92e05e26ed67b8c00140e1348e6526a1c0e87765f859b94dd15be37ca967e5ca"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+        }
+      ],
       "source_file_count": 41,
       "source_fingerprint": "d9b0ba105dd626a1d5a11a4ec06dab047929c703e6ecd5ab7d5c7fa8582019db",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "1.0.0",
       "wheel": {
         "filename": "anthropic-1.0.0-py3-none-any.whl",
@@ -823,8 +1667,89 @@
       "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
       "reason": "missing beta selectors restored",
       "role": "protocol_change_point",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "1326738a5b0a5598ed80cb54fff257f688ee754824742fa46cd522839417f126",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "f98a1d645cec3957ce8e5eaa21f34788989815c81f5c973ada000d45e80c7c07"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "722b8d940cc779b39cb9b9f153abc33ffc89ae59573b9f9b9362f6b6d1a2fc75"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "95f6e7c55785bfc035a64f20e04ffa64ae5bbb6d1981e178556a1717d8950b56"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "92e05e26ed67b8c00140e1348e6526a1c0e87765f859b94dd15be37ca967e5ca"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+        }
+      ],
       "source_file_count": 41,
       "source_fingerprint": "905d35670b11eedf4897225f37c727bd566d8c5dc31736931bba2c36c90d16a9",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "1.1.0",
       "wheel": {
         "filename": "anthropic-1.1.0-py3-none-any.whl",
@@ -880,8 +1805,89 @@
       "operation_fingerprint": "34d260a15bb03bb643f215c0f6ce5a6ea05813ab4a4a24c5293341d5670fe515",
       "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins",
       "role": "current_oracle",
+      "runtime_source_count": 6,
+      "runtime_source_fingerprint": "1326738a5b0a5598ed80cb54fff257f688ee754824742fa46cd522839417f126",
+      "runtime_sources": [
+        {
+          "path": "anthropic/_base_client.py",
+          "sha256": "f98a1d645cec3957ce8e5eaa21f34788989815c81f5c973ada000d45e80c7c07"
+        },
+        {
+          "path": "anthropic/_client.py",
+          "sha256": "722b8d940cc779b39cb9b9f153abc33ffc89ae59573b9f9b9362f6b6d1a2fc75"
+        },
+        {
+          "path": "anthropic/_exceptions.py",
+          "sha256": "95f6e7c55785bfc035a64f20e04ffa64ae5bbb6d1981e178556a1717d8950b56"
+        },
+        {
+          "path": "anthropic/_files.py",
+          "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+        },
+        {
+          "path": "anthropic/_response.py",
+          "sha256": "92e05e26ed67b8c00140e1348e6526a1c0e87765f859b94dd15be37ca967e5ca"
+        },
+        {
+          "path": "anthropic/_streaming.py",
+          "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+        }
+      ],
       "source_file_count": 41,
       "source_fingerprint": "cc3f26b6c830efe431b34033a25bbb716f3e92e636e6784f36e2613e16066539",
+      "stream_event_count": 49,
+      "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+      "stream_event_names": [
+        "agent.custom_tool_use",
+        "agent.mcp_tool_result",
+        "agent.mcp_tool_use",
+        "agent.message",
+        "agent.session_thread_message_received",
+        "agent.session_thread_message_sent",
+        "agent.thinking",
+        "agent.thread_context_compacted",
+        "agent.thread_message_received",
+        "agent.thread_message_sent",
+        "agent.tool_result",
+        "agent.tool_use",
+        "completion",
+        "content_block_delta",
+        "content_block_start",
+        "content_block_stop",
+        "error",
+        "event_delta",
+        "event_start",
+        "message",
+        "message_delta",
+        "message_start",
+        "message_stop",
+        "ping",
+        "session.deleted",
+        "session.error",
+        "session.status_idle",
+        "session.status_rescheduled",
+        "session.status_running",
+        "session.status_terminated",
+        "session.thread_created",
+        "session.thread_status_created",
+        "session.thread_status_idle",
+        "session.thread_status_rescheduled",
+        "session.thread_status_running",
+        "session.thread_status_terminated",
+        "session.updated",
+        "span.model_request_end",
+        "span.model_request_start",
+        "span.outcome_evaluation_end",
+        "span.outcome_evaluation_ongoing",
+        "span.outcome_evaluation_start",
+        "system.message",
+        "user.custom_tool_result",
+        "user.define_outcome",
+        "user.interrupt",
+        "user.message",
+        "user.tool_confirmation",
+        "user.tool_result"
+      ],
       "version": "1.2.0",
       "wheel": {
         "filename": "anthropic-1.2.0-py3-none-any.whl",
@@ -2001,8 +3007,87 @@
     ],
     "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins",
     "role": "current_oracle",
+    "runtime_source_fingerprint": "1326738a5b0a5598ed80cb54fff257f688ee754824742fa46cd522839417f126",
+    "runtime_sources": [
+      {
+        "path": "anthropic/_base_client.py",
+        "sha256": "f98a1d645cec3957ce8e5eaa21f34788989815c81f5c973ada000d45e80c7c07"
+      },
+      {
+        "path": "anthropic/_client.py",
+        "sha256": "722b8d940cc779b39cb9b9f153abc33ffc89ae59573b9f9b9362f6b6d1a2fc75"
+      },
+      {
+        "path": "anthropic/_exceptions.py",
+        "sha256": "95f6e7c55785bfc035a64f20e04ffa64ae5bbb6d1981e178556a1717d8950b56"
+      },
+      {
+        "path": "anthropic/_files.py",
+        "sha256": "f98df3605ef6f8745af03c586962f3472a2aa06890f469a03ef912f02c396c9c"
+      },
+      {
+        "path": "anthropic/_response.py",
+        "sha256": "92e05e26ed67b8c00140e1348e6526a1c0e87765f859b94dd15be37ca967e5ca"
+      },
+      {
+        "path": "anthropic/_streaming.py",
+        "sha256": "630ad9988e4712da3775e1c319e6709a775ec06d17ca311ffc1268a1f8c7baaf"
+      }
+    ],
     "source_file_count": 41,
     "source_fingerprint": "cc3f26b6c830efe431b34033a25bbb716f3e92e636e6784f36e2613e16066539",
+    "stream_event_fingerprint": "e9a7fbfe7b8c1463d5dc0d18c657b7114b89882c976700d7fffcc942c413a3ad",
+    "stream_event_names": [
+      "agent.custom_tool_use",
+      "agent.mcp_tool_result",
+      "agent.mcp_tool_use",
+      "agent.message",
+      "agent.session_thread_message_received",
+      "agent.session_thread_message_sent",
+      "agent.thinking",
+      "agent.thread_context_compacted",
+      "agent.thread_message_received",
+      "agent.thread_message_sent",
+      "agent.tool_result",
+      "agent.tool_use",
+      "completion",
+      "content_block_delta",
+      "content_block_start",
+      "content_block_stop",
+      "error",
+      "event_delta",
+      "event_start",
+      "message",
+      "message_delta",
+      "message_start",
+      "message_stop",
+      "ping",
+      "session.deleted",
+      "session.error",
+      "session.status_idle",
+      "session.status_rescheduled",
+      "session.status_running",
+      "session.status_terminated",
+      "session.thread_created",
+      "session.thread_status_created",
+      "session.thread_status_idle",
+      "session.thread_status_rescheduled",
+      "session.thread_status_running",
+      "session.thread_status_terminated",
+      "session.updated",
+      "span.model_request_end",
+      "span.model_request_start",
+      "span.outcome_evaluation_end",
+      "span.outcome_evaluation_ongoing",
+      "span.outcome_evaluation_start",
+      "system.message",
+      "user.custom_tool_result",
+      "user.define_outcome",
+      "user.interrupt",
+      "user.message",
+      "user.tool_confirmation",
+      "user.tool_result"
+    ],
     "version": "1.2.0",
     "wheel": {
       "filename": "anthropic-1.2.0-py3-none-any.whl",

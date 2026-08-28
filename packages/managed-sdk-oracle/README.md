@@ -78,8 +78,13 @@ evidence from drifting from the external expectation:
 - `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
   change point in its own SHA-256-qualified wheel root over one exact dependency
   closure. It re-extracts and compares the installed source/operation/helper/
-  export fingerprints, constructs every operation, and runs live Session and
-  Memory lifecycles. The last Beta-only and first GA Files/Skills releases own
+  export and handwritten transport-source fingerprints, constructs every
+  operation, proves the canonical Python error subclasses plus
+  retry/idempotency identity, and runs live Session/SSE and Memory lifecycles.
+  The generated SSE dispatch inventory records that the first 0.92 Managed
+  wheel filters canonical Managed event names in its own generic parser; 0.100+
+  must decode message and terminal replay. The last Beta-only and first GA
+  Files/Skills releases own
   the two additional projection-cutover cells; the current 1.2 behavior remains
   owned by the deeper runtime/recovery driver instead of being run twice.
 

@@ -157,7 +157,7 @@ async function exerciseRecovery(python, temporary) {
   }
 }
 
-async function exerciseHistoricalMatrix(python, pip, temporary) {
+async function exerciseHistoricalMatrix(python, pip, temporary, selectedVersion) {
   // Version-axis graph: all configured historical rows are reviewed change
   // points, never arbitrary patches. Each target installation is constrained
   // by the generated official wheel SHA; one shared exact dependency closure
@@ -165,7 +165,13 @@ async function exerciseHistoricalMatrix(python, pip, temporary) {
   // and owns every SDK call. One live server is shared because service behavior
   // is invariant; wheel state is isolated by one subprocess/PYTHONPATH per row.
   const oracle = JSON.parse(readFileSync(ORACLE, 'utf8'));
-  const anchors = oracle.anchors.filter(({ role }) => role !== 'current_oracle');
+  const historical = oracle.anchors.filter(({ role }) => role !== 'current_oracle');
+  const anchors = selectedVersion
+    ? historical.filter(({ version }) => version === selectedVersion)
+    : historical;
+  if (anchors.length === 0) {
+    throw new Error(`unknown historical Python Managed SDK version ${JSON.stringify(selectedVersion)}`);
+  }
   const roots = provisionHistoricalSdks(pip, temporary, anchors);
   await withScenarioServer('management', 'echo', PORT + 3, async (baseURL) => {
     for (const anchor of anchors) {
@@ -190,16 +196,25 @@ async function exerciseHistoricalMatrix(python, pip, temporary) {
 const temporary = mkdtempSync(resolve(tmpdir(), 'awaken-python-managed-sdk-'));
 try {
   const { python, pip } = provisionPython(temporary);
-  await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
-    await runDriver(python, DRIVER, baseURL);
-  });
-  await withServer('worker', PORT + 1, async (baseURL) => {
-    await runDriver(python, HELPER_DRIVER, baseURL);
-  });
-  await exerciseRecovery(python, temporary);
-  await exerciseHistoricalMatrix(python, pip, temporary);
-  const pinned = readFileSync(LOCK, 'utf8').match(/^anthropic==(\S+)$/mu)?.[1];
-  console.log(`E2E PASS: official Python Managed SDK ${pinned} runtime compatibility.`);
+  const selectedVersion = process.argv[2];
+  if (selectedVersion) {
+    // Explicit CLI selection is a developer diagnostic only. The release npm
+    // command supplies no argument and therefore cannot silently narrow the
+    // configured matrix.
+    await exerciseHistoricalMatrix(python, pip, temporary, selectedVersion);
+    process.exitCode = 0;
+  } else {
+    await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
+      await runDriver(python, DRIVER, baseURL);
+    });
+    await withServer('worker', PORT + 1, async (baseURL) => {
+      await runDriver(python, HELPER_DRIVER, baseURL);
+    });
+    await exerciseRecovery(python, temporary);
+    await exerciseHistoricalMatrix(python, pip, temporary);
+    const pinned = readFileSync(LOCK, 'utf8').match(/^anthropic==(\S+)$/mu)?.[1];
+    console.log(`E2E PASS: official Python Managed SDK ${pinned} runtime compatibility.`);
+  }
 } finally {
   rmSync(temporary, { recursive: true, force: true });
 }

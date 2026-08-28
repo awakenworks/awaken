@@ -33,6 +33,14 @@
     "anthropic.lib.sessions",
     "anthropic.lib.tools.agent_toolset"
   ],
+  "python_managed_runtime_files": [
+    "anthropic/_base_client.py",
+    "anthropic/_client.py",
+    "anthropic/_exceptions.py",
+    "anthropic/_files.py",
+    "anthropic/_response.py",
+    "anthropic/_streaming.py"
+  ],
   "documented_routes": [
     {
       "id": "documented.skills.versions.retrieveFile",

@@ -134,6 +134,44 @@ class AsyncWork(AsyncAPIResource):
             ],
         )
 
+    def test_extracts_exact_sse_dispatch_capabilities(self) -> None:
+        # SSE capability graph: C1=the generic parser dispatches one legacy
+        # event and two Managed event names; C2=an unrelated string resembles
+        # an event. Effects: E1=only actual `sse.event == literal` comparisons
+        # become capability evidence; E2=duplicates collapse deterministically.
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "_streaming.py"
+            target.write_text(
+                """
+def decode(sse):
+    ignored = 'agent.tool_use'
+    if sse.event == 'message' or sse.event == 'agent.message':
+        return True
+    if sse.event == 'session.status_idle':
+        return True
+    if sse.event == 'agent.message':
+        return True
+""",
+                encoding="utf-8",
+            )
+            names = oracle.stream_event_names(target)
+        self.assertEqual(names, ["agent.message", "message", "session.status_idle"])
+
+    def test_runtime_source_evidence_fails_closed_on_missing_file(self) -> None:
+        # Runtime closure partition: every configured handwritten transport
+        # file must exist. Silently skipping a renamed parser would preserve a
+        # stale fingerprint while executing unreviewed SDK code.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            existing = root / "anthropic/_streaming.py"
+            existing.parent.mkdir(parents=True)
+            existing.write_text("pass\n", encoding="utf-8")
+            with self.assertRaisesRegex(AssertionError, "missing Python Managed runtime source"):
+                oracle.runtime_source_evidence(
+                    root,
+                    ["anthropic/_streaming.py", "anthropic/_missing.py"],
+                )
+
     def test_route_expression_rejects_unresolved_dynamic_values(self) -> None:
         # Negative partition: a route assembled outside a literal/path_template
         # cannot be fingerprinted from source and is rejected. Accepting it
