@@ -1,0 +1,97 @@
+{
+  "qualifications": [
+    {
+      "baseline_version": "0.121.0",
+      "candidate_version": "0.122.0",
+      "delta_fingerprint": "444a9bdd3e4837c56a7fda9a696a216a59837bb104ee965c5d80e6c53eb992ee",
+      "evidence_groups": [
+        {
+          "owner": "candidate.typescript-change-points",
+          "coordinates": [
+            "declarations:changed:beta/files.d.ts",
+            "declarations:changed:beta/skills/index.d.ts",
+            "declarations:changed:beta/skills/skills.d.ts",
+            "declarations:changed:beta/skills/versions.d.ts"
+          ]
+        },
+        {
+          "owner": "candidate.webhook-helpers",
+          "coordinates": [
+            "declarations:changed:beta/webhooks.d.ts",
+            "runtime:changed:resources/beta/webhooks.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.files-runtime",
+          "coordinates": [
+            "operations:changed:beta.files.delete",
+            "operations:changed:beta.files.download",
+            "operations:changed:beta.files.list",
+            "operations:changed:beta.files.retrieveMetadata",
+            "operations:changed:beta.files.upload",
+            "runtime:changed:resources/beta/files.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.skills-runtime",
+          "coordinates": [
+            "operations:changed:beta.skills.create",
+            "operations:changed:beta.skills.delete",
+            "operations:changed:beta.skills.list",
+            "operations:changed:beta.skills.retrieve",
+            "operations:changed:beta.skills.versions.create",
+            "operations:changed:beta.skills.versions.delete",
+            "operations:changed:beta.skills.versions.download",
+            "operations:changed:beta.skills.versions.list",
+            "operations:changed:beta.skills.versions.retrieve",
+            "runtime:changed:resources/beta/skills/skills.mjs",
+            "runtime:changed:resources/beta/skills/versions.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.core-transport",
+          "coordinates": [
+            "runtime:changed:version.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.error-classification",
+          "coordinates": [
+            "runtime:changed:internal/errors.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.upload-admission",
+          "coordinates": [
+            "runtime:changed:internal/uploads.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.sse-parser",
+          "coordinates": [
+            "runtime:changed:core/middleware.mjs",
+            "runtime:changed:internal/parse.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.session-accumulator",
+          "coordinates": [
+            "runtime:changed:lib/sessions/accumulate.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.agent-toolset-node",
+          "coordinates": [
+            "runtime:changed:tools/agent-toolset/node.mjs"
+          ]
+        },
+        {
+          "owner": "candidate.skill-setup-recovery",
+          "coordinates": [
+            "runtime:changed:tools/agent-toolset/skills.mjs"
+          ]
+        }
+      ]
+    }
+  ]
+}

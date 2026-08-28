@@ -1,3 +1,5 @@
+import crypto from 'node:crypto';
+
 import {
   extractOperationsFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
@@ -7,6 +9,13 @@ import {
 import {
   managedRuntimeFingerprintFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-runtime.mjs';
+import { stableJson } from '../../packages/managed-sdk-oracle/src/normalize.mjs';
+
+const deltaKinds = Object.freeze([
+  ['operations', 'id'],
+  ['declarations', 'path'],
+  ['runtime', 'path'],
+]);
 
 function changedEntries(current, candidate, key) {
   const before = new Map(current.map((entry) => [entry[key], entry]));
@@ -36,6 +45,83 @@ export function officialSdkCandidateDelta(currentRoot, candidateRoot, scope) {
     operations: changedEntries(currentOperations.operations, candidateOperations.operations, 'id'),
     declarations: changedEntries(currentTypes.files, candidateTypes.files, 'path'),
     runtime: changedEntries(currentRuntime.files, candidateRuntime.files, 'path'),
+  });
+}
+
+export function officialSdkCandidateDeltaFingerprint(delta) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(stableJson(delta)))
+    .digest('hex');
+}
+
+export function officialSdkCandidateDeltaCoordinates(delta) {
+  return Object.freeze(deltaKinds.flatMap(([kind, key]) => (
+    ['added', 'removed', 'changed'].flatMap((change) => (
+      delta[kind][change].map((entry) => `${kind}:${change}:${entry[key]}`)
+    ))
+  )).sort());
+}
+
+function exactMembers(actual, expected) {
+  return actual.length === expected.length
+    && actual.every((value, index) => value === expected[index]);
+}
+
+export function qualifyOfficialSdkCandidateDelta(delta, qualifications) {
+  assertLatestRuntimeOwnsCandidateDelta(delta);
+  const coordinates = officialSdkCandidateDeltaCoordinates(delta);
+  if (delta.currentVersion === delta.candidateVersion) {
+    if (coordinates.length > 0) {
+      throw new Error('same-version SDK package content differs from the generated current anchor');
+    }
+    return Object.freeze({ requiredBehaviorOwners: Object.freeze([]) });
+  }
+
+  if (!Array.isArray(qualifications)) {
+    throw new Error('candidate qualification catalog must be an array');
+  }
+  const matches = qualifications.filter(({ baseline_version, candidate_version }) => (
+    baseline_version === delta.currentVersion && candidate_version === delta.candidateVersion
+  ));
+  if (matches.length !== 1) {
+    throw new Error(
+      `candidate ${delta.currentVersion} -> ${delta.candidateVersion} requires one exact qualification`,
+    );
+  }
+  const qualification = matches[0];
+  if (!Array.isArray(qualification.evidence_groups)
+    || qualification.evidence_groups.length === 0
+    || qualification.evidence_groups.some(({ coordinates: owned }) => (
+      !Array.isArray(owned) || owned.length === 0
+        || owned.some((coordinate) => typeof coordinate !== 'string' || coordinate.length === 0)
+    ))) {
+    throw new Error(`candidate ${delta.candidateVersion} qualification has invalid evidence groups`);
+  }
+  const fingerprint = officialSdkCandidateDeltaFingerprint(delta);
+  if (qualification.delta_fingerprint !== fingerprint) {
+    throw new Error(
+      `candidate ${delta.candidateVersion} delta fingerprint is not the reviewed qualification`,
+    );
+  }
+
+  const ownedCoordinates = qualification.evidence_groups
+    .flatMap(({ coordinates: owned }) => owned)
+    .sort();
+  if (new Set(ownedCoordinates).size !== ownedCoordinates.length) {
+    throw new Error(`candidate ${delta.candidateVersion} qualification owns a coordinate twice`);
+  }
+  if (!exactMembers(ownedCoordinates, coordinates)) {
+    throw new Error(
+      `candidate ${delta.candidateVersion} qualification does not own every exact delta coordinate`,
+    );
+  }
+  const requiredBehaviorOwners = qualification.evidence_groups.map(({ owner }) => owner);
+  if (requiredBehaviorOwners.some((owner) => typeof owner !== 'string' || owner.length === 0)
+    || new Set(requiredBehaviorOwners).size !== requiredBehaviorOwners.length) {
+    throw new Error(`candidate ${delta.candidateVersion} qualification has invalid behavior owners`);
+  }
+  return Object.freeze({
+    requiredBehaviorOwners: Object.freeze(requiredBehaviorOwners),
   });
 }
 

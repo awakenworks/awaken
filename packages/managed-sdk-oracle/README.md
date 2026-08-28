@@ -108,8 +108,13 @@ The runner reads the candidate's generated operation source. For Beta Files and
 Skills it requires every operation to agree on `beta=true` and its endpoint
 capability, derives the historical-Beta or GA wire projection from that request
 signature, strictly type-checks all changed methods against that exact package,
-and rejects TypeScript module resolution outside that package root. It then
-executes both Beta-namespace and GA lifecycles. The runtime proof covers the
+and rejects TypeScript module resolution outside that package root. Before any
+candidate module is imported, the complete operation, declaration, and runtime
+delta must match one reviewed version-pair fingerprint in
+`official_sdk_candidate_qualifications.json`; every delta coordinate must belong
+to exactly one named executable behavior owner. Reusing an allowlisted filename
+with different bytes therefore fails closed before candidate code can run. It
+then executes both Beta-namespace and GA lifecycles. The runtime proof covers the
 candidate's authentication header and retry behavior, exact Managed error
 envelopes, anonymous/read-only/admin policy enforcement without denied-write
 side effects, cursor traversal, rejected mutations, missing/deleted identities,

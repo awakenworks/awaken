@@ -31,8 +31,8 @@ import {
 } from '../harness.mjs';
 import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 import {
-  assertLatestRuntimeOwnsCandidateDelta,
   officialSdkCandidateDelta,
+  qualifyOfficialSdkCandidateDelta,
 } from './official_sdk_candidate_delta.mjs';
 import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
 import { exerciseOfficialWebhookContract } from './official_webhook_contract.mjs';
@@ -46,14 +46,6 @@ const REPO = resolve(HERE, '../..');
 const packageRoot = process.env.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
 assert.ok(packageRoot, 'ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT is required');
 const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'));
-const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
-const {
-  accumulateManagedAgentsEvent,
-} = await import(pathToFileURL(resolve(packageRoot, 'lib/sessions/accumulate.mjs')));
-const {
-  betaAgentToolset20260401,
-  setupSkills,
-} = await import(pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/node.mjs')));
 const scope = JSON.parse(readFileSync(
   resolve(REPO, 'packages/managed-sdk-oracle/config/scope.json'),
   'utf8',
@@ -67,7 +59,28 @@ const candidateDelta = officialSdkCandidateDelta(
   packageRoot,
   scope,
 );
-assertLatestRuntimeOwnsCandidateDelta(candidateDelta);
+const qualificationCatalog = JSON.parse(readFileSync(
+  resolve(HERE, 'official_sdk_candidate_qualifications.json'),
+  'utf8',
+));
+const qualification = qualifyOfficialSdkCandidateDelta(
+  candidateDelta,
+  qualificationCatalog.qualifications,
+);
+const completedBehaviorOwners = new Set();
+const completeBehaviorOwner = (owner) => completedBehaviorOwners.add(owner);
+
+// Candidate code is imported only after its complete source/type/runtime delta
+// matches a reviewed qualification. Extraction above reads package files but
+// executes none of them, so a same-path supply-chain mutation fails closed.
+const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
+const {
+  accumulateManagedAgentsEvent,
+} = await import(pathToFileURL(resolve(packageRoot, 'lib/sessions/accumulate.mjs')));
+const {
+  betaAgentToolset20260401,
+  setupSkills,
+} = await import(pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/node.mjs')));
 const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
@@ -91,11 +104,13 @@ const runtimeChanged = (runtimePath) => candidateDelta.runtime.changed.some(
 );
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
+completeBehaviorOwner('candidate.webhook-helpers');
 compileOfficialSdkChangePoints(packageRoot, {
   filesProjection: betaFiles.projection,
   skillsProjection: betaSkills.projection,
   parseUnverified: webhookProfile.parseUnverified,
 });
+completeBehaviorOwner('candidate.typescript-change-points');
 
 async function drain(pagePromise) {
   const rows = [];
@@ -205,6 +220,7 @@ async function exerciseSdkCoreTransport() {
   });
   assert.deepEqual(await drain(retrying.beta.files.list({ limit: 1 })), [], 'T3 page decode');
   assert.equal(attempts, 3, 'T3 candidate retry bound');
+  completeBehaviorOwner('candidate.core-transport');
   pass(`registry SDK ${manifest.version} preserves Managed core transport semantics`);
 }
 
@@ -269,6 +285,7 @@ async function exerciseSdkHelperRuntime() {
         /exceeds 32-byte limit/u,
         'H2 edit retains its whole-file safety bound',
       );
+      completeBehaviorOwner('candidate.agent-toolset-node');
     }
   } finally {
     rmSync(workdir, { recursive: true, force: true });
@@ -294,6 +311,7 @@ async function exerciseSdkHelperRuntime() {
       (error) => error instanceof Anthropic.APIConnectionTimeoutError,
       'H3 cross-realm DOMException is classified as a timeout',
     );
+    completeBehaviorOwner('candidate.error-classification');
   }
 
   if (runtimeChanged('internal/uploads.mjs')) {
@@ -357,6 +375,7 @@ async function exerciseSdkHelperRuntime() {
       errors.some((values) => values.some((value) => String(value).includes('{invalid'))),
       'H4 configured logger receives malformed SSE evidence',
     );
+    completeBehaviorOwner('candidate.sse-parser');
   }
   pass(`registry SDK ${manifest.version} preserves Managed helper dependency semantics`);
 }
@@ -431,6 +450,7 @@ async function exerciseBetaFiles(client) {
     'F1/F2 repeated delete is not falsely idempotent',
   );
   await client.beta.files.delete(peer.id);
+  completeBehaviorOwner('candidate.files-runtime');
 }
 
 async function exerciseBetaSkills(client) {
@@ -562,6 +582,10 @@ async function exerciseBetaSkills(client) {
     'S1/S2 repeated Skill delete',
   );
   await client.beta.skills.delete(peer.id);
+  completeBehaviorOwner('candidate.skills-runtime');
+  if (runtimeChanged('internal/uploads.mjs')) {
+    completeBehaviorOwner('candidate.upload-admission');
+  }
 }
 
 async function exerciseBetaGaRecovery() {
@@ -701,6 +725,7 @@ async function exerciseBetaGaRecovery() {
         assert.match(readFileSync(installed, 'utf8'), /Recovered\./u, 'P3/E5 helper archive bytes');
         await cleanup();
         assert.equal(existsSync(installed), false, 'P3/E5 helper cleanup removes its installation');
+        completeBehaviorOwner('candidate.skill-setup-recovery');
       } finally {
         rmSync(helperWorkdir, { recursive: true, force: true });
       }
@@ -782,6 +807,9 @@ await withRealServer('echo', 38190, async (baseURL) => {
       'R1 candidate SSE and accumulator reconstruct the canonical Agent message',
     );
     assert.ok(replaySnapshot.content.length > 0, 'R1 accumulated Agent message is non-empty');
+    if (runtimeChanged('lib/sessions/accumulate.mjs')) {
+      completeBehaviorOwner('candidate.session-accumulator');
+    }
   } finally {
     await client.beta.sessions.delete(session.id);
   }
@@ -915,6 +943,9 @@ const coveredCandidateOperations = assertOwnerOperationReceipts(
 const coveredIds = new Set(candidateResourceOperations.map(({ sdkMethod }) => sdkMethod));
 for (const { id } of candidateDelta.operations.changed) {
   assert.ok(coveredIds.has(id), `changed candidate operation lacks runtime owner: ${id}`);
+}
+for (const owner of qualification.requiredBehaviorOwners) {
+  assert.ok(completedBehaviorOwners.has(owner), `candidate behavior owner did not complete: ${owner}`);
 }
 
 console.log(
