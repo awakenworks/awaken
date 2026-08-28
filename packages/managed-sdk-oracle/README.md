@@ -59,8 +59,9 @@ evidence from drifting from the external expectation:
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
-  It replays the same 127 HTTP operations and four helpers for the current SDK
-  and every admitted candidate. A package-selection hook resolves unchanged
+  It projects the same owner graph over all 99/114/127 HTTP operations exposed
+  by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
+  four helpers for every admitted candidate. A package-selection hook resolves unchanged
   canonical imports inside the selected exact package root; each receipt must
   carry that package's exact `x-stainless-package-version`, method, route,
   Beta/GA selector, and capabilities. Files/Skills wire coordinates are
@@ -71,11 +72,29 @@ evidence from drifting from the external expectation:
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
   negative/error probes, pagination, concurrent idempotency, retry identity,
-  SSE full-replay/deduplication, and an optional official-service differential.
+  and SSE full-replay/deduplication. The ordinary command permits an optional
+  official-service differential for developer diagnostics; the release command
+  requires all official-reference credentials and fails closed when they are
+  absent or partial. It then runs the same positive SDK lifecycles against
+  reference-owned Agent, Environment, Workspace, UserProfile, API, and WIF
+  fixtures. The 139-route differential sweep remains single-owned and is not
+  repeated in that lifecycle pass.
 - `src/conformance/recovery.mjs` splits a Session/File/idempotency scenario at a
   process-replacement boundary. Product orchestration runs `prepare`, replaces
   every serving process, then runs `verify` and `cleanup`; an in-memory cache
   cannot satisfy this gate.
+- `src/conformance/release.mjs` is the sole release-grade composition of those
+  two drivers. It requires `AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND` to replace
+  the deployment and write versioned evidence to the injected
+  `AWAKEN_MANAGED_REPLACEMENT_EVIDENCE_FILE`. The evidence must contain non-empty,
+  unique, disjoint before/after serving-instance sets at the exact
+  `AWAKEN_MANAGED_EXPECTED_REVISION`, bound to the canonical
+  `AWAKEN_MANAGED_BASE_URL`, with the replacement set ready. The hook
+  receives no Managed API or Tunnel credentials. Hosted differential, durable
+  prepare, total replacement, recovery verification, and cleanup execute in
+  that order. Every post-prepare failure attempts compensation; a cleanup
+  failure preserves the private recovery/evidence directory and reports its
+  exact path so the same fixture identities can be reconciled rather than lost.
 - `e2e/conformance/managed_python_sdk_runtime_e2e.{mjs,py}` provisions the exact
   locked Python client closure in an isolated virtual environment and drives a
   real Awaken process. It owns Python-specific sync/async calls, cursor and SSE
@@ -134,7 +153,9 @@ feeds the exact Session-response gate. The standalone E2E package's
 5. Run `pnpm --filter @awaken/managed-sdk-oracle test` and
    `pnpm --filter @awaken/managed-sdk-oracle check`.
 6. Run this exact revision's hosted conformance command against every product
-   deployment; products must not maintain their own SDK version aliases.
+   deployment; products must not maintain their own SDK version aliases. A
+   release pipeline invokes `pnpm --filter @awaken/managed-sdk-oracle
+   conformance:release`, never the diagnostic-only `conformance:hosted` command.
 
 For a Python anchor, update `config/python-anchors.json`, run
 `pnpm --filter @awaken/managed-sdk-oracle generate:python`, review every

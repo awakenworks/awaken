@@ -54,6 +54,7 @@ REQUIRED_RELEASE_COMMANDS = (
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_e2e.sh",
     "AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12",
     "npm --prefix e2e run test:deterministic",
+    "npm --prefix e2e run test:sdk-behavior-owners",
     "npm --prefix e2e run test:sdk-latest-canary",
     "sandbox_capability_suite.sh --require-substrates",
 )
@@ -486,6 +487,10 @@ def self_test() -> None:
         public_api,
     ), "R7 required infrastructure"
     assert release_gate_errors(
+        check_all.replace("npm --prefix e2e run test:sdk-behavior-owners", ""),
+        public_api,
+    ), "R7 supported SDK behavior compatibility"
+    assert release_gate_errors(
         check_all.replace("npm --prefix e2e run test:sdk-latest-canary", ""),
         public_api,
     ), "R7 latest SDK compatibility"
@@ -498,6 +503,9 @@ def self_test() -> None:
     )
     without_e2e_group = check_all.replace(
         'run e2e "deterministic-e2e"', 'run static "deterministic-e2e"'
+    ).replace(
+        'run e2e "managed-sdk-anchor-behavior"',
+        'run static "managed-sdk-anchor-behavior"',
     ).replace(
         'run e2e "latest-managed-sdk"', 'run static "latest-managed-sdk"'
     )

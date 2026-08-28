@@ -113,6 +113,7 @@ run k3d "distributed-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/distributed_control_
 run k3d "nats-wake-k3d" env AWAKEN_K3D_REQUIRED=1 e2e/k3d/nats_wake_e2e.sh 12
 run frontend "frontend" scripts/ci/check-frontend.sh --full
 run e2e "deterministic-e2e" npm --prefix e2e run test:deterministic
+run e2e "managed-sdk-anchor-behavior" npm --prefix e2e run test:sdk-behavior-owners
 run e2e "latest-managed-sdk" npm --prefix e2e run test:sdk-latest-canary
 run sandbox "sandbox-capabilities" scripts/e2e/sandbox_capability_suite.sh --require-substrates
 
