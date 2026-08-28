@@ -34,13 +34,73 @@ export function latestCanaryPlan(oracle, latest, installed, releasePolicy = unde
         oracle,
         latest,
         installed,
+        candidateRequired: true,
         quarantinedUntil: new Date(eligibleAt).toISOString(),
       });
     }
-    throw new Error(
-      `registry latest @anthropic-ai/sdk ${JSON.stringify(latest)} does not match generated `
-      + `current oracle ${oracle}; update the current anchor and regenerate the Managed SDK oracle`,
-    );
+    return Object.freeze({
+      oracle,
+      latest,
+      installed,
+      candidateRequired: true,
+      promotionRequired: true,
+    });
   }
   return Object.freeze({ oracle, latest, installed });
+}
+
+export function latestCandidateQualification(
+  plan,
+  qualifications,
+  registryIntegrity,
+  candidateDependencies,
+) {
+  if (!plan.candidateRequired) return undefined;
+  if (!Array.isArray(qualifications)) {
+    throw new Error('candidate qualification catalog must be an array');
+  }
+  const matches = qualifications.filter(({ baseline_version, candidate_version }) => (
+    baseline_version === plan.oracle && candidate_version === plan.latest
+  ));
+  if (matches.length !== 1) {
+    throw new Error(
+      `registry candidate ${plan.oracle} -> ${plan.latest} requires one exact qualification`,
+    );
+  }
+  const qualification = matches[0];
+  if (typeof qualification.module !== 'string' || qualification.module.length === 0) {
+    throw new Error(`registry candidate ${plan.latest} requires one installed module alias`);
+  }
+  const exactDependency = `npm:@anthropic-ai/sdk@${plan.latest}`;
+  if (candidateDependencies?.[qualification.module] !== exactDependency) {
+    throw new Error(
+      `registry candidate ${plan.latest} module must use exact dependency ${exactDependency}`,
+    );
+  }
+  if (typeof qualification.package_integrity !== 'string'
+    || !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(qualification.package_integrity)) {
+    throw new Error(`registry candidate ${plan.latest} requires one exact sha512 integrity`);
+  }
+  if (registryIntegrity !== qualification.package_integrity) {
+    throw new Error(
+      `registry candidate ${plan.latest} integrity does not match its reviewed qualification`,
+    );
+  }
+  return qualification;
+}
+
+export async function executeLatestCanaryPlan(plan, verification) {
+  if (typeof verification?.current !== 'function'
+    || (plan.candidateRequired && typeof verification?.candidate !== 'function')) {
+    throw new Error('latest canary plan requires every scheduled runtime verifier');
+  }
+  await verification.current();
+  if (plan.candidateRequired) await verification.candidate();
+  if (plan.promotionRequired) {
+    throw new Error(
+      `registry latest @anthropic-ai/sdk ${JSON.stringify(plan.latest)} does not match generated `
+      + `current oracle ${plan.oracle}; candidate verification passed, update the current anchor `
+      + 'and regenerate the Managed SDK oracle',
+    );
+  }
 }

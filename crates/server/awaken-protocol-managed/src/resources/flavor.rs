@@ -11,13 +11,15 @@ pub(crate) enum ManagedResourceApiFlavor {
     Ga,
 }
 
-/// Whether the generated SDK's transport-only `beta=true` query is sufficient
-/// to select Beta. Historical Models SDKs use the query alone; endpoint-specific
-/// Files/Skills previews require their matching beta header.
+/// Contract selected by a generated SDK's transport-only `beta=true` query when
+/// its endpoint capability header is absent. Models keep their Beta projection;
+/// Files/Skills SDKs at and after their GA change point retain the Beta namespace
+/// and query while consuming the GA wire contract. Older Files/Skills SDKs still
+/// send the capability header and therefore retain their historical projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BetaQueryPolicy {
     QuerySelectsBeta,
-    RequireHeader,
+    QuerySelectsGa,
 }
 
 pub(crate) fn resource_api_flavor(
@@ -39,13 +41,10 @@ pub(crate) fn resource_api_flavor(
     let header_beta = has_capability(headers, capability);
     match (!query_beta.is_empty(), header_beta) {
         (true, true) | (false, true) => Ok(ManagedResourceApiFlavor::Beta),
-        (true, false) if query_policy == BetaQueryPolicy::QuerySelectsBeta => {
-            Ok(ManagedResourceApiFlavor::Beta)
-        }
-        (true, false) => Err(format!(
-            "`beta=true` requires `anthropic-beta: {beta}`",
-            beta = capability.beta(),
-        )),
+        (true, false) => Ok(match query_policy {
+            BetaQueryPolicy::QuerySelectsBeta => ManagedResourceApiFlavor::Beta,
+            BetaQueryPolicy::QuerySelectsGa => ManagedResourceApiFlavor::Ga,
+        }),
         (false, false) => Ok(ManagedResourceApiFlavor::Ga),
     }
 }
@@ -74,19 +73,20 @@ mod tests {
     fn selector_has_one_unambiguous_beta_and_ga_path() {
         // Cause/effect graph: C1 beta query, C2 matching beta header, C3
         // malformed/duplicate selector, C4 endpoint query policy. Effects: E1
-        // GA when neither selector is present; E2 beta for the strict official
-        // pair, header-only form, or the historical Models query-only form; E3
-        // reject query-only selection on strict Files/Skills endpoints.
+        // GA when neither selector is present; E2 beta for the historical
+        // header-bearing form or the Models query-only form; E3 GA for the
+        // Files/Skills change-point query-only form.
         // Decision table: R1 !C1&&!C2->E1; R2 C1&&C2->E2; R3 !C1&&C2->E2;
-        // R4 (C1&&!C2&&!C4)||C3->E3; R5 C1&&!C2&&C4->E2. The selected flavor
-        // changes only projection and never chooses storage or authorization.
+        // R4 C1&&!C2&&GA-policy->E3; R5 C1&&!C2&&Beta-policy->E2; R6 C3 rejects.
+        // The selected flavor changes only projection and never chooses storage
+        // or authorization.
         let mut headers = HeaderMap::new();
         assert_eq!(
             resource_api_flavor(
                 None,
                 &headers,
                 ManagedCapability::Skills,
-                BetaQueryPolicy::RequireHeader,
+                BetaQueryPolicy::QuerySelectsGa,
             )
             .unwrap(),
             ManagedResourceApiFlavor::Ga,
@@ -101,7 +101,7 @@ mod tests {
                 Some("beta=true"),
                 &headers,
                 ManagedCapability::Skills,
-                BetaQueryPolicy::RequireHeader,
+                BetaQueryPolicy::QuerySelectsGa,
             )
             .unwrap(),
             ManagedResourceApiFlavor::Beta,
@@ -112,28 +112,29 @@ mod tests {
                 None,
                 &headers,
                 ManagedCapability::Skills,
-                BetaQueryPolicy::RequireHeader,
+                BetaQueryPolicy::QuerySelectsGa,
             )
             .unwrap(),
             ManagedResourceApiFlavor::Beta,
             "R3"
         );
-        assert!(
+        assert_eq!(
             resource_api_flavor(
                 Some("beta=true"),
                 &HeaderMap::new(),
                 ManagedCapability::Skills,
-                BetaQueryPolicy::RequireHeader,
+                BetaQueryPolicy::QuerySelectsGa,
             )
-            .is_err(),
-            "R4"
+            .unwrap(),
+            ManagedResourceApiFlavor::Ga,
+            "R6"
         );
         assert!(
             resource_api_flavor(
                 Some("beta=false"),
                 &headers,
                 ManagedCapability::Skills,
-                BetaQueryPolicy::RequireHeader,
+                BetaQueryPolicy::QuerySelectsGa,
             )
             .is_err(),
             "R4"

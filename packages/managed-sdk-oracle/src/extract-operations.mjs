@@ -3,7 +3,7 @@ import path from 'node:path';
 import ts from 'typescript';
 
 import { normalizeRoute, operationNamespace } from './normalize.mjs';
-import { resolveSdkPackage, walkJavaScript } from './package-source.mjs';
+import { resolveSdkPackage, sdkPackageFromRoot, walkJavaScript } from './package-source.mjs';
 
 const HTTP_METHODS = new Map([
   ['delete', 'DELETE'],
@@ -92,13 +92,18 @@ function operationsInFile(resourceRoot, filename, prefix) {
 
 export function extractOperations(moduleName, scope) {
   const sdk = resolveSdkPackage(moduleName);
-  const betaRoot = path.join(sdk.root, 'resources', 'beta');
+  return extractOperationsFromPackageRoot(sdk.root, scope, moduleName);
+}
+
+export function extractOperationsFromPackageRoot(root, scope, moduleName = '@anthropic-ai/sdk') {
+  const sdk = sdkPackageFromRoot(root);
+  const betaRoot = path.join(root, 'resources', 'beta');
   const betaAllowed = new Set(scope.beta_resource_roots);
   const betaFiles = walkJavaScript(betaRoot).filter((filename) => {
     const root = path.relative(betaRoot, filename).split(path.sep)[0].replace(/\.js$/, '');
     return betaAllowed.has(root);
   });
-  const gaRoot = path.join(sdk.root, 'resources');
+  const gaRoot = path.join(root, 'resources');
   const gaAllowed = new Set(scope.ga_resource_roots ?? []);
   const gaFiles = walkJavaScript(gaRoot).filter((filename) => {
     const root = path.relative(gaRoot, filename).split(path.sep)[0].replace(/\.js$/, '');

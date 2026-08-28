@@ -25,7 +25,7 @@ import { execFileSync } from 'node:child_process';
 import Anthropic from '@anthropic-ai/sdk';
 import {
   cleanupFixtureTree,
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   pass,
   waitForSessionEventReceipt,
   withRealServer,
@@ -159,7 +159,7 @@ async function main() {
     // physically unresolvable; C2=the User batch is accepted by the Session root;
     // C3=pre-Run clone fails; C4=one bounded reconciliation window elapses without
     // external repair. Effects: E1=admission returns the exact unprocessed receipt
-    // without listing it as unanchored committed history; E2=the Session remains
+    // and lists it exactly once as pending history; E2=the Session remains
     // idle/nonterminal; E3=no Run, model, assistant, tool,
     // or session.error fact is fabricated; E4=no fallback Repository is used and
     // the original command remains available to the lifecycle supervisor.
@@ -188,7 +188,7 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(repoSession.id, { betas: BETAS })) {
       repoEvents.push(event);
     }
-    committedEffectsAfterUnanchoredReceipt({
+    assertPendingReceiptHasNoRuntimeEffects({
       history: repoEvents,
       receiptId: acceptedRepoEvent.id,
       forbiddenEventTypes: new Set([

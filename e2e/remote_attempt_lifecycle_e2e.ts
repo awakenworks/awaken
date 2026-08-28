@@ -15,7 +15,7 @@ import type {
 } from '@anthropic-ai/sdk/resources/beta/sessions/events';
 // @ts-ignore -- shared JavaScript harness intentionally serves TS scenarios.
 import {
-  committedEffectsAfterUnanchoredReceipt,
+  assertPendingReceiptHasNoRuntimeEffects,
   hasEndTurn,
   spawnServer,
   stopServer,
@@ -917,8 +917,8 @@ async function main(): Promise<void> {
     assert.equal(pollFailureReceipt.processed_at, null, 'F2/E1 retryable receipt is unprocessed');
     // F2 negative-observation rule: C1=the official SDK receipt is admitted;
     // C2=the pinned task is polled and returns retryable 503; C3=Session remains
-    // Running. E1=the unanchored receipt is absent from committed history and no
-    // success/error/idle/terminated delta is fabricated. D1=C1+C2+C3=>E1.
+    // Running. E1=the receipt is exposed exactly once as unprocessed history and
+    // no success/error/idle/terminated delta is fabricated. D1=C1+C2+C3=>E1.
     const retryablePoll: {
       session: { status: string };
       events: BetaManagedAgentsSessionEvent[];
@@ -948,7 +948,7 @@ async function main(): Promise<void> {
         retryablePoll.reads.every((taskId) => taskId === 'poll-failure-task'),
       `F2/E3 every new poll addresses the committed task: ${JSON.stringify(retryablePoll.reads)}`,
     );
-    committedEffectsAfterUnanchoredReceipt({
+    assertPendingReceiptHasNoRuntimeEffects({
       history: retryablePoll.events,
       priorHistory: pollPriorHistory,
       receiptId: pollFailureReceipt.id,

@@ -6,7 +6,11 @@ use awaken_resource_contract::{
     FileApplicationService, MemoryRepository, MemoryStoreApplicationService,
     ResourcePurgeScheduler, SkillStore,
 };
-use axum::Router;
+use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::{Json, Router};
+
+use crate::types::ErrorResponse;
 
 pub use files::files_router;
 pub use memory_stores::memory_stores_router;
@@ -16,6 +20,32 @@ mod files;
 pub(crate) mod flavor;
 mod memory_stores;
 mod skills;
+
+fn managed_resource_error_type(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::UNAUTHORIZED => "authentication_error",
+        StatusCode::FORBIDDEN => "permission_error",
+        StatusCode::NOT_FOUND => "not_found_error",
+        StatusCode::CONFLICT => "conflict_error",
+        StatusCode::TOO_MANY_REQUESTS => "rate_limit_error",
+        status if status.is_server_error() => "api_error",
+        _ => "invalid_request_error",
+    }
+}
+
+pub(super) fn managed_resource_error(
+    status: StatusCode,
+    message: impl Into<String>,
+) -> axum::response::Response {
+    (
+        status,
+        Json(ErrorResponse::new(
+            managed_resource_error_type(status),
+            message,
+        )),
+    )
+        .into_response()
+}
 
 pub struct ResourcesRouterInput {
     pub files: Arc<dyn FileApplicationService>,
@@ -37,6 +67,26 @@ pub fn resources_router(input: ResourcesRouterInput) -> Router {
 mod tests {
     use super::*;
     use awaken_resource_application::ResourceAuthorities;
+
+    #[test]
+    fn resource_errors_follow_the_official_status_discriminators() {
+        // Cause/effect table: C1 client syntax, C2 authentication, C3 policy,
+        // C4 absent identity, C5 aggregate conflict, C6 rate limit, C7 server
+        // fault. Effects are the exact official SDK inner error discriminators.
+        // One mapper prevents File, Skill, and Memory adapters from returning
+        // the same HTTP status with incompatible Anthropic error bodies.
+        for (status, expected) in [
+            (StatusCode::BAD_REQUEST, "invalid_request_error"),
+            (StatusCode::UNAUTHORIZED, "authentication_error"),
+            (StatusCode::FORBIDDEN, "permission_error"),
+            (StatusCode::NOT_FOUND, "not_found_error"),
+            (StatusCode::CONFLICT, "conflict_error"),
+            (StatusCode::TOO_MANY_REQUESTS, "rate_limit_error"),
+            (StatusCode::INTERNAL_SERVER_ERROR, "api_error"),
+        ] {
+            assert_eq!(managed_resource_error_type(status), expected);
+        }
+    }
 
     #[tokio::test]
     async fn one_resources_router_mounts_each_public_family_once() {

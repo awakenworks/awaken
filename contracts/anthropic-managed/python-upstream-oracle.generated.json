@@ -1,0 +1,1531 @@
+{
+  "anchors": [
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.deployment_runs.list",
+        "beta.deployment_runs.retrieve",
+        "beta.deployments.archive",
+        "beta.deployments.create",
+        "beta.deployments.list",
+        "beta.deployments.pause",
+        "beta.deployments.retrieve",
+        "beta.deployments.run",
+        "beta.deployments.unpause",
+        "beta.deployments.update",
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.environments.work.ack",
+        "beta.environments.work.heartbeat",
+        "beta.environments.work.list",
+        "beta.environments.work.poll",
+        "beta.environments.work.retrieve",
+        "beta.environments.work.stats",
+        "beta.environments.work.stop",
+        "beta.environments.work.update",
+        "beta.memory_stores.archive",
+        "beta.memory_stores.create",
+        "beta.memory_stores.delete",
+        "beta.memory_stores.list",
+        "beta.memory_stores.memories.create",
+        "beta.memory_stores.memories.delete",
+        "beta.memory_stores.memories.list",
+        "beta.memory_stores.memories.retrieve",
+        "beta.memory_stores.memories.update",
+        "beta.memory_stores.memory_versions.list",
+        "beta.memory_stores.memory_versions.redact",
+        "beta.memory_stores.memory_versions.retrieve",
+        "beta.memory_stores.retrieve",
+        "beta.memory_stores.update",
+        "beta.sessions.threads.archive",
+        "beta.sessions.threads.events.list",
+        "beta.sessions.threads.events.stream",
+        "beta.sessions.threads.list",
+        "beta.sessions.threads.retrieve",
+        "beta.skills.versions.download",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.reveal_token",
+        "beta.tunnels.rotate_token",
+        "beta.user_profiles.create",
+        "beta.user_profiles.create_enrollment_url",
+        "beta.user_profiles.list",
+        "beta.user_profiles.retrieve",
+        "beta.user_profiles.update",
+        "beta.vaults.credentials.mcp_oauth_validate",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 55,
+      "operation_fingerprint": "bb2389b6b3af9193d1d42312271f5ddbb703b010e7c309207cc44a3223c7fc35",
+      "reason": "first official Managed Agents release",
+      "role": "oldest_supported",
+      "source_file_count": 17,
+      "source_fingerprint": "ce5b2fc2a46fca74be29bb351868f1c0dd52451218e0cc1dea63cdf1946b995d",
+      "version": "0.92.0",
+      "wheel": {
+        "filename": "anthropic-0.92.0-py3-none-any.whl",
+        "sha256": "f92a4bd065d5cab90a96b65bb44e473bf7c6fe731a743cd156e9ad1d245c381e"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.deployment_runs.list",
+        "beta.deployment_runs.retrieve",
+        "beta.deployments.archive",
+        "beta.deployments.create",
+        "beta.deployments.list",
+        "beta.deployments.pause",
+        "beta.deployments.retrieve",
+        "beta.deployments.run",
+        "beta.deployments.unpause",
+        "beta.deployments.update",
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.environments.work.ack",
+        "beta.environments.work.heartbeat",
+        "beta.environments.work.list",
+        "beta.environments.work.poll",
+        "beta.environments.work.retrieve",
+        "beta.environments.work.stats",
+        "beta.environments.work.stop",
+        "beta.environments.work.update",
+        "beta.skills.versions.download",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.reveal_token",
+        "beta.tunnels.rotate_token",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 80,
+      "operation_fingerprint": "5643547c0abf4ec4af896a4c3ce50b6193fc052ba878037cb0c6da9078214c27",
+      "reason": "multi-agent, outcome, webhook, and vault-validation surface",
+      "role": "protocol_change_point",
+      "source_file_count": 26,
+      "source_fingerprint": "07ec41f4995c2e4e8a842d86c0a2c9e694cce75af72619ad374fd3d3697ddb7c",
+      "version": "0.100.0",
+      "wheel": {
+        "filename": "anthropic-0.100.0-py3-none-any.whl",
+        "sha256": "1c15769efa15d8fd5c1ebf900e25c57e3ee540f8554a29aa56e4edefffe2951d"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.reveal_token",
+        "beta.tunnels.rotate_token",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 99,
+      "operation_fingerprint": "05b9772ca29dc398a0b30682f2c13ce44392e873e7c6be145e97a1e901de8761",
+      "reason": "deployment and environment-credential surface",
+      "role": "protocol_change_point",
+      "source_file_count": 30,
+      "source_fingerprint": "749611ae738a4b058131bbb9b5c1ad1bde629b061df7fa2a126f95ef149a8bbf",
+      "version": "0.109.0",
+      "wheel": {
+        "filename": "anthropic-0.109.0-py3-none-any.whl",
+        "sha256": "b5d930af26fdeeb7c7e7a6ff6c4bcdaf46ee50403b26ada25d08fd853c751fff"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.reveal_token",
+        "beta.tunnels.rotate_token",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 99,
+      "operation_fingerprint": "05b9772ca29dc398a0b30682f2c13ce44392e873e7c6be145e97a1e901de8761",
+      "reason": "event-delta, override, reverse-pagination, and webhook surface",
+      "role": "protocol_change_point",
+      "source_file_count": 30,
+      "source_fingerprint": "33279c4503867f2d73c7885116b23eecf4cdf55a35b3a5cb2ae1d8e4468faade",
+      "version": "0.115.0",
+      "wheel": {
+        "filename": "anthropic-0.115.0-py3-none-any.whl",
+        "sha256": "aa4bbea9272fa1cced6749728f18d0af9d7934b7268779e84d6f5a246f4b998d"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "beta.dreams.archive",
+        "beta.dreams.cancel",
+        "beta.dreams.create",
+        "beta.dreams.list",
+        "beta.dreams.retrieve",
+        "beta.tunnels.archive",
+        "beta.tunnels.certificates.archive",
+        "beta.tunnels.certificates.create",
+        "beta.tunnels.certificates.list",
+        "beta.tunnels.certificates.retrieve",
+        "beta.tunnels.create",
+        "beta.tunnels.list",
+        "beta.tunnels.retrieve",
+        "beta.tunnels.reveal_token",
+        "beta.tunnels.rotate_token",
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 99,
+      "operation_fingerprint": "e676ec0cd3113ed3a0e6f8695635d3e2bc65e1c3c18a2ad686ed3e7a4cd20fc9",
+      "reason": "agent-memory beta selector",
+      "role": "protocol_change_point",
+      "source_file_count": 30,
+      "source_fingerprint": "ba4880d1fe24d2195ed5cbd1e40226f7072b5c5a56711773f157e71565ee461a",
+      "version": "0.116.0",
+      "wheel": {
+        "filename": "anthropic-0.116.0-py3-none-any.whl",
+        "sha256": "6c0a7698e8d652455da3499978279bb2588c7264d0a35be3666009a4258c8256"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 114,
+      "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
+      "reason": "Dream and MCP Tunnel surface",
+      "role": "protocol_change_point",
+      "source_file_count": 34,
+      "source_fingerprint": "39f15b2cc8f88ebaa5313dd2dd314681940d1a178af80543f7105b5e42977cac",
+      "version": "0.117.1",
+      "wheel": {
+        "filename": "anthropic-0.117.1-py3-none-any.whl",
+        "sha256": "7ab79e2c33c3dbde54c5800c4d535821e1c6d80bdf7de83ae1c0328bae563b76"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 114,
+      "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
+      "reason": "initial events, model effort, and Thread delta streaming",
+      "role": "protocol_change_point",
+      "source_file_count": 34,
+      "source_fingerprint": "43bd339df7c0248f6ddfb7db652c2a547cbdae6d372c32621385648ff7970061",
+      "version": "0.118.0",
+      "wheel": {
+        "filename": "anthropic-0.118.0-py3-none-any.whl",
+        "sha256": "524d835869b8e374510b3bcc552e28dbdafc035a61d63fc0088c4035286ef8fe"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [
+        "files.delete",
+        "files.download",
+        "files.list",
+        "files.retrieve_metadata",
+        "files.upload",
+        "skills.create",
+        "skills.delete",
+        "skills.list",
+        "skills.retrieve",
+        "skills.versions.create",
+        "skills.versions.delete",
+        "skills.versions.list",
+        "skills.versions.retrieve"
+      ],
+      "operation_count": 114,
+      "operation_fingerprint": "1baca4ee718b0c919b1d752245170b5f63e0a5c7347c52f09be85d567ca1d78a",
+      "reason": "budgets, advisor, inference location, and GitHub Skill loading",
+      "role": "protocol_change_point",
+      "source_file_count": 34,
+      "source_fingerprint": "38a606b20abf32e0a5cd2072114067a4e447bbe9d0506a2b38493af4179e1b46",
+      "version": "0.121.0",
+      "wheel": {
+        "filename": "anthropic-0.121.0-py3-none-any.whl",
+        "sha256": "6048713fa441e59e1cba8363171cd2a86273b25bd213e9c7ac70a523af88b011"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
+      "reason": "Files and Skills GA cutover",
+      "role": "ga_change_point",
+      "source_file_count": 38,
+      "source_fingerprint": "ee2ed9ccf8a10039be3fcd51716bb1c2678f7e8275ab14bcc62c57041d12f64a",
+      "version": "0.124.0",
+      "wheel": {
+        "filename": "anthropic-0.124.0-py3-none-any.whl",
+        "sha256": "e7f86e3182c4173edf09fd8f42aa328d1aa9246355a90a300287c355228bb356"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
+      "reason": "web-search configuration and self-hosted sandbox memory",
+      "role": "protocol_change_point",
+      "source_file_count": 38,
+      "source_fingerprint": "36461962599e6f02f43a718869543015b12760b3b4b40019081d68d7f4169afd",
+      "version": "0.125.0",
+      "wheel": {
+        "filename": "anthropic-0.125.0-py3-none-any.whl",
+        "sha256": "3486013602eca76d8b12540764e53654f02cf4951110bca86cf06e67428a9f21"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
+      "reason": "httpx2 transport boundary",
+      "role": "transport_change_point",
+      "source_file_count": 38,
+      "source_fingerprint": "d3f31d6c89799e2f885489bacaaeb96d501487bf9695c41f329e00fdeb3923ec",
+      "version": "1.0.0",
+      "wheel": {
+        "filename": "anthropic-1.0.0-py3-none-any.whl",
+        "sha256": "32dd52e9e1d774393b27182f451398ba4262287a4d0eab30887f89f1481b3ae4"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "0dfee3b39e9b84e6cfd9df296d5090429c876cf1321e30b4768d727658357f4b",
+      "reason": "missing beta selectors restored",
+      "role": "protocol_change_point",
+      "source_file_count": 38,
+      "source_fingerprint": "ebc84b2564586d269ca4a777fb0d50cff3703a8ef6fe16b4c2361bc9c9fa299e",
+      "version": "1.1.0",
+      "wheel": {
+        "filename": "anthropic-1.1.0-py3-none-any.whl",
+        "sha256": "babf7b217a6f289059a25ba4871c167411c747bbf233a4f1fb8ececc8a22f875"
+      }
+    },
+    {
+      "only_in_anchor": [],
+      "only_in_current": [],
+      "operation_count": 127,
+      "operation_fingerprint": "34d260a15bb03bb643f215c0f6ce5a6ea05813ab4a4a24c5293341d5670fe515",
+      "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins",
+      "role": "current_oracle",
+      "source_file_count": 38,
+      "source_fingerprint": "fb5606bda210a7b07e9e911a10a4defc5495ea67d718eb89636a6603f8e0f976",
+      "version": "1.2.0",
+      "wheel": {
+        "filename": "anthropic-1.2.0-py3-none-any.whl",
+        "sha256": "b60642b3e3cd6b8e3e328a2d3f2863ad2b6e743f1037e42cc0143f7df99f63c6"
+      }
+    }
+  ],
+  "current": {
+    "operation_fingerprint": "34d260a15bb03bb643f215c0f6ce5a6ea05813ab4a4a24c5293341d5670fe515",
+    "operations": [
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.archive",
+        "method": "POST",
+        "path": "/v1/agents/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.create",
+        "method": "POST",
+        "path": "/v1/agents",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.list",
+        "method": "GET",
+        "path": "/v1/agents",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.retrieve",
+        "method": "GET",
+        "path": "/v1/agents/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.update",
+        "method": "POST",
+        "path": "/v1/agents/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.agents.versions.list",
+        "method": "GET",
+        "path": "/v1/agents/{}/versions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployment_runs.list",
+        "method": "GET",
+        "path": "/v1/deployment_runs",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployment_runs.retrieve",
+        "method": "GET",
+        "path": "/v1/deployment_runs/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.archive",
+        "method": "POST",
+        "path": "/v1/deployments/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.create",
+        "method": "POST",
+        "path": "/v1/deployments",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.list",
+        "method": "GET",
+        "path": "/v1/deployments",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.pause",
+        "method": "POST",
+        "path": "/v1/deployments/{}/pause",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.retrieve",
+        "method": "GET",
+        "path": "/v1/deployments/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.run",
+        "method": "POST",
+        "path": "/v1/deployments/{}/run",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.unpause",
+        "method": "POST",
+        "path": "/v1/deployments/{}/unpause",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.deployments.update",
+        "method": "POST",
+        "path": "/v1/deployments/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.archive",
+        "method": "POST",
+        "path": "/v1/dreams/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.cancel",
+        "method": "POST",
+        "path": "/v1/dreams/{}/cancel",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.create",
+        "method": "POST",
+        "path": "/v1/dreams",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.list",
+        "method": "GET",
+        "path": "/v1/dreams",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "dreaming-2026-04-21"
+        ],
+        "id": "beta.dreams.retrieve",
+        "method": "GET",
+        "path": "/v1/dreams/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.archive",
+        "method": "POST",
+        "path": "/v1/environments/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.create",
+        "method": "POST",
+        "path": "/v1/environments",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.delete",
+        "method": "DELETE",
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.list",
+        "method": "GET",
+        "path": "/v1/environments",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.retrieve",
+        "method": "GET",
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.update",
+        "method": "POST",
+        "path": "/v1/environments/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.ack",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/ack",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.heartbeat",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/heartbeat",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.list",
+        "method": "GET",
+        "path": "/v1/environments/{}/work",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.poll",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/poll",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.retrieve",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.stats",
+        "method": "GET",
+        "path": "/v1/environments/{}/work/stats",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.stop",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}/stop",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.environments.work.update",
+        "method": "POST",
+        "path": "/v1/environments/{}/work/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.files.delete",
+        "method": "DELETE",
+        "path": "/v1/files/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.files.download",
+        "method": "GET",
+        "path": "/v1/files/{}/content",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.files.list",
+        "method": "GET",
+        "path": "/v1/files",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.files.retrieve_metadata",
+        "method": "GET",
+        "path": "/v1/files/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.files.upload",
+        "method": "POST",
+        "path": "/v1/files",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.archive",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.create",
+        "method": "POST",
+        "path": "/v1/memory_stores",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.delete",
+        "method": "DELETE",
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.list",
+        "method": "GET",
+        "path": "/v1/memory_stores",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memories.create",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memories",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memories.delete",
+        "method": "DELETE",
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memories.list",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memories",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memories.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memories.update",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memories/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memory_versions.list",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memory_versions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memory_versions.redact",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}/memory_versions/{}/redact",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.memory_versions.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}/memory_versions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.retrieve",
+        "method": "GET",
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "agent-memory-2026-07-22"
+        ],
+        "id": "beta.memory_stores.update",
+        "method": "POST",
+        "path": "/v1/memory_stores/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.models.list",
+        "method": "GET",
+        "path": "/v1/models",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.models.retrieve",
+        "method": "GET",
+        "path": "/v1/models/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.archive",
+        "method": "POST",
+        "path": "/v1/sessions/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.create",
+        "method": "POST",
+        "path": "/v1/sessions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.delete",
+        "method": "DELETE",
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/events",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.send",
+        "method": "POST",
+        "path": "/v1/sessions/{}/events",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.events.stream",
+        "method": "GET",
+        "path": "/v1/sessions/{}/events/stream",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.list",
+        "method": "GET",
+        "path": "/v1/sessions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.add",
+        "method": "POST",
+        "path": "/v1/sessions/{}/resources",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.delete",
+        "method": "DELETE",
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/resources",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.resources.update",
+        "method": "POST",
+        "path": "/v1/sessions/{}/resources/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.archive",
+        "method": "POST",
+        "path": "/v1/sessions/{}/threads/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.events.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}/events",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.events.stream",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}/stream",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.list",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.threads.retrieve",
+        "method": "GET",
+        "path": "/v1/sessions/{}/threads/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.sessions.update",
+        "method": "POST",
+        "path": "/v1/sessions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.create",
+        "method": "POST",
+        "path": "/v1/skills",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.list",
+        "method": "GET",
+        "path": "/v1/skills",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.versions.create",
+        "method": "POST",
+        "path": "/v1/skills/{}/versions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.versions.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}/versions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.versions.download",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}/content",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.versions.list",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "beta.skills.versions.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.archive",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.archive",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/certificates/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.create",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/certificates",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.list",
+        "method": "GET",
+        "path": "/v1/tunnels/{}/certificates",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.certificates.retrieve",
+        "method": "GET",
+        "path": "/v1/tunnels/{}/certificates/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.create",
+        "method": "POST",
+        "path": "/v1/tunnels",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.list",
+        "method": "GET",
+        "path": "/v1/tunnels",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.retrieve",
+        "method": "GET",
+        "path": "/v1/tunnels/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.reveal_token",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/reveal_token",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "mcp-tunnels-2026-06-22"
+        ],
+        "id": "beta.tunnels.rotate_token",
+        "method": "POST",
+        "path": "/v1/tunnels/{}/rotate_token",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.user_profiles.create",
+        "method": "POST",
+        "path": "/v1/user_profiles",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.user_profiles.create_enrollment_url",
+        "method": "POST",
+        "path": "/v1/user_profiles/{}/enrollment_url",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.user_profiles.list",
+        "method": "GET",
+        "path": "/v1/user_profiles",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.user_profiles.retrieve",
+        "method": "GET",
+        "path": "/v1/user_profiles/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "user-profiles-2026-08-18"
+        ],
+        "id": "beta.user_profiles.update",
+        "method": "POST",
+        "path": "/v1/user_profiles/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.archive",
+        "method": "POST",
+        "path": "/v1/vaults/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.create",
+        "method": "POST",
+        "path": "/v1/vaults",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.archive",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}/archive",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.create",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.delete",
+        "method": "DELETE",
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.list",
+        "method": "GET",
+        "path": "/v1/vaults/{}/credentials",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.mcp_oauth_validate",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}/mcp_oauth_validate",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.retrieve",
+        "method": "GET",
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.credentials.update",
+        "method": "POST",
+        "path": "/v1/vaults/{}/credentials/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.delete",
+        "method": "DELETE",
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.list",
+        "method": "GET",
+        "path": "/v1/vaults",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.retrieve",
+        "method": "GET",
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [
+          "managed-agents-2026-04-01"
+        ],
+        "id": "beta.vaults.update",
+        "method": "POST",
+        "path": "/v1/vaults/{}",
+        "transport_query": "beta=true"
+      },
+      {
+        "betas": [],
+        "id": "files.delete",
+        "method": "DELETE",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [],
+        "id": "files.download",
+        "method": "GET",
+        "path": "/v1/files/{}/content"
+      },
+      {
+        "betas": [],
+        "id": "files.list",
+        "method": "GET",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [],
+        "id": "files.retrieve_metadata",
+        "method": "GET",
+        "path": "/v1/files/{}"
+      },
+      {
+        "betas": [],
+        "id": "files.upload",
+        "method": "POST",
+        "path": "/v1/files"
+      },
+      {
+        "betas": [],
+        "id": "models.list",
+        "method": "GET",
+        "path": "/v1/models"
+      },
+      {
+        "betas": [],
+        "id": "models.retrieve",
+        "method": "GET",
+        "path": "/v1/models/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.create",
+        "method": "POST",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [],
+        "id": "skills.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.list",
+        "method": "GET",
+        "path": "/v1/skills"
+      },
+      {
+        "betas": [],
+        "id": "skills.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.create",
+        "method": "POST",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.delete",
+        "method": "DELETE",
+        "path": "/v1/skills/{}/versions/{}"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.list",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions"
+      },
+      {
+        "betas": [],
+        "id": "skills.versions.retrieve",
+        "method": "GET",
+        "path": "/v1/skills/{}/versions/{}"
+      }
+    ],
+    "reason": "beta Files and Skills adopt GA shapes and drop dated selector pins",
+    "role": "current_oracle",
+    "source_file_count": 38,
+    "source_fingerprint": "fb5606bda210a7b07e9e911a10a4defc5495ea67d718eb89636a6603f8e0f976",
+    "version": "1.2.0",
+    "wheel": {
+      "filename": "anthropic-1.2.0-py3-none-any.whl",
+      "sha256": "b60642b3e3cd6b8e3e328a2d3f2863ad2b6e743f1037e42cc0143f7df99f63c6"
+    }
+  },
+  "package": "anthropic",
+  "schema_version": 1
+}

@@ -21,6 +21,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import Anthropic from '@anthropic-ai/sdk';
 import {
+  assertPendingReceiptHasNoRuntimeEffects,
   cleanupFixtureTree,
   spawnServer,
   stopServer,
@@ -137,11 +138,11 @@ async function main() {
     // admitted; C2=the local backend cannot enforce the frozen read-only mount;
     // C3=no committed projection anchor exists; C4=one bounded reconciliation
     // window elapses. E1=return the exact unprocessed receipt from admission;
-    // E2=exclude that unanchored receipt from committed list history; E3=keep
+    // E2=expose that receipt exactly once as pending list history; E3=keep
     // the Session idle/nonterminal; E4=publish no model/tool/terminal effect;
     // E5=enqueue no extraction or store mutation. K: the Session root retains
-    // retryable command provenance, while events.list owns only committed
-    // history; this fixture must not invent a second pending-event surface.
+    // retryable command provenance and events.list projects its pending suffix;
+    // this fixture must not invent a second pending-event surface.
     // Decision RO1 C1+C2=>E1; RO2 C1+C2+C3+C4=>E2+E3+E4+E5.
     const readOnlyReceipt = await client.beta.sessions.events.send(readOnly.id, {
       betas: BETAS,
@@ -162,12 +163,10 @@ async function main() {
     for await (const event of client.beta.sessions.events.list(readOnly.id, { betas: BETAS })) {
       readOnlyEvents.push(event);
     }
-    assert.ok(
-      readOnlyEvents.every((event) => event.id !== acceptedReadOnly.id),
-      'RO2 unanchored receipt is not fabricated as committed Event history',
-    );
-    assert.ok(
-      !readOnlyEvents.some((event) => [
+    assertPendingReceiptHasNoRuntimeEffects({
+      history: readOnlyEvents,
+      receiptId: acceptedReadOnly.id,
+      forbiddenEventTypes: new Set([
         'agent.message',
         'agent.mcp_tool_use',
         'agent.mcp_tool_result',
@@ -179,9 +178,9 @@ async function main() {
         'session.usage',
         'span.model_request_start',
         'span.model_request_end',
-      ].includes(event.type)),
-      `RO2 no execution or terminal effect is fabricated: ${readOnlyEvents.map((event) => event.type)}`,
-    );
+      ]),
+      description: 'RO2 denied read-only extraction',
+    });
     assert.equal(
       (await client.beta.sessions.retrieve(readOnly.id, { betas: BETAS })).status,
       'idle',

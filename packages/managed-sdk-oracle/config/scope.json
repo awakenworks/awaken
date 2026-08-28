@@ -13,12 +13,20 @@
     "skills",
     "tunnels",
     "user-profiles",
-    "vaults"
+    "vaults",
+    "webhooks"
   ],
   "ga_resource_roots": [
     "files",
     "models",
     "skills"
+  ],
+  "managed_runtime_entrypoints": [
+    "index.mjs",
+    "helpers/beta/zod.mjs",
+    "lib/environments/index.mjs",
+    "lib/sessions/accumulate.mjs",
+    "tools/agent-toolset/node.mjs"
   ],
   "documented_routes": [
     {
