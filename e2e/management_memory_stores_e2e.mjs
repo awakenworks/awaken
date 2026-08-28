@@ -29,7 +29,7 @@ import assert from 'node:assert/strict';
 import Anthropic from '@anthropic-ai/sdk';
 import { withScenarioServer, pass } from './harness.mjs';
 
-const BETAS = ['agent-memory-2026-07-22'];
+const MEMORY_BETA = 'agent-memory-2026-07-22';
 
 async function drain(pagePromise) {
   const items = [];
@@ -41,7 +41,7 @@ async function json(baseUrl, method, route, body) {
   const response = await fetch(`${baseUrl}${route}`, {
     method,
     headers: {
-      'anthropic-beta': BETAS[0],
+      'anthropic-beta': MEMORY_BETA,
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
     },
     body: body === undefined ? undefined : JSON.stringify(body),
@@ -55,31 +55,34 @@ async function main() {
     await withScenarioServer('management', 'mcp', 38144, async (baseUrl) => {
       const client = new Anthropic({ apiKey: 'e2e-dummy', baseURL: baseUrl });
 
+      // Version-projection invariant: SDK calls omit `betas` so each exact
+      // generated client owns its endpoint selector. The 0.105 anchor injects
+      // the Managed beta; later anchors inject the dedicated Memory beta. Raw
+      // negative probes below use the current selector explicitly.
+
       // -- Store CRUD --------------------------------------------------------
       const store = await client.beta.memoryStores.create({
         name: 'notes',
         description: 'my notes',
         metadata: { a: '1' },
-        betas: BETAS,
       });
       assert.equal(store.type, 'memory_store');
       assert.equal(store.name, 'notes');
       pass('beta.memoryStores.create -> BetaManagedAgentsMemoryStore');
 
-      const gotStore = await client.beta.memoryStores.retrieve(store.id, { betas: BETAS });
+      const gotStore = await client.beta.memoryStores.retrieve(store.id);
       assert.equal(gotStore.id, store.id);
 
       const upStore = await client.beta.memoryStores.update(store.id, {
         description: 'updated notes',
         metadata: { a: null, b: '2' },
-        betas: BETAS,
       });
       assert.equal(upStore.description, 'updated notes');
       assert.equal(upStore.metadata.b, '2');
       assert.ok(!('a' in upStore.metadata), 'null metadata patch removes the key');
       pass('beta.memoryStores.retrieve / update');
 
-      const storeIds = (await drain(client.beta.memoryStores.list({ betas: BETAS }))).map((s) => s.id);
+      const storeIds = (await drain(client.beta.memoryStores.list())).map((s) => s.id);
       assert.ok(storeIds.includes(store.id));
       pass('beta.memoryStores.list -> PageCursor<BetaManagedAgentsMemoryStore>');
 
@@ -98,7 +101,6 @@ async function main() {
       const mem = await client.beta.memoryStores.memories.create(store.id, {
         path: '/notes.md',
         content: 'first',
-        betas: BETAS,
       });
       assert.equal(mem.type, 'memory');
       assert.equal(mem.path, '/notes.md');
@@ -109,14 +111,12 @@ async function main() {
 
       const gotMem = await client.beta.memoryStores.memories.retrieve(mem.id, {
         memory_store_id: store.id,
-        betas: BETAS,
       });
       assert.equal(gotMem.id, mem.id);
       assert.equal(gotMem.content, 'first', 'retrieve defaults to the full projection');
       const gotMemBasic = await client.beta.memoryStores.memories.retrieve(mem.id, {
         memory_store_id: store.id,
         view: 'basic',
-        betas: BETAS,
       });
       assert.equal(gotMemBasic.content, null, 'explicit basic retrieve elides content');
 
@@ -127,7 +127,6 @@ async function main() {
             memory_store_id: store.id,
             content: 'nope',
             precondition: { type: 'content_sha256', content_sha256: 'deadbeef'.repeat(8) },
-            betas: BETAS,
           }),
         (err) => err.status === 409,
       );
@@ -136,13 +135,12 @@ async function main() {
         view: 'full',
         content: 'second',
         precondition: { type: 'content_sha256', content_sha256: mem.content_sha256 },
-        betas: BETAS,
       });
       assert.equal(upMem.content, 'second');
       assert.notEqual(upMem.memory_version_id, mem.memory_version_id, 'update mints a new version');
       pass('beta.memoryStores.memories.update -> precondition (409 stale, ok fresh)');
 
-      const memIds = (await drain(client.beta.memoryStores.memories.list(store.id, { betas: BETAS }))).map(
+      const memIds = (await drain(client.beta.memoryStores.memories.list(store.id))).map(
         (m) => m.id,
       );
       assert.ok(memIds.includes(mem.id));
@@ -152,12 +150,11 @@ async function main() {
       const subMem = await client.beta.memoryStores.memories.create(store.id, {
         path: '/archive/old.md',
         content: 'archived',
-        betas: BETAS,
       });
 
       // path_prefix drills into the subtree, excluding /notes.md.
       const drilled = await drain(
-        client.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive/', betas: BETAS }),
+        client.beta.memoryStores.memories.list(store.id, { path_prefix: '/archive/' }),
       );
       assert.deepEqual(
         drilled.map((m) => m.id),
@@ -167,7 +164,7 @@ async function main() {
 
       // view=basic (also the list default) elides content; full must be explicit.
       const basic = await drain(
-        client.beta.memoryStores.memories.list(store.id, { view: 'basic', betas: BETAS }),
+        client.beta.memoryStores.memories.list(store.id, { view: 'basic' }),
       );
       assert.ok(basic.length >= 2, 'view=basic still lists every memory');
       assert.ok(
@@ -177,7 +174,7 @@ async function main() {
       pass('beta.memoryStores.memories.list -> path_prefix + view=basic');
 
       // -- Versions ----------------------------------------------------------
-      const versions = await drain(client.beta.memoryStores.memoryVersions.list(store.id, { betas: BETAS }));
+      const versions = await drain(client.beta.memoryStores.memoryVersions.list(store.id));
       const ops = versions.map((v) => v.operation);
       assert.ok(ops.includes('created') && ops.includes('modified'), `ops: ${ops}`);
       assert.ok(versions.every((v) => v.content === null), 'version list defaults to basic');
@@ -190,7 +187,6 @@ async function main() {
       const createdLineage = await drain(client.beta.memoryStores.memoryVersions.list(store.id, {
         memory_id: mem.id,
         operation: 'created',
-        betas: BETAS,
       }));
       assert.equal(createdLineage.length, 1);
       assert.equal(createdLineage[0].memory_id, mem.id);
@@ -199,13 +195,11 @@ async function main() {
         memory_id: mem.id,
         'created_at[gte]': createdLineage[0].created_at,
         'created_at[lte]': createdLineage[0].created_at,
-        betas: BETAS,
       }));
       assert.ok(boundedLineage.length >= 1);
       const serviceAccountVersions = await drain(
         client.beta.memoryStores.memoryVersions.list(store.id, {
           service_account_id: 'svac_absent',
-          betas: BETAS,
         }),
       );
       assert.deepEqual(serviceAccountVersions, []);
@@ -222,14 +216,12 @@ async function main() {
       const firstVer = versions[0];
       const gotVer = await client.beta.memoryStores.memoryVersions.retrieve(firstVer.id, {
         memory_store_id: store.id,
-        betas: BETAS,
       });
       assert.equal(gotVer.id, firstVer.id);
       assert.equal(gotVer.content, 'first', 'version retrieve defaults to full');
 
       const redacted = await client.beta.memoryStores.memoryVersions.redact(firstVer.id, {
         memory_store_id: store.id,
-        betas: BETAS,
       });
       assert.ok(redacted.redacted_at, 'redact stamps redacted_at');
       pass('beta.memoryStores.memoryVersions.retrieve / redact');
@@ -237,14 +229,13 @@ async function main() {
       // -- Delete memory + archive + delete store ----------------------------
       const delMem = await client.beta.memoryStores.memories.delete(mem.id, {
         memory_store_id: store.id,
-        betas: BETAS,
       });
       assert.equal(delMem.type, 'memory_deleted');
 
-      const archived = await client.beta.memoryStores.archive(store.id, { betas: BETAS });
+      const archived = await client.beta.memoryStores.archive(store.id);
       assert.ok(archived.archived_at);
 
-      const delStore = await client.beta.memoryStores.delete(store.id, { betas: BETAS });
+      const delStore = await client.beta.memoryStores.delete(store.id);
       assert.equal(delStore.type, 'memory_store_deleted');
       assert.equal(
         (

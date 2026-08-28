@@ -28,6 +28,19 @@ test('managed declaration fingerprint is deterministic and scoped', () => {
     first.files.some(({ path: declaration }) => declaration === 'beta/webhooks.d.ts'),
     'non-HTTP Webhook helpers are part of the type oracle',
   );
+  for (const declaration of [
+    'managed/helpers/beta/zod.d.ts',
+    'managed/lib/environments/worker.d.ts',
+    'managed/lib/sessions/accumulate.d.ts',
+    'managed/tools/agent-toolset/node.d.ts',
+    'managed/tools/agent-toolset/memories.d.ts',
+    'managed/tools/agent-toolset/skills.d.ts',
+  ]) {
+    assert.ok(
+      first.files.some(({ path: candidate }) => candidate === declaration),
+      `Managed helper declaration ${declaration} is fingerprinted`,
+    );
+  }
   assert.deepEqual(
     managedTypeFingerprintFromPackageRoot(
       resolveSdkPackage('@anthropic-ai/sdk-current').root,

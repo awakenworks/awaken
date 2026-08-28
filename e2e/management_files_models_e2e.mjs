@@ -23,6 +23,9 @@ import Anthropic, { toFile } from '@anthropic-ai/sdk';
 import { FAKE_KEY, withScenarioServer, pass } from './harness.mjs';
 
 const BETAS = ['managed-agents-2026-04-01'];
+const gaFilesMode = process.env.AWAKEN_MANAGED_SDK_HAS_GA_FILES ?? '1';
+assert.match(gaFilesMode, /^(?:0|1)$/u, 'GA Files capability mode must be 0 or 1');
+const HAS_GA_FILES = gaFilesMode === '1';
 
 async function drain(pagePromise) {
   const items = [];
@@ -52,26 +55,28 @@ async function main() {
 
       // GA Files uses the same durable File authority but a different metadata
       // projection and no beta selector. Exercise all five current SDK methods.
-      const gaFile = await client.files.upload({
-        file: await toFile(Buffer.from('ga-file-content'), 'ga-file.txt'),
-        expires_in_seconds: 3600,
-      });
-      assert.equal(gaFile.type, 'file', 'R2/E1');
-      assert.equal(typeof gaFile.expires_at, 'string', 'R2 GA expiry projection');
-      assert.equal((await client.files.retrieveMetadata(gaFile.id)).id, gaFile.id, 'R2/E1');
-      const gaFiles = await drain(client.files.list({ ids: [gaFile.id, 'file_missing'] }));
-      assert.deepEqual(gaFiles.map((file) => file.id), [gaFile.id], 'R2/E1 ids filter');
-      await assert.rejects(
-        () => client.files.download(gaFile.id),
-        (error) => error?.status === 400 && String(error).includes('not downloadable'),
-        'R2/E2 GA input download fails closed',
-      );
-      assert.equal((await client.files.delete(gaFile.id)).type, 'file_deleted', 'R2/E3');
-      await assert.rejects(
-        () => client.files.retrieveMetadata(gaFile.id),
-        (error) => error?.status === 404,
-      );
-      pass('GA Files upload/list/retrieve/download/delete share the canonical File authority');
+      if (HAS_GA_FILES) {
+        const gaFile = await client.files.upload({
+          file: await toFile(Buffer.from('ga-file-content'), 'ga-file.txt'),
+          expires_in_seconds: 3600,
+        });
+        assert.equal(gaFile.type, 'file', 'R2/E1');
+        assert.equal(typeof gaFile.expires_at, 'string', 'R2 GA expiry projection');
+        assert.equal((await client.files.retrieveMetadata(gaFile.id)).id, gaFile.id, 'R2/E1');
+        const gaFiles = await drain(client.files.list({ ids: [gaFile.id, 'file_missing'] }));
+        assert.deepEqual(gaFiles.map((file) => file.id), [gaFile.id], 'R2/E1 ids filter');
+        await assert.rejects(
+          () => client.files.download(gaFile.id),
+          (error) => error?.status === 400 && String(error).includes('not downloadable'),
+          'R2/E2 GA input download fails closed',
+        );
+        assert.equal((await client.files.delete(gaFile.id)).type, 'file_deleted', 'R2/E3');
+        await assert.rejects(
+          () => client.files.retrieveMetadata(gaFile.id),
+          (error) => error?.status === 404,
+        );
+        pass('GA Files upload/list/retrieve/download/delete share the canonical File authority');
+      }
 
       // -- Models: list + retrieve + alias-miss 404 -------------------------
       // Model-directory cause/effect rules: M1 no authored catalog facts ->

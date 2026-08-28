@@ -11,14 +11,35 @@
 // runner, so they are deliberately not duplicated here.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
-  loadQualifiedClients,
+  loadConformanceClients,
   qualifiedClient,
 } from '../../packages/managed-sdk-oracle/src/conformance/clients.mjs';
+import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import { FAKE_KEY, pass, withScenarioServer } from '../harness.mjs';
+import { officialBetaResourceProjection } from './official_sdk_resource_projection.mjs';
 
-const QUALIFIED_CLIENTS = await loadQualifiedClients();
-const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client, toFile }) => [version, Client, toFile]);
+const QUALIFIED_CLIENTS = await loadConformanceClients();
+const SCOPE = JSON.parse(readFileSync(
+  resolve(import.meta.dirname, '../../packages/managed-sdk-oracle/config/scope.json'),
+  'utf8',
+));
+// Projection graph: a candidate may retain the Beta namespace while adopting
+// GA Files/Skills request and DTO shapes. The exact generated operation
+// inventory selects that projection for each client. Cross-version handoff
+// therefore compares aggregate identity, not incompatible projection-local
+// fields or a hard-coded SDK version threshold.
+const CLIENTS = QUALIFIED_CLIENTS.map(({ version, Client, toFile, root }) => {
+  const operations = extractOperationsFromPackageRoot(root, SCOPE).operations;
+  return {
+    version,
+    Client,
+    toFile,
+    skillProjection: officialBetaResourceProjection(operations, 'skills').projection,
+  };
+});
 const QUALIFIED_VERSIONS = QUALIFIED_CLIENTS.map(({ version }) => version).join(', ');
 
 async function drain(items) {
@@ -32,8 +53,18 @@ function skillMarkdown(name, revision) {
 }
 
 async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
-  const [creatorVersion, Creator, creatorToFile] = creatorSpec;
-  const [operatorVersion, Operator, operatorToFile] = operatorSpec;
+  const {
+    version: creatorVersion,
+    Client: Creator,
+    toFile: creatorToFile,
+    skillProjection: creatorSkillProjection,
+  } = creatorSpec;
+  const {
+    version: operatorVersion,
+    Client: Operator,
+    toFile: operatorToFile,
+    skillProjection: operatorSkillProjection,
+  } = operatorSpec;
   const creator = new Creator({ apiKey: 'e2e-dummy', baseURL });
   const operator = new Operator({ apiKey: 'e2e-dummy', baseURL });
   const suffix = `${creatorVersion.replaceAll('.', '')}-${operatorVersion.replaceAll('.', '')}`;
@@ -118,17 +149,36 @@ async function exerciseResources(baseURL, creatorSpec, operatorSpec) {
 
   const skillName = `compat-${suffix}`;
   const skill = await creator.beta.skills.create({
-    display_title: `Compat ${suffix}`,
+    ...(creatorSkillProjection === 'beta'
+      ? { display_title: `Compat ${suffix}` }
+      : { display_name: `Compat ${suffix}` }),
     files: [await creatorToFile(Buffer.from(skillMarkdown(skillName, 'one')), 'SKILL.md')],
   });
   assert.equal((await operator.beta.skills.retrieve(skill.id)).id, skill.id);
   const secondVersion = await operator.beta.skills.versions.create(skill.id, {
     files: [await operatorToFile(Buffer.from(skillMarkdown(skillName, 'two')), 'SKILL.md')],
   });
-  assert.equal(secondVersion.version, '2');
-  assert.deepEqual(
-    (await drain(creator.beta.skills.versions.list(skill.id))).map((item) => item.version),
-    ['1', '2'],
+  const operatorReference = operatorSkillProjection === 'beta'
+    ? secondVersion.version
+    : secondVersion.id;
+  assert.equal(typeof operatorReference, 'string', 'operator decodes its Version identity');
+  assert.equal(
+    (await operator.beta.skills.versions.retrieve(operatorReference, { skill_id: skill.id })).skill_id,
+    skill.id,
+  );
+  const creatorVersions = await drain(creator.beta.skills.versions.list(skill.id));
+  assert.equal(creatorVersions.length, 2, 'creator observes both immutable Versions');
+  const firstReference = creatorSkillProjection === 'beta'
+    ? skill.latest_version
+    : skill.latest_version_id;
+  const creatorReferences = creatorVersions.map((item) => (
+    creatorSkillProjection === 'beta' ? item.version : item.id
+  ));
+  const creatorSecondReference = creatorReferences.find((reference) => reference !== firstReference);
+  assert.equal(typeof creatorSecondReference, 'string', 'creator projects the operator-created Version');
+  assert.equal(
+    (await creator.beta.skills.versions.retrieve(creatorSecondReference, { skill_id: skill.id })).skill_id,
+    skill.id,
   );
   assert.equal((await operator.beta.skills.delete(skill.id)).type, 'skill_deleted');
 

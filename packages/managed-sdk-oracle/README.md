@@ -15,8 +15,9 @@ else is derived evidence:
   fingerprints;
 - `contracts/anthropic-managed/python-upstream-oracle.generated.json` binds
   every selected Python change point to its exact PyPI wheel SHA-256, normalized
-  operation inventory, and scoped source fingerprint. The current Python oracle
-  must retain the reviewed operation identity relationship to TypeScript;
+  operation inventory, handwritten resource helpers, explicit Managed library
+  exports, and scoped source fingerprint. The current Python oracle must retain
+  the reviewed operation identity relationship to TypeScript;
 - `contracts/anthropic-managed/canonical-wire.schemas.generated.json` records
   the wire schemas generated from the Rust implementation and is compared to
   that oracle rather than treated as a competing protocol definition;
@@ -41,6 +42,15 @@ evidence from drifting from the external expectation:
   the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
   arguments while runtime assertions bind the exact method, normalized path,
   `beta=true` transport selector, and capability set.
+- `test/sdk-transport-resilience.test.mjs` runs every supported TypeScript
+  anchor and the admitted candidate through one error/retry contract. It owns
+  the exact 400/401/403/404/409/413/422/429/500/529 subclasses and headers,
+  retry decision table including `x-should-retry`, byte-identical mutation
+  identity, opaque cursor traversal, and caller-abort fencing.
+- The declaration oracle includes the Managed helper entrypoints in addition
+  to HTTP resource types. A separate pre-import ESM export inventory is checked
+  against the executable current modules; adding or removing a helper inside
+  an already-owned file therefore cannot reuse that file's behavior evidence.
 - The generated oracle also fingerprints the transitive `.mjs` dependency
   closure rooted at the supported resources, Client, Session accumulator,
   EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client
@@ -49,28 +59,67 @@ evidence from drifting from the external expectation:
   Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
-  It fails unless all current HTTP operations are observed with their exact
-  method, route, Beta/GA selector, and required capabilities. A method present
-  only in source text can therefore no longer satisfy behavior qualification.
+  It projects the same owner graph over all 99/114/127 HTTP operations exposed
+  by the exact 0.105/0.117.1/0.121 anchors, and replays all 127 operations plus
+  four helpers for every admitted candidate. A package-selection hook resolves unchanged
+  canonical imports inside the selected exact package root; each receipt must
+  carry that package's exact `x-stainless-package-version`, method, route,
+  Beta/GA selector, and capabilities. Files/Skills wire coordinates are
+  projected from that package's generated operations, so the 0.122 post-GA
+  DTOs are exercised without copying the 0.121 tests or accepting a union
+  shape. A method present only in source text cannot satisfy qualification.
 - `src/conformance/hosted.mjs` is the canonical deployed behavior runner. A
   product supplies only endpoint credentials and fixture identities through
   environment variables. It executes positive Beta/GA lifecycles, all-operation
   negative/error probes, pagination, concurrent idempotency, retry identity,
-  SSE full-replay/deduplication, and an optional official-service differential.
+  and SSE full-replay/deduplication. The ordinary command permits an optional
+  official-service differential for developer diagnostics; the release command
+  requires all official-reference credentials and fails closed when they are
+  absent or partial. It then runs the same positive SDK lifecycles against
+  reference-owned Agent, Environment, Workspace, UserProfile, API, and WIF
+  fixtures. The 139-route differential sweep remains single-owned and is not
+  repeated in that lifecycle pass.
 - `src/conformance/recovery.mjs` splits a Session/File/idempotency scenario at a
   process-replacement boundary. Product orchestration runs `prepare`, replaces
   every serving process, then runs `verify` and `cleanup`; an in-memory cache
   cannot satisfy this gate.
+- `src/conformance/release.mjs` is the sole release-grade composition of those
+  two drivers. It requires `AWAKEN_MANAGED_REPLACE_AND_WAIT_COMMAND` to replace
+  the deployment and write versioned evidence to the injected
+  `AWAKEN_MANAGED_REPLACEMENT_EVIDENCE_FILE`. The evidence must contain non-empty,
+  unique, disjoint before/after serving-instance sets at the exact
+  `AWAKEN_MANAGED_EXPECTED_REVISION`, bound to the canonical
+  `AWAKEN_MANAGED_BASE_URL`, with the replacement set ready. The hook
+  receives no Managed API or Tunnel credentials. Hosted differential, durable
+  prepare, total replacement, recovery verification, and cleanup execute in
+  that order. Every post-prepare failure attempts compensation; a cleanup
+  failure preserves the private recovery/evidence directory and reports its
+  exact path so the same fixture identities can be reconciled rather than lost.
 - `e2e/conformance/managed_python_sdk_runtime_e2e.{mjs,py}` provisions the exact
   locked Python client closure in an isolated virtual environment and drives a
   real Awaken process. It owns Python-specific sync/async calls, cursor and SSE
   decoding, typed errors, multipart encoding, beta/GA resource handoff, and the
-  standard-webhooks adapter. Before that real-process slice, a recording
+  standard-webhooks adapter. The companion helper driver executes the official
+  poller, SessionToolRunner, EnvironmentWorker, accumulator, and Agent Toolset;
+  a two-process scenario recovers Session/Event, Memory, File, and Skill facts
+  from one durable deployment. Before those real-process slices, a recording
   transport invokes all 127 Python methods through `with_raw_response` and
   requires their exact generated verb, normalized route, query selector, and
   beta-header set; a new required parameter fails closed until its fixture is
   reviewed. The existing shared behavior owners continue to own service-domain
   semantics, so this client sweep does not copy their resource state machines.
+- `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
+  change point in its own SHA-256-qualified wheel root over one exact dependency
+  closure. It re-extracts and compares the installed source/operation/helper/
+  export and handwritten transport-source fingerprints, constructs every
+  operation, proves the canonical Python error subclasses plus
+  retry/idempotency identity, and runs live Session/SSE and Memory lifecycles.
+  The generated SSE dispatch inventory records that the first 0.92 Managed
+  wheel filters canonical Managed event names in its own generic parser; 0.100+
+  must decode message and terminal replay. The last Beta-only and first GA
+  Files/Skills releases own
+  the two additional projection-cutover cells; the current 1.2 behavior remains
+  owned by the deeper runtime/recovery driver instead of being run twice.
 
 `config/anchors.json` selects exact SDK releases and assigns each a stable role.
 `config/python-anchors.json` selects behavior-changing Python releases from the
@@ -104,7 +153,9 @@ feeds the exact Session-response gate. The standalone E2E package's
 5. Run `pnpm --filter @awaken/managed-sdk-oracle test` and
    `pnpm --filter @awaken/managed-sdk-oracle check`.
 6. Run this exact revision's hosted conformance command against every product
-   deployment; products must not maintain their own SDK version aliases.
+   deployment; products must not maintain their own SDK version aliases. A
+   release pipeline invokes `pnpm --filter @awaken/managed-sdk-oracle
+   conformance:release`, never the diagnostic-only `conformance:hosted` command.
 
 For a Python anchor, update `config/python-anchors.json`, run
 `pnpm --filter @awaken/managed-sdk-oracle generate:python`, review every
@@ -144,12 +195,15 @@ delta must match one reviewed version-pair fingerprint in
 `official_sdk_candidate_qualifications.json`; every delta coordinate must belong
 to exactly one named executable behavior owner. Reusing an allowlisted filename
 with different bytes therefore fails closed before candidate code can run. It
-then executes both Beta-namespace and GA lifecycles. The runtime proof covers the
+then executes both Beta-namespace and GA lifecycles and injects only that exact
+alias into the same Session/Native/ACP, resource-handoff, Memory/CAS, and Webhook
+matrices used by the stable anchors. The runtime proof covers the
 candidate's authentication header and retry behavior, exact Managed error
 envelopes, anonymous/read-only/admin policy enforcement without denied-write
 side effects, cursor traversal, rejected mutations, missing/deleted identities,
 immutable version archives, cross-root identity, and a real process restart over
-one durable store. A shared transport receipt encoder requires every discovered
+one durable store, including Session/Event, Memory, File, and Skill recovery.
+A shared transport receipt encoder requires every discovered
 Beta Files/Skills operation to reach a real non-5xx resource response with its
 exact method, route, selector, capability, and official-SDK marker; 401/403
 policy failures cannot impersonate resource-owner coverage. The runner also
@@ -163,3 +217,22 @@ version-number table, uses type escape hatches, or silently falls back to the
 installed current anchor. After the observation window, a passing candidate
 proof still fails the release gate until that exact version is promoted to the
 canonical current oracle.
+
+The 0.121→0.122 change point intentionally records one upstream source-level
+break: 0.122 removes the public `resolveSkillVersion` re-export from
+`tools/agent-toolset/node`. Static runtime and declaration inventories prove
+that it is the sole removed Managed helper; candidate compilation proves the
+symbol is absent, while the real-process `setupSkills("latest")` recovery case
+proves the replacement server-resolved version flow. This is an official SDK
+API boundary, not an Awaken compatibility shim, and future export changes fail
+closed until they receive their own explicit behavior owner.
+
+Supplying the same exact candidate module and version to `conformance:hosted`
+and every `conformance:recovery:*` phase also admits it to public-ingress and
+process-replacement evidence. Those paths cover the candidate's GA and Beta
+resource projections, User Profiles, pagination/idempotency/reconnect, and
+Tunnel/WIF behavior. Recovery records the selected SDK role and version and
+rejects a later phase run with a different package. Beta Files and Skills are
+invoked without hand-authored capability headers, ensuring that the deployed
+service receives the official SDK's generated 0.121 legacy-Beta or 0.122
+GA-projection behavior rather than a test-masked approximation.
