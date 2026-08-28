@@ -85,3 +85,22 @@ feeds the exact Session-response gate. The standalone E2E package's
 The `check` command regenerates in memory and compares byte-for-byte. CI and the
 contract generation script both call it, while `test` type-checks all compile
 fixtures, so stale or unowned compatibility claims fail closed.
+
+## Qualifying a newer candidate
+
+`npm --prefix e2e run test:sdk-latest-canary` observes the registry but never
+downloads or executes a release during the repository's minimum-release-age
+window. Once supply-chain policy has provisioned an exact SDK package root, the
+same runtime proof can be applied before changing the canonical anchor:
+
+```bash
+ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT=/absolute/path/to/node_modules/@anthropic-ai/sdk \
+  node e2e/conformance/sdk_latest_runtime_canary.mjs
+```
+
+The runner reads the candidate's generated operation source. For Beta Files and
+Skills it requires every operation to agree on `beta=true` and its endpoint
+capability, derives the historical-Beta or GA wire projection from that request
+signature, and then executes both Beta-namespace and GA lifecycles. It also runs
+every webhook parser exposed by that SDK. It never chooses behavior from a
+version-number table or silently falls back to the installed current anchor.

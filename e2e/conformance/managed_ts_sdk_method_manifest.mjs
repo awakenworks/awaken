@@ -76,6 +76,7 @@ const SDK_HELPERS = [
     relativeMethod: 'webhooks.unwrap',
     route: 'offline-standard-webhooks',
     owner: 'managed_webhooks_official_sdk_e2e.mjs',
+    sdkHelper: 'conformance/official_webhook_contract.mjs#exerciseOfficialWebhookContract',
   },
 ];
 

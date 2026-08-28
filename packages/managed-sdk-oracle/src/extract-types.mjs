@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
 
-import { resolveSdkPackage } from './package-source.mjs';
+import { resolveSdkPackage, sdkPackageFromRoot } from './package-source.mjs';
 
 function declarations(root) {
   const files = [];
@@ -20,26 +20,40 @@ function declarations(root) {
 
 export function managedTypeFingerprint(moduleName, scope) {
   const sdk = resolveSdkPackage(moduleName);
-  const betaRoot = path.join(sdk.root, 'resources', 'beta');
+  return managedTypeFingerprintFromPackageRoot(sdk.root, scope);
+}
+
+export function managedTypeFingerprintFromPackageRoot(root, scope) {
+  sdkPackageFromRoot(root);
+  const betaRoot = path.join(root, 'resources', 'beta');
   const roots = [
     { root: betaRoot, prefix: 'beta/', allowed: new Set(scope.beta_resource_roots) },
-    { root: path.join(sdk.root, 'resources'), prefix: 'ga/', allowed: new Set(scope.ga_resource_roots ?? []) },
+    { root: path.join(root, 'resources'), prefix: 'ga/', allowed: new Set(scope.ga_resource_roots ?? []) },
   ];
   const hash = crypto.createHash('sha256');
-  let fileCount = 0;
-  for (const { root, prefix, allowed } of roots) {
-    for (const filename of declarations(root)) {
-      const relative = path.relative(root, filename).replaceAll(path.sep, '/');
+  const files = [];
+  for (const { root: declarationRoot, prefix, allowed } of roots) {
+    for (const filename of declarations(declarationRoot)) {
+      const relative = path.relative(declarationRoot, filename).replaceAll(path.sep, '/');
       if (!allowed.has(relative.split('/')[0].replace(/\.d\.ts$/, ''))) continue;
-      hash.update(prefix + relative);
+      const scopedPath = prefix + relative;
+      const content = fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n');
+      hash.update(scopedPath);
       hash.update('\0');
-      hash.update(fs.readFileSync(filename, 'utf8').replaceAll('\r\n', '\n'));
+      hash.update(content);
       hash.update('\0');
-      fileCount += 1;
+      files.push(Object.freeze({
+        path: scopedPath,
+        fingerprint: crypto.createHash('sha256').update(content).digest('hex'),
+      }));
     }
   }
-  if (fileCount === 0) throw new Error(`${moduleName} exposed no scoped Managed declarations`);
-  return { fingerprint: hash.digest('hex'), file_count: fileCount };
+  if (files.length === 0) throw new Error(`${root} exposed no scoped Managed declarations`);
+  return Object.freeze({
+    fingerprint: hash.digest('hex'),
+    file_count: files.length,
+    files: Object.freeze(files),
+  });
 }
 
 function declarationSource(root, relative) {

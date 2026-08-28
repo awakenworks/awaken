@@ -13,7 +13,8 @@
     "skills",
     "tunnels",
     "user-profiles",
-    "vaults"
+    "vaults",
+    "webhooks"
   ],
   "ga_resource_roots": [
     "files",
