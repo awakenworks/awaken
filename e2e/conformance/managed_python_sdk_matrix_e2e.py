@@ -13,6 +13,8 @@ from pathlib import Path
 import anthropic
 
 from managed_python_sdk_request_contract import (
+    exercise_async_error_and_retry_contract,
+    exercise_all_async_operation_requests,
     exercise_all_operation_requests,
     exercise_error_and_retry_contract,
 )
@@ -211,7 +213,11 @@ def main() -> None:
     evidence, anchor = extracted_evidence(args.version)
     transport = importlib.import_module("httpx2" if args.version.startswith("1.") else "httpx")
     exercise_all_operation_requests(anthropic, transport, evidence["operations"])
+    asyncio.run(
+        exercise_all_async_operation_requests(anthropic, transport, evidence["operations"])
+    )
     exercise_error_and_retry_contract(anthropic, transport)
+    asyncio.run(exercise_async_error_and_retry_contract(anthropic, transport))
     exercise_library_exports(evidence["library_exports"])
     asyncio.run(exercise_resource_helper_surface(evidence["helpers"]))
     operation_ids = {operation["id"] for operation in evidence["operations"]}
@@ -219,7 +225,7 @@ def main() -> None:
     exercise_memory(args.base_url, operation_ids)
     exercise_beta_ga_change_point(args.base_url, operation_ids)
     print(
-        f"PYTHON SDK MATRIX PASS {args.version}: {len(operation_ids)} operations, "
+        f"PYTHON SDK MATRIX PASS {args.version}: {len(operation_ids)} sync/async operations, "
         f"{len(evidence['helpers'])} resource helpers, {len(evidence['library_exports'])} library exports"
     )
 

@@ -23,6 +23,8 @@ from anthropic.types.beta.sessions import BetaManagedAgentsTextBlock
 from standardwebhooks import WebhookVerificationError
 
 from managed_python_sdk_request_contract import (
+    exercise_async_error_and_retry_contract,
+    exercise_all_async_operation_requests as exercise_async_requests,
     exercise_all_operation_requests as exercise_requests,
     exercise_error_and_retry_contract,
 )
@@ -64,6 +66,14 @@ def exercise_all_operation_requests() -> None:
     oracle = json.loads(PYTHON_ORACLE.read_text(encoding="utf-8"))
     exercise_requests(anthropic, httpx2, oracle["current"]["operations"])
     assert len(oracle["current"]["operations"]) == 127
+
+
+async def exercise_all_async_operation_requests() -> None:
+    # The current deep runtime matrix owns the same sync/async metamorphic
+    # relation as every historical change point. Reading the generated oracle
+    # here keeps 127 operation identities single-owned by the extractor.
+    oracle = json.loads(PYTHON_ORACLE.read_text(encoding="utf-8"))
+    await exercise_async_requests(anthropic, httpx2, oracle["current"]["operations"])
 
 
 def wait_for_idle(client: anthropic.Anthropic, session_id: str, receipt_id: str) -> list[object]:
@@ -413,15 +423,17 @@ def main() -> None:
         print(f"PYTHON SDK RECOVERY {args.mode} PASS")
         return
     exercise_all_operation_requests()
+    asyncio.run(exercise_all_async_operation_requests())
     exercise_error_and_retry_contract(anthropic, httpx2)
+    asyncio.run(exercise_async_error_and_retry_contract(anthropic, httpx2))
     exercise_accumulator_contract()
     exercise_sync_session()
     asyncio.run(exercise_async_session())
     exercise_beta_ga_handoff()
     exercise_webhook_decoder()
     print(
-        "PYTHON SDK PASS: 127 request constructors; sync/async Session, cursor, SSE, "
-        "errors, event accumulation, beta/GA handoff, webhook helpers"
+        "PYTHON SDK PASS: 127 sync/async request constructors; sync/async Session and errors, "
+        "cursor, SSE, event accumulation, beta/GA handoff, webhook helpers"
     )
 
 

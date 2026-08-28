@@ -126,17 +126,22 @@ evidence from drifting from the external expectation:
   poller, SessionToolRunner, EnvironmentWorker, accumulator, and Agent Toolset;
   a two-process scenario recovers Session/Event, Memory, File, and Skill facts
   from one durable deployment. Before those real-process slices, a recording
-  transport invokes all 127 Python methods through `with_raw_response` and
-  requires their exact generated verb, normalized route, query selector, and
-  beta-header set; a new required parameter fails closed until its fixture is
-  reviewed. The existing shared behavior owners continue to own service-domain
-  semantics, so this client sweep does not copy their resource state machines.
+  transport invokes all 127 Python methods through both synchronous and
+  asynchronous `with_raw_response` resources and requires their exact generated
+  verb, normalized route, query selector, and beta-header set; a new required
+  parameter fails closed until its fixture is reviewed. Both client modes share
+  the same extracted operation ledger, fixture vocabulary, and assertions, so
+  async drift cannot hide behind a duplicate inventory. The existing shared
+  behavior owners continue to own service-domain semantics, so this client
+  sweep does not copy their resource state machines.
 - `managed_python_sdk_matrix_e2e.py` executes every earlier reviewed Python
   change point in its own SHA-256-qualified wheel root over one exact dependency
   closure. It re-extracts and compares the installed source/operation/helper/
   export and handwritten transport-source fingerprints, constructs every
-  operation, proves the canonical Python error subclasses plus
-  retry/idempotency identity, and runs live Session/SSE and Memory lifecycles.
+  operation through both sync and async clients, projects one shared decision
+  table through both clients to prove the canonical Python error subclasses,
+  retry policy, and byte-identical idempotent retries, and runs live Session/SSE
+  and Memory lifecycles.
   The generated SSE dispatch inventory records that the first 0.92 Managed
   wheel filters canonical Managed event names in its own generic parser; 0.100+
   must decode message and terminal replay. The last Beta-only and first GA

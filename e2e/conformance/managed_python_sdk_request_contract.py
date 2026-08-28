@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 from typing import Any
 
@@ -51,8 +52,37 @@ def resource_method(client: object, operation_id: str) -> object:
     return getattr(getattr(resource, "with_raw_response"), parts[-1])
 
 
+def required_arguments(method: object) -> tuple[list[object], dict[str, object]]:
+    positional = []
+    keyword = {}
+    for parameter in inspect.signature(method).parameters.values():
+        if parameter.default is not inspect.Parameter.empty:
+            continue
+        value = required_fixture(parameter.name)
+        if parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            positional.append(value)
+        elif parameter.kind == inspect.Parameter.KEYWORD_ONLY:
+            keyword[parameter.name] = value
+        else:
+            raise AssertionError(
+                f"unsupported required parameter kind {parameter.kind} for {parameter.name}"
+            )
+    return positional, keyword
+
+
 def normalized_actual_path(path: str) -> str:
     return "/".join("{}" if segment == "fixture" else segment for segment in path.split("/"))
+
+
+def assert_operation_request(operation: dict[str, Any], request: object) -> None:
+    assert request.method == operation["method"], operation["id"]
+    assert normalized_actual_path(request.url.path) == operation["path"], operation["id"]
+    assert request.url.query.decode() == operation.get("transport_query", ""), operation["id"]
+    actual_betas = sorted(filter(None, request.headers.get("anthropic-beta", "").split(",")))
+    assert actual_betas == operation["betas"], operation["id"]
 
 
 def exercise_all_operation_requests(
@@ -83,33 +113,48 @@ def exercise_all_operation_requests(
     ) as client:
         for operation in operations:
             method = resource_method(client, operation["id"])
-            positional = []
-            keyword = {}
-            for parameter in inspect.signature(method).parameters.values():
-                if parameter.default is not inspect.Parameter.empty:
-                    continue
-                value = required_fixture(parameter.name)
-                if parameter.kind in (
-                    inspect.Parameter.POSITIONAL_ONLY,
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                ):
-                    positional.append(value)
-                elif parameter.kind == inspect.Parameter.KEYWORD_ONLY:
-                    keyword[parameter.name] = value
-                else:
-                    raise AssertionError(
-                        f"{operation['id']}: unsupported parameter kind {parameter.kind}"
-                    )
+            positional, keyword = required_arguments(method)
             before = len(requests)
             response = method(*positional, **keyword)
             assert response.status_code == 200
             assert len(requests) == before + 1, f"{operation['id']}: exact request count"
-            request = requests[-1]
-            assert request.method == operation["method"], operation["id"]
-            assert normalized_actual_path(request.url.path) == operation["path"], operation["id"]
-            assert request.url.query.decode() == operation.get("transport_query", ""), operation["id"]
-            actual_betas = sorted(filter(None, request.headers.get("anthropic-beta", "").split(",")))
-            assert actual_betas == operation["betas"], operation["id"]
+            assert_operation_request(operation, requests[-1])
+    assert len(requests) == len(operations)
+
+
+async def exercise_all_async_operation_requests(
+    anthropic_module: Any,
+    transport_module: Any,
+    operations: list[dict[str, Any]],
+) -> None:
+    # Metamorphic client-mode graph: C1=the same exact wheel and generated
+    # operation ledger; C2=sync versus async resource implementation; C3=one
+    # shared fail-closed fixture vocabulary. E1=both modes emit the identical
+    # method/path/query/beta identity for every operation; E2=a missing async
+    # method, new required parameter, duplicate request, or async-only selector
+    # drift fails. Shared argument and request assertions make client mode the
+    # sole transformed variable instead of maintaining a second inventory.
+    requests = []
+
+    async def respond(request: object) -> object:
+        requests.append(request)
+        return transport_module.Response(200, json={})
+
+    transport = transport_module.MockTransport(respond)
+    http_client = transport_module.AsyncClient(transport=transport)
+    async with anthropic_module.AsyncAnthropic(
+        api_key="async-request-sweep",  # awaken-allow: secret
+        http_client=http_client,
+        max_retries=0,
+    ) as client:
+        for operation in operations:
+            method = resource_method(client, operation["id"])
+            positional, keyword = required_arguments(method)
+            before = len(requests)
+            response = await method(*positional, **keyword)
+            assert response.status_code == 200
+            assert len(requests) == before + 1, f"{operation['id']}: exact async request count"
+            assert_operation_request(operation, requests[-1])
     assert len(requests) == len(operations)
 
 
@@ -121,7 +166,56 @@ def canonical_error(status: int, error_type: str) -> dict[str, object]:
     }
 
 
-def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:
+async def _call_session_create(
+    anthropic_module: Any,
+    transport_module: Any,
+    handler: object,
+    *,
+    asynchronous: bool,
+    max_retries: int,
+    raw: bool = False,
+    extra_headers: dict[str, str] | None = None,
+) -> object:
+    arguments = {"agent": "fixture", "environment_id": "fixture"}
+    if extra_headers is not None:
+        arguments["extra_headers"] = extra_headers
+    if asynchronous:
+        async def async_handler(request: object) -> object:
+            return handler(request)
+
+        async with anthropic_module.AsyncAnthropic(
+            api_key="async-transport-contract",  # awaken-allow: secret
+            http_client=transport_module.AsyncClient(
+                transport=transport_module.MockTransport(async_handler)
+            ),
+            max_retries=max_retries,
+        ) as client:
+            method = (
+                client.beta.sessions.with_raw_response.create
+                if raw
+                else client.beta.sessions.create
+            )
+            return await method(**arguments)
+
+    with anthropic_module.Anthropic(
+        api_key="transport-contract",  # awaken-allow: secret
+        http_client=transport_module.Client(transport=transport_module.MockTransport(handler)),
+        max_retries=max_retries,
+    ) as client:
+        method = (
+            client.beta.sessions.with_raw_response.create
+            if raw
+            else client.beta.sessions.create
+        )
+        return method(**arguments)
+
+
+async def _exercise_error_and_retry_contract_for_mode(
+    anthropic_module: Any,
+    transport_module: Any,
+    *,
+    asynchronous: bool,
+) -> None:
     # Transport decision table shared across the exact Python version matrix:
     # C1=one canonical Managed error envelope and request-id header; C2=status
     # is 400/401/403/404/409/413/422/429/500/529; C3=max_retries=0. Effects: E1=the
@@ -131,7 +225,9 @@ def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: A
     # relation: C6=one retry with an explicit idempotency key and body; E4=the
     # complete command identity is byte-stable. This owns Python transport
     # behavior only; Awaken's production error mapping is owned by deployed/Rust
-    # operation cases.
+    # operation cases. C7 projects the same decision graph through sync and
+    # async API clients; the transport handler and all expectations remain
+    # single-owned, so a mode-specific divergence cannot be normalized away.
     cases = (
         (400, "invalid_request_error", "BadRequestError"),
         (401, "authentication_error", "AuthenticationError"),
@@ -156,20 +252,21 @@ def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: A
                 headers={"request-id": f"req_header_{status}"},
             )
 
-        with anthropic_module.Anthropic(
-            api_key="error-contract",  # awaken-allow: secret
-            http_client=transport_module.Client(transport=transport_module.MockTransport(reject)),
-            max_retries=0,
-        ) as client:
-            try:
-                client.beta.sessions.create(agent="fixture", environment_id="fixture")
-            except anthropic_module.APIStatusError as error:
-                assert error.__class__.__name__ == class_name
-                assert error.status_code == status
-                assert error.body["error"]["type"] == error_type
-                assert error.request_id == f"req_header_{status}"
-            else:
-                raise AssertionError(f"{status}: Python SDK accepted a Managed error")
+        try:
+            await _call_session_create(
+                anthropic_module,
+                transport_module,
+                reject,
+                asynchronous=asynchronous,
+                max_retries=0,
+            )
+        except anthropic_module.APIStatusError as error:
+            assert error.__class__.__name__ == class_name
+            assert error.status_code == status
+            assert error.body["error"]["type"] == error_type
+            assert error.request_id == f"req_header_{status}"
+        else:
+            raise AssertionError(f"{status}: Python SDK accepted a Managed error")
         assert len(requests) == 1, f"{status}: client fault retried"
 
     retry_cases = (
@@ -201,21 +298,21 @@ def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: A
                 headers=headers,
             )
 
-        with anthropic_module.Anthropic(
-            api_key="retry-decision-contract",  # awaken-allow: secret
-            http_client=transport_module.Client(transport=transport_module.MockTransport(decide)),
-            max_retries=2,
-        ) as client:
-            try:
-                response = client.beta.sessions.with_raw_response.create(
-                    agent="fixture", environment_id="fixture"
-                )
-            except anthropic_module.APIStatusError as error:
-                assert not retries, f"{status}/{override}: retryable response was rejected"
-                assert error.status_code == status
-            else:
-                assert retries, f"{status}/{override}: non-retryable response was accepted"
-                assert response.status_code == 200
+        try:
+            response = await _call_session_create(
+                anthropic_module,
+                transport_module,
+                decide,
+                asynchronous=asynchronous,
+                max_retries=2,
+                raw=True,
+            )
+        except anthropic_module.APIStatusError as error:
+            assert not retries, f"{status}/{override}: retryable response was rejected"
+            assert error.status_code == status
+        else:
+            assert retries, f"{status}/{override}: non-retryable response was accepted"
+            assert response.status_code == 200
         assert len(attempts) == (3 if retries else 1), (
             f"{status}/{override}: exact retry bound"
         )
@@ -234,18 +331,36 @@ def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: A
         return transport_module.Response(200, request=request, json={})
 
     key = "python-managed-retry-identity"
-    with anthropic_module.Anthropic(
-        api_key="retry-contract",  # awaken-allow: secret
-        http_client=transport_module.Client(transport=transport_module.MockTransport(transient)),
+    response = await _call_session_create(
+        anthropic_module,
+        transport_module,
+        transient,
+        asynchronous=asynchronous,
         max_retries=1,
-    ) as client:
-        response = client.beta.sessions.with_raw_response.create(
-            agent="fixture",
-            environment_id="fixture",
-            extra_headers={"idempotency-key": key},
-        )
-        assert response.status_code == 200
+        raw=True,
+        extra_headers={"idempotency-key": key},
+    )
+    assert response.status_code == 200
     assert len(attempts) == 2
     first, second = attempts
     assert (first.method, first.url, first.content) == (second.method, second.url, second.content)
     assert first.headers["idempotency-key"] == second.headers["idempotency-key"] == key
+
+
+def exercise_error_and_retry_contract(anthropic_module: Any, transport_module: Any) -> None:
+    asyncio.run(_exercise_error_and_retry_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=False,
+    ))
+
+
+async def exercise_async_error_and_retry_contract(
+    anthropic_module: Any,
+    transport_module: Any,
+) -> None:
+    await _exercise_error_and_retry_contract_for_mode(
+        anthropic_module,
+        transport_module,
+        asynchronous=True,
+    )
