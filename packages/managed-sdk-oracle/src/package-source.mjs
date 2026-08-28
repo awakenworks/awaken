@@ -4,6 +4,14 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 
+export function pathBelongsToRoot(root, candidate) {
+  const remainder = path.relative(path.resolve(root), path.resolve(candidate));
+  return remainder.length > 0
+    && remainder !== '..'
+    && !remainder.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(remainder);
+}
+
 export function sdkPackageFromRoot(root) {
   const manifestPath = path.join(root, 'package.json');
   if (!fs.existsSync(manifestPath)) {

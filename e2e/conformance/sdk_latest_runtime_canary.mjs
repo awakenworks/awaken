@@ -4,9 +4,15 @@
 // topologies that own each resource family.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
@@ -41,6 +47,13 @@ const packageRoot = process.env.ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT;
 assert.ok(packageRoot, 'ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT is required');
 const manifest = JSON.parse(readFileSync(resolve(packageRoot, 'package.json'), 'utf8'));
 const { default: Anthropic, toFile } = await import(pathToFileURL(resolve(packageRoot, 'index.mjs')));
+const {
+  accumulateManagedAgentsEvent,
+} = await import(pathToFileURL(resolve(packageRoot, 'lib/sessions/accumulate.mjs')));
+const {
+  betaAgentToolset20260401,
+  setupSkills,
+} = await import(pathToFileURL(resolve(packageRoot, 'tools/agent-toolset/node.mjs')));
 const scope = JSON.parse(readFileSync(
   resolve(REPO, 'packages/managed-sdk-oracle/config/scope.json'),
   'utf8',
@@ -72,6 +85,9 @@ const candidateReceipts = [];
 const candidateRecordingFetch = recordingFetch(
   globalThis.fetch.bind(globalThis),
   (receipt) => candidateReceipts.push(receipt),
+);
+const runtimeChanged = (runtimePath) => candidateDelta.runtime.changed.some(
+  ({ path }) => path === runtimePath,
 );
 const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
@@ -114,6 +130,11 @@ function assertCandidateFilesTransport(input, init) {
     assert.deepEqual(selectors, [], 'T1 post-GA Beta root omits the retired capability');
   }
   assert.equal(request.headers.get('x-api-key'), 'transport-only', 'T1 SDK authentication header');
+  assert.equal(
+    request.headers.get('user-agent'),
+    `Anthropic/JS ${manifest.version}`,
+    'T1 exact candidate self-identification',
+  );
 }
 
 async function exerciseSdkCoreTransport() {
@@ -185,6 +206,159 @@ async function exerciseSdkCoreTransport() {
   assert.deepEqual(await drain(retrying.beta.files.list({ limit: 1 })), [], 'T3 page decode');
   assert.equal(attempts, 3, 'T3 candidate retry bound');
   pass(`registry SDK ${manifest.version} preserves Managed core transport semantics`);
+}
+
+async function exerciseSdkHelperRuntime() {
+  // Dependency-closure cause/effect graph: C1 candidate Session accumulation,
+  // C2 Agent Toolset, C3 cross-realm fetch errors, and C4 SSE parsing may change
+  // without changing a Managed HTTP operation or declaration. Effects: E1 the
+  // known message snapshot is canonical and a future event is non-destructive;
+  // E2 every tool remains registered and a bounded range can read a large file;
+  // E3 foreign AbortError is classified as a timeout; E4 malformed SSE uses the
+  // configured logger. A changed implementation runs its enduring behavior
+  // assertion; unchanged implementations still run their shared smoke path.
+  let accumulated = accumulateManagedAgentsEvent(undefined, {
+    type: 'event_start',
+    event: { id: 'message_candidate', type: 'agent.message' },
+  });
+  accumulated = accumulateManagedAgentsEvent(accumulated, {
+    type: 'event_delta',
+    event_id: 'message_candidate',
+    delta: { index: 0, content: { type: 'text', text: 'candidate' } },
+  });
+  assert.equal(accumulated.content[0].text, 'candidate', 'H1 known Session accumulation');
+  if (runtimeChanged('lib/sessions/accumulate.mjs')) {
+    const future = { type: 'session.future_event', id: 'future_candidate' };
+    assert.equal(
+      accumulateManagedAgentsEvent(accumulated, future),
+      accumulated,
+      'H1 unknown future event preserves the accumulated snapshot',
+    );
+  }
+
+  const workdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-toolset-'));
+  try {
+    const tools = betaAgentToolset20260401({ workdir, maxFileBytes: 32 });
+    assert.deepEqual(
+      tools.map(({ name }) => name).sort(),
+      ['bash', 'edit', 'glob', 'grep', 'read', 'write'],
+      'H2 complete Agent Toolset registration',
+    );
+    if (runtimeChanged('tools/agent-toolset/node.mjs')) {
+      const lines = Array.from({ length: 40 }, (_, index) => `line-${String(index + 1).padStart(2, '0')}`);
+      writeFileSync(join(workdir, 'large.txt'), lines.join('\n'));
+      const read = tools.find(({ name }) => name === 'read');
+      const edit = tools.find(({ name }) => name === 'edit');
+      assert.equal(
+        await read.run({ file_path: 'large.txt', view_range: [20, 20] }),
+        'line-20',
+        'H2 bounded range streams one line from an over-limit file',
+      );
+      await assert.rejects(
+        () => read.run({ file_path: 'large.txt' }),
+        /exceeds 32-byte limit/u,
+        'H2 whole over-limit read fails closed',
+      );
+      await assert.rejects(
+        () => read.run({ file_path: 'large.txt', view_range: [1] }),
+        /view_range must be \[start_line, end_line\]/u,
+        'H2 malformed range fails before filesystem work',
+      );
+      await assert.rejects(
+        () => edit.run({ file_path: 'large.txt', old_string: 'line', new_string: 'changed' }),
+        /exceeds 32-byte limit/u,
+        'H2 edit retains its whole-file safety bound',
+      );
+    }
+  } finally {
+    rmSync(workdir, { recursive: true, force: true });
+  }
+
+  if (runtimeChanged('internal/errors.mjs')) {
+    const foreignAbort = {
+      name: 'AbortError',
+      message: 'foreign abort',
+      [Symbol.toStringTag]: 'DOMException',
+    };
+    const client = new Anthropic({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL: 'https://managed.invalid',
+      maxRetries: 0,
+      fetch: async (input, init) => {
+        assertCandidateFilesTransport(input, init);
+        throw foreignAbort;
+      },
+    });
+    await assert.rejects(
+      () => client.beta.files.retrieveMetadata('file_transport'),
+      (error) => error instanceof Anthropic.APIConnectionTimeoutError,
+      'H3 cross-realm DOMException is classified as a timeout',
+    );
+  }
+
+  if (runtimeChanged('internal/uploads.mjs')) {
+    const requestUrls = [];
+    const client = new Anthropic({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL: 'https://managed.invalid',
+      maxRetries: 0,
+      fetch: async (input) => {
+        const url = input instanceof Request ? input.url : String(input);
+        requestUrls.push(url);
+        if (url === 'data:,') return new Response('');
+        throw new Error('invalid upload reached transport');
+      },
+    });
+    const create = (files) => client.beta.skills.create({
+      ...(betaSkills.projection === 'beta'
+        ? { display_title: 'Invalid Upload' }
+        : { display_name: 'Invalid Upload' }),
+      files,
+    });
+    await assert.rejects(
+      () => create([new Uint8Array([1])]),
+      /wrap them with `await toFile/u,
+      'H5 raw bytes explain the strongly typed upload path',
+    );
+    await assert.rejects(
+      () => create([Promise.resolve(new Blob(['content']))]),
+      /await it first/u,
+      'H5 unresolved upload Promise explains the missing await',
+    );
+    assert.ok(
+      requestUrls.every((url) => url === 'data:,'),
+      'H5 invalid upload values fail before API transport',
+    );
+  }
+
+  if (runtimeChanged('core/middleware.mjs') || runtimeChanged('internal/parse.mjs')) {
+    const errors = [];
+    const logger = {
+      debug() {},
+      info() {},
+      warn() {},
+      error(...values) { errors.push(values); },
+    };
+    const client = new Anthropic({
+      apiKey: 'transport-only', // awaken-allow: secret
+      baseURL: 'https://managed.invalid',
+      logger,
+      logLevel: 'debug',
+      maxRetries: 0,
+      fetch: async () => new Response('event: agent.message\ndata: {invalid\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    });
+    const stream = await client.beta.sessions.events.stream('session_transport');
+    await assert.rejects(async () => {
+      for await (const event of stream) void event;
+    }, SyntaxError, 'H4 malformed candidate SSE fails parsing');
+    assert.ok(
+      errors.some((values) => values.some((value) => String(value).includes('{invalid'))),
+      'H4 configured logger receives malformed SSE evidence',
+    );
+  }
+  pass(`registry SDK ${manifest.version} preserves Managed helper dependency semantics`);
 }
 
 async function exerciseBetaFiles(client) {
@@ -268,6 +442,18 @@ async function exerciseBetaSkills(client) {
   // S1->E1+E3; S2->E2+E3. The operation signature is the only discriminator.
   const document = '---\nname: latest-beta-canary\ndescription: first\n---\nFirst.';
   const revised = '---\nname: latest-beta-canary\ndescription: second\n---\nSecond.';
+  if (runtimeChanged('internal/uploads.mjs')) {
+    await assert.rejects(
+      () => client.beta.skills.create({
+        ...(betaSkills.projection === 'beta'
+          ? { display_title: 'Bare Blob' }
+          : { display_name: 'Bare Blob' }),
+        files: [new Blob([document], { type: 'text/markdown' })],
+      }),
+      managedError(400, 'invalid_request_error', /SKILL\.md/u),
+      'S0 candidate bare Blob crosses multipart encoding and fails at bundle validation',
+    );
+  }
   const skill = await client.beta.skills.create({
     ...(betaSkills.projection === 'beta'
       ? { display_title: 'Latest Beta Canary' }
@@ -500,6 +686,25 @@ async function exerciseBetaGaRecovery() {
       skill_id: skill.id,
     });
     assert.match(await archive.text(), /Recovered\./u, 'P3/E5 immutable Version bytes');
+    if (runtimeChanged('tools/agent-toolset/skills.mjs')) {
+      const helperWorkdir = mkdtempSync(resolve(tmpdir(), 'awaken-candidate-skill-helper-'));
+      try {
+        const cleanup = await setupSkills({
+          client,
+          session: {
+            agent: { skills: [{ type: 'custom', skill_id: skill.id, version: 'latest' }] },
+          },
+          workdir: helperWorkdir,
+        });
+        const installed = join(helperWorkdir, 'skills', 'candidate-recovery', 'SKILL.md');
+        assert.equal(existsSync(installed), true, 'P3/E5 setupSkills resolves latest after restart');
+        assert.match(readFileSync(installed, 'utf8'), /Recovered\./u, 'P3/E5 helper archive bytes');
+        await cleanup();
+        assert.equal(existsSync(installed), false, 'P3/E5 helper cleanup removes its installation');
+      } finally {
+        rmSync(helperWorkdir, { recursive: true, force: true });
+      }
+    }
     await client.files.delete(file.id);
     await client.skills.delete(skill.id);
     await assert.rejects(
@@ -521,6 +726,7 @@ async function exerciseBetaGaRecovery() {
 }
 
 await exerciseSdkCoreTransport();
+await exerciseSdkHelperRuntime();
 
 await withRealServer('echo', 38190, async (baseURL) => {
   // Cause/effect graph: C0=Session Event send returns one exact durable
@@ -562,6 +768,20 @@ await withRealServer('echo', 38190, async (baseURL) => {
     );
     assert.ok(events.some((event) => event.type === 'agent.message'));
     assert.ok(events.some((event) => event.type === 'session.status_idle'));
+    let replaySnapshot;
+    let replaySawMessage = false;
+    const replay = await client.beta.sessions.events.stream(session.id);
+    for await (const event of replay) {
+      replaySnapshot = accumulateManagedAgentsEvent(replaySnapshot, event);
+      if (event.type === 'agent.message') replaySawMessage = true;
+      if (replaySawMessage && event.type === 'session.status_idle') break;
+    }
+    assert.equal(
+      replaySnapshot?.type,
+      'agent.message',
+      'R1 candidate SSE and accumulator reconstruct the canonical Agent message',
+    );
+    assert.ok(replaySnapshot.content.length > 0, 'R1 accumulated Agent message is non-empty');
   } finally {
     await client.beta.sessions.delete(session.id);
   }
@@ -704,5 +924,6 @@ console.log(
   + 'typescript=pass, '
   + `resource_operations=${coveredCandidateOperations}, `
   + `operation_changes=${candidateDelta.operations.changed.length}, `
-  + `declaration_changes=${candidateDelta.declarations.changed.length}.`,
+  + `declaration_changes=${candidateDelta.declarations.changed.length}, `
+  + `runtime_changes=${candidateDelta.runtime.changed.length}.`,
 );

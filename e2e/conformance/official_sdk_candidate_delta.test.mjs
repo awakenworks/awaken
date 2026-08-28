@@ -25,6 +25,19 @@ test('candidate delta ownership fails closed outside exercised change points', (
         { path: 'beta/webhooks.d.ts' },
       ],
     },
+    runtime: {
+      ...empty(),
+      changed: [
+        { path: 'core/middleware.mjs' },
+        { path: 'internal/uploads.mjs' },
+        { path: 'lib/sessions/accumulate.mjs' },
+        { path: 'resources/beta/files.mjs' },
+        { path: 'resources/beta/skills/versions.mjs' },
+        { path: 'resources/beta/webhooks.mjs' },
+        { path: 'tools/agent-toolset/node.mjs' },
+        { path: 'version.mjs' },
+      ],
+    },
   };
   assert.doesNotThrow(() => assertLatestRuntimeOwnsCandidateDelta(owned), 'D1/E1');
 
@@ -33,6 +46,8 @@ test('candidate delta ownership fails closed outside exercised change points', (
     { ...owned, operations: { ...empty(), changed: [{ id: 'beta.sessions.create' }] } },
     { ...owned, declarations: { ...empty(), added: [{ path: 'beta/files/new.d.ts' }] } },
     { ...owned, declarations: { ...empty(), changed: [{ path: 'beta/sessions.d.ts' }] } },
+    { ...owned, runtime: { ...empty(), added: [{ path: 'lib/new-helper.mjs' }] } },
+    { ...owned, runtime: { ...empty(), changed: [{ path: 'lib/tools/SessionToolRunner.mjs' }] } },
   ];
   for (const delta of rejected) {
     assert.throws(() => assertLatestRuntimeOwnsCandidateDelta(delta), undefined, 'D2/E2');

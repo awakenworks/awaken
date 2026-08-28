@@ -1,6 +1,7 @@
 import { realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { resolve } from 'node:path';
 import ts from 'typescript';
+import { pathBelongsToRoot } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 
 function filesFixture(projection) {
   if (projection === 'beta') {
@@ -65,14 +66,6 @@ function skillsFixture(projection) {
   throw new Error(`unsupported Skills projection ${JSON.stringify(projection)}`);
 }
 
-export function pathBelongsToPackage(packageRoot, resolvedModule) {
-  const remainder = relative(resolve(packageRoot), resolve(resolvedModule));
-  return remainder.length > 0
-    && remainder !== '..'
-    && !remainder.startsWith(`..${sep}`)
-    && !isAbsolute(remainder);
-}
-
 export function officialSdkChangePointFixture({
   filesProjection,
   skillsProjection,
@@ -80,11 +73,21 @@ export function officialSdkChangePointFixture({
 }) {
   return `// Generated in memory by official_sdk_change_point_compile.mjs.
 import Anthropic, { toFile } from '@anthropic-ai/sdk';
+import { accumulateManagedAgentsEvent } from '@anthropic-ai/sdk/lib/sessions/accumulate';
+import {
+  betaAgentToolset20260401,
+  setupSkills,
+} from '@anthropic-ai/sdk/tools/agent-toolset/node';
 
 const client = new Anthropic({ apiKey: 'compile-only' }); // awaken-allow: secret
 
 async function exerciseChangePoints() {
   const upload = await toFile(new Uint8Array([1]), 'fixture.txt');
+  const tools = betaAgentToolset20260401({ workdir: '/tmp' });
+  const toolNames: string[] = tools.map(({ name }) => name);
+  await setupSkills({ workdir: '/tmp' });
+  const accumulate: typeof accumulateManagedAgentsEvent = accumulateManagedAgentsEvent;
+  void toolNames; void accumulate;
 ${filesFixture(filesProjection)}
 ${skillsFixture(skillsProjection)}
   client.beta.webhooks.unwrap('{}', { headers: {
@@ -146,7 +149,7 @@ export function compileOfficialSdkChangePoints(packageRoot, profile) {
   }
   const canonicalRoot = realpathSync(packageRoot);
   const canonicalModule = realpathSync(resolvedSdk.resolvedFileName);
-  if (!pathBelongsToPackage(canonicalRoot, canonicalModule)) {
+  if (!pathBelongsToRoot(canonicalRoot, canonicalModule)) {
     throw new Error(
       `candidate TypeScript resolved @anthropic-ai/sdk outside ${canonicalRoot}: ${canonicalModule}`,
     );

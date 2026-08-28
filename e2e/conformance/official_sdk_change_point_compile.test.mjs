@@ -3,8 +3,8 @@ import test from 'node:test';
 
 import {
   officialSdkChangePointFixture,
-  pathBelongsToPackage,
 } from './official_sdk_change_point_compile.mjs';
+import { pathBelongsToRoot } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 
 test('candidate compilation cannot resolve declarations from a sibling or parent SDK', () => {
   // Cause/effect table: C1 resolution is inside the explicit package root;
@@ -13,19 +13,19 @@ test('candidate compilation cannot resolve declarations from a sibling or parent
   // admissible. This prevents a missing candidate declaration from silently
   // compiling against the workspace's pinned SDK and producing a false green.
   const root = '/candidate/node_modules/@anthropic-ai/sdk';
-  assert.equal(pathBelongsToPackage(root, `${root}/index.d.mts`), true, 'C1');
-  assert.equal(pathBelongsToPackage(root, `${root}-old/index.d.mts`), false, 'C2');
+  assert.equal(pathBelongsToRoot(root, `${root}/index.d.mts`), true, 'C1');
+  assert.equal(pathBelongsToRoot(root, `${root}-old/index.d.mts`), false, 'C2');
   assert.equal(
-    pathBelongsToPackage(root, '/candidate/node_modules/@anthropic-ai/sdk/index.d.mts'),
+    pathBelongsToRoot(root, '/candidate/node_modules/@anthropic-ai/sdk/index.d.mts'),
     true,
     'C1 normalized',
   );
   assert.equal(
-    pathBelongsToPackage(root, '/candidate/node_modules/@anthropic-ai/index.d.mts'),
+    pathBelongsToRoot(root, '/candidate/node_modules/@anthropic-ai/index.d.mts'),
     false,
     'C3',
   );
-  assert.equal(pathBelongsToPackage(root, root), false, 'C4');
+  assert.equal(pathBelongsToRoot(root, root), false, 'C4');
 });
 
 test('candidate compile fixtures are projection-complete and contain no escape hatch', () => {
@@ -46,6 +46,8 @@ test('candidate compile fixtures are projection-complete and contain no escape h
   assert.match(ga, /skill\.latest_version_id;/u, 'T2/E2');
   assert.match(ga, /parseUnverified/u, 'T2/E3');
   for (const fixture of [beta, ga]) {
+    assert.match(fixture, /betaAgentToolset20260401/u, 'Managed helper subpath compiles');
+    assert.match(fixture, /accumulateManagedAgentsEvent/u, 'Session accumulator subpath compiles');
     assert.doesNotMatch(fixture, /\bany\b|\sas\s|@ts-/u, 'E4');
   }
   assert.throws(

@@ -7,6 +7,8 @@
       "id": "oldest",
       "operation_fingerprint": "8bc30a783ba309bdce3e06789b4e81b6a6f16ecf4b6a7f6899da6395475f0278",
       "role": "oldest_supported",
+      "runtime_file_count": 97,
+      "runtime_fingerprint": "d796c2cd6c77244cd6345b09d4e70feea15464ba5b62e5012b21b4961e34bf56",
       "type_fingerprint": "79faa0f29c5d662b04adffe4ecee271b38aad1ab1e34a9176b81d6c09cfaac60",
       "version": "0.105.0"
     },
@@ -15,6 +17,8 @@
       "id": "user_profiles_legacy",
       "operation_fingerprint": "27be4854aeec7f7a211fbd3eed32f54bb0e150760372c88b1ae495217c19207e",
       "role": "protocol_change_point",
+      "runtime_file_count": 104,
+      "runtime_fingerprint": "427157fd63fb784c6396fddd9fa381fba9bd1d6b1d1d9ec95ab5ebfe3f8f23a0",
       "type_fingerprint": "e9ee37dc895914efcd87e51da6d4cca350b07ec9b6849ab799c772eacd5deb4f",
       "version": "0.117.1"
     },
@@ -23,6 +27,8 @@
       "id": "current",
       "operation_fingerprint": "0d85e4b43ed7e5720dbdb77340afd3e7ebeffa0967d19b3a0b4af8dd8abd6189",
       "role": "current_oracle",
+      "runtime_file_count": 112,
+      "runtime_fingerprint": "885483af1fdc09315dea9181c6bb1a03bdd2dfc2fa017c639547e0a5c2d8be1c",
       "type_fingerprint": "174d7580d6270f178dfd0f49b4029fc6341522d1734af58045466c8bdc524b88",
       "version": "0.122.0"
     }

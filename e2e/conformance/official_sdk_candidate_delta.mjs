@@ -4,6 +4,9 @@ import {
 import {
   managedTypeFingerprintFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-types.mjs';
+import {
+  managedRuntimeFingerprintFromPackageRoot,
+} from '../../packages/managed-sdk-oracle/src/extract-runtime.mjs';
 
 function changedEntries(current, candidate, key) {
   const before = new Map(current.map((entry) => [entry[key], entry]));
@@ -25,11 +28,14 @@ export function officialSdkCandidateDelta(currentRoot, candidateRoot, scope) {
   const candidateOperations = extractOperationsFromPackageRoot(candidateRoot, scope);
   const currentTypes = managedTypeFingerprintFromPackageRoot(currentRoot, scope);
   const candidateTypes = managedTypeFingerprintFromPackageRoot(candidateRoot, scope);
+  const currentRuntime = managedRuntimeFingerprintFromPackageRoot(currentRoot, scope);
+  const candidateRuntime = managedRuntimeFingerprintFromPackageRoot(candidateRoot, scope);
   return Object.freeze({
     currentVersion: currentOperations.version,
     candidateVersion: candidateOperations.version,
     operations: changedEntries(currentOperations.operations, candidateOperations.operations, 'id'),
     declarations: changedEntries(currentTypes.files, candidateTypes.files, 'path'),
+    runtime: changedEntries(currentRuntime.files, candidateRuntime.files, 'path'),
   });
 }
 
@@ -56,5 +62,22 @@ export function assertLatestRuntimeOwnsCandidateDelta(delta) {
   );
   if (unsupportedDeclaration) {
     throw new Error(`${unsupportedDeclaration.path} changed outside the latest runtime canary`);
+  }
+  if (delta.runtime.added.length > 0 || delta.runtime.removed.length > 0) {
+    throw new Error('candidate adds or removes Managed runtime dependencies; add explicit behavior ownership');
+  }
+  const runtimeOwners = [
+    /^(?:core\/middleware|internal\/(?:errors|parse|uploads))\.mjs$/u,
+    /^lib\/sessions\/accumulate\.mjs$/u,
+    /^resources\/beta\/(?:files|webhooks)\.mjs$/u,
+    /^resources\/beta\/skills\/(?:skills|versions)\.mjs$/u,
+    /^tools\/agent-toolset\/(?:node|skills)\.mjs$/u,
+    /^version\.mjs$/u,
+  ];
+  const unsupportedRuntime = delta.runtime.changed.find(
+    ({ path }) => !runtimeOwners.some((owner) => owner.test(path)),
+  );
+  if (unsupportedRuntime) {
+    throw new Error(`${unsupportedRuntime.path} changed outside the latest runtime canary`);
   }
 }

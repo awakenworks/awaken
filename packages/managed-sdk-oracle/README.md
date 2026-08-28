@@ -36,6 +36,12 @@ evidence from drifting from the external expectation:
   the GA Files, Models, and Skills namespaces. Strict TypeScript checks the
   arguments while runtime assertions bind the exact method, normalized path,
   `beta=true` transport selector, and capability set.
+- The generated oracle also fingerprints the transitive `.mjs` dependency
+  closure rooted at the supported resources, Client, Session accumulator,
+  EnvironmentWorker, Agent Toolset, and typed helper entrypoints. Shared client
+  implementation drift can therefore not hide behind unchanged operations or
+  declarations; unrelated Messages/Organization modules remain outside the
+  Managed claim.
 - `e2e/conformance/run_managed_sdk_behavior_owners.mjs` executes every distinct
   real-process owner and records completed, non-5xx official-SDK HTTP exchanges.
   It fails unless all current HTTP operations are observed with their exact
@@ -112,6 +118,11 @@ one durable store. A shared transport receipt encoder requires every discovered
 Beta Files/Skills operation to reach a real non-5xx resource response with its
 exact method, route, selector, capability, and official-SDK marker; 401/403
 policy failures cannot impersonate resource-owner coverage. The runner also
-executes every webhook parser exposed by that SDK. It never chooses behavior
-from a version-number table, uses type escape hatches, or silently falls back to
-the installed current anchor.
+executes every webhook parser exposed by that SDK. Changes in the Managed
+runtime dependency closure additionally activate tests for Session SSE
+accumulation and forward-compatible events, Agent Toolset registration and
+bounded file reads, `setupSkills("latest")` after process replacement, bare-Blob
+multipart admission, invalid-upload diagnostics, cross-realm aborts, configured
+SSE logging, and exact SDK self-identification. It never chooses behavior from a
+version-number table, uses type escape hatches, or silently falls back to the
+installed current anchor.

@@ -21,6 +21,13 @@
     "models",
     "skills"
   ],
+  "managed_runtime_entrypoints": [
+    "index.mjs",
+    "helpers/beta/zod.mjs",
+    "lib/environments/index.mjs",
+    "lib/sessions/accumulate.mjs",
+    "tools/agent-toolset/node.mjs"
+  ],
   "documented_routes": [
     {
       "id": "documented.skills.versions.retrieveFile",

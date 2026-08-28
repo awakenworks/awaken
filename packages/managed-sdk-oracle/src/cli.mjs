@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 
 import { extractOperations } from './extract-operations.mjs';
 import { managedTypeFingerprint, managedWireContract } from './extract-types.mjs';
+import { managedRuntimeFingerprint } from './extract-runtime.mjs';
 import { stableJson } from './normalize.mjs';
 import { operationCoverage, surfaceFixture } from './coverage.mjs';
 
@@ -32,6 +33,7 @@ function generated() {
   const extracted = anchors.anchors.map((anchor) => {
     const sdk = extractOperations(anchor.module, scope);
     const types = managedTypeFingerprint(anchor.module, scope);
+    const runtime = managedRuntimeFingerprint(anchor.module, scope);
     assert.ok(sdk.operations.length > 0, `${anchor.id} extracted no Managed operations`);
     return {
       id: anchor.id,
@@ -41,6 +43,8 @@ function generated() {
       operation_fingerprint: fingerprint(sdk.operations),
       type_fingerprint: types.fingerprint,
       declaration_file_count: types.file_count,
+      runtime_fingerprint: runtime.fingerprint,
+      runtime_file_count: runtime.file_count,
       operations: sdk.operations,
     };
   });
@@ -66,6 +70,8 @@ function generated() {
       operation_fingerprint: anchor.operation_fingerprint,
       type_fingerprint: anchor.type_fingerprint,
       declaration_file_count: anchor.declaration_file_count,
+      runtime_fingerprint: anchor.runtime_fingerprint,
+      runtime_file_count: anchor.runtime_file_count,
       only_in_anchor: anchor.operations.filter(({ id }) => !currentById.has(id)),
       only_in_current: currentOracle.operations
         .filter(({ id }) => !anchorIds.has(id))
@@ -90,6 +96,8 @@ function generated() {
           operation_fingerprint,
           type_fingerprint,
           declaration_file_count,
+          runtime_fingerprint,
+          runtime_file_count,
         }) => ({
           id,
           role,
@@ -97,6 +105,8 @@ function generated() {
           operation_fingerprint,
           type_fingerprint,
           declaration_file_count,
+          runtime_fingerprint,
+          runtime_file_count,
         }),
       ),
     }),
