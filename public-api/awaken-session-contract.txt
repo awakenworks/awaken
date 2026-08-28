@@ -1122,6 +1122,7 @@ pub fn awaken_session_contract::PersistedSession::archived_at(&self) -> core::op
 pub fn awaken_session_contract::PersistedSession::begin_activity_epoch(&mut self) -> core::option::Option<u64>
 pub fn awaken_session_contract::PersistedSession::begin_activity_epoch_at(&mut self, u64) -> bool
 pub fn awaken_session_contract::PersistedSession::complete_terminal_cleanup(&mut self, &[awaken_session_contract::VerifiedSessionCleanupReceipt], impl core::convert::Into<alloc::string::String>) -> core::result::Result<bool, awaken_session_contract::SessionCleanupError>
+pub fn awaken_session_contract::PersistedSession::configured_mcp_servers(&self) -> alloc::vec::Vec<awaken_session_contract::VisibleMcpServer>
 pub fn awaken_session_contract::PersistedSession::ensure_terminal_cleanup_fence(&mut self) -> bool
 pub fn awaken_session_contract::PersistedSession::environment_id(&self) -> &str
 pub fn awaken_session_contract::PersistedSession::freeze_terminal_cleanup_targets(&mut self, impl core::iter::traits::collect::IntoIterator<Item = alloc::string::String>, u64, u64) -> core::result::Result<bool, awaken_session_contract::SessionCleanupError>
@@ -1310,7 +1311,6 @@ pub awaken_session_contract::SessionCleanupCommand::thread_id: alloc::string::St
 impl awaken_session_contract::SessionCleanupCommand
 pub fn awaken_session_contract::SessionCleanupCommand::new(&str, &str, &str) -> Self
 pub struct awaken_session_contract::SessionCleanupCompletion
-pub awaken_session_contract::SessionCleanupCompletion::artifact_bundle_receipts: alloc::vec::Vec<awaken_resource_contract::execution::ArtifactBundleCompletionReceipt>
 pub awaken_session_contract::SessionCleanupCompletion::artifact_receipts: alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>
 pub awaken_session_contract::SessionCleanupCompletion::effect_id: alloc::string::String
 pub awaken_session_contract::SessionCleanupCompletion::receipt_fingerprint: alloc::string::String
@@ -1318,8 +1318,9 @@ pub awaken_session_contract::SessionCleanupCompletion::session_id: alloc::string
 pub awaken_session_contract::SessionCleanupCompletion::thread_id: alloc::string::String
 impl awaken_session_contract::SessionCleanupCompletion
 pub fn awaken_session_contract::SessionCleanupCompletion::new(&awaken_session_contract::SessionCleanupCommand, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>) -> Self
-pub fn awaken_session_contract::SessionCleanupCompletion::new_with_artifact_bundles(&awaken_session_contract::SessionCleanupCommand, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactPublicationReceipt>, alloc::vec::Vec<awaken_resource_contract::execution::ArtifactBundleCompletionReceipt>) -> Self
 pub fn awaken_session_contract::SessionCleanupCompletion::verify(&self, &awaken_session_contract::SessionCleanupCommand) -> core::result::Result<awaken_session_contract::VerifiedSessionCleanupReceipt, awaken_session_contract::SessionCleanupError>
+impl<'de> serde_core::de::Deserialize<'de> for awaken_session_contract::SessionCleanupCompletion
+pub fn awaken_session_contract::SessionCleanupCompletion::deserialize<D>(D) -> core::result::Result<Self, <D as serde_core::de::Deserializer>::Error> where D: serde_core::de::Deserializer<'de>
 pub struct awaken_session_contract::SessionCreationIntent
 pub awaken_session_contract::SessionCreationIntent::control: awaken_session_contract::ControlSessionCreationInputs
 impl awaken_session_contract::SessionCreationIntent
