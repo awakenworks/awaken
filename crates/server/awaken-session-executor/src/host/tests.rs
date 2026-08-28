@@ -1842,6 +1842,7 @@ async fn managed_user_run_reservation_precedes_physical_environment_realization(
                         "application:test-session-envelope/v1".to_string(),
                     ]),
                 },
+                replacement: awaken_session_contract::SessionRunReplacement::PreservePrior,
             })
             .await
             .expect("R1 reservation"),

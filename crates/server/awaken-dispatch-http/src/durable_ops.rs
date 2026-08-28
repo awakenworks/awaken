@@ -3,6 +3,9 @@
 use awaken_agent_contract::agent::content::extract_text;
 use awaken_agent_contract::agent::message::{Id as MessageId, Message, Role};
 use awaken_dispatch::{ApplicationError, ApplicationErrorKind, DurableRunOperations};
+use awaken_session_contract::{
+    RunErrorKind, SessionRunBackgroundApplication, SessionRunReplacementApplication,
+};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::routing::{get, post};
@@ -14,17 +17,58 @@ use std::sync::Arc;
 /// The durable operations router. Mounted on every server; each route fails
 /// closed with 400 when the server is not in durable mode.
 pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router {
+    durable_ops_router_with_session_commands(
+        application.clone(),
+        BackgroundApplication::Legacy(application.clone()),
+        SupersedeApplication::Legacy(application),
+    )
+}
+
+/// Compose the operational query/control verbs with the canonical Session
+/// replacement application. Only this constructor may expose newest-wins for a
+/// Session root; the legacy constructor remains available to isolated queue
+/// adapters and tests whose Threads are not Session aggregates.
+pub fn durable_ops_router_with_session_admission(
+    application: Arc<dyn DurableRunOperations>,
+    background: Arc<dyn SessionRunBackgroundApplication>,
+    supersede: Arc<dyn SessionRunReplacementApplication>,
+) -> Router {
+    durable_ops_router_with_session_commands(
+        application.clone(),
+        BackgroundApplication::Session(background),
+        SupersedeApplication::Session {
+            application: supersede,
+            operations: application,
+        },
+    )
+}
+
+#[derive(Clone)]
+enum BackgroundApplication {
+    Legacy(Arc<dyn DurableRunOperations>),
+    Session(Arc<dyn SessionRunBackgroundApplication>),
+}
+
+#[derive(Clone)]
+enum SupersedeApplication {
+    Legacy(Arc<dyn DurableRunOperations>),
+    Session {
+        application: Arc<dyn SessionRunReplacementApplication>,
+        operations: Arc<dyn DurableRunOperations>,
+    },
+}
+
+fn durable_ops_router_with_session_commands(
+    application: Arc<dyn DurableRunOperations>,
+    background_application: BackgroundApplication,
+    supersede_application: SupersedeApplication,
+) -> Router {
     Router::new()
-        .route(
-            "/v1/durable/threads/{thread}/submit_background",
-            post(submit_background),
-        )
         .route("/v1/durable/threads/{thread}/cancel", post(cancel))
         .route("/v1/durable/threads/{thread}/pause", post(pause))
         .route("/v1/durable/threads/{thread}/resume", post(resume))
         .route("/v1/durable/threads/{thread}/wake", post(wake))
         .route("/v1/durable/threads/{thread}/deliver", post(deliver))
-        .route("/v1/durable/threads/{thread}/supersede", post(supersede))
         .route("/v1/durable/threads/{thread}/superseded", get(superseded))
         .route("/v1/durable/threads/{thread}/dispatches", get(dispatches))
         .route("/v1/durable/threads/{thread}/messages", get(messages))
@@ -46,10 +90,23 @@ pub fn durable_ops_router(application: Arc<dyn DurableRunOperations>) -> Router 
             post(purge),
         )
         .with_state(application)
+        .merge(
+            Router::new()
+                .route(
+                    "/v1/durable/threads/{thread}/submit_background",
+                    post(submit_background),
+                )
+                .with_state(background_application),
+        )
+        .merge(
+            Router::new()
+                .route("/v1/durable/threads/{thread}/supersede", post(supersede))
+                .with_state(supersede_application),
+        )
 }
 
 async fn submit_background(
-    State(application): State<Arc<dyn DurableRunOperations>>,
+    State(application): State<BackgroundApplication>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
@@ -66,13 +123,38 @@ async fn submit_background(
                 Role::User,
                 text,
             );
-            let run_id = application
-                .submit_background(agent, &thread, vec![message])
-                .await?;
+            let operation_id = message.id.0.clone();
+            let run_id = match application {
+                BackgroundApplication::Legacy(application) => {
+                    application
+                        .submit_background(agent, &thread, vec![message])
+                        .await?
+                }
+                BackgroundApplication::Session(application) => {
+                    application
+                        .submit_session_run_background(
+                            &operation_id,
+                            &thread,
+                            agent.map(str::to_string),
+                            vec![message],
+                        )
+                        .await
+                        .map_err(map_run_error)?
+                        .0
+                }
+            };
             Ok(json!({ "run_id": run_id, "queued": true }))
         }
         .await,
     )
+}
+
+fn map_run_error(error: awaken_session_contract::RunError) -> ApplicationError {
+    match error.kind {
+        RunErrorKind::BadRequest => ApplicationError::invalid(error.message),
+        RunErrorKind::Unavailable => ApplicationError::unavailable(error.message),
+        RunErrorKind::Internal => ApplicationError::internal(error.message),
+    }
 }
 
 /// Cancel a run by id via the durable live-control seam (ADR-0018): live channel
@@ -172,7 +254,7 @@ async fn deliver(
 }
 
 async fn supersede(
-    State(application): State<Arc<dyn DurableRunOperations>>,
+    State(application): State<SupersedeApplication>,
     Path(thread): Path<String>,
     Json(body): Json<Value>,
 ) -> (StatusCode, Json<Value>) {
@@ -189,11 +271,35 @@ async fn supersede(
                 Role::User,
                 text,
             );
-            let outcome = application.supersede(agent, &thread, vec![message]).await?;
-            Ok(json!({
-                "state": outcome.state,
-                "superseded": outcome.superseded,
-            }))
+            match application {
+                SupersedeApplication::Legacy(application) => {
+                    let outcome = application.supersede(agent, &thread, vec![message]).await?;
+                    Ok(json!({
+                        "state": outcome.state,
+                        "superseded": outcome.superseded,
+                    }))
+                }
+                SupersedeApplication::Session {
+                    application,
+                    operations,
+                } => {
+                    let operation_id = message.id.0.clone();
+                    let outcome = application
+                        .supersede_session_run(
+                            &operation_id,
+                            &thread,
+                            agent.map(str::to_string),
+                            vec![message],
+                        )
+                        .await
+                        .map_err(map_run_error)?;
+                    let superseded = operations.superseded(&thread).await?;
+                    Ok(json!({
+                        "state": format!("{:?}", outcome.state()),
+                        "superseded": superseded,
+                    }))
+                }
+            }
         }
         .await,
     )

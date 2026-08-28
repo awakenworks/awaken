@@ -20,6 +20,7 @@ pub use awaken_runtime_contract::{
     AttemptCredentialBinding, CandidateFingerprint, CredentialRealizationReceipt,
     CredentialReceiptError, verify_credential_realization_receipt,
 };
+pub use awaken_session_contract::SessionRunReplacement;
 pub use awaken_worker_contract::{
     AssignmentRejection, ExecutionLocation, HOST_EXECUTOR_CAPABILITY, LeastLoadedPolicy,
     PREFERRED_ENVIRONMENT_SHAPE_ATTRIBUTE, PROVIDER_CREDENTIAL_SOURCE_CAPABILITY, PlacementContext,
@@ -42,7 +43,8 @@ pub use dispatch::{
     DispatchSettlementObserver, DispatchState, DispatchSummary, Inbox, Lease, Outbox, PendingInput,
     PendingRecord, RunClaim, SessionChildAdmission, SessionRunReservationActivation,
     SessionRunReservationOutcome, SessionRunReservationResolution, SettleOutcome, SubmitOptions,
-    compile_attempt_credential_bindings, worker_credential_realization_capabilities,
+    compile_attempt_credential_bindings, session_run_replacement_candidate_is_safe,
+    worker_credential_realization_capabilities,
 };
 pub use dispatch_transition::{
     CancelTransition, DispatchTransition, DispatchTransitionError, GuardedTransition,
