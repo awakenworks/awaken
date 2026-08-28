@@ -101,6 +101,10 @@ ANTHROPIC_SDK_RUNTIME_PACKAGE_ROOT=/absolute/path/to/node_modules/@anthropic-ai/
 The runner reads the candidate's generated operation source. For Beta Files and
 Skills it requires every operation to agree on `beta=true` and its endpoint
 capability, derives the historical-Beta or GA wire projection from that request
-signature, and then executes both Beta-namespace and GA lifecycles. It also runs
-every webhook parser exposed by that SDK. It never chooses behavior from a
-version-number table or silently falls back to the installed current anchor.
+signature, strictly type-checks all changed methods against that exact package,
+and then executes both Beta-namespace and GA lifecycles. The runtime proof covers
+cursor traversal, rejected mutations, missing/deleted identities, immutable
+version archives, cross-root identity, and a real process restart over one
+durable store. It also runs every webhook parser exposed by that SDK. It never
+chooses behavior from a version-number table, uses type escape hatches, or
+silently falls back to the installed current anchor.

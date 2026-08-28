@@ -4,14 +4,21 @@
 // topologies that own each resource family.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { extractOperationsFromPackageRoot } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
+  availablePort,
   pass,
+  realServerEnv,
+  spawnServer,
+  startUpstream,
+  stopServer,
   waitForSessionEventReceipt,
+  waitForPort,
   withRealServer,
   withScenarioServer,
 } from '../harness.mjs';
@@ -20,6 +27,7 @@ import {
   assertLatestRuntimeOwnsCandidateDelta,
   officialSdkCandidateDelta,
 } from './official_sdk_candidate_delta.mjs';
+import { compileOfficialSdkChangePoints } from './official_sdk_change_point_compile.mjs';
 import { exerciseOfficialWebhookContract } from './official_webhook_contract.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -45,12 +53,30 @@ assertLatestRuntimeOwnsCandidateDelta(candidateDelta);
 const { operations } = extractOperationsFromPackageRoot(packageRoot, scope);
 const betaFiles = officialBetaResourceProjection(operations, 'files');
 const betaSkills = officialBetaResourceProjection(operations, 'skills');
+const MISSING_FILE_ID = 'file_missing';
 const webhookProfile = exerciseOfficialWebhookContract(Anthropic);
+compileOfficialSdkChangePoints(packageRoot, {
+  filesProjection: betaFiles.projection,
+  skillsProjection: betaSkills.projection,
+  parseUnverified: webhookProfile.parseUnverified,
+});
 
 async function drain(pagePromise) {
   const rows = [];
   for await (const row of pagePromise) rows.push(row);
   return rows;
+}
+
+function managedError(status, kind, messagePattern) {
+  return (error) => {
+    assert.ok(error instanceof Anthropic.APIError, `${status}: official SDK APIError`);
+    assert.equal(error.status, status, `${status}: HTTP status`);
+    assert.equal(error.error?.type, 'error', `${status}: Anthropic error envelope`);
+    assert.equal(error.error?.error?.type, kind, `${status}: Anthropic error kind`);
+    assert.equal(typeof error.error?.error?.message, 'string', `${status}: error message`);
+    if (messagePattern) assert.match(error.error.error.message, messagePattern);
+    return true;
+  };
 }
 
 async function exerciseBetaFiles(client) {
@@ -65,6 +91,10 @@ async function exerciseBetaFiles(client) {
     file: await toFile(Buffer.from(manifest.version), 'latest-beta.txt'),
     ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
   });
+  const peer = await client.beta.files.upload({
+    file: await toFile(Buffer.from('peer'), 'latest-beta-peer.txt'),
+    ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
+  });
   assert.equal(file.type, 'file', 'F1/F2 shared File identity');
   assert.equal(file.filename, 'latest-beta.txt', 'F1/F2 metadata');
   if (betaFiles.projection === 'beta') {
@@ -74,19 +104,51 @@ async function exerciseBetaFiles(client) {
     assert.equal(Object.hasOwn(file, 'scope'), false, 'F2/E7');
   }
   assert.equal((await client.beta.files.retrieveMetadata(file.id)).id, file.id, 'F1/F2 retrieve');
-  const listed = await drain(client.beta.files.list(
-    betaFiles.projection === 'ga' ? { ids: [file.id, 'file_missing'] } : {},
-  ));
-  assert.ok(listed.some(({ id }) => id === file.id), 'F1/F2 list');
+  const listed = await drain(client.beta.files.list({ limit: 1 }));
+  assert.deepEqual(
+    new Set(listed.map(({ id }) => id)),
+    new Set([file.id, peer.id]),
+    'F1/F2 cursor traversal returns every File exactly once',
+  );
   if (betaFiles.projection === 'ga') {
-    assert.deepEqual(listed.map(({ id }) => id), [file.id], 'F2/E7 ids[]');
+    const selected = await drain(client.beta.files.list({ ids: [file.id, MISSING_FILE_ID] }));
+    assert.deepEqual(selected.map(({ id }) => id), [file.id], 'F2/E7 ids[]');
+    await assert.rejects(
+      async () => client.beta.files.upload({
+        file: await toFile(Buffer.from('invalid'), 'invalid-expiry.txt'),
+        expires_in_seconds: 3_599,
+      }),
+      managedError(400, 'invalid_request_error'),
+      'F2 invalid expiry fails before mutation',
+    );
+    await assert.rejects(
+      () => drain(client.beta.files.list({ ids: [file.id], limit: 1 })),
+      managedError(400, 'invalid_request_error'),
+      'F2 mutually exclusive pagination selectors fail closed',
+    );
   }
   await assert.rejects(
+    () => client.beta.files.retrieveMetadata(MISSING_FILE_ID),
+    managedError(404, 'not_found_error'),
+    'F1/F2 unknown File metadata',
+  );
+  await assert.rejects(
     () => client.beta.files.download(file.id),
-    (error) => error?.status === 400 && String(error).includes('not downloadable'),
+    managedError(400, 'invalid_request_error', /not downloadable/u),
     'F1/F2 input download policy',
   );
   assert.equal((await client.beta.files.delete(file.id)).type, 'file_deleted', 'F1/F2 delete');
+  await assert.rejects(
+    () => client.beta.files.retrieveMetadata(file.id),
+    managedError(404, 'not_found_error'),
+    'F1/F2 deleted File stays absent',
+  );
+  await assert.rejects(
+    () => client.beta.files.delete(file.id),
+    managedError(404, 'not_found_error'),
+    'F1/F2 repeated delete is not falsely idempotent',
+  );
+  await client.beta.files.delete(peer.id);
 }
 
 async function exerciseBetaSkills(client) {
@@ -118,9 +180,38 @@ async function exerciseBetaSkills(client) {
     assert.equal(Object.hasOwn(skill, 'display_title'), false, 'S2/E2');
   }
   assert.equal((await client.beta.skills.retrieve(skill.id)).id, skill.id, 'S1/S2 retrieve');
-  assert.ok(
-    (await drain(client.beta.skills.list())).some(({ id }) => id === skill.id),
-    'S1/S2 list',
+  await assert.rejects(
+    async () => client.beta.skills.create({
+      ...(betaSkills.projection === 'beta'
+        ? { display_title: 'Duplicate' }
+        : { display_name: 'Duplicate' }),
+      files: [await toFile(Buffer.from(document), 'SKILL.md')],
+    }),
+    managedError(409, 'conflict_error'),
+    'S1/S2 duplicate durable Skill identity',
+  );
+  const peerDocument = '---\nname: latest-beta-peer\ndescription: peer\n---\nPeer.';
+  const peer = await client.beta.skills.create({
+    ...(betaSkills.projection === 'beta'
+      ? { display_title: 'Latest Beta Peer' }
+      : { display_name: 'Latest Beta Peer' }),
+    files: [await toFile(Buffer.from(peerDocument), 'SKILL.md')],
+  });
+  const skills = await drain(client.beta.skills.list({ limit: 1 }));
+  assert.deepEqual(
+    new Set(skills.map(({ id }) => id)),
+    new Set([skill.id, peer.id]),
+    'S1/S2 Skill cursor traversal returns every identity exactly once',
+  );
+  await assert.rejects(
+    () => client.beta.skills.retrieve('skill_missing'),
+    managedError(404, 'not_found_error'),
+    'S1/S2 unknown Skill',
+  );
+  await assert.rejects(
+    () => drain(client.beta.skills.versions.list('skill_missing')),
+    managedError(404, 'not_found_error'),
+    'S1/S2 unknown Skill Version collection',
   );
 
   const version = await client.beta.skills.versions.create(skill.id, {
@@ -133,20 +224,123 @@ async function exerciseBetaSkills(client) {
     skill.id,
     'S1/S2 version retrieve',
   );
-  const versions = await drain(client.beta.skills.versions.list(skill.id));
-  assert.ok(versions.some((item) => (
-    betaSkills.projection === 'beta' ? item.version : item.id
-  ) === versionReference), 'S1/S2 version list');
+  const versions = await drain(client.beta.skills.versions.list(skill.id, { limit: 1 }));
+  assert.deepEqual(
+    new Set(versions.map((item) => (
+      betaSkills.projection === 'beta' ? item.version : item.id
+    ))),
+    new Set([firstVersion, versionReference]),
+    'S1/S2 Version cursor traversal returns every identity exactly once',
+  );
   const archive = await client.beta.skills.versions.download(versionReference, {
     skill_id: skill.id,
   });
   assert.match(await archive.text(), /Second\./u, 'S1/S2 archive download');
+  await assert.rejects(
+    () => client.beta.skills.versions.retrieve('version_missing', { skill_id: skill.id }),
+    managedError(404, 'not_found_error'),
+    'S1/S2 unknown immutable Version',
+  );
+  await assert.rejects(
+    () => client.beta.skills.versions.download('version_missing', { skill_id: skill.id }),
+    managedError(404, 'not_found_error'),
+    'S1/S2 unknown Version archive',
+  );
   assert.equal(
     (await client.beta.skills.versions.delete(firstVersion, { skill_id: skill.id })).type,
     'skill_version_deleted',
     'S1/S2 version delete',
   );
+  await assert.rejects(
+    () => client.beta.skills.versions.delete(firstVersion, { skill_id: skill.id }),
+    managedError(404, 'not_found_error'),
+    'S1/S2 retired Version stays absent',
+  );
+  await assert.rejects(
+    () => client.beta.skills.versions.delete(versionReference, { skill_id: skill.id }),
+    managedError(400, 'invalid_request_error'),
+    'S1/S2 last live Version protects the aggregate invariant',
+  );
   assert.equal((await client.beta.skills.delete(skill.id)).type, 'skill_deleted', 'S1/S2 delete');
+  await assert.rejects(
+    () => client.beta.skills.delete(skill.id),
+    managedError(404, 'not_found_error'),
+    'S1/S2 repeated Skill delete',
+  );
+  await client.beta.skills.delete(peer.id);
+}
+
+async function exerciseBetaGaRecovery() {
+  // Cause/effect graph: C1 the candidate Beta root selects its generated wire
+  // projection; C2 GA and Beta roots address one File/Skill identity authority;
+  // C3 process B opens the exact durable directory committed by process A.
+  // Effects: E1 both roots observe the same ids before restart; E2 GA reads the
+  // Beta-created aggregates after restart; E3 the Beta-only archive operation
+  // still reads immutable Version bytes; E4 deletion through GA is immediately
+  // visible through Beta. Decision rule P1 C1+C2+C3->E1+E2+E3+E4. This catches
+  // an accidental projection-specific repository, memory-only success, stale
+  // cache resurrection, or route adapter that changes identity across restart.
+  const storageDir = mkdtempSync(resolve(tmpdir(), 'awaken-managed-sdk-recovery-'));
+  const port = await availablePort(38192);
+  const upstream = await startUpstream('mcp');
+  const servers = [];
+  const environment = {
+    SESSION_DEPLOYMENT_STORAGE_DIR: storageDir,
+    ...realServerEnv('mcp', upstream, { mode: 'management' }),
+  };
+  const clientFor = (baseURL) => new Anthropic({ apiKey: 'e2e-dummy', baseURL });
+  try {
+    const a = spawnServer('management', port, environment);
+    servers.push(a.server);
+    await waitForPort(port, 900_000, a.server);
+    let client = clientFor(a.baseUrl);
+    const file = await client.beta.files.upload({
+      file: await toFile(Buffer.from(`recovery-${manifest.version}`), 'recovery.txt'),
+      ...(betaFiles.projection === 'ga' ? { expires_in_seconds: 3_600 } : {}),
+    });
+    const body = '---\nname: candidate-recovery\ndescription: restart proof\n---\nRecovered.';
+    const skill = await client.beta.skills.create({
+      ...(betaSkills.projection === 'beta'
+        ? { display_title: 'Candidate Recovery' }
+        : { display_name: 'Candidate Recovery' }),
+      files: [await toFile(Buffer.from(body), 'SKILL.md')],
+    });
+    const versionReference = betaSkills.projection === 'beta'
+      ? skill.latest_version
+      : skill.latest_version_id;
+    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P1/E1 File');
+    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P1/E1 Skill');
+
+    await stopServer(a.server);
+    servers.pop();
+    const b = spawnServer('management', port, environment);
+    servers.push(b.server);
+    await waitForPort(port, 900_000, b.server);
+    client = clientFor(b.baseUrl);
+    assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id, 'P1/E2 File');
+    assert.equal((await client.skills.retrieve(skill.id)).id, skill.id, 'P1/E2 Skill');
+    const archive = await client.beta.skills.versions.download(versionReference, {
+      skill_id: skill.id,
+    });
+    assert.match(await archive.text(), /Recovered\./u, 'P1/E3 immutable Version bytes');
+    await client.files.delete(file.id);
+    await client.skills.delete(skill.id);
+    await assert.rejects(
+      () => client.beta.files.retrieveMetadata(file.id),
+      managedError(404, 'not_found_error'),
+      'P1/E4 File deletion crosses roots',
+    );
+    await assert.rejects(
+      () => client.beta.skills.retrieve(skill.id),
+      managedError(404, 'not_found_error'),
+      'P1/E4 Skill deletion crosses roots',
+    );
+    pass(`registry SDK ${manifest.version} preserves Beta-created Files/Skills across restart`);
+  } finally {
+    for (const server of servers) await stopServer(server);
+    upstream.close();
+    rmSync(storageDir, { recursive: true, force: true });
+  }
 }
 
 await withRealServer('echo', 38190, async (baseURL) => {
@@ -220,12 +414,12 @@ await withRealServer('echo', 38190, async (baseURL) => {
   });
   assert.equal(file.type, 'file', 'R3/E3');
   assert.equal(typeof file.expires_at, 'string', 'R3/E4 expiry');
-  const files = await client.files.list({ ids: [file.id, 'file_missing'] });
+  const files = await client.files.list({ ids: [file.id, MISSING_FILE_ID] });
   assert.deepEqual(files.data.map((item) => item.id), [file.id], 'R3/E5 ids[]');
   assert.equal((await client.files.retrieveMetadata(file.id)).id, file.id);
   await assert.rejects(
     () => client.files.download(file.id),
-    (error) => error?.status === 400 && String(error).includes('not downloadable'),
+    managedError(400, 'invalid_request_error', /not downloadable/u),
     'R3 uploaded inputs remain non-downloadable through the latest GA client',
   );
   await client.files.delete(file.id);
@@ -298,10 +492,13 @@ await withScenarioServer('management', 'mcp', 38191, async (baseURL) => {
   pass(`registry SDK ${manifest.version} runs UserProfile default beta`);
 });
 
+await exerciseBetaGaRecovery();
+
 console.log(
   `SDK LATEST RUNTIME CANARY PASS: @anthropic-ai/sdk ${manifest.version}; `
   + `beta.files=${betaFiles.projection}, beta.skills=${betaSkills.projection}, `
   + `parseUnverified=${webhookProfile.parseUnverified}, `
+  + 'typescript=pass, '
   + `operation_changes=${candidateDelta.operations.changed.length}, `
   + `declaration_changes=${candidateDelta.declarations.changed.length}.`,
 );
