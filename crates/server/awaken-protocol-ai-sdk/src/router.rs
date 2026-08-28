@@ -4,7 +4,6 @@
 //! project the committed step into a UI Message Stream SSE response. No runtime or
 //! protocol logic lives here beyond routing and framing.
 
-use std::collections::HashSet;
 use std::convert::Infallible;
 use std::sync::Arc;
 
@@ -117,19 +116,22 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
         .clone()
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty());
-    let known_ids: HashSet<String> = match &peek {
+    let committed_history = match &peek {
         Some(thread) => match rt.history(thread).await {
-            Ok(history) => history.into_iter().map(|message| message.id.0).collect(),
+            Ok(history) => history,
             Err(error) => return sse_error(error),
         },
-        None => HashSet::new(),
+        None => Vec::new(),
     };
 
-    let processed = process_request(payload, &known_ids);
+    let processed = match process_request(payload, &committed_history) {
+        Ok(processed) => processed,
+        Err(error) => return sse_error(RunApplicationError::bad_request(error.to_string())),
+    };
     let thread = processed.thread_id.clone();
     let operation_id = processed.operation_id.clone();
 
-    if processed.messages.is_empty() {
+    if processed.is_resume_only() {
         // RunResume answers an awaiting tool decision — a single committed step, framed
         // whole (no in-flight model output to stream).
         match resume_step(&rt, &operation_id, &thread, &processed.decisions).await {
@@ -144,9 +146,10 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
             }
             Err(response) => response,
         }
-    } else {
+    } else if !processed.messages.is_empty() {
         // A fresh turn: stream the engine's live progress as it runs, then append
-        // the committed authoritative tail.
+        // the committed authoritative tail. The message may be the known latest
+        // operation replay; Session Run admission owns its exact/conflict decision.
         stream_turn(
             rt,
             operation_id,
@@ -154,6 +157,10 @@ async fn run(rt: Runtime, payload: AiSdkChatRequest) -> Response {
             processed.agent_id,
             processed.messages,
         )
+    } else {
+        sse_error(RunApplicationError::bad_request(
+            "AI SDK request contains neither a turn nor a tool decision",
+        ))
     }
 }
 

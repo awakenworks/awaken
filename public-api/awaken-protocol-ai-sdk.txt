@@ -17,6 +17,11 @@ pub awaken_protocol_ai_sdk::request::DecisionKind::Approved
 pub awaken_protocol_ai_sdk::request::DecisionKind::Denied
 pub awaken_protocol_ai_sdk::request::DecisionKind::Error(alloc::string::String)
 pub awaken_protocol_ai_sdk::request::DecisionKind::Output(serde_json::value::Value)
+pub enum awaken_protocol_ai_sdk::request::ProcessError
+pub awaken_protocol_ai_sdk::request::ProcessError::CommittedRoleConflict(alloc::string::String)
+pub awaken_protocol_ai_sdk::request::ProcessError::DuplicateHistoryId(alloc::string::String)
+pub awaken_protocol_ai_sdk::request::ProcessError::EmptyOperation
+pub awaken_protocol_ai_sdk::request::ProcessError::InputCardinality
 pub struct awaken_protocol_ai_sdk::request::Decision
 pub awaken_protocol_ai_sdk::request::Decision::kind: awaken_protocol_ai_sdk::request::DecisionKind
 pub awaken_protocol_ai_sdk::request::Decision::tool_call_id: alloc::string::String
@@ -28,7 +33,7 @@ pub awaken_protocol_ai_sdk::request::ProcessedRequest::operation_id: alloc::stri
 pub awaken_protocol_ai_sdk::request::ProcessedRequest::thread_id: alloc::string::String
 impl awaken_protocol_ai_sdk::request::ProcessedRequest
 pub fn awaken_protocol_ai_sdk::request::ProcessedRequest::is_resume_only(&self) -> bool
-pub fn awaken_protocol_ai_sdk::request::process_request(awaken_protocol_ai_sdk::types::AiSdkChatRequest, &std::collections::hash::set::HashSet<alloc::string::String>) -> awaken_protocol_ai_sdk::request::ProcessedRequest
+pub fn awaken_protocol_ai_sdk::request::process_request(awaken_protocol_ai_sdk::types::AiSdkChatRequest, &[awaken_agent_contract::agent::message::Message]) -> core::result::Result<awaken_protocol_ai_sdk::request::ProcessedRequest, awaken_protocol_ai_sdk::request::ProcessError>
 pub fn awaken_protocol_ai_sdk::request::result_text(&serde_json::value::Value) -> alloc::string::String
 pub mod awaken_protocol_ai_sdk::router
 pub fn awaken_protocol_ai_sdk::router::router(alloc::sync::Arc<dyn awaken_session_contract::run_application::RunApplication>) -> axum::routing::Router
