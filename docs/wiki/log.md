@@ -1,5 +1,23 @@
 # Wiki Update Log
 
+## 2026-08-28 — Close the Sandbox signature/attestation retry boundary
+
+- Kept the release workflow, provenance module, registry resolver, and static
+  checker as the only publication owners; no second schema, ledger, publisher,
+  or compatibility path was added.
+- Classified the image signature independently from the Open provenance
+  predicate. Exact pinned-Cosign absence permits one signature write followed
+  by a registry requery; one exact verified signature is reused, while
+  malformed, multiple, mismatched, or query-error evidence fails closed.
+- Made a crash after signing but before attesting converge as `S1/P0`: retry
+  performs no second signature write and creates only the missing predicate.
+  Predicate presence never substitutes for a signature, and an existing release
+  tag still requires both exact facts plus a final immutable-tag read.
+- Extended the causal self-test and publisher mutation matrix for exact absence,
+  bundle/legacy representations, duplicate or drifting evidence, missing
+  post-sign requery, and signature-bypass attempts. This record does not claim
+  a live GHCR publication.
+
 ## 2026-08-28 — Prove Sandbox staging before release-tag promotion
 
 - Kept the existing Sandbox build script, release workflow, strict predicate,

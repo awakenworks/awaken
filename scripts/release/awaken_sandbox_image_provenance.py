@@ -25,7 +25,11 @@ PREDICATE_TYPE = (
 # A cosign upgrade must change this contract and its causal tests together;
 # silently accepting another statement shape would hide supply-chain drift.
 IN_TOTO_STATEMENT_TYPE = "https://in-toto.io/Statement/v0.1"
+IN_TOTO_STATEMENT_V1 = "https://in-toto.io/Statement/v1"
 DSSE_PAYLOAD_TYPE = "application/vnd.in-toto+json"
+COSIGN_BUNDLE_MEDIA_TYPE = "application/vnd.dev.sigstore.bundle.v0.3+json"
+COSIGN_SIGNATURE_PREDICATE_TYPE = "https://sigstore.dev/cosign/sign/v1"
+LEGACY_COSIGN_SIGNATURE_TYPE = "cosign container image signature"
 SOURCE_REPOSITORY = "https://github.com/awakenworks/awaken"
 SOURCE_REPOSITORY_SLUG = "awakenworks/awaken"
 IMAGE_REPOSITORY = "ghcr.io/awakenworks/awaken-sandbox"
@@ -34,6 +38,8 @@ MAX_ATTESTATIONS_BYTES = 4 * 1024 * 1024
 MAX_ATTESTATION_COUNT = 64
 MAX_STATEMENT_BYTES = 1024 * 1024
 MAX_RELEASE_METADATA_BYTES = 1024 * 1024
+MAX_SIGNATURE_BYTES = 4 * 1024 * 1024
+MAX_SIGNATURE_COUNT = 64
 
 REVISION_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -43,10 +49,26 @@ RELEASE_REF_RE = re.compile(
     r"(?:0|[1-9][0-9]*)"
 )
 RUN_NUMBER_RE = re.compile(r"[1-9][0-9]*")
+COSIGN_ABSENCE_TIME_RE = re.compile(
+    r"[0-9]{4}/[0-9]{2}/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}"
+)
 
 
 class ContractError(ValueError):
     """The signed provenance does not satisfy the Open-owned contract."""
+
+
+def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ContractError(f"JSON object: duplicate key {key!r}")
+        value[key] = item
+    return value
+
+
+def _strict_json_decoder() -> json.JSONDecoder:
+    return json.JSONDecoder(object_pairs_hook=_strict_object)
 
 
 def _require_exact_keys(
@@ -185,7 +207,7 @@ def _load_release_metadata(raw: bytes, location: str) -> dict[str, Any]:
     if len(raw) > MAX_RELEASE_METADATA_BYTES:
         raise ContractError(f"{location}: input exceeds the 1 MiB bound")
     try:
-        value = json.loads(raw)
+        value = json.loads(raw, object_pairs_hook=_strict_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ContractError(f"{location}: expected one UTF-8 JSON object") from error
     if not isinstance(value, dict):
@@ -241,7 +263,7 @@ def _load_json_stream(raw: bytes) -> list[Any]:
     except UnicodeDecodeError as error:
         raise ContractError("attestations: expected UTF-8 JSON") from error
 
-    decoder = json.JSONDecoder()
+    decoder = _strict_json_decoder()
     values: list[Any] = []
     index = 0
     while True:
@@ -266,52 +288,328 @@ def _load_json_stream(raw: bytes) -> list[Any]:
     return values
 
 
-def _read_attestations(path: Path) -> bytes:
+def _read_bounded_input(path: Path, *, limit: int, location: str) -> bytes:
     with path.open("rb") as source:
-        raw = source.read(MAX_ATTESTATIONS_BYTES + 1)
-    if len(raw) > MAX_ATTESTATIONS_BYTES:
-        raise ContractError("attestations: input exceeds the 4 MiB bound")
+        raw = source.read(limit + 1)
+    if len(raw) > limit:
+        raise ContractError(f"{location}: input exceeds the {limit}-byte bound")
     return raw
+
+
+def _read_attestations(path: Path) -> bytes:
+    return _read_bounded_input(
+        path, limit=MAX_ATTESTATIONS_BYTES, location="attestations"
+    )
 
 
 def _read_release_metadata(path: Path) -> bytes:
-    with path.open("rb") as source:
-        raw = source.read(MAX_RELEASE_METADATA_BYTES + 1)
-    if len(raw) > MAX_RELEASE_METADATA_BYTES:
-        raise ContractError("release metadata: input exceeds the 1 MiB bound")
-    return raw
+    return _read_bounded_input(
+        path, limit=MAX_RELEASE_METADATA_BYTES, location="release metadata"
+    )
 
 
-def _decode_statement(envelope: Any, index: int) -> dict[str, Any]:
+def _read_signature_input(path: Path, location: str) -> bytes:
+    return _read_bounded_input(
+        path, limit=MAX_SIGNATURE_BYTES, location=location
+    )
+
+
+def _statement_subject_digest(
+    statement: dict[str, Any], location: str, *, expected_name: str | None = None
+) -> str:
+    subject = statement["subject"]
+    if not isinstance(subject, list) or len(subject) != 1:
+        raise ContractError(f"{location}.subject: expected one subject")
+    subject_item = subject[0]
+    if not isinstance(subject_item, dict):
+        raise ContractError(f"{location}.subject[0]: expected an object")
+    if expected_name is None:
+        if not {"digest"}.issubset(subject_item) or not set(subject_item).issubset(
+            {"annotations", "digest", "name"}
+        ):
+            raise ContractError(f"{location}.subject[0]: unexpected keys")
+    else:
+        _require_exact_keys(
+            subject_item, {"digest", "name"}, f"{location}.subject[0]"
+        )
+        if subject_item["name"] != expected_name:
+            raise ContractError(f"{location}.subject[0].name: unexpected image")
+    digest = _require_exact_keys(
+        subject_item["digest"], {"sha256"}, f"{location}.subject[0].digest"
+    )
+    return f"sha256:{_require_fullmatch(DIGEST_RE, digest['sha256'], location)}"
+
+
+def _legacy_signature_record(record: dict[str, Any], location: str) -> tuple[str, str]:
     item = _require_exact_keys(
-        envelope, {"payload", "payloadType", "signatures"}, f"attestations[{index}]"
+        record,
+        {
+            "Base64Signature",
+            "Bundle",
+            "Cert",
+            "Chain",
+            "Payload",
+            "RFC3161Timestamp",
+        },
+        location,
+    )
+    signature = item["Base64Signature"]
+    payload = item["Payload"]
+    if not isinstance(signature, str) or not signature:
+        raise ContractError(f"{location}.Base64Signature: expected base64 text")
+    if not isinstance(payload, str) or not payload:
+        raise ContractError(f"{location}.Payload: expected base64 text")
+    try:
+        base64.b64decode(signature, validate=True)
+        payload_raw = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ContractError(f"{location}: invalid base64 signature record") from error
+    try:
+        claim = json.loads(payload_raw.decode("utf-8"), object_pairs_hook=_strict_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ContractError(f"{location}.Payload: invalid claim JSON") from error
+    root = _require_exact_keys(claim, {"Critical", "Optional"}, f"{location}.claim")
+    critical = _require_exact_keys(
+        root["Critical"], {"Identity", "Image", "Type"}, f"{location}.claim.Critical"
+    )
+    identity = _require_exact_keys(
+        critical["Identity"],
+        {"docker-reference"},
+        f"{location}.claim.Critical.Identity",
+    )
+    if not isinstance(identity["docker-reference"], str):
+        raise ContractError(f"{location}.claim.Critical.Identity: invalid reference")
+    if root["Optional"] is not None and not isinstance(root["Optional"], dict):
+        raise ContractError(f"{location}.claim.Optional: invalid value")
+    if critical["Type"] != LEGACY_COSIGN_SIGNATURE_TYPE:
+        raise ContractError(f"{location}.claim.Critical.Type: unexpected value")
+    image = _require_exact_keys(
+        critical["Image"],
+        {"Docker-manifest-digest"},
+        f"{location}.claim.Critical.Image",
+    )
+    digest = image["Docker-manifest-digest"]
+    if not isinstance(digest, str):
+        raise ContractError(f"{location}.claim.Critical.Image: invalid digest")
+    return "legacy", digest
+
+
+def _signature_inventory(raw: bytes) -> tuple[list[tuple[str, str]], int]:
+    if not raw:
+        return [], 0
+    if len(raw) > MAX_SIGNATURE_BYTES:
+        raise ContractError("signatures: input exceeds the 4 MiB bound")
+    if not raw.endswith(b"\n"):
+        raise ContractError("signatures: JSONL must end with LF")
+    records: list[tuple[str, str]] = []
+    lines = raw.splitlines(keepends=True)
+    if len(lines) > MAX_SIGNATURE_COUNT:
+        raise ContractError("signatures: too many registry records")
+    for index, line in enumerate(lines):
+        if line == b"\n" or not line.endswith(b"\n"):
+            raise ContractError(f"signatures[{index}]: blank or unterminated JSONL row")
+        try:
+            value = json.loads(
+                line[:-1].decode("utf-8"), object_pairs_hook=_strict_object
+            )
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ContractError(f"signatures[{index}]: invalid JSON") from error
+        if not isinstance(value, dict):
+            raise ContractError(f"signatures[{index}]: expected an object")
+        item = value
+        if "mediaType" in item:
+            bundle = _require_exact_keys(
+                item,
+                {"dsseEnvelope", "mediaType", "verificationMaterial"},
+                f"signatures[{index}]",
+            )
+            if bundle["mediaType"] != COSIGN_BUNDLE_MEDIA_TYPE:
+                raise ContractError(f"signatures[{index}].mediaType: unexpected value")
+            if not isinstance(bundle["verificationMaterial"], dict):
+                raise ContractError(
+                    f"signatures[{index}].verificationMaterial: expected an object"
+                )
+            statement = _decode_statement(
+                bundle["dsseEnvelope"], f"signatures[{index}].dsseEnvelope"
+            )
+            if statement["predicateType"] == COSIGN_SIGNATURE_PREDICATE_TYPE:
+                if statement["_type"] != IN_TOTO_STATEMENT_V1:
+                    raise ContractError(
+                        f"signatures[{index}].dsseEnvelope.statement._type: "
+                        "unexpected value"
+                    )
+                if statement["predicate"] != {}:
+                    raise ContractError(
+                        f"signatures[{index}].dsseEnvelope.statement.predicate: "
+                        "expected an empty object"
+                    )
+                records.append(
+                    (
+                        "bundle",
+                        _statement_subject_digest(
+                            statement, f"signatures[{index}].dsseEnvelope.statement"
+                        ),
+                    )
+                )
+            continue
+        records.append(_legacy_signature_record(item, f"signatures[{index}]"))
+    return records, len(lines)
+
+
+def _verified_signature_inventory(raw: bytes) -> tuple[list[tuple[str, str]], int]:
+    if len(raw) > MAX_SIGNATURE_BYTES:
+        raise ContractError("verified signatures: input exceeds the 4 MiB bound")
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ContractError("verified signatures: expected one JSON array") from error
+    if not isinstance(value, list):
+        raise ContractError("verified signatures: expected one JSON array")
+    if len(value) > MAX_SIGNATURE_COUNT:
+        raise ContractError("verified signatures: too many records")
+    records: list[tuple[str, str]] = []
+    for index, entry in enumerate(value):
+        item = _require_exact_keys(
+            entry, {"critical", "optional"}, f"verified signatures[{index}]"
+        )
+        critical = _require_exact_keys(
+            item["critical"],
+            {"identity", "image", "type"},
+            f"verified signatures[{index}].critical",
+        )
+        identity = _require_exact_keys(
+            critical["identity"],
+            {"docker-reference"},
+            f"verified signatures[{index}].critical.identity",
+        )
+        if not isinstance(identity["docker-reference"], str):
+            raise ContractError(
+                f"verified signatures[{index}].critical.identity: invalid reference"
+            )
+        if item["optional"] is not None and not isinstance(item["optional"], dict):
+            raise ContractError(f"verified signatures[{index}].optional: invalid value")
+        signature_type = critical["type"]
+        if signature_type not in {
+            COSIGN_SIGNATURE_PREDICATE_TYPE,
+            LEGACY_COSIGN_SIGNATURE_TYPE,
+        }:
+            continue
+        image = _require_exact_keys(
+            critical["image"],
+            {"docker-manifest-digest"},
+            f"verified signatures[{index}].critical.image",
+        )
+        digest = image["docker-manifest-digest"]
+        if not isinstance(digest, str):
+            raise ContractError(
+                f"verified signatures[{index}].critical.image: invalid digest"
+            )
+        records.append(
+            (
+                "bundle"
+                if signature_type == COSIGN_SIGNATURE_PREDICATE_TYPE
+                else "legacy",
+                digest,
+            )
+        )
+    return records, len(value)
+
+
+def _validate_signature_absence(error_raw: bytes, expected_image: str) -> None:
+    try:
+        error = error_raw.decode("utf-8")
+    except UnicodeDecodeError as decode_error:
+        raise ContractError("signature query: stderr must be UTF-8") from decode_error
+    expected = f"{expected_image}: no signatures associated"
+    lines = error.splitlines(keepends=True)
+    if len(lines) != 2 or any(not line.endswith("\n") for line in lines):
+        raise ContractError("signature query: unexpected absence stderr shape")
+    if lines[0] != f"Error: {expected}\n":
+        raise ContractError("signature query: unexpected absence error")
+    timed = lines[1].removesuffix("\n")
+    timestamp, separator, message = timed.partition(" ")
+    if not separator:
+        raise ContractError("signature query: missing timestamp")
+    # The Go logger emits date and time as two tokens. Split them together before
+    # matching the pinned v3.0.6 error body.
+    time_token, separator, message = message.partition(" ")
+    if (
+        not separator
+        or COSIGN_ABSENCE_TIME_RE.fullmatch(f"{timestamp} {time_token}") is None
+        or message != f"error during command execution: {expected}"
+    ):
+        raise ContractError("signature query: unexpected logged absence error")
+
+
+def publisher_signature_state(
+    *,
+    expected_image: str,
+    download_exit_code: int,
+    signatures: bytes,
+    verified_signatures: bytes,
+    download_error: bytes,
+) -> str:
+    expected_digest = f"sha256:{_parse_image(expected_image)}"
+    if download_exit_code == 1:
+        if signatures or verified_signatures:
+            raise ContractError("signature query: failed download produced output")
+        _validate_signature_absence(download_error, expected_image)
+        return "absent"
+    if download_exit_code != 0:
+        raise ContractError(
+            f"signature query: unexpected download exit {download_exit_code}"
+        )
+    if download_error:
+        raise ContractError("signature query: successful download wrote stderr")
+    raw_records, raw_total = _signature_inventory(signatures)
+    verified_records, verified_total = _verified_signature_inventory(
+        verified_signatures
+    )
+    if not raw_records and not verified_records:
+        if raw_total > 0 and verified_total > 0:
+            return "absent"
+        raise ContractError(
+            "signature query: successful download returned an empty or unverified set"
+        )
+    if len(raw_records) != 1 or len(verified_records) != 1:
+        raise ContractError(
+            "signature query: expected exactly one raw and verified image signature"
+        )
+    if raw_records[0] != verified_records[0]:
+        raise ContractError("signature query: raw and verified signatures disagree")
+    if raw_records[0][1] != expected_digest:
+        raise ContractError("signature query: signature binds another image digest")
+    return "reuse"
+
+
+def _decode_statement(envelope: Any, location: str) -> dict[str, Any]:
+    item = _require_exact_keys(
+        envelope, {"payload", "payloadType", "signatures"}, location
     )
     if item["payloadType"] != DSSE_PAYLOAD_TYPE:
-        raise ContractError(f"attestations[{index}].payloadType: unexpected value")
+        raise ContractError(f"{location}.payloadType: unexpected value")
     signatures = item["signatures"]
     if not isinstance(signatures, list) or not signatures:
-        raise ContractError(
-            f"attestations[{index}].signatures: expected a non-empty list"
-        )
+        raise ContractError(f"{location}.signatures: expected a non-empty list")
     payload = item["payload"]
     if not isinstance(payload, str):
-        raise ContractError(f"attestations[{index}].payload: expected base64 text")
+        raise ContractError(f"{location}.payload: expected base64 text")
     try:
         statement_raw = base64.b64decode(payload, validate=True)
     except (binascii.Error, ValueError) as error:
-        raise ContractError(f"attestations[{index}].payload: invalid base64") from error
+        raise ContractError(f"{location}.payload: invalid base64") from error
     if len(statement_raw) > MAX_STATEMENT_BYTES:
-        raise ContractError(f"attestations[{index}].payload: statement exceeds 1 MiB")
+        raise ContractError(f"{location}.payload: statement exceeds 1 MiB")
     try:
-        statement = json.loads(statement_raw)
+        statement = json.loads(
+            statement_raw.decode("utf-8"), object_pairs_hook=_strict_object
+        )
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise ContractError(
-            f"attestations[{index}].payload: invalid statement JSON"
-        ) from error
+        raise ContractError(f"{location}.payload: invalid statement JSON") from error
     return _require_exact_keys(
         statement,
         {"_type", "predicate", "predicateType", "subject"},
-        f"attestations[{index}].statement",
+        f"{location}.statement",
     )
 
 
@@ -328,38 +626,19 @@ def _matching_predicates(
 
     matches: list[dict[str, Any]] = []
     for index, envelope in enumerate(_load_json_stream(raw)):
-        statement = _decode_statement(envelope, index)
+        statement = _decode_statement(envelope, f"attestations[{index}]")
         if statement["predicateType"] != PREDICATE_TYPE:
             continue
         if statement["_type"] != IN_TOTO_STATEMENT_TYPE:
             raise ContractError(
                 f"attestations[{index}].statement._type: unexpected value"
             )
-        subject = statement["subject"]
-        if not isinstance(subject, list) or len(subject) != 1:
-            raise ContractError(
-                f"attestations[{index}].statement.subject: expected one subject"
-            )
-        subject_item = _require_exact_keys(
-            subject[0],
-            {"digest", "name"},
-            f"attestations[{index}].statement.subject[0]",
+        digest = _statement_subject_digest(
+            statement,
+            f"attestations[{index}].statement",
+            expected_name=IMAGE_REPOSITORY,
         )
-        if subject_item["name"] != IMAGE_REPOSITORY:
-            raise ContractError(
-                f"attestations[{index}].statement.subject[0].name: unexpected image"
-            )
-        subject_digest = _require_exact_keys(
-            subject_item["digest"],
-            {"sha256"},
-            f"attestations[{index}].statement.subject[0].digest",
-        )
-        digest = _require_fullmatch(
-            DIGEST_RE,
-            subject_digest["sha256"],
-            f"attestations[{index}].statement.subject[0].digest.sha256",
-        )
-        subject_image = f"{IMAGE_REPOSITORY}@sha256:{digest}"
+        subject_image = f"{IMAGE_REPOSITORY}@{digest}"
         if subject_image != expected_image:
             raise ContractError(
                 f"attestations[{index}].statement.subject[0].digest: unexpected digest"
@@ -432,6 +711,43 @@ def self_test() -> list[str]:
     )
     valid = _envelope(predicate, image)
 
+    signature_statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicate": {},
+        "predicateType": COSIGN_SIGNATURE_PREDICATE_TYPE,
+        "subject": [{"digest": {"sha256": "a" * 64}}],
+    }
+    signature_bundle = {
+        "mediaType": COSIGN_BUNDLE_MEDIA_TYPE,
+        "verificationMaterial": {},
+        "dsseEnvelope": {
+            "payload": base64.b64encode(canonical_bytes(signature_statement)).decode(
+                "ascii"
+            ),
+            "payloadType": DSSE_PAYLOAD_TYPE,
+            "signatures": [{"sig": "self-test"}],
+        },
+    }
+    verified_signature = {
+        "critical": {
+            "identity": {"docker-reference": image},
+            "image": {"docker-manifest-digest": f"sha256:{'a' * 64}"},
+            "type": COSIGN_SIGNATURE_PREDICATE_TYPE,
+        },
+        "optional": None,
+    }
+    signature_raw = (
+        json.dumps(signature_bundle, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    verified_raw = json.dumps([verified_signature], separators=(",", ":")).encode(
+        "utf-8"
+    )
+    absence_error = (
+        f"Error: {image}: no signatures associated\n"
+        f"2026/08/28 18:30:00 error during command execution: "
+        f"{image}: no signatures associated\n"
+    ).encode("utf-8")
+
     # Cause/effect graph:
     # verified DSSE + exact subject + exact Open predicate -> canonical bytes/digest
     # wrong image/revision/ref/workflow/schema or zero/multiple matches -> refuse
@@ -460,7 +776,254 @@ def self_test() -> list[str]:
     #   present  |       -      | missing/wrong |   *    |   *   | refuse preseed
     #   present  |       -      |     exact     | wrong  |   *   | refuse drift
     #   present  |       -      |     exact     | exact  | 0/2+  | refuse ambiguity
+    #
+    # Image-signature cause/effect graph:
+    # pinned-v3 exact-empty query -> S0; one raw image-signature record plus one
+    # exact-identity verified record for the same digest -> S1; query/schema/count/
+    # subject drift -> SX. Provenance P is independent and never substitutes for S.
+    #
+    # Decision table (the signature cases below own every rule):
+    # raw S | verified S | exact absence stderr | effect
+    #   0   |     0      | exact exit=1 pair    | absent
+    #   0   |     0      | successful non-S P  | absent
+    #   1   |     1      |          -           | reuse
+    #  2+   |     *      |          -           | refuse ambiguity
+    #   *   | 0/2+/drift |          -           | refuse mismatch
+    #   0   |     0      | generic/error drift  | refuse query failure
     failures: list[str] = []
+
+    def expect_signature_state(
+        name: str,
+        expected: str | None,
+        *,
+        exit_code: int,
+        signatures: bytes,
+        verified: bytes,
+        error: bytes = b"",
+    ) -> None:
+        try:
+            actual = publisher_signature_state(
+                expected_image=image,
+                download_exit_code=exit_code,
+                signatures=signatures,
+                verified_signatures=verified,
+                download_error=error,
+            )
+        except ContractError as contract_error:
+            if expected is not None:
+                failures.append(f"{name}: unexpected refusal: {contract_error}")
+            return
+        if expected is None:
+            failures.append(f"{name}: expected refusal")
+        elif actual != expected:
+            failures.append(f"{name}: expected {expected}, got {actual}")
+
+    expect_signature_state(
+        "exact pinned-v3 absence",
+        "absent",
+        exit_code=1,
+        signatures=b"",
+        verified=b"",
+        error=absence_error,
+    )
+    expect_signature_state(
+        "one exact bundle signature",
+        "reuse",
+        exit_code=0,
+        signatures=signature_raw,
+        verified=verified_raw,
+    )
+    for name, field, value in (
+        ("signature statement type drift", "_type", IN_TOTO_STATEMENT_TYPE),
+        ("signature predicate drift", "predicate", {"unexpected": True}),
+    ):
+        drifted_statement = copy.deepcopy(signature_statement)
+        drifted_statement[field] = value
+        drifted_bundle = copy.deepcopy(signature_bundle)
+        drifted_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+            canonical_bytes(drifted_statement)
+        ).decode("ascii")
+        expect_signature_state(
+            name,
+            None,
+            exit_code=0,
+            signatures=(
+                json.dumps(drifted_bundle, separators=(",", ":")) + "\n"
+            ).encode("utf-8"),
+            verified=verified_raw,
+        )
+
+    provenance_statement = {
+        "_type": "https://in-toto.io/Statement/v1",
+        "predicate": {},
+        "predicateType": PREDICATE_TYPE,
+        "subject": [{"digest": {"sha256": "a" * 64}}],
+    }
+    provenance_bundle = copy.deepcopy(signature_bundle)
+    provenance_bundle["dsseEnvelope"]["payload"] = base64.b64encode(
+        canonical_bytes(provenance_statement)
+    ).decode("ascii")
+    verified_provenance = copy.deepcopy(verified_signature)
+    verified_provenance["critical"]["type"] = PREDICATE_TYPE
+    mixed_raw = signature_raw + (
+        json.dumps(provenance_bundle, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    mixed_verified = json.dumps(
+        [verified_signature, verified_provenance], separators=(",", ":")
+    ).encode("utf-8")
+    expect_signature_state(
+        "signature beside independent provenance bundle",
+        "reuse",
+        exit_code=0,
+        signatures=mixed_raw,
+        verified=mixed_verified,
+    )
+    expect_signature_state(
+        "provenance does not substitute for image signature",
+        "absent",
+        exit_code=0,
+        signatures=(
+            json.dumps(provenance_bundle, separators=(",", ":")) + "\n"
+        ).encode("utf-8"),
+        verified=json.dumps([verified_provenance], separators=(",", ":")).encode(
+            "utf-8"
+        ),
+    )
+    expect_signature_state(
+        "successful empty download is not canonical absence",
+        None,
+        exit_code=0,
+        signatures=b"",
+        verified=b"[]",
+    )
+    expect_signature_state(
+        "unverified non-signature bundle is not canonical absence",
+        None,
+        exit_code=0,
+        signatures=(
+            json.dumps(provenance_bundle, separators=(",", ":")) + "\n"
+        ).encode("utf-8"),
+        verified=b"[]",
+    )
+
+    legacy_claim = {
+        "Critical": {
+            "Identity": {"docker-reference": IMAGE_REPOSITORY},
+            "Image": {"Docker-manifest-digest": f"sha256:{'a' * 64}"},
+            "Type": LEGACY_COSIGN_SIGNATURE_TYPE,
+        },
+        "Optional": None,
+    }
+    legacy_record = {
+        "Base64Signature": base64.b64encode(b"signature").decode("ascii"),
+        "Payload": base64.b64encode(canonical_bytes(legacy_claim)).decode("ascii"),
+        "Cert": None,
+        "Chain": None,
+        "Bundle": None,
+        "RFC3161Timestamp": None,
+    }
+    verified_legacy = copy.deepcopy(verified_signature)
+    verified_legacy["critical"]["type"] = LEGACY_COSIGN_SIGNATURE_TYPE
+    expect_signature_state(
+        "one exact legacy signature",
+        "reuse",
+        exit_code=0,
+        signatures=(json.dumps(legacy_record, separators=(",", ":")) + "\n").encode(
+            "utf-8"
+        ),
+        verified=json.dumps([verified_legacy], separators=(",", ":")).encode(
+            "utf-8"
+        ),
+    )
+    expect_signature_state(
+        "duplicate raw image signatures",
+        None,
+        exit_code=0,
+        signatures=signature_raw + signature_raw,
+        verified=verified_raw,
+    )
+    expect_signature_state(
+        "unbounded raw signature inventory",
+        None,
+        exit_code=0,
+        signatures=signature_raw * (MAX_SIGNATURE_COUNT + 1),
+        verified=verified_raw,
+    )
+    expect_signature_state(
+        "oversized raw signature input",
+        None,
+        exit_code=0,
+        signatures=b"x" * (MAX_SIGNATURE_BYTES + 1),
+        verified=verified_raw,
+    )
+    expect_signature_state(
+        "duplicate verified image signatures",
+        None,
+        exit_code=0,
+        signatures=signature_raw,
+        verified=json.dumps(
+            [verified_signature, verified_signature], separators=(",", ":")
+        ).encode("utf-8"),
+    )
+    wrong_verified = copy.deepcopy(verified_signature)
+    wrong_verified["critical"]["image"]["docker-manifest-digest"] = (
+        f"sha256:{'c' * 64}"
+    )
+    expect_signature_state(
+        "verified signature subject drift",
+        None,
+        exit_code=0,
+        signatures=signature_raw,
+        verified=json.dumps([wrong_verified], separators=(",", ":")).encode("utf-8"),
+    )
+    for name, error in (
+        (
+            "generic no-signatures wording",
+            b"Error: no signatures found\n"
+            b"2026/08/28 18:30:00 error during command execution: "
+            b"no signatures found\n",
+        ),
+        ("authorization failure", b"Error: unauthorized\n"),
+        ("trailing third line", absence_error + b"usage drift\n"),
+    ):
+        expect_signature_state(
+            name,
+            None,
+            exit_code=1,
+            signatures=b"",
+            verified=b"",
+            error=error,
+        )
+    expect_signature_state(
+        "successful download with stderr drift",
+        None,
+        exit_code=0,
+        signatures=signature_raw,
+        verified=verified_raw,
+        error=b"warning: output contract drifted\n",
+    )
+    expect_signature_state(
+        "noncanonical query exit",
+        None,
+        exit_code=2,
+        signatures=b"",
+        verified=b"",
+        error=b"network failure\n",
+    )
+    expect_signature_state(
+        "malformed signature JSONL",
+        None,
+        exit_code=0,
+        signatures=b"{\n",
+        verified=b"[]",
+    )
+    expect_signature_state(
+        "duplicate signature JSON key",
+        None,
+        exit_code=0,
+        signatures=b'{"mediaType":"a","mediaType":"b"}\n',
+        verified=b"[]",
+    )
 
     def expect_success(name: str, value: bytes) -> None:
         try:
@@ -675,6 +1238,16 @@ def _build_parser() -> argparse.ArgumentParser:
     validate.add_argument("--attestations", required=True, type=Path)
     validate.add_argument("--output", required=True, type=Path)
 
+    signature = subparsers.add_parser(
+        "publisher-signature-state",
+        help="classify the exact image signature as absent or reusable",
+    )
+    signature.add_argument("--image", required=True)
+    signature.add_argument("--download-exit-code", required=True, type=int)
+    signature.add_argument("--signatures", required=True, type=Path)
+    signature.add_argument("--verified-signatures", required=True, type=Path)
+    signature.add_argument("--download-error", required=True, type=Path)
+
     resolve = subparsers.add_parser(
         "resolve-manifest", help="resolve one registry manifest to its immutable image"
     )
@@ -736,6 +1309,21 @@ def main(argv: list[str] | None = None) -> int:
                 _read_release_metadata(args.metadata), expected_image=args.image
             )
             print("OK - release tag promotion retained the proven digest.")
+            return 0
+        if args.command == "publisher-signature-state":
+            print(
+                publisher_signature_state(
+                    expected_image=args.image,
+                    download_exit_code=args.download_exit_code,
+                    signatures=_read_signature_input(args.signatures, "signatures"),
+                    verified_signatures=_read_signature_input(
+                        args.verified_signatures, "verified signatures"
+                    ),
+                    download_error=_read_signature_input(
+                        args.download_error, "signature query stderr"
+                    ),
+                )
+            )
             return 0
         if args.command == "emit":
             predicate = build_predicate(
