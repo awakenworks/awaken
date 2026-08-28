@@ -5,7 +5,8 @@
 - Amended: 2026-07-04 (Slice 3/5 mechanism decisions — see Amendment);
   2026-07-24 (credential broker composition — see Amendment 2);
   2026-08-11 (Kubernetes egress-policy evidence — see Amendment 3);
-  2026-08-24 (one signed sandbox-image publisher — see Amendment 4)
+  2026-08-24 (one signed sandbox-image publisher — see Amendment 4);
+  2026-08-28 (prove immutable staging before release promotion — see Amendment 5)
 - Builds on: [ADR-0034](0034-runtime-axis-model-and-orthogonality.md) (kernel is
   sandbox-agnostic; a rooted tool is just a `RawTool`, D6),
   [ADR-0035](0035-environment-provisioning-tools-skills-resources.md)
@@ -334,3 +335,55 @@ match the emitted bytes. Any failed precondition or verification terminates
 without producing downstream release evidence. A consumer starts from the
 immutable digest and exact Open revision, verifies through this owner, and only
 then records the returned predicate digest.
+
+## Amendment 5 (2026-08-28): prove immutable staging before release promotion
+
+This amendment supersedes only Amendment 4's publication order. Building or
+pushing the semantic release tag before proof is unsafe: a crash after that
+push but before attestation leaves a release coordinate whose bytes can change
+on retry, while trusting image labels would let another package writer preseed
+spoof-labelled bytes for the release workflow to launder. Labels are therefore
+consistency evidence, never authorization, and an existing release tag without
+trusted proof is an error rather than unfinished work for this workflow.
+
+Static structure: the domain owners remain unchanged and no publisher, ledger,
+schema, or compatibility path is added. `deploy/images/sandbox/build.sh` projects the
+standard `org.opencontainers.image.source`, `.revision`, and `.version` labels
+only when release automation supplies the complete set. The sole release
+workflow owns a run-scoped staging tag, immutable-digest proof, and final tag
+promotion. `resolve_awaken_sandbox_release_image.sh` is the workflow's sole
+read-only registry adapter: it resolves a tag once, reads configuration only by
+the resulting immutable digest, and applies the existing validator. The
+existing provenance validator remains the only predicate and
+consumer interpretation owner; it also validates release labels, the one
+registry-resolved manifest digest, and promotion metadata. The static checker
+locks this dependency direction and rejects release-tag builds or pushes,
+pre-proof promotion, parallel registry writers, unbounded tag promotion, and
+weakened exact-workflow claims.
+
+Dynamic behavior has two closed paths. If the semantic tag exists, the workflow
+resolves it exactly once before any build and thereafter uses only that
+immutable digest. Reuse requires all of the following: exact OCI labels; a
+keyless image signature whose certificate has the exact repository, workflow
+identity, protected tag ref, source SHA, and `push` trigger; and exactly one
+verified predicate of the existing type whose canonical bytes bind that same
+digest, revision, tag, and workflow. Missing, wrong, conflicting, or multiple
+evidence fails without building, signing, attesting, or mutating the tag. In
+particular, this workflow never signs or completes a pre-existing unsigned
+semantic tag.
+
+If the semantic tag is absent, the canonical script builds and accepts only a
+run-scoped staging tag carrying the complete labels, pushes it, and resolves
+the pushed image through the same adapter to an immutable digest. The workflow validates labels on
+that digest, either reuses its one exact proof or keyless-signs and attests it,
+and then performs the same exact signature, attestation, exactly-one predicate,
+and canonical-byte checks. Only after those checks succeed may it promote the
+same manifest to the semantic tag. Immediately before the write, the same
+adapter requires that the tag is still absent or already names the proven
+digest; immediately after, it must name that digest with exact labels.
+Digest-preserving promotion and its metadata must name the already-proven
+digest exactly. A crash before promotion leaves no
+release tag, so retry can rebuild safely or reuse proof for an identical staged
+digest. A crash after promotion follows the existing-tag path and reuses the
+verified immutable digest. Consumers retain their strict exactly-one verified
+predicate rule throughout; publisher retry logic does not weaken it.

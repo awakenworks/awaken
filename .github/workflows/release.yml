@@ -13,6 +13,7 @@ concurrency:
 
 env:
   IMAGE_REPOSITORY: ghcr.io/awakenworks/awaken-sandbox
+  SOURCE_REPOSITORY: https://github.com/awakenworks/awaken
   PREDICATE_TYPE: https://awakenworks.com/attestations/awaken-sandbox-image-provenance/v1
   SIGSTORE_OIDC_ISSUER: https://token.actions.githubusercontent.com
   WORKFLOW_PATH: .github/workflows/release.yml
@@ -69,15 +70,12 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
 
-      - name: Build and accept the production Sandbox image
-        shell: bash
-        env:
-          RELEASE_TAG: ${{ steps.source.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-          deploy/images/sandbox/build.sh "$RELEASE_TAG"
+      - name: Install the pinned Cosign release
+        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
+        with:
+          cosign-release: v3.0.6
 
-      - name: Push once and emit exact Open provenance
+      - name: Reuse a proven release or prove staging before promotion
         id: provenance
         shell: bash
         env:
@@ -85,63 +83,157 @@ jobs:
           SOURCE_REVISION: ${{ steps.source.outputs.revision }}
         run: |
           set -euo pipefail
-          docker push "$RELEASE_TAG"
-          IMAGE="$(docker image inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$RELEASE_TAG")"
-          test -n "$IMAGE"
-          [[ "$IMAGE" != *$'\n'* ]]
-          PROVENANCE_SHA256="$(python3 scripts/release/awaken_sandbox_image_provenance.py emit \
-            --image "$IMAGE" \
-            --revision "$SOURCE_REVISION" \
-            --source-ref "$GITHUB_REF" \
-            --workflow-ref "$GITHUB_WORKFLOW_REF" \
-            --run-id "$GITHUB_RUN_ID" \
-            --run-attempt "$GITHUB_RUN_ATTEMPT" \
-            --output "$RUNNER_TEMP/awaken-sandbox-image-provenance.json")"
+          CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/${WORKFLOW_PATH}@${GITHUB_REF}"
+          STAGING_TAG="${IMAGE_REPOSITORY}:staging-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          VERIFY_IDENTITY_ARGS=(
+            --certificate-identity "$CERTIFICATE_IDENTITY"
+            --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER"
+            --certificate-github-workflow-repository "$GITHUB_REPOSITORY"
+            --certificate-github-workflow-ref "$GITHUB_REF"
+            --certificate-github-workflow-sha "$SOURCE_REVISION"
+            --certificate-github-workflow-trigger push
+          )
+
+          download_release_attestations() {
+            local image=$1 output=$2 download_error="${2}.stderr"
+            if ! cosign download attestation \
+                --predicate-type "$PREDICATE_TYPE" \
+                "$image" > "$output" 2> "$download_error"; then
+              if [[ ! -s "$output" ]] && grep -Fqi 'no attestations' "$download_error"; then
+                : > "$output"
+              else
+                cat "$download_error" >&2
+                return 1
+              fi
+            fi
+          }
+
+          verify_release_proof() {
+            local image=$1 raw_attestations=$2 prefix=$3 raw_sha256 verified_sha256
+            test -s "$raw_attestations"
+            cosign verify \
+              "${VERIFY_IDENTITY_ARGS[@]}" \
+              "$image" > "$RUNNER_TEMP/${prefix}-awaken-sandbox-image-signature.json"
+            cosign verify-attestation \
+              --type "$PREDICATE_TYPE" \
+              "${VERIFY_IDENTITY_ARGS[@]}" \
+              --output json \
+              "$image" > "$RUNNER_TEMP/${prefix}-verified-attestations.json"
+            verified_sha256="$(python3 scripts/release/awaken_sandbox_image_provenance.py \
+              validate-attestations \
+              --image "$image" \
+              --revision "$SOURCE_REVISION" \
+              --source-ref "$GITHUB_REF" \
+              --attestations "$RUNNER_TEMP/${prefix}-verified-attestations.json" \
+              --output "$RUNNER_TEMP/${prefix}-verified-awaken-sandbox-image-provenance.json")"
+            raw_sha256="$(python3 scripts/release/awaken_sandbox_image_provenance.py \
+              validate-attestations \
+              --image "$image" \
+              --revision "$SOURCE_REVISION" \
+              --source-ref "$GITHUB_REF" \
+              --attestations "$raw_attestations" \
+              --output "$RUNNER_TEMP/${prefix}-raw-awaken-sandbox-image-provenance.json")"
+            test "$raw_sha256" = "$verified_sha256"
+            cmp "$RUNNER_TEMP/${prefix}-raw-awaken-sandbox-image-provenance.json" \
+              "$RUNNER_TEMP/${prefix}-verified-awaken-sandbox-image-provenance.json"
+            cp "$RUNNER_TEMP/${prefix}-verified-awaken-sandbox-image-provenance.json" \
+              "$RUNNER_TEMP/awaken-sandbox-image-provenance.json"
+            PROVENANCE_SHA256=$verified_sha256
+          }
+
+          initial="$(scripts/release/resolve_awaken_sandbox_release_image.sh \
+            "$RELEASE_TAG" \
+            "$SOURCE_REVISION" \
+            "$GITHUB_REF" \
+            "$RUNNER_TEMP/initial-awaken-sandbox-release")"
+          case "$initial" in
+            absent) ;;
+            "present ${IMAGE_REPOSITORY}@sha256:"*)
+              IMAGE="${initial#present }"
+              download_release_attestations "$IMAGE" \
+                "$RUNNER_TEMP/existing-awaken-sandbox-image-attestations.raw.json"
+              verify_release_proof "$IMAGE" \
+                "$RUNNER_TEMP/existing-awaken-sandbox-image-attestations.raw.json" \
+                existing
+              printf 'mode=reuse\n' >> "$GITHUB_OUTPUT"
+              printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
+              printf 'sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+            *) echo "unexpected Awaken Sandbox release resolution: $initial" >&2; exit 1 ;;
+          esac
+
+          AWAKEN_SANDBOX_IMAGE_SOURCE="$SOURCE_REPOSITORY" \
+          AWAKEN_SANDBOX_IMAGE_REVISION="$SOURCE_REVISION" \
+          AWAKEN_SANDBOX_IMAGE_VERSION="$GITHUB_REF_NAME" \
+            deploy/images/sandbox/build.sh "$STAGING_TAG"
+          docker push "$STAGING_TAG"
+          staging="$(scripts/release/resolve_awaken_sandbox_release_image.sh \
+            "$STAGING_TAG" \
+            "$SOURCE_REVISION" \
+            "$GITHUB_REF" \
+            "$RUNNER_TEMP/staging-awaken-sandbox-release")"
+          case "$staging" in
+            "present ${IMAGE_REPOSITORY}@sha256:"*) IMAGE="${staging#present }" ;;
+            *) echo "staging tag did not resolve to exact published bytes" >&2; exit 1 ;;
+          esac
+          download_release_attestations "$IMAGE" \
+            "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json"
+
+          if [[ -s "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" ]]; then
+            verify_release_proof "$IMAGE" \
+              "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" \
+              staging-reuse
+          else
+            EMITTED_PROVENANCE_SHA256="$(python3 scripts/release/awaken_sandbox_image_provenance.py emit \
+              --image "$IMAGE" \
+              --revision "$SOURCE_REVISION" \
+              --source-ref "$GITHUB_REF" \
+              --workflow-ref "$GITHUB_WORKFLOW_REF" \
+              --run-id "$GITHUB_RUN_ID" \
+              --run-attempt "$GITHUB_RUN_ATTEMPT" \
+              --output "$RUNNER_TEMP/emitted-awaken-sandbox-image-provenance.json")"
+            cosign sign --yes "$IMAGE"
+            cosign attest --yes \
+              --type "$PREDICATE_TYPE" \
+              --predicate "$RUNNER_TEMP/emitted-awaken-sandbox-image-provenance.json" \
+              "$IMAGE"
+            download_release_attestations "$IMAGE" \
+              "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json"
+            verify_release_proof "$IMAGE" \
+              "$RUNNER_TEMP/staging-awaken-sandbox-image-attestations.raw.json" \
+              staging-new
+            test "$EMITTED_PROVENANCE_SHA256" = "$PROVENANCE_SHA256"
+            cmp "$RUNNER_TEMP/emitted-awaken-sandbox-image-provenance.json" \
+              "$RUNNER_TEMP/awaken-sandbox-image-provenance.json"
+          fi
+
+          before="$(scripts/release/resolve_awaken_sandbox_release_image.sh \
+            "$RELEASE_TAG" \
+            "$SOURCE_REVISION" \
+            "$GITHUB_REF" \
+            "$RUNNER_TEMP/before-awaken-sandbox-promotion")"
+          case "$before" in
+            absent)
+              docker buildx imagetools create \
+                --prefer-index=false \
+                --tag "$RELEASE_TAG" \
+                --metadata-file "$RUNNER_TEMP/awaken-sandbox-promotion-metadata.json" \
+                "$IMAGE"
+              python3 scripts/release/awaken_sandbox_image_provenance.py \
+                validate-promotion \
+                --metadata "$RUNNER_TEMP/awaken-sandbox-promotion-metadata.json" \
+                --image "$IMAGE"
+              ;;
+            "present $IMAGE") ;;
+            *) echo "release tag changed before promotion: $before" >&2; exit 1 ;;
+          esac
+          after="$(scripts/release/resolve_awaken_sandbox_release_image.sh \
+            "$RELEASE_TAG" \
+            "$SOURCE_REVISION" \
+            "$GITHUB_REF" \
+            "$RUNNER_TEMP/after-awaken-sandbox-promotion")"
+          test "$after" = "present $IMAGE"
+          printf 'mode=publish\n' >> "$GITHUB_OUTPUT"
           printf 'image=%s\n' "$IMAGE" >> "$GITHUB_OUTPUT"
           printf 'sha256=%s\n' "$PROVENANCE_SHA256" >> "$GITHUB_OUTPUT"
-
-      - name: Install the pinned Cosign release
-        uses: sigstore/cosign-installer@ba7bc0a3fef59531c69a25acd34668d6d3fe6f22 # v4.1.0
-        with:
-          cosign-release: v3.0.6
-
-      - name: Keyless-sign image and exact provenance
-        shell: bash
-        env:
-          IMAGE: ${{ steps.provenance.outputs.image }}
-        run: |
-          set -euo pipefail
-          cosign sign --yes "$IMAGE"
-          cosign attest --yes \
-            --type "$PREDICATE_TYPE" \
-            --predicate "$RUNNER_TEMP/awaken-sandbox-image-provenance.json" \
-            "$IMAGE"
-
-      - name: Verify the published image and canonical provenance
-        shell: bash
-        env:
-          IMAGE: ${{ steps.provenance.outputs.image }}
-          EXPECTED_PROVENANCE_SHA256: ${{ steps.provenance.outputs.sha256 }}
-          SOURCE_REVISION: ${{ steps.source.outputs.revision }}
-        run: |
-          set -euo pipefail
-          CERTIFICATE_IDENTITY="https://github.com/${GITHUB_REPOSITORY}/${WORKFLOW_PATH}@${GITHUB_REF}"
-          cosign verify \
-            --certificate-identity "$CERTIFICATE_IDENTITY" \
-            --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
-            "$IMAGE" > "$RUNNER_TEMP/awaken-sandbox-image-signature.json"
-          cosign verify-attestation \
-            --type "$PREDICATE_TYPE" \
-            --certificate-identity "$CERTIFICATE_IDENTITY" \
-            --certificate-oidc-issuer "$SIGSTORE_OIDC_ISSUER" \
-            --output json \
-            "$IMAGE" > "$RUNNER_TEMP/awaken-sandbox-image-attestations.json"
-          VERIFIED_PROVENANCE_SHA256="$(python3 scripts/release/awaken_sandbox_image_provenance.py \
-            validate-attestations \
-            --image "$IMAGE" \
-            --revision "$SOURCE_REVISION" \
-            --attestations "$RUNNER_TEMP/awaken-sandbox-image-attestations.json" \
-            --output "$RUNNER_TEMP/verified-awaken-sandbox-image-provenance.json")"
-          test "$VERIFIED_PROVENANCE_SHA256" = "$EXPECTED_PROVENANCE_SHA256"
-          cmp "$RUNNER_TEMP/awaken-sandbox-image-provenance.json" \
-            "$RUNNER_TEMP/verified-awaken-sandbox-image-provenance.json"

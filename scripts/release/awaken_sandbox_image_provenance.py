@@ -33,6 +33,7 @@ WORKFLOW_PATH = ".github/workflows/release.yml"
 MAX_ATTESTATIONS_BYTES = 4 * 1024 * 1024
 MAX_ATTESTATION_COUNT = 64
 MAX_STATEMENT_BYTES = 1024 * 1024
+MAX_RELEASE_METADATA_BYTES = 1024 * 1024
 
 REVISION_RE = re.compile(r"[0-9a-f]{40}")
 DIGEST_RE = re.compile(r"[0-9a-f]{64}")
@@ -77,6 +78,11 @@ def _parse_image(image: str) -> str:
         )
     digest = image[len(prefix) :]
     return _require_fullmatch(DIGEST_RE, digest, "image digest")
+
+
+def _version_from_source_ref(source_ref: str) -> str:
+    _require_fullmatch(RELEASE_REF_RE, source_ref, "source ref")
+    return source_ref.removeprefix("refs/tags/")
 
 
 def _workflow_identity(source_ref: str) -> str:
@@ -175,6 +181,58 @@ def predicate_digest(predicate: dict[str, Any]) -> str:
     return f"sha256:{hashlib.sha256(canonical_bytes(predicate)).hexdigest()}"
 
 
+def _load_release_metadata(raw: bytes, location: str) -> dict[str, Any]:
+    if len(raw) > MAX_RELEASE_METADATA_BYTES:
+        raise ContractError(f"{location}: input exceeds the 1 MiB bound")
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ContractError(f"{location}: expected one UTF-8 JSON object") from error
+    if not isinstance(value, dict):
+        raise ContractError(f"{location}: expected an object")
+    return value
+
+
+def resolve_image_manifest(raw: bytes) -> str:
+    manifest = _load_release_metadata(raw, "manifest")
+    digest_value = manifest.get("digest")
+    if not isinstance(digest_value, str) or not digest_value.startswith("sha256:"):
+        raise ContractError("manifest.digest: expected sha256:<64 lowercase hex>")
+    digest = _require_fullmatch(
+        DIGEST_RE, digest_value.removeprefix("sha256:"), "manifest.digest"
+    )
+    return f"{IMAGE_REPOSITORY}@sha256:{digest}"
+
+
+def validate_image_labels(
+    raw: bytes, *, expected_revision: str, expected_source_ref: str
+) -> None:
+    labels = _load_release_metadata(raw, "image labels")
+    _require_fullmatch(REVISION_RE, expected_revision, "expected revision")
+    expected = {
+        "org.opencontainers.image.source": SOURCE_REPOSITORY,
+        "org.opencontainers.image.revision": expected_revision,
+        "org.opencontainers.image.version": _version_from_source_ref(
+            expected_source_ref
+        ),
+    }
+    for name, value in expected.items():
+        if labels.get(name) != value:
+            raise ContractError(f"image labels.{name}: unexpected value")
+
+
+def validate_promotion_metadata(raw: bytes, *, expected_image: str) -> None:
+    expected_digest = _parse_image(expected_image)
+    metadata = _load_release_metadata(raw, "promotion metadata")
+    descriptor = metadata.get("containerimage.descriptor")
+    if not isinstance(descriptor, dict):
+        raise ContractError("promotion metadata: missing containerimage.descriptor")
+    if descriptor.get("digest") != f"sha256:{expected_digest}":
+        raise ContractError(
+            "promotion metadata.containerimage.descriptor.digest: unexpected digest"
+        )
+
+
 def _load_json_stream(raw: bytes) -> list[Any]:
     if len(raw) > MAX_ATTESTATIONS_BYTES:
         raise ContractError("attestations: input exceeds the 4 MiB bound")
@@ -216,6 +274,14 @@ def _read_attestations(path: Path) -> bytes:
     return raw
 
 
+def _read_release_metadata(path: Path) -> bytes:
+    with path.open("rb") as source:
+        raw = source.read(MAX_RELEASE_METADATA_BYTES + 1)
+    if len(raw) > MAX_RELEASE_METADATA_BYTES:
+        raise ContractError("release metadata: input exceeds the 1 MiB bound")
+    return raw
+
+
 def _decode_statement(envelope: Any, index: int) -> dict[str, Any]:
     item = _require_exact_keys(
         envelope, {"payload", "payloadType", "signatures"}, f"attestations[{index}]"
@@ -249,10 +315,17 @@ def _decode_statement(envelope: Any, index: int) -> dict[str, Any]:
     )
 
 
-def validate_attestations(
-    raw: bytes, *, expected_image: str, expected_revision: str
-) -> dict[str, Any]:
-    digest = _parse_image(expected_image)
+def _matching_predicates(
+    raw: bytes,
+    *,
+    expected_revision: str,
+    expected_image: str,
+    expected_source_ref: str,
+) -> list[dict[str, Any]]:
+    _parse_image(expected_image)
+    _require_fullmatch(REVISION_RE, expected_revision, "expected revision")
+    _require_fullmatch(RELEASE_REF_RE, expected_source_ref, "expected source ref")
+
     matches: list[dict[str, Any]] = []
     for index, envelope in enumerate(_load_json_stream(raw)):
         statement = _decode_statement(envelope, index)
@@ -276,17 +349,47 @@ def validate_attestations(
             raise ContractError(
                 f"attestations[{index}].statement.subject[0].name: unexpected image"
             )
-        if subject_item["digest"] != {"sha256": digest}:
+        subject_digest = _require_exact_keys(
+            subject_item["digest"],
+            {"sha256"},
+            f"attestations[{index}].statement.subject[0].digest",
+        )
+        digest = _require_fullmatch(
+            DIGEST_RE,
+            subject_digest["sha256"],
+            f"attestations[{index}].statement.subject[0].digest.sha256",
+        )
+        subject_image = f"{IMAGE_REPOSITORY}@sha256:{digest}"
+        if subject_image != expected_image:
             raise ContractError(
                 f"attestations[{index}].statement.subject[0].digest: unexpected digest"
             )
-        matches.append(
-            validate_predicate(
-                statement["predicate"],
-                expected_image=expected_image,
-                expected_revision=expected_revision,
-            )
+        predicate = validate_predicate(
+            statement["predicate"],
+            expected_image=subject_image,
+            expected_revision=expected_revision,
         )
+        if predicate["source"]["ref"] != expected_source_ref:
+            raise ContractError(
+                "predicate.source.ref: does not match the requested release identity"
+            )
+        matches.append(predicate)
+    return matches
+
+
+def validate_attestations(
+    raw: bytes,
+    *,
+    expected_image: str,
+    expected_revision: str,
+    expected_source_ref: str,
+) -> dict[str, Any]:
+    matches = _matching_predicates(
+        raw,
+        expected_image=expected_image,
+        expected_revision=expected_revision,
+        expected_source_ref=expected_source_ref,
+    )
     if len(matches) != 1:
         raise ContractError(
             "attestations: expected exactly one matching Awaken Sandbox provenance "
@@ -341,12 +444,31 @@ def self_test() -> list[str]:
     #    exact  |      1      | wrong   |   *       | refuse artifact mismatch
     #    exact  |      1      | exact   | wrong     | refuse provenance mismatch
     # wrong/bad |      *      |   *     |   *       | refuse format/unbounded input
+    #
+    # Publisher-rerun cause/effect graph:
+    # existing semver tag + exact workflow proof + exact labels -> reuse digest
+    # absent semver tag -> staging digest may receive the one proof before promotion
+    # unsigned/preseeded tag, missing/conflicting proof, or wrong labels -> refuse
+    # promotion metadata must bind the already-verified immutable digest exactly
+    #
+    # Decision table (the release-selection cases below own every rule):
+    # semver tag | staged proof | release proof | labels | count | effect
+    #   absent   |       0      |       -       | exact  |   0   | prove/promote
+    #   absent   |    1 exact   |       -       | exact  |   1   | reuse/promote
+    #   absent   |  2+/conflict |       -       |   *    |  2+   | refuse
+    #   present  |       -      |     exact     | exact  |   1   | reuse canonical
+    #   present  |       -      | missing/wrong |   *    |   *   | refuse preseed
+    #   present  |       -      |     exact     | wrong  |   *   | refuse drift
+    #   present  |       -      |     exact     | exact  | 0/2+  | refuse ambiguity
     failures: list[str] = []
 
     def expect_success(name: str, value: bytes) -> None:
         try:
             actual = validate_attestations(
-                value, expected_image=image, expected_revision=revision
+                value,
+                expected_image=image,
+                expected_revision=revision,
+                expected_source_ref=source_ref,
             )
             if canonical_bytes(actual) != canonical_bytes(predicate):
                 failures.append(f"{name}: canonical predicate drifted")
@@ -356,7 +478,10 @@ def self_test() -> list[str]:
     def expect_refusal(name: str, value: bytes) -> None:
         try:
             validate_attestations(
-                value, expected_image=image, expected_revision=revision
+                value,
+                expected_image=image,
+                expected_revision=revision,
+                expected_source_ref=source_ref,
             )
         except ContractError:
             return
@@ -369,6 +494,92 @@ def self_test() -> list[str]:
         "duplicate matching envelope",
         f"{encoded.decode()}\n{encoded.decode()}\n".encode("utf-8"),
     )
+
+    expect_refusal("zero release attestations", b"")
+    selected = validate_attestations(
+        encoded,
+        expected_image=image,
+        expected_revision=revision,
+        expected_source_ref=source_ref,
+    )
+    if canonical_bytes(selected) != canonical_bytes(predicate):
+        failures.append("exact release attestation: canonical predicate drifted")
+    rerun_predicate = build_predicate(
+        image=image,
+        revision=revision,
+        source_ref=source_ref,
+        workflow_ref=_workflow_ref(source_ref),
+        run_id="123",
+        run_attempt="3",
+    )
+    if predicate_digest(selected) == predicate_digest(rerun_predicate):
+        failures.append("failed-job rerun: original canonical digest was not retained")
+    expect_refusal(
+        "multiple release attestations",
+        f"{encoded.decode()}\n{encoded.decode()}\n".encode("utf-8"),
+    )
+
+    conflicting_release = copy.deepcopy(predicate)
+    conflicting_release["source"]["ref"] = "refs/tags/v1.2.4"
+    conflicting_release["builder"]["workflow"] = _workflow_identity(
+        "refs/tags/v1.2.4"
+    )
+    expect_refusal(
+        "conflicting release identity",
+        json.dumps(_envelope(conflicting_release, image)).encode("utf-8"),
+    )
+
+    labels = {
+        "org.opencontainers.image.source": SOURCE_REPOSITORY,
+        "org.opencontainers.image.revision": revision,
+        "org.opencontainers.image.version": "v1.2.3",
+        "org.awaken.environment-packages": "2",
+    }
+    try:
+        validate_image_labels(
+            json.dumps(labels).encode("utf-8"),
+            expected_revision=revision,
+            expected_source_ref=source_ref,
+        )
+    except ContractError as error:
+        failures.append(f"exact OCI release labels: unexpected refusal: {error}")
+    for name in (
+        "org.opencontainers.image.source",
+        "org.opencontainers.image.revision",
+        "org.opencontainers.image.version",
+    ):
+        conflicting_labels = copy.deepcopy(labels)
+        conflicting_labels[name] = "wrong"
+        try:
+            validate_image_labels(
+                json.dumps(conflicting_labels).encode("utf-8"),
+                expected_revision=revision,
+                expected_source_ref=source_ref,
+            )
+        except ContractError:
+            pass
+        else:
+            failures.append(f"conflicting OCI label {name}: expected refusal")
+
+    manifest = json.dumps({"digest": f"sha256:{'a' * 64}"}).encode("utf-8")
+    if resolve_image_manifest(manifest) != image:
+        failures.append("immutable manifest resolution: image coordinate drifted")
+    promotion = json.dumps(
+        {"containerimage.descriptor": {"digest": f"sha256:{'a' * 64}"}}
+    ).encode("utf-8")
+    try:
+        validate_promotion_metadata(promotion, expected_image=image)
+    except ContractError as error:
+        failures.append(f"exact promotion metadata: unexpected refusal: {error}")
+    wrong_promotion = json.dumps(
+        {"containerimage.descriptor": {"digest": f"sha256:{'c' * 64}"}}
+    ).encode("utf-8")
+    try:
+        validate_promotion_metadata(wrong_promotion, expected_image=image)
+    except ContractError:
+        pass
+    else:
+        failures.append("different promoted digest: expected refusal")
 
     wrong_predicate_type = copy.deepcopy(valid)
     statement = json.loads(base64.b64decode(wrong_predicate_type["payload"]))
@@ -460,8 +671,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument("--image", required=True)
     validate.add_argument("--revision", required=True)
+    validate.add_argument("--source-ref", required=True)
     validate.add_argument("--attestations", required=True, type=Path)
     validate.add_argument("--output", required=True, type=Path)
+
+    resolve = subparsers.add_parser(
+        "resolve-manifest", help="resolve one registry manifest to its immutable image"
+    )
+    resolve.add_argument("--manifest", required=True, type=Path)
+
+    labels = subparsers.add_parser(
+        "validate-image-labels", help="validate exact OCI release identity labels"
+    )
+    labels.add_argument("--labels", required=True, type=Path)
+    labels.add_argument("--revision", required=True)
+    labels.add_argument("--source-ref", required=True)
+
+    promotion = subparsers.add_parser(
+        "validate-promotion", help="bind promotion metadata to the proven digest"
+    )
+    promotion.add_argument("--metadata", required=True, type=Path)
+    promotion.add_argument("--image", required=True)
 
     subparsers.add_parser("self-test", help="run dependency-free causal tests")
     return parser
@@ -490,6 +720,23 @@ def main(argv: list[str] | None = None) -> int:
             )
             print("OK - exact Awaken Sandbox image release context accepted.")
             return 0
+        if args.command == "resolve-manifest":
+            print(resolve_image_manifest(_read_release_metadata(args.manifest)))
+            return 0
+        if args.command == "validate-image-labels":
+            validate_image_labels(
+                _read_release_metadata(args.labels),
+                expected_revision=args.revision,
+                expected_source_ref=args.source_ref,
+            )
+            print("OK - exact OCI release identity labels accepted.")
+            return 0
+        if args.command == "validate-promotion":
+            validate_promotion_metadata(
+                _read_release_metadata(args.metadata), expected_image=args.image
+            )
+            print("OK - release tag promotion retained the proven digest.")
+            return 0
         if args.command == "emit":
             predicate = build_predicate(
                 image=args.image,
@@ -504,6 +751,7 @@ def main(argv: list[str] | None = None) -> int:
                 _read_attestations(args.attestations),
                 expected_image=args.image,
                 expected_revision=args.revision,
+                expected_source_ref=args.source_ref,
             )
         _write_output(args.output, predicate)
         print(predicate_digest(predicate))
