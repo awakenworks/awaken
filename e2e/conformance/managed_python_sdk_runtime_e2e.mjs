@@ -17,12 +17,14 @@ import {
 } from '../harness.mjs';
 import { extractOperations } from '../../packages/managed-sdk-oracle/src/extract-operations.mjs';
 import {
+  extractRequestContractsFromPackageRoot,
   extractResponseContractsFromPackageRoot,
 } from '../../packages/managed-sdk-oracle/src/extract-wire-contracts.mjs';
 import { resolveSdkPackage } from '../../packages/managed-sdk-oracle/src/package-source.mjs';
 import {
   canonicalPythonOperationID,
 } from '../../packages/managed-sdk-oracle/src/python-operation-identity.mjs';
+import { buildRequestWitnessBundle } from './managed_sdk_request_contract_e2e.mjs';
 
 const REPO = resolve(import.meta.dirname, '../..');
 const LOCK = resolve(REPO, 'packages/managed-sdk-oracle/python/requirements.lock');
@@ -38,6 +40,10 @@ const MATRIX_DRIVER = resolve(import.meta.dirname, 'managed_python_sdk_matrix_e2
 const RESPONSE_CONTRACT_DRIVER = resolve(
   import.meta.dirname,
   'managed_python_sdk_response_contract_e2e.py',
+);
+const REQUEST_CONTRACT_DRIVER = resolve(
+  import.meta.dirname,
+  'managed_python_sdk_request_contract_e2e.py',
 );
 const PORT = Number(process.env.E2E_PORT ?? 38199);
 
@@ -171,9 +177,62 @@ function writePythonResponseContracts(temporary) {
   return destination;
 }
 
+async function writePythonRequestContracts(temporary) {
+  // One declaration and one executable authority: the reviewed TS 0.122
+  // candidate supplies both its finite request graph and generated serializer.
+  // Python operation ids are an injective spelling projection only; every
+  // witness retains the TS-emitted semantic Request as its expected result.
+  const module = '@anthropic-ai/sdk-candidate';
+  const sdk = resolveSdkPackage(module);
+  const scope = JSON.parse(readFileSync(SCOPE, 'utf8'));
+  const operations = extractOperations(module, scope).operations;
+  const contracts = extractRequestContractsFromPackageRoot(
+    sdk.root,
+    scope,
+    operations.map(({ id }) => id),
+  );
+  const python = JSON.parse(readFileSync(ORACLE, 'utf8')).current;
+  const pythonByTypescript = new Map(
+    python.operations.map(({ id }) => [canonicalPythonOperationID(id), id]),
+  );
+  assert.equal(pythonByTypescript.size, python.operations.length, 'Python request mapping is injective');
+  assert.deepEqual(
+    new Set(pythonByTypescript.keys()),
+    new Set(operations.map(({ id }) => id)),
+    'Python and candidate request operation sets',
+  );
+  const bundle = await buildRequestWitnessBundle({ packageRoot: sdk.root, operations, contracts });
+  const witnesses = bundle.witnesses.map((witness) => ({
+    ...witness,
+    python_operation_id: pythonByTypescript.get(witness.operation_id),
+  }));
+  const upstreamRejections = bundle.upstream_rejections.map((rejection) => ({
+    ...rejection,
+    python_operation_id: pythonByTypescript.get(rejection.operation_id),
+  }));
+  assert.ok(witnesses.every(({ python_operation_id }) => python_operation_id));
+  assert.ok(upstreamRejections.every(({ python_operation_id }) => python_operation_id));
+  const destination = resolve(temporary, 'python-request-contracts.json');
+  writeFileSync(destination, `${JSON.stringify({
+    operation_count: operations.length,
+    python_version: python.version,
+    typescript_version: sdk.version,
+    upstream_rejections: upstreamRejections,
+    witness_count: witnesses.length,
+    witnesses,
+  })}\n`);
+  return destination;
+}
+
 async function exercisePythonResponseContracts(python, contracts) {
   await runDriver(python, RESPONSE_CONTRACT_DRIVER, 'http://managed-response.invalid', {
     extraEnv: { AWAKEN_MANAGED_PYTHON_RESPONSE_CONTRACTS: contracts },
+  });
+}
+
+async function exercisePythonRequestContracts(python, contracts) {
+  await runDriver(python, REQUEST_CONTRACT_DRIVER, 'http://managed-request.invalid', {
+    extraEnv: { AWAKEN_MANAGED_PYTHON_REQUEST_CONTRACTS: contracts },
   });
 }
 
@@ -262,7 +321,10 @@ try {
   const { python, pip } = provisionPython(temporary);
   const responseContracts = writePythonResponseContracts(temporary);
   const selectedVersion = process.argv[2];
-  if (selectedVersion) {
+  if (selectedVersion === '--request-contract-only') {
+    const requestContracts = await writePythonRequestContracts(temporary);
+    await exercisePythonRequestContracts(python, requestContracts);
+  } else if (selectedVersion) {
     // Explicit CLI selection is a developer diagnostic only. The release npm
     // command supplies no argument and therefore cannot silently narrow the
     // configured matrix.
@@ -275,6 +337,8 @@ try {
     );
     process.exitCode = 0;
   } else {
+    const requestContracts = await writePythonRequestContracts(temporary);
+    await exercisePythonRequestContracts(python, requestContracts);
     await exercisePythonResponseContracts(python, responseContracts);
     await withScenarioServer('management', 'echo', PORT, async (baseURL) => {
       await runDriver(python, DRIVER, baseURL);

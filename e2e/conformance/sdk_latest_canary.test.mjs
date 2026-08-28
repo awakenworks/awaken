@@ -6,6 +6,7 @@ import {
   latestCandidateQualification,
   latestCanaryPlan,
 } from './sdk_latest_canary_lib.mjs';
+import { requestContractInternals } from './managed_sdk_request_contract_e2e.mjs';
 
 const candidateQualification = Object.freeze({
   baseline_version: '0.120.0',
@@ -15,6 +16,60 @@ const candidateQualification = Object.freeze({
 });
 const candidateDependencies = Object.freeze({
   '@anthropic-ai/sdk-candidate': 'npm:@anthropic-ai/sdk@0.121.0',
+});
+
+test('empty-value request variances require one exact omission witness', () => {
+  // Metamorphic decision table: preserve method/path/headers and remove exactly
+  // one empty query pair or multipart text part -> derive Python's omission
+  // authority. Any second wire mutation or non-empty value -> no exception.
+  // This keeps the cross-language gate fail-closed without a 72-row hand ledger.
+  const empty = {
+    method: 'GET',
+    path: '/v1/items',
+    headers: { accept: 'application/json' },
+    query: [['filter', '']],
+    body: { kind: 'empty' },
+  };
+  const omitted = { ...empty, query: [] };
+  assert.deepEqual(
+    requestContractInternals.pythonEmptyOmission(empty, omitted, 'filter'),
+    { expected: omitted, field: 'filter', wire_kind: 'query' },
+  );
+  assert.equal(
+    requestContractInternals.pythonEmptyOmission(
+      { ...empty, query: [['filter', 'value']] },
+      omitted,
+      'filter',
+    ),
+    null,
+  );
+
+  const multipartEmpty = {
+    ...empty,
+    method: 'POST',
+    query: [],
+    body: { kind: 'multipart', parts: [{ name: 'display_name', text: '' }] },
+  };
+  const multipartOmitted = {
+    ...multipartEmpty,
+    body: { kind: 'multipart', parts: [] },
+  };
+  assert.deepEqual(
+    requestContractInternals.pythonEmptyOmission(
+      multipartEmpty,
+      multipartOmitted,
+      'display_name',
+    ),
+    { expected: multipartOmitted, field: 'display_name', wire_kind: 'multipart' },
+  );
+  assert.equal(
+    requestContractInternals.pythonEmptyOmission(
+      { ...multipartEmpty, path: '/v1/other' },
+      multipartOmitted,
+      'display_name',
+    ),
+    null,
+  );
 });
 
 test('registry latest reuses the generated current oracle only when all versions agree', () => {
@@ -247,8 +302,8 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
   );
   assert.match(
     pythonRunner,
-    /const responseContracts = writePythonResponseContracts\(temporary\);[\s\S]*await exercisePythonResponseContracts\(python, responseContracts\);[\s\S]*await withScenarioServer/u,
-    'the all-operation Python response proof precedes selected real-process lifecycles',
+    /const responseContracts = writePythonResponseContracts\(temporary\);[\s\S]*writePythonRequestContracts\(temporary\)[\s\S]*exercisePythonRequestContracts\(python, requestContracts\)[\s\S]*exercisePythonResponseContracts\(python, responseContracts\)[\s\S]*await withScenarioServer/u,
+    'the declaration-derived request and response proofs precede selected real-process lifecycles',
   );
   assert.match(
     pythonRunner,
@@ -270,11 +325,31 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
   ]) {
     assert.ok(responseDriver.includes(edge), `Python response proof is missing ${edge}`);
   }
+  const requestDriver = readFileSync(
+    new URL('./managed_python_sdk_request_contract_e2e.py', import.meta.url),
+    'utf8',
+  );
+  for (const edge of [
+    'KNOWN_NULL_QUERY_VARIANCES',
+    'observed_variances == KNOWN_NULL_QUERY_VARIANCES',
+    'actual == expected_without_empty_field',
+    'python_empty_omission',
+    'observed_empty_omissions == expected_empty_omissions',
+    'actual == omission["expected"]',
+    'exercise_sync(bundle)',
+    'exercise_async(bundle)',
+  ]) {
+    assert.ok(requestDriver.includes(edge), `Python request proof is missing ${edge}`);
+  }
   const historicalDriver = readFileSync(
     new URL('./managed_python_sdk_matrix_e2e.py', import.meta.url),
     'utf8',
   );
   for (const edge of [
+    'exercise_declared_request_witnesses(',
+    'exercise_pathlike_upload_change_point(',
+    'UNICODE_WORKER_HEADER_REJECTING_VERSIONS',
+    'exact empty-path rejection closure',
     'exercise_current_response_compatibility(',
     'verify_declarations=False',
     'current response corpus lacks historical operations',

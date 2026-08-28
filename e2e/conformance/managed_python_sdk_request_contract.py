@@ -1,11 +1,42 @@
 from __future__ import annotations
 
 import asyncio
+import collections.abc
+import datetime
+import enum
+import io
 import inspect
+import itertools
+import os
+import types
+import typing
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, unquote
+
+from managed_python_sdk_wire import semantic_request
 
 
 SKILL = b"---\nname: python-fixture\ndescription: request fixture\n---\nFixture."
+TRANSPORT_PARAMETERS = frozenset(
+    {"betas", "extra_headers", "extra_query", "extra_body", "timeout"}
+)
+UPLOAD_MARKER = "__managed_python_upload_kind__"
+PATHLIKE_REJECTING_VERSIONS = frozenset(
+    {
+        "0.92.0",
+        "0.100.0",
+        "0.109.0",
+        "0.115.0",
+        "0.116.0",
+        "0.117.1",
+        "0.118.0",
+        "0.121.0",
+    }
+)
+UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
+    {"0.124.0", "0.125.0", "1.0.0", "1.1.0"}
+)
 
 
 def required_fixture(name: str) -> object:
@@ -73,6 +104,656 @@ def required_arguments(method: object) -> tuple[list[object], dict[str, object]]
     return positional, keyword
 
 
+def _identity(value: object) -> object:
+    if isinstance(value, dict):
+        return ("dict", tuple(sorted((name, _identity(nested)) for name, nested in value.items())))
+    if isinstance(value, (list, tuple)):
+        return (type(value).__name__, tuple(_identity(item) for item in value))
+    if isinstance(value, bytes):
+        return ("bytes", value)
+    if isinstance(value, (datetime.date, datetime.datetime, Path)):
+        return (type(value).__name__, str(value))
+    if isinstance(value, enum.Enum):
+        return (type(value).__qualname__, value.value)
+    return (type(value).__name__, repr(value))
+
+
+def _distinct(values: list[object]) -> list[object]:
+    return list(dict((_identity(value), value) for value in values).values())
+
+
+def _without_sdk_sentinels(types_: tuple[object, ...]) -> tuple[object, ...]:
+    return tuple(
+        candidate
+        for candidate in types_
+        if not (
+            inspect.isclass(candidate)
+            and candidate.__module__.startswith("anthropic")
+            and candidate.__name__ in {"Omit", "NotGiven"}
+        )
+    )
+
+
+def _unwrap(annotation: object) -> object:
+    while typing.get_origin(annotation) in {
+        typing.Annotated,
+        typing.Required,
+        typing.NotRequired,
+    }:
+        annotation = typing.get_args(annotation)[0]
+    return annotation
+
+
+def _baseline_type_value(annotation: object, stack: tuple[object, ...] = ()) -> object:
+    values = _type_witnesses(annotation, stack)
+    assert values, f"request type has no constructible branch: {annotation!r}"
+    def preferred(value: object) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value)
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return value > 0
+        if isinstance(value, (dict, list, tuple)):
+            return bool(value)
+        return True
+
+    return next(
+        (value for value in values if preferred(value)),
+        next((value for value in values if value is not None), values[0]),
+    )
+
+
+def _typed_dict_witnesses(
+    annotation: object,
+    stack: tuple[object, ...],
+) -> list[object]:
+    assert annotation not in stack, f"recursive request TypedDict is not finite: {annotation!r}"
+    hints = typing.get_type_hints(annotation, include_extras=True)
+    required = set(annotation.__required_keys__)
+    for name, field in hints.items():
+        origin = typing.get_origin(field)
+        if origin is typing.Required:
+            required.add(name)
+        elif annotation.__total__ and origin is not typing.NotRequired:
+            required.add(name)
+    nested_stack = (*stack, annotation)
+    baseline = {
+        name: _baseline_type_value(field, nested_stack)
+        for name, field in hints.items()
+        if name in required
+    }
+    generated: list[object] = [baseline]
+    for name, field in hints.items():
+        for value in _type_witnesses(field, nested_stack):
+            generated.append({**baseline, name: value})
+    return _distinct(generated)
+
+
+def _tuple_witnesses(args: tuple[object, ...], stack: tuple[object, ...]) -> list[object]:
+    if len(args) == 2 and args[1] is Ellipsis:
+        return [(), *[(value,) for value in _type_witnesses(args[0], stack)]]
+    baseline = tuple(_baseline_type_value(item, stack) for item in args)
+    generated: list[object] = [baseline]
+    for index, item in enumerate(args):
+        for value in _type_witnesses(item, stack):
+            candidate = list(baseline)
+            candidate[index] = value
+            generated.append(tuple(candidate))
+    return _distinct(generated)
+
+
+def _type_witnesses(annotation: object, stack: tuple[object, ...] = ()) -> list[object]:
+    """Finite one-factor witnesses for one installed SDK request annotation.
+
+    The recursion mirrors the declaration's algebra rather than operation names:
+    every union arm, literal, nullable branch, TypedDict field omission/presence,
+    empty/non-empty collection, mapping value and upload representation is
+    executable. Unknown or recursive shapes fail closed when an SDK evolves.
+    """
+
+    annotation = _unwrap(annotation)
+    if annotation in {Any, object, typing.Any}:
+        return [{"managed_fixture": {"enabled": True, "nullable": None}}]
+    if annotation in {None, type(None)}:
+        return [None]
+    if annotation is str:
+        return ["", "managed fixture /?% ü"]
+    if annotation is bool:
+        return [True, False]
+    if annotation is int:
+        return [-1, 0, 1]
+    if annotation is float:
+        return [-1.5, 0.0, 1.5]
+    if annotation is bytes:
+        return [{UPLOAD_MARKER: "bytes"}]
+    if annotation in {datetime.datetime, datetime.date}:
+        return [datetime.datetime(2026, 1, 2, 3, 4, 5, tzinfo=datetime.timezone.utc)]
+    if annotation is os.PathLike:
+        return [{UPLOAD_MARKER: "path"}]
+    if isinstance(annotation, typing.TypeVar):
+        if annotation.__constraints__:
+            return _distinct(
+                [
+                    value
+                    for constraint in annotation.__constraints__
+                    for value in _type_witnesses(constraint, stack)
+                ]
+            )
+        if annotation.__bound__ is not None:
+            return _type_witnesses(annotation.__bound__, stack)
+        raise AssertionError(f"unbounded request TypeVar: {annotation!r}")
+    if hasattr(annotation, "__supertype__"):
+        return _type_witnesses(annotation.__supertype__, stack)
+    if typing.is_typeddict(annotation) or (
+        inspect.isclass(annotation)
+        and issubclass(annotation, dict)
+        and hasattr(annotation, "__required_keys__")
+        and hasattr(annotation, "__optional_keys__")
+    ):
+        return _typed_dict_witnesses(annotation, stack)
+    if inspect.isclass(annotation) and issubclass(annotation, enum.Enum):
+        return list(annotation)
+
+    origin = typing.get_origin(annotation)
+    args = typing.get_args(annotation)
+    if origin is typing.Literal:
+        return list(args)
+    if origin in {typing.Union, types.UnionType}:
+        return _distinct(
+            [
+                value
+                for candidate in _without_sdk_sentinels(args)
+                for value in _type_witnesses(candidate, stack)
+            ]
+        )
+    if origin in {tuple, typing.Tuple}:
+        return _tuple_witnesses(args, stack)
+    if origin in {typing.IO, typing.BinaryIO}:
+        return [{UPLOAD_MARKER: "io"}]
+    if origin is os.PathLike:
+        return [{UPLOAD_MARKER: "path"}]
+    if origin is not None and inspect.isclass(origin):
+        if issubclass(origin, collections.abc.Mapping):
+            key_type, value_type = args or (str, object)
+            key = _baseline_type_value(key_type, stack)
+            assert isinstance(key, str), f"request map key must be a string: {annotation!r}"
+            return [
+                {},
+                *[{key: value} for value in _type_witnesses(value_type, stack)],
+            ]
+        if issubclass(origin, collections.abc.Iterable):
+            assert args, f"unparameterized request collection: {annotation!r}"
+            return [
+                [],
+                *[[value] for value in _type_witnesses(args[0], stack)],
+            ]
+    raise AssertionError(f"unsupported installed SDK request type: {annotation!r}")
+
+
+def _materialize(value: object) -> object:
+    if isinstance(value, dict) and set(value) == {UPLOAD_MARKER}:
+        kind = value[UPLOAD_MARKER]
+        if kind == "bytes":
+            return b"managed-python-upload"
+        if kind == "io":
+            return io.BytesIO(b"managed-python-upload")
+        if kind == "path":
+            # PathLike itself has one change-point probe below. The declaration
+            # witness uses a fresh equivalent stream so the same central SDK
+            # upload defect is not multiplied across every FileTypes nesting.
+            return io.BytesIO(Path(__file__).read_bytes())
+        raise AssertionError(f"unknown upload witness {kind!r}")
+    if isinstance(value, list):
+        return [_materialize(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_materialize(item) for item in value)
+    if isinstance(value, dict):
+        return {name: _materialize(nested) for name, nested in value.items()}
+    return value
+
+
+def _declared_invocations(method: object) -> list[tuple[object, list[object], dict[str, object]]]:
+    signature = inspect.signature(method)
+    hints = typing.get_type_hints(method, include_extras=True)
+    parameters = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.name not in TRANSPORT_PARAMETERS
+    ]
+    assert all(parameter.name in hints for parameter in parameters), (
+        "every public request parameter has a runtime-resolvable annotation"
+    )
+    baseline_values = {
+        parameter.name: _baseline_type_value(hints[parameter.name])
+        for parameter in parameters
+        if parameter.default is inspect.Parameter.empty
+    }
+    cases: list[tuple[str, dict[str, object]]] = [("required-only", baseline_values)]
+    for parameter in parameters:
+        for value in _type_witnesses(hints[parameter.name]):
+            cases.append((parameter.name, {**baseline_values, parameter.name: value}))
+
+    for parameter in parameters:
+        if parameter.default is not inspect.Parameter.empty:
+            assert parameter.name not in baseline_values, (
+                f"{parameter.name}: optional omission witness"
+            )
+        expected = {_identity(value) for value in _type_witnesses(hints[parameter.name])}
+        observed = {
+            _identity(supplied[parameter.name])
+            for cause, supplied in cases
+            if cause == parameter.name
+        }
+        assert observed == expected, f"{parameter.name}: declaration branches changed"
+
+    invocations = []
+    seen = set()
+    for cause, supplied in cases:
+        identity = (cause, _identity(supplied))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        positional = []
+        keyword = {}
+        for parameter in parameters:
+            if parameter.name not in supplied:
+                continue
+            value = supplied[parameter.name]
+            if parameter.kind == inspect.Parameter.POSITIONAL_ONLY:
+                positional.append(value)
+            elif parameter.kind in {
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            }:
+                keyword[parameter.name] = value
+            else:
+                raise AssertionError(
+                    f"unsupported request parameter kind {parameter.kind}: {parameter.name}"
+                )
+        invocations.append((identity, positional, keyword))
+
+    baseline_identity = ("required-only", _identity(baseline_values))
+    assert any(identity == baseline_identity for identity, _, _ in invocations)
+    return invocations
+
+
+def _assert_path_template(operation: dict[str, Any], actual_path: str) -> None:
+    expected = operation["path"].split("/")
+    actual = actual_path.split("/")
+    assert len(actual) == len(expected), operation["id"]
+    assert all(want == "{}" or want == unquote(got) for want, got in zip(expected, actual)), (
+        operation["id"]
+    )
+
+
+def _assert_declared_coordinate(operation: dict[str, Any], request: object) -> None:
+    assert request.method == operation["method"], operation["id"]
+    _assert_path_template(
+        operation,
+        request.url.raw_path.split(b"?", 1)[0].decode(),
+    )
+    fixed_query = operation.get("transport_query", "")
+    if fixed_query:
+        for pair in parse_qsl(fixed_query, keep_blank_values=True):
+            assert pair in parse_qsl(request.url.query.decode(), keep_blank_values=True), (
+                operation["id"]
+            )
+    actual_betas = set(filter(None, request.headers.get("anthropic-beta", "").split(",")))
+    assert set(operation["betas"]).issubset(actual_betas), operation["id"]
+
+
+def _empty_path_field(
+    method: object,
+    operation: dict[str, Any],
+    positional: list[object],
+    keyword: dict[str, object],
+) -> str | None:
+    signature = inspect.signature(method)
+    public_parameters = [
+        parameter
+        for parameter in signature.parameters.values()
+        if parameter.name not in TRANSPORT_PARAMETERS
+    ]
+    path_count = operation["path"].count("{}")
+    assert path_count <= len(public_parameters), operation["id"]
+    bound = signature.bind_partial(*positional, **keyword)
+    empty = [
+        parameter.name
+        for parameter in public_parameters[:path_count]
+        if bound.arguments.get(parameter.name) == ""
+    ]
+    assert len(empty) <= 1, f"{operation['id']}: one-factor empty path witness"
+    return empty[0] if empty else None
+
+
+def _assert_empty_path_rejection(error: BaseException, field: str, operation_id: str) -> None:
+    assert type(error) is ValueError, operation_id
+    assert str(error) == (
+        f"Expected a non-empty value for `{field}` but received ''"
+    ), operation_id
+
+
+def _unicode_worker_header_field(
+    version: str,
+    operation_id: str,
+    keyword: dict[str, object],
+) -> str | None:
+    field = "anthropic_worker_id"
+    value = keyword.get(field)
+    if (
+        version in UNICODE_WORKER_HEADER_REJECTING_VERSIONS
+        and operation_id == "beta.environments.work.poll"
+        and isinstance(value, str)
+        and not value.isascii()
+    ):
+        return field
+    return None
+
+
+def _assert_unicode_header_rejection(
+    error: BaseException,
+    field: str,
+    operation_id: str,
+) -> None:
+    assert isinstance(error, UnicodeEncodeError), operation_id
+    assert error.encoding == "ascii" and error.start < error.end, operation_id
+    assert not str(error.object).isascii(), operation_id
+    assert field == "anthropic_worker_id", operation_id
+
+
+def exercise_declared_request_witnesses(
+    anthropic_module: Any,
+    transport_module: Any,
+    operations: list[dict[str, Any]],
+) -> int:
+    # Historical declaration causal graph:
+    # exact wheel source/hash -> get_type_hints -> finite one-factor witnesses
+    # -> official sync serializer -> semantic Request authority
+    # -> official async serializer -> exact semantic equality.
+    # Every operation has a required-only baseline; every optional/null/union/
+    # literal/nested/collection/map/upload branch changes one cause at a time.
+    # Unknown annotation, missing async branch, serializer rejection, duplicate
+    # request, or method/path/query/header/body drift fails closed.
+    expected: list[tuple[str, object, dict[str, Any]]] = []
+    sync_requests = []
+
+    def respond(request: object) -> object:
+        sync_requests.append(request)
+        return transport_module.Response(200, json={})
+
+    with anthropic_module.Anthropic(
+        api_key="declared-request-sync",  # awaken-allow: secret
+        http_client=transport_module.Client(
+            transport=transport_module.MockTransport(respond)
+        ),
+        max_retries=0,
+    ) as client:
+        for operation in operations:
+            method = resource_method(client, operation["id"])
+            for identity, positional, keyword in _declared_invocations(method):
+                before = len(sync_requests)
+                field = _empty_path_field(method, operation, positional, keyword)
+                header_field = _unicode_worker_header_field(
+                    anthropic_module.__version__,
+                    operation["id"],
+                    keyword,
+                )
+                try:
+                    response = method(
+                        *[_materialize(value) for value in positional],
+                        **{name: _materialize(value) for name, value in keyword.items()},
+                    )
+                except (ValueError, UnicodeEncodeError) as error:
+                    assert (field is None) != (header_field is None), (
+                        f"{operation['id']}: unreviewed sync serializer rejection "
+                        f"for {identity[0]}: {error!r}"
+                    )
+                    if field is not None:
+                        _assert_empty_path_rejection(error, field, operation["id"])
+                    else:
+                        assert header_field is not None
+                        _assert_unicode_header_rejection(
+                            error,
+                            header_field,
+                            operation["id"],
+                        )
+                    assert len(sync_requests) == before
+                    expected.append((operation["id"], identity, {
+                        "kind": (
+                            "empty-path-rejection"
+                            if field is not None
+                            else "unicode-header-rejection"
+                        ),
+                        "field": field or header_field,
+                    }))
+                    continue
+                assert field is None and header_field is None, (
+                    f"{operation['id']}: expected sync serializer rejection vanished"
+                )
+                assert response.status_code == 200
+                assert len(sync_requests) == before + 1
+                request = sync_requests[-1]
+                _assert_declared_coordinate(operation, request)
+                expected.append((operation["id"], identity, {
+                    "kind": "request",
+                    "semantic": semantic_request(request),
+                }))
+
+    async def exercise_async() -> None:
+        async_requests = []
+
+        async def respond(request: object) -> object:
+            async_requests.append(request)
+            return transport_module.Response(200, json={})
+
+        observed: list[tuple[str, object, dict[str, Any]]] = []
+        async with anthropic_module.AsyncAnthropic(
+            api_key="declared-request-async",  # awaken-allow: secret
+            http_client=transport_module.AsyncClient(
+                transport=transport_module.MockTransport(respond)
+            ),
+            max_retries=0,
+        ) as client:
+            for operation in operations:
+                method = resource_method(client, operation["id"])
+                for identity, positional, keyword in _declared_invocations(method):
+                    before = len(async_requests)
+                    field = _empty_path_field(method, operation, positional, keyword)
+                    header_field = _unicode_worker_header_field(
+                        anthropic_module.__version__,
+                        operation["id"],
+                        keyword,
+                    )
+                    try:
+                        response = await method(
+                            *[_materialize(value) for value in positional],
+                            **{name: _materialize(value) for name, value in keyword.items()},
+                        )
+                    except (ValueError, UnicodeEncodeError) as error:
+                        assert (field is None) != (header_field is None), (
+                            f"{operation['id']}: unreviewed async serializer rejection "
+                            f"for {identity[0]}: {error!r}"
+                        )
+                        if field is not None:
+                            _assert_empty_path_rejection(error, field, operation["id"])
+                        else:
+                            assert header_field is not None
+                            _assert_unicode_header_rejection(
+                                error,
+                                header_field,
+                                operation["id"],
+                            )
+                        assert len(async_requests) == before
+                        observed.append((operation["id"], identity, {
+                            "kind": (
+                                "empty-path-rejection"
+                                if field is not None
+                                else "unicode-header-rejection"
+                            ),
+                            "field": field or header_field,
+                        }))
+                        continue
+                    assert field is None and header_field is None, (
+                        f"{operation['id']}: expected async serializer rejection vanished"
+                    )
+                    assert response.status_code == 200
+                    assert len(async_requests) == before + 1
+                    request = async_requests[-1]
+                    _assert_declared_coordinate(operation, request)
+                    observed.append((operation["id"], identity, {
+                        "kind": "request",
+                        "semantic": semantic_request(request),
+                    }))
+        if observed != expected:
+            difference = next(
+                (
+                    (index, sync, asynchronous)
+                    for index, (sync, asynchronous) in enumerate(
+                        itertools.zip_longest(expected, observed)
+                    )
+                    if sync != asynchronous
+                ),
+                None,
+            )
+            raise AssertionError(
+                f"historical sync/async semantic request drift: {difference!r}"
+            )
+
+    asyncio.run(exercise_async())
+    assert len({operation_id for operation_id, _, _ in expected}) == len(operations)
+    assert len(expected) > len(operations)
+    path_rejections = sum(
+        outcome["kind"] == "empty-path-rejection"
+        for _, _, outcome in expected
+    )
+    expected_path_rejections = sum(operation["path"].count("{}") for operation in operations)
+    assert path_rejections == expected_path_rejections, (
+        f"{anthropic_module.__version__}: exact empty-path rejection closure"
+    )
+    unicode_header_rejections = sum(
+        outcome["kind"] == "unicode-header-rejection"
+        for _, _, outcome in expected
+    )
+    assert unicode_header_rejections == (
+        1
+        if anthropic_module.__version__ in UNICODE_WORKER_HEADER_REJECTING_VERSIONS
+        else 0
+    ), f"{anthropic_module.__version__}: exact Unicode worker-header change point"
+    return len(expected)
+
+
+def exercise_pathlike_upload_change_point(
+    anthropic_module: Any,
+    transport_module: Any,
+    operation_ids: set[str],
+) -> str:
+    # Upstream declaration/runtime decision table:
+    # C1 every fixed wheel declares PathLike in FileTypes; C2 versions through
+    # 0.121 hand tuple-contained PosixPath to old httpx multipart and fail before
+    # transport; C3 the 0.124 Files/Skills GA transform and later wheels serialize
+    # it. Effects: C2 must preserve the exact APIConnectionError
+    # <- AttributeError cause and zero requests; C3 must emit exactly one request.
+    # A version entering/leaving either set fails and requires an explicit review.
+    operation_id = next(
+        (
+            candidate
+            for candidate in ("files.upload", "beta.files.upload")
+            if candidate in operation_ids
+        ),
+        None,
+    )
+    assert operation_id is not None, "PathLike probe requires one Files upload operation"
+    version = anthropic_module.__version__
+    path = Path(__file__)
+    cases = [
+        ("direct", path, False),
+        ("tuple2", (None, path), version in PATHLIKE_REJECTING_VERSIONS),
+        ("tuple3", (None, path, None), version in PATHLIKE_REJECTING_VERSIONS),
+        ("tuple4", (None, path, None, {}), version in PATHLIKE_REJECTING_VERSIONS),
+    ]
+
+    def assert_old_httpx_rejection(error: BaseException) -> None:
+        assert type(error).__name__ == "APIConnectionError"
+        cause = error
+        while cause.__cause__ is not None:
+            cause = cause.__cause__
+        assert isinstance(cause, AttributeError)
+        assert "PosixPath" in str(cause) and "read" in str(cause)
+
+    sync_requests = []
+
+    def sync_respond(request: object) -> object:
+        sync_requests.append(request)
+        return transport_module.Response(200, json={})
+
+    with anthropic_module.Anthropic(
+        api_key="pathlike-sync",  # awaken-allow: secret
+        http_client=transport_module.Client(
+            transport=transport_module.MockTransport(sync_respond)
+        ),
+        max_retries=0,
+    ) as client:
+        method = resource_method(client, operation_id)
+        for label, value, expected_rejection in cases:
+            before = len(sync_requests)
+            try:
+                response = method(file=value)
+            except BaseException as error:
+                assert expected_rejection, (
+                    f"{version}: unreviewed sync PathLike rejection for {label}"
+                )
+                assert_old_httpx_rejection(error)
+                assert len(sync_requests) == before
+            else:
+                assert not expected_rejection, (
+                    f"{version}: expected sync PathLike rejection vanished for {label}"
+                )
+                assert response.status_code == 200
+                assert len(sync_requests) == before + 1
+
+    async def exercise_async() -> None:
+        async_requests = []
+
+        async def async_respond(request: object) -> object:
+            async_requests.append(request)
+            return transport_module.Response(200, json={})
+
+        async with anthropic_module.AsyncAnthropic(
+            api_key="pathlike-async",  # awaken-allow: secret
+            http_client=transport_module.AsyncClient(
+                transport=transport_module.MockTransport(async_respond)
+            ),
+            max_retries=0,
+        ) as client:
+            method = resource_method(client, operation_id)
+            for label, value, expected_rejection in cases:
+                before = len(async_requests)
+                try:
+                    response = await method(file=value)
+                except BaseException as error:
+                    assert expected_rejection, (
+                        f"{version}: unreviewed async PathLike rejection for {label}"
+                    )
+                    assert_old_httpx_rejection(error)
+                    assert len(async_requests) == before
+                else:
+                    assert not expected_rejection, (
+                        f"{version}: expected async PathLike rejection vanished for {label}"
+                    )
+                    assert response.status_code == 200
+                    assert len(async_requests) == before + 1
+
+    asyncio.run(exercise_async())
+    return (
+        "tuple-upstream-rejection"
+        if version in PATHLIKE_REJECTING_VERSIONS
+        else "all-serialized"
+    )
+
+
 def normalized_actual_path(path: str) -> str:
     return "/".join("{}" if segment == "fixture" else segment for segment in path.split("/"))
 
@@ -83,79 +764,6 @@ def assert_operation_request(operation: dict[str, Any], request: object) -> None
     assert request.url.query.decode() == operation.get("transport_query", ""), operation["id"]
     actual_betas = sorted(filter(None, request.headers.get("anthropic-beta", "").split(",")))
     assert actual_betas == operation["betas"], operation["id"]
-
-
-def exercise_all_operation_requests(
-    anthropic_module: Any,
-    transport_module: Any,
-    operations: list[dict[str, Any]],
-) -> None:
-    # Complete request-construction graph shared by current and historical
-    # wheels: C1=the exact wheel exposes every extracted method; C2=all required
-    # arguments come from one fail-closed fixture vocabulary; C3=its own raw
-    # response adapter performs the real transform/serialization. Effects:
-    # E1=one request per operation with exact verb/path/query/betas; E2=a new
-    # required argument, missing method, duplicate request, or drift fails. DTO
-    # and persistence semantics remain in real-process owners, so this helper
-    # centralizes wire construction without cloning service state machines.
-    requests = []
-
-    def respond(request: object) -> object:
-        requests.append(request)
-        return transport_module.Response(200, json={})
-
-    transport = transport_module.MockTransport(respond)
-    http_client = transport_module.Client(transport=transport)
-    with anthropic_module.Anthropic(
-        api_key="request-sweep",  # awaken-allow: secret
-        http_client=http_client,
-        max_retries=0,
-    ) as client:
-        for operation in operations:
-            method = resource_method(client, operation["id"])
-            positional, keyword = required_arguments(method)
-            before = len(requests)
-            response = method(*positional, **keyword)
-            assert response.status_code == 200
-            assert len(requests) == before + 1, f"{operation['id']}: exact request count"
-            assert_operation_request(operation, requests[-1])
-    assert len(requests) == len(operations)
-
-
-async def exercise_all_async_operation_requests(
-    anthropic_module: Any,
-    transport_module: Any,
-    operations: list[dict[str, Any]],
-) -> None:
-    # Metamorphic client-mode graph: C1=the same exact wheel and generated
-    # operation ledger; C2=sync versus async resource implementation; C3=one
-    # shared fail-closed fixture vocabulary. E1=both modes emit the identical
-    # method/path/query/beta identity for every operation; E2=a missing async
-    # method, new required parameter, duplicate request, or async-only selector
-    # drift fails. Shared argument and request assertions make client mode the
-    # sole transformed variable instead of maintaining a second inventory.
-    requests = []
-
-    async def respond(request: object) -> object:
-        requests.append(request)
-        return transport_module.Response(200, json={})
-
-    transport = transport_module.MockTransport(respond)
-    http_client = transport_module.AsyncClient(transport=transport)
-    async with anthropic_module.AsyncAnthropic(
-        api_key="async-request-sweep",  # awaken-allow: secret
-        http_client=http_client,
-        max_retries=0,
-    ) as client:
-        for operation in operations:
-            method = resource_method(client, operation["id"])
-            positional, keyword = required_arguments(method)
-            before = len(requests)
-            response = await method(*positional, **keyword)
-            assert response.status_code == 200
-            assert len(requests) == before + 1, f"{operation['id']}: exact async request count"
-            assert_operation_request(operation, requests[-1])
-    assert len(requests) == len(operations)
 
 
 def canonical_error(status: int, error_type: str) -> dict[str, object]:

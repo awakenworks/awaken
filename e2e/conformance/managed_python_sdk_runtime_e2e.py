@@ -24,8 +24,6 @@ from standardwebhooks import WebhookVerificationError
 
 from managed_python_sdk_request_contract import (
     exercise_async_error_and_retry_contract,
-    exercise_all_async_operation_requests as exercise_async_requests,
-    exercise_all_operation_requests as exercise_requests,
     exercise_error_and_retry_contract,
 )
 from managed_python_sdk_installed_evidence import assert_installed_evidence
@@ -58,30 +56,6 @@ def assert_locked_environment() -> None:
         PYTHON_ORACLE,
         SCOPE,
     )
-
-
-def exercise_all_operation_requests() -> None:
-    # Complete request-construction graph: C1=the exact Python wheel exposes
-    # each of the generated 127 methods; C2=all required arguments come from one
-    # reviewed, fail-closed fixture vocabulary; C3=with_raw_response performs
-    # the real SDK transform/serialization without coupling this client test to
-    # 127 duplicate service fixtures. Effects: E1=each call emits exactly one
-    # request with the oracle verb/path/query/beta set; E2=unknown new required
-    # parameters or a missing/extra request fail. Decision table:
-    # C1+C2+C3=>E1; !C1||!C2||request_count!=1||coordinate drift=>E2.
-    # Response DTO semantics are exercised by the real-process scenarios below
-    # and the shared TypeScript behavior owners, not by this raw-response sweep.
-    oracle = json.loads(PYTHON_ORACLE.read_text(encoding="utf-8"))
-    exercise_requests(anthropic, httpx2, oracle["current"]["operations"])
-    assert len(oracle["current"]["operations"]) == 127
-
-
-async def exercise_all_async_operation_requests() -> None:
-    # The current deep runtime matrix owns the same sync/async metamorphic
-    # relation as every historical change point. Reading the generated oracle
-    # here keeps 127 operation identities single-owned by the extractor.
-    oracle = json.loads(PYTHON_ORACLE.read_text(encoding="utf-8"))
-    await exercise_async_requests(anthropic, httpx2, oracle["current"]["operations"])
 
 
 def wait_for_idle(client: anthropic.Anthropic, session_id: str, receipt_id: str) -> list[object]:
@@ -430,8 +404,6 @@ def main() -> None:
             verify_recovery(args.state)
         print(f"PYTHON SDK RECOVERY {args.mode} PASS")
         return
-    exercise_all_operation_requests()
-    asyncio.run(exercise_all_async_operation_requests())
     exercise_error_and_retry_contract(anthropic, httpx2)
     asyncio.run(exercise_async_error_and_retry_contract(anthropic, httpx2))
     exercise_accumulator_contract()
@@ -440,7 +412,7 @@ def main() -> None:
     exercise_beta_ga_handoff()
     exercise_webhook_decoder()
     print(
-        "PYTHON SDK PASS: 127 sync/async request constructors; sync/async Session and errors, "
+        "PYTHON SDK PASS: sync/async Session and errors, "
         "cursor, SSE, event accumulation, beta/GA handoff, webhook helpers"
     )
 
