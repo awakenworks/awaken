@@ -1224,14 +1224,25 @@ async fn sessions_are_isolated() {
     // E1 each rooted read observes its own content; E2 neither read observes the
     // other Session's content. Decision rule: C0+C1+C2 => E1+E2. The Session
     // aggregate and sandbox binding remain the sole isolation authorities.
+    // Each Session publishes a distinct public tool Event id even when the
+    // model reuses its private call-id `w`; confirmations therefore use the
+    // public correlation id and cannot cross Session boundaries.
     let app = build_write_confirmation_router(Arc::new(WriteReadProbe), "scripted");
     let one = create_session(&app).await;
     let two = create_session(&app).await;
 
-    send_message(&app, &one, "SECRET-ONE").await;
-    let list_one = confirm(&app, &one, "w").await;
-    send_message(&app, &two, "SECRET-TWO").await;
-    let list_two = confirm(&app, &two, "w").await;
+    let awaiting_one = send_message(&app, &one, "SECRET-ONE").await;
+    let tool_one =
+        last_event_of_type(awaiting_one["data"].as_array().unwrap(), "agent.tool_use")["id"]
+            .as_str()
+            .expect("first Session public tool Event id");
+    let list_one = confirm(&app, &one, tool_one).await;
+    let awaiting_two = send_message(&app, &two, "SECRET-TWO").await;
+    let tool_two =
+        last_event_of_type(awaiting_two["data"].as_array().unwrap(), "agent.tool_use")["id"]
+            .as_str()
+            .expect("second Session public tool Event id");
+    let list_two = confirm(&app, &two, tool_two).await;
 
     let read_one = read_result_text(&list_one);
     let read_two = read_result_text(&list_two);
