@@ -8,6 +8,7 @@ import io
 import inspect
 import itertools
 import os
+import re
 import types
 import typing
 from pathlib import Path
@@ -35,8 +36,25 @@ PATHLIKE_REJECTING_VERSIONS = frozenset(
     }
 )
 UNICODE_WORKER_HEADER_REJECTING_VERSIONS = frozenset(
-    {"0.124.0", "0.125.0", "1.0.0", "1.1.0"}
+    {
+        # `anthropic_worker_id` first appears at the 0.109 Environment Work
+        # change point. Every selected wheel from that introduction through
+        # 0.125 delegates the value to an ASCII-only httpx Header encoder; the
+        # 1.0 httpx2 transport boundary accepts the same declaration-derived
+        # non-ASCII witness. Keeping the complete closed set here makes a
+        # silent transport change fail in either direction.
+        "0.109.0",
+        "0.115.0",
+        "0.116.0",
+        "0.117.1",
+        "0.118.0",
+        "0.121.0",
+        "0.124.0",
+        "0.125.0",
+    }
 )
+MULTIPART_HEADER_NAME_REJECTING_VERSIONS = frozenset({"1.0.0", "1.1.0"})
+HTTP_FIELD_NAME = re.compile(r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+\Z")
 
 
 def required_fixture(name: str) -> object:
@@ -464,6 +482,51 @@ def _assert_unicode_header_rejection(
     assert field == "anthropic_worker_id", operation_id
 
 
+def _contains_invalid_multipart_header(value: object) -> bool:
+    if isinstance(value, tuple):
+        if (
+            len(value) == 4
+            and isinstance(value[3], collections.abc.Mapping)
+            and any(
+                not isinstance(name, str) or HTTP_FIELD_NAME.fullmatch(name) is None
+                for name in value[3]
+            )
+        ):
+            return True
+        return any(_contains_invalid_multipart_header(item) for item in value)
+    if isinstance(value, list):
+        return any(_contains_invalid_multipart_header(item) for item in value)
+    return False
+
+
+def _invalid_multipart_header_field(
+    version: str,
+    keyword: dict[str, object],
+) -> str | None:
+    # 1.0 and 1.1 expose the four-part FileTypes declaration unchanged but
+    # httpx2 rejects a non-token custom multipart header name before transport.
+    # 0.x httpx accepts the witness; 1.2 normalizes the upload representation.
+    if version not in MULTIPART_HEADER_NAME_REJECTING_VERSIONS:
+        return None
+    matches = [
+        name
+        for name, value in keyword.items()
+        if _contains_invalid_multipart_header(value)
+    ]
+    assert len(matches) <= 1, "one-factor multipart-header witness"
+    return matches[0] if matches else None
+
+
+def _assert_multipart_header_rejection(
+    error: BaseException,
+    field: str,
+    operation_id: str,
+) -> None:
+    assert type(error) is ValueError, operation_id
+    assert str(error) == "Invalid multipart header name.", operation_id
+    assert field in {"file", "files"}, operation_id
+
+
 def exercise_declared_request_witnesses(
     anthropic_module: Any,
     transport_module: Any,
@@ -501,23 +564,36 @@ def exercise_declared_request_witnesses(
                     operation["id"],
                     keyword,
                 )
+                multipart_field = _invalid_multipart_header_field(
+                    anthropic_module.__version__,
+                    keyword,
+                )
                 try:
                     response = method(
                         *[_materialize(value) for value in positional],
                         **{name: _materialize(value) for name, value in keyword.items()},
                     )
                 except (ValueError, UnicodeEncodeError) as error:
-                    assert (field is None) != (header_field is None), (
+                    assert sum(
+                        candidate is not None
+                        for candidate in (field, header_field, multipart_field)
+                    ) == 1, (
                         f"{operation['id']}: unreviewed sync serializer rejection "
                         f"for {identity[0]}: {error!r}"
                     )
                     if field is not None:
                         _assert_empty_path_rejection(error, field, operation["id"])
-                    else:
-                        assert header_field is not None
+                    elif header_field is not None:
                         _assert_unicode_header_rejection(
                             error,
                             header_field,
+                            operation["id"],
+                        )
+                    else:
+                        assert multipart_field is not None
+                        _assert_multipart_header_rejection(
+                            error,
+                            multipart_field,
                             operation["id"],
                         )
                     assert len(sync_requests) == before
@@ -525,12 +601,16 @@ def exercise_declared_request_witnesses(
                         "kind": (
                             "empty-path-rejection"
                             if field is not None
-                            else "unicode-header-rejection"
+                            else (
+                                "unicode-header-rejection"
+                                if header_field is not None
+                                else "multipart-header-rejection"
+                            )
                         ),
-                        "field": field or header_field,
+                        "field": field or header_field or multipart_field,
                     }))
                     continue
-                assert field is None and header_field is None, (
+                assert field is None and header_field is None and multipart_field is None, (
                     f"{operation['id']}: expected sync serializer rejection vanished"
                 )
                 assert response.status_code == 200
@@ -567,23 +647,36 @@ def exercise_declared_request_witnesses(
                         operation["id"],
                         keyword,
                     )
+                    multipart_field = _invalid_multipart_header_field(
+                        anthropic_module.__version__,
+                        keyword,
+                    )
                     try:
                         response = await method(
                             *[_materialize(value) for value in positional],
                             **{name: _materialize(value) for name, value in keyword.items()},
                         )
                     except (ValueError, UnicodeEncodeError) as error:
-                        assert (field is None) != (header_field is None), (
+                        assert sum(
+                            candidate is not None
+                            for candidate in (field, header_field, multipart_field)
+                        ) == 1, (
                             f"{operation['id']}: unreviewed async serializer rejection "
                             f"for {identity[0]}: {error!r}"
                         )
                         if field is not None:
                             _assert_empty_path_rejection(error, field, operation["id"])
-                        else:
-                            assert header_field is not None
+                        elif header_field is not None:
                             _assert_unicode_header_rejection(
                                 error,
                                 header_field,
+                                operation["id"],
+                            )
+                        else:
+                            assert multipart_field is not None
+                            _assert_multipart_header_rejection(
+                                error,
+                                multipart_field,
                                 operation["id"],
                             )
                         assert len(async_requests) == before
@@ -591,12 +684,20 @@ def exercise_declared_request_witnesses(
                             "kind": (
                                 "empty-path-rejection"
                                 if field is not None
-                                else "unicode-header-rejection"
+                                else (
+                                    "unicode-header-rejection"
+                                    if header_field is not None
+                                    else "multipart-header-rejection"
+                                )
                             ),
-                            "field": field or header_field,
+                            "field": field or header_field or multipart_field,
                         }))
                         continue
-                    assert field is None and header_field is None, (
+                    assert (
+                        field is None
+                        and header_field is None
+                        and multipart_field is None
+                    ), (
                         f"{operation['id']}: expected async serializer rejection vanished"
                     )
                     assert response.status_code == 200
@@ -642,6 +743,13 @@ def exercise_declared_request_witnesses(
         if anthropic_module.__version__ in UNICODE_WORKER_HEADER_REJECTING_VERSIONS
         else 0
     ), f"{anthropic_module.__version__}: exact Unicode worker-header change point"
+    multipart_header_rejections = sum(
+        outcome["kind"] == "multipart-header-rejection"
+        for _, _, outcome in expected
+    )
+    assert (multipart_header_rejections > 0) == (
+        anthropic_module.__version__ in MULTIPART_HEADER_NAME_REJECTING_VERSIONS
+    ), f"{anthropic_module.__version__}: exact multipart-header change point"
     return len(expected)
 
 

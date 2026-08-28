@@ -348,13 +348,27 @@ test('the release canary reaches both official TypeScript and Python SDK oracles
   for (const edge of [
     'exercise_declared_request_witnesses(',
     'exercise_pathlike_upload_change_point(',
-    'UNICODE_WORKER_HEADER_REJECTING_VERSIONS',
-    'exact empty-path rejection closure',
     'exercise_current_response_compatibility(',
     'verify_declarations=False',
     'current response corpus lacks historical operations',
     'assert sync_count == async_count',
   ]) {
     assert.ok(historicalDriver.includes(edge), `historical response proof is missing ${edge}`);
+  }
+  const historicalRequestDriver = readFileSync(
+    new URL('./managed_python_sdk_request_contract.py', import.meta.url),
+    'utf8',
+  );
+  for (const edge of [
+    'UNICODE_WORKER_HEADER_REJECTING_VERSIONS',
+    'MULTIPART_HEADER_NAME_REJECTING_VERSIONS',
+    'exact empty-path rejection closure',
+    'exact Unicode worker-header change point',
+    'exact multipart-header change point',
+  ]) {
+    assert.ok(
+      historicalRequestDriver.includes(edge),
+      `historical request proof is missing ${edge}`,
+    );
   }
 });
