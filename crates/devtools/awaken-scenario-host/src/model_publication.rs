@@ -152,6 +152,10 @@ impl awaken_config_service::ModelPublicationResolver for DistributedProviderPubl
                         CredentialUsage::ProviderAdapter,
                         CredentialExecutionPolicy::self_hosted_provider(),
                     )
+                    .with_target(awaken_runtime_contract::CredentialTarget::new(
+                        awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                        "adr71-provider",
+                    ))
                     .with_envelope(CredentialEnvelope::SealedForWorker {
                         envelope_ref: SealedCredentialEnvelopeRef {
                             id: DISTRIBUTED_ENVELOPE_ID.into(),

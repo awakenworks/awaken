@@ -399,15 +399,24 @@ pub async fn enter_credential_with_materials(
 /// durable pending fact is recoverable, but the executable Source and Managed
 /// child become visible only in the repository's one atomic commit.
 pub async fn create_managed_credential(
-    command: ManagedCredentialCreateCommand,
+    mut command: ManagedCredentialCreateCommand,
     store: &dyn SecretStore,
     repo: &dyn ManagedCredentialRepository,
 ) -> Result<(CredentialSource, ManagedVaultCredential), ManagedCredentialCreationError> {
     validate_create_params(&command.source)?;
     validate_material_slots(command.auxiliary_materials.keys().map(String::as_str))?;
-    let (mut source, secret) = match command.source_id {
-        Some(id) => prepare_source_with_id(id, command.source),
-        None => prepare_source(command.source),
+    let descriptor = command.descriptor.take();
+    let (mut source, secret) = match descriptor {
+        Some(descriptor) => prepare_described_source(
+            command.source_id,
+            command.source,
+            command.protocol_endpoint_id.clone(),
+            descriptor,
+        )?,
+        None => match command.source_id {
+            Some(id) => prepare_source_with_id(id, command.source),
+            None => prepare_source(command.source),
+        },
     };
     source.protocol_endpoint_id = command.protocol_endpoint_id;
     if command.primary_material_ref.is_some() {
@@ -1128,6 +1137,90 @@ pub(super) async fn rotate_credential_materials_exact_with_primary_ref(
     execute_source_mutation(Some(before), after, materials, Some(store), repo)
         .await
         .map(|committed| committed.after)
+}
+
+/// Atomically cut one exact undescribed provider-scoped row over to its
+/// canonical descriptor while rotating the primary material through the same
+/// WAL/CAS. This is the sole compatibility migration; ordinary rotations may
+/// never synchronize two provider authorities.
+pub(super) struct LegacyProviderDescriptorMigration<'a> {
+    id: &'a CredentialSourceId,
+    expected_version: i64,
+    expected_legacy_provider: &'a str,
+    descriptor: awaken_credential_contract::CredentialDescriptor,
+    primary_ref: crate::SecretRef,
+    primary: awaken_agent_contract::RedactedString,
+}
+
+impl<'a> LegacyProviderDescriptorMigration<'a> {
+    pub(super) fn new(
+        id: &'a CredentialSourceId,
+        expected_version: i64,
+        expected_legacy_provider: &'a str,
+        descriptor: awaken_credential_contract::CredentialDescriptor,
+        primary_ref: crate::SecretRef,
+        primary: awaken_agent_contract::RedactedString,
+    ) -> Self {
+        Self {
+            id,
+            expected_version,
+            expected_legacy_provider,
+            descriptor,
+            primary_ref,
+            primary,
+        }
+    }
+}
+
+pub(super) async fn migrate_legacy_provider_to_descriptor_exact(
+    migration: LegacyProviderDescriptorMigration<'_>,
+    store: &dyn SecretStore,
+    repo: &dyn CredentialRepo,
+) -> Result<CredentialSource, CredentialError> {
+    let LegacyProviderDescriptorMigration {
+        id,
+        expected_version,
+        expected_legacy_provider,
+        descriptor,
+        primary_ref,
+        primary,
+    } = migration;
+    descriptor
+        .validate()
+        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
+    crate::validate_described_material(&descriptor, &primary)?;
+    let before = repo.get(id).await?;
+    if before.version != expected_version {
+        return Err(CredentialError::MutationConflict(
+            "credential revision changed before descriptor migration".into(),
+        ));
+    }
+    if before.kind != CredentialKind::Vault
+        || before.status != CredentialStatus::Active
+        || before.descriptor.is_some()
+        || before.provider_id.as_deref() != Some(expected_legacy_provider)
+    {
+        return Err(CredentialError::InvalidSource(
+            "credential is not the exact legacy provider source selected for migration".into(),
+        ));
+    }
+    let mut after = before.clone();
+    after.version = before
+        .version
+        .checked_add(1)
+        .ok_or_else(|| CredentialError::InvalidSource("credential revision overflow".into()))?;
+    after.provider_id = None;
+    after.descriptor = Some(descriptor);
+    after.material_ref = Some(primary_ref.clone());
+    execute_source_mutation(
+        Some(before),
+        after,
+        vec![(primary_ref, primary)],
+        Some(store),
+        repo,
+    )
+    .await
+    .map(|committed| committed.after)
 }
 
 /// Publish a higher exact revision for executable, secret-free configuration

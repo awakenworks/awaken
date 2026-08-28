@@ -651,7 +651,11 @@ mod tests {
                     allowed_holder.clone(),
                     ModelExposurePolicy::Forbidden,
                 ),
-            ),
+            )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                provider,
+            )),
         )
     }
 
@@ -849,6 +853,10 @@ mod tests {
                 usage,
                 CredentialExecutionPolicy::exact(selected.clone(), ModelExposurePolicy::Forbidden),
             )
+            .with_target(awaken_runtime_contract::CredentialTarget::new(
+                awaken_runtime_contract::credential::CredentialPurpose::McpAuthorization,
+                "https://mcp.example.test/",
+            ))
         };
         let worker_installed = capabilities(&worker, CredentialRealizationKind::WorkerRelay);
 
@@ -1246,7 +1254,18 @@ mod tests {
                 CredentialMaterialSource::ControlPlaneReference,
                 usage,
                 policy,
-            );
+            )
+            .with_target(if matches!(rule.fixture, BindingFixture::RemoteWorker) {
+                awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::RemoteAgentAuthorization,
+                    "https://agent.invalid",
+                )
+            } else {
+                awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    "provider-a",
+                )
+            });
             if matches!(rule.fixture, BindingFixture::EnvelopeExpired) {
                 access = access.with_envelope(CredentialEnvelope::SealedForWorker {
                     envelope_ref: SealedCredentialEnvelopeRef {

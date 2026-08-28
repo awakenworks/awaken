@@ -24,6 +24,7 @@ mod managed_model_id;
 mod management_audit;
 mod plugin_validation;
 mod publication;
+mod reconciliation;
 mod registration_reconciliation;
 mod service_access;
 mod service_wiring;

@@ -539,15 +539,21 @@ mod tests {
             provider,
             route,
             "workspace-a",
-            Some(awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
-                    id: credential.into(),
-                    revision: 0,
-                },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
-            )),
+            Some(
+                awaken_runtime_contract::CredentialAccess::new(
+                    awaken_runtime_contract::CredentialRef {
+                        id: credential.into(),
+                        revision: 0,
+                    },
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    awaken_runtime_contract::CredentialExecutionPolicy::self_hosted_provider(),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    provider.split_once('@').map_or(provider, |(id, _)| id),
+                )),
+            ),
             awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "openai".into(),
                 api_dialect: "open_ai_chat".into(),

@@ -63,15 +63,14 @@ pub fn executor_from_materialized_endpoint_for_provider(
     credential: Option<&awaken_agent_contract::RedactedString>,
 ) -> Result<Arc<dyn LlmExecutor>, ResolvedExecutorError> {
     let expected_adapter = match api_dialect {
-        "" => None,
-        "anthropic_messages" => Some("anthropic"),
-        "open_ai_chat" => Some("openai"),
-        "gemini" => Some("gemini"),
-        "vertex_gemini" => Some("vertex"),
-        "open_ai_responses" => Some("openai"),
+        "anthropic_messages" => "anthropic",
+        "open_ai_chat" => "openai",
+        "gemini" => "gemini",
+        "vertex_gemini" => "vertex",
+        "open_ai_responses" => "openai",
         other => return Err(ResolvedExecutorError::UnsupportedDialect(other.to_string())),
     };
-    if expected_adapter.is_some_and(|expected| expected != adapter_kind) {
+    if expected_adapter != adapter_kind {
         return Err(ResolvedExecutorError::DialectAdapterMismatch {
             dialect: api_dialect.to_string(),
             adapter: adapter_kind.to_string(),
@@ -460,15 +459,13 @@ mod tests {
 
     #[test]
     fn provider_executor_factory_decision_table() {
-        // Causes: C1 dialect is supported, C2 dialect matches adapter, C3
-        // adapter is supported, C4 base URL exists, C5 credential exists, C6
-        // a legacy publication leaves dialect empty but pins a supported adapter.
-        // Effects: E1 exact construction or the corresponding fail-closed typed
-        // error; E2 C6 remains executable through its adapter pin. Constraints:
-        // Responses is a dedicated executor despite sharing OpenAI's family,
-        // while a non-empty dialect may never mismatch or silently default.
-        // Decision rules: R1=C1..C5=>E1; R2=C6+C3..C5=>E2; each single false
-        // cause in R1 yields its typed error. No composition crate owns another map.
+        // Causes: C1 dialect is present and supported, C2 dialect matches the
+        // pinned adapter, C3 adapter is supported, C4 base URL exists, and C5
+        // credential exists. Effects: E1 exact construction; E2 every false
+        // cause fails closed before provider I/O. Decision rules:
+        // R1=C1+C2+C3+C4+C5=>E1; R2=!C1=>UnsupportedDialect; each other single
+        // false cause yields its typed error. Empty historical dialect is not an
+        // executable compatibility path; it must be migrated at publication.
         let credential = RedactedString::new("sk-test");
         for (dialect, adapter) in [
             ("anthropic_messages", "anthropic"),
@@ -488,18 +485,15 @@ mod tests {
                 "all causes true for {dialect}/{adapter} -> E1"
             );
         }
-        for adapter in ["openai", "anthropic"] {
-            assert!(
-                executor_from_materialized_endpoint(
-                    "",
-                    adapter,
-                    Some("https://provider.invalid"),
-                    Some(&credential),
-                )
-                .is_ok(),
-                "R2/E2 legacy empty dialect remains executable via {adapter}"
-            );
-        }
+        assert!(matches!(
+            executor_from_materialized_endpoint(
+                "",
+                "openai",
+                Some("https://provider.invalid"),
+                Some(&credential),
+            ),
+            Err(ResolvedExecutorError::UnsupportedDialect(dialect)) if dialect.is_empty()
+        ));
         assert!(matches!(
             executor_from_materialized_endpoint(
                 "unknown",
@@ -525,7 +519,7 @@ mod tests {
                 Some("https://provider.invalid"),
                 Some(&credential),
             ),
-            Err(ResolvedExecutorError::UnsupportedAdapter(_))
+            Err(ResolvedExecutorError::UnsupportedDialect(dialect)) if dialect.is_empty()
         ));
         assert!(matches!(
             executor_from_materialized_endpoint("open_ai_chat", "openai", None, Some(&credential)),

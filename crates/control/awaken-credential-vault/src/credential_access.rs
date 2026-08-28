@@ -7,40 +7,19 @@
 use awaken_credential_contract::{
     CredentialAccess, CredentialExecutionPolicy, CredentialMaterialBinding,
     CredentialMaterialSource, CredentialRef, CredentialTarget, CredentialUsage, PlaintextHolder,
-    validate_credential_target_usage,
 };
 
 use crate::{CredentialError, CredentialMaterialOrigin, CredentialSource, CredentialStatus};
-
-/// Compile one active source revision into the canonical executable access.
-/// This is the sole source-row admission path; adapters add custody envelopes
-/// only after it succeeds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeferredCredentialHolderSelection {
-    /// Provider publication freezes the policy now; the dispatch claim selects
-    /// its exact Worker or Workload holder later.
-    ProviderPublication,
-    /// A2A publication freezes the policy now; the dispatch claim selects its
-    /// exact transport holder later.
-    A2aPublication,
-}
-
-/// Whether the consumer edge has already selected the exact plaintext holder.
-/// Described and target-bearing access is never eligible for deferred
-/// selection; the two deferred variants exist only for the retained targetless
-/// Provider/A2A publication paths.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CredentialHolderAdmission<'a> {
-    Selected(&'a PlaintextHolder),
-    Deferred(DeferredCredentialHolderSelection),
-}
 
 pub struct ExactCredentialAccessRequest<'a> {
     pub workspace_id: Option<&'a str>,
     pub target: Option<CredentialTarget>,
     pub usage: CredentialUsage,
     pub policy: CredentialExecutionPolicy,
-    pub holder_admission: CredentialHolderAdmission<'a>,
+    /// Exact execution boundary selected by the trusted Environment/deployment
+    /// profile before publication. Runtime failure can never search the policy
+    /// set or switch to another trust domain.
+    pub selected_holder: &'a PlaintextHolder,
     pub binding: &'a CredentialMaterialBinding,
     pub now_unix_ms: u64,
 }
@@ -54,7 +33,7 @@ pub fn compile_exact_credential_access(
         target,
         usage,
         policy,
-        holder_admission,
+        selected_holder,
         binding,
         now_unix_ms,
     } = request;
@@ -80,59 +59,16 @@ pub fn compile_exact_credential_access(
             "credential policy has no allowed plaintext holder".into(),
         ));
     }
-    match holder_admission {
-        CredentialHolderAdmission::Selected(selected_holder) => {
-            if !policy.allowed_plaintext_holders.contains(selected_holder) {
-                return Err(CredentialError::InvalidSource(
-                    "selected plaintext holder is not authorized by credential policy".into(),
-                ));
-            }
-        }
-        CredentialHolderAdmission::Deferred(owner) => {
-            if source.descriptor.is_some() || target.is_some() {
-                return Err(CredentialError::InvalidSource(
-                    "deferred plaintext-holder selection is limited to legacy targetless Provider or A2A publication"
-                        .into(),
-                ));
-            }
-            let usage_matches_owner = match owner {
-                DeferredCredentialHolderSelection::ProviderPublication => matches!(
-                    &usage,
-                    CredentialUsage::ProviderAdapter | CredentialUsage::EnvironmentVariable { .. }
-                ),
-                DeferredCredentialHolderSelection::A2aPublication => {
-                    matches!(&usage, CredentialUsage::HttpHeader { .. })
-                }
-            };
-            if !usage_matches_owner {
-                return Err(CredentialError::InvalidSource(
-                    "deferred plaintext-holder selection does not own this credential usage".into(),
-                ));
-            }
-        }
+    if !policy.allowed_plaintext_holders.contains(selected_holder) {
+        return Err(CredentialError::InvalidSource(
+            "selected plaintext holder is not authorized by credential policy".into(),
+        ));
     }
-    validate_credential_target_usage(target.as_ref(), &usage)
-        .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
-    match (&source.descriptor, target.as_ref()) {
-        (Some(descriptor), Some(target)) => {
-            descriptor
-                .admit(target, &usage)
-                .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
-            descriptor
-                .validate_expiry(now_unix_ms)
-                .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
-        }
-        (Some(_), None) => {
-            return Err(CredentialError::InvalidSource(
-                "described credential access requires an exact target".into(),
-            ));
-        }
-        (None, Some(_)) => {
-            return Err(CredentialError::InvalidSource(
-                "legacy undescribed credentials cannot be rebound to an exact target".into(),
-            ));
-        }
-        (None, None) => {}
+    source.validate_access_target(target.as_ref(), &usage)?;
+    if let (Some(descriptor), Some(_)) = (&source.descriptor, target.as_ref()) {
+        descriptor
+            .validate_expiry(now_unix_ms)
+            .map_err(|error| CredentialError::InvalidSource(error.to_string()))?;
     }
     let material_source = match source.material_origin() {
         CredentialMaterialOrigin::Vault | CredentialMaterialOrigin::ExternalHelper => {
@@ -259,7 +195,7 @@ mod tests {
                 target: Some(target.clone()),
                 usage: CredentialUsage::HttpBasicAuth,
                 policy: policy.clone(),
-                holder_admission: CredentialHolderAdmission::Selected(&holder),
+                selected_holder: &holder,
                 binding: &binding,
                 now_unix_ms: 1_999,
             },
@@ -278,7 +214,7 @@ mod tests {
                     target: Some(target.clone()),
                     usage: CredentialUsage::HttpBasicAuth,
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -297,7 +233,7 @@ mod tests {
                         target: Some(target.clone()),
                         usage: CredentialUsage::HttpBasicAuth,
                         policy: policy.clone(),
-                        holder_admission: CredentialHolderAdmission::Selected(&holder),
+                        selected_holder: &holder,
                         binding: &binding,
                         now_unix_ms: 1_999,
                     },
@@ -314,7 +250,7 @@ mod tests {
                     target: Some(target.clone()),
                     usage: CredentialUsage::HttpBasicAuth,
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -335,7 +271,7 @@ mod tests {
                     target: Some(other_target),
                     usage: CredentialUsage::HttpBasicAuth,
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -351,7 +287,7 @@ mod tests {
                     target: Some(target.clone()),
                     usage: CredentialUsage::HttpBasicAuth,
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 2_000,
                 },
@@ -371,7 +307,7 @@ mod tests {
                     target: Some(target.clone()),
                     usage: CredentialUsage::HttpBasicAuth,
                     policy,
-                    holder_admission: CredentialHolderAdmission::Selected(&other_holder),
+                    selected_holder: &other_holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -393,7 +329,7 @@ mod tests {
                         holder.clone(),
                         ModelExposurePolicy::Forbidden,
                     ),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -403,44 +339,48 @@ mod tests {
         );
     }
 
-    /// Deferred-holder cause/effect graph: C1 source is an active, positive,
-    /// undescribed legacy row; C2 access is targetless; C3 policy is nonempty;
-    /// C4 the typed deferred owner matches Provider or A2A usage. Effects: E1
-    /// compile the same source-owned material/revision while holder selection
-    /// remains at the dispatch claim; E2 any described/targeted/zero-revision,
-    /// empty-policy, or owner/usage mismatch fails before material I/O.
+    /// Exact-target cause/effect graph: C1 the active positive legacy source
+    /// scope owns the requested provider/origin; C2 the access carries that
+    /// exact purpose/audience; C3 the selected holder is admitted. Effects: E1
+    /// compile one target-bearing pin; E2 missing/wrong target, invalid revision,
+    /// or unauthorized holder fails before material I/O.
     ///
-    /// | Rule | C1 | C2 | C3 | C4 | Effect |
-    /// |---|---|---|---|---|---|
-    /// | D1 | T | T | T | Provider | E1 |
-    /// | D2 | T | T | T | A2A | E1 |
-    /// | D3 | described/zero | - | T | valid | E2 |
-    /// | D4 | T | targeted | T | valid | E2 |
-    /// | D5 | T | T | F | valid | E2 |
-    /// | D6 | T | T | T | mismatch | E2 |
+    /// | Rule | C1 | C2 | C3 | Effect |
+    /// |---|---|---|---|---|
+    /// | D1 | Provider | exact | T | E1 |
+    /// | D2 | A2A origin | exact | T | E1 |
+    /// | D3 | any | missing | T | E2 |
+    /// | D4 | Provider | wrong audience | T | E2 |
+    /// | D5 | Provider | exact | F | E2 |
     #[test]
-    fn deferred_holder_admission_is_bounded_to_legacy_provider_and_a2a() {
-        let (described, target, _, _, _) = fixture();
-        let mut legacy = described.clone();
+    fn exact_holder_admission_is_required_for_legacy_provider_and_a2a() {
+        let (described, _, _, _, _) = fixture();
+        let mut legacy = described;
         legacy.descriptor = None;
         legacy.provider_id = Some("legacy-provider".into());
         let policy = CredentialExecutionPolicy::self_hosted_provider();
+        let holder = policy
+            .allowed_plaintext_holders
+            .iter()
+            .next()
+            .expect("self-hosted policy has one exact holder")
+            .clone();
         let provider_usage = CredentialUsage::ProviderAdapter;
         let provider_binding = CredentialMaterialBinding::for_target(
             "workspace-a",
             &("legacy-provider@1", "https://provider.example.invalid/v1"),
             &provider_usage,
         );
+        let provider_target =
+            CredentialTarget::new(CredentialPurpose::ProviderAdapter, "legacy-provider");
         let provider = compile_exact_credential_access(
             &legacy,
             ExactCredentialAccessRequest {
                 workspace_id: Some("workspace-a"),
-                target: None,
+                target: Some(provider_target.clone()),
                 usage: provider_usage.clone(),
                 policy: policy.clone(),
-                holder_admission: CredentialHolderAdmission::Deferred(
-                    DeferredCredentialHolderSelection::ProviderPublication,
-                ),
+                selected_holder: &holder,
                 binding: &provider_binding,
                 now_unix_ms: 1_999,
             },
@@ -448,6 +388,8 @@ mod tests {
         .expect("D1/E1");
         assert_eq!(provider.credential.revision, 7, "D1/E1");
 
+        let mut a2a_source = legacy.clone();
+        a2a_source.provider_id = Some("https://agent.example".into());
         let a2a_usage = CredentialUsage::HttpHeader {
             name: "authorization".into(),
             scheme: Some("Bearer".into()),
@@ -457,17 +399,19 @@ mod tests {
             &("a2a:https://agent.example/service", "sha256:card-security"),
             &a2a_usage,
         );
+        let a2a_target = CredentialTarget::new(
+            CredentialPurpose::RemoteAgentAuthorization,
+            "https://agent.example",
+        );
         assert!(
             compile_exact_credential_access(
-                &legacy,
+                &a2a_source,
                 ExactCredentialAccessRequest {
                     workspace_id: Some("workspace-a"),
-                    target: None,
+                    target: Some(a2a_target),
                     usage: a2a_usage.clone(),
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Deferred(
-                        DeferredCredentialHolderSelection::A2aPublication,
-                    ),
+                    selected_holder: &holder,
                     binding: &a2a_binding,
                     now_unix_ms: 1_999,
                 },
@@ -476,45 +420,34 @@ mod tests {
             "D2/E1"
         );
 
-        for (rule, invalid) in [
-            ("D3 described", described),
-            ("D3 zero revision", {
-                let mut invalid = legacy.clone();
-                invalid.version = 0;
-                invalid
-            }),
-        ] {
-            assert!(
-                compile_exact_credential_access(
-                    &invalid,
-                    ExactCredentialAccessRequest {
-                        workspace_id: Some("workspace-a"),
-                        target: None,
-                        usage: provider_usage.clone(),
-                        policy: policy.clone(),
-                        holder_admission: CredentialHolderAdmission::Deferred(
-                            DeferredCredentialHolderSelection::ProviderPublication,
-                        ),
-                        binding: &provider_binding,
-                        now_unix_ms: 1_999,
-                    },
-                )
-                .is_err(),
-                "{rule}/E2"
-            );
-        }
-
         assert!(
             compile_exact_credential_access(
                 &legacy,
                 ExactCredentialAccessRequest {
                     workspace_id: Some("workspace-a"),
-                    target: Some(target),
+                    target: None,
                     usage: provider_usage.clone(),
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Deferred(
-                        DeferredCredentialHolderSelection::ProviderPublication,
-                    ),
+                    selected_holder: &holder,
+                    binding: &provider_binding,
+                    now_unix_ms: 1_999,
+                },
+            )
+            .is_err(),
+            "D3/E2"
+        );
+        assert!(
+            compile_exact_credential_access(
+                &legacy,
+                ExactCredentialAccessRequest {
+                    workspace_id: Some("workspace-a"),
+                    target: Some(CredentialTarget::new(
+                        CredentialPurpose::ProviderAdapter,
+                        "another-provider",
+                    )),
+                    usage: provider_usage.clone(),
+                    policy: policy.clone(),
+                    selected_holder: &holder,
                     binding: &provider_binding,
                     now_unix_ms: 1_999,
                 },
@@ -527,15 +460,13 @@ mod tests {
                 &legacy,
                 ExactCredentialAccessRequest {
                     workspace_id: Some("workspace-a"),
-                    target: None,
+                    target: Some(provider_target),
                     usage: provider_usage,
                     policy: CredentialExecutionPolicy::new(
                         std::iter::empty::<PlaintextHolder>(),
                         ModelExposurePolicy::Forbidden,
                     ),
-                    holder_admission: CredentialHolderAdmission::Deferred(
-                        DeferredCredentialHolderSelection::ProviderPublication,
-                    ),
+                    selected_holder: &holder,
                     binding: &provider_binding,
                     now_unix_ms: 1_999,
                 },
@@ -543,27 +474,9 @@ mod tests {
             .is_err(),
             "D5/E2"
         );
-        assert!(
-            compile_exact_credential_access(
-                &legacy,
-                ExactCredentialAccessRequest {
-                    workspace_id: Some("workspace-a"),
-                    target: None,
-                    usage: a2a_usage,
-                    policy,
-                    holder_admission: CredentialHolderAdmission::Deferred(
-                        DeferredCredentialHolderSelection::ProviderPublication,
-                    ),
-                    binding: &a2a_binding,
-                    now_unix_ms: 1_999,
-                },
-            )
-            .is_err(),
-            "D6/E2"
-        );
     }
 
-    /// Material-origin cause/effect graph: C1 the legacy targetless source is
+    /// Material-origin cause/effect graph: C1 the local-injection source is
     /// otherwise admissible; C2 its canonical `material_origin()` is Vault,
     /// ExternalHelper, WorkerLocal, or LegacyEnvironment. Effects: E1 Vault and
     /// ExternalHelper compile a Control-plane reference; E2 WorkerLocal compiles
@@ -580,9 +493,8 @@ mod tests {
     fn exact_access_uses_the_source_owned_material_origin() {
         let (mut source, _, policy, holder, binding) = fixture();
         source.descriptor = None;
-        let usage = CredentialUsage::HttpHeader {
-            name: "authorization".into(),
-            scheme: Some("Bearer".into()),
+        let usage = CredentialUsage::EnvironmentVariable {
+            name: "AWAKEN_TEST_KEY".into(),
         };
 
         for (rule, kind, expected) in [
@@ -611,7 +523,7 @@ mod tests {
                     target: None,
                     usage: usage.clone(),
                     policy: policy.clone(),
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },
@@ -629,7 +541,7 @@ mod tests {
                     target: None,
                     usage,
                     policy,
-                    holder_admission: CredentialHolderAdmission::Selected(&holder),
+                    selected_holder: &holder,
                     binding: &binding,
                     now_unix_ms: 1_999,
                 },

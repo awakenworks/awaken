@@ -449,6 +449,21 @@ fn http_basic_material(username: &str, password: &str) -> awaken_agent_contract:
         .expect("encode HTTP Basic test material")
 }
 
+fn repository_credential_descriptor(url: &str) -> awaken_credential_contract::CredentialDescriptor {
+    awaken_credential_contract::CredentialDescriptor::new(
+        "git",
+        awaken_credential_contract::CredentialMaterialDescriptor::structured(
+            awaken_runtime_contract::credential::HTTP_BASIC_MATERIAL_TYPE,
+            ["password", "username"],
+        ),
+        [awaken_credential_contract::CredentialTargetContract::new(
+            awaken_session_contract::repository_transport_credential_target(url)
+                .expect("HTTPS Repository target"),
+            awaken_session_contract::repository_transport_credential_usage(),
+        )],
+    )
+}
+
 fn effective_resources(
     resources: Vec<TestInput>,
 ) -> awaken_session_contract::ResolvedSessionResources {
@@ -6691,7 +6706,7 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
     let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
     let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
     let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-    let credential = awaken_credential_vault::repo::enter_credential(
+    let mut credential = awaken_credential_vault::repo::enter_credential(
         awaken_credential_vault::CredentialCreateParams {
             workspace_id: "workspace-a".into(),
             kind: awaken_credential_vault::CredentialKind::Vault,
@@ -6712,6 +6727,28 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
         .with_credential_refresh_factory(Arc::new(ExactRefreshFactory));
     let holder = PlaintextHolder::new(PlaintextBoundary::Worker, "awaken.worker");
     let (mcp_url, seen) = crate::test_mcp::start(Some("Bearer published-mcp-token")).await;
+    let mcp_audience = awaken_session_contract::McpTarget::identity(&mcp_url)
+        .unwrap()
+        .canonical_url();
+    credential.descriptor = Some(awaken_credential_contract::CredentialDescriptor::new(
+        mcp_audience.clone(),
+        awaken_credential_contract::CredentialMaterialDescriptor::secret(
+            awaken_credential_contract::OPAQUE_SECRET_MATERIAL_TYPE,
+        ),
+        [awaken_credential_contract::CredentialTargetContract::new(
+            awaken_credential_contract::CredentialTarget::new(
+                awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                mcp_audience.clone(),
+            ),
+            CredentialUsage::HttpHeader {
+                name: "authorization".into(),
+                scheme: Some("Bearer".into()),
+            },
+        )],
+    ));
+    awaken_credential_vault::repo::CredentialRepo::put(credentials.as_ref(), credential.clone())
+        .await
+        .unwrap();
     let generation = |session: &str| awaken_session_contract::McpGenerationRef {
         session_id: session.into(),
         attachment_id: awaken_session_contract::McpAttachmentId("mcp-docs".into()),
@@ -6728,25 +6765,35 @@ async fn published_mcp_credential_is_materialized_only_for_its_workspace_and_rev
             stage_idempotency_key: format!("stage-{session}"),
             name: "docs".into(),
             target: awaken_session_contract::McpTarget::parse_http(&mcp_url).unwrap(),
-            credential: Some(CredentialAccess::new(
-                CredentialRef {
-                    id: credential.id.0.clone(),
-                    revision,
-                },
-                CredentialMaterialSource::ControlPlaneReference,
-                CredentialUsage::HttpHeader {
-                    name: "authorization".into(),
-                    scheme: Some("Bearer".into()),
-                },
-                CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
-            )),
+            credential: Some(
+                CredentialAccess::new(
+                    CredentialRef {
+                        id: credential.id.0.clone(),
+                        revision,
+                    },
+                    CredentialMaterialSource::ControlPlaneReference,
+                    CredentialUsage::HttpHeader {
+                        name: "authorization".into(),
+                        scheme: Some("Bearer".into()),
+                    },
+                    CredentialExecutionPolicy::exact(
+                        holder.clone(),
+                        ModelExposurePolicy::VirtualOnly,
+                    ),
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_credential_contract::CredentialPurpose::McpAuthorization,
+                    mcp_audience.clone(),
+                )),
+            ),
             prompts_as_skills: false,
             selected_plaintext_holder: Some(holder.clone()),
         }
     };
 
-    // Cause graph: exact workspace + revision + allowed Worker holder -> Native
-    // host material is staged but invisible; durable publication command -> visible.
+    // Cause graph: exact described MCP target + workspace + revision + allowed
+    // Worker holder -> Native host material is staged but invisible; durable
+    // publication command -> visible.
     // ACP authentication additionally requires installed no-bypass provider evidence
     // before material resolution; anonymous ACP has no secret and needs no custody proof.
     //
@@ -7376,7 +7423,13 @@ async fn published_mcp_envelope_uses_the_authoring_target_binding_at_realization
         CredentialMaterialSource::ControlPlaneReference,
         usage.clone(),
         CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::VirtualOnly),
-    );
+    )
+    .with_target(awaken_runtime_contract::CredentialTarget::new(
+        awaken_credential_contract::CredentialPurpose::McpAuthorization,
+        awaken_session_contract::McpTarget::identity(target.http_url().unwrap())
+            .unwrap()
+            .canonical_url(),
+    ));
     let resolver = Arc::new(ExactTargetResolver {
         expected: awaken_credential_contract::CredentialMaterialBinding::for_target(
             workspace, &target, &usage,
@@ -7608,6 +7661,7 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
                 plugins: Vec::new(),
                 tool_ids: vec![format!("docs-generation-{number}")],
                 skill_registries: Vec::new(),
+                call_fences: Vec::new(),
             }),
             mcp_process: None,
             state: McpProjectionState::Staged,
@@ -7714,6 +7768,155 @@ async fn native_and_acp_project_the_same_generation_across_hot_replacement() {
             .status(),
         reqwest::StatusCode::NOT_FOUND,
         "P5"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mcp_drain_acknowledges_removed_only_after_busy_call_quiesces() {
+    use std::sync::{Arc, Condvar, Mutex};
+
+    use async_trait::async_trait;
+    use awaken_ext_mcp::transport::{McpToolTransport, revocable_transport};
+    use awaken_ext_mcp::{CallToolResult, McpToolDefinition, McpTransportError};
+    use awaken_session_contract::{
+        McpAttachmentId, McpGeneration, McpGenerationRef, McpRealizationReceipt, StageMcpAttachment,
+    };
+
+    use crate::mcp::{McpTransportMaterial, McpTransportMaterialKind, McpWiring};
+    use crate::session_slot::{McpGenerationProjection, McpProjectionState};
+
+    struct DropGate(Arc<(Mutex<bool>, Condvar)>);
+
+    impl Drop for DropGate {
+        fn drop(&mut self) {
+            let (released, signal) = self.0.as_ref();
+            let mut released = released.lock().expect("drop gate mutex");
+            while !*released {
+                released = signal.wait(released).expect("drop gate wait");
+            }
+        }
+    }
+
+    struct BusyTransport {
+        started: Arc<tokio::sync::Notify>,
+        drop_gate: Arc<(Mutex<bool>, Condvar)>,
+    }
+
+    #[async_trait]
+    impl McpToolTransport for BusyTransport {
+        async fn list_tools(&self) -> Result<Vec<McpToolDefinition>, McpTransportError> {
+            Ok(Vec::new())
+        }
+
+        async fn call_tool(
+            &self,
+            _tool_name: &str,
+            _arguments: serde_json::Value,
+        ) -> Result<CallToolResult, McpTransportError> {
+            let _drop_gate = DropGate(self.drop_gate.clone());
+            self.started.notify_waiters();
+            std::future::pending().await
+        }
+    }
+
+    // Cause/effect graph: C1 one exact generation is Active; C2 one local tool
+    // call is in flight; C3 drain is requested; C4 cancellation has begun but
+    // the call future has not completed its drop. Effects: E1 new visibility is
+    // closed immediately; E2 state remains Draining and no Removed receipt can
+    // be observed during C4; E3 releasing the last call guard permits Removed;
+    // E4 the busy call terminates with revocation instead of producing a late
+    // result. Decision rules: Q1 C1+C2+C3+C4=>E1+E2; Q2 Q1+quiesced=>E3+E4.
+    let host = Arc::new(SharedHost::new(Arc::new(OkModel), "stub"));
+    let generation = McpGenerationRef {
+        session_id: "mcp-busy-drain".into(),
+        attachment_id: McpAttachmentId("docs".into()),
+        generation: McpGeneration(1),
+        runtime_incarnation: "runtime-1".into(),
+        lease_epoch: 1,
+        lease_expires_at_unix_ms: u64::MAX,
+    };
+    let request = StageMcpAttachment {
+        workspace_id: "workspace-a".into(),
+        generation: generation.clone(),
+        realization_id: "realization-1".into(),
+        stage_idempotency_key: "stage-1".into(),
+        name: "docs".into(),
+        target: awaken_session_contract::McpTarget::parse_http("https://mcp.example.test/sse")
+            .unwrap(),
+        prompts_as_skills: false,
+        credential: None,
+        selected_plaintext_holder: None,
+    };
+    let started = Arc::new(tokio::sync::Notify::new());
+    let drop_gate = Arc::new((Mutex::new(false), Condvar::new()));
+    let (transport, fence) = revocable_transport(Arc::new(BusyTransport {
+        started: started.clone(),
+        drop_gate: drop_gate.clone(),
+    }));
+    host.insert_mcp_projection(McpGenerationProjection {
+        receipt: McpRealizationReceipt {
+            generation: generation.clone(),
+            realization_id: request.realization_id.clone(),
+            selected_plaintext_holder: None,
+            actual_realization_kind: None,
+            receipt_fingerprint: request.fingerprint(),
+        },
+        request,
+        server: Some(McpTransportMaterial {
+            name: "docs".into(),
+            prompts_as_skills: false,
+            transport: McpTransportMaterialKind::Http {
+                url: "https://mcp.example.test/sse".into(),
+                bearer: None,
+                refresh: None,
+            },
+        }),
+        native_wiring: Some(McpWiring {
+            plugins: Vec::new(),
+            tool_ids: Vec::new(),
+            skill_registries: Vec::new(),
+            call_fences: vec![fence],
+        }),
+        mcp_process: None,
+        state: McpProjectionState::Active,
+    })
+    .unwrap();
+
+    let busy_call =
+        tokio::spawn(async move { transport.call_tool("busy", serde_json::Value::Null).await });
+    started.notified().await;
+    let drain_host = host.clone();
+    let drain_generation = generation.clone();
+    let drain =
+        tokio::spawn(async move { drain_host.drain_mcp_projection(&drain_generation).await });
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if host
+                .mcp_projection(&generation)
+                .is_some_and(|projection| projection.state == McpProjectionState::Draining)
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("Q1 drain enters Draining");
+    assert!(
+        !drain.is_finished(),
+        "Q1/E2 no early Removed acknowledgement"
+    );
+
+    let (released, signal) = drop_gate.as_ref();
+    *released.lock().expect("release mutex") = true;
+    signal.notify_all();
+    assert!(busy_call.await.unwrap().is_err(), "Q2/E4 busy call revoked");
+    drain.await.unwrap().unwrap();
+    assert_eq!(
+        host.mcp_projection(&generation).unwrap().state,
+        McpProjectionState::Removed,
+        "Q2/E3"
     );
 }
 
@@ -8176,15 +8379,16 @@ async fn worker_dispatch_resource_runtime_survives_assembly_and_fails_closed() {
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-        let source = awaken_credential_vault::repo::enter_credential(
+        let source = awaken_credential_vault::repo::enter_credential_described(
             awaken_credential_vault::CredentialCreateParams {
                 workspace_id: workspace.clone(),
                 kind: awaken_credential_vault::CredentialKind::Vault,
-                provider_id: Some("git".into()),
+                provider_id: None,
                 env_key: None,
                 secret: Some(http_basic_material("git", "dispatch-repository-secret")),
                 oauth_command: None,
             },
+            repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
         )
@@ -8584,7 +8788,7 @@ async fn repository_credential_realization_follows_the_decision_table() {
         let workspace = host.local_workspace().to_owned();
         let credentials = Arc::new(awaken_credential_vault::repo::InMemoryCredentialRepo::new());
         let secrets = Arc::new(awaken_credential_vault::InMemorySecretStore::new());
-        let mut source = awaken_credential_vault::repo::enter_credential(
+        let mut source = awaken_credential_vault::repo::enter_credential_described(
             awaken_credential_vault::CredentialCreateParams {
                 workspace_id: if matches!(rule.case, Case::CrossWorkspace) {
                     "another-workspace".into()
@@ -8592,20 +8796,30 @@ async fn repository_credential_realization_follows_the_decision_table() {
                     workspace.clone()
                 },
                 kind: awaken_credential_vault::CredentialKind::Vault,
-                provider_id: Some("git".into()),
+                provider_id: None,
                 env_key: None,
-                secret: Some(if matches!(rule.case, Case::WrongMaterial) {
-                    awaken_agent_contract::RedactedString::new("legacy-scalar-token")
-                } else {
-                    http_basic_material("git", "repository-decision-secret")
-                }),
+                secret: Some(http_basic_material("git", "repository-decision-secret")),
                 oauth_command: None,
             },
+            repository_credential_descriptor("https://github.com/awaken/example.git"),
             secrets.as_ref(),
             credentials.as_ref(),
         )
         .await
         .expect("author exact Repository credential");
+        if matches!(rule.case, Case::WrongMaterial) {
+            let material_ref = source
+                .material_ref
+                .as_ref()
+                .expect("described Repository material reference");
+            awaken_credential_vault::SecretStore::put(
+                secrets.as_ref(),
+                material_ref,
+                awaken_agent_contract::RedactedString::new("corrupt-scalar-token"),
+            )
+            .await
+            .expect("simulate corrupted Repository material at rest");
+        }
         if matches!(rule.case, Case::InactiveSource) {
             source.status = awaken_credential_vault::CredentialStatus::Disabled;
             awaken_credential_vault::repo::CredentialRepo::put(
@@ -9905,15 +10119,21 @@ fn cold_host_inference_holder_follows_the_candidate_backend_decision_table() {
         |model: &str, backend: &str, policy: awaken_runtime_contract::CredentialExecutionPolicy| {
             let binding =
                 awaken_runtime_contract::resolved::ModelBinding::new("provider", model, backend);
-            let credential = Some(awaken_runtime_contract::CredentialAccess::new(
-                awaken_runtime_contract::CredentialRef {
-                    id: format!("credential-{model}"),
-                    revision: 1,
-                },
-                awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
-                awaken_runtime_contract::CredentialUsage::ProviderAdapter,
-                policy,
-            ));
+            let credential = Some(
+                awaken_runtime_contract::CredentialAccess::new(
+                    awaken_runtime_contract::CredentialRef {
+                        id: format!("credential-{model}"),
+                        revision: 1,
+                    },
+                    awaken_runtime_contract::CredentialMaterialSource::ControlPlaneReference,
+                    awaken_runtime_contract::CredentialUsage::ProviderAdapter,
+                    policy,
+                )
+                .with_target(awaken_runtime_contract::CredentialTarget::new(
+                    awaken_runtime_contract::credential::CredentialPurpose::ProviderAdapter,
+                    "provider",
+                )),
+            );
             let endpoint = awaken_runtime_contract::InferenceEndpoint {
                 adapter_kind: "test".into(),
                 api_dialect: "test".into(),

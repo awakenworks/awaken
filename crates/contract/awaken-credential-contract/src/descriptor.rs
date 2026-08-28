@@ -94,25 +94,33 @@ pub enum CredentialPurpose {
     ProviderAdapter,
     RepositoryTransport,
     McpAuthorization,
+    RemoteAgentAuthorization,
+    /// One registered Host Web provider identified by its immutable provider id.
+    WebProviderAuthorization,
     HttpEffect,
     SignatureVerification,
     Extension,
 }
 
 impl CredentialPurpose {
-    /// Validate the sole usage shape supported by this purpose. Provider and
-    /// MCP descriptors remain closed until their existing publication
-    /// compilers carry an exact target; accepting them earlier would create a
-    /// source that only some materialization paths can enforce.
+    /// Validate the closed usage shapes supported by each target owner.
     pub fn validate_usage(&self, usage: &CredentialUsage) -> Result<(), CredentialDescriptorError> {
         match (self, usage) {
-            (Self::RepositoryTransport, CredentialUsage::HttpBasicAuth)
+            (Self::ProviderAdapter, CredentialUsage::ProviderAdapter)
+            | (Self::ProviderAdapter, CredentialUsage::EnvironmentVariable { .. })
+            | (Self::ProviderAdapter, CredentialUsage::File { .. })
+            | (Self::RepositoryTransport, CredentialUsage::HttpBasicAuth)
+            | (Self::McpAuthorization, CredentialUsage::HttpHeader { .. })
+            | (Self::RemoteAgentAuthorization, CredentialUsage::HttpHeader { .. })
+            | (Self::WebProviderAuthorization, CredentialUsage::HttpHeader { .. })
+            | (Self::WebProviderAuthorization, CredentialUsage::HttpBasicAuth)
+            | (Self::WebProviderAuthorization, CredentialUsage::QueryParameter { .. })
+            | (Self::WebProviderAuthorization, CredentialUsage::ClientCertificate)
+            | (Self::WebProviderAuthorization, CredentialUsage::EnvironmentVariable { .. })
+            | (Self::WebProviderAuthorization, CredentialUsage::File { .. })
             | (Self::HttpEffect, CredentialUsage::HttpEffect { .. })
             | (Self::SignatureVerification, CredentialUsage::SignatureVerification { .. })
             | (Self::Extension, CredentialUsage::Extension { .. }) => Ok(()),
-            (Self::ProviderAdapter | Self::McpAuthorization, _) => {
-                Err(CredentialDescriptorError::UnsupportedPurpose)
-            }
             _ => Err(CredentialDescriptorError::InvalidTargetUsage),
         }
     }
@@ -147,8 +155,8 @@ impl CredentialTarget {
 }
 
 /// Validate the single target/usage authority carried by executable access.
-/// Legacy Provider/MCP/A2A access remains target-less; credential forms whose
-/// meaning depends on a target cannot execute without one.
+/// Raw local injection forms retain their holder/binding authority; every
+/// network or provider effect must name its exact consumer target.
 pub fn validate_credential_target_usage(
     target: Option<&CredentialTarget>,
     usage: &CredentialUsage,
@@ -157,7 +165,9 @@ pub fn validate_credential_target_usage(
         Some(target) => target.validate_usage(usage),
         None if matches!(
             usage,
-            CredentialUsage::HttpBasicAuth
+            CredentialUsage::ProviderAdapter
+                | CredentialUsage::HttpHeader { .. }
+                | CredentialUsage::HttpBasicAuth
                 | CredentialUsage::HttpEffect { .. }
                 | CredentialUsage::SignatureVerification { .. }
                 | CredentialUsage::Extension { .. }
@@ -389,6 +399,8 @@ impl CredentialDescriptor {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum CredentialDescriptorError {
+    #[error("credential purpose has no exact target compiler")]
+    UnsupportedPurpose,
     #[error("credential descriptor metadata is invalid")]
     InvalidMetadata,
     #[error("credential descriptor material shape is invalid")]
@@ -399,8 +411,6 @@ pub enum CredentialDescriptorError {
     TargetMismatch,
     #[error("credential descriptor declares an invalid target usage")]
     InvalidTargetUsage,
-    #[error("credential purpose has no exact target compiler")]
-    UnsupportedPurpose,
     #[error("credential usage requires an exact target")]
     MissingTarget,
     #[error("credential descriptor declares the same purpose and audience more than once")]
@@ -592,13 +602,13 @@ mod tests {
     /// Purpose/usage cause-effect graph: C1 purpose has a production exact-
     /// target compiler; C2 usage is that purpose's sole supported shape.
     /// Effects: E1 the pair is admitted; E2 a cross-purpose usage is rejected;
-    /// E3 a target-less Provider/MCP compiler cannot publish a described source.
+    /// E3 every network/provider usage fails without its target.
     ///
     /// | Rule | C1 | C2 | Effect |
     /// |---|---|---|---|
     /// | P1 | T | T | E1 |
     /// | P2 | T | F | E2 |
-    /// | P3 | F | - | E3 |
+    /// | P3 | T | target absent | E3 |
     #[test]
     fn credential_purpose_accepts_only_its_exact_supported_usage() {
         let effect = CredentialUsage::HttpEffect {
@@ -648,21 +658,57 @@ mod tests {
         );
         assert_eq!(
             CredentialPurpose::ProviderAdapter.validate_usage(&CredentialUsage::ProviderAdapter),
-            Err(CredentialDescriptorError::UnsupportedPurpose),
-            "P3/E3 Provider"
+            Ok(()),
+            "P1/E1 Provider"
         );
         assert_eq!(
             CredentialPurpose::McpAuthorization.validate_usage(&CredentialUsage::HttpHeader {
                 name: "authorization".into(),
                 scheme: Some("Bearer".into()),
             },),
-            Err(CredentialDescriptorError::UnsupportedPurpose),
-            "P3/E3 MCP"
+            Ok(()),
+            "P1/E1 MCP"
+        );
+        assert_eq!(
+            CredentialPurpose::RemoteAgentAuthorization.validate_usage(
+                &CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+            ),
+            Ok(()),
+            "P1/E1 remote Agent"
+        );
+        assert_eq!(
+            CredentialPurpose::WebProviderAuthorization.validate_usage(
+                &CredentialUsage::HttpHeader {
+                    name: "x-api-key".into(),
+                    scheme: None,
+                },
+            ),
+            Ok(()),
+            "P1/E1 Web provider"
         );
         assert_eq!(
             validate_credential_target_usage(None, &CredentialUsage::HttpBasicAuth),
             Err(CredentialDescriptorError::MissingTarget),
             "P3/E3 target-dependent access"
+        );
+        assert_eq!(
+            validate_credential_target_usage(None, &CredentialUsage::ProviderAdapter),
+            Err(CredentialDescriptorError::MissingTarget),
+            "P3/E3 Provider target"
+        );
+        assert_eq!(
+            validate_credential_target_usage(
+                None,
+                &CredentialUsage::HttpHeader {
+                    name: "authorization".into(),
+                    scheme: Some("Bearer".into()),
+                },
+            ),
+            Err(CredentialDescriptorError::MissingTarget),
+            "P3/E3 HTTP authorization target"
         );
         assert_eq!(
             CredentialPurpose::HttpEffect.validate_usage(&signature),

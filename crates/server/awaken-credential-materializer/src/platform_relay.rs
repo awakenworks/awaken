@@ -109,7 +109,11 @@ mod tests {
     use std::sync::Arc;
 
     use awaken_agent_contract::RedactedString;
-    use awaken_credential_vault::repo::{InMemoryCredentialRepo, enter_credential};
+    use awaken_credential_contract::{
+        CredentialDescriptor, CredentialMaterialDescriptor, CredentialPurpose, CredentialTarget,
+        CredentialTargetContract, OPAQUE_SECRET_MATERIAL_TYPE,
+    };
+    use awaken_credential_vault::repo::{CredentialRepo, InMemoryCredentialRepo, enter_credential};
     use awaken_credential_vault::{CredentialCreateParams, CredentialKind, InMemorySecretStore};
     use awaken_runtime_contract::{
         CredentialAccess, CredentialExecutionPolicy, CredentialMaterialSource,
@@ -136,7 +140,17 @@ mod tests {
     async fn platform_relay_resolves_only_an_exact_holder_and_workspace() {
         let credentials = Arc::new(InMemoryCredentialRepo::new());
         let secrets = Arc::new(InMemorySecretStore::new());
-        let source = enter_credential(
+        let usage = CredentialUsage::HttpEffect {
+            fields: BTreeMap::from([(
+                "token".into(),
+                BTreeSet::from([HttpEffectPlacement::Header {
+                    name: "authorization".into(),
+                }]),
+            )]),
+        };
+        let target =
+            CredentialTarget::new(CredentialPurpose::HttpEffect, "https://api.example.test");
+        let mut source = enter_credential(
             CredentialCreateParams {
                 workspace_id: "workspace-a".into(),
                 kind: CredentialKind::Vault,
@@ -150,6 +164,13 @@ mod tests {
         )
         .await
         .unwrap();
+        source.provider_id = None;
+        source.descriptor = Some(CredentialDescriptor::new(
+            "domain-pack/provider",
+            CredentialMaterialDescriptor::secret(OPAQUE_SECRET_MATERIAL_TYPE),
+            [CredentialTargetContract::new(target.clone(), usage.clone())],
+        ));
+        credentials.put(source.clone()).await.unwrap();
         let materializer = PinnedCredentialMaterializer::new(credentials, secrets);
         let holder = PlaintextHolder::new(PlaintextBoundary::Platform, "gateway.beta");
         let access = CredentialAccess::new(
@@ -158,20 +179,10 @@ mod tests {
                 revision: u64::try_from(source.version).unwrap(),
             },
             CredentialMaterialSource::ControlPlaneReference,
-            CredentialUsage::HttpEffect {
-                fields: BTreeMap::from([(
-                    "token".into(),
-                    BTreeSet::from([HttpEffectPlacement::Header {
-                        name: "authorization".into(),
-                    }]),
-                )]),
-            },
+            usage,
             CredentialExecutionPolicy::exact(holder.clone(), ModelExposurePolicy::Forbidden),
         )
-        .with_target(awaken_credential_contract::CredentialTarget::new(
-            awaken_credential_contract::CredentialPurpose::HttpEffect,
-            "https://api.example.test",
-        ));
+        .with_target(target);
 
         let capabilities = materializer.platform_relay_capabilities("gateway.beta");
         assert!(capabilities.holders.contains(&holder));

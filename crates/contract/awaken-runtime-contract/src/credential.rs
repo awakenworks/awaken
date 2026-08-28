@@ -463,15 +463,21 @@ mod tests {
                 "provider@1",
                 "route@1",
                 "workspace-a",
-                Some(CredentialAccess::new(
-                    CredentialRef {
-                        id: "provider-key".into(),
-                        revision: 1,
-                    },
-                    CredentialMaterialSource::ControlPlaneReference,
-                    CredentialUsage::ProviderAdapter,
-                    CredentialExecutionPolicy::self_hosted_provider(),
-                )),
+                Some(
+                    CredentialAccess::new(
+                        CredentialRef {
+                            id: "provider-key".into(),
+                            revision: 1,
+                        },
+                        CredentialMaterialSource::ControlPlaneReference,
+                        CredentialUsage::ProviderAdapter,
+                        CredentialExecutionPolicy::self_hosted_provider(),
+                    )
+                    .with_target(CredentialTarget::new(
+                        CredentialPurpose::ProviderAdapter,
+                        "provider",
+                    )),
+                ),
                 crate::InferenceEndpoint {
                     adapter_kind: "generic".into(),
                     api_dialect: "generic".into(),
@@ -514,9 +520,10 @@ mod tests {
     #[test]
     fn remote_candidates_compile_only_claim_fenced_http_header_authority() {
         // Cause graph:
-        // C1 Remote publication has an exact credential; C2 usage is an HTTP
-        // header; C3 the selected holder is the Worker; C4 WorkerRelay is
-        // installed. Effects: E1 compile one exact attempt binding; E2 an
+        // C1 Remote publication has an exact credential and verified-origin
+        // target; C2 usage is an HTTP header; C3 the selected holder is the
+        // Worker; C4 WorkerRelay is installed. Effects: E1 compile one exact
+        // attempt binding; E2 an
         // anonymous Remote compiles no authority; E3 a non-header usage fails
         // before materialization.
         //
@@ -556,6 +563,10 @@ mod tests {
                 usage,
                 CredentialExecutionPolicy::self_hosted_provider(),
             )
+            .with_target(CredentialTarget::new(
+                CredentialPurpose::RemoteAgentAuthorization,
+                "https://agent.example",
+            ))
         };
 
         let authenticated = remote(Some(access(CredentialUsage::HttpHeader {

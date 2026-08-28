@@ -61,10 +61,10 @@ pub fn static_bearer_to_create_params(
     CredentialCreateParams {
         workspace_id: workspace_id.into(),
         kind: CredentialKind::Vault,
-        // Runtime MCP material is deliberately not an unscoped model-provider
-        // credential. The MCP materializer skips the provider join, while model
-        // publication cannot accidentally select this bearer token as an API key.
-        provider_id: Some("mcp".into()),
+        // The target-owning Managed application attaches the canonical MCP
+        // descriptor in the same aggregate command. No legacy provider scope is
+        // persisted beside that descriptor.
+        provider_id: None,
         // No env-var name: a bearer credential is bound to its MCP server by URL
         // (kept on the wire record), not injected into a process environment.
         env_key: None,
@@ -105,7 +105,7 @@ pub fn mcp_oauth_to_create_params(
         params: CredentialCreateParams {
             workspace_id: workspace_id.into(),
             kind: CredentialKind::Vault,
-            provider_id: Some("mcp".into()),
+            provider_id: None,
             // As with `static_bearer`: URL-bound, not env-injected.
             env_key: None,
             secret: Some(RedactedString::new(wire.access_token)),
@@ -162,7 +162,10 @@ mod tests {
         let json = serde_json::to_string(&source).unwrap();
         assert!(!json.contains("brr-from-the-wire"));
         assert!(source.env_key.is_none());
-        assert_eq!(source.provider_id.as_deref(), Some("mcp"));
+        assert!(
+            source.provider_id.is_none(),
+            "the Managed aggregate adds the exact MCP descriptor; the ACL must not add a parallel legacy provider"
+        );
         // …but the token materializes back at the seam.
         assert_eq!(
             materialize(&source, &store).await.unwrap().expose_secret(),
@@ -186,7 +189,7 @@ mod tests {
             "rt-from-the-wire"
         );
         let source = create_source(bridged.params, &store).await.unwrap();
-        assert_eq!(source.provider_id.as_deref(), Some("mcp"));
+        assert!(source.provider_id.is_none());
         assert!(
             !serde_json::to_string(&source)
                 .unwrap()
