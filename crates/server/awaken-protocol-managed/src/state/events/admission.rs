@@ -148,22 +148,25 @@ impl ManagedState {
                 candidate.projected_event_id = projected_event_id;
             }
         }
-        let mut unresolved = candidates
-            .iter()
-            .map(|candidate| candidate.key.clone())
-            .collect::<std::collections::HashSet<_>>();
         let persisted_session = self
             .application
             .session(session_id)
             .await
             .map_err(StateError::from)?;
+        let retained_replies =
+            Self::retained_tool_reply_identities(&persisted_session, &candidates);
+        let mut unresolved = candidates
+            .iter()
+            .map(|candidate| candidate.key.clone())
+            .filter(|key| !retained_replies.contains(key))
+            .collect::<std::collections::HashSet<_>>();
         let budget_cap_reached = !persisted_session.budget.can_admit_model_request();
         // A pending committed tool reply is the stronger aggregate state. With
         // no pending reply, a reached shared cap makes interrupt an accepted
         // no-op; it must not create an event/receipt or touch Runtime state.
         let ignore_budget_pause_interrupts = budget_cap_reached
             && persisted_session.execution == SessionExecutionState::Idle
-            && unresolved.is_empty();
+            && candidates.is_empty();
         let mut inputs = Vec::with_capacity(events.len());
         for event in events {
             let resolution = match event {

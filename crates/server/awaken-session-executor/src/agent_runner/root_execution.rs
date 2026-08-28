@@ -51,6 +51,8 @@ pub(crate) struct AgentExecution<'a> {
     pub(crate) context: Option<RuntimeRunContext>,
     #[cfg(test)]
     pub(crate) scheduler: Option<RunScheduler>,
+    #[cfg(test)]
+    pub(crate) toolsets: &'a [awaken_runtime_contract::agent_bindings::ToolsetPolicy],
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -312,7 +314,7 @@ pub(crate) async fn run_agent_until_boundary(
     sandbox: AgentRunSandbox<'_>,
     request: ChildRunRequest,
 ) -> Result<AgentRunBoundary, AgentRunError> {
-    let config = server_config(
+    let mut config = server_config(
         execution.agent_id,
         execution.model_ref,
         &HashSet::new(),
@@ -322,6 +324,7 @@ pub(crate) async fn run_agent_until_boundary(
         &[],
         awaken_runtime_contract::resolved::ContextPolicy::KeepAll,
     );
+    config.resolved_spec.plugin_config.agent.toolsets = execution.toolsets.to_vec();
     run_configured_agent_until_boundary(
         &config,
         sandbox,

@@ -65,6 +65,10 @@ export function pairToolResults(log: SessionEvent[]): Map<string, SessionEvent> 
 export interface SessionRuntimeProjection {
   phase: "unknown" | "running" | "idle" | "error";
   pendingConfirmIds: Set<string>;
+  /** Exact accepted replies whose durable Session command has not yet exposed
+   * its processed commit anchor. They no longer need user approval, but remain
+   * interruptible/recoverable work. */
+  resolvingConfirmIds: Set<string>;
   latestError?: SessionEvent;
 }
 
@@ -76,28 +80,39 @@ export interface SessionRuntimeProjection {
 export function projectSessionRuntime(log: SessionEvent[]): SessionRuntimeProjection {
   let phase: SessionRuntimeProjection["phase"] = "unknown";
   let ids = new Set<string>();
+  let resolving = new Set<string>();
   let latestError: SessionEvent | undefined;
   for (const ev of log) {
     if (ev.type === "session.status_running") {
       phase = "running";
       ids = new Set();
+      resolving = new Set();
     } else if (ev.type === "session.status_idle" && "stop_reason" in ev) {
       phase = "idle";
       const sr = ev.stop_reason as { type: string; event_ids?: string[] };
       ids = new Set(sr.type === "requires_action" ? sr.event_ids ?? [] : []);
+      resolving = new Set();
     } else if (ev.type === "session.error") {
       phase = "error";
       ids = new Set();
+      resolving = new Set();
       latestError = ev;
     } else if (ev.type === "agent.tool_result" && "tool_use_id" in ev) {
       ids.delete(String(ev.tool_use_id));
+      resolving.delete(String(ev.tool_use_id));
     } else if (ev.type === "user.tool_confirmation" && "tool_use_id" in ev) {
-      ids.delete(String(ev.tool_use_id));
+      const id = String(ev.tool_use_id);
+      ids.delete(id);
+      if (ev.processed_at) resolving.delete(id);
+      else resolving.add(id);
     } else if (ev.type === "user.custom_tool_result" && "custom_tool_use_id" in ev) {
-      ids.delete(String(ev.custom_tool_use_id));
+      const id = String(ev.custom_tool_use_id);
+      ids.delete(id);
+      if (ev.processed_at) resolving.delete(id);
+      else resolving.add(id);
     }
   }
-  return { phase, pendingConfirmIds: ids, latestError };
+  return { phase, pendingConfirmIds: ids, resolvingConfirmIds: resolving, latestError };
 }
 
 /** The currently unresolved tool ids from the canonical Runtime projection. */

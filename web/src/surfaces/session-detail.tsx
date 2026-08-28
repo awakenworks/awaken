@@ -56,9 +56,11 @@ export default function SessionDetailSurface() {
   const effectiveStatus = runtime.phase === "unknown" ? session.data?.status : runtime.phase;
   const canInterrupt = runtime.phase === "running"
     || runtime.pendingConfirmIds.size > 0
+    || runtime.resolvingConfirmIds.size > 0
     || session.data?.status === "running"
     || session.data?.status === "rescheduling";
-  const needsRecovery = runtime.pendingConfirmIds.size > 0;
+  const needsRecovery = runtime.pendingConfirmIds.size > 0
+    || runtime.resolvingConfirmIds.size > 0;
   const canSend = canSendToSession(runtime, session.data?.status);
 
   const control = useMutation({
@@ -222,6 +224,7 @@ export default function SessionDetailSurface() {
               <span>{app.t("Created", "创建时间")} {session.data?.created_at ? new Date(session.data.created_at).toLocaleString() : "—"}</span>
               <span>{app.t("Status", "状态")} {effectiveStatus === "running" ? app.t("running", "运行中") : effectiveStatus === "idle" ? app.t("idle", "空闲") : effectiveStatus ?? "—"}</span>
               <span>{app.t("Pending tools", "待审批工具")} {runtime.pendingConfirmIds.size}</span>
+              <span>{app.t("Resolving tools", "处理中工具")} {runtime.resolvingConfirmIds.size}</span>
               <span>{app.t("Can send message", "允许发送消息")} {canSend ? app.t("yes", "是") : app.t("no", "否")}</span>
               {runtime.latestError && <span className="err">{app.t("Last error", "最近错误")} {sessionErrorText(runtime.latestError)}</span>}
               <span>{app.t("Environment", "运行环境")} {session.data?.environment_id ?? app.t("Default", "默认")}</span>
