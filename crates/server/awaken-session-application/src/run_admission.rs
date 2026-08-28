@@ -969,15 +969,14 @@ impl SessionRunApplication {
             .to_string()
     }
 
-    async fn run_admitted(
+    fn admission_command(
         &self,
         operation_id: &str,
         thread: &str,
-        requested_agent: Option<String>,
+        requested_agent: Option<&str>,
         messages: Vec<Message>,
-        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
         replacement: awaken_session_contract::SessionRunReplacement,
-    ) -> Result<StepOutcome, RunApplicationError> {
+    ) -> Result<AdmitSessionRun, RunApplicationError> {
         if operation_id.trim().is_empty() {
             return Err(RunError::bad_request(
                 "Session Run requires a stable operation identity",
@@ -988,10 +987,9 @@ impl SessionRunApplication {
                 "Session Run requires at least one new input message",
             ));
         }
-        let agent_id = self.agent_for(thread, requested_agent.as_deref());
-        let command = AdmitSessionRun {
+        Ok(AdmitSessionRun {
             session_id: thread.to_string(),
-            agent_id,
+            agent_id: self.agent_for(thread, requested_agent),
             operation_id: operation_id.to_string(),
             run_id: awaken_session_contract::session_run_id(thread, operation_id),
             messages,
@@ -999,7 +997,25 @@ impl SessionRunApplication {
             traceparent: None,
             execution_requirements: Default::default(),
             replacement,
-        };
+        })
+    }
+
+    async fn run_admitted(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        requested_agent: Option<String>,
+        messages: Vec<Message>,
+        sink: Option<Arc<dyn awaken_agent_contract::stream::sink::Sink>>,
+        replacement: awaken_session_contract::SessionRunReplacement,
+    ) -> Result<StepOutcome, RunApplicationError> {
+        let command = self.admission_command(
+            operation_id,
+            thread,
+            requested_agent.as_deref(),
+            messages,
+            replacement,
+        )?;
         let owner_scope = (self.workspace)(thread);
         Box::pin(
             self.sessions
@@ -1105,5 +1121,35 @@ impl awaken_session_contract::SessionRunReplacementApplication for SessionRunApp
             awaken_session_contract::SessionRunReplacement::SupersedePrior,
         )
         .await
+    }
+}
+
+#[async_trait::async_trait]
+impl awaken_session_contract::SessionRunBackgroundApplication for SessionRunApplication {
+    async fn submit_session_run_background(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<awaken_agent_contract::agent::run::Id, RunApplicationError> {
+        let command = self.admission_command(
+            operation_id,
+            thread,
+            agent.as_deref(),
+            messages,
+            awaken_session_contract::SessionRunReplacement::PreservePrior,
+        )?;
+        let run_id = command.run_id.clone();
+        let owner_scope = (self.workspace)(thread);
+        let admitted = Box::pin(
+            self.sessions
+                .admit_session_run_for_owner(&owner_scope, command),
+        )
+        .await?;
+        self.sessions
+            .activate_admitted_session_run(admitted)
+            .await?;
+        Ok(run_id)
     }
 }

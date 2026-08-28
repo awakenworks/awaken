@@ -16,6 +16,7 @@ use awaken_agent_contract::stream::event::Event;
 use awaken_agent_contract::stream::sink::{Error as SinkError, Sink as StreamSink};
 
 use crate::{Pending, RunError, StepOutcome};
+use awaken_agent_contract::agent::run::Id as RunId;
 
 pub use awaken_agent_contract::page::{CursorParams, HistoryPage};
 
@@ -94,6 +95,23 @@ pub trait SessionRunReplacementApplication: Send + Sync {
         agent: Option<String>,
         messages: Vec<Message>,
     ) -> Result<StepOutcome, RunApplicationError>;
+}
+
+/// Narrow application port for publishing a Session Run without observing it.
+///
+/// Background submission changes only the caller's observation policy. It must
+/// still reserve the Run, commit the exact Session activity receipt, and publish
+/// that reservation through the same Session-owned admission state machine as a
+/// foreground protocol request.
+#[async_trait]
+pub trait SessionRunBackgroundApplication: Send + Sync {
+    async fn submit_session_run_background(
+        &self,
+        operation_id: &str,
+        thread: &str,
+        agent: Option<String>,
+        messages: Vec<Message>,
+    ) -> Result<RunId, RunApplicationError>;
 }
 
 /// Concatenate direct text blocks, dropping non-text blocks. Nested tool-result

@@ -8,6 +8,7 @@ struct ProtocolProjectionRuntime;
 
 #[derive(Default)]
 struct ActivationOnlySessionRunRuntime {
+    reservations: Mutex<Vec<AdmitSessionRun>>,
     deliveries: Mutex<Vec<SessionRunDelivery>>,
 }
 
@@ -49,9 +50,87 @@ impl awaken_session_contract::SessionRuntime for ActivationOnlySessionRunRuntime
         Ok(SessionRunActivation::Activated)
     }
 
+    async fn reserve_session_run(
+        &self,
+        command: AdmitSessionRun,
+    ) -> Result<SessionRunReservation, RunError> {
+        self.reservations.lock().unwrap().push(command);
+        Ok(SessionRunReservation::Reserved)
+    }
+
     fn model(&self) -> String {
         "activation-only-session-run".into()
     }
+}
+
+#[tokio::test]
+async fn background_protocol_uses_the_canonical_session_admission_without_observing() {
+    // Cause/effect decision table: C1 a durable Session exists; C2 the caller
+    // requests background observation; C3 reservation succeeds; C4 the exact
+    // Session activity receipt commits. Effects: E1 one PreservePrior command
+    // is reserved; E2 the same Run id and non-zero epoch are activated once;
+    // E3 the HTTP caller can return while the Session remains Running. Failure
+    // rule B2: C3 or C4 false => no executable delivery. Constraint K1: neither
+    // Host enqueue nor a second background lifecycle is available to this port.
+    let repository: Arc<dyn ManagedSessionRepository> = Arc::new(
+        awaken_session_store::SqliteManagedSessionRepository::open_in_memory()
+            .expect("session repository"),
+    );
+    create(
+        repository.as_ref(),
+        persisted("background-protocol", false, "idle"),
+    )
+    .await;
+    let runtime = Arc::new(ActivationOnlySessionRunRuntime::default());
+    let sessions = Arc::new(application_with_runtime(
+        runtime.clone(),
+        repository.clone(),
+        Arc::new(RecordingEnvironmentSource::default()),
+    ));
+    let protocol = SessionRunApplication::new(
+        Arc::new(ProtocolProjectionRuntime),
+        sessions,
+        |_| "workspace".into(),
+        |_| Some("agent".into()),
+    );
+    let run_id =
+        awaken_session_contract::SessionRunBackgroundApplication::submit_session_run_background(
+            &protocol,
+            "background-operation",
+            "background-protocol",
+            None,
+            vec![awaken_agent_contract::agent::message::Message::text(
+                awaken_agent_contract::agent::message::Id("background-input".into()),
+                awaken_agent_contract::agent::message::Role::User,
+                "run later",
+            )],
+        )
+        .await
+        .expect("B1 background admission");
+
+    let reservations = runtime.reservations.lock().unwrap();
+    assert_eq!(reservations.len(), 1, "B1/E1");
+    assert_eq!(reservations[0].run_id, run_id, "B1/E1 exact Run");
+    assert_eq!(
+        reservations[0].replacement,
+        awaken_session_contract::SessionRunReplacement::PreservePrior,
+        "B1/E1 append semantics",
+    );
+    drop(reservations);
+    let deliveries = runtime.deliveries.lock().unwrap();
+    assert_eq!(deliveries.len(), 1, "B1/E2");
+    assert_eq!(deliveries[0].run_id, run_id, "B1/E2 exact Run");
+    assert!(deliveries[0].session_activity_epoch > 0, "B1/E2 receipt");
+    drop(deliveries);
+    assert_eq!(
+        repository
+            .get("background-protocol")
+            .await
+            .expect("B1 durable Session")
+            .execution,
+        SessionExecutionState::Running,
+        "B1/E3 background caller did not wait for settlement",
+    );
 }
 
 struct BlockingSessionRunRuntime {
