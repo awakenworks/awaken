@@ -3552,6 +3552,7 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
             "/bin/sh",
             std::time::Duration::ZERO,
         );
+    let repository_path_fidelity = raw_host.session_provider.capabilities().path_fidelity;
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let desired = effective_resources(vec![TestInput {
@@ -3583,17 +3584,38 @@ async fn applying_repository_detach_removes_the_resident_namespace_checkout() {
         )
         .await
         .unwrap();
-    host.run(
-        None,
-        "t-repo-detach",
-        vec![Message::text(
-            MessageId("repo-before".into()),
-            Role::User,
-            "observe repository",
-        )],
-    )
-    .await
-    .unwrap();
+    let realization = host
+        .run(
+            None,
+            "t-repo-detach",
+            vec![Message::text(
+                MessageId("repo-before".into()),
+                Role::User,
+                "observe repository",
+            )],
+        )
+        .await;
+    if !repository_path_fidelity {
+        let error = match realization {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "a Namespace provider without path fidelity must reject Repository realization"
+            ),
+        };
+        assert!(
+            error
+                .message
+                .contains("one sandbox-absolute workspace path"),
+            "RD0 capability rejection must explain the shared-path invariant: {}",
+            error.message
+        );
+        assert!(
+            host.session_environment("t-repo-detach").await.is_none(),
+            "RD0 rejection happens before a resident environment or checkout is exposed"
+        );
+        return;
+    }
+    realization.expect("RD1 path-fidelitous Namespace realizes the Repository");
     let environment = host
         .session_environment("t-repo-detach")
         .await
@@ -6267,6 +6289,7 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
             "/bin/sh",
             std::time::Duration::ZERO,
         );
+    let repository_path_fidelity = raw_host.session_provider.capabilities().path_fidelity;
     let host = Arc::new(raw_host);
     let managed = managed_with_resource_source(host.clone());
     let _dispatch_runtime = managed.clone().install_dispatch_session_runtime();
@@ -6297,17 +6320,47 @@ async fn managed_terminal_repository_publication_pushes_exact_commit_and_replays
         )
         .await
         .expect("P1 prepare exact input");
-    host.run(
-        None,
-        session_id,
-        vec![Message::text(
-            MessageId("terminal-publication-input".into()),
-            Role::User,
-            "prepare repository",
-        )],
-    )
-    .await
-    .expect("P1 realize Session Environment");
+    let realization = host
+        .run(
+            None,
+            session_id,
+            vec![Message::text(
+                MessageId("terminal-publication-input".into()),
+                Role::User,
+                "prepare repository",
+            )],
+        )
+        .await;
+    if !repository_path_fidelity {
+        let error = match realization {
+            Err(error) => error,
+            Ok(_) => panic!(
+                "a Namespace provider without path fidelity must reject Repository publication"
+            ),
+        };
+        assert!(
+            error
+                .message
+                .contains("one sandbox-absolute workspace path"),
+            "P0 capability rejection must explain the shared-path invariant: {}",
+            error.message
+        );
+        assert!(
+            host.session_environment(session_id).await.is_none(),
+            "P0 rejection happens before a publishable environment is exposed"
+        );
+        let published = std::process::Command::new("git")
+            .current_dir(&remote)
+            .args(["show-ref", "--verify", "--quiet", "refs/heads/awf/work"])
+            .status()
+            .expect("inspect publication ref");
+        assert!(
+            !published.success(),
+            "P0 rejected realization cannot publish a remote branch"
+        );
+        return;
+    }
+    realization.expect("P1 realize Session Environment");
     let environment = host
         .session_environment(session_id)
         .await
