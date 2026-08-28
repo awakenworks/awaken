@@ -1,8 +1,8 @@
 //! Real-model skill conformance: drive the Managed Agents adapter over a **live**
 //! Anthropic-compatible endpoint (Kimi) and prove the skill path end-to-end — the
-//! model discovers a skill via `list_skills`, activates it via `Skill`, and the
-//! activated instructions reach it (it echoes a secret that lives *only* in the
-//! skill body). ADR-0036.
+//! model discovers the frozen Skill path, reads it with the ordinary `read`
+//! tool, and follows the instructions (it echoes a secret that lives *only* in
+//! the Skill body). ADR-0036.
 //!
 //! Gated with `#[ignore]` (needs network + credentials). Run explicitly:
 //!
@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use awaken_coordinator::SkillSpec;
 use awaken_provider_genai::GenaiExecutor;
-use awaken_scenario_host::build_router_with_skills;
+use awaken_scenario_host::build_router_with_managed_skills;
 use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
@@ -95,7 +95,13 @@ fn events_text(
 
 #[tokio::test]
 #[ignore = "hits a live model endpoint; run with KIMI_API_KEY set and --ignored"]
-async fn kimi_discovers_activates_and_follows_a_skill() {
+async fn kimi_discovers_reads_and_follows_a_skill() {
+    // Cause/effect rule K1: C1 a versioned Agent binding freezes the codeword
+    // Skill, C2 the live model follows progressive-disclosure metadata => E1 it
+    // calls ordinary `read`, E2 neither semantic Skill tool appears, E3 the
+    // body-only secret reaches its answer. The ignored network row complements
+    // deterministic `skill_lifecycle`, which owns the same rule without provider
+    // variability.
     let key = std::env::var("KIMI_API_KEY")
         .expect("set KIMI_API_KEY (the Kimi/Anthropic-compatible key) to run this test");
     let base = std::env::var("KIMI_BASE_URL")
@@ -117,15 +123,14 @@ async fn kimi_discovers_activates_and_follows_a_skill() {
         base,
         key,
     );
-    let app = build_router_with_skills(Arc::new(executor), model, vec![codeword]);
+    let app = build_router_with_managed_skills(Arc::new(executor), model, vec![codeword]).await;
     let id = create_session(&app).await;
 
     let list = send_message(
         &app,
         &id,
-        "You have skills available through the `list_skills` and `Skill` tools. \
-         First call `list_skills` to see what exists, then activate the `codeword` \
-         skill with the `Skill` tool and follow its instruction exactly.",
+        "Inspect the available Skill metadata, read the codeword Skill's `SKILL.md` \
+         with the ordinary `read` tool, and follow its instruction exactly.",
     )
     .await;
 
@@ -141,8 +146,14 @@ async fn kimi_discovers_activates_and_follows_a_skill() {
     eprintln!("--- live messages: {messages:?}");
 
     assert!(
-        tool_uses.iter().any(|t| t == "Skill"),
-        "the model activated the skill via the Skill tool: {tool_uses:?}"
+        tool_uses.iter().any(|tool| tool == "read"),
+        "the model loaded the frozen Skill through ordinary read: {tool_uses:?}"
+    );
+    assert!(
+        tool_uses
+            .iter()
+            .all(|tool| tool != "Skill" && tool != "list_skills"),
+        "Managed execution has no semantic Skill fallback: {tool_uses:?}"
     );
     assert!(
         messages.iter().any(|m| m.contains(SECRET)) || all_text.contains(SECRET),

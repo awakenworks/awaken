@@ -2,9 +2,10 @@
 //! object in the official Managed Agents wire shapes: the built-in tools fold into a
 //! single `agent_toolset_20260401` reference (unregistered tools disabled,
 //! confirmation-gated tools `always_ask`), client tools become `custom` definitions,
-//! offered skills become `custom` skill references, and a delegate roster becomes a
-//! `coordinator` multiagent object. This drives the full `ManagedHost::capabilities`
-//! → host accessors → `project` wiring over the public wire.
+//! only versioned catalog skills become `custom` skill references, and a delegate
+//! roster becomes a `coordinator` multiagent object. This drives the full
+//! `ManagedHost::capabilities` → host accessors → `project` wiring over the public
+//! wire.
 
 use std::sync::Arc;
 
@@ -39,18 +40,22 @@ async fn create_session(app: &Router) -> serde_json::Value {
 
 /// The built-in hand tools fold into one `agent_toolset_20260401` reference: the
 /// registered official tools inherit the Managed Agent `always_allow` default,
-/// while configurable `web_fetch` and
-/// `web_search` are disabled when no routed Web plugin is selected. Offered
-/// skills appear on `agent.skills`.
+/// while configurable `web_fetch` and `web_search` are disabled when no routed
+/// Web plugin is selected. An unversioned host-static Skill remains
+/// direct-session compatibility input and does not appear on Managed
+/// `agent.skills`.
 ///
 /// Cause/effect graph and decision table:
 /// C1=the host registers an official static tool, C2=a configurable Web plugin
-/// is absent, C3=an override names a closed Agent toolset member; E1=the static
+/// is absent, C3=an override names a closed Agent toolset member, C4=an
+/// unversioned host-static Skill exists; E1=the static
 /// tool inherits the enabled/always-allow default, E2=the Web tool is disabled,
 /// E3=the config's `type` repeats the
-/// closed member discriminator.
+/// closed member discriminator, E4=the direct-only Skill is absent from Managed
+/// capabilities.
 /// R1(C1,!C2)->E1 covers bash/read/write/edit/glob/grep;
 /// R2(!C1,C2,C3)->E2+E3 covers WebFetch and WebSearch.
+/// R3(C4, no versioned catalog record)->E4 covers profile convergence.
 /// Constraints/invariants: one neutral `SessionToolConfiguration` owns policy;
 /// the Managed projector is the only wire owner, Web providers use the unified
 /// configured-provider registry, and there is no legacy static WebFetch path.
@@ -86,10 +91,7 @@ async fn managed_session_folds_builtins_into_the_agent_toolset() {
             "default_config": { "enabled": true, "permission_policy": { "type": "always_allow" } }
         }])
     );
-    assert_eq!(
-        session["agent"]["skills"],
-        serde_json::json!([{ "type": "custom", "skill_id": "deploy", "version": "latest" }])
-    );
+    assert_eq!(session["agent"]["skills"], serde_json::json!([]));
     assert!(session["agent"]["multiagent"].is_null());
     assert!(session["resources"].as_array().unwrap().is_empty());
 }
